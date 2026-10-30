@@ -56,6 +56,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .session_budget import session_budget
+
 import yaml
 
 from .mcp_transport import connector_config, isolated_mcp
@@ -492,6 +494,7 @@ def run_arm(
         "progress_label": progress_label,
         "claude_bin": sandbox.claude_bin,
         "timeout": args.timeout,
+        "max_budget_usd": getattr(args, "max_budget_usd", None),
         "model": args.model,
         "effort": args.effort,
         "env": env,
@@ -1212,6 +1215,18 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
     expected kinds is deliberately left to propagate — a harness bug must not be
     recorded as an ordinary infra-error and averaged into the evidence.
     """
+    cell_started_at = datetime.now(UTC).isoformat()
+    cell_started = time.monotonic()
+    phase_started = cell_started
+    active_phase = "validation"
+    phase_seconds: dict[str, float] = {}
+
+    def enter_phase(name: str) -> None:
+        nonlocal active_phase, phase_started
+        now = time.monotonic()
+        phase_seconds[active_phase] = phase_seconds.get(active_phase, 0.0) + now - phase_started
+        active_phase, phase_started = name, now
+
     args = ctx.args
     task = ctx.task
     worktree: Path | None = None
@@ -1235,6 +1250,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 raise RuntimeError("sanitized graph snapshot is unavailable")
         if ctx.asset_snapshot is None:
             raise RuntimeError("task asset snapshot is unavailable")
+        enter_phase("clone")
         if ctx.clone_template is not None:
             if not ctx.sanitized_head:
                 raise RuntimeError("clone template is missing its sanitized HEAD")
@@ -1243,9 +1259,11 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
         else:
             worktree = make_worktree(ctx.repo, ctx.task_sha, ctx.trees_dir)
             sanitized_head = sanitize_clone_for_hidden_oracles(worktree)
+        enter_phase("graph_materialize")
         if gitnexus_available:
             assert ctx.graph_snapshot is not None
             ctx.graph_snapshot.materialize(worktree, sanitized_head=sanitized_head)
+        enter_phase("dependencies")
         dependency_mounts = stage_task_assets(
             task,
             repo=ctx.repo,
@@ -1258,12 +1276,14 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             else []
         )
         ce_mounts = ce_plugin_mounts_for_arm(execution_arm, ctx.ce_plugin_snapshot)
+        enter_phase("mcp_startup")
         if isolated_baseline:
             endpoint = resources.enter_context(isolated_mcp(
                 clone=worktree, mounts=[*dependency_mounts, *gitnexus_mounts], bwrap_bin=ctx.bwrap_bin,
             ))
             gitnexus_mounts = [endpoint]
             runtime_exposure = "stdio-only"
+        enter_phase("sandbox_setup")
         with prepare_sandbox(
             clone=worktree,
             claude_bin=args.claude_bin,
@@ -1346,6 +1366,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             before_work_digest = (
                 implementation_diff_digest(sandbox, orig_sha) if execution_arm in IMPLEMENTATION_ARMS else ""
             )
+            enter_phase("agent_and_verification")
             record = run_arm(
                 execution_arm,
                 task,
@@ -1360,6 +1381,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 oracle_snapshot=ctx.oracle_snapshot,
                 mcp_config_json=connector_config() if isolated_baseline else None,
             )
+            enter_phase("artifacts")
             if execution_arm in ("review", "ce_review"):
                 review_source = review_output_path(sandbox, REVIEW_OUTPUT)
                 if review_source.is_file() and not review_source.is_symlink():
@@ -1433,6 +1455,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
         detail = redact_text(str(exc), credential_secrets(args))
         print(f"[{task['id']}][{arm}][run {run_idx}] infra-error: {detail}")
     finally:
+        enter_phase("cleanup")
         try:
             resources.close()
         except (SandboxError, OSError, RuntimeError) as exc:
@@ -1453,8 +1476,14 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
         record["error_detail"] = (
             f"primary={primary_kind}: {primary_detail}; cleanup: {type(cleanup_error).__name__}: {cleanup_error}"
         )[:2000]
+    cell_finished = time.monotonic()
+    phase_seconds["cleanup"] = cell_finished - phase_started
     record.update(
         {
+            "cell_started_at": cell_started_at,
+            "cell_finished_at": datetime.now(UTC).isoformat(),
+            "cell_duration_s": cell_finished - cell_started,
+            "cell_phase_seconds": phase_seconds,
             "task": task["id"],
             "class": task.get("class", ""),
             "run": run_idx,
@@ -2105,6 +2134,10 @@ def build_parser() -> argparse.ArgumentParser:
         "subagent spend — token metrics count only the main loop",
     )
     parser.add_argument("--promotion-min-runs", type=int, default=3)
+    parser.add_argument(
+        "--max-budget-usd", type=float,
+        help="opt-in CLI-reported cost stop per baseline session; provider billing may exceed it",
+    )
     parser.add_argument("--promotion-min-improvement", type=float, default=5.0)
     parser.add_argument("--promotion-max-task-regression", type=float, default=20.0)
     parser.add_argument("--task-bindings-json", default=None, help=argparse.SUPPRESS)
@@ -2126,6 +2159,9 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     try:
+        args.max_budget_usd = session_budget(args.max_budget_usd)
+        if args.max_budget_usd is not None and any(arm not in ("baseline", "baseline_nomcp", "baseline_cli") for arm in args.arms):
+            raise ValueError("--max-budget-usd is limited to single-session baseline arms")
         args.model = normalized_model_identifier(args.model)
         args.proposer_model = (
             normalized_model_identifier(args.proposer_model, flag="--proposer-model")
