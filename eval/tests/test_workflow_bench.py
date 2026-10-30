@@ -411,6 +411,62 @@ def test_test_artifact_retries_cannot_hide_missing_evidence(ci_test_jobs):
                     )
 
 
+def test_test_artifact_download_retries_require_a_verified_artifact():
+    repo_root = Path(__file__).resolve().parents[2]
+    action = yaml.safe_load((repo_root / ".github/actions/download-test-artifact/action.yml").read_text())
+    assert action["runs"]["using"] == "composite"
+    assert action["inputs"]["name"]["required"] is True
+    assert action["inputs"]["path"]["required"] is True
+    first, wait, second, final_wait, final = action["runs"]["steps"]
+    assert "if" not in first
+    assert first["id"] == "first" and second["id"] == "second"
+    assert first["continue-on-error"] is True
+    assert second["continue-on-error"] is True
+    assert not final.get("continue-on-error", False)
+
+    # Use raw outcomes: continue-on-error turns a failed attempt's conclusion
+    # into success. Stop retrying after recovery or cancellation.
+    for pause, attempt, previous, delay in (
+        (wait, second, "first", 10),
+        (final_wait, final, "second", 30),
+    ):
+        assert pause["if"] == attempt["if"] == "${{ !cancelled() && steps." + previous + ".outcome == 'failure' }}"
+        assert pause["shell"] == "bash"
+        assert pause["run"] == f"sleep {delay}"
+
+    assert len({step["uses"] for step in (first, second, final)}) == 1
+    for step in (first, second, final):
+        assert re.fullmatch(r"actions/download-artifact@[a-f0-9]{40}", step["uses"])
+        # Every attempt must fetch and verify the same artifact in this run;
+        # no pattern, alternate run, or relaxed digest check may substitute it.
+        assert step["with"] == {
+            "name": "${{ inputs.name }}",
+            "path": "${{ inputs.path }}",
+            "digest-mismatch": "error",
+        }
+
+
+@pytest.mark.parametrize("job_name", ["tests", "coverage-merge", "shard-plan", "cross-platform", "native-timings"])
+def test_frozen_timing_consumers_retry_required_downloads(ci_test_jobs, job_name):
+    job = ci_test_jobs[job_name]
+    downloads = [
+        step for step in job["steps"]
+        if step.get("with", {}).get("name") == "shard-timing-input"
+        and step.get("uses") != "./.github/actions/upload-test-artifact"
+    ]
+    assert len(downloads) == 1
+    download = downloads[0]
+    assert download["uses"] == "./.github/actions/download-test-artifact"
+    assert not download.get("continue-on-error", False)
+    assert not job.get("continue-on-error", False)
+    expected_path = ".vitest/timings" if job_name == "shard-plan" else "gitnexus/.vitest/timings"
+    assert download["with"] == {"name": "shard-timing-input", "path": expected_path}
+    assert any(
+        step.get("uses", "").startswith("actions/checkout@")
+        for step in job["steps"][:job["steps"].index(download)]
+    )
+
+
 def test_shard_plan_retry_cannot_replace_frozen_timing_input(ci_test_jobs):
     steps = ci_test_jobs["shard-plan"]["steps"]
     restore = next(step for step in steps if step.get("id") == "previous-input")
