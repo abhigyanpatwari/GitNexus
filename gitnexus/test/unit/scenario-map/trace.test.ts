@@ -1041,10 +1041,17 @@ describe('runTrace', () => {
   });
 
   it('runs sibling tests in both passes while comparing only the candidate tests', async () => {
-    const fake = fakeRun([ROUND('[2]')], [ROUND('[2]')]);
     const manifestRoot = tempDir();
     writeTree(manifestRoot, '');
     const sibling = `${PACKAGE_FILE}#suite setup in an earlier test`;
+    const baseline = vitestResult(['survived', 'survived']);
+    baseline.tests.push({
+      ...baseline.tests[0],
+      id: sibling,
+      taskId: 'sibling-task',
+      fullName: 'suite setup in an earlier test',
+    });
+    const fake = fakeRun([ROUND('[2]')], [ROUND('[2]')], { baseline });
     const skipped = `${PACKAGE_FILE}#platform-specific test`;
     const unrelated = 'test/unit/unrelated.test.ts#unrelated';
     const manifest = buildRunManifest({
@@ -1070,6 +1077,9 @@ describe('runTrace', () => {
     ]);
     expect(result.tests.map((test) => test.id)).toEqual([A, B]);
     expect(result.pairs.map((pair) => pair.status)).toEqual(['clean']);
+    expect(fake.provided.find(([key]) => key === TRACE_KEY)?.[1]).toMatchObject({
+      taskIds: ['t_0', 't_1'],
+    });
   });
 
   it('runs a baseline and a traced run of the same tests and vetoes differing calls', async () => {

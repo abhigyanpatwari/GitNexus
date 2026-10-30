@@ -73,6 +73,8 @@ export interface TraceContext {
   preparedRoot: string;
   /** Extra path-map roots (controls mode). */
   extraRoots: string[];
+  /** Candidate Vitest task ids from the baseline collection; siblings still execute. */
+  taskIds: string[];
   /** The wrap list (builtins.ts `wrapListOf`). */
   wrap: WrapEntry[];
 }

@@ -161,7 +161,10 @@ and cannot confirm duplicates.
 Capture preserves the suite's normal lifecycle and does not add per-test repeats:
 repeating a destructive test or a cache assertion within one suite changes its input.
 Tracing includes runnable siblings in each candidate file in both passes, preserving
-setup performed by earlier tests; only candidate tests are compared. Explicitly skipped
+setup performed by earlier tests; only candidate tests are recorded and compared. Candidate
+task IDs come from the baseline collection. Siblings run without trace stack capture,
+argument serialization or per-test fixture snapshots, so unrelated timing checks do not
+pay that instrumentation cost. A missing candidate trace remains inconclusive. Explicitly skipped
 siblings stay out. If a runnable sibling uses retries, the file's pairs remain inconclusive.
 Failed captures retain their error details in `coverage.json` and keep the report
 partial even when every file was collected.

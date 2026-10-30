@@ -543,12 +543,6 @@ export async function runTrace(
   const packageDir = path.posix.join(preparedRoot, PACKAGE_DIR);
   copyBuildOutput(manifest.mode.kind, path.join(repoRoot, PACKAGE_DIR), packageDir);
   const vitest = vitestSelectionOf(manifest.mode);
-  const context: TraceContext = {
-    outDir: layout.rawDir,
-    preparedRoot,
-    extraRoots,
-    wrap: wrap.entries,
-  };
   let baseline: VitestRunResult;
   let traced: VitestRunResult;
   try {
@@ -565,6 +559,15 @@ export async function runTrace(
       },
       isSequential,
     );
+    const context: TraceContext = {
+      outDir: layout.rawDir,
+      preparedRoot,
+      extraRoots,
+      taskIds: baseline.tests.flatMap((test) =>
+        candidates.has(test.id) && test.taskId !== null ? [test.taskId] : [],
+      ),
+      wrap: wrap.entries,
+    };
     rmSync(layout.rawDir, { recursive: true, force: true });
     mkdirSync(layout.rawDir, { recursive: true });
     traced = await runVitestPartitioned(
