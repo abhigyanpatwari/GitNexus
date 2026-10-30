@@ -137,6 +137,7 @@
     "@babel/traverse": "^8.0.0",
     "@babel/types": "^8.0.0",
     "@mermaid-js/tiny": "12.0.0",
+    "@streamparser/json": "0.0.26",
     "@stryker-mutator/api": "10.0.0",
     "@stryker-mutator/core": "10.0.0",
     "@types/busboy": "^1.5.4",

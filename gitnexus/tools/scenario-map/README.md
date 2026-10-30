@@ -150,6 +150,14 @@ node --import tsx tools/scenario-map/consolidation/verify-controls.ts \
 Full-suite planning needs more than Node's default heap. The CI Plan step uses
 the same 8 GiB budget; allow additional RAM for native allocations and subprocesses.
 
+The merge stage streams `scenario-map-report.json` one record at a time. Full-suite
+reports can exceed Node's single-string limit; use a streaming JSON reader instead
+of `JSON.parse(readFileSync(..., 'utf8'))`. The report schema and all candidate
+evidence are preserved. Baseline comparison and the CI issue update use
+`report/json.ts`'s `readReportFields` to retain only the fields they need while
+validating the whole file. A failed runtime trace still produces a partial report
+and cannot confirm duplicates.
+
 The acceptance command checks all 28 pairs among eight real pipeline controls:
 15 exact/renamed/partial/cross-language opportunities and 13 negative pairs. It
 also checks that unique evidence and runtime limitations survive in the report.

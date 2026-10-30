@@ -666,13 +666,14 @@ jobs:
           import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
           import path from 'node:path';
           import { shouldUpdateIssue } from './tools/scenario-map/report/issue-body.ts';
+          import { readReportFields } from './tools/scenario-map/report/json.ts';
           import { completenessLine, degradedLine, runLink } from './tools/scenario-map/report/markdown.ts';
 
           const { ISSUE_NUMBER, GITHUB_OUTPUT, RUNNER_TEMP } = process.env;
           const reportDir = path.join(RUNNER_TEMP, 'scenario-map-report');
           const issueDir = path.join(RUNNER_TEMP, 'scenario-map-issue');
-          const report = JSON.parse(
-            readFileSync(path.join(reportDir, 'scenario-map-report.json'), 'utf8'),
+          const report = await readReportFields(
+            path.join(reportDir, 'scenario-map-report.json'), ['run', 'completeness'],
           );
           const existing = ISSUE_NUMBER
             ? readFileSync(path.join(issueDir, 'existing-body.md'), 'utf8')

@@ -322,6 +322,7 @@ import {
 import { fingerprintMutants } from './report/anchors.js';
 import { UnreadableBaseline } from './report/baseline.js';
 import { renderIssueBody } from './report/issue-body.js';
+import { readReportFields, writeReportJson } from './report/json.js';
 import { renderMarkdown } from './report/markdown.js';
 import {
   buildReport,
@@ -3323,7 +3324,7 @@ export async function runMergeStage(
   let baseline: unknown = null;
   if (options.baseline !== null) {
     try {
-      baseline = readJsonFile(options.baseline);
+      baseline = await readReportFields(options.baseline, ['schemaVersion', 'run', 'continuity']);
     } catch (error) {
       baseline = new UnreadableBaseline(errorMessage(error));
     }
@@ -3494,7 +3495,7 @@ export async function runMergeStage(
     );
   }
   // The work directory exists: the plan was read from it.
-  writeJson(layout.reportJson, report, true);
+  await writeReportJson(layout.reportJson, report);
   writeFileSync(layout.reportMarkdown, renderMarkdown(report));
   writeFileSync(layout.issueBody, renderIssueBody(report));
   log(
