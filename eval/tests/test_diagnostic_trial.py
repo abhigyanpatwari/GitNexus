@@ -202,8 +202,7 @@ def test_trial_is_manual_only_and_cannot_publish_release_evidence():
     assert document[True]["workflow_dispatch"]["inputs"]["diagnostic_trial"]["default"] is False
     assert "diagnostic_trial" not in document[True]["workflow_call"]["inputs"]
     steps = document["jobs"]["evaluate"]["steps"]
-    excluded = {"Run the opt-in CLI-only arm on the candidate", "Measure candidate with deferred MCP descriptions",
-                "Summarize complete or incomplete measurements", "Require complete paired evidence and no task regression",
+    excluded = {"Summarize complete or incomplete measurements", "Require complete paired evidence and no task regression",
                 "Collect sanitized evidence and publish summary", "Summarize time, cost, and tool measurements",
                 "Upload sanitized release evidence", "Upload sanitized PR cost comparison"}
     for step in steps:

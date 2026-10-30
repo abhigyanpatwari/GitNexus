@@ -492,8 +492,10 @@ jobs:
           done
       # Descriptive only: its own output directory leaves the paired evidence
       # that release_report and release_gate read exactly as without the opt-in.
+      # Trials reject these opt-ins before startup. Preserve the exact gates
+      # recognized by the historical measurement-protocol validator.
       - name: Run the opt-in CLI-only arm on the candidate
-        if: env.CLI_ARM == 'true' && inputs.diagnostic_trial != true
+        if: env.CLI_ARM == 'true'
         continue-on-error: true
         timeout-minutes: 600
         working-directory: eval
@@ -515,7 +517,7 @@ jobs:
             --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
             --out "$RUNNER_TEMP/release-evaluation/candidate/cli-raw"
       - name: Measure candidate with deferred MCP descriptions
-        if: inputs.mcp_tool_loading == true && inputs.candidate_pr == '' && inputs.diagnostic_trial != true
+        if: inputs.mcp_tool_loading == true && inputs.candidate_pr == ''
         timeout-minutes: 360
         working-directory: eval
         env:
