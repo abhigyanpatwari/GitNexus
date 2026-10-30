@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   closeLbug,
   executeQuery,
@@ -15,7 +16,12 @@ import {
 } from '../../src/core/lbug/lbug-adapter.js';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { createTempDir } from '../helpers/test-db.js';
-import { parseFilesWithWorkers } from '../helpers/worker-parse.js';
+import { DIST_WORKER_URL, parseFilesWithWorkers } from '../helpers/worker-parse.js';
+import { createWorkerPool } from '../../src/core/ingestion/workers/worker-pool.js';
+import type {
+  ParseWorkerInput,
+  ParseWorkerResult,
+} from '../../src/core/ingestion/workers/parse-worker.js';
 import { findDanglingEdges } from './resolvers/helpers.js';
 
 const CHAINED_CONST = `import { z } from 'zod';
@@ -107,6 +113,50 @@ describe('#3747 member edges only name emitted owners', () => {
       expect(Number(row.edges)).toBe(result.graph.relationships.length);
     } finally {
       await closeLbug();
+      await temp.cleanup();
+    }
+  });
+
+  it('settles the partial file when a real parser provider throws after emitting members', async () => {
+    const temp = await createTempDir();
+    const bootstrap = path.join(temp.dbPath, 'throwing-provider.mjs');
+    const providersUrl = new URL('../languages/index.js', DIST_WORKER_URL).href;
+    // Inject the failure in the worker isolate, leaving the production loop and
+    // its finally intact. Removing that finally must make this regression fail.
+    await fs.writeFile(
+      bootstrap,
+      `
+      const { getProvider } = await import(${JSON.stringify(providersUrl)});
+      getProvider('javascript').extractToolDefinitions = () => {
+        throw new Error('owner-edge-guard provider fault');
+      };
+      await import(${JSON.stringify(DIST_WORKER_URL.href)});
+    `,
+    );
+    const pool = createWorkerPool(pathToFileURL(bootstrap), 1);
+    try {
+      const [result] = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>([
+        { path: 'ctx.mjs', content: CHAINED_CONST },
+        { path: 'after.mjs', content: 'export function shouldNotParse() {}' },
+      ]);
+      // The first file is counted before the provider throws; the remaining
+      // file is skipped, proving the injected failure reached processBatch.
+      expect(result.fileCount).toBe(1);
+      expect(result.nodes.some((node) => node.properties.name === 'shouldNotParse')).toBe(false);
+      const member = result.nodes.find((node) => node.properties.name === 'REPO');
+      expect(member).toBeDefined();
+      expect(result.relationships.filter((edge) => edge.targetId === member?.id)).toEqual([
+        {
+          id: `DEFINES:File:ctx.mjs->${member?.id}`,
+          sourceId: 'File:ctx.mjs',
+          targetId: member?.id,
+          type: 'DEFINES',
+          confidence: 1,
+          reason: '',
+        },
+      ]);
+    } finally {
+      await pool.terminate();
       await temp.cleanup();
     }
   });
