@@ -515,7 +515,7 @@ CI auto-discovers the set via `tsx`. No workflow edit required.
 
 ## Language-agnostic graph feeding
 
-18 languages → single unified graph. Four abstraction layers:
+19 languages → single unified graph. Four abstraction layers:
 
 ```
  Unified Graph Schema (44 node types, 21 relationship types)

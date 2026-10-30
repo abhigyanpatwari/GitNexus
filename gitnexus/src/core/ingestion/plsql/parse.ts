@@ -74,6 +74,8 @@ export interface PlSqlSegment {
 export interface ParsedPlSqlSource {
   readonly segments: readonly PlSqlSegment[];
   readonly scriptIncludes: readonly ScriptInclude[];
+  /** SQL*Plus client commands blanked by the pre-pass (EXEC, SET, @@, …). */
+  readonly sqlplusCommands: readonly SqlPlusCommand[];
 }
 
 class CountingErrorListener extends BaseErrorListener {
@@ -199,7 +201,7 @@ export function parsePlSqlSource(
     const result = parseSegment(padded, options.segmentDeadlineMs ?? segmentDeadlineMs(lines));
     segments.push({ startLine: seg.startLine, endLine: seg.endLine, text: seg.body, ...result });
   }
-  return { segments, scriptIncludes: scriptIncludesOf(commands) };
+  return { segments, scriptIncludes: scriptIncludesOf(commands), sqlplusCommands: commands };
 }
 
 export type { ParserRuleContext };

@@ -169,6 +169,17 @@ describe('file classification', () => {
       false,
     );
     expect(looksLikeOraclePlSql('SELECT * FROM t;')).toBe(false);
+    // Triggers: Oracle-only bodies qualify; a PostgreSQL trigger does not.
+    expect(
+      looksLikeOraclePlSql(
+        'CREATE OR REPLACE TRIGGER t BEFORE UPDATE ON x FOR EACH ROW\nBEGIN\n  :NEW.ts := SYSDATE;\nEND;',
+      ),
+    ).toBe(true);
+    expect(
+      looksLikeOraclePlSql(
+        'CREATE TRIGGER t BEFORE INSERT ON x FOR EACH ROW EXECUTE FUNCTION f();',
+      ),
+    ).toBe(false);
     // `IS` after the header is Oracle-only, no other marker needed.
     expect(looksLikeOraclePlSql('CREATE PROCEDURE p IS BEGIN NULL; END;')).toBe(true);
     // T-SQL without GO: `AS` header, `IS NULL` only inside the body.
@@ -200,11 +211,25 @@ describe('resolvePlSqlScriptInclude', () => {
       'vendor/ext.pks',
     );
   });
+  it('resolves @@ against the calling script and @ / START against the repository root first', () => {
+    const paths = new Set(['db/install.sql', 'db/foo.sql', 'foo.sql']);
+    expect(resolvePlSqlScriptInclude('foo', 'db/install.sql', paths, false)).toBe('foo.sql');
+    expect(resolvePlSqlScriptInclude('foo', 'db/install.sql', paths, true)).toBe('db/foo.sql');
+    expect(resolvePlSqlScriptInclude('@@foo', 'db/install.sql', paths)).toBe('db/foo.sql');
+    expect(
+      resolvePlSqlScriptInclude('ext.pks', 'db/install.sql', new Set(['ext.pks']), true),
+    ).toBeNull();
+  });
+
   it('never suffix-matches a script outside the repository', () => {
     expect(resolvePlSqlScriptInclude('ext.pks', 'db/install.sql', files)).toBeNull();
     expect(
       resolvePlSqlScriptInclude('?/rdbms/admin/utlrp.sql', 'db/install.sql', files),
     ).toBeNull();
     expect(resolvePlSqlScriptInclude('/opt/x.sql', 'db/install.sql', files)).toBeNull();
+    expect(
+      resolvePlSqlScriptInclude('\\\\server\\share\\x.sql', 'db/install.sql', files),
+    ).toBeNull();
+    expect(resolvePlSqlScriptInclude('C:\\deploy\\x.sql', 'db/install.sql', files)).toBeNull();
   });
 });

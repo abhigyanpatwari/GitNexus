@@ -18,11 +18,7 @@
  */
 
 import type { Capture, CaptureMatch, Range } from 'gitnexus-shared';
-import {
-  type PlSqlDefinition,
-  type PlSqlFileFacts,
-  type PlSqlNameToken,
-} from '../../plsql/extract.js';
+import type { PlSqlDefinition, PlSqlFileFacts, PlSqlNameToken } from '../../plsql/extract.js';
 import { plsqlFactsForFile } from '../../plsql/facts-store.js';
 
 function capture(name: string, range: Range, text: string): Capture {
@@ -137,7 +133,12 @@ export function emitPlSqlScopeCaptures(
     };
     out.push({
       '@import.statement': capture('@import.statement', r, include.target),
-      '@import.name': capture('@import.name', r, include.target),
+      // `@@` marks a script-relative include for resolveImportTarget.
+      '@import.name': capture(
+        '@import.name',
+        r,
+        include.relativeToScript ? `@@${include.target}` : include.target,
+      ),
     });
   }
 

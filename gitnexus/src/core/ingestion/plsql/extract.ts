@@ -10,14 +10,19 @@
  */
 
 import {
+  CharStream,
+  CommonTokenStream,
   ParseTreeWalker,
   ParserRuleContext,
+  Token,
   type ParseTree,
   type ParseTreeListener,
 } from 'antlr4ng';
 import { PlSqlParser as P } from './generated/PlSqlParser.js';
+import { PlSqlLexer } from './generated/PlSqlLexer.js';
 import { parsePlSqlSource, type PlSqlSegment } from './parse.js';
-import type { ScriptInclude } from './preprocess.js';
+import { normaliseIdentifier } from './names.js';
+import type { ScriptInclude, SqlPlusCommand } from './preprocess.js';
 
 export type PlSqlDefKind = 'package' | 'procedure' | 'function' | 'trigger';
 export type PlSqlAccessKind =
@@ -123,6 +128,11 @@ export interface PlSqlDynamicSqlSite {
 export interface PlSqlFileFacts {
   readonly scriptIncludes: readonly ScriptInclude[];
   /**
+   * SQL*Plus client commands removed before parsing. `EXEC pkg.proc(…)` lines
+   * name subprograms the parse tree never sees, so rename must consult them.
+   */
+  readonly sqlplusCommands: readonly SqlPlusCommand[];
+  /**
    * Identifiers in expression positions that are not recorded call sites:
    * variables, columns, record fields — or argument-less function calls the
    * grammar cannot tell apart from them. Rename treats a same-named one as
@@ -141,11 +151,7 @@ export interface PlSqlFileFacts {
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
-export function normaliseIdentifier(text: string): string {
-  return text.startsWith('"') && text.endsWith('"') && text.length >= 2
-    ? text.slice(1, -1)
-    : text.toUpperCase();
-}
+export { normaliseIdentifier };
 
 function splitDotted(text: string): string[] {
   // `"a.b".c` keeps the quoted part intact.
@@ -639,7 +645,7 @@ function fallbackDefinitions(segment: PlSqlSegment, known: ReadonlySet<string>):
   };
   routines.forEach((r, i) => {
     const ownerPath = pathOf(i);
-    if (known.has(`${ownerPath.join('.')}|${r.name}`)) return;
+    if (known.has(`${ownerPath.join('\0')}|${r.name}`)) return;
     const line = lineAt(r.start);
     out.push(makeFallback(r.kind, r.name, ownerPath, line, line, undefined, unit!.isSpec));
   });
@@ -700,7 +706,7 @@ export function extractPlSqlFacts(
       if (segment.mode === 'timeout') segmentsTimedOut++;
       firstError ??= segment.firstError;
       const known = new Set(
-        out.definitions.slice(before).map((d) => `${d.ownerPath.join('.')}|${d.name}`),
+        out.definitions.slice(before).map((d) => `${d.ownerPath.join('\0')}|${d.name}`),
       );
       out.definitions.push(...fallbackDefinitions(segment, known));
     }
@@ -708,9 +714,34 @@ export function extractPlSqlFacts(
   return {
     ...out,
     scriptIncludes: parsed.scriptIncludes,
+    sqlplusCommands: parsed.sqlplusCommands,
     segments: parsed.segments.length,
     segmentsWithErrors,
     segmentsTimedOut,
     firstError,
   };
+}
+
+// ─── tokens for rename ────────────────────────────────────────────────────
+
+export interface PlSqlLexedToken {
+  readonly text: string;
+  readonly line: number;
+  readonly column: number;
+}
+
+/**
+ * Default-channel tokens of pre-processed text (comments, whitespace and EOF
+ * excluded). Lives here so rename reaches the lexer through the lazily loaded
+ * parser module rather than importing it at start-up.
+ */
+export function lexPlSqlTokens(preprocessed: string): PlSqlLexedToken[] {
+  const lexer = new PlSqlLexer(CharStream.fromString(preprocessed));
+  lexer.removeErrorListeners();
+  const stream = new CommonTokenStream(lexer);
+  stream.fill();
+  return stream
+    .getTokens()
+    .filter((t) => t.channel === Token.DEFAULT_CHANNEL && t.type !== Token.EOF)
+    .map((t) => ({ text: t.text ?? '', line: t.line, column: t.column }));
 }

@@ -15,7 +15,7 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import { processPlSql, isPlSqlSource } from '../plsql-processor.js';
 import { hasPlSqlExtension, isSqlFile } from '../plsql/file-types.js';
-import { resetPlSqlFactsStore } from '../plsql/facts-store.js';
+import { loadPlSqlParser, resetPlSqlFactsStore } from '../plsql/facts-store.js';
 import { readFileContents } from '../filesystem-walker.js';
 import type { StructureOutput } from './structure.js';
 import { isDev } from '../utils/env.js';
@@ -84,6 +84,8 @@ export const plsqlPhase: PipelinePhase<PlSqlOutput> = {
       return { files: 0, packages: 0, subprograms: 0 };
     }
 
+    // The ANTLR parser is loaded only now that the repository is known to hold PL/SQL.
+    await loadPlSqlParser();
     const result = processPlSql(ctx.graph, files, allPathSet);
 
     if (isDev) {

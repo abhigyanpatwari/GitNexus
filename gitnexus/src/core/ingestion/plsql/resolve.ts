@@ -43,13 +43,19 @@ export function rootPackageOf(
   return pkg === undefined ? undefined : defs.find((d) => d.kind === 'package' && d.name === pkg);
 }
 
-const pathKey = (path: readonly string[]) => path.join('.');
+/** NUL-separated: a quoted identifier may itself contain `.` (`"A.B"` ≠ `A`.`B`). */
+const pathKey = (path: readonly string[]) => path.join('\0');
+
+/** Join name parts with `.`, re-quoting any part that itself contains a dot. */
+export function dottedName(parts: readonly string[]): string {
+  return parts.map((p) => (p.includes('.') ? `"${p}"` : p)).join('.');
+}
 
 /** Owner path + name + parameter signature: identifies a spec declaration with its body. */
 export function plsqlSignatureKey(
   def: Pick<PlSqlDefinition, 'ownerPath' | 'name' | 'parameters'>,
 ): string {
-  return `${[...def.ownerPath, def.name].join('.')}(${def.parameters.map((p) => `${p.name} ${p.type}`.trim()).join(',')})`;
+  return `${dottedName([...def.ownerPath, def.name])}(${def.parameters.map((p) => `${p.name} ${p.type}`.trim()).join(',')})`;
 }
 
 /** Number of leading directory segments two repository paths share. */
@@ -135,20 +141,34 @@ function preferWrittenSchema<E extends PlSqlIndexEntry>(
   return inSchema.length > 0 ? inSchema : candidates;
 }
 
+/**
+ * Keep the candidates a call can bind to. With a known argument list, a
+ * candidate fits when the positional arguments fill its leading parameters,
+ * every named argument names one of the remaining parameters, and every
+ * parameter left unfilled has a default. A known mismatch is dropped — even a
+ * sole candidate — so it yields no edge rather than a wrong one. Candidates
+ * with unknown parameters (regex fallback) always fit.
+ */
 function narrowOverloads<E extends PlSqlIndexEntry>(
   candidates: E[],
   call: Pick<PlSqlCallSite, 'arity' | 'namedArguments'>,
 ): E[] {
-  if (candidates.length <= 1 || call.arity === undefined) return candidates;
-  const arity = call.arity;
-  const fits = candidates.filter((c) => {
+  if (call.arity === undefined) return candidates;
+  const positional = call.arity - call.namedArguments.length;
+  return candidates.filter((c) => {
     if (c.def.fromFallback) return true; // parameters unknown
-    const required = c.def.parameters.filter((p) => !p.hasDefault).length;
-    if (arity < required || arity > c.def.parameters.length) return false;
-    const names = new Set(c.def.parameters.map((p) => p.name));
-    return call.namedArguments.every((n) => names.has(n));
+    const params = c.def.parameters;
+    if (positional < 0 || positional > params.length) return false;
+    const named = new Set(call.namedArguments);
+    if (named.size !== call.namedArguments.length) return false; // duplicate name
+    const supplied = new Set(params.slice(0, positional).map((p) => p.name));
+    for (const name of named) {
+      const param = params.find((p) => p.name === name);
+      if (!param || supplied.has(name)) return false;
+      supplied.add(name);
+    }
+    return params.every((p) => p.hasDefault || supplied.has(p.name));
   });
-  return fits.length > 0 ? fits : candidates;
 }
 
 /**

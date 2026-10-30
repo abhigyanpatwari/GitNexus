@@ -2,6 +2,7 @@
   "_what": "Baselines for bench/import-target/measure.mjs cover every import-target resolver registered in SCOPE_RESOLVERS on a shared corpus, plus a configured C# arm for the branch the default call cannot reach. measure.mjs derives its arm inventory from LANG_REGISTRY and --check reconciles the registered languages in both directions. The single PHP arm supplies its production PSR-4 Composer mapping; csharp_csproj supplies csproj configuration. C and C++ also receive their production resolutionConfig header corpus. The timing, shape, fingerprint, context, and retained-heap gates therefore cover each production resolver path without splitting PHP into configured and unconfigured identities.",
   "_rebaselined_2960_kotlin_declared_packages": "Kotlin now resolves only from parsed package facts and local module bindings. This deliberately changes its five fingerprints, removes path-depth sensitivity, adds the context probe, and reduces the 32000-file retained index from 40.82 MiB to 4.31 MiB. External same-name path decoys now remain unresolved.",
   "_zig_arm_1432": "zig was registered in SCOPE_RESOLVERS by PR #1432 with no arm here, which is the exact hole the inventory arm exists for, and it reported it. The arm passes NO build config: resolveZigImportInternal walks an importer-relative @import path component by component and probes allFiles.has() twice (as spelled, then + '.zig'), so its fingerprints pin that walk alone and do not move when build.zig / build.zig.zon parsing (the bare-name legs, gated by test/unit/zig-import-resolver.test.ts) changes. Same corpus proportions as rust — 979 of 3200 resolve at 400 files — and rust's collide design, a deep tree whose spellings carry thirteen components against the unique arm's three, because component count is the only axis the cost has. Measured on one box: small 1.036 ms, collide 1.700 ms, scaling 1.050, collide scaling 1.011, depth 1.573; budgets take the file's usual ~1.5x on ratios (2.4 depth) and ~4x on absolute ms (4 / 7). Heap reads 16 B at both 8000 and 32000 files — it builds nothing, exactly rust's reading — so it sits in heap_bound_bytes at rust's absolute 1048576 B.",
+  "_plsql_arm_3772": "plsql was registered in SCOPE_RESOLVERS by PR #3772. Its import sites are SQL*Plus script includes: resolvePlSqlScriptInclude probes allFilePaths.has() on at most four exact candidates (repository root, then the calling script's directory; as spelled, then + '.sql') and never searches, so it takes zig's corpus proportions and collide design (a deep tree, thirteen components against three). ORACLE_HOME scripts (?/rdbms/admin/...) are rejected before any probe. Measured on one box: small 1.379 ms, collide 2.354 ms, scaling 1.015, collide scaling 1.018, depth 1.687; budgets take the file's usual ~1.5x on ratios (2.6 depth) and ~4x on absolute ms (6 / 10). Heap reads 16 B at both 8000 and 32000 files - it builds nothing - so it sits in heap_bound_bytes at zig's absolute 1048576 B.",
   "_objc_arm_3179": "Objective-C resolves local header and source imports through a cached suffix map. The map preserves the previous first-path tie-break, which is covered directly in objective-c-provider.test.ts. This arm covers the registered resolver's five dispatch paths, including the depth-sensitive index construction and a collision layout. Measured on this branch: small 1.844 ms, collide 1.861 ms, scaling 1.111, collide scaling 1.067, depth 2.779, and 44101944 retained bytes. The 3.6 depth budget allows normal timing variation while remaining below a full per-import file scan; collision scaling stays at the shared linear 1.8 budget because suffix lookup is keyed.",
   "_cobol_copybook_dir_preference_2967": "COBOL now prefers well-known copybook directories (copybooks/, cpy/, copy/, plus importer dir) over vendor paths when resolving COPY statements, so COPY EXTERNAL no longer hits same-named decoys outside the project structure. This intentional behavior change moves the resolver from depth-free (prior measured ~0.885) to depth-sensitive (measured 1.751 on CI), because the new preferredCopybookDirs check walks path components. The 2.4 depth budget is ~1.37x the measured ratio, consistent with the ~1.5x convention for depth arms. The unique-arm fingerprints and resolved counts change to reflect the new target set: small/deep drop from 1153 to 442 resolved because files outside preferred directories are now correctly filtered. The collide arm (svc${d}/copybooks layout) keeps 1153 resolved because ALL its files are in preferred copybook directories, so the filter does not change its resolution outcomes — the collide arm now measures collision behavior within the preferred class rather than across mixed layouts. Fixes #2967.",
   "_php_composer_gate_2962": "The canonical PHP arm supplies an authoritative App PSR-4 mapping. A deterministic Vendor0 suffix decoy makes deletion of the external gate change every timing fingerprint, while the heap arm separately pins a mapped miss, the rendered mapping, and the external null result. Three serial samples measured depth ratios 1.058, 1.114, and 1.158; the 1.8 budget is 1.55x the observed maximum. The mapped-miss heap reading peaked at 39607216 retained bytes at 32000 files.",
@@ -31,7 +32,8 @@
     "c": 3.8,
     "cpp": 4,
     "objc": 1.8,
-    "zig": 1.8
+    "zig": 1.8,
+    "plsql": 1.8
   },
   "depth_budget": {
     "go": 1.4,
@@ -52,7 +54,8 @@
     "c": 3,
     "cpp": 3,
     "objc": 3.6,
-    "zig": 2.4
+    "zig": 2.4,
+    "plsql": 2.6
   },
   "small_ms_ceiling": {
     "go": 7,
@@ -73,7 +76,8 @@
     "c": 7,
     "cpp": 7,
     "objc": 8,
-    "zig": 4
+    "zig": 4,
+    "plsql": 6
   },
   "collide_ms_ceiling": {
     "go": 28,
@@ -94,7 +98,8 @@
     "c": 11,
     "cpp": 12,
     "objc": 8,
-    "zig": 7
+    "zig": 7,
+    "plsql": 10
   },
   "heap_ceiling_bytes": {
     "rust": 31300000,
@@ -135,7 +140,8 @@
     "javascript": 1048576,
     "typescript": 1048576,
     "vue": 1048576,
-    "zig": 1048576
+    "zig": 1048576,
+    "plsql": 1048576
   },
   "heap_floor_fraction": 0.5,
   "heap_ratio_budget": 1.25,
@@ -1161,6 +1167,57 @@
         "depth_ratio": 1.573,
         "scaling_ratio": 1.05,
         "small_ms": 1.036
+      }
+    },
+    "plsql": {
+      "small": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 979,
+        "distinct_outcomes": 2997,
+        "fingerprint": "dcf564b77271c71148ce5e93d29c3f35a378a6c28a659f8f85cbaa703dcba783"
+      },
+      "large": {
+        "files": 1600,
+        "imports": 12800,
+        "resolved": 4064,
+        "distinct_outcomes": 11934,
+        "fingerprint": "d1a44689c312e5ebb911cda66ee7a813a308c0e8eecc369248b8f74cf108b93a"
+      },
+      "deep": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 979,
+        "distinct_outcomes": 2997,
+        "fingerprint": "0ccb52824580a94f0ee27d5398b0a696059781086375fb9a4bfafc51690a71ec"
+      },
+      "collide": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 979,
+        "distinct_outcomes": 2997,
+        "fingerprint": "0211995236c0c561e2d2d87c235cba2a7fab95c6dcdde4689ad67908b9e8bd41"
+      },
+      "collide_large": {
+        "files": 1600,
+        "imports": 12800,
+        "resolved": 4064,
+        "distinct_outcomes": 11934,
+        "fingerprint": "a9e28b724981fdf0312d90ca9ccc6f070f02dfa1ac7c8552c9febd3cd3dacbdc"
+      },
+      "fingerprint": "d1a44689c312e5ebb911cda66ee7a813a308c0e8eecc369248b8f74cf108b93a",
+      "heap": {
+        "files_small": 8000,
+        "files_large": 32000,
+        "path_segments": 11,
+        "probe": "../vendor0/missing.sql"
+      },
+      "_measured": {
+        "collide_ms": 2.354,
+        "collide_scaling_ratio": 1.018,
+        "depth_ratio": 1.687,
+        "scaling_ratio": 1.015,
+        "small_ms": 1.379
       }
     }
   },

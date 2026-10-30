@@ -50,9 +50,14 @@ const ORACLE_IS_HEADER =
   /^[ \t]*create\s+(?:or\s+replace\s+)?(?:(?:non)?editionable\s+)?(?:package(?:\s+body)?|procedure|function|type(?:\s+body)?)\s+[\w$#."]+(?:(?!\b(?:begin|as)\b)[\s\S]){0,4000}?\bis\b/im;
 const POSTGRES_DOLLAR_BODY = /\bas\s+\$[\w]*\$|\blanguage\s+plpgsql\b/i;
 const TSQL_MARKERS = /^\s*go\s*$|\bnvarchar\s*\(\s*max\s*\)|@@identity|\bset\s+nocount\s+on\b/im;
-/** Constructs that only appear in Oracle PL/SQL. */
+/**
+ * Constructs that only appear in Oracle PL/SQL. A trigger header alone is
+ * not one — PostgreSQL and MySQL write `CREATE TRIGGER t BEFORE …` too — so
+ * triggers are recognised by Oracle-only bodies: `:NEW.` / `:OLD.` bind
+ * references, `COMPOUND TRIGGER`, or the SQL*Plus `/` terminator.
+ */
 const ORACLE_MARKERS =
-  /%(?:row)?type\b|^\s*\/\s*$|\bpragma\s+(?:autonomous_transaction|exception_init|serially_reusable|restrict_references)\b|\bexecute\s+immediate\b|\bdbms_\w+\.|\braise_application_error\b|\bsys_refcursor\b|\bvarchar2\b|\bnvl\s*\(/im;
+  /%(?:row)?type\b|^\s*\/\s*$|\bpragma\s+(?:autonomous_transaction|exception_init|serially_reusable|restrict_references)\b|\bexecute\s+immediate\b|\bdbms_\w+\.|\braise_application_error\b|\bsys_refcursor\b|\bvarchar2\b|\bnvl\s*\(|:(?:new|old)\.|\bcompound\s+trigger\b/im;
 
 /**
  * A SQL*Plus script inclusion of a PL/SQL or SQL file on its own line. `@@`,

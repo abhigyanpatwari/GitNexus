@@ -15,7 +15,6 @@
  * appears in dynamic SQL text or in a segment the grammar could not parse.
  */
 
-import { CharStream, CommonTokenStream, Token } from 'antlr4ng';
 import type { Range, SymbolDefinition } from 'gitnexus-shared';
 import type {
   RenameIssue,
@@ -24,13 +23,10 @@ import type {
   RenameSource,
 } from '../../rename-provider.js';
 import { extractParsedFile } from '../../scope-extractor-bridge.js';
-import { PlSqlLexer } from '../../plsql/generated/PlSqlLexer.js';
 import { preprocessPlSql } from '../../plsql/preprocess.js';
-import {
-  normaliseIdentifier,
-  type PlSqlDefinition,
-  type PlSqlFileFacts,
-} from '../../plsql/extract.js';
+import type { PlSqlDefinition, PlSqlFileFacts } from '../../plsql/extract.js';
+import { loadPlSqlParser, plsqlLexTokens } from '../../plsql/facts-store.js';
+import { normaliseIdentifier } from '../../plsql/names.js';
 import { PlSqlPackageInstances, plsqlSignatureKey, rootPackageOf } from '../../plsql/resolve.js';
 import { plsqlFactsFor, plsqlNameRange, plsqlRangeKey, plsqlTokenRange } from './captures.js';
 
@@ -82,7 +78,8 @@ export const plsqlRenameProvider: RenameProvider = {
     );
   },
 
-  parseSource({ filePath, content, languageProvider }) {
+  async parseSource({ filePath, content, languageProvider }) {
+    await loadPlSqlParser();
     const facts = plsqlFactsFor(content, filePath);
     const parsed = extractParsedFile(languageProvider, content, filePath);
     if (!parsed)
@@ -104,14 +101,9 @@ export const plsqlRenameProvider: RenameProvider = {
 
     // Pre-processing keeps every line and column of the remaining text, so
     // token positions map straight back onto the original content.
-    const lexer = new PlSqlLexer(CharStream.fromString(preprocessPlSql(content)));
-    lexer.removeErrorListeners();
-    const stream = new CommonTokenStream(lexer);
-    stream.fill();
     const occurrences = new Map<string, RenameOccurrence>();
-    for (const token of stream.getTokens()) {
-      if (token.channel !== Token.DEFAULT_CHANNEL || token.type === Token.EOF) continue;
-      const text = token.text ?? '';
+    for (const token of plsqlLexTokens(preprocessPlSql(content))) {
+      const text = token.text;
       if (!IDENTIFIER_TOKEN.test(text)) continue;
       const range: Range = {
         startLine: token.line,
@@ -193,6 +185,18 @@ export const plsqlRenameProvider: RenameProvider = {
       if (dynamic)
         return unsupported(
           `${target.name} appears in dynamic SQL at ${file.path}:${dynamic.line}; rename cannot rewrite it safely.`,
+        );
+      // SQL*Plus client commands (`EXEC pkg.proc(…)`) are removed before
+      // parsing, so the names they mention are invisible to the occurrence
+      // inventory; refuse instead of leaving them stale.
+      // Script includes name files, not identifiers (`@@pkg_log.pks`).
+      const includeLines = new Set(facts.scriptIncludes.map((inc) => inc.line));
+      const command = facts.sqlplusCommands.find(
+        (c) => !includeLines.has(c.line) && word.test(c.text),
+      );
+      if (command)
+        return unsupported(
+          `${target.name} appears in a SQL*Plus command at ${file.path}:${command.line}; rename cannot rewrite client commands.`,
         );
       if (facts.segmentsWithErrors > 0 && word.test(file.content)) {
         return unsupported(

@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { KnowledgeGraph } from '../../src/core/graph/types.js';
 import { processPlSql } from '../../src/core/ingestion/plsql-processor.js';
 import {
+  loadPlSqlParser,
   plsqlFactsForFile,
   resetPlSqlFactsStore,
 } from '../../src/core/ingestion/plsql/facts-store.js';
@@ -10,6 +11,9 @@ import {
   segmentDeadlineMs,
   SEGMENT_DEADLINE_FLOOR_MS,
 } from '../../src/core/ingestion/plsql/parse.js';
+
+// The parser loads lazily (the phase awaits it); tests calling the processor directly preload it.
+beforeAll(loadPlSqlParser);
 
 const run = (files: Record<string, string>) => {
   const graph = createKnowledgeGraph();
@@ -52,6 +56,57 @@ END pkg_log;
     });
     expect(edges(graph, 'ACCESSES')).toEqual(['LOG_MSG@L6 -> T_APP_LOG@db/pkg_log.pkb']);
     expect(edges(graph, 'CALLS')).toEqual(['LOG_MSG@L2 -> LOG_MSG@db/pkg_log.pkb']);
+  });
+
+  it('binds named-argument calls only to overloads whose required parameters are supplied', () => {
+    const { graph } = run({
+      'p.pkb': `CREATE OR REPLACE PACKAGE BODY p AS
+  PROCEDURE q(a IN NUMBER, b IN NUMBER DEFAULT 0) IS BEGIN NULL; END q;
+  PROCEDURE q(b IN NUMBER) IS BEGIN NULL; END q;
+  PROCEDURE r(a IN NUMBER) IS BEGIN NULL; END r;
+  PROCEDURE run IS
+  BEGIN
+    q(b => 1);
+    r(1, 2);
+  END run;
+END p;
+/
+`,
+    });
+    const targets: string[] = [];
+    for (const rel of graph.iterRelationships()) {
+      if (rel.type !== 'CALLS') continue;
+      const t = graph.getNode(rel.targetId)!;
+      targets.push(`${t.properties.name}@L${t.properties.startLine! + 1} ${rel.reason}`);
+    }
+    // q(b => 1) cannot bind q(a, b) (a is required); r(1, 2) has too many arguments.
+    expect(targets).toEqual(['Q@L3 plsql-call']);
+  });
+
+  it('keeps a quoted dotted package name apart from nested names', () => {
+    const { graph } = run({
+      'p.pkb': `CREATE OR REPLACE PACKAGE BODY "A.B" AS
+  PROCEDURE f IS BEGIN NULL; END f;
+END "A.B";
+/
+CREATE OR REPLACE PACKAGE BODY a AS
+  PROCEDURE b IS
+    PROCEDURE f IS BEGIN NULL; END f;
+  BEGIN
+    f;
+  END b;
+END a;
+/
+`,
+    });
+    const calls: string[] = [];
+    for (const rel of graph.iterRelationships()) {
+      if (rel.type === 'CALLS') {
+        const t = graph.getNode(rel.targetId)!;
+        calls.push(`${t.properties.name}@L${t.properties.startLine! + 1}`);
+      }
+    }
+    expect(calls).toEqual(['F@L7']);
   });
 
   it('keeps forward-declared private subprograms private', () => {

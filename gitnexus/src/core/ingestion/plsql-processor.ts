@@ -369,7 +369,12 @@ export function processPlSql(
   let scriptIncludes = 0;
   for (const [filePath, f] of facts) {
     for (const include of f.scriptIncludes) {
-      const target = resolvePlSqlScriptInclude(include.target, filePath, allPaths);
+      const target = resolvePlSqlScriptInclude(
+        include.target,
+        filePath,
+        allPaths,
+        include.relativeToScript,
+      );
       if (!target) continue;
       addEdge(
         graph,

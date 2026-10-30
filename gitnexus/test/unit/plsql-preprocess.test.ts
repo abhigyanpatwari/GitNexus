@@ -77,6 +77,15 @@ describe('stripSqlPlusCommands', () => {
     expect(lines(stripSqlPlusCommands(src))).toEqual(['', '', '', 'SELECT 1 FROM dual;']);
   });
 
+  it('ends a statement whose `;` is followed by a block comment', () => {
+    const src = ['SELECT 1 FROM dual; /* note */', 'SET ECHO ON', 'SELECT 2 FROM dual;'].join('\n');
+    expect(lines(stripSqlPlusCommands(src))).toEqual([
+      'SELECT 1 FROM dual; /* note */',
+      '',
+      'SELECT 2 FROM dual;',
+    ]);
+  });
+
   it('reports blanked commands to the sink', () => {
     const commands: SqlPlusCommand[] = [];
     stripSqlPlusCommands('REM header\n@@a.sql\n', commands);

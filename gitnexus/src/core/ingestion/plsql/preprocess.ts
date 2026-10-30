@@ -26,7 +26,8 @@ const CREATE_PREFIX = /^create\b/i;
 /** Lines looked ahead to complete a split `CREATE` header. */
 const HEADER_LOOKAHEAD_LINES = 6;
 
-const ENDS_STATEMENT = /;\s*(?:--.*)?$/;
+/** `;` at line end, optionally followed by closed block comments and/or a `--` comment. */
+const ENDS_STATEMENT = /;\s*(?:\/\*.*?\*\/\s*)*(?:--.*)?$/;
 const CONTINUATION = /\s-\s*$/;
 const LEADING_BLOCK_COMMENTS = /^(?:\/\*[\s\S]*?\*\/\s*)+/;
 

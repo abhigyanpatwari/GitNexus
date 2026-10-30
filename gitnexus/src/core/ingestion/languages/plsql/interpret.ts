@@ -20,7 +20,8 @@ import type {
 export function interpretPlSqlImport(match: CaptureMatch): ParsedImport | null {
   const name = match['@import.name']?.text;
   if (!name) return null;
-  return { kind: 'named', localName: name, importedName: name, targetRaw: name };
+  const bare = name.replace(/^@@/, '');
+  return { kind: 'named', localName: bare, importedName: bare, targetRaw: name };
 }
 
 /** Script inclusion is file-level: it binds in the file's Module scope. */
