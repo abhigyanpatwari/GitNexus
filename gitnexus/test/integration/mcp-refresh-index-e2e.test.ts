@@ -85,8 +85,10 @@ describe('refresh_index through a real analyze worker (#3524)', () => {
       wouldRefresh: true,
       lastCommit: indexedCommit,
       staleness: { status: 'behind', commitsBehind: 1 },
+      // Counted in the working tree, so the commit's new file is included;
       // CLAUDE.md is indexed too.
-      estimatedFiles: 2,
+      estimatedFiles: 3,
+      lastIndexedFiles: 2,
     });
     const list = await backend.callTool('list_repos', {});
     expect(list.repositories[0].lastCommit).toBe(indexedCommit);
@@ -117,4 +119,33 @@ describe('refresh_index through a real analyze worker (#3524)', () => {
     expect(found).not.toHaveProperty('error');
     expect(found.staleness).toMatchObject({ status: 'current', lastCommit: head });
   }, 180_000);
+
+  it('refuses once the working tree outgrows the limit, whatever the last index counted', async () => {
+    // The index at HEAD recorded 3 files, under the limit; the tree now holds 5.
+    for (const name of ['refunds', 'shipping']) {
+      await fs.writeFile(path.join(repo, 'src', `${name}.ts`), `export const ${name} = 1;\n`);
+    }
+    commitAll(repo, 'add refunds and shipping');
+    vi.stubEnv('GITNEXUS_MCP_REFRESH_MAX_FILES', '4');
+    try {
+      const dryRun = await backend.callTool('refresh_index', { repo, dry_run: true });
+      expect(dryRun).toMatchObject({
+        status: 'dry_run',
+        staleness: { status: 'behind' },
+        estimatedFiles: null,
+        lastIndexedFiles: 3,
+        maxFiles: 4,
+        wouldRefresh: false,
+        refusal: expect.stringMatching(/more than 4 files in its working tree/),
+      });
+      await expect(backend.callTool('refresh_index', { repo })).resolves.toEqual({
+        error: dryRun.refusal,
+      });
+      // No worker ran: the index still stops at the previous commit.
+      const list = await backend.callTool('list_repos', {});
+      expect(list.repositories[0].lastCommit).toBe(head);
+    } finally {
+      vi.stubEnv('GITNEXUS_MCP_REFRESH_MAX_FILES', undefined);
+    }
+  });
 });

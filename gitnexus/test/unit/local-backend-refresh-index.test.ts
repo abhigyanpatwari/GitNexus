@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   runAutoSyncAnalysis: vi.fn(),
   checkStalenessAsync: vi.fn(),
   embeddingsFromGitnexusRc: vi.fn(),
+  countScanCandidates: vi.fn(),
 }));
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
@@ -22,6 +23,11 @@ vi.mock('../../src/core/auto-sync/analysis-worker-launch.js', async (importOrigi
 vi.mock('../../src/core/git-staleness.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/git-staleness.js')>();
   return { ...actual, checkStalenessAsync: mocks.checkStalenessAsync };
+});
+vi.mock('../../src/core/ingestion/filesystem-walker.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../src/core/ingestion/filesystem-walker.js')>();
+  return { ...actual, countScanCandidates: mocks.countScanCandidates };
 });
 vi.mock('../../src/core/gitnexus-rc-embeddings.js', () => ({
   embeddingsFromGitnexusRc: mocks.embeddingsFromGitnexusRc,
@@ -58,6 +64,8 @@ describe('LocalBackend refresh_index (#3524)', () => {
     vi.stubEnv('GITNEXUS_MCP_REFRESH_TIMEOUT_MS', undefined);
     mocks.listRegisteredRepos.mockResolvedValue([entry()]);
     mocks.embeddingsFromGitnexusRc.mockResolvedValue({});
+    // The working tree has one file more than the last index recorded.
+    mocks.countScanCandidates.mockResolvedValue(41);
     mocks.checkStalenessAsync.mockImplementation(async (_path: string, commit: string) =>
       commit === 'new' ? CURRENT : BEHIND,
     );
@@ -83,7 +91,8 @@ describe('LocalBackend refresh_index (#3524)', () => {
       indexedAt: '2026-10-01T00:00:00.000Z',
       lastCommit: 'old',
       staleness: expect.objectContaining({ status: 'behind', commitsBehind: 3 }),
-      estimatedFiles: 40,
+      estimatedFiles: 41,
+      lastIndexedFiles: 40,
       maxFiles: 5_000,
       embeddings: false,
       wouldRefresh: true,
@@ -148,25 +157,56 @@ describe('LocalBackend refresh_index (#3524)', () => {
     });
   });
 
-  it('refuses a repository over the file limit, and one with no recorded count', async () => {
-    vi.stubEnv('GITNEXUS_MCP_REFRESH_MAX_FILES', '39');
-    const over = await backend.callTool('refresh_index', { repo: 'shop' });
-    expect(over.error).toMatch(/had 40 files at its last index, over .* limit of 39/);
-
+  it('counts the working tree against the limit, not the last index', async () => {
+    // The last index recorded 40 files; the tree has since grown past the limit.
+    mocks.countScanCandidates.mockResolvedValue(5_001);
     const dryRun = await backend.callTool('refresh_index', { repo: 'shop', dry_run: true });
-    expect(dryRun).toMatchObject({ wouldRefresh: false, refusal: over.error });
+    expect(dryRun).toMatchObject({
+      estimatedFiles: null,
+      lastIndexedFiles: 40,
+      maxFiles: 5_000,
+      wouldRefresh: false,
+      refusal:
+        'shop has more than 5000 files in its working tree (40 at its last index), over ' +
+        "this server's refresh limit of 5000 (GITNEXUS_MCP_REFRESH_MAX_FILES). " +
+        'Run `gitnexus analyze` in the repository instead.',
+    });
+    await expect(backend.callTool('refresh_index', { repo: 'shop' })).resolves.toEqual({
+      error: dryRun.refusal,
+    });
+    expect(mocks.runAutoSyncAnalysis).not.toHaveBeenCalled();
+    // Enumeration stops one past the limit.
+    expect(mocks.countScanCandidates).toHaveBeenCalledWith(REPO, 5_000);
+  });
 
+  it('admits an index with no recorded count, and skips the count with no limit', async () => {
     mocks.listRegisteredRepos.mockResolvedValue([entry({ stats: undefined })]);
     await backend.init();
-    vi.stubEnv('GITNEXUS_MCP_REFRESH_MAX_FILES', undefined);
-    const unknown = await backend.callTool('refresh_index', { repo: REPO });
-    expect(unknown.error).toMatch(/has no recorded file count/);
+    await expect(
+      backend.callTool('refresh_index', { repo: REPO, dry_run: true }),
+    ).resolves.toMatchObject({ estimatedFiles: 41, lastIndexedFiles: null, wouldRefresh: true });
 
     vi.stubEnv('GITNEXUS_MCP_REFRESH_MAX_FILES', '0');
+    mocks.countScanCandidates.mockClear();
+    await expect(
+      backend.callTool('refresh_index', { repo: REPO, dry_run: true }),
+    ).resolves.toMatchObject({ estimatedFiles: null, maxFiles: 0, wouldRefresh: true });
     await expect(backend.callTool('refresh_index', { repo: REPO })).resolves.toMatchObject({
       status: 'refreshed',
     });
-    expect(mocks.runAutoSyncAnalysis).toHaveBeenCalledTimes(1);
+    expect(mocks.countScanCandidates).not.toHaveBeenCalled();
+  });
+
+  it('refuses to start when the working tree cannot be read', async () => {
+    mocks.countScanCandidates.mockRejectedValue(
+      new Error(`walkRepositoryPaths: path does not exist: ${REPO}`),
+    );
+    for (const dry_run of [true, false]) {
+      await expect(backend.callTool('refresh_index', { repo: 'shop', dry_run })).resolves.toEqual({
+        error: `Cannot refresh shop: walkRepositoryPaths: path does not exist: ${REPO}.`,
+      });
+    }
+    expect(mocks.runAutoSyncAnalysis).not.toHaveBeenCalled();
   });
 
   it('runs one refresh per repository at a time', async () => {

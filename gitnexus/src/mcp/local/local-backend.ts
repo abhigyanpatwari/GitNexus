@@ -3257,26 +3257,29 @@ export class LocalBackend {
       return { error: 'Parameter "dry_run" must be a boolean.' };
     }
     const { maxFiles, timeoutMs } = resolveMcpRefreshLimits();
-    const [{ runAutoSyncAnalysis }, { embeddingsFromGitnexusRc }] = await Promise.all([
-      import('../../core/auto-sync/analysis-worker-launch.js'),
-      import('../../core/gitnexus-rc-embeddings.js'),
-    ]);
+    const [{ runAutoSyncAnalysis }, { embeddingsFromGitnexusRc }, { countScanCandidates }] =
+      await Promise.all([
+        import('../../core/auto-sync/analysis-worker-launch.js'),
+        import('../../core/gitnexus-rc-embeddings.js'),
+        import('../../core/ingestion/filesystem-walker.js'),
+      ]);
     let rcEmbeddings: Awaited<ReturnType<typeof embeddingsFromGitnexusRc>>;
+    // The working tree, not the last index, decides the rebuild's size: a stale
+    // index is exactly the one that may have fallen far behind it. Counting
+    // stops one past the limit, so a huge tree costs no more than a small one.
+    let treeFiles: number | undefined;
     try {
       rcEmbeddings = await embeddingsFromGitnexusRc(repo.repoPath);
+      if (maxFiles > 0) treeFiles = await countScanCandidates(repo.repoPath, maxFiles);
     } catch (err) {
       return { error: `Cannot refresh ${repo.name}: ${asSentence(err)}` };
     }
     const previous = await this.refreshSnapshot(repo);
-    // The last index's count stands in for the rebuild's size; a legacy index
-    // without one is refused rather than guessed at.
-    const estimatedFiles = repo.stats?.files;
+    const lastIndexedFiles = repo.stats?.files ?? null;
     const refusal =
-      maxFiles > 0 && (estimatedFiles === undefined || estimatedFiles > maxFiles)
-        ? `${repo.name} ${
-            estimatedFiles === undefined
-              ? 'has no recorded file count'
-              : `had ${estimatedFiles} files at its last index`
+      treeFiles !== undefined && treeFiles > maxFiles
+        ? `${repo.name} has more than ${maxFiles} files in its working tree${
+            lastIndexedFiles === null ? '' : ` (${lastIndexedFiles} at its last index)`
           }, over this server's refresh limit of ${maxFiles} (GITNEXUS_MCP_REFRESH_MAX_FILES). Run \`gitnexus analyze\` in the repository instead.`
         : undefined;
     const running = this.refreshesInFlight.has(repo.storagePath);
@@ -3286,7 +3289,9 @@ export class LocalBackend {
         status: 'dry_run',
         repo: repo.name,
         ...previous,
-        estimatedFiles: estimatedFiles ?? null,
+        // Exact up to the limit; past it, only "more than maxFiles" is known.
+        estimatedFiles: treeFiles === undefined || refusal ? null : treeFiles,
+        lastIndexedFiles,
         maxFiles,
         // `.gitnexusrc` can ask for embeddings, which the file limit does not bound.
         embeddings: rcEmbeddings.embeddings === true,
