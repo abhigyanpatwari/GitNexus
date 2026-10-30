@@ -206,26 +206,131 @@ describe('callable-value-flow dependency worklist', () => {
 });
 
 describe('collectDeferredIndirectCollection', () => {
-  it('fills call signatures from the first referenceSites walk', () => {
+  it('retains no per-call signature index when there are no indirect invocations', () => {
     const parsed: ParsedFile = {
       filePath: FILE,
       moduleScope: MODULE,
       scopes: [],
       parsedImports: [],
       localDefs: [],
-      referenceSites: [
-        {
-          name: 'target',
-          kind: 'call',
-          callForm: 'free',
-          atRange: range(1),
-          inScope: MODULE,
-          arity: 0,
-        },
-      ],
+      referenceSites: Array.from({ length: 10_000 }, (_, line) => ({
+        name: 'target',
+        kind: 'call' as const,
+        callForm: 'free' as const,
+        atRange: range(line + 1),
+        inScope: MODULE,
+        arity: 0,
+      })),
       callableFlowSites: [],
     };
     const collected = collectDeferredIndirectCollection([parsed]);
-    expect(collected.callSignaturesBySite.get(`${FILE}:1:0`)).toEqual({ parameterCount: 0 });
+    expect(collected.sites.size).toBe(0);
+    expect(collected.callSignaturesBySite.size).toBe(0);
+  });
+
+  it('keeps direct-call argument signatures across files when an indirect invoke needs them', () => {
+    const direct: ParsedFile = {
+      filePath: 'caller.ts',
+      moduleScope: MODULE,
+      scopes: [],
+      parsedImports: [],
+      localDefs: [],
+      referenceSites: [
+        { name: 'register', kind: 'call', atRange: range(1), inScope: MODULE, arity: 1 },
+        { name: 'unrelated', kind: 'call', atRange: range(2), inScope: MODULE, arity: 0 },
+        // Multiple captures at one call keep the richest overload evidence.
+        {
+          name: 'register',
+          kind: 'call',
+          atRange: range(1),
+          inScope: MODULE,
+          arity: 1,
+          argumentTypes: ['Handler'],
+        },
+      ],
+      callableFlowSites: [
+        {
+          kind: 'argument',
+          callSite: range(1),
+          parameterIndex: 0,
+          source: operand('handler', 1),
+          directCalleeName: 'register',
+        },
+      ],
+    };
+    const indirect: ParsedFile = {
+      filePath: FILE,
+      moduleScope: MODULE,
+      scopes: [],
+      parsedImports: [],
+      localDefs: [],
+      referenceSites: [{ name: 'callback', kind: 'call', atRange: range(3), inScope: ENTRY_SCOPE }],
+      callableFlowSites: [
+        {
+          kind: 'invoke',
+          callSite: range(3),
+          inScope: ENTRY_SCOPE,
+          callee: operand('callback', 3),
+          invocationKind: 'indirect',
+          arity: 0,
+        },
+      ],
+    };
+    const collected = collectDeferredIndirectCollection([direct, indirect]);
+    expect([...collected.sites]).toEqual([`${FILE}:3:0`]);
+    expect([...collected.callSignaturesBySite]).toEqual([
+      ['caller.ts:1:0', { parameterCount: 1, parameterTypes: ['Handler'] }],
+    ]);
+    const unmatched = collectDeferredIndirectCollection([
+      direct,
+      { ...indirect, referenceSites: [] },
+    ]);
+    expect(unmatched.sites.size).toBe(0);
+    expect(unmatched.callSignaturesBySite.size).toBe(0);
+  });
+
+  it('skips the callable solver for ordinary facts and reports unmatched invokes', () => {
+    const graph = createKnowledgeGraph();
+    const result = emitCallableValueFlow({
+      graph,
+      scopes: indexes([]),
+      nodeLookup: buildGraphNodeLookup(graph),
+      calleeIds: createCalleeIdAccumulator(),
+      language: 'typescript',
+      parsedFiles: [
+        {
+          filePath: FILE,
+          moduleScope: MODULE,
+          scopes: [],
+          parsedImports: [],
+          localDefs: [],
+          referenceSites: [],
+          callableFlowSites: [
+            {
+              kind: 'seed',
+              destination: operand('unused', 1),
+              targetName: 'target',
+              targetRange: range(1),
+            },
+            {
+              kind: 'invoke',
+              callSite: range(3),
+              inScope: ENTRY_SCOPE,
+              callee: operand('stale', 3),
+              invocationKind: 'indirect',
+              arity: 0,
+            },
+          ],
+        },
+      ],
+    });
+    expect(result).toEqual({
+      emitted: 0,
+      resolvedInvokes: 0,
+      ambiguousInvokes: 0,
+      unmatchedInvokes: 1,
+      iterations: 0,
+    });
+    expect(graph.relationshipCount).toBe(0);
   });
 });

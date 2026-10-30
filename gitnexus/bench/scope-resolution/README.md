@@ -76,3 +76,45 @@ preparation, import-target resolution, SCCs, ambiguity checks, transitive export
 (only if requested), linking, wildcard expansion, bindings and workspace indexes.
 `sr-extract-start` precedes `sr-post-nodeLookup`; a last `sr-post-nodeLookup`
 marker therefore points into finalization after extraction.
+
+## Post-resolution memory probes (#3695)
+
+```sh
+node --expose-gc --import tsx bench/scope-resolution/call-signature-memory.mts 500000
+GITNEXUS_DEBUG_HEAP=1 node --import tsx bench/scope-resolution/dense-java.mts 300 20 10
+```
+
+CI runs both probes once with `--check` in the existing
+`scope-resolution-benchmark` job, alongside its all-language measurements.
+The ordinary-call check rejects any retained signatures. The dense Java check
+requires the default 300/20/10 workload and its reviewed full graph fingerprint
+below. Heap and timing remain measurements, without absolute thresholds.
+Both outputs join the existing `scope-resolution-benchmark` artifact: the
+collector's JSON and dense Java's log, including `sr-emit-*` heap checkpoints.
+Omit `--check` for comparisons against older revisions or custom workloads.
+
+The first probe isolates ordinary calls with no indirect-call facts. Previously
+the deferred-call collector retained a signature object and position key for
+every call even though none could be consumed. At 500,000 calls, three fresh
+processes measured a median 90.29 MiB retained overhead before the change and
+0.08 MiB afterward. With `--max-old-space-size=160`, the old collector exhausted
+the heap (exit 134); the updated collector completed. Input records remain live
+through both measurements. This measures one allocation source, not total
+indexing memory.
+
+The second probe uses real worker parsing and scope resolution on generated
+Java: 300 files, 20 methods per file, 10 receiver calls per method. It reports
+per-stage heap samples and a fingerprint of complete nodes and relationships.
+Before and after the change it produced 66,300 nodes and 126,600 relationships,
+with fingerprint `3209302e91e7023328464540ec7d0ac72ac03bf49fa73303817a56ed3d415ef5`.
+It uses the in-memory graph helper, so its RSS is not a measurement of the CLI's
+streaming graph sink. Calls pass `null` to match each receiver's parameter type;
+the 300-file workload compiles with `javac --release 17`. The probe measures
+analysis and does not execute the generated Java.
+
+`GITNEXUS_DEBUG_HEAP=1` now adds `sr-emit-*` checkpoints after receiver calls,
+free calls, replay, references, property passes, callable flow, imports and
+provider hooks, including elapsed emit time and graph counts. `sr-post-resolve`
+marks the end of the initial registry lookup only; substantial resolution still
+follows it. These markers distinguish that work on the next reporter run.
+The private repository's complete OOM has not been reproduced by these probes.
