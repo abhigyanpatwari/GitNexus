@@ -1,4 +1,4 @@
-/** Report JSON can exceed V8's single-string limit. Keep I/O bounded by individual records. */
+/** Report JSON can exceed V8's single-string limit. Serialize nested collections incrementally. */
 import { JSONParser } from '@streamparser/json';
 import { randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
@@ -9,13 +9,13 @@ import { pipeline } from 'node:stream/promises';
 import { isRecord } from '../util.js';
 import type { ScenarioMapReport } from './report.js';
 
-/** Report collections (pairs, tests, anchors, etc.) are serialized one entry at a time. */
+/** Recurse through collections so even a single oversized record never becomes one string. */
 function* jsonChunks(value: unknown): Generator<string> {
   if (Array.isArray(value)) {
     yield '[';
     for (let i = 0; i < value.length; i++) {
       if (i > 0) yield ',\n';
-      yield JSON.stringify(value[i]) ?? 'null';
+      yield* jsonChunks(value[i]);
     }
     yield ']';
   } else if (isRecord(value)) {

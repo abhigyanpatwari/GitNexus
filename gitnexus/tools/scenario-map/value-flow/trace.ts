@@ -6,7 +6,7 @@
  *
  * Run ({@link runTrace}). One throwaway copy, `<work>/trace/prepared`, prepared like a shard's
  * copy (tools/mutation/prepare, nothing blanked) and verified against the run manifest (run-group.ts
- * `verifyPreparedCopy`; a mismatch runs nothing). Every manifest test in the candidate tests'
+ * `verifyPreparedCopy`; a mismatch runs nothing). Every runnable manifest test in the candidate tests'
  * files runs twice through vitest-run.ts `runVitest`, each a fresh Vitest instance with the same
  * selection: a baseline, then the traced run with trace.setup.ts added (`setupFiles`) and its
  * context provided: the raw-record directory `<work>/trace/raw`, the prepared root, the extra

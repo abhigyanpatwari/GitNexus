@@ -34,12 +34,14 @@ describe('report JSON', () => {
       ...entry,
       keep: [{ test: entry.a, reason: 'intentional control' }],
     }));
+    report.fingerprint.pairs[0].details = Array(1_000).fill('nested record detail');
     const file = output();
     const stringify = JSON.stringify;
-    // Model the V8 cap at a small scale: rows fit, the complete report and collections do not.
+    // Model the V8 cap at a small scale, including a collection nested inside one record.
     const limit = 16_384;
     expect(stringify(report.fingerprint.pairs).length).toBeGreaterThan(limit);
     expect(stringify(report.fingerprint.kept).length).toBeGreaterThan(limit);
+    expect(stringify(report.fingerprint.pairs[0]).length).toBeGreaterThan(limit);
     const capped = vi.spyOn(JSON, 'stringify').mockImplementation((value, replacer, space) => {
       const text = stringify(value, replacer, space);
       if (text !== undefined && text.length > limit) throw new RangeError('Invalid string length');

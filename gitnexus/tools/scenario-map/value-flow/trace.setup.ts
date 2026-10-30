@@ -45,8 +45,7 @@ const currentTest = (): CurrentTest | null => {
 
 const fixtures = new TraceFixtureRoots();
 Reflect.set(globalThis, FIXTURE_CAPTURE_KEY, (root: unknown) => {
-  const test = TestRunner.getCurrentTest<RunnerTestCase | undefined>();
-  if (test === undefined || candidateTaskIds.has(test.id)) fixtures.capture(root);
+  if (currentTest() !== null) fixtures.capture(root);
 });
 const recorder = new TraceRecorder({
   currentTest,
