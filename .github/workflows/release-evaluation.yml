@@ -660,7 +660,7 @@ jobs:
           set -euo pipefail
           root="$RUNNER_TEMP/release-evaluation"
           mkdir -p "$root/public"
-          printf '\n## Two-cell diagnostic trial\n\nOne task, one repetition per arm. $5 CLI budget stop per cell; provider billing can exceed the planned $10. This trial checks telemetry and is not release-quality evidence.\n' >> "$GITHUB_STEP_SUMMARY"
+          printf "\n## Two-cell diagnostic trial\n\nOne task, one repetition per arm. \$5 CLI budget stop per cell; provider billing can exceed the planned \$10. This trial checks telemetry and is not release-quality evidence.\n" >> "$GITHUB_STEP_SUMMARY"
           failed=0
           for cell in cell-0000 cell-0001; do
             if ! uv run --locked --extra dev python -m workflow_bench.cost_diagnostics \
