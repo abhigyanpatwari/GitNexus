@@ -77,6 +77,29 @@ def _content(event: dict[str, Any]) -> list[Any]:
     return content if isinstance(content, list) else []
 
 
+def _has_shell_control(command: str) -> bool:
+    """Reject operators/expansions while allowing quoted or escaped literals."""
+    quote = None
+    escaped = False
+    for char in command:
+        if escaped:
+            escaped = False
+            continue
+        if quote == "'":
+            if char == "'":
+                quote = None
+            continue
+        if char == "\\":
+            escaped = True
+        elif char == '"':
+            quote = None if quote == '"' else '"'
+        elif char == "'" and quote is None:
+            quote = "'"
+        elif char in "`$" or (quote is None and char in ";|&\n<>()"):
+            return True
+    return False
+
+
 def _tool_name(block: dict[str, Any]) -> str:
     name = block.get("name")
     if name == "Bash" and isinstance(block.get("input"), dict):
@@ -88,7 +111,7 @@ def _tool_name(block: dict[str, Any]) -> str:
         except ValueError:
             words = []
         if (len(words) >= 2 and PurePosixPath(words[0]).name == "gitnexus"
-                and words[1] in COMMANDS and not any(op in command for op in (";", "|", "&", "\n", "`", "$("))):
+                and words[1] in COMMANDS and not _has_shell_control(command)):
             return f"cli__gitnexus__{words[1]}"
     return name if isinstance(name, str) and name in TOOLS else "other"
 

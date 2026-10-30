@@ -56,6 +56,8 @@ def prepare_plan(
     model = normalized_model_identifier(model)
     if effort not in ("low", "medium", "high", "xhigh", "max"):
         raise ValueError("invalid effort")
+    if not isinstance(document, dict):
+        raise ValueError("task document must contain tasks")
     tasks = document.get("tasks")
     if not isinstance(tasks, list) or not tasks or not all(isinstance(t, dict) for t in tasks):
         raise ValueError("task document must contain tasks")

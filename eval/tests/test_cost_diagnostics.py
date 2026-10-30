@@ -280,6 +280,12 @@ def test_plan_rejects_unpinned_or_ambiguous_inputs(override):
         prepare_plan(task_document(), **(plan_args() | override))
 
 
+@pytest.mark.parametrize("document", [None, [], "tasks", 42])
+def test_plan_rejects_non_mapping_yaml_documents(document):
+    with pytest.raises(ValueError, match="task document must contain tasks"):
+        prepare_plan(document, **plan_args())
+
+
 @pytest.mark.parametrize("model", [None, 1, "", "  ", " auto ", "claude-sonnet-LATEST",
                                   "provider/latest", "provider:auto", "provider@AUTO"])
 def test_plan_uses_runner_model_validation(model):
