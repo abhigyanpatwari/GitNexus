@@ -448,6 +448,44 @@ def test_workflow_protocol_rejects_extra_paid_invocations(workflow_protocol_pair
         pr_evaluation.measurement_protocol(yaml.safe_dump(new))
 
 
+def test_workflow_protocol_ignores_opt_in_arms_after_the_paid_step(workflow_protocol_pair):
+    _, new = workflow_protocol_pair
+    expected = pr_evaluation.measurement_protocol(yaml.safe_dump(new))
+    for gate in sorted(pr_evaluation.OPT_IN_ARM_CONDITIONS):
+        new["jobs"]["evaluate"]["steps"].append({"if": gate, "run": "uv run python -m workflow_bench.runner --arms x\n"})
+    assert pr_evaluation.measurement_protocol(yaml.safe_dump(new)) == expected
+
+
+@pytest.mark.parametrize(
+    "position, step, message",
+    [
+        (0, {"if": "env.CLI_ARM == 'true'", "run": "python -m workflow_bench.runner"}, "must follow"),
+        (None, {"if": "env.CLI_ARM == 'true'", "run": "python -m workflow_bench.runner\npython -m workflow_bench.runner"},
+         "must follow"),
+        (None, {"if": "env.OTHER == 'true'", "run": "python -m workflow_bench.runner"}, "one paid"),
+        (0, {"if": "inputs.mcp_tool_loading == true && inputs.candidate_pr == ''",
+             "run": "python -m workflow_bench.runner"}, "must follow"),
+        (None, {"if": "inputs.mcp_tool_loading == true && inputs.candidate_pr == ''",
+                "run": "python -m workflow_bench.runner\npython -m workflow_bench.runner"}, "must follow"),
+        (None, {"if": "inputs.mcp_tool_loading == true", "run": "python -m workflow_bench.runner"}, "one paid"),
+    ],
+)
+def test_workflow_protocol_rejects_misplaced_or_unlisted_extra_arms(workflow_protocol_pair, position, step, message):
+    _, new = workflow_protocol_pair
+    steps = new["jobs"]["evaluate"]["steps"]
+    steps.insert(len(steps) if position is None else position, step)
+    with pytest.raises(ValueError, match=message):
+        pr_evaluation.measurement_protocol(yaml.safe_dump(new))
+
+
+def test_checked_in_release_workflow_has_a_valid_measurement_protocol():
+    from pathlib import Path
+
+    workflow = Path(__file__).resolve().parents[2] / pr_evaluation.EVALUATION_WORKFLOW
+    protocol = pr_evaluation.measurement_protocol(workflow.read_text())
+    assert "-m workflow_bench.runner" in protocol["steps"][-1]["run"]
+
+
 @pytest.mark.parametrize(
     "comparison",
     [
@@ -510,6 +548,56 @@ def test_baseline_download_authenticates_run_artifact_and_recomputes_report(gith
 
 
 @pytest.mark.parametrize(
+    "model,effort",
+    [
+        ("gpt-5.6-sol", "low"),
+        ("gpt-5.5", "medium"),
+        ("gpt-5.6-sol\nOTHER=value", "low"),
+        ("gpt-5.6-sol", "low\rOTHER=value"),
+    ],
+)
+def test_baseline_cli_inherits_authenticated_settings(github, tmp_path, monkeypatch, model, effort):
+    previous = github["report"]
+    metadata = {**previous, "model": model, "effort": effort}
+    rows = [{**row, "model": model, "effort": effort} for row in previous["per_run"]]
+    github["report"] = build_report(rows, metadata, now=NOW)
+    report, environment = tmp_path / "previous.json", tmp_path / "github-env"
+    environment.write_text("EXISTING=value\n")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "pr_evaluation",
+            "baseline",
+            "--repo",
+            REPO,
+            "--run-id",
+            "42",
+            "--harness-sha",
+            HARNESS,
+            "--out",
+            str(report),
+            "--env-out",
+            str(environment),
+        ],
+    )
+    if "\n" in model or "\r" in effort:
+        with pytest.raises(ValueError, match="single-line"):
+            pr_evaluation.main()
+        assert environment.read_text() == "EXISTING=value\n"
+        assert not report.exists()
+        return
+    pr_evaluation.main()
+    assert json.loads(report.read_text()) == github["report"]
+    assert environment.read_text() == f"EXISTING=value\nMODEL={model}\nEFFORT={effort}\n"
+
+
+@pytest.mark.parametrize("model,effort", [("gpt-5.5", "xhigh"), ("gpt-5.6-sol", "low")])
+def test_explicit_baseline_settings_still_require_an_exact_match(github, model, effort):
+    with pytest.raises(ValueError, match="does not match"):
+        pr_evaluation.fetch_baseline(REPO, 42, HARNESS, model, effort)
+
+
+@pytest.mark.parametrize(
     "mutation",
     [
         lambda g: g["run"].update(conclusion="failure"),
@@ -526,10 +614,11 @@ def test_baseline_download_authenticates_run_artifact_and_recomputes_report(gith
         lambda g: g["report"]["arms"]["baseline"].update(mean_cost_usd=0),
     ],
 )
-def test_untrusted_or_tampered_historical_evidence_is_rejected_before_paid_work(github, mutation):
+@pytest.mark.parametrize("settings", [(), ("gpt-5.6-sol", "xhigh")])
+def test_untrusted_or_tampered_historical_evidence_is_rejected_before_paid_work(github, mutation, settings):
     mutation(github)
     with pytest.raises(ValueError):
-        pr_evaluation.fetch_baseline(REPO, 42, HARNESS, "gpt-5.6-sol", "xhigh")
+        pr_evaluation.fetch_baseline(REPO, 42, HARNESS, *settings)
 
 
 def test_cli_writes_sanitized_candidate_report_and_marks_missing_measurements_incomplete(

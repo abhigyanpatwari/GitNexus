@@ -30,6 +30,12 @@ PREVIEW_PATHS = {
     "eval/workflow_bench/README.md",
 }
 EVALUATION_WORKFLOW = ".github/workflows/release-evaluation.yml"
+# Exact `if:` gates of the dispatch-only descriptive arms (never PR previews).
+OPT_IN_ARM_CONDITIONS = frozenset({
+    "env.CLI_ARM == 'true'",
+    "env.CODE_ARM == 'true'",
+    "inputs.mcp_tool_loading == true && inputs.candidate_pr == ''",
+})
 MEASUREMENT_PATHS = ("eval/", ".github/claude-canary-runtime/", EVALUATION_WORKFLOW)
 
 
@@ -121,8 +127,18 @@ def measurement_protocol(source: str) -> dict[str, Any]:
         key: value for key, value in job["env"].items() if key not in {"INPUT_PR", "INPUT_PR_SHA", "COMPARISON_RUN_ID"}
     }
     steps = []
-    if sum(step.get("run", "").count("-m workflow_bench.runner") for step in job["steps"]) != 1:
+    invocations = [
+        (index, step.get("run", "").count("-m workflow_bench.runner"), step.get("if"))
+        for index, step in enumerate(job["steps"])
+        if "-m workflow_bench.runner" in step.get("run", "")
+    ]
+    paid = [(index, count) for index, count, condition in invocations if condition not in OPT_IN_ARM_CONDITIONS]
+    if len(paid) != 1 or paid[0][1] != 1:
         raise ValueError("expected one paid measurement step")
+    # Descriptive opt-in arms run after the paired measurement, which the
+    # fingerprint below ends at; one placed earlier could alter what it measures.
+    if any(count != 1 or index < paid[0][0] for index, count, condition in invocations if condition in OPT_IN_ARM_CONDITIONS):
+        raise ValueError("opt-in arm runs must follow the paid measurement step")
     for step in job["steps"]:
         if step.get("id") == "resolve":
             continue  # Runtime selection is intentionally different for an unmerged PR.
@@ -192,7 +208,9 @@ def require_comparable_harness(repo: str, previous_sha: str, harness_sha: str) -
             raise ValueError("historical workflow measurement protocol changed; measure a fresh baseline")
 
 
-def fetch_baseline(repo: str, run_id: int, harness_sha: str, model: str, effort: str) -> dict[str, Any]:
+def fetch_baseline(
+    repo: str, run_id: int, harness_sha: str, model: str | None = None, effort: str | None = None
+) -> dict[str, Any]:
     from .release_evidence import eligible_runs
     from .release_report import suite_binding, validate_report
 
@@ -229,8 +247,8 @@ def fetch_baseline(repo: str, run_id: int, harness_sha: str, model: str, effort:
     validate_report(report, runtime_sha=runtime_sha, task_set_digest=digest, task_pins=pins)
     if (
         report["harness_sha"] != run["head_sha"]
-        or report["model"] != model
-        or report["effort"] != effort
+        or (model is not None and report["model"] != model)
+        or (effort is not None and report["effort"] != effort)
         or report["runs"] != 3
     ):
         raise ValueError("historical harness, model, reasoning effort or repetition count does not match")
@@ -444,10 +462,13 @@ def main() -> None:
     resolve.add_argument("--pr", type=int, required=True)
     resolve.add_argument("--sha", required=True)
     baseline = commands.add_parser("baseline")
-    for flag in ("repo", "harness-sha", "model", "effort"):
+    for flag in ("repo", "harness-sha"):
         baseline.add_argument(f"--{flag}", required=True)
+    for flag in ("model", "effort"):
+        baseline.add_argument(f"--{flag}", help="Require this setting; otherwise inherit the authenticated report")
     baseline.add_argument("--run-id", type=int, required=True)
     baseline.add_argument("--out", type=Path, required=True)
+    baseline.add_argument("--env-out", type=Path, help="Append authenticated MODEL/EFFORT to a GitHub environment file")
     dependencies = commands.add_parser("dependencies")
     dependencies.add_argument("--tasks", type=Path, required=True)
     dependencies.add_argument("--baseline", type=Path, required=True)
@@ -468,8 +489,17 @@ def main() -> None:
         print(f"sha={resolve_pr(args.repo, args.pr, args.sha)}")
     elif args.command == "baseline":
         report = fetch_baseline(args.repo, args.run_id, args.harness_sha, args.model, args.effort)
+        settings = {"MODEL": report["model"], "EFFORT": report["effort"]}
+        if args.env_out and any(
+            not isinstance(value, str) or not value or any(char in value for char in "\r\n\0")
+            for value in settings.values()
+        ):
+            raise ValueError("historical model settings must be nonempty single-line strings")
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+        if args.env_out:
+            with args.env_out.open("a") as environment:
+                environment.writelines(f"{key}={value}\n" for key, value in settings.items())
     elif args.command == "dependencies":
         import yaml
 
