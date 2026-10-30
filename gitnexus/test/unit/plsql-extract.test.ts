@@ -180,6 +180,21 @@ describe('file classification', () => {
         'CREATE TRIGGER t BEFORE INSERT ON x FOR EACH ROW EXECUTE FUNCTION f();',
       ),
     ).toBe(false);
+    // A plain PL/SQL trigger body with no Oracle-only marker still qualifies…
+    expect(
+      looksLikeOraclePlSql(
+        'CREATE OR REPLACE TRIGGER t BEFORE INSERT ON x FOR EACH ROW\nBEGIN\n  NULL;\nEND;',
+      ),
+    ).toBe(true);
+    // …while MySQL/MariaDB trigger scripts do not.
+    expect(
+      looksLikeOraclePlSql(
+        'DELIMITER $$\nCREATE TRIGGER t BEFORE INSERT ON x FOR EACH ROW\nBEGIN\n  SET NEW.a = 1;\nEND$$\nDELIMITER ;',
+      ),
+    ).toBe(false);
+    expect(
+      looksLikeOraclePlSql('CREATE TRIGGER t BEFORE INSERT ON `x` FOR EACH ROW SET NEW.a = 1;'),
+    ).toBe(false);
     // `IS` after the header is Oracle-only, no other marker needed.
     expect(looksLikeOraclePlSql('CREATE PROCEDURE p IS BEGIN NULL; END;')).toBe(true);
     // T-SQL without GO: `AS` header, `IS NULL` only inside the body.

@@ -48,6 +48,25 @@ const ORACLE_UNIT_HEADER =
   /^[ \t]*create\s+(?:or\s+replace\s+)?(?:(?:non)?editionable\s+)?(?:(?:package(?:\s+body)?|procedure|function|type(?:\s+body)?)\s+[\w$#."]+(?:(?!\bbegin\b)[\s\S]){0,4000}?\b(?:is|as)\b|trigger\s+[\w$#."]+\s+(?:before|after|instead\s+of|for)\b)/im;
 const ORACLE_IS_HEADER =
   /^[ \t]*create\s+(?:or\s+replace\s+)?(?:(?:non)?editionable\s+)?(?:package(?:\s+body)?|procedure|function|type(?:\s+body)?)\s+[\w$#."]+(?:(?!\b(?:begin|as)\b)[\s\S]){0,4000}?\bis\b/im;
+/**
+ * A trigger whose body is a PL/SQL block. The header is shared with
+ * PostgreSQL and MySQL/MariaDB, so the dialects are told apart by what they
+ * cannot write: PostgreSQL triggers call `EXECUTE FUNCTION|PROCEDURE` instead
+ * of carrying a body, and a MySQL/MariaDB body can only hold `;` inside a
+ * `DELIMITER` script and refers to `NEW.col` / `OLD.col` without a colon.
+ */
+const TRIGGER_HEADER =
+  /^[ \t]*create\s+(?:or\s+replace\s+)?(?:(?:non)?editionable\s+)?trigger\s+[\w$#."]+\s+(?:before|after|instead\s+of|for)\b/im;
+const PLSQL_BLOCK = /\b(?:begin|declare)\b[\s\S]*\bend\b[^;]*;/i;
+const NON_ORACLE_TRIGGER =
+  /^\s*delimiter\b|`|(?<![:\w])(?:new|old)\.\w|\bexecute\s+(?:function|procedure)\b/im;
+
+function looksLikeOracleTrigger(content: string): boolean {
+  return (
+    TRIGGER_HEADER.test(content) && PLSQL_BLOCK.test(content) && !NON_ORACLE_TRIGGER.test(content)
+  );
+}
+
 const POSTGRES_DOLLAR_BODY = /\bas\s+\$[\w]*\$|\blanguage\s+plpgsql\b/i;
 const TSQL_MARKERS = /^\s*go\s*$|\bnvarchar\s*\(\s*max\s*\)|@@identity|\bset\s+nocount\s+on\b/im;
 /**
@@ -78,7 +97,11 @@ export function looksLikeOraclePlSql(content: string): boolean {
   // `IS` after a unit header is Oracle-only syntax (T-SQL, PostgreSQL and
   // MySQL write `AS` or `BEGIN`), so a plain `CREATE PROCEDURE p IS …` needs
   // no further marker; an `AS` header still does.
-  return ORACLE_IS_HEADER.test(content) || ORACLE_MARKERS.test(content);
+  return (
+    ORACLE_IS_HEADER.test(content) ||
+    looksLikeOracleTrigger(content) ||
+    ORACLE_MARKERS.test(content)
+  );
 }
 
 /** File-level predicate used by the PL/SQL phase. */
