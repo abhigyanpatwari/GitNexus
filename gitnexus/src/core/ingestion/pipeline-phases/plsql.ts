@@ -60,7 +60,7 @@ export const plsqlPhase: PipelinePhase<PlSqlOutput> = {
       );
       if (result.segmentsWithErrors > 0) {
         logger.info(
-          `  PL/SQL degraded: ${result.segmentsWithErrors} segments with syntax errors, ${result.fallbackDefinitions} fallback definitions`,
+          `  PL/SQL degraded: ${result.segmentsWithErrors} segments with syntax errors (${result.segmentsTimedOut} at the parse deadline), ${result.fallbackDefinitions} fallback definitions`,
         );
       }
     }

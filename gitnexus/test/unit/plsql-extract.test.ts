@@ -147,6 +147,16 @@ describe('file classification', () => {
       false,
     );
     expect(looksLikeOraclePlSql('SELECT * FROM t;')).toBe(false);
+    // MySQL: no IS/AS before BEGIN, even with an Oracle-looking marker in a comment.
+    expect(
+      looksLikeOraclePlSql(
+        'CREATE PROCEDURE p()\nBEGIN\n  -- nvl( is not MySQL\n  SELECT 1;\nEND\n/\n',
+      ),
+    ).toBe(false);
+    // Oracle header split across lines still counts.
+    expect(
+      looksLikeOraclePlSql('CREATE OR REPLACE\nPACKAGE BODY p\nAS\n  x VARCHAR2(1);\nEND p;\n/\n'),
+    ).toBe(true);
   });
 });
 

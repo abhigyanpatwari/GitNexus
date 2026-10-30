@@ -13,24 +13,45 @@
 const SQLPLUS_COMMAND =
   /^\s*(?:set|define|def|undefine|undef|prompt|pro|rem|remark|spool|spo|whenever|column|col|connect|conn|accept|acc|pause|show|sho|exit|quit|host|ttitle|btitle|break|compute|clear|var|variable|print|timing|exec|execute|start|sta|disconnect|disc|store|repheader|repfooter|attribute|copy|describe|desc|get|help|list|password|run|save|xquery)\b/i;
 
-/** Statements that start a PL/SQL unit, which only a lone `/` terminates. */
+/**
+ * Statements that start a PL/SQL unit, which only a lone `/` terminates.
+ * Tested against a header joined across lines, so `CREATE OR REPLACE` on its
+ * own line followed by `PACKAGE BODY …` is still recognised.
+ */
 const PLSQL_UNIT_START =
-  /^(?:create\s+(?:or\s+replace\s+)?(?:(?:non)?editionable\s+)?(?:package|procedure|function|trigger|type)\b|declare\b|begin\b)/i;
+  /^(?:create\s+(?:or\s+replace\s+)?(?:(?:non)?editionable\s+)?(?:and\s+(?:compile|resolve)\s+(?:noforce\s+)?java\b|package|procedure|function|trigger|type|library)\b|declare\b|begin\b)/i;
+
+/** A `CREATE` whose object keyword may still be on a following line. */
+const CREATE_PREFIX = /^create\b/i;
+/** Lines looked ahead to complete a split `CREATE` header. */
+const HEADER_LOOKAHEAD_LINES = 6;
 
 const ENDS_STATEMENT = /;\s*(?:--.*)?$/;
 const CONTINUATION = /\s-\s*$/;
+const LEADING_BLOCK_COMMENTS = /^(?:\/\*[\s\S]*?\*\/\s*)+/;
 
-/**
- * Blank SQL*Plus commands. They are only recognised *between* statements:
- * inside a PL/SQL unit `EXECUTE IMMEDIATE ...` or a column named `desc` is
- * ordinary code and must survive.
- */
 export interface SqlPlusCommand {
   /** 1-based line of the command's first line. */
   readonly line: number;
   readonly text: string;
 }
 
+/** `CREATE` header text joined with the next few code lines (comments skipped). */
+function joinedHeader(lines: readonly string[], index: number, first: string): string {
+  const parts = [first];
+  for (let j = index + 1; j < lines.length && parts.length <= HEADER_LOOKAHEAD_LINES; j++) {
+    const t = lines[j]!.replace(/\r$/, '').trim().replace(LEADING_BLOCK_COMMENTS, '');
+    if (t === '' || t.startsWith('--')) continue;
+    parts.push(t);
+  }
+  return parts.join(' ');
+}
+
+/**
+ * Blank SQL*Plus commands. They are only recognised *between* statements:
+ * inside a PL/SQL unit `EXECUTE IMMEDIATE ...`, `EXIT WHEN …` or a call to a
+ * procedure named `run` is ordinary code and must survive.
+ */
 export function stripSqlPlusCommands(source: string, commands?: SqlPlusCommand[]): string {
   const lines = source.split('\n');
   let state: 'between' | 'plsql' | 'sql' = 'between';
@@ -56,19 +77,22 @@ export function stripSqlPlusCommands(source: string, commands?: SqlPlusCommand[]
       if (trimmed === '/' || ENDS_STATEMENT.test(trimmed)) state = 'between';
       continue;
     }
-    if (trimmed === '' || trimmed.startsWith('--') || trimmed === '/') continue;
-    if (trimmed.startsWith('/*')) {
-      if (!trimmed.includes('*/', 2)) inBlockComment = true;
+    // Code after any leading `/* … */` on the same line.
+    const code = trimmed.replace(LEADING_BLOCK_COMMENTS, '');
+    if (code.startsWith('/*')) {
+      inBlockComment = true;
       continue;
     }
-    if (SQLPLUS_COMMAND.test(trimmed) || trimmed.startsWith('@')) {
-      continuation = CONTINUATION.test(trimmed);
+    if (code === '' || code.startsWith('--') || code === '/') continue;
+    if (code === trimmed && (SQLPLUS_COMMAND.test(code) || code.startsWith('@'))) {
+      continuation = CONTINUATION.test(code);
       commands?.push({ line: i + 1, text: line.replace(/\r$/, '') });
       lines[i] = blankLine(line);
       continue;
     }
-    if (PLSQL_UNIT_START.test(trimmed)) state = 'plsql';
-    else if (!ENDS_STATEMENT.test(trimmed)) state = 'sql';
+    const header = CREATE_PREFIX.test(code) ? joinedHeader(lines, i, code) : code;
+    if (PLSQL_UNIT_START.test(header)) state = 'plsql';
+    else if (!ENDS_STATEMENT.test(code)) state = 'sql';
   }
   return lines.join('\n');
 }

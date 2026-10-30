@@ -52,6 +52,8 @@ export interface PlSqlDefinition {
   readonly schema?: string;
   /** Enclosing definition names, outermost first (package, then subprograms). */
   readonly ownerPath: readonly string[];
+  /** Index into `definitions` of the enclosing definition (by position); absent at top level and for fallback definitions. */
+  readonly ownerIndex?: number;
   readonly startLine: number;
   /** 0-based column of the first token of the definition. */
   readonly startColumn: number;
@@ -64,8 +66,16 @@ export interface PlSqlDefinition {
   /** `END <name>` closing labels, which must be renamed with the definition. */
   readonly endLabels: readonly PlSqlNameToken[];
   readonly parameters: readonly PlSqlParameter[];
-  /** Package spec, or a subprogram declared (not implemented) in a package spec. */
+  /**
+   * Package spec, or a subprogram declared in a package spec — i.e. public.
+   * Forward declarations inside a package body are NOT spec declarations.
+   */
   readonly isSpec: boolean;
+  /**
+   * Declaration without a body at this position: a package-spec declaration
+   * or a forward declaration in a package body. Never owns call sites.
+   */
+  readonly declarationOnly: boolean;
   /** Trigger only: the table the trigger fires on. */
   readonly triggerTable?: string;
   /** True when the definition was recovered by the regex fallback. */
@@ -74,6 +84,8 @@ export interface PlSqlDefinition {
 
 export interface PlSqlCallSite {
   readonly ownerPath: readonly string[];
+  /** Index into `definitions` of the innermost enclosing definition (by position). */
+  readonly ownerIndex?: number;
   readonly line: number;
   readonly column: number;
   /** Dotted name parts (`PKG_LOG`, `WARN`); optional schema first. */
@@ -89,6 +101,8 @@ export interface PlSqlCallSite {
 
 export interface PlSqlTableAccess {
   readonly ownerPath: readonly string[];
+  /** Index into `definitions` of the innermost enclosing definition (by position). */
+  readonly ownerIndex?: number;
   readonly line: number;
   readonly column: number;
   readonly table: string;
@@ -99,6 +113,8 @@ export interface PlSqlTableAccess {
 
 export interface PlSqlDynamicSqlSite {
   readonly ownerPath: readonly string[];
+  /** Index into `definitions` of the innermost enclosing definition (by position). */
+  readonly ownerIndex?: number;
   readonly line: number;
   /** Literal statement text when the argument is a string literal. */
   readonly literal?: string;
@@ -156,14 +172,6 @@ function childRule(ctx: ParserRuleContext, rule: number): ParserRuleContext | un
 function childRules(ctx: ParserRuleContext, rule: number): ParserRuleContext[] {
   return ctx.children.filter(
     (c): c is ParserRuleContext => c instanceof ParserRuleContext && c.ruleIndex === rule,
-  );
-}
-
-function hasTerminal(ctx: ParserRuleContext, tokenType: number): boolean {
-  return ctx.children.some(
-    (c) =>
-      !(c instanceof ParserRuleContext) &&
-      (c as { symbol?: { type: number } }).symbol?.type === tokenType,
   );
 }
 
@@ -302,6 +310,15 @@ function cteNamesAbove(ctx: ParserRuleContext): Set<string> {
 
 const PSEUDO_TABLES = new Set(['DUAL']);
 
+/** True for a subprogram spec inside `CREATE PACKAGE` (public), false for a body forward declaration. */
+function insidePackageSpec(ctx: ParserRuleContext): boolean {
+  for (let a = ctx.parent; a; a = a.parent) {
+    if (a.ruleIndex === P.RULE_create_package) return true;
+    if (a.ruleIndex === P.RULE_create_package_body) return false;
+  }
+  return false;
+}
+
 // ─── tree walk ────────────────────────────────────────────────────────────
 
 const SCOPE_RULES = new Set([
@@ -326,12 +343,21 @@ function extractSegment(
 ): void {
   if (!segment.tree) return;
   const scope: string[] = [];
+  /** Definition indices parallel to `scope`: sites record the innermost owner by position. */
+  const owners: number[] = [];
+  const ownerIndex = () => owners[owners.length - 1];
 
   const define = (
     ctx: ParserRuleContext,
     kind: PlSqlDefKind,
     nameCtx: ParserRuleContext | undefined,
-    extra: { schema?: string; isSpec?: boolean; triggerTable?: string; push?: boolean } = {},
+    extra: {
+      schema?: string;
+      isSpec?: boolean;
+      declarationOnly?: boolean;
+      triggerTable?: string;
+      push?: boolean;
+    } = {},
   ) => {
     const parts = splitDotted(textOf(nameCtx));
     const name = parts[parts.length - 1] ?? '?';
@@ -343,6 +369,7 @@ function extractSegment(
       name,
       schema,
       ownerPath: [...scope],
+      ownerIndex: ownerIndex(),
       startLine: ctx.start!.line,
       startColumn: ctx.start!.column,
       endLine: stop.line,
@@ -353,10 +380,14 @@ function extractSegment(
       endLabels: endLabelsOf(ctx),
       parameters: parametersOf(ctx),
       isSpec: extra.isSpec ?? false,
+      declarationOnly: extra.declarationOnly ?? false,
       triggerTable: extra.triggerTable,
       fromFallback: false,
     });
-    if (extra.push !== false) scope.push(name);
+    if (extra.push !== false) {
+      scope.push(name);
+      owners.push(out.definitions.length - 1);
+    }
   };
 
   const listener: ParseTreeListener = {
@@ -374,13 +405,13 @@ function extractSegment(
           break;
         }
         case P.RULE_procedure_spec:
-          define(ctx, 'procedure', childRule(ctx, P.RULE_identifier), {
-            isSpec: true,
-            push: false,
-          });
-          break;
         case P.RULE_function_spec:
-          define(ctx, 'function', childRule(ctx, P.RULE_identifier), { isSpec: true, push: false });
+          define(
+            ctx,
+            ctx.ruleIndex === P.RULE_procedure_spec ? 'procedure' : 'function',
+            childRule(ctx, P.RULE_identifier),
+            { isSpec: insidePackageSpec(ctx), declarationOnly: true, push: false },
+          );
           break;
         case P.RULE_procedure_body:
           define(ctx, 'procedure', childRule(ctx, P.RULE_identifier));
@@ -424,6 +455,7 @@ function extractSegment(
           const { arity, named } = argumentsOf(fnArgs[0]);
           out.calls.push({
             ownerPath: [...scope],
+            ownerIndex: ownerIndex(),
             line: routine.start!.line,
             column: routine.start!.column,
             nameParts: splitDotted(at >= 0 ? raw.slice(0, at) : raw),
@@ -457,6 +489,7 @@ function extractSegment(
           const { arity, named } = argumentsOf(fnArg);
           out.calls.push({
             ownerPath: [...scope],
+            ownerIndex: ownerIndex(),
             line: ctx.start!.line,
             column: ctx.start!.column,
             nameParts: names,
@@ -478,6 +511,7 @@ function extractSegment(
           if (parts.length === 1 && cteNamesAbove(ctx).has(table)) break;
           out.accesses.push({
             ownerPath: [...scope],
+            ownerIndex: ownerIndex(),
             line: ctx.start!.line,
             column: ctx.start!.column,
             table,
@@ -492,6 +526,7 @@ function extractSegment(
           const text = expr?.getText() ?? '';
           out.dynamicSql.push({
             ownerPath: [...scope],
+            ownerIndex: ownerIndex(),
             line: ctx.start!.line,
             literal: /^'[\s\S]*'$/.test(text) ? text.slice(1, -1).replace(/''/g, "'") : undefined,
           });
@@ -500,7 +535,10 @@ function extractSegment(
       }
     },
     exitEveryRule(ctx: ParserRuleContext) {
-      if (SCOPE_RULES.has(ctx.ruleIndex)) scope.pop();
+      if (SCOPE_RULES.has(ctx.ruleIndex)) {
+        scope.pop();
+        owners.pop();
+      }
     },
   };
   ParseTreeWalker.DEFAULT.walk(listener, segment.tree);
@@ -523,10 +561,20 @@ const FALLBACK_UNIT =
   /^[ \t]*create\s+(?:or\s+replace\s+)?(?:(?:non)?editionable\s+)?(package\s+body|package|procedure|function|trigger)\s+((?:"[^"]+"|[\w$#]+)(?:\.(?:"[^"]+"|[\w$#]+))?)/gim;
 const FALLBACK_SUBPROGRAM = /^[ \t]*(procedure|function)\s+("[^"]+"|[\w$#]+)/gim;
 
-function lineAt(text: string, offset: number, firstLine: number): number {
-  let line = firstLine;
-  for (let i = 0; i < offset; i++) if (text.charCodeAt(i) === 10) line++;
-  return line;
+/** Offset → line lookup built once per segment (binary search over line starts). */
+function lineLocator(text: string, firstLine: number): (offset: number) => number {
+  const starts = [0];
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10) starts.push(i + 1);
+  return (offset) => {
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid]! <= offset) lo = mid;
+      else hi = mid - 1;
+    }
+    return firstLine + lo;
+  };
 }
 
 /**
@@ -536,6 +584,7 @@ function lineAt(text: string, offset: number, firstLine: number): number {
 function fallbackDefinitions(segment: PlSqlSegment, known: ReadonlySet<string>): PlSqlDefinition[] {
   const out: PlSqlDefinition[] = [];
   const text = segment.text;
+  const lineAt = lineLocator(text, segment.startLine);
   let unit: { name: string; kind: PlSqlDefKind; isSpec: boolean } | undefined;
   for (const m of text.matchAll(FALLBACK_UNIT)) {
     const kindText = m[1]!.toLowerCase().replace(/\s+/g, ' ');
@@ -544,7 +593,7 @@ function fallbackDefinitions(segment: PlSqlSegment, known: ReadonlySet<string>):
       ? 'package'
       : (kindText as PlSqlDefKind);
     const name = parts[parts.length - 1]!;
-    const line = lineAt(text, m.index!, segment.startLine);
+    const line = lineAt(m.index!);
     if (!known.has(`|${name}`)) {
       out.push(
         makeFallback(
@@ -565,7 +614,7 @@ function fallbackDefinitions(segment: PlSqlSegment, known: ReadonlySet<string>):
   for (const m of text.matchAll(FALLBACK_SUBPROGRAM)) {
     const name = normaliseIdentifier(m[2]!);
     if (known.has(`${unit.name}|${name}`)) continue;
-    const line = lineAt(text, m.index!, segment.startLine);
+    const line = lineAt(m.index!);
     out.push(
       makeFallback(
         m[1]!.toLowerCase() as PlSqlDefKind,
@@ -605,6 +654,7 @@ function makeFallback(
     endLabels: [],
     parameters: [],
     isSpec,
+    declarationOnly: isSpec && kind !== 'package',
     fromFallback: true,
   };
 }

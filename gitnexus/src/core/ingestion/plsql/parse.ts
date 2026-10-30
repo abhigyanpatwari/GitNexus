@@ -37,8 +37,26 @@ import {
   type SqlPlusCommand,
 } from './preprocess.js';
 
-/** Default wall-clock budget for one segment. */
-export const DEFAULT_SEGMENT_DEADLINE_MS = 10_000;
+/**
+ * Wall-clock budget for one segment: a floor plus a per-line allowance.
+ * A cold ANTLR DFA cache needs ~5 ms/line on large package bodies (a valid
+ * 3.4k-line body took ~18 s in the spike), so a flat budget would drop the
+ * largest — usually most important — packages to the regex fallback.
+ * `GITNEXUS_PLSQL_SEGMENT_DEADLINE_MS` overrides the floor; 0 disables.
+ */
+export const SEGMENT_DEADLINE_FLOOR_MS = 10_000;
+export const SEGMENT_DEADLINE_PER_LINE_MS = 15;
+
+export function segmentDeadlineMs(lines: number, floorMs = configuredFloorMs()): number {
+  if (floorMs <= 0) return Number.POSITIVE_INFINITY;
+  return Math.max(floorMs, lines * SEGMENT_DEADLINE_PER_LINE_MS);
+}
+
+function configuredFloorMs(): number {
+  const raw = process.env.GITNEXUS_PLSQL_SEGMENT_DEADLINE_MS;
+  const value = raw === undefined || raw.trim() === '' ? NaN : Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : SEGMENT_DEADLINE_FLOOR_MS;
+}
 
 export interface PlSqlSegment {
   /** 1-based first and last source line of the segment. */
@@ -150,6 +168,7 @@ export function splitSegments(
 
 export function parsePlSqlSource(
   source: string,
+  /** `segmentDeadlineMs` replaces the size-scaled budget (tests). */
   options: { segmentDeadlineMs?: number } = {},
 ): ParsedPlSqlSource {
   const commands: SqlPlusCommand[] = [];
@@ -158,7 +177,8 @@ export function parsePlSqlSource(
   for (const seg of splitSegments(text)) {
     // Prefix blank lines so token lines are file lines.
     const padded = '\n'.repeat(seg.startLine - 1) + seg.body;
-    const result = parseSegment(padded, options.segmentDeadlineMs ?? DEFAULT_SEGMENT_DEADLINE_MS);
+    const lines = seg.endLine - seg.startLine + 1;
+    const result = parseSegment(padded, options.segmentDeadlineMs ?? segmentDeadlineMs(lines));
     segments.push({ startLine: seg.startLine, endLine: seg.endLine, text: seg.body, ...result });
   }
   return { segments, scriptIncludes: scriptIncludesOf(commands) };

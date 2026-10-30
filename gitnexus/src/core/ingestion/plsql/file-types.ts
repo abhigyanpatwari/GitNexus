@@ -37,14 +37,15 @@ export function isSqlFile(filePath: string): boolean {
 }
 
 /**
- * `CREATE [OR REPLACE] [EDITIONABLE|NONEDITIONABLE] PACKAGE|PROCEDURE|FUNCTION|TRIGGER|TYPE <name> ... IS|AS`
- * at the start of a line. `IS`/`AS` (or a trigger timing keyword) must follow
- * within the header, which rules out PostgreSQL's `CREATE FUNCTION ... AS $$`
- * (handled by `POSTGRES_DOLLAR_BODY`) and T-SQL's `CREATE PROCEDURE ... AS BEGIN`
- * without Oracle markers.
+ * An Oracle unit header at the start of a line:
+ *   `CREATE [OR REPLACE] [EDITIONABLE|NONEDITIONABLE] PACKAGE|PROCEDURE|FUNCTION|TYPE <name> … IS|AS`
+ *   `CREATE [OR REPLACE] … TRIGGER <name> BEFORE|AFTER|INSTEAD OF|FOR`
+ * `IS`/`AS` must follow the name (after an optional parameter list / RETURN
+ * clause) before any `BEGIN`, which rules out MySQL's `CREATE PROCEDURE p() BEGIN`.
+ * PostgreSQL's `AS $$` and T-SQL are excluded separately below.
  */
 const ORACLE_UNIT_HEADER =
-  /^[ \t]*create\s+(?:or\s+replace\s+)?(?:(?:non)?editionable\s+)?(?:package(?:\s+body)?|procedure|function|trigger|type(?:\s+body)?)\s+[\w$#."]+/im;
+  /^[ \t]*create\s+(?:or\s+replace\s+)?(?:(?:non)?editionable\s+)?(?:(?:package(?:\s+body)?|procedure|function|type(?:\s+body)?)\s+[\w$#."]+(?:(?!\bbegin\b)[\s\S]){0,4000}?\b(?:is|as)\b|trigger\s+[\w$#."]+\s+(?:before|after|instead\s+of|for)\b)/im;
 const POSTGRES_DOLLAR_BODY = /\bas\s+\$[\w]*\$|\blanguage\s+plpgsql\b/i;
 const TSQL_MARKERS = /^\s*go\s*$|\bnvarchar\s*\(\s*max\s*\)|@@identity|\bset\s+nocount\s+on\b/im;
 /** Constructs that only appear in Oracle PL/SQL. */

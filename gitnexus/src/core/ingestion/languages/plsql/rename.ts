@@ -31,7 +31,7 @@ import {
   type PlSqlDefinition,
   type PlSqlFileFacts,
 } from '../../plsql/extract.js';
-import { plsqlSignatureKey } from '../../plsql/resolve.js';
+import { PlSqlPackageInstances, plsqlSignatureKey } from '../../plsql/resolve.js';
 import { plsqlFactsFor, plsqlNameRange, plsqlRangeKey, plsqlTokenRange } from './captures.js';
 
 const unsupported = (message: string): RenameIssue => ({
@@ -83,7 +83,7 @@ export const plsqlRenameProvider: RenameProvider = {
   },
 
   parseSource({ filePath, content, languageProvider }) {
-    const facts = plsqlFactsFor(content);
+    const facts = plsqlFactsFor(content, filePath);
     const parsed = extractParsedFile(languageProvider, content, filePath);
     if (!parsed)
       throw {
@@ -145,14 +145,33 @@ export const plsqlRenameProvider: RenameProvider = {
     const targetSource = context.files.get(context.target.filePath);
     const target = targetSource && definitionFor(targetSource, context.target);
     if (!target) return unsupported('The PL/SQL declaration has no source identity.');
-    const sameEntity = (d: PlSqlDefinition) =>
-      target.kind === 'package'
+    // One family per package instance: a spec, its paired body and the
+    // declarations inside them. Same-named copies elsewhere are other objects.
+    const packages: Array<{ name: string; filePath: string; isSpec: boolean }> = [];
+    for (const file of context.files.values()) {
+      for (const d of evidence.get(file)?.definitions ?? []) {
+        if (d.kind === 'package')
+          packages.push({ name: d.name, filePath: file.path, isSpec: d.isSpec });
+      }
+    }
+    const instances = new PlSqlPackageInstances(packages);
+    const definesPackage = new Set(packages.map((p) => `${p.name}\0${p.filePath}`));
+    const scopeOf = (d: PlSqlDefinition, filePath: string): string => {
+      const pkg = d.kind === 'package' ? d.name : d.ownerPath[0];
+      return pkg !== undefined && definesPackage.has(`${pkg}\0${filePath}`)
+        ? `${pkg}\0${instances.homeOf(pkg, filePath) ?? filePath}`
+        : `\0${filePath}`;
+    };
+    const targetScope = scopeOf(target, context.target.filePath);
+    const sameEntity = (d: PlSqlDefinition, filePath: string) =>
+      scopeOf(d, filePath) === targetScope &&
+      (target.kind === 'package'
         ? d.kind === 'package' && d.name === target.name
-        : d.kind === target.kind && plsqlSignatureKey(d) === plsqlSignatureKey(target);
+        : d.kind === target.kind && plsqlSignatureKey(d) === plsqlSignatureKey(target));
     return context.definitions.filter((symbol) => {
       const source = context.files.get(symbol.filePath);
       const def = source && definitionFor(source, symbol);
-      return def !== undefined && sameEntity(def);
+      return def !== undefined && sameEntity(def, symbol.filePath);
     });
   },
 

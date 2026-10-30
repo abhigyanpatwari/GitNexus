@@ -37,6 +37,36 @@ describe('stripSqlPlusCommands', () => {
     expect(lines(stripSqlPlusCommands(src))).toEqual([...lines(src).slice(0, 7), '']);
   });
 
+  it('recognises a CREATE header split across lines (EXIT, calls named like commands survive)', () => {
+    const src = [
+      'CREATE OR REPLACE',
+      '/* generated */',
+      'PACKAGE BODY p AS',
+      '  PROCEDURE run IS BEGIN',
+      '    FETCH c INTO r;',
+      '    exit when c%NOTFOUND;',
+      '    run_step;',
+      '    list := 1;',
+      '  END run;',
+      'END p;',
+      '/',
+      'SHOW ERRORS',
+    ].join('\n');
+    expect(lines(stripSqlPlusCommands(src))).toEqual([...lines(src).slice(0, 11), '']);
+  });
+
+  it('tracks a unit that follows a closed block comment on the same line', () => {
+    const src = [
+      '/* v2 */ CREATE OR REPLACE PROCEDURE q IS',
+      'BEGIN',
+      '  x := 1;',
+      '  exit;',
+      'END;',
+      '/',
+    ].join('\n');
+    expect(stripSqlPlusCommands(src)).toBe(src);
+  });
+
   it('blanks `-` continuation lines of a command', () => {
     const src = [
       'EXECUTE dbms_stats.gather_schema_stats( -',

@@ -19,11 +19,11 @@
 
 import type { Capture, CaptureMatch, Range } from 'gitnexus-shared';
 import {
-  extractPlSqlFacts,
   type PlSqlDefinition,
   type PlSqlFileFacts,
   type PlSqlNameToken,
 } from '../../plsql/extract.js';
+import { plsqlFactsForFile } from '../../plsql/facts-store.js';
 
 function capture(name: string, range: Range, text: string): Capture {
   return { name, range, text };
@@ -59,25 +59,17 @@ export function plsqlDefinitionRange(def: PlSqlDefinition): Range {
 export const plsqlRangeKey = (r: Range): string =>
   `${r.startLine}:${r.startCol}:${r.endLine}:${r.endCol}`;
 
-/** Facts are recomputed per call site of the hook; memoise on the exact source text. */
-const factsCache = new Map<string, PlSqlFileFacts>();
-const FACTS_CACHE_LIMIT = 64;
-
-export function plsqlFactsFor(sourceText: string): PlSqlFileFacts {
-  const cached = factsCache.get(sourceText);
-  if (cached) return cached;
-  const facts = extractPlSqlFacts(sourceText);
-  if (factsCache.size >= FACTS_CACHE_LIMIT) factsCache.delete(factsCache.keys().next().value!);
-  factsCache.set(sourceText, facts);
-  return facts;
+/** Facts for a source, shared with the `plsql` phase (parsed once per run). */
+export function plsqlFactsFor(sourceText: string, filePath: string): PlSqlFileFacts {
+  return plsqlFactsForFile(filePath, sourceText);
 }
 
 export function emitPlSqlScopeCaptures(
   sourceText: string,
-  _filePath: string,
+  filePath: string,
   _cachedTree?: unknown,
 ): readonly CaptureMatch[] {
-  const facts = plsqlFactsFor(sourceText);
+  const facts = plsqlFactsFor(sourceText, filePath);
   const out: CaptureMatch[] = [];
 
   for (const def of facts.definitions) {
@@ -106,8 +98,8 @@ export function emitPlSqlScopeCaptures(
         String(required),
       );
     }
-    // A spec declaration has no body, so it opens no scope.
-    if (!def.isSpec || def.kind === 'package') {
+    // A spec or forward declaration has no body, so it opens no scope.
+    if (!def.declarationOnly) {
       const scope = def.kind === 'package' ? '@scope.module' : '@scope.function';
       match[scope] = capture(scope, range, def.name);
     }

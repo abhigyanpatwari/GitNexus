@@ -161,6 +161,17 @@ describe('Oracle PL/SQL extraction', () => {
       ]);
     });
 
+    it('CALLS/ACCESSES: sites belong to the overload whose body contains them', () => {
+      const line = (id: string) => result.graph.getNode(id)!.properties.startLine! + 1;
+      const fromLogMsg = [...result.graph.iterRelationships()]
+        .filter((r) => result.graph.getNode(r.sourceId)?.properties.name === 'LOG_MSG')
+        .filter((r) => r.type === 'CALLS' || r.type === 'ACCESSES')
+        .map((r) => `${r.type} LOG_MSG@L${line(r.sourceId)}`)
+        .sort();
+      // L3 log_msg(p_msg) calls the 2-arg overload; L8's body does the INSERT.
+      expect(fromLogMsg).toEqual(['ACCESSES LOG_MSG@L8', 'CALLS LOG_MSG@L3']);
+    });
+
     it('ACCESSES: read/write per statement, MERGE target vs source, trigger target', () => {
       expect(plsqlEdges(result, 'ACCESSES')).toEqual([
         'CALC_PENALTY → T_LOAN_CONTRACT [plsql-select]',
