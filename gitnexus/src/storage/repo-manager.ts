@@ -63,6 +63,7 @@ import {
   LIST_STORAGE_REQUIREMENTS,
   requireDeletableStoragePath,
   StorageDeletionError,
+  type StorageInspection,
   validateConfiguredStoragePath,
 } from './storage-resolver.js';
 
@@ -1745,6 +1746,12 @@ export const listRegisteredRepos = async (opts?: {
   const prunedSlots = new Set<string>();
   const registrySlotKey = (entry: RegistryEntry): string =>
     `${canonicalizePath(entry.path)}\0${canonicalizePath(entry.storagePath)}`;
+  const isSafelyPrunable = (inspection: StorageInspection): boolean =>
+    !isTransientStorageInspection(inspection) &&
+    (inspection.state === 'missing' ||
+      inspection.state === 'empty' ||
+      (inspection.state === 'unowned' &&
+        inspection.reason === 'Storage directory contains data but no valid ownership metadata.'));
   const inspections = await mapPool(entries, inspectRegisteredStorage, 8);
   for (const [entry, inspection] of entries.map(
     (entry, i) => [entry, inspections[i]] as [RegistryEntry, (typeof inspections)[number]],
@@ -1754,12 +1761,7 @@ export const listRegisteredRepos = async (opts?: {
       (!LIST_STORAGE_REQUIREMENTS.requireCodeIndexDB || inspection.hasCodeIndexDB);
     if (meetsRequirements) {
       valid.push(entry);
-    } else if (
-      inspection.state === 'missing' ||
-      inspection.state === 'empty' ||
-      (inspection.state === 'unowned' &&
-        inspection.reason === 'Storage directory contains data but no valid ownership metadata.')
-    ) {
+    } else if (isSafelyPrunable(inspection)) {
       // A missing/empty directory or a registry slot with no ownership
       // metadata is not a usable index. Removing only the registry row is
       // safe; the storage directory itself is never deleted here.
@@ -1786,15 +1788,22 @@ export const listRegisteredRepos = async (opts?: {
   // only then. The validation walk above is read-only and can touch several
   // files per entry, so holding the global lock across it would serialize
   // every `gitnexus augment` behind unrelated registry work for no benefit.
-  // Re-read inside the lock and drop only the same provably-absent storage
-  // slots from that fresh snapshot, so a concurrent re-registration of the
-  // same repository path into another slot survives.
+  // Reinspect only deletion candidates under the lock: even the same slot
+  // with identical metadata may have been rebuilt and re-registered since
+  // the initial inspection (#3515). Other slots keep the lock-free read path.
   if (prunedSlots.size > 0) {
     try {
       await withRegistryLock(async () => {
-        const fresh = await readRegistry();
+        const fresh = await readRegistryStrictIfPresent();
+        if (!fresh) return;
+        const candidates = fresh.filter((entry) => prunedSlots.has(registrySlotKey(entry)));
+        const rechecked = await mapPool(candidates, inspectRegisteredStorage, 8);
+        const confirmedSlots = new Set(
+          candidates.filter((_, i) => isSafelyPrunable(rechecked[i])).map(registrySlotKey),
+        );
+        if (confirmedSlots.size === 0) return;
         await writeRegistry(
-          fresh.filter((entry) => !prunedSlots.has(registrySlotKey(entry))),
+          fresh.filter((entry) => !confirmedSlots.has(registrySlotKey(entry))),
           1,
         );
       });

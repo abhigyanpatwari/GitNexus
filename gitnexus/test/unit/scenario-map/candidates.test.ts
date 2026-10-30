@@ -80,6 +80,22 @@ describe('jaccard', () => {
 });
 
 describe('findCandidates: Jaccard source', () => {
+  it('retrieves the same body across cleanup/import contexts and dissimilar setup coverage', () => {
+    const result = findCandidates([
+      test('direct', [1, 2], { checksContext: 'direct-context', bodyKey: 'same-body' }),
+      test('reexport', [1, 2, 3, 4], { checksContext: 'reexport-context', bodyKey: 'same-body' }),
+      test('other', [5], { checksContext: 'other-context', bodyKey: 'different-body' }),
+    ]);
+    expect(result.pairs).toEqual([
+      expect.objectContaining({
+        a: 'direct',
+        b: 'reexport',
+        sources: ['body'],
+        identicalBlocks: false,
+      }),
+    ]);
+  });
+
   it.each([
     { name: 'one block removed (199/200)', b: range(0, 199) },
     { name: 'one block replaced (199/201)', b: [...range(0, 199), 500] },
@@ -147,7 +163,7 @@ describe('findCandidates: checks-and-context source', () => {
       test('b', [1, 2], { checksContext: 'k' }),
     ]);
     expect(result.pairs.map((pair) => pair.sources)).toEqual([['jaccard', 'checks-context']]);
-    expect(result.stats.bySource).toEqual({ jaccard: 0, checksContext: 0, both: 1 });
+    expect(result.stats.bySource).toEqual({ jaccard: 0, checksContext: 0, both: 1, body: 0 });
   });
 });
 
