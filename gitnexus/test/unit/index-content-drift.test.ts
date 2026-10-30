@@ -224,6 +224,52 @@ describe('detectIndexContentDrift', () => {
     expect(await detectIndexContentDrift(repo, recorded)).toMatchObject({ kind: 'current' });
   });
 
+  it('replays the analyze-time dot-directory list, whatever the environment says now', async () => {
+    const repo = makeRepo({
+      'a.js': 'export const a = 1;\n',
+      'pkg/.scallywag/unit.js': 'export const unit = 1;\n',
+    });
+    const policy = { maxFileSizeBytes: 512 * 1024, includeDotDirs: ['.scallywag'] };
+    const recorded = await recordCoverage(repo, { includeDotDirs: policy.includeDotDirs });
+    expect(Object.keys(recorded)).toContain('pkg/.scallywag/unit.js');
+
+    const original = process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+    delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+    try {
+      expect(await detectIndexContentDrift(repo, recorded, policy)).toMatchObject({
+        kind: 'current',
+      });
+      fs.writeFileSync(path.join(repo, 'pkg/.scallywag/unit.js'), 'export const unit = 2;\n');
+      expect(await detectIndexContentDrift(repo, recorded, policy)).toMatchObject({
+        kind: 'drifted',
+        changed: ['pkg/.scallywag/unit.js'],
+      });
+    } finally {
+      if (original !== undefined) process.env.GITNEXUS_INCLUDE_DOT_DIRS = original;
+    }
+  });
+
+  it('does not report dot-directory files as added for an index built without the option', async () => {
+    const repo = makeRepo({ 'a.js': 'export const a = 1;\n' });
+    const recorded = await recordCoverage(repo, { includeDotDirs: [] });
+    fs.mkdirSync(path.join(repo, '.scallywag'));
+    fs.writeFileSync(path.join(repo, '.scallywag/unit.js'), 'export const unit = 1;\n');
+
+    const original = process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+    process.env.GITNEXUS_INCLUDE_DOT_DIRS = '.scallywag';
+    try {
+      expect(
+        await detectIndexContentDrift(repo, recorded, { maxFileSizeBytes: 512 * 1024 }),
+      ).toMatchObject({ kind: 'current' });
+    } finally {
+      if (original === undefined) {
+        delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      } else {
+        process.env.GITNEXUS_INCLUDE_DOT_DIRS = original;
+      }
+    }
+  });
+
   it('treats a covered file that can no longer be read as changed, not current', async () => {
     if (typeof process.getuid === 'function' && process.getuid() === 0) {
       return;

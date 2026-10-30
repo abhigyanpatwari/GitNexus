@@ -448,6 +448,44 @@ def test_workflow_protocol_rejects_extra_paid_invocations(workflow_protocol_pair
         pr_evaluation.measurement_protocol(yaml.safe_dump(new))
 
 
+def test_workflow_protocol_ignores_opt_in_arms_after_the_paid_step(workflow_protocol_pair):
+    _, new = workflow_protocol_pair
+    expected = pr_evaluation.measurement_protocol(yaml.safe_dump(new))
+    for gate in sorted(pr_evaluation.OPT_IN_ARM_CONDITIONS):
+        new["jobs"]["evaluate"]["steps"].append({"if": gate, "run": "uv run python -m workflow_bench.runner --arms x\n"})
+    assert pr_evaluation.measurement_protocol(yaml.safe_dump(new)) == expected
+
+
+@pytest.mark.parametrize(
+    "position, step, message",
+    [
+        (0, {"if": "env.CLI_ARM == 'true'", "run": "python -m workflow_bench.runner"}, "must follow"),
+        (None, {"if": "env.CLI_ARM == 'true'", "run": "python -m workflow_bench.runner\npython -m workflow_bench.runner"},
+         "must follow"),
+        (None, {"if": "env.OTHER == 'true'", "run": "python -m workflow_bench.runner"}, "one paid"),
+        (0, {"if": "inputs.mcp_tool_loading == true && inputs.candidate_pr == ''",
+             "run": "python -m workflow_bench.runner"}, "must follow"),
+        (None, {"if": "inputs.mcp_tool_loading == true && inputs.candidate_pr == ''",
+                "run": "python -m workflow_bench.runner\npython -m workflow_bench.runner"}, "must follow"),
+        (None, {"if": "inputs.mcp_tool_loading == true", "run": "python -m workflow_bench.runner"}, "one paid"),
+    ],
+)
+def test_workflow_protocol_rejects_misplaced_or_unlisted_extra_arms(workflow_protocol_pair, position, step, message):
+    _, new = workflow_protocol_pair
+    steps = new["jobs"]["evaluate"]["steps"]
+    steps.insert(len(steps) if position is None else position, step)
+    with pytest.raises(ValueError, match=message):
+        pr_evaluation.measurement_protocol(yaml.safe_dump(new))
+
+
+def test_checked_in_release_workflow_has_a_valid_measurement_protocol():
+    from pathlib import Path
+
+    workflow = Path(__file__).resolve().parents[2] / pr_evaluation.EVALUATION_WORKFLOW
+    protocol = pr_evaluation.measurement_protocol(workflow.read_text())
+    assert "-m workflow_bench.runner" in protocol["steps"][-1]["run"]
+
+
 @pytest.mark.parametrize(
     "comparison",
     [

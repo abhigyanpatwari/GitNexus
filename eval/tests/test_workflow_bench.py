@@ -210,7 +210,7 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         step for step in containment["steps"] if str(step.get("uses", "")).startswith("actions/setup-node@")
     )
     claude_lock = json.loads((repo_root / ".github" / "claude-canary-runtime" / "package-lock.json").read_text())
-    setup_uv = "astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884"
+    setup_uv = "astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa"
     assert workflow.count(setup_uv) >= 3
     assert workflow.count("version: '0.11.23'") >= 3
     assert workflow.count("uv run --locked --extra dev python -m pytest") >= 3
@@ -267,6 +267,8 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         "pytest",
         "tests/test_process_control.py",
         "tests/test_proposer_sandbox.py",
+        # Real-Bubblewrap baseline_cli shim canary; skipped everywhere else.
+        "tests/test_cli_shim.py",
         "tests/test_workflow_bench_sessions.py",
         "tests/test_ce_plugin_runtime.py",
         # The offline sweep, run here with nothing stubbed: this job is the only
@@ -275,6 +277,7 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         # Carries the real-CLI identity probe, which needs CLAUDE_CANARY_BIN -
         # set only on this job. Omitted from this list it skipped everywhere.
         "tests/test_mock_provider.py",
+        "tests/test_mcp_tool_loading.py",
         # Paired prepare/session/oracle/report composition uses that same native
         # CLI and containment; it must execute here rather than skip everywhere.
         "tests/test_release_evaluation_smoke.py",
@@ -295,7 +298,7 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         for path in (repo_root / "eval" / "tests").glob("test_*.py")
         if bwrap_canary_marker.search(path.read_text())
     )
-    assert bwrap_canary_files == ["test_proposer_sandbox.py", "test_workflow_bench_sessions.py"]
+    assert bwrap_canary_files == ["test_cli_shim.py", "test_proposer_sandbox.py", "test_workflow_bench_sessions.py"]
     assert all(f"tests/{name}" in selected_containment_tests for name in bwrap_canary_files)
     assert "eval-containment-windows:" in workflow
 

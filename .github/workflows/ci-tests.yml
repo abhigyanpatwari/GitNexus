@@ -1341,12 +1341,26 @@ jobs:
       - name: Measure all languages and check graph and binding baselines
         run: node --import tsx bench/scope-resolution/measure.mts --check --output scope-resolution-benchmark.json
         working-directory: gitnexus
+      # #3695 probes share this runner and artifact; the language matrix runs once.
+      - name: Check ordinary-call signature allocation
+        shell: bash
+        run: node --expose-gc --import tsx bench/scope-resolution/call-signature-memory.mts 500000 --check | tee scope-resolution-call-signature-memory.json
+        working-directory: gitnexus
+      - name: Measure dense Java and check its graph baseline
+        shell: bash
+        env:
+          GITNEXUS_DEBUG_HEAP: '1'
+        run: node --import tsx bench/scope-resolution/dense-java.mts 300 20 10 --check 2>&1 | tee scope-resolution-dense-java.log
+        working-directory: gitnexus
       - name: Upload scope-resolution measurements
         if: always()
         uses: ./.github/actions/upload-test-artifact
         with:
           name: scope-resolution-benchmark
-          path: gitnexus/scope-resolution-benchmark.json
+          path: |
+            gitnexus/scope-resolution-benchmark.json
+            gitnexus/scope-resolution-call-signature-memory.json
+            gitnexus/scope-resolution-dense-java.log
           retention-days: 5
 
   # Locked eval suite. setup-uv and uv itself are immutable so CI exercises
@@ -1360,7 +1374,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
         with:
           version: '0.11.23'
           python-version: '3.13'
@@ -1473,7 +1487,7 @@ jobs:
           cache-dependency-path: |
             gitnexus/package-lock.json
             gitnexus-shared/package-lock.json
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
         with:
           version: '0.11.23'
           python-version: '3.13'
@@ -1532,10 +1546,12 @@ jobs:
           uv run --locked --extra dev python -m pytest
           tests/test_process_control.py
           tests/test_proposer_sandbox.py
+          tests/test_cli_shim.py
           tests/test_workflow_bench_sessions.py
           tests/test_ce_plugin_runtime.py
           tests/test_offline_sweep_integration.py
           tests/test_mock_provider.py
+          tests/test_mcp_tool_loading.py
           tests/test_release_evaluation_smoke.py
           tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant
           tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout
@@ -1561,7 +1577,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
         with:
           version: '0.11.23'
           python-version: '3.13'
