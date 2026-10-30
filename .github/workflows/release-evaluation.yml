@@ -414,6 +414,8 @@ jobs:
             if [[ -n "$INPUT_PR" && "$runtime" == stable ]]; then continue; fi
             remaining=$(( ${{ needs.start-runner.outputs.stop_deadline_epoch }} - $(date +%s) - 5400 ))
             (( remaining > 0 )) || { echo '::error::No time remains before the stop and evidence reserve.'; exit 1; }
+            GITNEXUS_BENCH_PROVIDER_USAGE="$RUNNER_TEMP/release-evaluation/$runtime/provider-usage.jsonl" \
+            GITNEXUS_BENCH_SWEEP_ID="release-${{ github.run_id }}-${{ github.run_attempt }}-$runtime" \
             timeout --signal=TERM --kill-after=60 "${remaining}s" \
               uv run --locked --extra dev python -m workflow_bench.runner \
               --tasks "$RUNNER_TEMP/release-evaluation/$runtime/tasks.yaml" \
@@ -437,6 +439,8 @@ jobs:
           set -euo pipefail
           remaining=$(( ${{ needs.start-runner.outputs.stop_deadline_epoch }} - $(date +%s) - 5400 ))
           (( remaining > 0 )) || { echo '::warning::No time remains for the CLI-only arm.'; exit 1; }
+          GITNEXUS_BENCH_PROVIDER_USAGE="$RUNNER_TEMP/release-evaluation/candidate/cli-provider-usage.jsonl" \
+          GITNEXUS_BENCH_SWEEP_ID="release-${{ github.run_id }}-${{ github.run_attempt }}-cli" \
           timeout --signal=TERM --kill-after=60 "${remaining}s" \
             uv run --locked --extra dev python -m workflow_bench.runner \
             --tasks "$RUNNER_TEMP/release-evaluation/candidate/tasks.yaml" \
@@ -456,6 +460,8 @@ jobs:
           set -euo pipefail
           remaining=$(( ${{ needs.start-runner.outputs.stop_deadline_epoch }} - $(date +%s) - 5400 ))
           (( remaining > 0 )) || { echo '::error::No time remains for deferred sessions before the evidence reserve.'; exit 1; }
+          GITNEXUS_BENCH_PROVIDER_USAGE="$RUNNER_TEMP/release-evaluation/candidate/deferred-provider-usage.jsonl" \
+          GITNEXUS_BENCH_SWEEP_ID="release-${{ github.run_id }}-${{ github.run_attempt }}-deferred" \
           timeout --signal=TERM --kill-after=60 "${remaining}s" \
             uv run --locked --extra dev python -m workflow_bench.runner \
             --tasks "$RUNNER_TEMP/release-evaluation/candidate/tasks.yaml" \
@@ -539,6 +545,49 @@ jobs:
             --paired "$candidate/raw/results.jsonl" --cli "$candidate/cli-raw/results.jsonl" \
             --out "$RUNNER_TEMP/release-evaluation/public"
           cat "$RUNNER_TEMP/release-evaluation/public/cli-arm-comparison.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Summarize time, cost, and tool measurements
+        if: ${{ always() && steps.resolve.outputs.sha != '' }}
+        working-directory: eval
+        env:
+          DEFERRED_ARM: ${{ inputs.mcp_tool_loading }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/release-evaluation"
+          public="$root/public"
+          mkdir -p "$public"
+          failed=0
+          for variant in stable candidate cli deferred; do
+            case "$variant" in
+              stable)
+                if [[ -n "$INPUT_PR" ]]; then continue; fi
+                results="$root/stable/raw/results.jsonl"
+                ledger="$root/stable/provider-usage.jsonl" ;;
+              candidate)
+                results="$root/candidate/raw/results.jsonl"
+                ledger="$root/candidate/provider-usage.jsonl" ;;
+              cli)
+                if [[ "$CLI_ARM" != true ]]; then continue; fi
+                results="$root/candidate/cli-raw/results.jsonl"
+                ledger="$root/candidate/cli-provider-usage.jsonl" ;;
+              deferred)
+                if [[ "$DEFERRED_ARM" != true || -n "$INPUT_PR" ]]; then continue; fi
+                results="$root/candidate/deferred/results.jsonl"
+                ledger="$root/candidate/deferred-provider-usage.jsonl" ;;
+            esac
+            if ! uv run --locked --extra dev python -m workflow_bench.cost_diagnostics \
+              --results "$results" --provider-usage "$ledger" --allow-incomplete \
+              --out "$public/$variant-diagnostics.json" --markdown-out "$public/$variant-diagnostics.md"; then
+              printf '\nDetailed measurements for %s could not be validated; inspect the step log.\n' "$variant" >> "$GITHUB_STEP_SUMMARY"
+              failed=1
+              continue
+            fi
+            {
+              printf '\n<details><summary>Detailed measurements: %s</summary>\n\n' "$variant"
+              cat "$public/$variant-diagnostics.md"
+              printf '\n</details>\n'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+          exit "$failed"
       - name: Upload sanitized release evidence
         if: ${{ always() && steps.resolve.outputs.sha != '' && inputs.candidate_pr == '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -553,6 +602,8 @@ jobs:
             ${{ runner.temp }}/release-evaluation/public/release-quality-gate.md
             ${{ runner.temp }}/release-evaluation/public/mcp-tool-loading.json
             ${{ runner.temp }}/release-evaluation/public/mcp-tool-loading.md
+            ${{ runner.temp }}/release-evaluation/public/*-diagnostics.json
+            ${{ runner.temp }}/release-evaluation/public/*-diagnostics.md
           if-no-files-found: error
           retention-days: 30
       - name: Upload the opt-in CLI-only arm comparison
@@ -563,6 +614,8 @@ jobs:
           path: |
             ${{ runner.temp }}/release-evaluation/public/cli-arm-comparison.json
             ${{ runner.temp }}/release-evaluation/public/cli-arm-comparison.md
+            ${{ runner.temp }}/release-evaluation/public/cli-diagnostics.json
+            ${{ runner.temp }}/release-evaluation/public/cli-diagnostics.md
           if-no-files-found: warn
           retention-days: 30
       - name: Upload sanitized PR cost comparison
@@ -573,6 +626,8 @@ jobs:
           path: |
             ${{ runner.temp }}/release-evaluation/public/pr-cost-comparison.json
             ${{ runner.temp }}/release-evaluation/public/pr-cost-comparison.md
+            ${{ runner.temp }}/release-evaluation/public/*-diagnostics.json
+            ${{ runner.temp }}/release-evaluation/public/*-diagnostics.md
           if-no-files-found: error
           retention-days: 30
 

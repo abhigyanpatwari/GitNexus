@@ -930,6 +930,207 @@ measurements unchanged and compare only runs with matching task contracts.
 
 ## MCP response cost
 
+### Session diagnostics
+
+Every new headless session records `session_diagnostics` in `results.jsonl`.
+The parent timestamps complete stdout event lines without changing the agent
+prompt, tool responses, sandbox, or release criteria. No additional model calls
+are made. Existing results without diagnostics remain valid and have unknown
+timing, rather than measured zero time.
+
+The release evaluation's GitHub Actions summary includes a **Detailed
+measurements** section for each measured runtime or optional arm. It shows cost
+and wall-time distributions, setup/cleanup phases, CLI token counters, tool
+outcomes and outliers, context/cache signals, repeated verification, and provider
+request sizes and usage. Matching `*-diagnostics.json` and `*-diagnostics.md`
+files are included in the sanitized evaluation artifacts. PR comparison
+summaries retain the candidate's safe diagnostics too.
+
+Each sweep writes its own provider ledger. Only aggregate numeric provider
+measurements reach the summary and artifacts; raw request identities and usage
+ledgers remain on the runner. Missing or torn inputs are marked as partial,
+and provider token totals are withheld when ledger records are unreadable.
+Concurrent requests are not assigned to individual cells. Historical runs
+without this instrumentation show missing telemetry; regenerating a report
+cannot recover tool timings that were never recorded.
+
+Each session contains:
+
+- `calls`: tool name, event indexes, input/result JSON bytes, receipt offsets,
+  elapsed time, repeated-argument references, result status, staleness,
+  truncation, and the next assistant action's tool names. MCP errors, missing
+  symbols, ambiguity, empty query results, UNKNOWN risk, and output-limit
+  failures are counted separately. Standalone `gitnexus` shim commands are
+  identified; compound shell commands remain `Bash` because their elapsed time
+  includes other work.
+- `assistant_usage`: the last available usage snapshot for each assistant
+  message, keyed by event index. Missing fields stay missing. These are
+  main-session CLI counters, not a complete provider or subagent ledger.
+- `workload`: repeated reads, reads of files referenced by graph results,
+  query/context/read sequences, graph calls before the first observed edit,
+  verification commands and repeats, edits after verification, compactions,
+  and input-context growth. Shell commands are classified conservatively;
+  compound commands remain mixed. Unknown shell actions invalidate the
+  assumption that the checkout stayed unchanged between verification calls.
+  These are action counts, including failed edit attempts, not proven waste.
+- `tools`: per-tool counts, elapsed sums, response bytes, and source-read
+  follow-ups after problematic results. One source action can follow multiple
+  problem results, so follow-ups are associations, not unique extra reads.
+- `tool_wait_s`: the union of observed call intervals; parallel tools count
+  once. `mcp_wait_s` is a subset. `other_wall_s` includes model requests,
+  startup, transport, retries and scheduling; it is not a measurement of model
+  reasoning time. Missing results, unmatched IDs, clock gaps or diagnostics
+  limits make complete wait totals unavailable.
+- `server_wall_s`: the sum of tool-reported `timing.wall` milliseconds, converted
+  to seconds, with a separate coverage count. Missing server timing stays
+  unknown. This does not equal the host's tool wait or model request time.
+
+The normal release JSON and Markdown include numeric per-tool summaries. The
+JSON also keeps each session's five largest results, five slowest calls, and
+five problematic calls with the largest results,
+with event indexes for locating the detail in local `results.jsonl`. Raw tool
+arguments, result text, source, prompts, IDs and argument hashes are excluded
+from these diagnostics. Call and assistant-usage details are bounded at 2,048
+entries per session; `truncated` exposes that limit. Receipt timing is bounded
+at 100,000 event lines. Diagnostics do not make incomplete task evidence valid.
+
+Use the counters to investigate explanations separately: large successful
+responses suggest payload overhead; missing/ambiguous targets followed by
+source reads suggest a possible workaround; repeated calls suggest a possible
+navigation loop. These are signals, not proof of poor resolution or causation.
+An empty result is not proof that a symbol is absent. Repeated arguments can be
+justified after edits, and smaller output can require more follow-up reads.
+Graph precision/recall requires expected-symbol labels or source verification.
+The reported session cost is the money measurement; diagnostics never invent
+per-tool dollar costs from bytes or elapsed time.
+
+### Cost investigations and controlled experiments
+
+No paid rerun is needed to prepare experiments or summarize existing evidence.
+The commands below only read local files and write diagnostic artifacts.
+Run them from `eval/` with the project's locked environment.
+
+For the first trial, prepare two cells for one task, with a $5 CLI-reported
+budget stop per cell. This checks telemetry delivery before a larger comparison:
+
+```bash
+uv run --locked python -m workflow_bench.diagnostic_experiments \
+  --tasks workflow_bench/tasks.scenarios.yaml \
+  --repository /path/to/GitNexus --runtime /path/to/built/GitNexus \
+  --harness-sha FULL_HARNESS_SHA --runtime-sha FULL_RUNTIME_SHA \
+  --model gpt-5.6-sol --effort xhigh --seed 3762 --repeats 1 \
+  --variants no_graph mcp_eager --task-ids trivial-status-json-alias \
+  --max-budget-usd 5 --out /tmp/gitnexus-diagnostics-trial
+```
+
+The runner forwards `--max-budget-usd` to Claude Code and accepts it only for
+single-session baseline arms. The default remains uncapped. Budget-stopped
+sessions stay failed and retain reported spend; they cannot establish savings
+or successful task completion. The $10 planned total uses CLI accounting, not
+a provider invoice cap: an in-flight request or different provider accounting
+can exceed it. Preparing the plan does not authorize or execute the trial.
+
+| Possible cause | Measurement | What still needs an experiment |
+| --- | --- | --- |
+| Missing, ambiguous or incomplete resolution | Tool outcomes, UNKNOWN risk, lower-bound/stale/truncated responses, next source actions | Verify the intended target exists at the indexed source revision |
+| Successful but irrelevant retrieval | Fixed source anchors in `retrieval_cases.json`, anchor recall and first anchor position | Capture the same queries against the sanitized task graph; unjudged results are not false positives |
+| Too little detail or repeated investigation | Query/context/read chains, repeated arguments/reads, reads after graph references with and without source | A follow-up read may be necessary; compare matched tasks before calling it waste |
+| Large responses and context growth | Result bytes, complete input usage snapshots, first/last/peak context, cache reads/writes, compactions | Compare response-size treatments at equal quality; bytes are not tokens |
+| Mandatory graph workflow | Graph calls before edits; eager MCP versus optional-use prompt arm | Prompt ablation measures behavior; it does not remove repository instruction bytes |
+| Tool catalog and transport | Eager/deferred/CLI arms; proxy tools/messages bytes and counts | Request sizes are available only when the proxy callback receives those fields |
+| Verification and scope growth | Test/typecheck/lint/build counts, repeated checks, edits after verification, diff insertions/deletions/files | Larger diffs and repeated tests are not inherently unnecessary |
+| Task fit and quality ceiling | Per-task cost distribution, solved/failed/missing counts, cost per solved task | Add harder independently validated tasks before claiming a quality improvement at 100% success |
+| Order, concurrency, warm caches | Seeded rotated order, one worker and separate ledger per cell | Run matched worker-count/cold-start studies separately; fresh processes do not guarantee cold provider/filesystem caches |
+| Retries, provider translation and accounting | CLI retry events; deduplicated success/failure callbacks, native normalized usage, reasoning tokens, proxy durations and estimates | Reconcile with provider billing; do not join concurrent requests to cells by timestamp |
+| Setup, indexing and infrastructure | Cell start/finish timestamps, total duration, clone/index-materialization/dependency/MCP-startup/sandbox/agent-and-verification/artifact/cleanup spans | Shared index-build preparation, CPU/RSS, isolated oracle spans and infrastructure prices need separate evidence; do not fold them into model dollars |
+
+Summarize a runner result file (including failed cells) and optionally its proxy
+ledger. Historical release reports with `per_run` rows are also accepted:
+
+```bash
+uv run --locked python -m workflow_bench.cost_diagnostics \
+  --results /path/to/results.jsonl \
+  --provider-usage /path/to/provider_usage.jsonl \
+  --out /tmp/cost-diagnostics.json --markdown-out /tmp/cost-diagnostics.md
+```
+
+Unknown fields remain null. Distinct model/effort/source/prompt/runtime/loading
+cohorts are kept separate. Duplicate exported cell identities are rejected.
+Provider response-ID conflicts withhold token totals; missing IDs prevent a
+deduplicated total. Failed requests remain in the accounting. Proxy cost is an
+estimate, not a provider invoice. The report is descriptive and does not change
+release gates. It cannot infer cells omitted from its input: compare every
+expected cell in the experiment plan before computing a treatment effect.
+`cell_duration_s` includes setup and cleanup; `duration_s` retains its existing
+session meaning. Phase spans partition the cell, including a failed active
+phase, and unvisited phases stay missing. Shared snapshot construction happens
+before cells and is not included. Agent and harness verification share one
+phase; it must not be presented as isolated LLM reasoning time. Raw rows retain
+UTC start/finish timestamps for order analysis; public release JSON retains
+only numeric durations and whitelisted phase names.
+
+Prepare a pilot focused on the overhead floor and the expensive retry task:
+
+```bash
+uv run --locked python -m workflow_bench.diagnostic_experiments \
+  --tasks workflow_bench/tasks.scenarios.yaml \
+  --repository /path/to/GitNexus --runtime /path/to/built/GitNexus \
+  --harness-sha FULL_HARNESS_SHA --runtime-sha FULL_RUNTIME_SHA \
+  --model gpt-5.6-sol --effort xhigh --seed 3762 --repeats 5 \
+  --task-ids trivial-status-json-alias cross-module-parse-retry \
+  --out /tmp/gitnexus-cost-experiment
+```
+
+This creates `plan.json` and one task manifest per cell. It has **no execution
+mode** and never starts an agent. Five arms × two tasks × five repeats prepares
+50 cells; this is a design, not spend authorization. Use `--variants` to prepare
+a narrower comparison. Position balance requires a repeat count divisible by
+the number of arms. The plan records argv arrays, environment paths, task class,
+block/position, source pins and prompt/manifest digests. It refuses to overwrite
+an existing directory. Pin the final instrumentation commit before execution;
+an uncommitted implementation is not reproduced by its parent SHA alone.
+
+After separately authorizing spend, run cells serially in the listed sequence,
+from the recorded `cwd`, with the recorded environment and a fresh exclusive
+proxy ledger. Each subprocess runs one task/arm/repetition. Its raw `run` is
+zero; retain the plan's cell ID and block when assembling comparisons. Do not
+mix the optional-prompt arm with ordinary release evidence or reuse its results
+for a required-guidance arm. Retain failures and missing cells in the denominator.
+Record machine/container, dependency bindings, cache policy, start/finish times
+and setup/oracle timing alongside the existing runner output. Reconcile the
+ledger sum with CLI-reported session spend, rather than estimating dollars per
+tool from duration or payload size.
+
+The four source-verified retrieval cases cover the same pinned scenario source.
+Capture each fixed query from the **sanitized** task index used by the runner,
+with the same query limits and content setting. Save parsed response objects as:
+
+```json
+{
+  "source_sha": "c4ecf398de637cf779ab2238e69958cfd5d601ce",
+  "runtime_sha": "FULL_RUNTIME_SHA",
+  "sanitized_graph": true,
+  "index_complete": true,
+  "index_staleness": "current",
+  "query_options": {"limit": 5, "max_symbols": 10, "include_content": false},
+  "cases": [{"id": "CASE_ID", "query": "EXACT_FIXTURE_QUERY", "response": {}}]
+}
+```
+
+Verify those provenance fields against the index receipt; the offline scorer
+checks declarations, not the database itself. Keep capture metadata and raw
+responses private, since they contain repository source. Score without an LLM:
+
+```bash
+uv run --locked python -m workflow_bench.retrieval_diagnostics \
+  --recordings /path/to/retrieval-recordings.json --out /tmp/retrieval-scores.json
+```
+
+Missing cases remain missing, errors are not successful empty queries, and stale
+or mismatched source recordings are rejected. These are partial anchor labels;
+there is no precision score or claim that every other result is irrelevant.
+Anchor position follows flattened response order, not a global search rank.
+
 With `include_content: true`, queries share a 16,000-character preview allowance
 equally across unique symbols on the returned page. The database returns only
 those prefixes, after ranking and pagination. `content_truncated: true` marks
