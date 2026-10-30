@@ -15,6 +15,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from .session_diagnostics import public_cell_diagnostics, render_diagnostics
+
 ARMS = ("baseline_nomcp", "baseline", "baseline_cli")
 EXPOSURE = {"baseline_nomcp": "none", "baseline": "stdio-only", "baseline_cli": "stdio-only"}
 METRICS = ("cost_usd", "duration_s", "num_turns", "cache_read_input_tokens", "output_tokens")
@@ -141,6 +143,10 @@ def build_report(paired: Path, cli: Path) -> dict[str, Any]:
                         "pairs": len(matched),
                         "expected_pairs": len(pairs),
                     }
+    report["diagnostic_rows"] = [
+        {**{field: row.get(field) for field in ("task", "run", "arm")}, **public_cell_diagnostics(row)}
+        for row, _ in rows
+    ]
     return report
 
 
@@ -180,6 +186,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     if report["problems"]:
         lines += ["", "**Problems:**", *[f"- {problem}" for problem in report["problems"]]]
     lines += ["", "Small pinned task set; descriptive evidence only, not statistical significance.", ""]
+    lines += render_diagnostics(report.get("diagnostic_rows", []))
     return "\n".join(lines)
 
 
