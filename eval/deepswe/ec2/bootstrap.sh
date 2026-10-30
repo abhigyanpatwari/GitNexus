@@ -30,10 +30,11 @@ tar -xzf "$tarball" -C /usr/local --strip-components=1
 rm "$tarball"
 
 sudo -iu "$USER_NAME" bash -lc "curl -LsSf https://astral.sh/uv/install.sh | sh"
-sudo -iu "$USER_NAME" bash -lc "~/.local/bin/uv tool install datacurve-pier==${PIER_VERSION}"
+sudo -iu "$USER_NAME" bash -lc "\$HOME/.local/bin/uv tool install datacurve-pier==${PIER_VERSION}"
 sudo -iu "$USER_NAME" git clone --quiet "$GITNEXUS_REPO" "$HOME_DIR/GitNexus"
 sudo -iu "$USER_NAME" git -C "$HOME_DIR/GitNexus" fetch --quiet origin "$GITNEXUS_REF"
 sudo -iu "$USER_NAME" git -C "$HOME_DIR/GitNexus" checkout --quiet --detach FETCH_HEAD
 
-echo "ready $(date -u +%FT%TZ) gitnexus=$(git -C "$HOME_DIR/GitNexus" rev-parse HEAD)" > "$HOME_DIR/BOOTSTRAP_DONE"
+echo "ready $(date -u +%FT%TZ) gitnexus=$(sudo -iu "$USER_NAME" git -C "$HOME_DIR/GitNexus" rev-parse HEAD)" \
+  > "$HOME_DIR/BOOTSTRAP_DONE"
 chown "$USER_NAME:$USER_NAME" "$HOME_DIR/BOOTSTRAP_DONE"
