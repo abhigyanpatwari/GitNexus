@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from .runner_tasks import normalized_model_identifier
 from .session_budget import session_budget
 
 VARIANTS = {
@@ -50,8 +51,9 @@ def prepare_plan(
         raise ValueError("repeats must be between 1 and 100")
     if not all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (runtime_sha, harness_sha)):
         raise ValueError("runtime and harness require full commit SHAs")
-    if not isinstance(model, str) or not model.strip() or model.lower() in ("auto", "latest") or model.endswith("-latest"):
+    if not isinstance(model, str):
         raise ValueError("use a named model, not auto/latest")
+    model = normalized_model_identifier(model)
     if effort not in ("low", "medium", "high", "xhigh", "max"):
         raise ValueError("invalid effort")
     tasks = document.get("tasks")

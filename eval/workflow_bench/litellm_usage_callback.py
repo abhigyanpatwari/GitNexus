@@ -82,6 +82,8 @@ def _request_metrics(kwargs: dict, start_time: Any, end_time: Any) -> dict:
                     value, ensure_ascii=False, separators=(",", ":"),
                 ).encode(errors="backslashreplace"))
             except (TypeError, ValueError, RecursionError):
+                # Keep size unknown when serialization fails; usage accounting
+                # must still be recorded even without this optional metric.
                 pass
         if field != "system":
             metrics[f"{field}_count"] = len(value) if isinstance(value, list) else None

@@ -402,11 +402,11 @@ def render_diagnostics(rows: list[dict[str, Any]]) -> list[str]:
                 lines.append(f"\nLargest observed CLI input context: {max(peaks):,} tokens. "
                              "Uses complete Anthropic-shaped usage snapshots; provider-native usage may differ.")
     if lines:
-        lines += ["", "Receipt timing includes transport and scheduling, not just server execution. Other wall time is not model time. "
+        lines += ["", ("Receipt timing includes transport and scheduling, not just server execution. Other wall time is not model time. "
                   "Bytes are serialized payload bytes, not tokens. Repeated arguments may be justified after edits. "
                   "Source follow-ups are the next assistant action after a problematic result, not proof of a workaround. "
-                  "Per-tool elapsed sums may overlap. Session cost includes all work; no per-tool dollar attribution is available."]
-        lines += ["A file read after a graph reference is an association, not duplicated content or low relevance. "
+                  "Per-tool elapsed sums may overlap. Session cost includes all work; no per-tool dollar attribution is available.")]
+        lines += [("A file read after a graph reference is an association, not duplicated content or low relevance. "
                   "Repeated verification can be necessary. Bash classification is conservative; mixed commands stay unclassified. "
-                  "Missing usage fields remain unknown. Context totals describe observed snapshots only."]
+                  "Missing usage fields remain unknown. Context totals describe observed snapshots only.")]
     return lines

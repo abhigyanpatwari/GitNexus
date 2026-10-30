@@ -28,6 +28,10 @@ TOKEN_FIELDS = (
 )
 FIELDS = (*COUNT_FIELDS, *TOKEN_FIELDS)
 VERIFY = frozenset({"test", "typecheck", "lint", "build"})
+_UV_RUN_FLAGS = frozenset({"--locked", "--frozen", "--no-sync", "--offline", "--all-extras",
+                           "--no-dev", "--only-dev", "--isolated", "--active", "--no-project"})
+_UV_RUN_VALUES = frozenset({"--extra", "--group", "--python", "--project", "--directory",
+                            "--package", "--with"})
 
 
 def classify_bash(command: Any) -> str:
@@ -53,7 +57,23 @@ def classify_bash(command: Any) -> str:
     executable = PurePosixPath(words[0]).name
     args = words[1:]
     if executable == "uv" and args[:1] == ["run"]:
-        return classify_bash(shlex.join(args[1:]))
+        args = args[1:]
+        while args and args[0].startswith("-"):
+            option = args.pop(0)
+            if option == "--":
+                break
+            name, separator, value = option.partition("=")
+            if name in _UV_RUN_FLAGS and not separator:
+                continue
+            if name in _UV_RUN_VALUES:
+                if separator and value:
+                    continue
+                if not separator and args and args[0] and not args[0].startswith("-"):
+                    args.pop(0)
+                    continue
+            # Unknown or malformed options may change what uv executes.
+            return "other"
+        return classify_bash(shlex.join(args))
     if executable in ("python", "python3") and args[:2] == ["-m", "pytest"]:
         return "test"
     if executable in ("npm", "pnpm", "yarn", "bun", "npx") and args:

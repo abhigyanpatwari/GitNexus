@@ -56,8 +56,9 @@ def test_server_reported_time_is_separate_from_host_wait_and_missing_stays_unkno
     assert safe["tools"]["mcp__gitnexus__impact"]["server_wall_s"] is None
 
 
-def test_verification_repetition_respects_edits_and_unknown_shell_mutations():
-    check = ("Bash", {"command": "cd gitnexus && npm test"}, "ok")
+@pytest.mark.parametrize("command", ["cd gitnexus && npm test", "uv run --locked --extra dev python -m pytest"])
+def test_verification_repetition_respects_edits_and_unknown_shell_mutations(command):
+    check = ("Bash", {"command": command}, "ok")
     events = trace([check, check, ("Edit", {"file_path": "secret"}, "ok"), check,
                     ("Bash", {"command": "python custom_script.py"}, "ok"), check])
     work = diagnose_session(events, None, 10)["workload"]
@@ -69,6 +70,15 @@ def test_verification_repetition_respects_edits_and_unknown_shell_mutations():
 
 @pytest.mark.parametrize(("command", "category"), [
     ("uv run python -m pytest -q", "test"), ("npm run test:unit", "test"),
+    ("uv run --locked --extra dev python -m pytest -q", "test"),
+    ("uv run --frozen --no-sync --offline --extra=dev pytest", "test"),
+    ("uv run --project ./eval --group dev --python 3.12 -- pytest", "test"),
+    ("uv run --locked --extra dev ruff check .", "lint"),
+    ("uv run --locked --extra dev ruff format .", "mutation"),
+    ("uv run --unknown pytest", "other"), ("uv run --extra", "other"),
+    ("uv run --extra= pytest", "other"), ("uv run --extra --locked pytest", "other"),
+    ("uv run --locked=true pytest", "other"), ("uv run --locked", "other"),
+    ("uv run -- --locked pytest", "other"),
     ("npx tsc --noEmit", "typecheck"), ("npx eslint .", "lint"),
     ("npx eslint . --fix", "mutation"), ("npm run build", "build"),
     ("cat source.ts", "source"), ("rg 'x' src", "source"),
@@ -261,6 +271,20 @@ def test_plan_rejects_unpinned_or_ambiguous_inputs(override):
         prepare_plan(task_document(), **(plan_args() | override))
 
 
+@pytest.mark.parametrize("model", [None, 1, "", "  ", " auto ", "claude-sonnet-LATEST",
+                                  "provider/latest", "provider:auto", "provider@AUTO"])
+def test_plan_uses_runner_model_validation(model):
+    with pytest.raises(ValueError):
+        prepare_plan(task_document(), **(plan_args() | {"model": model}))
+
+
+def test_plan_normalizes_model_in_metadata_and_commands():
+    plan = prepare_plan(task_document(), **(plan_args() | {"model": "  gpt-5.6-sol  "}))
+    assert plan["model"] == "gpt-5.6-sol"
+    for cell in plan["cells"]:
+        assert cell["argv"][cell["argv"].index("--model") + 1] == "gpt-5.6-sol"
+
+
 def test_trial_plan_passes_each_cell_budget_without_starting_a_model():
     args = plan_args() | {"repeats": 1, "variants": ["no_graph", "mcp_eager"], "task_ids": ["one"], "max_budget_usd": 5.0}
     plan = prepare_plan(task_document(), **args)
@@ -271,7 +295,7 @@ def test_trial_plan_passes_each_cell_budget_without_starting_a_model():
         assert cell["argv"][cell["argv"].index("--max-budget-usd") + 1] == "5.0"
 
 
-@pytest.mark.parametrize("budget", [0, -1, float("nan"), float("inf"), True])
+@pytest.mark.parametrize("budget", [0, -1, float("nan"), float("inf"), True, 10 ** 1000])
 def test_invalid_budget_fails_before_any_process_starts(monkeypatch, tmp_path, budget):
     from workflow_bench import runner_sessions
 
