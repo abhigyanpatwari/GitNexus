@@ -26,8 +26,8 @@ beforeEach(async () => {
   await write('src/a.ts');
   await write('src/b.ts');
   await write('README.md', '# readme\n');
-  await write('.gitignore', 'generated/\n');
-  await write('generated/out.ts');
+  await write('.gitignore', 'scratch/\n');
+  await write('scratch/out.ts');
   await write('node_modules/dep/index.js');
   await write('.hidden/c.ts');
 });
