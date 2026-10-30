@@ -15,11 +15,32 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import { processPlSql, isPlSqlSource } from '../plsql-processor.js';
 import { hasPlSqlExtension, isSqlFile } from '../plsql/file-types.js';
+import { resetPlSqlFactsStore } from '../plsql/facts-store.js';
 import { readFileContents } from '../filesystem-walker.js';
 import type { StructureOutput } from './structure.js';
 import { isDev } from '../utils/env.js';
 
 import { logger } from '../../logger.js';
+
+/** Bytes of candidate source read at once while classifying `.sql` files. */
+const READ_BATCH_BYTES = 16 * 1024 * 1024;
+
+function byteBudgetBatches<T extends { size: number }>(items: readonly T[], budget: number): T[][] {
+  const batches: T[][] = [];
+  let current: T[] = [];
+  let bytes = 0;
+  for (const item of items) {
+    if (current.length > 0 && bytes + item.size > budget) {
+      batches.push(current);
+      current = [];
+      bytes = 0;
+    }
+    current.push(item);
+    bytes += item.size;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
+}
 
 export interface PlSqlOutput {
   files: number;
@@ -38,16 +59,30 @@ export const plsqlPhase: PipelinePhase<PlSqlOutput> = {
     const { scannedFiles, allPathSet } = getPhaseOutput<StructureOutput>(deps, 'structure');
 
     const candidates = scannedFiles.filter((f) => hasPlSqlExtension(f.path) || isSqlFile(f.path));
-    if (candidates.length === 0) return { files: 0, packages: 0, subprograms: 0 };
+    if (candidates.length === 0) {
+      resetPlSqlFactsStore(0); // drop a previous run's facts in long-lived processes
+      return { files: 0, packages: 0, subprograms: 0 };
+    }
 
-    const contents = await readFileContents(
-      ctx.repoPath,
-      candidates.map((f) => f.path),
-    );
-    const files = candidates
-      .filter((f) => contents.has(f.path) && isPlSqlSource(f.path, contents.get(f.path)!))
-      .map((f) => ({ path: f.path, content: contents.get(f.path)! }));
-    if (files.length === 0) return { files: 0, packages: 0, subprograms: 0 };
+    // Read in byte-budgeted batches and keep only Oracle sources, so a repo
+    // full of other-dialect `.sql` files never holds them all in memory.
+    const files: Array<{ path: string; content: string }> = [];
+    for (const batch of byteBudgetBatches(candidates, READ_BATCH_BYTES)) {
+      const contents = await readFileContents(
+        ctx.repoPath,
+        batch.map((f) => f.path),
+      );
+      for (const f of batch) {
+        const content = contents.get(f.path);
+        if (content !== undefined && isPlSqlSource(f.path, content)) {
+          files.push({ path: f.path, content });
+        }
+      }
+    }
+    if (files.length === 0) {
+      resetPlSqlFactsStore(0);
+      return { files: 0, packages: 0, subprograms: 0 };
+    }
 
     const result = processPlSql(ctx.graph, files, allPathSet);
 

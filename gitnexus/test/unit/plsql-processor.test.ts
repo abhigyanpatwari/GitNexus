@@ -105,6 +105,32 @@ END p;
     }
   });
 
+  it('keeps same-named packages of different schemas apart and honours S.A.N calls', () => {
+    const { graph } = run({
+      'db/schemas.pck': `CREATE OR REPLACE PACKAGE a.pkg AS PROCEDURE f; END pkg;
+/
+CREATE OR REPLACE PACKAGE BODY a.pkg AS PROCEDURE f IS BEGIN NULL; END f; END pkg;
+/
+CREATE OR REPLACE PACKAGE b.pkg AS PROCEDURE f; END pkg;
+/
+CREATE OR REPLACE PACKAGE BODY b.pkg AS PROCEDURE f IS BEGIN NULL; END f; END pkg;
+/
+CREATE OR REPLACE PROCEDURE caller IS BEGIN b.pkg.f; END caller;
+/
+`,
+    });
+    let modules = 0;
+    graph.forEachNode((n) => {
+      if (n.label === 'Module') modules++;
+    });
+    expect(modules).toBe(2);
+    const targets: number[] = [];
+    for (const r of graph.iterRelationships()) {
+      if (r.type === 'CALLS') targets.push(graph.getNode(r.targetId)!.properties.startLine! + 1);
+    }
+    expect(targets).toEqual([7]); // b.pkg body, not a.pkg
+  });
+
   it('does not lose PL/SQL statements when the CREATE header is split across lines', () => {
     const { graph } = run({
       'p.pkb': `CREATE OR REPLACE
@@ -126,8 +152,8 @@ END p;
 
 describe('segment deadline', () => {
   it('scales with segment size above the floor', () => {
-    expect(segmentDeadlineMs(10)).toBe(SEGMENT_DEADLINE_FLOOR_MS);
-    expect(segmentDeadlineMs(4_000)).toBeGreaterThan(30_000);
+    expect(segmentDeadlineMs(10, SEGMENT_DEADLINE_FLOOR_MS)).toBe(SEGMENT_DEADLINE_FLOOR_MS);
+    expect(segmentDeadlineMs(4_000, SEGMENT_DEADLINE_FLOOR_MS)).toBeGreaterThan(30_000);
     expect(segmentDeadlineMs(4_000, 0)).toBe(Number.POSITIVE_INFINITY);
   });
 });

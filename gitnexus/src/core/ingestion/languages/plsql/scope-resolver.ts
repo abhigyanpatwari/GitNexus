@@ -14,7 +14,12 @@ import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { plsqlProvider } from '../plsql.js';
-import { PlSqlNameIndex, nearestByPath, type PlSqlIndexEntry } from '../../plsql/resolve.js';
+import {
+  PlSqlNameIndex,
+  nearestByPath,
+  rootPackageOf,
+  type PlSqlIndexEntry,
+} from '../../plsql/resolve.js';
 import { resolvePlSqlScriptInclude } from '../../plsql/script-include.js';
 import type { PlSqlCallSite, PlSqlDefinition } from '../../plsql/extract.js';
 import { plsqlFactsFor, plsqlNameRange, plsqlRangeKey, plsqlTokenRange } from './captures.js';
@@ -69,7 +74,13 @@ const plsqlScopeResolver: ScopeResolver = {
         const symbol = byNameRange.get(plsqlRangeKey(plsqlNameRange(def)));
         if (!symbol) continue;
         symbolOf.set(def, symbol);
-        index.add({ def, filePath: parsed.filePath, symbol });
+        index.add({
+          def,
+          filePath: parsed.filePath,
+          symbol,
+          packageSchema:
+            def.kind === 'package' ? undefined : rootPackageOf(def, facts.definitions)?.schema,
+        });
       }
       return { parsed, facts };
     });
@@ -78,16 +89,23 @@ const plsqlScopeResolver: ScopeResolver = {
     // spec when indexed.
     const packageSymbols = new Map<
       string,
-      Array<{ filePath: string; symbol: SymbolDefinition; isSpec: boolean }>
+      Array<{ filePath: string; symbol: SymbolDefinition; isSpec: boolean; schema?: string }>
     >();
     for (const [def, symbol] of symbolOf) {
       if (def.kind !== 'package') continue;
       const list = packageSymbols.get(def.name) ?? [];
-      list.push({ filePath: symbol.filePath, symbol, isSpec: def.isSpec });
+      list.push({ filePath: symbol.filePath, symbol, isSpec: def.isSpec, schema: def.schema });
       packageSymbols.set(def.name, list);
     }
-    const packageSymbol = (name: string, fromFile: string): SymbolDefinition | undefined => {
-      const nearest = nearestByPath(packageSymbols.get(name) ?? [], fromFile);
+    /** In `S.A.N` the written schema `S` narrows same-named packages first. */
+    const packageSymbol = (
+      name: string,
+      fromFile: string,
+      schema: string | undefined,
+    ): SymbolDefinition | undefined => {
+      const all = packageSymbols.get(name) ?? [];
+      const inSchema = schema === undefined ? [] : all.filter((p) => p.schema === schema);
+      const nearest = nearestByPath(inSchema.length > 0 ? inSchema : all, fromFile);
       return (nearest.find((p) => p.isSpec) ?? nearest[0])?.symbol;
     };
 
@@ -125,7 +143,11 @@ const plsqlScopeResolver: ScopeResolver = {
           // In `S.A.N` only `A` (the part before the callee) can name a package.
           const symbol =
             m.part === m.call.nameParts.length - 2
-              ? packageSymbol(m.call.nameParts[m.part]!, parsed.filePath)
+              ? packageSymbol(
+                  m.call.nameParts[m.part]!,
+                  parsed.filePath,
+                  m.part > 0 ? m.call.nameParts[m.part - 1] : undefined,
+                )
               : undefined;
           record(
             site,

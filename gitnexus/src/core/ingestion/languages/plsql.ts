@@ -7,7 +7,8 @@
  *
  * Dedicated extensions (.pks, .pkb, .pck, …) are always PL/SQL. `.sql` is
  * claimed through `classifyFileContent` only when the file holds an Oracle
- * PL/SQL unit, leaving other SQL dialects alone.
+ * PL/SQL unit or is a SQL*Plus script that includes other scripts
+ * (`@@file`, `@file.ext`, `START file.ext`), leaving other SQL dialects alone.
  */
 import { SupportedLanguages } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';

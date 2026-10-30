@@ -34,6 +34,7 @@ import {
   PlSqlNameIndex,
   PlSqlPackageInstances,
   plsqlSignatureKey,
+  rootPackageOf,
   type PlSqlIndexEntry,
 } from './plsql/resolve.js';
 
@@ -64,19 +65,28 @@ export { isPlSqlSource };
 
 // ─── node identity ────────────────────────────────────────────────────────
 
-/** A package is one node for spec and body, keyed by the file that declares it. */
-export function plsqlPackageNodeId(homeFile: string, packageName: string): string {
-  return generateId('Module', `${homeFile}:${packageName}`);
+/**
+ * A package is one node for spec and body, keyed by the file that declares it.
+ * The schema joins the key only when one file declares same-named packages of
+ * several schemas, so ordinary ids stay `Module:<file>:<name>`.
+ */
+export function plsqlPackageNodeId(homeFile: string, packageName: string, schema?: string): string {
+  return generateId('Module', `${homeFile}:${schema ? `${schema}.` : ''}${packageName}`);
 }
 
 /**
  * Subprograms are keyed by owner path plus the normalised parameter signature,
  * so overloads get distinct ids that survive edits elsewhere in the file.
  */
-export function plsqlSubprogramNodeId(filePath: string, def: PlSqlDefinition): string {
+export function plsqlSubprogramNodeId(
+  filePath: string,
+  def: PlSqlDefinition,
+  packageSchema?: string,
+): string {
+  const schema = packageSchema ? `${packageSchema}.` : '';
   return generateId(
     'Function',
-    `${filePath}:${plsqlSignatureKey(def)}${def.kind === 'trigger' ? ':trigger' : ''}`,
+    `${filePath}:${schema}${plsqlSignatureKey(def)}${def.kind === 'trigger' ? ':trigger' : ''}`,
   );
 }
 
@@ -104,26 +114,34 @@ export function processPlSql(
   const entryOf = new Map<PlSqlDefinition, Entry>();
   for (const [filePath, f] of facts) {
     for (const def of f.definitions) {
-      const entry: Entry = { def, filePath };
+      const entry: Entry = {
+        def,
+        filePath,
+        packageSchema:
+          def.kind === 'package' ? undefined : rootPackageOf(def, f.definitions)?.schema,
+      };
       entryOf.set(def, entry);
       index.add(entry);
     }
   }
 
-  // ── package instances: each spec paired with its nearest body ──
+  // ── package instances: each spec paired with its nearest compatible body ──
   const packageDefs = [...entryOf.values()].filter((e) => e.def.kind === 'package');
   const instances = new PlSqlPackageInstances(
-    packageDefs.map((e) => ({ name: e.def.name, filePath: e.filePath, isSpec: e.def.isSpec })),
+    packageDefs.map((e) => ({
+      name: e.def.name,
+      schema: e.def.schema,
+      filePath: e.filePath,
+      isSpec: e.def.isSpec,
+    })),
   );
-  const filesDefiningPackage = new Set(packageDefs.map((e) => `${e.def.name}\0${e.filePath}`));
-  const instanceKey = (name: string, filePath: string) =>
-    `${name}\0${instances.homeOf(name, filePath) ?? filePath}`;
+  const instanceOfPackage = (pkg: PlSqlDefinition, filePath: string) =>
+    instances.instanceOf(pkg.name, pkg.schema, filePath);
   /** The package instance a definition in `filePath` belongs to, if it is a package member. */
   const memberInstance = (def: PlSqlDefinition, filePath: string): string | undefined => {
-    const pkg = def.ownerPath[0];
-    return pkg !== undefined && filesDefiningPackage.has(`${pkg}\0${filePath}`)
-      ? instanceKey(pkg, filePath)
-      : undefined;
+    if (def.kind === 'package') return undefined;
+    const pkg = rootPackageOf(def, facts.get(filePath)!.definitions);
+    return pkg ? instanceOfPackage(pkg, filePath) : undefined;
   };
   /** Pairs a spec/forward declaration with its body inside one package instance (or one file). */
   const pairingKey = (def: PlSqlDefinition, filePath: string) =>
@@ -132,11 +150,11 @@ export function processPlSql(
   const packageNodeByInstance = new Map<string, string>();
   const instanceFiles = new Map<string, { home: string; anchor: Entry; files: Set<string> }>();
   for (const entry of packageDefs) {
-    const key = instanceKey(entry.def.name, entry.filePath);
+    const key = instanceOfPackage(entry.def, entry.filePath);
     const instance = instanceFiles.get(key);
     if (!instance) {
       instanceFiles.set(key, {
-        home: instances.homeOf(entry.def.name, entry.filePath) ?? entry.filePath,
+        home: instances.homeOf(key) ?? entry.filePath,
         anchor: entry,
         files: new Set([entry.filePath]),
       });
@@ -145,9 +163,15 @@ export function processPlSql(
       if (entry.def.isSpec && !instance.anchor.def.isSpec) instance.anchor = entry;
     }
   }
+  const homeClashes = new Map<string, number>();
+  for (const instance of instanceFiles.values()) {
+    const k = `${instance.home}\0${instance.anchor.def.name}`;
+    homeClashes.set(k, (homeClashes.get(k) ?? 0) + 1);
+  }
   for (const [key, instance] of instanceFiles) {
-    const { name } = instance.anchor.def;
-    const nodeId = plsqlPackageNodeId(instance.home, name);
+    const { name, schema } = instance.anchor.def;
+    const clash = (homeClashes.get(`${instance.home}\0${name}`) ?? 0) > 1;
+    const nodeId = plsqlPackageNodeId(instance.home, name, clash ? schema : undefined);
     packageNodeByInstance.set(key, nodeId);
     const others = [...instance.files].filter((f) => f !== instance.home).sort();
     graph.addNode({
@@ -171,7 +195,7 @@ export function processPlSql(
     }
   }
   for (const entry of packageDefs) {
-    entry.nodeId = packageNodeByInstance.get(instanceKey(entry.def.name, entry.filePath));
+    entry.nodeId = packageNodeByInstance.get(instanceOfPackage(entry.def, entry.filePath));
   }
 
   // ── subprograms and triggers ──
@@ -193,7 +217,7 @@ export function processPlSql(
     const key = pairingKey(def, filePath);
     // A spec/forward declaration with an indexed body is the same subprogram.
     if (def.declarationOnly && bodyKeys.has(key)) continue;
-    entry.nodeId = plsqlSubprogramNodeId(filePath, def);
+    entry.nodeId = plsqlSubprogramNodeId(filePath, def, entry.packageSchema);
     if (!def.declarationOnly) bodyNodeByKey.set(key, entry.nodeId);
     if (def.kind === 'trigger') triggers++;
     else subprograms++;
@@ -234,10 +258,12 @@ export function processPlSql(
       const owner = fileFacts.definitions[site.ownerIndex]!;
       return entryOf.get(owner)?.nodeId;
     }
-    const pkg = site.ownerPath[0];
-    if (site.ownerPath.length === 1 && filesDefiningPackage.has(`${pkg}\0${filePath}`)) {
-      return packageNodeByInstance.get(instanceKey(pkg!, filePath));
-    }
+    const pkgName = site.ownerPath[0];
+    const pkg =
+      site.ownerPath.length === 1
+        ? fileFacts.definitions.find((d) => d.kind === 'package' && d.name === pkgName)
+        : undefined;
+    if (pkg) return packageNodeByInstance.get(instanceOfPackage(pkg, filePath));
     return undefined;
   };
 

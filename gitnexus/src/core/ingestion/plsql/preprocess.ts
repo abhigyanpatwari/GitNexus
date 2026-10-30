@@ -102,12 +102,13 @@ function blankLine(line: string): string {
 }
 
 /**
- * `&name` / `&&name` / `&name.` → an identifier of exactly the same length
- * (`Zname`, `ZZname`), so token columns stay aligned with the original text.
+ * `&name` / `&&name` / `&name.` / positional `&1` → an identifier of exactly
+ * the same length (`Zname`, `ZZname`, `Z1`), so token columns stay aligned
+ * with the original text.
  */
 export function neutraliseSubstitutionVariables(source: string): string {
   return source.replace(
-    /(&&?)([A-Za-z_][\w$#]*)(\.?)/g,
+    /(&&?)([A-Za-z_][\w$#]*|\d+)(\.?)/g,
     (_m, amps: string, name: string, dot: string) =>
       `${'Z'.repeat(amps.length)}${name}${dot ? ' ' : ''}`,
   );

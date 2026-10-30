@@ -46,6 +46,8 @@ export function isSqlFile(filePath: string): boolean {
  */
 const ORACLE_UNIT_HEADER =
   /^[ \t]*create\s+(?:or\s+replace\s+)?(?:(?:non)?editionable\s+)?(?:(?:package(?:\s+body)?|procedure|function|type(?:\s+body)?)\s+[\w$#."]+(?:(?!\bbegin\b)[\s\S]){0,4000}?\b(?:is|as)\b|trigger\s+[\w$#."]+\s+(?:before|after|instead\s+of|for)\b)/im;
+const ORACLE_IS_HEADER =
+  /^[ \t]*create\s+(?:or\s+replace\s+)?(?:(?:non)?editionable\s+)?(?:package(?:\s+body)?|procedure|function|type(?:\s+body)?)\s+[\w$#."]+(?:(?!\b(?:begin|as)\b)[\s\S]){0,4000}?\bis\b/im;
 const POSTGRES_DOLLAR_BODY = /\bas\s+\$[\w]*\$|\blanguage\s+plpgsql\b/i;
 const TSQL_MARKERS = /^\s*go\s*$|\bnvarchar\s*\(\s*max\s*\)|@@identity|\bset\s+nocount\s+on\b/im;
 /** Constructs that only appear in Oracle PL/SQL. */
@@ -68,7 +70,10 @@ export function looksLikeOraclePlSql(content: string): boolean {
   if (SQLPLUS_INCLUDE.test(content) && !TSQL_MARKERS.test(content)) return true;
   if (!ORACLE_UNIT_HEADER.test(content)) return false;
   if (POSTGRES_DOLLAR_BODY.test(content) || TSQL_MARKERS.test(content)) return false;
-  return ORACLE_MARKERS.test(content);
+  // `IS` after a unit header is Oracle-only syntax (T-SQL, PostgreSQL and
+  // MySQL write `AS` or `BEGIN`), so a plain `CREATE PROCEDURE p IS …` needs
+  // no further marker; an `AS` header still does.
+  return ORACLE_IS_HEADER.test(content) || ORACLE_MARKERS.test(content);
 }
 
 /** File-level predicate used by the PL/SQL phase. */

@@ -116,6 +116,28 @@ END pkg_x;
     expect(names.some((n) => n.startsWith('PKG_X.A'))).toBe(true);
   });
 
+  it('counts lexer errors, so a segment with an unlexable character is degraded', () => {
+    const f = extractPlSqlFacts('CREATE PROCEDURE p IS BEGIN x := 1 ` 2; END;\n/\n');
+    expect(f.segmentsWithErrors).toBe(1);
+  });
+
+  it('places fallback subprograms under the routine whose END span contains them', () => {
+    const f = extractPlSqlFacts(`CREATE OR REPLACE PACKAGE BODY pkg_x AS
+  PROCEDURE outer_p IS
+    PROCEDURE inner_p IS BEGIN this is not plsql; END inner_p;
+  BEGIN
+    inner_p;
+  END outer_p;
+  PROCEDURE other_p IS BEGIN NULL; END other_p;
+END pkg_x;
+/
+`);
+    expect(f.segmentsWithErrors).toBe(1);
+    const paths = f.definitions.map((d) => [...d.ownerPath, d.name].join('.'));
+    expect(paths).toContain('PKG_X.OUTER_P.INNER_P');
+    expect(paths).not.toContain('PKG_X.INNER_P');
+  });
+
   it('keeps one segment per `/`-terminated unit so an error stays local', () => {
     const f = extractPlSqlFacts(
       'CREATE PROCEDURE ok1 IS BEGIN NULL; END;\n/\nCREATE PROCEDURE bad IS BEGIN ((( END;\n/\nCREATE PROCEDURE ok2 IS BEGIN NULL; END;\n/\n',
@@ -147,6 +169,12 @@ describe('file classification', () => {
       false,
     );
     expect(looksLikeOraclePlSql('SELECT * FROM t;')).toBe(false);
+    // `IS` after the header is Oracle-only, no other marker needed.
+    expect(looksLikeOraclePlSql('CREATE PROCEDURE p IS BEGIN NULL; END;')).toBe(true);
+    // T-SQL without GO: `AS` header, `IS NULL` only inside the body.
+    expect(
+      looksLikeOraclePlSql('CREATE PROCEDURE p @x int AS\nBEGIN\n  IF @x IS NULL RETURN;\nEND'),
+    ).toBe(false);
     // MySQL: no IS/AS before BEGIN, even with an Oracle-looking marker in a comment.
     expect(
       looksLikeOraclePlSql(

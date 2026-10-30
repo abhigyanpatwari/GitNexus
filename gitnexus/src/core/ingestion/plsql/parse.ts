@@ -107,12 +107,19 @@ function deadlineListener(deadline: number): ParseTreeListener {
   };
 }
 
-function newParser(text: string): PlSqlParser {
+/**
+ * Parser over `text`. Lexer errors (characters no token rule matches) are
+ * counted too: the lexer skips them and the parser may then succeed, so they
+ * must still mark the segment as degraded.
+ */
+function newParser(text: string): { parser: PlSqlParser; lexerErrors: CountingErrorListener } {
   const lexer = new PlSqlLexer(CharStream.fromString(text));
   lexer.removeErrorListeners();
+  const lexerErrors = new CountingErrorListener();
+  lexer.addErrorListener(lexerErrors);
   const parser = new PlSqlParser(new CommonTokenStream(lexer));
   parser.removeErrorListeners();
-  return parser;
+  return { parser, lexerErrors };
 }
 
 function parseSegment(
@@ -122,22 +129,33 @@ function parseSegment(
   const deadline = performance.now() + deadlineMs;
   try {
     const sll = newParser(text);
-    sll.interpreter.predictionMode = PredictionMode.SLL;
-    sll.errorHandler = new BailErrorStrategy();
-    sll.addParseListener(deadlineListener(deadline));
+    sll.parser.interpreter.predictionMode = PredictionMode.SLL;
+    sll.parser.errorHandler = new BailErrorStrategy();
+    sll.parser.addParseListener(deadlineListener(deadline));
     try {
-      return { tree: sll.sql_script(), syntaxErrors: 0, mode: 'sll' };
+      const tree = sll.parser.sql_script();
+      return {
+        tree,
+        syntaxErrors: sll.lexerErrors.count,
+        firstError: sll.lexerErrors.first,
+        mode: 'sll',
+      };
     } catch (e) {
       if (!(e instanceof ParseCancellationException)) throw e;
     }
     const ll = newParser(text);
     const errors = new CountingErrorListener();
-    ll.addErrorListener(errors);
-    ll.interpreter.predictionMode = PredictionMode.LL;
-    ll.errorHandler = new DefaultErrorStrategy();
-    ll.addParseListener(deadlineListener(deadline));
-    const tree = ll.sql_script();
-    return { tree, syntaxErrors: errors.count, firstError: errors.first, mode: 'll' };
+    ll.parser.addErrorListener(errors);
+    ll.parser.interpreter.predictionMode = PredictionMode.LL;
+    ll.parser.errorHandler = new DefaultErrorStrategy();
+    ll.parser.addParseListener(deadlineListener(deadline));
+    const tree = ll.parser.sql_script();
+    return {
+      tree,
+      syntaxErrors: errors.count + ll.lexerErrors.count,
+      firstError: ll.lexerErrors.first ?? errors.first,
+      mode: 'll',
+    };
   } catch (e) {
     if (e instanceof DeadlineExceeded)
       return { syntaxErrors: 1, firstError: 'deadline exceeded', mode: 'timeout' };

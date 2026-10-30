@@ -31,7 +31,7 @@ import {
   type PlSqlDefinition,
   type PlSqlFileFacts,
 } from '../../plsql/extract.js';
-import { PlSqlPackageInstances, plsqlSignatureKey } from '../../plsql/resolve.js';
+import { PlSqlPackageInstances, plsqlSignatureKey, rootPackageOf } from '../../plsql/resolve.js';
 import { plsqlFactsFor, plsqlNameRange, plsqlRangeKey, plsqlTokenRange } from './captures.js';
 
 const unsupported = (message: string): RenameIssue => ({
@@ -147,20 +147,19 @@ export const plsqlRenameProvider: RenameProvider = {
     if (!target) return unsupported('The PL/SQL declaration has no source identity.');
     // One family per package instance: a spec, its paired body and the
     // declarations inside them. Same-named copies elsewhere are other objects.
-    const packages: Array<{ name: string; filePath: string; isSpec: boolean }> = [];
+    const packages: Array<{ name: string; schema?: string; filePath: string; isSpec: boolean }> =
+      [];
     for (const file of context.files.values()) {
       for (const d of evidence.get(file)?.definitions ?? []) {
         if (d.kind === 'package')
-          packages.push({ name: d.name, filePath: file.path, isSpec: d.isSpec });
+          packages.push({ name: d.name, schema: d.schema, filePath: file.path, isSpec: d.isSpec });
       }
     }
     const instances = new PlSqlPackageInstances(packages);
-    const definesPackage = new Set(packages.map((p) => `${p.name}\0${p.filePath}`));
     const scopeOf = (d: PlSqlDefinition, filePath: string): string => {
-      const pkg = d.kind === 'package' ? d.name : d.ownerPath[0];
-      return pkg !== undefined && definesPackage.has(`${pkg}\0${filePath}`)
-        ? `${pkg}\0${instances.homeOf(pkg, filePath) ?? filePath}`
-        : `\0${filePath}`;
+      const defs = evidence.get(context.files.get(filePath)!)?.definitions ?? [];
+      const pkg = rootPackageOf(d, defs);
+      return pkg ? instances.instanceOf(pkg.name, pkg.schema, filePath) : `\0${filePath}`;
     };
     const targetScope = scopeOf(target, context.target.filePath);
     const sameEntity = (d: PlSqlDefinition, filePath: string) =>
@@ -183,7 +182,8 @@ export const plsqlRenameProvider: RenameProvider = {
       return unsupported(
         'The declaration was recovered without a full parse; rename cannot prove its references.',
       );
-    const word = new RegExp(`(^|[^\\w$#])${target.name.replace(/[$#]/g, '\\$&')}($|[^\\w$#])`, 'i');
+    const escaped = target.name.replace(/[.*+?^${}()|[\]\\$#]/g, '\\$&');
+    const word = new RegExp(`(^|[^\\w$#])${escaped}($|[^\\w$#])`, 'i');
     for (const file of context.files.values()) {
       const facts = evidence.get(file);
       if (!facts) continue;

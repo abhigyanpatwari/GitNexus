@@ -9,7 +9,7 @@
  * The grammar's C++ header placeholders are replaced with the antlr4ng base-class
  * imports, exactly as grammars-v4's `Antlr4ng/transformGrammar.py` does.
  */
-import { execFileSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import {
   mkdtempSync,
   readFileSync,
@@ -40,21 +40,17 @@ try {
       );
     writeFileSync(path.join(work, name), text);
   }
-  execFileSync(
-    'npx',
+  // String form runs through the platform shell (cmd.exe / sh) so `npx`
+  // resolves to npx.cmd on Windows — execFileSync('npx') without a shell
+  // fails there (same constraint as scripts/build-web.js).
+  const quote = (arg) => `"${arg}"`;
+  execSync(
     [
-      '--yes',
-      'antlr-ng@1.0.10',
-      '-Dlanguage=TypeScript',
-      '-l',
-      'true',
-      '-v',
-      'false',
-      '-o',
-      work,
-      path.join(work, 'PlSqlLexer.g4'),
-      path.join(work, 'PlSqlParser.g4'),
-    ],
+      'npx --yes antlr-ng@1.0.10 -Dlanguage=TypeScript -l true -v false',
+      `-o ${quote(work)}`,
+      quote(path.join(work, 'PlSqlLexer.g4')),
+      quote(path.join(work, 'PlSqlParser.g4')),
+    ].join(' '),
     { stdio: 'inherit' },
   );
   for (const file of readdirSync(work)) {

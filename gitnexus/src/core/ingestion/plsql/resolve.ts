@@ -22,6 +22,25 @@ import type { PlSqlCallSite, PlSqlDefinition } from './extract.js';
 export interface PlSqlIndexEntry {
   readonly def: PlSqlDefinition;
   readonly filePath: string;
+  /** Schema written on the enclosing package (`CREATE PACKAGE loan.pkg`), if any. */
+  readonly packageSchema?: string;
+}
+
+/**
+ * The package a definition belongs to: the root of its `ownerIndex` chain,
+ * or — for fallback definitions without an index — the first package of
+ * that name in the same file.
+ */
+export function rootPackageOf(
+  def: PlSqlDefinition,
+  defs: readonly PlSqlDefinition[],
+): PlSqlDefinition | undefined {
+  if (def.kind === 'package') return def;
+  let current: PlSqlDefinition | undefined = def;
+  while (current?.ownerIndex !== undefined) current = defs[current.ownerIndex];
+  if (current && current !== def && current.kind === 'package') return current;
+  const pkg = def.ownerPath[0];
+  return pkg === undefined ? undefined : defs.find((d) => d.kind === 'package' && d.name === pkg);
 }
 
 const pathKey = (path: readonly string[]) => path.join('.');
@@ -100,10 +119,20 @@ export class PlSqlNameIndex<E extends PlSqlIndexEntry> {
     call: Pick<PlSqlCallSite, 'nameParts' | 'ownerPath' | 'arity' | 'namedArguments'>,
     fromFile: string,
   ): E[] {
-    return preferImplementations(
-      nearestByPath(narrowOverloads(this.candidates(call), call), fromFile),
-    );
+    const narrowed = preferWrittenSchema(narrowOverloads(this.candidates(call), call), call);
+    return preferImplementations(nearestByPath(narrowed, fromFile));
   }
+}
+
+/** In `S.A.N`, keep members of packages declared in schema `S` when any are indexed. */
+function preferWrittenSchema<E extends PlSqlIndexEntry>(
+  candidates: E[],
+  call: Pick<PlSqlCallSite, 'nameParts'>,
+): E[] {
+  if (call.nameParts.length !== 3) return candidates;
+  const schema = call.nameParts[0];
+  const inSchema = candidates.filter((c) => c.packageSchema === schema);
+  return inSchema.length > 0 ? inSchema : candidates;
 }
 
 function narrowOverloads<E extends PlSqlIndexEntry>(
@@ -134,50 +163,70 @@ function preferImplementations<E extends PlSqlIndexEntry>(defs: E[]): E[] {
 }
 
 /**
- * Pairs every package spec/body file with one package instance, keyed by its
- * home file: a spec is its own home; a body joins the nearest spec of the
- * same name (shared directory depth, then path order), or is its own home when
- * no spec is indexed. Copies of a package in unrelated folders stay separate.
+ * Pairs every package spec/body definition with one package instance: a spec
+ * is its own instance; a body joins the nearest spec of the same name whose
+ * schema is compatible (equal, or unwritten on either side), or is its own
+ * instance when no such spec is indexed. Copies of a package in unrelated
+ * folders, and same-named packages of different schemas, stay separate.
  */
 export class PlSqlPackageInstances {
+  private readonly instance = new Map<string, string>();
   private readonly home = new Map<string, string>();
 
   constructor(
     packages: ReadonlyArray<{
       readonly name: string;
+      readonly schema?: string;
       readonly filePath: string;
       readonly isSpec: boolean;
     }>,
   ) {
-    const specFiles = new Map<string, string[]>();
-    for (const p of packages) {
-      if (!p.isSpec) continue;
-      const list = specFiles.get(p.name) ?? [];
-      list.push(p.filePath);
-      specFiles.set(p.name, list);
-    }
-    for (const files of specFiles.values()) files.sort();
-    for (const p of packages) {
-      const key = `${p.name}\0${p.filePath}`;
-      if (p.isSpec || this.home.has(key)) {
-        if (p.isSpec) this.home.set(key, p.filePath);
-        continue;
-      }
-      const specs = specFiles.get(p.name);
-      this.home.set(
-        key,
-        specs
-          ? nearestByPath(
-              specs.map((filePath) => ({ filePath })),
-              p.filePath,
-            )[0]!.filePath
-          : p.filePath,
-      );
+    const specs = packages.filter((p) => p.isSpec);
+    for (const p of [...specs, ...packages.filter((q) => !q.isSpec)]) {
+      const key = entryKey(p.name, p.schema, p.filePath);
+      if (this.instance.has(key)) continue;
+      const spec = p.isSpec
+        ? p
+        : pickSpec(
+            specs.filter(
+              (s) =>
+                s.name === p.name &&
+                (s.schema === undefined || p.schema === undefined || s.schema === p.schema),
+            ),
+            p.filePath,
+            p.schema,
+          );
+      const owner = spec ?? p;
+      const id = entryKey(owner.name, owner.schema, owner.filePath);
+      this.instance.set(key, id);
+      this.home.set(id, owner.filePath);
     }
   }
 
-  /** Home file of the instance of package `name` defined (spec or body) in `filePath`. */
-  homeOf(name: string, filePath: string): string | undefined {
-    return this.home.get(`${name}\0${filePath}`);
+  /** Opaque instance id of package `name` (written schema `schema`) defined in `filePath`. */
+  instanceOf(name: string, schema: string | undefined, filePath: string): string {
+    return this.instance.get(entryKey(name, schema, filePath)) ?? entryKey(name, schema, filePath);
   }
+
+  /** File that anchors an instance (its spec when indexed). */
+  homeOf(instanceId: string): string | undefined {
+    return this.home.get(instanceId);
+  }
+}
+
+function entryKey(name: string, schema: string | undefined, filePath: string): string {
+  return `${name}\0${schema ?? ''}\0${filePath}`;
+}
+
+/** Nearest compatible spec; an exact schema match wins a distance tie, then path order. */
+function pickSpec<S extends { filePath: string; schema?: string }>(
+  specs: readonly S[],
+  fromFile: string,
+  schema: string | undefined,
+): S | undefined {
+  const nearest = nearestByPath(specs, fromFile);
+  const exact = nearest.filter((s) => s.schema === schema);
+  return [...(exact.length > 0 ? exact : nearest)].sort((a, b) =>
+    a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0,
+  )[0];
 }

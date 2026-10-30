@@ -611,22 +611,38 @@ function fallbackDefinitions(segment: PlSqlSegment, known: ReadonlySet<string>):
     break; // one top-level unit per segment
   }
   if (unit?.kind !== 'package') return out;
-  for (const m of text.matchAll(FALLBACK_SUBPROGRAM)) {
+  // Nesting from `END <name>;` spans: a routine that starts inside another
+  // routine's span is local to it, not a package member. Spec declarations
+  // have no bodies, so everything in a spec is package-level.
+  const routines = [...text.matchAll(FALLBACK_SUBPROGRAM)].map((m) => {
     const name = normaliseIdentifier(m[2]!);
-    if (known.has(`${unit.name}|${name}`)) continue;
-    const line = lineAt(m.index!);
-    out.push(
-      makeFallback(
-        m[1]!.toLowerCase() as PlSqlDefKind,
-        name,
-        [unit.name],
-        line,
-        line,
-        undefined,
-        unit.isSpec,
-      ),
-    );
-  }
+    let end = -1;
+    if (!unit!.isSpec) {
+      const label = m[2]!.startsWith('"') ? m[2]!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : name;
+      const close = new RegExp(
+        `^[ \\t]*end[ \\t]+${label.replace(/[$#]/g, '\\$&')}[ \\t]*;`,
+        'gim',
+      );
+      close.lastIndex = m.index!;
+      end = close.exec(text)?.index ?? -1;
+    }
+    return { name, kind: m[1]!.toLowerCase() as PlSqlDefKind, start: m.index!, end };
+  });
+  const pathOf = (i: number): string[] => {
+    const r = routines[i]!;
+    let parent = -1;
+    for (let j = 0; j < i; j++) {
+      const p = routines[j]!;
+      if (p.end > r.start && (parent < 0 || p.start > routines[parent]!.start)) parent = j;
+    }
+    return parent < 0 ? [unit!.name] : [...pathOf(parent), routines[parent]!.name];
+  };
+  routines.forEach((r, i) => {
+    const ownerPath = pathOf(i);
+    if (known.has(`${ownerPath.join('.')}|${r.name}`)) return;
+    const line = lineAt(r.start);
+    out.push(makeFallback(r.kind, r.name, ownerPath, line, line, undefined, unit!.isSpec));
+  });
   return out;
 }
 

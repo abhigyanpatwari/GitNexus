@@ -96,6 +96,15 @@ describe('neutraliseSubstitutionVariables', () => {
   });
 });
 
+describe('positional substitution', () => {
+  it('neutralises &1 / &&2 at equal length', () => {
+    const src = 'SELECT * FROM t WHERE id = &1 AND d = &&2.;';
+    const out = neutraliseSubstitutionVariables(src);
+    expect(out).toBe('SELECT * FROM t WHERE id = Z1 AND d = ZZ2 ;');
+    expect(out.length).toBe(src.length);
+  });
+});
+
 describe('resolveConditionalCompilation', () => {
   it('keeps the first branch, blanks directives and other branches, preserves layout', () => {
     const src = [
