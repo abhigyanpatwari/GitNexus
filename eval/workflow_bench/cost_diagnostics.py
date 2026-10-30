@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import math
 import statistics
@@ -13,7 +14,8 @@ from typing import Any
 from .provider_usage import NormalizedUsage, UsageSemanticsError, normalize_usage
 from .session_diagnostics import CELL_PHASES, public_diagnostics, render_diagnostics
 
-NUMERIC = ("cost_usd", "duration_s", "cell_duration_s", "num_turns", "diff_insertions", "diff_deletions", "diff_files")
+NUMERIC = ("cost_usd", "duration_s", "cell_duration_s", "num_turns", "diff_insertions", "diff_deletions", "diff_files",
+           "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 COHORT = ("model", "effort", "task_base_sha", "task_prompt_digest", "runtime_digest", "mcp_tool_loading",
           "sandbox_dependency_content_digest", "oracle_digest", "max_budget_usd")
 REQUEST_METRICS = ("messages_bytes", "tools_bytes", "system_bytes", "messages_count", "tools_count",
@@ -21,7 +23,12 @@ REQUEST_METRICS = ("messages_bytes", "tools_bytes", "system_bytes", "messages_co
 
 
 def _number(value: Any) -> bool:
-    return type(value) in (int, float) and math.isfinite(value) and value >= 0
+    if type(value) not in (int, float) or value < 0:
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
 
 
 def distribution(values: list[Any]) -> dict[str, Any]:
@@ -153,26 +160,123 @@ def build_cost_report(rows: list[dict[str, Any]], provider_events: list[dict[str
     }
 
 
+def render_markdown(report: dict[str, Any]) -> str:
+    """Render measured distributions and coverage, without guessing missing spend."""
+    def number(value: Any) -> str:
+        return f"{value:,.4f}".rstrip("0").rstrip(".") if _number(value) else "n/a"
+
+    def label(value: Any) -> str:
+        return html.escape(str(value)).replace("\n", " ").translate(
+            {ord(char): f"&#{ord(char)};" for char in "\\`*_[]()|!"}
+        )
+
+    def table(metrics: dict[str, dict]) -> list[str]:
+        lines = ["| Measurement | Observed / missing | Observed total | Mean | Median | Min | Max | Std. dev. |",
+                 "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+        for name, values in metrics.items():
+            lines.append(f"| {name} | {values['observed']} / {values['missing']} | " + " | ".join(
+                number(values[field]) for field in ("sum_observed", "mean", "median", "min", "max", "stdev")
+            ) + " |")
+        return lines
+
+    lines = ["## Time, cost, and tool measurements", "",
+             f"Observed cells: {report['cells']}. Missing measurements are shown as `n/a`, not zero.",
+             "Cell token counters come from the CLI. Provider tokens below use provider-specific accounting; do not add the two together.", ""]
+    if report.get("input_problems"):
+        lines += ["**Partial input: totals cover only the readable records.**", "",
+                  *[f"- {problem}" for problem in report["input_problems"]], ""]
+    for group in report["groups"]:
+        lines += [f"### Group {group['diagnostic_group']}: <code>{label(group['arm'])}</code> / <code>{label(group['task'])}</code>", "",
+                  (f"Solved: {group['solved']}/{group['cells']}; failed sessions: {group['failed_cells']}; "
+                   f"quality unknown: {group['quality_missing']}; diagnostics: {group['diagnostic_cells']}/{group['cells']}."),
+                  f"Cost per solved cell (USD, including failed-session spend): {number(group['cost_per_solved'])}.",
+                  f"Complete cohort provenance: {'yes' if group['provenance_complete'] else 'no'}.", "",
+                  "<details><summary>Measurements and cohort</summary>", "",
+                  "| Cohort field | Value |", "| --- | --- |",
+                  *[f"| {field} | <code>{label(value) if value else 'unknown'}</code> |"
+                    for field, value in group["cohort"].items()], "",
+                  *table(group["metrics"]), "", "Cell phases (seconds; agent_and_verification includes grading):", "",
+                  *table(group["cell_phases"]), "", "</details>", ""]
+    provider = report["provider"]
+    lines += ["### Provider requests", ""]
+    if provider is None:
+        lines += ["Provider ledger unavailable. Request counts, provider tokens, and proxy cost are unknown.", ""]
+    else:
+        lines += [(f"Observed requests: {provider['observed_requests']}; successes: {provider['successes']}; "
+                   f"failures: {provider['failures']}; duplicate callbacks removed: {provider['duplicate_callbacks']}."),
+                  (f"Conflicting response identities: {provider['conflicting_response_ids']}; "
+                   f"requests without identity: {provider['requests_without_response_id']}; "
+                   f"invalid usage records: {provider['invalid_usage_records']}."),
+                  "Attribution is to this sweep's ledger. Requests are not assigned to individual concurrent cells.", "",
+                  "| Provider token field | Observed total |", "| --- | ---: |",
+                  *[f"| {field} | {number(value)} |" for field, value in provider["token_totals"].items()], "",
+                  *table(provider["request_metrics"]), "",
+                  *provider["limitations"], ""]
+    lines += [report["tool_markdown"], "", *report["limitations"], ""]
+    return "\n".join(lines)
+
+
+def _read_rows(path: Path, *, allow_incomplete: bool, name: str, problems: list[str]) -> list[dict]:
+    if not path.is_file() and allow_incomplete:
+        problems.append(f"{name} file is missing.")
+        return []
+    raw = path.read_text()
+    try:
+        doc = json.loads(raw)
+    except json.JSONDecodeError:
+        rows = []
+        for line in raw.splitlines():
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                if not allow_incomplete:
+                    raise
+                rows.append(None)
+    else:
+        rows = doc.get("per_run", [doc]) if isinstance(doc, dict) else doc
+    if not isinstance(rows, list):
+        raise ValueError(f"expected {name} rows")
+    invalid = sum(not isinstance(row, dict) for row in rows)
+    if invalid:
+        if not allow_incomplete:
+            raise ValueError(f"expected {name} rows")
+        problems.append(f"{name}: {invalid} unreadable record(s).")
+    return [row for row in rows if isinstance(row, dict)]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", type=Path, required=True, help="runner results.jsonl or release report JSON")
     parser.add_argument("--provider-usage", type=Path)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--markdown-out", type=Path)
+    parser.add_argument("--allow-incomplete", action="store_true", help="report missing/torn inputs after an interrupted run")
     args = parser.parse_args()
-    raw = args.results.read_text()
-    try:
-        doc = json.loads(raw)
-    except json.JSONDecodeError:
-        rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    else:
-        rows = doc.get("per_run", [doc]) if isinstance(doc, dict) else doc
-    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
-        raise ValueError("expected result rows")
-    provider = [json.loads(line) for line in args.provider_usage.read_text().splitlines() if line.strip()] if args.provider_usage else None
+    problems: list[str] = []
+    rows = _read_rows(args.results, allow_incomplete=args.allow_incomplete, name="Results", problems=problems)
+    provider = None
+    provider_problems: list[str] = []
+    if args.provider_usage:
+        provider = _read_rows(args.provider_usage, allow_incomplete=args.allow_incomplete,
+                              name="Provider ledger", problems=provider_problems)
+        if provider_problems and not provider:
+            provider = None
+        problems += provider_problems
     report = build_cost_report(rows, provider)
+    if report["provider"] is not None:
+        report["provider"]["ledger_complete"] = not provider_problems
+        if provider_problems:
+            report["provider"]["identity_complete"] = False
+            report["provider"]["token_totals"] = dict.fromkeys(report["provider"]["token_totals"])
+    report["input_problems"] = problems
     with args.out.open("x") as handle:
         json.dump(report, handle, indent=2, allow_nan=False)
         handle.write("\n")
+    if args.markdown_out:
+        with args.markdown_out.open("x") as handle:
+            handle.write(render_markdown(report))
 
 
 if __name__ == "__main__":

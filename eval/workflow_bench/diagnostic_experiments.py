@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-from .runner_tasks import normalized_model_identifier
+from .runner_tasks import normalized_model_identifier, select_tasks
 from .session_budget import session_budget
 
 VARIANTS = {
@@ -59,9 +59,8 @@ def prepare_plan(
     tasks = document.get("tasks")
     if not isinstance(tasks, list) or not tasks or not all(isinstance(t, dict) for t in tasks):
         raise ValueError("task document must contain tasks")
-    ids = [t.get("id") for t in tasks]
-    if any(not isinstance(i, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", i) for i in ids) or len(set(ids)) != len(ids):
-        raise ValueError("task IDs must be unique slugs")
+    tasks, _ = select_tasks([{**task, "repo": repository} for task in tasks], include_expensive=True)
+    ids = [t["id"] for t in tasks]
     if task_ids is not None and (not task_ids or not set(task_ids) <= set(ids)):
         raise ValueError("unknown or empty task selection")
     tasks = [t for t in tasks if task_ids is None or t["id"] in task_ids]

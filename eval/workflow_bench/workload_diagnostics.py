@@ -212,29 +212,32 @@ def workload_metrics(
                     counts["edits_after_verification"] += verified
     counts["usage_snapshots"] = len(usage)
     input_fields = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
-    complete = [u for u in usage if all(type(u.get(f)) is int and u[f] >= 0 for f in input_fields)]
-    totals = [sum(u[f] for f in input_fields) for u in complete]
+    totals = [sum(u[f] for f in input_fields)
+              if all(type(u.get(f)) is int and u[f] >= 0 for f in input_fields) else None for u in usage]
+    complete = [total for total in totals if total is not None]
     counts["complete_input_snapshots"] = len(complete)
     after_graph = []
-    for u in complete:
+    for u, total in zip(usage, totals, strict=True):
         preceding = [call for call, _, _ in observations
                      if call.get("result_event") is not None and call["result_event"] < u["event_index"]]
         latest = max((call["result_event"] for call in preceding), default=-1)
         if any("__gitnexus__" in c["tool"] and c["result_event"] == latest for c in preceding):
-            after_graph.append(sum(u[f] for f in input_fields))
+            after_graph.append(total)
     counts["usage_after_graph_snapshots"] = len(after_graph)
     tokens = {
         "first_input_tokens": totals[0] if totals else None,
         "last_input_tokens": totals[-1] if totals else None,
-        "max_input_tokens": max(totals) if totals else None,
-        "sum_input_tokens": sum(totals) if totals else None,
-        "input_tokens_after_graph": sum(after_graph) if after_graph else None,
+        "max_input_tokens": max(complete) if complete else None,
+        "sum_input_tokens": sum(complete) if totals and len(complete) == len(totals) else None,
+        "input_tokens_after_graph": sum(after_graph) if after_graph and all(t is not None for t in after_graph) else None,
     }
     for dest, source in (("sum_cache_read_tokens", "cache_read_input_tokens"),
                          ("sum_cache_write_tokens", "cache_creation_input_tokens"), ("sum_output_tokens", "output_tokens")):
         # A partial sum labelled as total would understate spend. These fields
         # stay unknown unless every observed usage snapshot supplies the field.
-        tokens[dest] = sum(u[source] for u in usage) if usage and all(source in u for u in usage) else None
+        tokens[dest] = sum(u[source] for u in usage) if usage and all(
+            type(u.get(source)) is int and u[source] >= 0 for u in usage
+        ) else None
     return {**counts, **tokens}
 
 

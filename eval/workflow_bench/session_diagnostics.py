@@ -15,7 +15,7 @@ from collections import Counter
 from pathlib import PurePosixPath
 from typing import Any
 
-from .workload_diagnostics import public_workload, workload_metrics
+from .workload_diagnostics import COUNT_FIELDS, TOKEN_FIELDS, public_workload, workload_metrics
 
 SCHEMA = "gitnexus.session-diagnostics/v1"
 MAX_EVENTS = 100_000
@@ -366,17 +366,31 @@ def render_diagnostics(rows: list[dict[str, Any]]) -> list[str]:
                   "| Tool | Calls | Errors | Ambiguous | Not found | Empty | UNKNOWN risk | Repeated args | Result bytes | Largest result | Source follow-ups after problems | Timed calls | Elapsed seconds |",
                   "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
         totals: dict[str, Counter] = {}
+        coverage: dict[str, Counter] = {}
+        tool_sessions: Counter = Counter()
         for session in sessions:
             for name, values in session["tools"].items():
                 tally = totals.setdefault(name, Counter())
+                known = coverage.setdefault(name, Counter())
+                tool_sessions[name] += 1
                 for field, number in values.items():
                     if number is not None:
+                        known[field] += 1
                         tally[field] = max(tally[field], number) if field == "max_result_bytes" else tally[field] + number
         for name, tally in sorted(totals.items()):
             lines.append("| " + " | ".join(str(v) for v in (
-                name, *(tally[f] for f in ("calls", "errors", "ambiguous", "not_found", "empty", "unknown_risk",
-                                         "repeated", "result_bytes", "max_result_bytes", "source_followups", "timed_calls")),
+                name, *(tally[f] if coverage[name][f] == tool_sessions[name] else "n/a" for f in
+                        ("calls", "errors", "ambiguous", "not_found", "empty", "unknown_risk",
+                         "repeated", "result_bytes", "max_result_bytes", "source_followups", "timed_calls")),
                 f"{tally['elapsed_s']:.1f}" if tally["timed_calls"] else "n/a",
+            )) + " |")
+        lines += ["", "| Tool | Stale | Truncated results | Lower bound | Output limit | Unfinished | Server-timed calls | Server seconds |",
+                  "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+        for name, tally in sorted(totals.items()):
+            lines.append("| " + " | ".join(str(v) for v in (
+                name, *(tally[f] if coverage[name][f] == tool_sessions[name] else "n/a" for f in
+                        ("stale", "truncated_results", "lower_bound", "output_limit_exceeded", "unfinished", "server_timed_calls")),
+                f"{tally['server_wall_s']:.3f}" if tally["server_timed_calls"] else "n/a",
             )) + " |")
         complete = [s for s in sessions if s["timing_complete"] and s["tool_wait_s"] is not None]
         lines += ["", f"Complete host timing: {len(complete)}/{len(sessions)} sessions."]
@@ -387,20 +401,39 @@ def render_diagnostics(rows: list[dict[str, Any]]) -> list[str]:
             lines.append(f"Observed tool wait: {sum(s['tool_wait_s'] for s in complete):.1f}s; "
                          f"MCP wait: {sum(s['mcp_wait_s'] or 0 for s in complete):.1f}s "
                          "(a subset of tool wait). Parallel intervals are counted once per session.")
+        for field, label in (("other_wall_s", "Other session wall time (seconds)"), ("api_retries", "Observed API retries")):
+            values = [s[field] for s in sessions if s.get(field) is not None]
+            lines.append(f"{label}: {sum(values):.1f} across {len(values)}/{len(sessions)} sessions."
+                         if values else f"{label}: n/a.")
         workloads = [s["workload"] for s in sessions if s.get("workload")]
         if workloads:
             lines += ["", f"Workload signals available for {len(workloads)}/{len(sessions)} sessions.", "",
                       "| Workload signal | Observed count | Sessions reporting |", "| --- | ---: | ---: |"]
-            for field in ("source_reads", "repeated_source_reads", "reads_after_graph_reference",
-                          "reads_after_graph_content_reference", "query_context_read_chains", "graph_calls_before_first_edit",
-                          "verification_calls", "verification_repeated_without_observed_change", "verification_errors",
-                          "edits_after_verification", "compactions", "usage_snapshots", "complete_input_snapshots"):
+            for field in COUNT_FIELDS:
                 values = [w[field] for w in workloads if w.get(field) is not None]
                 lines.append(f"| {field} | {sum(values) if values else 'n/a'} | {len(values)}/{len(sessions)} |")
             peaks = [w["max_input_tokens"] for w in workloads if w.get("max_input_tokens") is not None]
             if peaks:
                 lines.append(f"\nLargest observed CLI input context: {max(peaks):,} tokens. "
                              "Uses complete Anthropic-shaped usage snapshots; provider-native usage may differ.")
+            lines += ["", "| Context/cache signal | Session minimum | Session maximum | Sessions reporting |",
+                      "| --- | ---: | ---: | ---: |"]
+            for field in TOKEN_FIELDS:
+                values = [w[field] for w in workloads if w.get(field) is not None]
+                lines.append(f"| {field} | {min(values) if values else 'n/a'} | {max(values) if values else 'n/a'} | "
+                             f"{len(values)}/{len(sessions)} |")
+        lines += ["", "<details><summary>Largest, slowest, and problematic tool calls</summary>", "",
+                  "Session and call indexes identify observations; arguments and source content are omitted.", "",
+                  "| View | Session | Call | Tool | Result bytes | Host seconds | Outcome |",
+                  "| --- | ---: | ---: | --- | ---: | ---: | --- |"]
+        for view, sort_key in (("largest_results", "result_bytes"), ("slowest_calls", "duration_s"),
+                               ("problem_calls", "result_bytes")):
+            calls = [(index, call) for index, session in enumerate(sessions) for call in session[view]]
+            for index, call in sorted(calls, key=lambda item: item[1][sort_key], reverse=True)[:5]:
+                duration = call["duration_s"]
+                lines.append(f"| {view} | {index} | {call['index']} | {call['tool']} | {call['result_bytes']} | "
+                             f"{f'{duration:.3f}' if duration is not None else 'n/a'} | {call['outcome']} |")
+        lines += ["", "</details>"]
     if lines:
         lines += ["", ("Receipt timing includes transport and scheduling, not just server execution. Other wall time is not model time. "
                   "Bytes are serialized payload bytes, not tokens. Repeated arguments may be justified after edits. "

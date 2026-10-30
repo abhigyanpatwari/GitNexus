@@ -2,9 +2,14 @@
 
 import copy
 import json
+import os
+import subprocess
+import sys
 from collections import Counter
+from pathlib import Path
 
 import pytest
+import yaml
 
 from tests.test_session_diagnostics import result, use
 from workflow_bench.cost_diagnostics import build_cost_report, provider_summary
@@ -101,7 +106,8 @@ def test_usage_missing_fields_are_unknown_and_cache_counts_are_not_double_counte
     report = diagnose_session([first, second, {"type": "system", "subtype": "compact_boundary"}], None, 5)
     work = report["workload"]
     assert work["usage_snapshots"] == 2 and work["complete_input_snapshots"] == 1
-    assert work["max_input_tokens"] == work["sum_input_tokens"] == 130
+    assert work["max_input_tokens"] == work["first_input_tokens"] == 130
+    assert work["sum_input_tokens"] is work["last_input_tokens"] is None
     assert work["sum_cache_read_tokens"] is work["sum_output_tokens"] is None
     assert work["compactions"] == 1
     work["prompt"] = "secret"
@@ -242,8 +248,11 @@ def plan_args():
 
 
 def task_document():
-    return {"tasks": [{"id": "one", "ref": "c" * 40, "prompt": "Fix this", "class": "trivial"},
-                      {"id": "two", "ref": "c" * 40, "prompt": "Fix that", "class": "cross-module"}]}
+    return {"tasks": [
+        {"id": name, "ref": "c" * 40, "prompt": "Fix this", "class": task_class, "verify": "true",
+         "oracle": {"command": "true", "files": [{"source": "fixture.txt", "target": "fixture.txt"}]}}
+        for name, task_class in (("one", "trivial"), ("two", "cross-module"))
+    ]}
 
 
 def test_plan_is_deterministic_balanced_isolated_and_never_runs_a_model():
@@ -283,6 +292,49 @@ def test_plan_normalizes_model_in_metadata_and_commands():
     assert plan["model"] == "gpt-5.6-sol"
     for cell in plan["cells"]:
         assert cell["argv"][cell["argv"].index("--model") + 1] == "gpt-5.6-sol"
+
+
+@pytest.mark.parametrize("task_id", ["_task", "-task", "a" * 129])
+def test_plan_rejects_task_ids_the_runner_cannot_use(task_id):
+    document = task_document()
+    document["tasks"][0]["id"] = task_id
+    with pytest.raises(ValueError, match="artifact-safe slug"):
+        prepare_plan(document, **plan_args())
+
+
+def test_every_prepared_task_satisfies_the_runner_metadata_contract():
+    from workflow_bench.runner_tasks import select_tasks
+
+    document = task_document()
+    document["tasks"][0]["id"] = "a.task-1"
+    plan = prepare_plan(document, **plan_args())
+    for cell in plan["cells"]:
+        selected, skipped = select_tasks(cell["task_document"]["tasks"], include_expensive=True)
+        assert selected == cell["task_document"]["tasks"] and skipped == []
+    document["tasks"][0]["verify"] = ""
+    with pytest.raises(ValueError, match="verify"):
+        prepare_plan(document, **plan_args())
+
+
+@pytest.mark.parametrize("intervening_read", [False, True])
+def test_post_graph_input_totals_require_every_relevant_snapshot(intervening_read):
+    complete = {"type": "assistant", "message": {"id": "complete", "usage": {
+        "input_tokens": 10, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 20,
+    }}}
+    incomplete = {"type": "assistant", "message": {"id": "incomplete", "usage": {"input_tokens": 30}}}
+    events = [use(), result({}), complete]
+    if intervening_read:
+        events += [use("Read", tool_id="read", args={"file_path": "src/a.ts"}), result("source", tool_id="read")]
+    events.append(incomplete)
+    work = diagnose_session(events, None, 5)["workload"]
+    assert work["sum_input_tokens"] is None
+    assert work["usage_after_graph_snapshots"] == (1 if intervening_read else 2)
+    assert work["input_tokens_after_graph"] == (130 if intervening_read else None)
+    # Preserve the actual first/last positions, even when a snapshot is incomplete.
+    reversed_usage = diagnose_session([incomplete, complete], None, 5)["workload"]
+    assert reversed_usage["first_input_tokens"] is None and reversed_usage["last_input_tokens"] == 130
+    complete_usage = diagnose_session([complete], None, 5)["workload"]
+    assert complete_usage["sum_input_tokens"] == 130
 
 
 def test_trial_plan_passes_each_cell_budget_without_starting_a_model():
@@ -333,3 +385,136 @@ def test_budget_rejects_multisession_arms_before_reading_task_inputs(monkeypatch
         runner.main()
     assert failure.value.code == 2
     assert "--max-budget-usd is limited to single-session baseline arms" in capsys.readouterr().err
+
+
+def test_summary_cli_gathers_safe_measurements_and_provider_coverage(tmp_path, monkeypatch):
+    from workflow_bench import cost_diagnostics
+
+    diagnostic = diagnose_session(trace([
+        ("mcp__gitnexus__query", {"query": "SECRET QUERY"}, {"staleness": {"status": "behind"}}),
+        ("Bash", {"command": "uv run --locked --extra dev pytest"}, "SECRET RESULT"),
+    ]), [0, 2, 3, 5], 8)
+    rows = [{"task": "one", "arm": "baseline", "run": 0, "cost_usd": 2, "duration_s": 8,
+             "ok": False, "resolved": False, "session_diagnostics": [diagnostic], "private": "SECRET PATH",
+             "cell_phase_seconds": {"clone": 1, "agent_and_verification": 9, "PRIVATE PHASE": 123}}]
+    results, ledger = tmp_path / "results.jsonl", tmp_path / "provider.jsonl"
+    results.write_text(json.dumps(rows[0]) + "\n")
+    event = provider_event() | {"messages": "SECRET PROMPT", "response_id": "SECRET ID"}
+    ledger.write_text(json.dumps(event) + "\n")
+    out, markdown = tmp_path / "diagnostics.json", tmp_path / "diagnostics.md"
+    monkeypatch.setattr("sys.argv", ["cost_diagnostics", "--results", str(results), "--provider-usage", str(ledger),
+                                    "--out", str(out), "--markdown-out", str(markdown)])
+    cost_diagnostics.main()
+    body = markdown.read_text()
+    assert "SECRET" not in out.read_text() + body and "PRIVATE PHASE" not in body
+    assert "Solved: 0/1; failed sessions: 1" in body
+    assert "| clone | 1 / 0 | 1 |" in body
+    assert "| verification_calls | 1 | 1/1 |" in body
+    assert "| tools_bytes | 1 / 0 | 300 |" in body
+    assert "| total_input_tokens | 100 |" in body
+    assert "Largest, slowest, and problematic tool calls" in body
+    assert "requests without identity: 0" in body
+    assert json.loads(out.read_text())["provider"]["ledger_complete"] is True
+
+
+def test_summary_cli_reports_missing_legacy_telemetry_and_torn_provider_rows(tmp_path, monkeypatch):
+    from workflow_bench import cost_diagnostics
+
+    results, ledger = tmp_path / "results.jsonl", tmp_path / "provider.jsonl"
+    results.write_text(json.dumps({"task": "old", "arm": "baseline", "cost_usd": 1}) + "\n{torn")
+    ledger.write_text(json.dumps(provider_event()) + "\n{torn")
+    out, markdown = tmp_path / "diagnostics.json", tmp_path / "diagnostics.md"
+    monkeypatch.setattr("sys.argv", ["cost_diagnostics", "--results", str(results), "--provider-usage", str(ledger),
+                                    "--allow-incomplete", "--out", str(out), "--markdown-out", str(markdown)])
+    cost_diagnostics.main()
+    report = json.loads(out.read_text())
+    assert len(report["input_problems"]) == 2
+    assert report["provider"]["observed_requests"] == 1
+    assert report["provider"]["ledger_complete"] is False
+    assert all(value is None for value in report["provider"]["token_totals"].values())
+    body = markdown.read_text()
+    assert "Partial input" in body and "diagnostics: 0/1" in body
+    assert "| clone | 0 / 1 | n/a |" in body
+    assert "| total_input_tokens | n/a |" in body
+
+
+def test_summary_cli_reports_unavailable_inputs_after_early_failure(tmp_path, monkeypatch):
+    from workflow_bench import cost_diagnostics
+
+    out, markdown = tmp_path / "diagnostics.json", tmp_path / "diagnostics.md"
+    monkeypatch.setattr("sys.argv", ["cost_diagnostics", "--results", str(tmp_path / "missing"),
+                                    "--provider-usage", str(tmp_path / "missing-ledger"), "--allow-incomplete",
+                                    "--out", str(out), "--markdown-out", str(markdown)])
+    cost_diagnostics.main()
+    assert "Observed cells: 0" in markdown.read_text()
+    assert "Provider ledger unavailable" in markdown.read_text()
+    assert json.loads(out.read_text())["provider"] is None
+
+
+def test_summary_escapes_markdown_and_html_labels():
+    from workflow_bench.cost_diagnostics import render_markdown
+
+    report = build_cost_report([{"arm": "baseline", "task": "</code><img src=x>|bad![x](https://example.test)"}])
+    markdown = render_markdown(report)
+    assert "<img" not in markdown and "&#124;" in markdown
+    assert "![x]" not in markdown
+
+
+def test_summary_does_not_turn_missing_tool_counters_into_zero():
+    from workflow_bench.session_diagnostics import SCHEMA, render_diagnostics
+
+    body = "\n".join(render_diagnostics([{"arm": "baseline", "session_diagnostics": [
+        {"schema": SCHEMA, "tools": {"Read": {"calls": 1}}},
+    ]}]))
+    assert "| Read | 1 | n/a |" in body
+    assert "Other session wall time (seconds): n/a." in body
+
+
+def test_summary_treats_unrepresentable_numbers_as_unknown():
+    report = build_cost_report([{"arm": "baseline", "task": "one", "cost_usd": 10 ** 1000}])
+    assert report["groups"][0]["metrics"]["cost_usd"]["observed"] == 0
+    assert report["groups"][0]["metrics"]["cost_usd"]["missing"] == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="release summary executes in bash on the Linux runner")
+@pytest.mark.parametrize(("pr", "expected"), [("", {"stable", "candidate", "cli", "deferred"}),
+                                            ("3773", {"candidate", "cli"})])
+def test_actual_workflow_summary_step_publishes_each_enabled_sweep(tmp_path, pr, expected):
+    repository = Path(__file__).resolve().parents[2]
+    workflow = yaml.safe_load((repository / ".github/workflows/release-evaluation.yml").read_text())
+    step = next(step for job in workflow["jobs"].values() for step in job.get("steps", [])
+                if step.get("name") == "Summarize time, cost, and tool measurements")
+    # Run the workflow's actual shell and report command with this test's Python;
+    # dependency provisioning and paid model commands are outside this step.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    uv = bin_dir / "uv"
+    uv.write_text('#!/bin/sh\n[ "$1 $2 $3 $4 $5" = "run --locked --extra dev python" ] || exit 90\n'
+                  'shift 5\nexec "$SUMMARY_TEST_PYTHON" "$@"\n')
+    uv.chmod(0o755)
+    root = tmp_path / "release-evaluation"
+    for runtime, directory, ledger in (("stable", "raw", "provider-usage.jsonl"),
+                                       ("candidate", "raw", "provider-usage.jsonl"),
+                                       ("candidate", "cli-raw", "cli-provider-usage.jsonl"),
+                                       ("candidate", "deferred", "deferred-provider-usage.jsonl")):
+        out = root / runtime / directory
+        out.mkdir(parents=True)
+        out.joinpath("results.jsonl").write_text(json.dumps({
+            "arm": "baseline_cli" if directory == "cli-raw" else "baseline", "task": "one",
+            "run": 0, "cost_usd": 2, "duration_s": 5, "resolved": True, "ok": True,
+        }) + "\n")
+        (root / runtime / ledger).write_text(json.dumps(provider_event() | {"request": "SECRET"}) + "\n")
+    summary = tmp_path / "summary.md"
+    completed = subprocess.run(["bash", "-euo", "pipefail", "-c", step["run"]], cwd=repository / "eval",
+                               env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                                    "SUMMARY_TEST_PYTHON": sys.executable, "RUNNER_TEMP": str(tmp_path),
+                                    "GITHUB_STEP_SUMMARY": str(summary), "INPUT_PR": pr,
+                                    "CLI_ARM": "true", "DEFERRED_ARM": "true"},
+                               capture_output=True, text=True, timeout=60)
+    assert completed.returncode == 0, completed.stderr
+    assert {p.name.removesuffix("-diagnostics.json") for p in (root / "public").glob("*.json")} == expected
+    body = summary.read_text()
+    for variant in expected:
+        assert f"Detailed measurements: {variant}" in body
+        assert json.loads((root / "public" / f"{variant}-diagnostics.json").read_text())["provider"]["observed_requests"] == 1
+    assert "SECRET" not in body

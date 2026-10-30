@@ -938,6 +938,22 @@ prompt, tool responses, sandbox, or release criteria. No additional model calls
 are made. Existing results without diagnostics remain valid and have unknown
 timing, rather than measured zero time.
 
+The release evaluation's GitHub Actions summary includes a **Detailed
+measurements** section for each measured runtime or optional arm. It shows cost
+and wall-time distributions, setup/cleanup phases, CLI token counters, tool
+outcomes and outliers, context/cache signals, repeated verification, and provider
+request sizes and usage. Matching `*-diagnostics.json` and `*-diagnostics.md`
+files are included in the sanitized evaluation artifacts. PR comparison
+summaries retain the candidate's safe diagnostics too.
+
+Each sweep writes its own provider ledger. Only aggregate numeric provider
+measurements reach the summary and artifacts; raw request identities and usage
+ledgers remain on the runner. Missing or torn inputs are marked as partial,
+and provider token totals are withheld when ledger records are unreadable.
+Concurrent requests are not assigned to individual cells. Historical runs
+without this instrumentation show missing telemetry; regenerating a report
+cannot recover tool timings that were never recorded.
+
 Each session contains:
 
 - `calls`: tool name, event indexes, input/result JSON bytes, receipt offsets,
@@ -1035,7 +1051,7 @@ ledger. Historical release reports with `per_run` rows are also accepted:
 uv run --locked python -m workflow_bench.cost_diagnostics \
   --results /path/to/results.jsonl \
   --provider-usage /path/to/provider_usage.jsonl \
-  --out /tmp/cost-diagnostics.json
+  --out /tmp/cost-diagnostics.json --markdown-out /tmp/cost-diagnostics.md
 ```
 
 Unknown fields remain null. Distinct model/effort/source/prompt/runtime/loading
