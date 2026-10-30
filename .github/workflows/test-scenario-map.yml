@@ -226,6 +226,9 @@ jobs:
           ls "$dest"
       - name: Plan the run
         env:
+          # Full-suite Layer 2 exceeds Node's default ~4 GiB heap. Budget 8 GiB
+          # for this step, leaving room on the 16 GB runner for native memory.
+          NODE_OPTIONS: --max-old-space-size=8192
           SEED: ${{ inputs.seed || github.run_id }}
           SHARDS: ${{ inputs.shards }}
           MUTATION: ${{ steps.scope.outputs.mutation }}

@@ -141,11 +141,14 @@ workflow to distribute the capture):
 ```sh
 node --import tsx tools/scenario-map/scenario-map.ts coverage \
   --index 0 --of 1 --work /tmp/scenario-coverage --mutation none --concurrency 2
-node --import tsx tools/scenario-map/scenario-map.ts plan \
+NODE_OPTIONS=--max-old-space-size=8192 node --import tsx tools/scenario-map/scenario-map.ts plan \
   --coverage /tmp/scenario-coverage --work /tmp/scenario-plan --mutation none
 node --import tsx tools/scenario-map/consolidation/verify-controls.ts \
   /tmp/scenario-plan/consolidation.json
 ```
+
+Full-suite planning needs more than Node's default heap. The CI Plan step uses
+the same 8 GiB budget; allow additional RAM for native allocations and subprocesses.
 
 The acceptance command checks all 28 pairs among eight real pipeline controls:
 15 exact/renamed/partial/cross-language opportunities and 13 negative pairs. It
