@@ -24,6 +24,60 @@ def result(body, *, tool_id="one", error=False):
     ]}}
 
 
+@pytest.mark.parametrize("message", [None, {}, {"id": "message"}, {"content": None}, [], "invalid"])
+def test_top_level_content_preserves_tool_results_and_source_followups(message):
+    events = [use(), result({"definitions": []}), use("Read", tool_id="read"), result("source", tool_id="read")]
+    for event in events:
+        event["content"] = event["message"]["content"]
+        event["message"] = message
+    report = diagnostics.diagnose_session(events, [1, 2, 3, 4], 5)
+    assert report["timing_complete"] is True
+    assert report["tool_wait_s"] == 2
+    query = report["tools"]["mcp__gitnexus__query"]
+    assert query["calls"] == query["empty"] == query["source_followups"] == 1
+    assert query["unfinished"] == 0
+    assert report["tools"]["Read"]["calls"] == 1
+
+
+@pytest.mark.parametrize("nested", [[], "invalid"])
+def test_present_non_null_nested_content_prevents_top_level_fallback(nested):
+    events = [use(), result("done")]
+    for event in events:
+        event["content"] = event["message"]["content"]
+        event["message"]["content"] = nested
+    report = diagnostics.diagnose_session(events, [1, 2], 3)
+    assert report["calls"] == []
+    assert report["tools"] == {}
+
+
+def test_nested_tool_content_wins_over_conflicting_top_level_blocks():
+    events = [use(), result("done")]
+    events[0]["content"] = use("Read", tool_id="shadow")["message"]["content"]
+    events[1]["content"] = result("shadow", tool_id="shadow")["message"]["content"]
+    report = diagnostics.diagnose_session(events, [1, 2], 3)
+    assert list(report["tools"]) == ["mcp__gitnexus__query"]
+    assert report["tools"]["mcp__gitnexus__query"]["calls"] == 1
+    assert report["timing_complete"] is True
+    assert report["tool_wait_s"] == 1
+
+
+@pytest.mark.parametrize(("wall", "expected"), [
+    (0, 0), (500, 0.5), (123.5, 0.1235),
+    (None, None), (True, None), ("1", None), (-1, None),
+    (float("nan"), None), (float("inf"), None), (10**400, None),
+])
+def test_server_timing_values_do_not_fail_or_reclassify_completed_tool_calls(wall, expected):
+    events = [use(), result({"timing": {"wall": wall}})]
+    report = diagnostics.diagnose_session(events, [1, 2], 3)
+    tool = report["tools"]["mcp__gitnexus__query"]
+    assert tool["calls"] == 1
+    assert tool["errors"] == tool["unfinished"] == 0
+    assert tool["server_wall_s"] == expected
+    assert tool["server_timed_calls"] == int(expected is not None)
+    assert report["timing_complete"] is True
+    assert report["tool_wait_s"] == 1
+
+
 def test_event_clock_handles_chunk_boundaries_blank_lines_and_unterminated_event(monkeypatch):
     ticks = iter([10, 11, 13, 15])
     monkeypatch.setattr(diagnostics.time, "monotonic", lambda: next(ticks))

@@ -73,7 +73,9 @@ class EventClock:
 
 def _content(event: dict[str, Any]) -> list[Any]:
     message = event.get("message")
-    content = message.get("content") if isinstance(message, dict) else event.get("content")
+    content = message.get("content") if isinstance(message, dict) else None
+    if content is None:
+        content = event.get("content")
     return content if isinstance(content, list) else []
 
 
@@ -142,7 +144,7 @@ def _result_signals(content: Any) -> dict[str, Any]:
     signals["lower_bound"] = body.get("epistemic") == "lower-bound"
     timing = body.get("timing")
     wall = timing.get("wall") if isinstance(timing, dict) else None
-    if type(wall) in (int, float) and math.isfinite(wall) and 0 <= wall <= 10**12:
+    if type(wall) in (int, float) and 0 <= wall <= 10**12:
         signals["server_wall_ms"] = wall
     staleness = body.get("staleness")
     if isinstance(staleness, dict) and staleness.get("status") in ("current", "behind", "diverged", "unknown"):
