@@ -52,6 +52,14 @@ describe('cross-platform shard partition', () => {
     }
   });
 
+  it('selects the real-worker AdonisJS taint proof exactly once across the CI shards', () => {
+    const file = 'test/integration/cfg/adonis-taint.test.ts';
+    const selected = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL).flat();
+    expect(WORKER_THREADS.filter((candidate) => candidate === file)).toEqual([file]);
+    expect(ALL_CROSS_PLATFORM.filter((candidate) => candidate === file)).toEqual([file]);
+    expect(selected.filter((candidate) => candidate === file)).toEqual([file]);
+  });
+
   it('selects both real-worker local-import proofs exactly once across the CI shards', () => {
     const proofs = [
       'test/integration/local-import-worker-parity.test.ts',

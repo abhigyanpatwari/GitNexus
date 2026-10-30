@@ -340,6 +340,9 @@ const SPAWN_CLI = [
 const WORKER_THREADS = [
   // Native callback parsing and exact caller/summary ownership (#3489).
   'test/integration/cfg/interproc-taint.test.ts',
+  // AdonisJS sources and Lucid sinks through a real parse worker, then the
+  // warm parse-cache and ParsedFile-store path (#2982).
+  'test/integration/cfg/adonis-taint.test.ts',
   'test/integration/function-local-identity.test.ts',
   'test/integration/java-imported-return-types.test.ts',
   'test/unit/community-processor.test.ts',
