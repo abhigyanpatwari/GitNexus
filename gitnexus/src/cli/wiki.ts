@@ -47,6 +47,7 @@ export interface WikiCommandOptions {
   retries?: string;
   lang?: string;
   allowInsecureConnection?: string;
+  maxCompletionTokens?: string;
 }
 
 function isLocalProvider(
@@ -189,6 +190,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
   let timeoutSeconds: number | undefined;
   let retries: number | undefined;
   let allowedInsecureHttpHosts: string[] | undefined;
+  let maxCompletionTokens: number | undefined;
   try {
     timeoutSeconds =
       options?.timeout === undefined
@@ -202,6 +204,12 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       options?.allowInsecureConnection === undefined
         ? undefined
         : parseLLMAllowedInsecureHttpHosts(options.allowInsecureConnection);
+    maxCompletionTokens =
+      options?.maxCompletionTokens === undefined
+        ? undefined
+        : parseIntegerOption(options.maxCompletionTokens, '--max-completion-tokens', {
+            minimum: 1,
+          });
   } catch (error) {
     console.log(`  Error: ${(error as Error).message}\n`);
     process.exitCode = 1;
@@ -271,15 +279,23 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     options?.reasoningModel !== undefined
   );
 
-  let llmConfig = await resolveLLMConfig({
-    model: options?.model,
-    baseUrl: options?.baseUrl,
-    apiKey: options?.apiKey,
-    provider: options?.provider,
-    apiVersion: options?.apiVersion,
-    isReasoningModel: options?.reasoningModel,
-    allowedInsecureHttpHosts,
-  });
+  let llmConfig;
+  try {
+    llmConfig = await resolveLLMConfig({
+      model: options?.model,
+      baseUrl: options?.baseUrl,
+      apiKey: options?.apiKey,
+      provider: options?.provider,
+      apiVersion: options?.apiVersion,
+      isReasoningModel: options?.reasoningModel,
+      allowedInsecureHttpHosts,
+      maxTokens: maxCompletionTokens,
+    });
+  } catch (error) {
+    console.log(`  Error: ${(error as Error).message}\n`);
+    process.exitCode = 1;
+    return;
+  }
 
   // Run interactive setup if no saved config and no CLI flags provided
   // (even if env vars exist — let user explicitly choose their provider)

@@ -20,6 +20,12 @@ gitnexus wiki --force
 gitnexus wiki --timeout <seconds>  # LLM request timeout in seconds (default: disabled)
 gitnexus wiki --retries <n>        # Max LLM retry attempts per request (default: 3)
 
+# Raise the completion-token limit (default: 16384)
+gitnexus wiki --max-completion-tokens 131072
+GITNEXUS_MAX_COMPLETION_TOKENS=131072 gitnexus wiki
+# Or set "maxCompletionTokens": 131072 in ~/.gitnexus/config.json
+# Precedence: flag, then the environment variable, then the config file.
+
 # Allow a specific LAN/self-hosted HTTP LLM host (HTTPS is preferred for remote endpoints)
 gitnexus wiki --base-url http://llama-box.local:8080/v1 --allow-insecure-connection llama-box.local
 # Or set a comma-separated host allowlist:

@@ -941,6 +941,30 @@ describe('wikiCommand --timeout mapping', () => {
     expect(harness.getCapturedConfig()?.maxAttempts).toBe(5);
   });
 
+  it('passes --max-completion-tokens through to the LLM config', async () => {
+    const harness = await loadWikiCommandHarness();
+
+    await harness.wikiCommand('/tmp/repo', { maxCompletionTokens: '131072' });
+
+    expect(harness.resolveLLMConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ maxTokens: 131072 }),
+    );
+    expect(harness.generatorCtor).toHaveBeenCalledTimes(1);
+    expect(harness.getCapturedConfig()?.maxTokens).toBe(131072);
+  });
+
+  it('rejects a non-integer --max-completion-tokens value before starting generation', async () => {
+    const harness = await loadWikiCommandHarness();
+
+    await harness.wikiCommand('/tmp/repo', { maxCompletionTokens: 'abc' });
+
+    expect(process.exitCode).toBe(1);
+    expect(harness.generatorCtor).not.toHaveBeenCalled();
+    expect(harness.consoleSpy).toHaveBeenCalledWith(
+      '  Error: --max-completion-tokens must be a positive integer\n',
+    );
+  });
+
   it('maps --allow-insecure-connection to allowedInsecureHttpHosts', async () => {
     const harness = await loadWikiCommandHarness();
 

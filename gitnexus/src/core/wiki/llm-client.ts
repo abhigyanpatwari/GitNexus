@@ -148,7 +148,11 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
         ? ''
         : (reuseSavedHttpConfig ? savedConfig.model : undefined) ||
           (savedProvider === 'minimax' ? MINIMAX_MODEL_IDS[0] : '')),
-    maxTokens: overrides?.maxTokens ?? 16_384,
+    maxTokens:
+      readOverrideMaxCompletionTokens(overrides?.maxTokens) ??
+      readEnvMaxCompletionTokens(process.env[LLM_MAX_COMPLETION_TOKENS_ENV]) ??
+      readConfiguredMaxCompletionTokens(savedConfig.maxCompletionTokens) ??
+      DEFAULT_MAX_COMPLETION_TOKENS,
     temperature: overrides?.temperature ?? 0,
     provider: savedProvider,
     apiVersion:
@@ -185,6 +189,37 @@ function isTimeoutLikeError(err: unknown): boolean {
 }
 
 export const LLM_ALLOW_INSECURE_CONNECTION_ENV = 'GITNEXUS_ALLOW_INSECURE_CONNECTION';
+export const LLM_MAX_COMPLETION_TOKENS_ENV = 'GITNEXUS_MAX_COMPLETION_TOKENS';
+export const DEFAULT_MAX_COMPLETION_TOKENS = 16_384;
+
+function readOverrideMaxCompletionTokens(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error('--max-completion-tokens must be a positive integer');
+  }
+  return value;
+}
+
+function readEnvMaxCompletionTokens(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const trimmed = value.trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) {
+    throw new Error(`${LLM_MAX_COMPLETION_TOKENS_ENV} must be a positive integer`);
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || String(parsed) !== trimmed) {
+    throw new Error(`${LLM_MAX_COMPLETION_TOKENS_ENV} is too large`);
+  }
+  return parsed;
+}
+
+function readConfiguredMaxCompletionTokens(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error('maxCompletionTokens in ~/.gitnexus/config.json must be a positive integer');
+  }
+  return value;
+}
 
 function normalizeAllowedInsecureHttpHost(host: string): string {
   const trimmed = host.trim().toLowerCase();
