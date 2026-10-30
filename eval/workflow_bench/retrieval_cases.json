@@ -1,0 +1,27 @@
+{
+  "source_sha": "c4ecf398de637cf779ab2238e69958cfd5d601ce",
+  "judgment": "partial source-verified anchors; no precision labels",
+  "query_options": {"limit": 5, "max_symbols": 10, "include_content": false},
+  "cases": [
+    {
+      "id": "trivial-status-json-alias",
+      "query": "status CLI command JSON output option registration",
+      "anchors": [{"file": "gitnexus/src/cli/index.ts"}]
+    },
+    {
+      "id": "inv-feature-c-include-provenance",
+      "query": "C include capture quoted and system header provenance",
+      "anchors": [{"file": "gitnexus/src/core/ingestion/languages/c/import-decomposer.ts", "name": "splitCInclude"}]
+    },
+    {
+      "id": "inv-feature-list-repos-filter",
+      "query": "list_repos MCP repository listings filter by name",
+      "anchors": [{"file": "gitnexus/src/mcp/local/local-backend.ts", "name": "listRepos"}]
+    },
+    {
+      "id": "cross-module-parse-retry",
+      "query": "parse worker transient failure error exit retry quarantine dispatch",
+      "anchors": [{"file": "gitnexus/src/core/ingestion/workers/worker-pool.ts", "name": "handleWorkerDeath"}]
+    }
+  ]
+}

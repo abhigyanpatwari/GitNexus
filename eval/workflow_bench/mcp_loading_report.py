@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .release_report import META_FIELDS, build_report
+from .session_diagnostics import render_diagnostics
 
 COUNTERS = ("num_turns", "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 BINDINGS = ("task_prompt_digest", "sandbox_dependency_content_digest")
@@ -105,6 +106,10 @@ def render_markdown(report: dict[str, Any]) -> str:
         "Hooks disabled; prompts, MCP backend and outputs unchanged. Descriptive evidence only; no release approval.",
         "",
     ]
+    for mode in ("none", "eager", "deferred"):
+        details = render_diagnostics([row for row in report.get("per_run", []) if row.get("mcp_tool_loading") == mode])
+        if details:
+            lines += [f"### Diagnostics: {mode}", *details, ""]
     if not report["complete"]:
         return "\n".join([*lines, "**Incomplete or mismatched evidence; no savings estimate.**", "",
                           *[f"- {p}" for p in report["problems"]], ""])

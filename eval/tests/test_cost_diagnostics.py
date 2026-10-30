@@ -1,0 +1,311 @@
+"""Offline measurements must not invent attribution, completeness or savings."""
+
+import copy
+import json
+from collections import Counter
+
+import pytest
+
+from tests.test_session_diagnostics import result, use
+from workflow_bench.cost_diagnostics import build_cost_report, provider_summary
+from workflow_bench.diagnostic_experiments import VARIANTS, prepare_plan
+from workflow_bench.session_diagnostics import diagnose_session, public_diagnostics
+from workflow_bench.workload_diagnostics import classify_bash
+
+
+def trace(actions):
+    events = []
+    for index, (tool, args, body) in enumerate(actions):
+        events += [use(tool, tool_id=str(index), args=args), result(body, tool_id=str(index))]
+    return events
+
+
+def test_graph_reference_is_not_confused_with_supplied_source_and_paths_stay_private():
+    events = trace([
+        ("mcp__gitnexus__query", {}, {"definitions": [{"filePath": "src/private.ts"}]}),
+        ("mcp__gitnexus__context", {}, {"symbol": {"filePath": "src/private.ts", "content": "secret source"}}),
+        ("Read", {"file_path": "/workspace/src/private.ts", "offset": 10, "limit": 5}, "source"),
+        ("Read", {"file_path": "/workspace/src/private.ts", "offset": 10, "limit": 5}, "source"),
+        ("Read", {"file_path": "/workspace/other/private.ts"}, "unrelated"),
+    ])
+    report = diagnose_session(events, None, 10)
+    work = report["workload"]
+    assert work["source_reads"] == 3
+    assert work["repeated_source_reads"] == 1
+    assert work["reads_after_graph_reference"] == work["reads_after_graph_content_reference"] == 2
+    assert work["query_context_read_chains"] == 2
+    assert "private.ts" not in json.dumps(public_diagnostics([report]))
+    assert "secret source" not in json.dumps(report)
+
+
+def test_read_before_graph_result_is_not_credited_as_a_followup():
+    events = [use(), use("Read", tool_id="read", args={"file_path": "src/a.ts"}),
+              result({"filePath": "src/a.ts"}), result("source", tool_id="read")]
+    work = diagnose_session(events, None, 10)["workload"]
+    assert work["reads_after_graph_reference"] == 0
+
+
+def test_server_reported_time_is_separate_from_host_wait_and_missing_stays_unknown():
+    events = trace([("mcp__gitnexus__query", {}, {"timing": {"wall": 125}, "epistemic": "lower-bound"}),
+                    ("mcp__gitnexus__impact", {}, {"risk": "LOW"})])
+    report = diagnose_session(events, [0, 2, 3, 5], 6)
+    safe = public_diagnostics([report])[0]
+    assert safe["tools"]["mcp__gitnexus__query"]["server_wall_s"] == 0.125
+    assert safe["tools"]["mcp__gitnexus__query"]["elapsed_s"] == 2
+    assert safe["tools"]["mcp__gitnexus__query"]["lower_bound"] == 1
+    assert safe["tools"]["mcp__gitnexus__impact"]["server_wall_s"] is None
+
+
+def test_verification_repetition_respects_edits_and_unknown_shell_mutations():
+    check = ("Bash", {"command": "cd gitnexus && npm test"}, "ok")
+    events = trace([check, check, ("Edit", {"file_path": "secret"}, "ok"), check,
+                    ("Bash", {"command": "python custom_script.py"}, "ok"), check])
+    work = diagnose_session(events, None, 10)["workload"]
+    assert work["verification_calls"] == 4
+    assert work["verification_repeated_without_observed_change"] == 1
+    assert work["verification_repeated_after_possible_change"] == 2
+    assert work["edits_after_verification"] == 1
+
+
+@pytest.mark.parametrize(("command", "category"), [
+    ("uv run python -m pytest -q", "test"), ("npm run test:unit", "test"),
+    ("npx tsc --noEmit", "typecheck"), ("npx eslint .", "lint"),
+    ("npx eslint . --fix", "mutation"), ("npm run build", "build"),
+    ("cat source.ts", "source"), ("rg 'x' src", "source"),
+    ("echo pytest", "other"), ("npm test && npm run build", "mixed"),
+    ("cd gitnexus && npm test && touch x", "mixed"),
+    ("cat x > y", "mixed"), ("sed -i 's/x/y/' a", "mutation"),
+    ("sed --in-place 's/x/y/' a", "mutation"), ("npx prettier -w .", "mutation"),
+    ("uv run ruff format .", "mutation"), ("uv run ruff format --check .", "lint"),
+    ("echo $(npm test)", "mixed"), ("unterminated '", "other"),
+])
+def test_shell_classification_is_conservative(command, category):
+    assert classify_bash(command) == category
+
+
+def test_usage_missing_fields_are_unknown_and_cache_counts_are_not_double_counted():
+    first = {"type": "assistant", "message": {"id": "a", "usage": {
+        "input_tokens": 10, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 20, "output_tokens": 4,
+    }}}
+    second = {"type": "assistant", "message": {"id": "b", "usage": {"input_tokens": 30}}}
+    report = diagnose_session([first, second, {"type": "system", "subtype": "compact_boundary"}], None, 5)
+    work = report["workload"]
+    assert work["usage_snapshots"] == 2 and work["complete_input_snapshots"] == 1
+    assert work["max_input_tokens"] == work["sum_input_tokens"] == 130
+    assert work["sum_cache_read_tokens"] is work["sum_output_tokens"] is None
+    assert work["compactions"] == 1
+    work["prompt"] = "secret"
+    assert "secret" not in json.dumps(public_diagnostics([report]))
+
+
+def provider_event():
+    return {"status": "success", "response_id": "one", "sweep_id": "sweep", "provider": "litellm-normalized",
+            "native_usage": {"prompt_tokens": 100, "completion_tokens": 20,
+                             "prompt_tokens_details": {"cached_tokens": 60, "cache_write_tokens": 10}},
+            "request_metrics": {"tools_bytes": 300, "duration_s": 2}}
+
+
+def test_provider_deduplicates_identical_hooks_and_refuses_conflicting_totals():
+    event = provider_event()
+    report = provider_summary([event, copy.deepcopy(event)])
+    assert report["observed_requests"] == 1 and report["duplicate_callbacks"] == 1
+    assert report["token_totals"]["total_input_tokens"] == 100
+    assert report["token_totals"]["ordinary_input_tokens"] == 30
+    assert report["token_totals"]["reasoning_output_tokens"] is None
+    assert report["attribution"] == "ledger_only_no_cell_join"
+    conflicting = copy.deepcopy(event)
+    conflicting["native_usage"]["prompt_tokens"] = 120
+    report = provider_summary([event, conflicting])
+    assert report["conflicting_response_ids"] == 1
+    assert all(value is None for value in report["token_totals"].values())
+
+
+def test_missing_identity_failed_usage_and_unknown_providers_remain_visible():
+    event = provider_event()
+    del event["response_id"]
+    report = provider_summary([event, event, {"status": "failure", "provider": "unknown"}])
+    assert report["requests_without_response_id"] == 3 and not report["identity_complete"]
+    assert report["failures"] == report["invalid_usage_records"] == 1
+    assert report["token_totals"]["total_input_tokens"] is None
+    assert report["request_metrics"]["tools_bytes"]["missing"] == 1
+
+
+def test_cost_report_keeps_failures_in_spend_and_missing_telemetry_is_not_zero():
+    rows = [{"arm": "baseline", "task": "test", "resolved": True, "ok": True, "cost_usd": 2},
+            {"arm": "baseline", "task": "test", "resolved": False, "ok": False, "cost_usd": 3}]
+    report = build_cost_report(rows)
+    group = report["groups"][0]
+    assert group["cost_per_solved"] == 5
+    assert group["failed_cells"] == 1 and group["diagnostic_cells"] == 0
+    assert group["metrics"]["duration_s"]["mean"] is None
+    rows[1]["cost_usd"] = float("nan")
+    assert build_cost_report(rows)["groups"][0]["cost_per_solved"] is None
+
+
+def test_different_model_or_prompt_cohorts_and_duplicate_exports_cannot_blend():
+    row = {"arm": "baseline", "task": "test", "run": 0, "model": "model-a", "cost_usd": 2}
+    other = row | {"model": "model-b", "cost_usd": 20}
+    assert len(build_cost_report([row, other])["groups"]) == 2
+    with pytest.raises(ValueError, match="duplicate cell"):
+        build_cost_report([row, row])
+
+
+def test_tool_summaries_preserve_cohort_boundaries_and_budget_treatment():
+    diagnostic = diagnose_session(trace([("Read", {"file_path": "source.ts"}, "source")]), None, 5)
+    row = {"arm": "baseline", "task": "test", "run": 0, "max_budget_usd": None,
+           "session_diagnostics": [diagnostic]}
+    report = build_cost_report([row, row | {"max_budget_usd": 5}])
+    assert len(report["groups"]) == 2
+    assert report["tool_markdown"].count("Diagnostics available for 1/1 cells") == 2
+    assert "Diagnostics available for 2/2 cells" not in report["tool_markdown"]
+
+
+def test_proxy_envelope_metrics_preserve_accounting_without_recording_content(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from workflow_bench.litellm_usage_callback import USAGE_LOG_ENV_VAR, ProviderUsageLogger
+
+    log = tmp_path / "provider.jsonl"
+    monkeypatch.setenv(USAGE_LOG_ENV_VAR, str(log))
+    kwargs = {"messages": [{"role": "user", "content": "SECRET PROMPT"}],
+              "optional_params": {"tools": [{"name": "PRIVATE TOOL"}]}, "response_cost": 0.25}
+    ProviderUsageLogger()._append("success", kwargs, SimpleNamespace(usage={"prompt_tokens": 20}), 10, 12)
+    payload = log.read_text()
+    row = json.loads(payload)
+    assert "SECRET" not in payload and "PRIVATE" not in payload
+    assert row["request_metrics"]["tools_count"] == 1
+    assert row["request_metrics"]["messages_count"] == 1
+    assert row["request_metrics"]["duration_s"] == 2
+    assert row["request_metrics"]["proxy_estimated_cost_usd"] == 0.25
+    ProviderUsageLogger()._append("failure", {"optional_params": [], "response_cost": float("nan")},
+                                  SimpleNamespace(usage={"prompt_tokens": 20}), None, None)
+    row = json.loads(log.read_text().splitlines()[-1])
+    assert row["native_usage"]["prompt_tokens"] == 20
+    assert row["request_metrics"]["tools_bytes"] is row["request_metrics"]["duration_s"] is None
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_cell_phases_include_cleanup_and_partial_failure_without_changing_credit(monkeypatch, tmp_path, fail):
+    from tests.test_runner_hardening import _cell_context, _stub_cell_dependencies
+    from workflow_bench import runner
+    from workflow_bench.session_diagnostics import CELL_PHASES
+
+    _stub_cell_dependencies(monkeypatch, tmp_path)
+    if fail:
+        def explode(*args, **kwargs):
+            raise RuntimeError("synthetic failure")
+        monkeypatch.setattr(runner, "run_arm", explode)
+    row = runner.run_cell(_cell_context(tmp_path), 2, "workflow")
+    phases = row["cell_phase_seconds"]
+    assert set(phases) <= set(CELL_PHASES)
+    assert "cleanup" in phases and "agent_and_verification" in phases
+    assert ("artifacts" not in phases) == fail
+    assert sum(phases.values()) == pytest.approx(row["cell_duration_s"])
+    assert row["cell_finished_at"] >= row["cell_started_at"]
+    assert row["resolved"] is (not fail)
+
+
+def test_release_and_cli_artifacts_publish_safe_diagnostics_and_keep_phase_validation(tmp_path):
+    from tests.test_cli_shim import _report_row, _write_results
+    from tests.test_release_report import DIGEST, NOW, SHA, metadata, rows
+    from workflow_bench import cli_arm_report, release_report
+
+    diagnostic = diagnose_session(trace([("Bash", {"command": "gitnexus query secret"}, "ok")]), None, 10)
+    extra = {"session_diagnostics": [diagnostic], "cell_duration_s": 12,
+             "cell_phase_seconds": {"clone": 1.0, "secret content": 99, "mcp_startup": float("nan")}}
+    measurements = rows()
+    measurements[1].update(extra)
+    report = release_report.build_report(measurements, metadata(), now=NOW)
+    release_report.validate_report(report, runtime_sha=SHA, task_set_digest=DIGEST, now=NOW)
+    assert report["per_run"][1]["cell_phase_seconds"] == {"clone": 1.0, "mcp_startup": None}
+    assert "secret" not in json.dumps(report)
+    paired, cli = _write_results(tmp_path, [_report_row("baseline", 0, 1), _report_row("baseline_nomcp", 0, 1)],
+                                  [_report_row("baseline_cli", 0, 1, **extra)])
+    report = cli_arm_report.build_report(paired, cli)
+    assert "secret" not in json.dumps(report)
+    assert "Tool diagnostics: baseline_cli" in cli_arm_report.render_markdown(report)
+
+
+def plan_args():
+    return dict(repository="/repo", runtime="/runtime", runtime_sha="a" * 40, harness_sha="b" * 40,
+                model="gpt-5.6-sol", effort="xhigh", repeats=5, seed=3762, variants=list(VARIANTS))
+
+
+def task_document():
+    return {"tasks": [{"id": "one", "ref": "c" * 40, "prompt": "Fix this", "class": "trivial"},
+                      {"id": "two", "ref": "c" * 40, "prompt": "Fix that", "class": "cross-module"}]}
+
+
+def test_plan_is_deterministic_balanced_isolated_and_never_runs_a_model():
+    original = task_document()
+    plan = prepare_plan(original, **plan_args())
+    assert plan == prepare_plan(original, **plan_args())
+    assert len(plan["cells"]) == 50 and plan["position_balanced"]
+    assert plan["execution"] == "not_started" and plan["release_gate_eligible"] is False
+    assert original == task_document()
+    for task in ("one", "two"):
+        for variant in VARIANTS:
+            positions = Counter(c["position"] for c in plan["cells"] if c["task"] == task and c["variant"] == variant)
+            assert set(positions.values()) == {1} and len(positions) == 5
+    ledgers = {c["env"]["GITNEXUS_BENCH_PROVIDER_USAGE"] for c in plan["cells"]}
+    assert len(ledgers) == 50
+    for cell in plan["cells"]:
+        assert (cell["prompt_sha256"] != cell["base_prompt_sha256"]) == (cell["variant"] == "mcp_optional_prompt")
+        assert "--unsafe-no-bwrap" not in cell["argv"]
+
+
+@pytest.mark.parametrize("override", [{"runtime_sha": "main"}, {"model": "latest"}, {"repeats": 0},
+                                     {"variants": ["cli", "cli"]}, {"task_ids": ["missing"]}])
+def test_plan_rejects_unpinned_or_ambiguous_inputs(override):
+    with pytest.raises(ValueError):
+        prepare_plan(task_document(), **(plan_args() | override))
+
+
+def test_trial_plan_passes_each_cell_budget_without_starting_a_model():
+    args = plan_args() | {"repeats": 1, "variants": ["no_graph", "mcp_eager"], "task_ids": ["one"], "max_budget_usd": 5.0}
+    plan = prepare_plan(task_document(), **args)
+    assert len(plan["cells"]) == 2
+    assert plan["planned_cli_budget_usd"] == 10.0
+    assert plan["execution"] == "not_started"
+    for cell in plan["cells"]:
+        assert cell["argv"][cell["argv"].index("--max-budget-usd") + 1] == "5.0"
+
+
+@pytest.mark.parametrize("budget", [0, -1, float("nan"), float("inf"), True])
+def test_invalid_budget_fails_before_any_process_starts(monkeypatch, tmp_path, budget):
+    from workflow_bench import runner_sessions
+
+    def must_not_start(*args, **kwargs):
+        pytest.fail("invalid budget launched a process")
+
+    monkeypatch.setattr(runner_sessions, "run_managed", must_not_start)
+    with pytest.raises(ValueError, match="max-budget-usd"):
+        runner_sessions.run_claude("task", tmp_path, claude_bin="claude", timeout=1, max_budget_usd=budget)
+
+
+def test_cli_budget_stop_remains_a_failed_billed_session(monkeypatch, tmp_path):
+    from tests.test_workflow_bench_sessions import fake_cli_result, report_variant
+    from workflow_bench import runner_sessions
+
+    captured = []
+
+    def run(command, **kwargs):
+        captured.extend(command)
+        return fake_cli_result(report_variant(subtype="error_max_budget_usd", total_cost_usd=5.1))
+
+    monkeypatch.setattr(runner_sessions, "run_managed", run)
+    record = runner_sessions.run_claude("task", tmp_path, claude_bin="claude", timeout=1, max_budget_usd=5)
+    assert captured[captured.index("--max-budget-usd") + 1] == "5.0"
+    assert record["ok"] is False and record["cost_usd"] == 5.1
+    assert record["max_budget_usd"] == 5
+
+
+def test_budget_rejects_multisession_arms_before_reading_task_inputs(monkeypatch, capsys):
+    from workflow_bench import runner
+
+    monkeypatch.setattr("sys.argv", ["runner", "--tasks", "nonexistent.yaml", "--model", "gpt-5.6-sol",
+                                    "--arms", "workflow", "--max-budget-usd", "5"])
+    with pytest.raises(SystemExit) as failure:
+        runner.main()
+    assert failure.value.code == 2
+    assert "--max-budget-usd is limited to single-session baseline arms" in capsys.readouterr().err
