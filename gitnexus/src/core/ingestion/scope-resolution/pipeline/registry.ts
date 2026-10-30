@@ -24,6 +24,7 @@ import { javascriptScopeResolver } from '../../languages/javascript/scope-resolv
 import { kotlinScopeResolver } from '../../languages/kotlin/scope-resolver.js';
 import { rubyScopeResolver } from '../../languages/ruby/scope-resolver.js';
 import { cobolScopeResolver } from '../../languages/cobol/scope-resolver.js';
+import { plsqlScopeResolver } from '../../languages/plsql/scope-resolver.js';
 import { swiftScopeResolver } from '../../languages/swift/scope-resolver.js';
 import { dartScopeResolver } from '../../languages/dart/scope-resolver.js';
 import { vueScopeResolver } from '../../languages/vue/scope-resolver.js';
@@ -50,6 +51,7 @@ export const SCOPE_RESOLVERS: ReadonlyMap<SupportedLanguages, ScopeResolver> = n
   [SupportedLanguages.Kotlin, kotlinScopeResolver],
   [SupportedLanguages.Ruby, rubyScopeResolver],
   [SupportedLanguages.Cobol, cobolScopeResolver],
+  [SupportedLanguages.PlSql, plsqlScopeResolver],
   [SupportedLanguages.Swift, swiftScopeResolver],
   [SupportedLanguages.Dart, dartScopeResolver],
   [SupportedLanguages.Vue, vueScopeResolver],

@@ -1,0 +1,167 @@
+/**
+ * ANTLR4 driver for the grammars-v4 PlSql grammar.
+ *
+ * - Source is pre-processed (SQL*Plus, conditional compilation) without moving
+ *   any line, then split into segments at lone `/` terminator lines, so a
+ *   syntax error or timeout is confined to one compilation unit.
+ * - Each segment is parsed with SLL + bail first (fast path) and re-parsed
+ *   with full LL + error recovery only when SLL fails.
+ * - A per-segment deadline aborts pathological inputs; callers fall back to
+ *   regex-level facts for that segment.
+ *
+ * Segments are parsed as the original text prefixed with blank lines, so token
+ * line numbers are file line numbers.
+ */
+
+import {
+  BailErrorStrategy,
+  BaseErrorListener,
+  CharStream,
+  CommonTokenStream,
+  DefaultErrorStrategy,
+  ParseCancellationException,
+  PredictionMode,
+  type ATNSimulator,
+  type ParseTreeListener,
+  type ParserRuleContext,
+  type RecognitionException,
+  type Recognizer,
+  type Token,
+} from 'antlr4ng';
+import { PlSqlLexer } from './generated/PlSqlLexer.js';
+import { PlSqlParser, type Sql_scriptContext } from './generated/PlSqlParser.js';
+import {
+  preprocessPlSql,
+  scriptIncludesOf,
+  type ScriptInclude,
+  type SqlPlusCommand,
+} from './preprocess.js';
+
+/** Default wall-clock budget for one segment. */
+export const DEFAULT_SEGMENT_DEADLINE_MS = 10_000;
+
+export interface PlSqlSegment {
+  /** 1-based first and last source line of the segment. */
+  readonly startLine: number;
+  readonly endLine: number;
+  /** Pre-processed segment text (same line layout as the source). */
+  readonly text: string;
+  /** Parse tree; undefined when the segment timed out. */
+  readonly tree?: Sql_scriptContext;
+  readonly syntaxErrors: number;
+  readonly firstError?: string;
+  readonly mode: 'sll' | 'll' | 'timeout';
+}
+
+export interface ParsedPlSqlSource {
+  readonly segments: readonly PlSqlSegment[];
+  readonly scriptIncludes: readonly ScriptInclude[];
+}
+
+class CountingErrorListener extends BaseErrorListener {
+  count = 0;
+  first?: string;
+  override syntaxError<S extends Token, T extends ATNSimulator>(
+    _recognizer: Recognizer<T>,
+    _offendingSymbol: S | null,
+    line: number,
+    column: number,
+    msg: string,
+    _e: RecognitionException | null,
+  ): void {
+    this.count++;
+    this.first ??= `${line}:${column} ${msg.slice(0, 160)}`;
+  }
+}
+
+class DeadlineExceeded extends Error {}
+
+/** Parse listener that aborts once the deadline passes (checked every 512 rules). */
+function deadlineListener(deadline: number): ParseTreeListener {
+  let ticks = 0;
+  return {
+    visitTerminal() {},
+    visitErrorNode() {},
+    enterEveryRule() {
+      if ((++ticks & 511) === 0 && performance.now() > deadline) throw new DeadlineExceeded();
+    },
+    exitEveryRule() {},
+  };
+}
+
+function newParser(text: string): PlSqlParser {
+  const lexer = new PlSqlLexer(CharStream.fromString(text));
+  lexer.removeErrorListeners();
+  const parser = new PlSqlParser(new CommonTokenStream(lexer));
+  parser.removeErrorListeners();
+  return parser;
+}
+
+function parseSegment(
+  text: string,
+  deadlineMs: number,
+): Omit<PlSqlSegment, 'startLine' | 'endLine' | 'text'> {
+  const deadline = performance.now() + deadlineMs;
+  try {
+    const sll = newParser(text);
+    sll.interpreter.predictionMode = PredictionMode.SLL;
+    sll.errorHandler = new BailErrorStrategy();
+    sll.addParseListener(deadlineListener(deadline));
+    try {
+      return { tree: sll.sql_script(), syntaxErrors: 0, mode: 'sll' };
+    } catch (e) {
+      if (!(e instanceof ParseCancellationException)) throw e;
+    }
+    const ll = newParser(text);
+    const errors = new CountingErrorListener();
+    ll.addErrorListener(errors);
+    ll.interpreter.predictionMode = PredictionMode.LL;
+    ll.errorHandler = new DefaultErrorStrategy();
+    ll.addParseListener(deadlineListener(deadline));
+    const tree = ll.sql_script();
+    return { tree, syntaxErrors: errors.count, firstError: errors.first, mode: 'll' };
+  } catch (e) {
+    if (e instanceof DeadlineExceeded)
+      return { syntaxErrors: 1, firstError: 'deadline exceeded', mode: 'timeout' };
+    throw e;
+  }
+}
+
+/** Split pre-processed text at lone `/` lines; each segment keeps its line offset. */
+export function splitSegments(
+  text: string,
+): Array<{ startLine: number; endLine: number; body: string }> {
+  const lines = text.split('\n');
+  const out: Array<{ startLine: number; endLine: number; body: string }> = [];
+  let start = 0;
+  const flush = (endExclusive: number) => {
+    const body = lines.slice(start, endExclusive).join('\n');
+    if (body.trim() !== '') out.push({ startLine: start + 1, endLine: endExclusive, body });
+  };
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]!.trim() === '/') {
+      flush(i + 1);
+      start = i + 1;
+    }
+  }
+  flush(lines.length);
+  return out;
+}
+
+export function parsePlSqlSource(
+  source: string,
+  options: { segmentDeadlineMs?: number } = {},
+): ParsedPlSqlSource {
+  const commands: SqlPlusCommand[] = [];
+  const text = preprocessPlSql(source, commands);
+  const segments: PlSqlSegment[] = [];
+  for (const seg of splitSegments(text)) {
+    // Prefix blank lines so token lines are file lines.
+    const padded = '\n'.repeat(seg.startLine - 1) + seg.body;
+    const result = parseSegment(padded, options.segmentDeadlineMs ?? DEFAULT_SEGMENT_DEADLINE_MS);
+    segments.push({ startLine: seg.startLine, endLine: seg.endLine, text: seg.body, ...result });
+  }
+  return { segments, scriptIncludes: scriptIncludesOf(commands) };
+}
+
+export type { ParserRuleContext };
