@@ -1030,6 +1030,28 @@ or successful task completion. The $10 planned total uses CLI accounting, not
 a provider invoice cap: an in-flight request or different provider accounting
 can exceed it. Preparing the plan does not authorize or execute the trial.
 
+After authorizing those two paid cells, dispatch the trusted main workflow with
+`diagnostic_trial=true` and the full reviewed candidate SHA:
+
+```bash
+gh workflow run release-evaluation.yml --ref main \
+  -f diagnostic_trial=true -f candidate_ref=FULL_CANDIDATE_SHA \
+  -f model=gpt-5.6-sol -f effort=xhigh
+```
+
+This mode runs `trivial-status-json-alias` once per arm, serially, with a $5
+CLI-reported budget stop and a 900-second session timeout. It rejects additional
+CLI/deferred arms, other models/efforts, runner-only mode, and repeat attempts.
+The full stable/candidate sweep is skipped. The existing EC2 lock, containment
+preflight, stop deadline, evidence reserve, and verified shutdown still apply.
+
+The Actions summary and `diagnostic-trial-*` artifact contain sanitized
+measurements for both cells, including failures. Raw provider ledgers remain on
+the runner. Trial artifacts cannot approve a release. Missing result rows,
+session diagnostics, or provider ledgers fail the trial instead of producing a
+green run without measurements. Review the recorded spend before authorizing a
+new dispatch after failure; the executor never retries or resumes a used plan.
+
 | Possible cause | Measurement | What still needs an experiment |
 | --- | --- | --- |
 | Missing, ambiguous or incomplete resolution | Tool outcomes, UNKNOWN risk, lower-bound/stale/truncated responses, next source actions | Verify the intended target exists at the indexed source revision |
