@@ -274,6 +274,13 @@ describe('file classification', () => {
         'CREATE PROCEDURE p()\nBEGIN\n  -- nvl( is not MySQL\n  SELECT 1;\nEND\n/\n',
       ),
     ).toBe(false);
+    // A package header is Oracle-only even with `AS` and no other marker.
+    expect(looksLikeOraclePlSql('CREATE PACKAGE p AS PROCEDURE q(x NUMBER); END p;')).toBe(true);
+    expect(
+      looksLikeOraclePlSql(
+        'CREATE OR REPLACE PACKAGE BODY p AS\n  PROCEDURE q IS BEGIN NULL; END;\nEND p;',
+      ),
+    ).toBe(true);
     // Oracle header split across lines still counts.
     expect(
       looksLikeOraclePlSql('CREATE OR REPLACE\nPACKAGE BODY p\nAS\n  x VARCHAR2(1);\nEND p;\n/\n'),

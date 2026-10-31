@@ -49,6 +49,13 @@ const ORACLE_UNIT_HEADER =
 const ORACLE_IS_HEADER =
   /^[ \t]*create\s+(?:or\s+replace\s+)?(?:(?:non)?editionable\s+)?(?:package(?:\s+body)?|procedure|function|type(?:\s+body)?)\s+[\w$#."]+(?:(?!\b(?:begin|as)\b)[\s\S]){0,4000}?\bis\b/im;
 /**
+ * `CREATE PACKAGE [BODY] <name> … IS|AS`: packages exist only in Oracle (and
+ * Oracle-compatible PL/SQL dialects) — T-SQL, PostgreSQL and MySQL have no
+ * `CREATE PACKAGE` — so a package header needs no further marker, even with `AS`.
+ */
+const ORACLE_PACKAGE_HEADER =
+  /^[ \t]*create\s+(?:or\s+replace\s+)?(?:(?:non)?editionable\s+)?package(?:\s+body)?\s+[\w$#."]+(?:(?!\bbegin\b)[\s\S]){0,4000}?\b(?:is|as)\b/im;
+/**
  * A trigger whose body is a PL/SQL block. The header is shared with
  * PostgreSQL and MySQL/MariaDB, so the dialects are told apart by what they
  * cannot write: PostgreSQL triggers call `EXECUTE FUNCTION|PROCEDURE` instead
@@ -99,10 +106,11 @@ export function looksLikeOraclePlSql(content: string): boolean {
   if (POSTGRES_DOLLAR_BODY.test(content) || TSQL_MARKERS.test(content)) return false;
   // `IS` after a unit header is Oracle-only syntax (T-SQL, PostgreSQL and
   // MySQL write `AS` or `BEGIN`), so a plain `CREATE PROCEDURE p IS …` needs
-  // no further marker; an `AS` header (shared with T-SQL) needs PL/SQL syntax
-  // from ORACLE_MARKERS in its body.
+  // no further marker, nor does any package header; a procedure or function
+  // `AS` header (shared with T-SQL) needs PL/SQL syntax from ORACLE_MARKERS.
   return (
     ORACLE_IS_HEADER.test(content) ||
+    ORACLE_PACKAGE_HEADER.test(content) ||
     looksLikeOracleTrigger(content) ||
     ORACLE_MARKERS.test(content)
   );
