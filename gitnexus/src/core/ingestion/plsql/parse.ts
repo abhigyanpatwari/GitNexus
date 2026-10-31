@@ -97,20 +97,32 @@ class CountingErrorListener extends BaseErrorListener {
 
 class DeadlineExceeded extends Error {}
 
-/** Throws once `deadline` has passed; checked on every 256th call to stay cheap. */
-function deadlineGuard(deadline: number): () => void {
+interface DeadlineGuard {
+  /** Throws once the deadline has passed; reads the clock on every 256th call to stay cheap. */
+  tick(): void;
+  /** Throws once the deadline has passed; always reads the clock. */
+  now(): void;
+}
+
+function deadlineGuard(deadline: number): DeadlineGuard {
   let ticks = 0;
-  return () => {
-    if ((++ticks & 255) === 0 && performance.now() > deadline) throw new DeadlineExceeded();
+  const now = () => {
+    if (performance.now() > deadline) throw new DeadlineExceeded();
+  };
+  return {
+    tick: () => {
+      if ((++ticks & 255) === 0) now();
+    },
+    now,
   };
 }
 
 /** Parse listener that runs the guard on every rule entry and every consumed token. */
-function deadlineListener(check: () => void): ParseTreeListener {
+function deadlineListener(guard: DeadlineGuard): ParseTreeListener {
   return {
-    visitTerminal: check,
+    visitTerminal: () => guard.tick(),
     visitErrorNode() {},
-    enterEveryRule: check,
+    enterEveryRule: () => guard.tick(),
     exitEveryRule() {},
   };
 }
@@ -123,7 +135,7 @@ function deadlineListener(check: () => void): ParseTreeListener {
  */
 function lex(
   text: string,
-  check: () => void,
+  guard: DeadlineGuard,
 ): { tokens: Token[]; lexerErrors: CountingErrorListener } {
   const lexer = new PlSqlLexer(CharStream.fromString(text));
   lexer.removeErrorListeners();
@@ -131,7 +143,7 @@ function lex(
   lexer.addErrorListener(lexerErrors);
   const tokens: Token[] = [];
   for (;;) {
-    check();
+    guard.tick();
     const token = lexer.nextToken();
     tokens.push(token);
     if (token.type === Token.EOF) break;
@@ -141,18 +153,22 @@ function lex(
 
 /**
  * Parser over pre-lexed tokens with the deadline checked on rule entry, on
- * every consumed token and before every adaptive prediction. A single
- * prediction cannot be interrupted (ANTLR exposes no hook inside one).
+ * every consumed token and around every adaptive prediction. A single
+ * prediction cannot be interrupted (ANTLR exposes no hook inside one), so the
+ * clock is read unthrottled right after each one: a prediction that overran
+ * the budget ends the parse there instead of being followed by a result.
  */
-function newParser(tokens: Token[], check: () => void): PlSqlParser {
+function newParser(tokens: Token[], guard: DeadlineGuard): PlSqlParser {
   const parser = new PlSqlParser(new CommonTokenStream(new ListTokenSource(tokens)));
   parser.removeErrorListeners();
-  parser.addParseListener(deadlineListener(check));
+  parser.addParseListener(deadlineListener(guard));
   const interpreter = parser.interpreter;
   const predict = interpreter.adaptivePredict.bind(interpreter);
   interpreter.adaptivePredict = (...args: Parameters<typeof predict>) => {
-    check();
-    return predict(...args);
+    guard.tick();
+    const alt = predict(...args);
+    guard.now();
+    return alt;
   };
   return parser;
 }
@@ -161,24 +177,27 @@ function parseSegment(
   text: string,
   deadlineMs: number,
 ): Omit<PlSqlSegment, 'startLine' | 'endLine' | 'text'> {
-  const check = deadlineGuard(performance.now() + deadlineMs);
+  const guard = deadlineGuard(performance.now() + deadlineMs);
   try {
-    const { tokens, lexerErrors } = lex(text, check);
-    const sll = newParser(tokens, check);
+    const { tokens, lexerErrors } = lex(text, guard);
+    const sll = newParser(tokens, guard);
     sll.interpreter.predictionMode = PredictionMode.SLL;
     sll.errorHandler = new BailErrorStrategy();
     try {
       const tree = sll.sql_script();
+      // A tree finished past the budget is still a timeout.
+      guard.now();
       return { tree, syntaxErrors: lexerErrors.count, firstError: lexerErrors.first, mode: 'sll' };
     } catch (e) {
       if (!(e instanceof ParseCancellationException)) throw e;
     }
-    const ll = newParser(tokens, check);
+    const ll = newParser(tokens, guard);
     const errors = new CountingErrorListener();
     ll.addErrorListener(errors);
     ll.interpreter.predictionMode = PredictionMode.LL;
     ll.errorHandler = new DefaultErrorStrategy();
     const tree = ll.sql_script();
+    guard.now();
     return {
       tree,
       syntaxErrors: errors.count + lexerErrors.count,

@@ -171,6 +171,17 @@ END pkg_x;
     expect(f.definitions.filter((d) => d.fromFallback).length).toBeGreaterThan(100);
   });
 
+  it('reports a timeout when the budget runs out with fewer than 256 guard ticks', () => {
+    // Too small for the throttled checks to read the clock: only the
+    // unthrottled checks after each prediction and before accepting the tree
+    // can notice the deadline.
+    const f = extractPlSqlFacts('CREATE PROCEDURE p IS BEGIN NULL; END;\n/\n', {
+      segmentDeadlineMs: -1,
+    });
+    expect(f.segmentsTimedOut).toBe(1);
+    expect(f.definitions.map((d) => [d.name, d.fromFallback])).toEqual([['P', true]]);
+  });
+
   it('keeps one segment per `/`-terminated unit so an error stays local', () => {
     const f = extractPlSqlFacts(
       'CREATE PROCEDURE ok1 IS BEGIN NULL; END;\n/\nCREATE PROCEDURE bad IS BEGIN ((( END;\n/\nCREATE PROCEDURE ok2 IS BEGIN NULL; END;\n/\n',
