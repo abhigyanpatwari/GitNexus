@@ -47,6 +47,8 @@ export interface McpHttpOptions {
   authToken?: string;
   /** Prevalidated repository policy shared by startup logging and transports. */
   repositoryPolicy?: McpRepositoryPolicy;
+  /** Expose `refresh_index` (#3524); set only by the local `gitnexus mcp --http`. */
+  refreshIndex?: boolean;
 }
 
 interface MCPSession {
@@ -229,6 +231,7 @@ export function createStreamableHttpHandler(
     host?: string;
     port?: number;
     repositoryPolicy?: McpRepositoryPolicy;
+    refreshIndex?: boolean;
   } = {},
 ): {
   handler: (req: Request, res: Response) => Promise<void>;
@@ -301,7 +304,10 @@ export function createStreamableHttpHandler(
       });
       const server = opts.createServer
         ? opts.createServer()
-        : createMCPServer(backend, { repositoryPolicy: await getRepositoryPolicy() });
+        : createMCPServer(backend, {
+            repositoryPolicy: await getRepositoryPolicy(),
+            refreshIndex: opts.refreshIndex,
+          });
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
 
@@ -363,6 +369,7 @@ export function createSseHandlers(
     host?: string;
     port?: number;
     repositoryPolicy?: McpRepositoryPolicy;
+    refreshIndex?: boolean;
   } = {},
 ): {
   sseHandler: (req: Request, res: Response) => Promise<void>;
@@ -395,7 +402,10 @@ export function createSseHandlers(
 
     // SSEServerTransport(endpoint, res, options): endpoint is the path clients POST to.
     const transport = new SSEServerTransport(messagesPath, res, dnsRebinding);
-    const server = createMCPServer(backend, { repositoryPolicy: await getRepositoryPolicy() });
+    const server = createMCPServer(backend, {
+      repositoryPolicy: await getRepositoryPolicy(),
+      refreshIndex: opts.refreshIndex,
+    });
 
     sseSessions.set(transport.sessionId, { server, transport, lastActivity: Date.now() });
 
@@ -535,7 +545,13 @@ export async function startMcpHttpServer(
   });
 
   // Streamable HTTP (modern MCP clients) at POST /mcp.
-  const streamable = createStreamableHttpHandler(backend, { host, port, repositoryPolicy });
+  const { refreshIndex } = options;
+  const streamable = createStreamableHttpHandler(backend, {
+    host,
+    port,
+    repositoryPolicy,
+    refreshIndex,
+  });
   app.all('/mcp', auth, jsonBody, (req: Request, res: Response) => {
     void streamable.handler(req, res).catch((err: unknown) => {
       logger.error({ err }, 'MCP /mcp request failed');
@@ -550,7 +566,12 @@ export async function startMcpHttpServer(
   });
 
   // Legacy SSE: GET /sse opens the stream; POST /messages receives JSON-RPC messages.
-  const sse = createSseHandlers(backend, '/messages', { host, port, repositoryPolicy });
+  const sse = createSseHandlers(backend, '/messages', {
+    host,
+    port,
+    repositoryPolicy,
+    refreshIndex,
+  });
   app.get('/sse', auth, (req: Request, res: Response) => {
     void sse.sseHandler(req, res).catch((err: unknown) => {
       logger.error({ err }, 'MCP /sse failed');
