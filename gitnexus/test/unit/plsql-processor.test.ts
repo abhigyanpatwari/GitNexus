@@ -84,6 +84,32 @@ END p;
     expect(targets).toEqual(['Q@L3 plsql-call']);
   });
 
+  it('keeps overloads that differ only in parameter names apart and binds named calls', () => {
+    const { graph, result } = run({
+      'pkg_fee.pks':
+        'CREATE OR REPLACE PACKAGE pkg_fee AS\n  PROCEDURE p(x NUMBER);\n  PROCEDURE p(y NUMBER);\nEND pkg_fee;\n/\n',
+      'pkg_fee.pkb': [
+        'CREATE OR REPLACE PACKAGE BODY pkg_fee AS',
+        '  PROCEDURE p(x NUMBER) IS BEGIN NULL; END p;',
+        '  PROCEDURE p(y NUMBER) IS BEGIN NULL; END p;',
+        'END pkg_fee;',
+        '/',
+        '',
+      ].join('\n'),
+      'settle.prc':
+        'CREATE OR REPLACE PROCEDURE settle IS\nBEGIN\n  pkg_fee.p(x => 1);\n  pkg_fee.p(y => 2);\nEND settle;\n/\n',
+    });
+    const targets: string[] = [];
+    for (const r of graph.iterRelationships()) {
+      if (r.type !== 'CALLS') continue;
+      const t = graph.getNode(r.targetId)!;
+      targets.push(`${t.properties.filePath}:L${t.properties.startLine! + 1}`);
+    }
+    // Each named call binds to its own body, never to the spec declarations.
+    expect(targets.sort()).toEqual(['pkg_fee.pkb:L2', 'pkg_fee.pkb:L3']);
+    expect(result.ambiguousCalls).toBe(0);
+  });
+
   it('keeps a quoted dotted package name apart from nested names', () => {
     const { graph } = run({
       'p.pkb': `CREATE OR REPLACE PACKAGE BODY "A.B" AS

@@ -69,6 +69,9 @@ export function dottedName(parts: readonly string[]): string {
  * white space (PLS-00323 otherwise), so parameter names are part of the key —
  * which also keeps apart overloads that differ only in parameter names, told
  * apart by named-argument calls. Type text is whitespace-free and upper-cased.
+ * See the Oracle 19c PL/SQL Language Reference, "Package Body"
+ * (lnpls/package-body.html) and "Overloaded Subprograms"
+ * (lnpls/overloaded-subprograms.html).
  */
 export function plsqlSignatureKey(
   def: Pick<PlSqlDefinition, 'ownerPath' | 'name' | 'parameters'>,
