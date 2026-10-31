@@ -13,6 +13,35 @@ function targets(result: PipelineResult, caller: string, method: string): string
     .sort();
 }
 
+it('records unresolved receivers once across replay without merging distinct sites', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-receiver-replay-'));
+  try {
+    writeFixtureRepo(root, {
+      'Replay.java': `class Replay {
+        void unresolved() {
+          System.out.println("first");
+          System.out.println("second");
+          External.value.value().value();
+        }
+      }`,
+    });
+    const result = await runPipelineFromRepo(root, () => {});
+    const drops = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
+      .filter((outcome) => outcome.reason === 'receiver-unresolved');
+    expect(drops.filter((outcome) => outcome.name === 'println')).toHaveLength(2);
+    expect(
+      drops.filter((outcome) => outcome.name === 'value' && outcome.siteKind === 'call'),
+    ).toHaveLength(2);
+    const identities = drops.map((outcome) =>
+      JSON.stringify([outcome.filePath, outcome.range, outcome.siteKind, outcome.name]),
+    );
+    expect(new Set(identities).size).toBe(drops.length);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 describe('Java protected overloads in enclosing subclasses', () => {
   let result: PipelineResult;
   beforeAll(async () => {

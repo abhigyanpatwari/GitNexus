@@ -34,6 +34,7 @@ interface AnalysisReceipt {
 }
 interface ImpactReceipt {
   error?: string;
+  partial?: boolean;
   epistemic: string;
   causes?: { overloadResolution?: number };
   summary: { direct: number };
@@ -50,7 +51,8 @@ it('preserves original overload callers and omission receipts across cold, durab
     GITNEXUS_MEMORY: 'off',
     GITNEXUS_LANG: 'en',
     GITNEXUS_LBUG_EXTENSION_INSTALL: 'never',
-    GITNEXUS_LBUG_BUFFER_POOL_SIZE: '134217728',
+    // Repeated impact traversals need more than the writer's 128 MiB minimum.
+    GITNEXUS_LBUG_BUFFER_POOL_SIZE: '536870912',
   };
   delete env.GITNEXUS_STORAGE_PATH;
   delete env.GITNEXUS_STORAGE_ROOT;
@@ -73,6 +75,7 @@ it('preserves original overload callers and omission receipts across cold, durab
     for (const [suffix, expected] of Object.entries(callers)) {
       const result = results[prefix + suffix];
       expect(result, suffix).not.toHaveProperty('error');
+      expect(result.partial, suffix).not.toBe(true);
       expect(result.summary.direct, suffix).toBe(expected.length);
       expect((result.byDepth['1'] ?? []).map((caller) => caller.name).sort(), suffix).toEqual(
         [...expected].sort(),
@@ -142,6 +145,7 @@ class UnknownCalls {
     expect(correction.reparsed).toBe(1);
     expect(correction.hits).toBe(5);
     const corrected = await child<Record<string, ImpactReceipt>>('inspect');
+    for (const uid of targets) expect(corrected[uid].partial, uid).not.toBe(true);
     expect(corrected[prefix + 'resolve#1~String'].summary.direct).toBe(2);
     expect(
       corrected[prefix + 'resolve#1~String'].byDepth['1'].map((caller) => caller.name).sort(),

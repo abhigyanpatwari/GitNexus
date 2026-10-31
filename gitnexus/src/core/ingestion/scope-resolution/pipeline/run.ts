@@ -125,7 +125,7 @@ import {
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 import { narrowOverloadCandidates } from '../passes/overload-narrowing.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
-import { withdrawAnsweredReceiverDrops } from '../resolution-outcome.js';
+import { answeredSiteKey, withdrawAnsweredReceiverDrops } from '../resolution-outcome.js';
 import { isDebugHeapEnabled, logHeapProbe } from '../../utils/heap-probe.js';
 import { parseTruthyEnv } from '../../utils/env.js';
 import { callResultBindingKey, selectedCallKey } from '../passes/provider-call-outcome.js';
@@ -1659,18 +1659,35 @@ export function runScopeResolution(
       if (!handledBeforeReplay.has(key)) resolvedOnReplay.add(key);
     }
     if (resolvedOnReplay.size > 0 || selectedCalls !== undefined) {
-      for (let i = resolutionOutcomes.length - 1; i >= 0; i--) {
-        const outcome = resolutionOutcomes[i];
-        if (
-          outcome.kind === 'suppressed' &&
-          outcome.reason === 'receiver-unresolved' &&
-          (selectedCalls === undefined
-            ? resolvedOnReplay.has(callableFlowSiteKey(outcome.filePath, outcome.range))
-            : selectedCalls.get(selectedCallKey(outcome.filePath, outcome.range)) != null)
-        ) {
-          resolutionOutcomes.splice(i, 1);
+      // Replay can retry an unresolved site. Keep its latest diagnostic once,
+      // and compact in one pass so withdrawing many drops stays linear.
+      const receiverDropPositions = new Map<string, number>();
+      let kept = 0;
+      for (const outcome of resolutionOutcomes) {
+        if (outcome.kind === 'suppressed' && outcome.reason === 'receiver-unresolved') {
+          const resolved =
+            selectedCalls === undefined
+              ? resolvedOnReplay.has(callableFlowSiteKey(outcome.filePath, outcome.range))
+              : selectedCalls.get(selectedCallKey(outcome.filePath, outcome.range)) != null;
+          if (resolved) continue;
+          if (outcome.siteKind !== undefined) {
+            const key = answeredSiteKey(
+              outcome.filePath,
+              outcome.range,
+              outcome.siteKind,
+              outcome.name,
+            );
+            const previous = receiverDropPositions.get(key);
+            if (previous !== undefined) {
+              resolutionOutcomes[previous] = outcome;
+              continue;
+            }
+            receiverDropPositions.set(key, kept);
+          }
         }
+        resolutionOutcomes[kept++] = outcome;
       }
+      resolutionOutcomes.length = kept;
     }
   }
   for (const [key, handledKey] of pendingCallReceivers ?? []) {
