@@ -1,0 +1,37 @@
+{
+  "language": "plsql",
+  "description": "Rename a package procedure: its spec declaration, body, END label and a cross-file package-qualified call change together; a same-spelled string literal and comment do not.",
+  "categories": [
+    "call-graph",
+    "cross-file",
+    "package-scope"
+  ],
+  "target": {
+    "name": "WARN",
+    "kind": "Function",
+    "file": "pkg_log.pkb"
+  },
+  "newName": "notify",
+  "expectedTargetName": "NOTIFY",
+  "expect": {
+    "status": "success",
+    "edits": 4
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "PRC_SETTLE",
+        "kind": "Function",
+        "file": "prc_settle.prc",
+        "startLine": 0
+      },
+      "to": {
+        "name": "WARN",
+        "kind": "Function",
+        "file": "pkg_log.pkb",
+        "startLine": 8
+      }
+    }
+  ]
+}
