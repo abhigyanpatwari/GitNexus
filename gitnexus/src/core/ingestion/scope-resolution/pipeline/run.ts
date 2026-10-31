@@ -24,6 +24,7 @@
  */
 
 import type {
+  CallResultAssignmentSite,
   ParsedFile,
   ReferenceSite,
   RegistryProviders,
@@ -127,6 +128,49 @@ import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution
 import { withdrawAnsweredReceiverDrops } from '../resolution-outcome.js';
 import { isDebugHeapEnabled, logHeapProbe } from '../../utils/heap-probe.js';
 import { parseTruthyEnv } from '../../utils/env.js';
+import { callResultBindingKey, selectedCallKey } from '../passes/provider-call-outcome.js';
+
+/** Update one inferred binding, retaining the scope that owns its return type. */
+function setCallResultBinding(scope: Scope, name: string, returned: TypeRef | undefined): boolean {
+  const bindings = scope.typeBindings as Map<string, TypeRef>;
+  if (returned === undefined) return bindings.delete(name);
+  const binding: TypeRef = {
+    rawName: returned.rawName,
+    ...(returned.declaredSpelling !== undefined
+      ? { declaredSpelling: returned.declaredSpelling }
+      : {}),
+    declaredAtScope: returned.declaredAtScope,
+    ...(returned.lookupPosition !== undefined ? { lookupPosition: returned.lookupPosition } : {}),
+    source: 'assignment-inferred',
+  };
+  const previous = bindings.get(name);
+  if (
+    previous?.rawName === binding.rawName &&
+    previous.declaredSpelling === binding.declaredSpelling &&
+    previous.declaredAtScope === binding.declaredAtScope &&
+    previous.source === binding.source &&
+    previous.lookupPosition?.startLine === binding.lookupPosition?.startLine &&
+    previous.lookupPosition?.startCol === binding.lookupPosition?.startCol
+  )
+    return false;
+  bindings.set(name, binding);
+  return true;
+}
+
+function applySelectedCallResultBinding(
+  assignment: CallResultAssignmentSite,
+  indexes: ScopeResolutionIndexes,
+  workspaceIndex: ReturnType<typeof buildWorkspaceResolutionIndex>,
+  selected: SymbolDefinition | null | undefined,
+): boolean {
+  const scope = indexes.scopeTree.getScope(assignment.inScope);
+  if (scope === undefined) return false;
+  const returned =
+    selected == null
+      ? undefined
+      : workspaceIndex.declaredReturnTypeByCallableId.get(selected.nodeId);
+  return setCallResultBinding(scope, assignment.lhs, returned);
+}
 
 /**
  * Join extraction-time assignment identity to Phase-4's exact resolved callee.
@@ -143,8 +187,25 @@ export function applyPreciseCallResultBindings(
   nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
   model: SemanticModel,
   requireOwnedHoistedReturn = false,
+  selectedCalls?: ReadonlyMap<string, SymbolDefinition | null>,
 ): number {
   let updated = 0;
+  if (selectedCalls !== undefined) {
+    for (const parsed of parsedFiles) {
+      for (const assignment of parsed.callResultAssignmentSites ?? []) {
+        if (
+          applySelectedCallResultBinding(
+            assignment,
+            indexes,
+            workspaceIndex,
+            selectedCalls.get(selectedCallKey(parsed.filePath, assignment.callSite)),
+          )
+        )
+          updated++;
+      }
+    }
+    return updated;
+  }
   const returnTypeByGraphId = new Map<string, { type: TypeRef; def: SymbolDefinition }>();
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
@@ -167,13 +228,14 @@ export function applyPreciseCallResultBindings(
       }
     }
     for (const assignment of parsed.callResultAssignmentSites ?? []) {
+      const scope = indexes.scopeTree.getScope(assignment.inScope);
+      if (scope === undefined) continue;
       const targets = resolvedByPosition.get(
         calleeIdPosKey(assignment.callSite.startLine, assignment.callSite.startCol),
       );
-      if (targets === undefined || targets.size !== 1) continue;
-      const targetId = targets.values().next().value as string | undefined;
-      if (targetId === undefined) continue;
-      const returned = returnTypeByGraphId.get(targetId);
+      const targetId =
+        targets?.size === 1 ? (targets.values().next().value as string | undefined) : undefined;
+      const returned = targetId === undefined ? undefined : returnTypeByGraphId.get(targetId);
       if (returned === undefined) continue;
       if (requireOwnedHoistedReturn) {
         const site = callsByPosition?.get(
@@ -225,18 +287,14 @@ export function applyPreciseCallResultBindings(
         )
           continue;
       }
-      const returnType = returned.type;
-      const scope = indexes.scopeTree.getScope(assignment.inScope);
-      if (scope === undefined) continue;
-      (scope.typeBindings as Map<string, TypeRef>).set(assignment.lhs, {
-        rawName: returnType.rawName,
-        ...(returnType.declaredSpelling !== undefined
-          ? { declaredSpelling: returnType.declaredSpelling }
-          : {}),
-        declaredAtScope: assignment.inScope,
-        source: 'assignment-inferred',
-      });
-      updated++;
+      if (
+        setCallResultBinding(scope, assignment.lhs, {
+          ...returned.type,
+          declaredAtScope: assignment.inScope,
+          lookupPosition: undefined,
+        })
+      )
+        updated++;
     }
   }
   return updated;
@@ -540,7 +598,10 @@ interface RunScopeResolutionInput {
    * `ParsedFile[]` to mirror the pipeline shape.
    */
   readonly model: MutableSemanticModel;
-  readonly files: readonly { readonly path: string; readonly content: string }[];
+  readonly files: readonly {
+    readonly path: string;
+    readonly content: string;
+  }[];
   readonly onWarn?: (message: string) => void;
   /**
    * Optional pre-parsed-Tree lookup keyed by file path: a cache hit lets the
@@ -1203,6 +1264,51 @@ export function runScopeResolution(
   // VALIDATE_SEMANTIC_MODEL=1.
   validateBindingsImmutability(indexes, onWarn);
 
+  const selectedCalls =
+    provider.receiverCallSite === undefined
+      ? undefined
+      : new Map<string, SymbolDefinition | null>();
+  const pendingCallReceivers = selectedCalls === undefined ? undefined : new Map<string, string>();
+  const callResultProducers =
+    selectedCalls === undefined ? undefined : new Map<string, CallResultAssignmentSite>();
+  const assignmentsByProducer = new Map<string, CallResultAssignmentSite[]>();
+  if (callResultProducers !== undefined) {
+    for (const parsed of parsedFiles) {
+      for (const assignment of parsed.callResultAssignmentSites ?? []) {
+        callResultProducers.set(
+          callResultBindingKey(assignment.inScope, assignment.lhs),
+          assignment,
+        );
+        const key = selectedCallKey(parsed.filePath, assignment.callSite);
+        let assignments = assignmentsByProducer.get(key);
+        if (assignments === undefined) assignmentsByProducer.set(key, (assignments = []));
+        assignments.push(assignment);
+      }
+    }
+  }
+  const onSelectedCall =
+    selectedCalls === undefined
+      ? undefined
+      : (key: string, definition: SymbolDefinition | null): void => {
+          for (const assignment of assignmentsByProducer.get(key) ?? []) {
+            applySelectedCallResultBinding(assignment, indexes, workspaceIndex, definition);
+          }
+        };
+  if (!callableFlowOnly && selectedCalls !== undefined) {
+    // Clear guessed assignment returns before Registry.lookup can cache a
+    // wrong downstream member. Exact primaries restore them after emission.
+    applyPreciseCallResultBindings(
+      parsedFiles,
+      indexes,
+      workspaceIndex,
+      createCalleeIdAccumulator(),
+      postHeritageNodeLookup,
+      readonlyModel,
+      provider.hoistedTypeBindingsRequireOwner === true,
+      selectedCalls,
+    );
+  }
+
   // ── Phase 3: resolve references via Registry.lookup ────────────────────
   input.onProgress?.('resolving references', files.length, files.length);
   const registryProviders: RegistryProviders = {
@@ -1373,7 +1479,10 @@ export function runScopeResolution(
   // propagation. Populated below at every CALLS emit path before dedup; the CFG
   // join still consumes it only inside the `input.pdg` block.
   const calleeIdAccumulator: CalleeIdAccumulator | undefined =
-    input.pdg === true || deferredIndirectSites.size > 0 || callResultAssignmentSites.size > 0
+    input.pdg === true ||
+    deferredIndirectSites.size > 0 ||
+    callResultAssignmentSites.size > 0 ||
+    provider.receiverCallSite !== undefined
       ? createCalleeIdAccumulator(
           input.pdg === true
             ? undefined
@@ -1401,6 +1510,10 @@ export function runScopeResolution(
         {
           recordResolutionOutcome,
           recordSourceBinding,
+          selectedCalls,
+          onSelectedCall,
+          pendingCallReceivers,
+          callResultProducers,
           allFilePaths,
           calleeIdSink: calleeIdAccumulator,
           // The pass's sources of positive EXTERNAL evidence for a dropped
@@ -1476,6 +1589,9 @@ export function runScopeResolution(
           resolveAdlCandidates: provider.resolveAdlCandidates,
           resolveOrdinaryCallables: provider.resolveOrdinaryCallables,
           resolveQualifiedFreeCall: provider.resolveQualifiedFreeCall,
+          resolveUnqualifiedCall: provider.resolveUnqualifiedCall,
+          selectedCalls,
+          onSelectedCall,
           conversionRankFn: provider.conversionRankFn,
           conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
           constraintCompatibility: provider.constraintCompatibility,
@@ -1487,7 +1603,7 @@ export function runScopeResolution(
       );
   probeEmit('free-calls-end', `handled=${handledSites.size} emitted=${freeCallExtras}`);
   const replayedCallResultBindings =
-    callableFlowOnly || calleeIdAccumulator === undefined
+    callableFlowOnly || calleeIdAccumulator === undefined || selectedCalls !== undefined
       ? 0
       : applyPreciseCallResultBindings(
           emitParsedFiles,
@@ -1497,8 +1613,9 @@ export function runScopeResolution(
           postHeritageNodeLookup,
           readonlyModel,
           provider.hoistedTypeBindingsRequireOwner === true,
+          selectedCalls,
         );
-  if (replayedCallResultBindings > 0) {
+  if (replayedCallResultBindings > 0 || selectedCalls !== undefined) {
     const handledBeforeReplay = new Set(handledSites);
     const replayedReceiverBound = emitReceiverBoundCalls(
       graph,
@@ -1512,6 +1629,11 @@ export function runScopeResolution(
       {
         calleeIdSink: calleeIdAccumulator,
         recordSourceBinding,
+        recordResolutionOutcome: selectedCalls === undefined ? undefined : recordResolutionOutcome,
+        selectedCalls,
+        onSelectedCall,
+        pendingCallReceivers,
+        callResultProducers,
         isBuiltInName: provider.languageProvider.isBuiltInName,
         externalReceiverNames: provider.languageProvider.externalReceiverNames,
         isExternalModuleSpecifier: provider.languageProvider.isExternalModuleSpecifier,
@@ -1537,18 +1659,24 @@ export function runScopeResolution(
     for (const key of handledSites) {
       if (!handledBeforeReplay.has(key)) resolvedOnReplay.add(key);
     }
-    if (resolvedOnReplay.size > 0) {
+    if (resolvedOnReplay.size > 0 || selectedCalls !== undefined) {
       for (let i = resolutionOutcomes.length - 1; i >= 0; i--) {
         const outcome = resolutionOutcomes[i];
         if (
           outcome.kind === 'suppressed' &&
           outcome.reason === 'receiver-unresolved' &&
-          resolvedOnReplay.has(callableFlowSiteKey(outcome.filePath, outcome.range))
+          (selectedCalls === undefined
+            ? resolvedOnReplay.has(callableFlowSiteKey(outcome.filePath, outcome.range))
+            : selectedCalls.get(selectedCallKey(outcome.filePath, outcome.range)) != null)
         ) {
           resolutionOutcomes.splice(i, 1);
         }
       }
     }
+  }
+  for (const [key, handledKey] of pendingCallReceivers ?? []) {
+    selectedCalls?.set(key, null);
+    handledSites.add(handledKey);
   }
   // Receiver/free-call passes have finished reading this set. Extend it for
   // the remaining passes instead of retaining three whole-program copies.
@@ -1667,7 +1795,12 @@ export function runScopeResolution(
   // propagation. `graph.addRelationship` remains first-write-wins, so precise
   // edges already emitted for a site retain ownership.
   const propertyDispatch = callableFlowOnly
-    ? { usesEmitted: 0, callsEmitted: 0, skippedKeys: 0, skippedKeyNames: [] as readonly string[] }
+    ? {
+        usesEmitted: 0,
+        callsEmitted: 0,
+        skippedKeys: 0,
+        skippedKeyNames: [] as readonly string[],
+      }
     : emitPropertyDispatchCalls(
         graph,
         indexes,
@@ -2176,7 +2309,11 @@ export function runScopeResolution(
   logHeapProbe('sr-end', `lang=${provider.language} parsedFiles=${parsedFiles.length}`);
 
   for (const outcome of resolutionOutcomes) input.recordResolutionOutcome?.(outcome);
-  input.onResolved?.({ parsedFiles, indexes, referenceBindings: referenceBindings! });
+  input.onResolved?.({
+    parsedFiles,
+    indexes,
+    referenceBindings: referenceBindings!,
+  });
 
   return {
     filesProcessed: parsedFiles.length,

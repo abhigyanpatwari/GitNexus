@@ -170,6 +170,10 @@ import {
   lookupUnresolvedCallCount,
 } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { UnresolvedReceiverSummary } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
+import {
+  probeOverloadBoundaries,
+  type OverloadBoundary,
+} from '../../core/ingestion/scope-resolution/unresolved-overloads.js';
 import type { UndecidedSatisfactionSummary } from '../../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { scopeExtractionFailureTotal } from '../../core/ingestion/scope-resolution/scope-extraction-failures.js';
 import { lookupCount } from '../../core/ingestion/scope-resolution/summary-maps.js';
@@ -817,6 +821,12 @@ export interface EpistemicCauses {
    */
   readonly receiverTyping: number;
   /**
+   * Unique call sites whose overload or implementation targets were unresolved.
+   * Counted once across all queried candidates. A partial/unverified receipt
+   * can report zero with a boundary note; zero alone does not prove completeness.
+   */
+  readonly overloadResolution?: number;
+  /**
    * Symbols on or beyond a dispatch boundary that the traversal could not
    * attribute statically: implementations plus interface-level consumers.
    *
@@ -898,6 +908,33 @@ export interface EpistemicCauses {
    * branch on `epistemic` first and read the causes as explanation.
    */
   readonly callableValueReferences: number;
+}
+
+type EpistemicBoundary = {
+  epistemic: 'exact' | 'lower-bound';
+  boundaries?: string[];
+  causes?: EpistemicCauses;
+};
+
+function mergeOverloadBoundary(
+  existing: EpistemicBoundary,
+  overloads: OverloadBoundary,
+): EpistemicBoundary {
+  if (overloads.notes.length === 0) return existing;
+  return {
+    epistemic: 'lower-bound',
+    boundaries: [...(existing.boundaries ?? []), ...overloads.notes],
+    causes: {
+      scopeExtractionFiles: 0,
+      receiverTyping: 0,
+      dispatchBoundary: 0,
+      externalBoundary: 0,
+      undecidedSatisfaction: 0,
+      callableValueReferences: 0,
+      ...existing.causes,
+      overloadResolution: overloads.sites,
+    },
+  };
 }
 
 function epistemicFrom(dropped: {
@@ -8187,6 +8224,7 @@ export class LocalBackend {
     symType: string,
     symName: string,
     direction?: 'upstream' | 'downstream',
+    includeOverloads = true,
   ): Promise<{
     epistemic: 'exact' | 'lower-bound';
     boundaries?: string[];
@@ -8212,6 +8250,11 @@ export class LocalBackend {
       meta = undefined;
     }
     const receiverDrops = unresolvedReceiverBoundaries(meta?.unresolvedReceiverMembers, symName);
+    // Context has both incoming and outgoing references. Impact defers this
+    // probe until its expanded frontier is known, avoiding root double-counts.
+    const overloadDrops = includeOverloads
+      ? probeOverloadBoundaries(meta?.unresolvedOverloads, new Set([symId]), direction ?? 'both')
+      : { notes: [], sites: 0 };
     const scopeExtractionDrops = scopeExtractionBoundaries(
       meta?.scopeExtractionFailures,
       meta?.scopeExtractionReceipt,
@@ -8304,7 +8347,9 @@ export class LocalBackend {
           });
         }
       }
-      if (boundary.size === 0) return epistemicFrom(droppedBoundaries);
+      if (boundary.size === 0) {
+        return mergeOverloadBoundary(epistemicFrom(droppedBoundaries), overloadDrops);
+      }
 
       const ifaceIds = Array.from(boundary.keys());
       // Count per interface id with scalar equality. A parameterized
@@ -8370,24 +8415,29 @@ export class LocalBackend {
           );
         }
       }
-      if (boundaries.length === 0) return epistemicFrom(droppedBoundaries);
-      return {
-        epistemic: 'lower-bound',
-        boundaries: [...droppedBoundaries.notes, ...boundaries],
-        causes: {
-          scopeExtractionFiles: droppedBoundaries.scopeExtraction,
-          receiverTyping: droppedBoundaries.sites,
-          dispatchBoundary: droppedBoundaries.dispatch + dispatchBoundarySymbols,
-          externalBoundary: droppedBoundaries.external,
-          undecidedSatisfaction: droppedBoundaries.undecided,
-          callableValueReferences: droppedBoundaries.callableValueReferences,
+      if (boundaries.length === 0) {
+        return mergeOverloadBoundary(epistemicFrom(droppedBoundaries), overloadDrops);
+      }
+      return mergeOverloadBoundary(
+        {
+          epistemic: 'lower-bound',
+          boundaries: [...droppedBoundaries.notes, ...boundaries],
+          causes: {
+            scopeExtractionFiles: droppedBoundaries.scopeExtraction,
+            receiverTyping: droppedBoundaries.sites,
+            dispatchBoundary: droppedBoundaries.dispatch + dispatchBoundarySymbols,
+            externalBoundary: droppedBoundaries.external,
+            undecidedSatisfaction: droppedBoundaries.undecided,
+            callableValueReferences: droppedBoundaries.callableValueReferences,
+          },
         },
-      };
+        overloadDrops,
+      );
     } catch (error) {
       rethrowSymbolIdentityError(error);
       // Never let the heritage probe's failure suppress a drop we already know
       // about — the whole point is that silence must not read as certainty.
-      return epistemicFrom(droppedBoundaries);
+      return mergeOverloadBoundary(epistemicFrom(droppedBoundaries), overloadDrops);
     }
   }
 
@@ -8503,7 +8553,18 @@ export class LocalBackend {
           symType,
           (sym.name || sym[1]) as string,
           direction,
+          false,
         );
+    const checkOverloads = !opts.skipEpistemic && relationTypes.includes('CALLS');
+    // readToolMetadata is request-cached: this shares the existing probe's
+    // metadata read and needs no graph queries for individual frontier nodes.
+    const overloadMetadataPromise = checkOverloads
+      ? Promise.resolve()
+          .then(() => this.readToolMetadata(repo))
+          .then((meta) => meta?.unresolvedOverloads)
+          .catch(() => undefined)
+      : Promise.resolve(undefined);
+    const expandedOverloadIds = new Set<string>();
     const beanMetadataPromise =
       opts.skipEpistemic || summaryOnly
         ? Promise.resolve(undefined)
@@ -8702,6 +8763,9 @@ export class LocalBackend {
 
     for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
       const nextFrontier: string[] = [];
+      if (checkOverloads) {
+        for (const id of frontier) expandedOverloadIds.add(id);
+      }
 
       // Batch frontier nodes into a single Cypher query per depth level.
       // ids/types/confidence are bound parameters (see above) — no interpolation.
@@ -9354,11 +9418,25 @@ export class LocalBackend {
 
     // #1858 — await the epistemic boundary probe kicked off alongside the BFS
     // above. Additive: leaves impactedCount and every existing field untouched.
-    const [epistemic, beanMetadata, aopMetadata] = await Promise.all([
+    const [targetEpistemic, beanMetadata, aopMetadata, overloadSummary] = await Promise.all([
       epistemicPromise,
       beanMetadataPromise,
       aopMetadataPromise,
+      overloadMetadataPromise,
     ]);
+    const epistemic =
+      checkOverloads && targetEpistemic.epistemic !== undefined
+        ? mergeOverloadBoundary(
+            { ...targetEpistemic, epistemic: targetEpistemic.epistemic },
+            probeOverloadBoundaries(
+              overloadSummary,
+              expandedOverloadIds,
+              direction,
+              (site) => direction !== 'upstream' || includeTests || !isTestFilePath(site.filePath),
+              traversalComplete,
+            ),
+          )
+        : targetEpistemic;
 
     const base = {
       target: {

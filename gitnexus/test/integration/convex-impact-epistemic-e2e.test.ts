@@ -1,3 +1,4 @@
+import { summarizeUnresolvedOverloads } from '../../src/core/ingestion/scope-resolution/unresolved-overloads.js';
 import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 import fs from 'fs';
 import path from 'path';
@@ -204,6 +205,7 @@ export const javascriptQuery = query({ handler: async () => null });
         lastCommit: 'convex-e2e',
         indexedAt: new Date(0).toISOString(),
         scopeExtractionReceipt: 1,
+        unresolvedOverloads: summarizeUnresolvedOverloads(replay.resolutionOutcomes),
       } satisfies RepoMeta);
     },
     poolAdapter: true,

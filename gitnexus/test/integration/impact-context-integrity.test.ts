@@ -1,3 +1,4 @@
+import { summarizeUnresolvedOverloads } from '../../src/core/ingestion/scope-resolution/unresolved-overloads.js';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -298,6 +299,7 @@ describe('native impact/context result integrity (#3354)', () => {
       lastCommit: 'integrity-fixture',
       indexedAt: new Date().toISOString(),
       scopeExtractionReceipt: 1 as const,
+      unresolvedOverloads: summarizeUnresolvedOverloads([]),
       stats: { files: 8, nodes: 11, processes: 3, communities: 0 },
     };
     await saveMeta(paths.storagePath, meta);
@@ -633,6 +635,7 @@ describe.skipIf(process.platform === 'win32')('warm backend index replacement (#
         lastCommit: 'graph-a',
         indexedAt: new Date().toISOString(),
         scopeExtractionReceipt: 1 as const,
+        unresolvedOverloads: summarizeUnresolvedOverloads([]),
         stats: { files: 3, nodes: 4, processes: 1, communities: 0 },
       };
       await saveMeta(paths.storagePath, meta);

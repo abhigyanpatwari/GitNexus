@@ -57,6 +57,7 @@ import {
 } from './ingestion/scope-resolution/unresolved-receivers.js';
 import { summarizeUndecidedSatisfaction } from './ingestion/scope-resolution/undecided-satisfaction.js';
 import { summarizeScopeExtractionFailures } from './ingestion/scope-resolution/scope-extraction-failures.js';
+import { summarizeUnresolvedOverloads } from './ingestion/scope-resolution/unresolved-overloads.js';
 import type { KnowledgeGraph } from './graph/types.js';
 import { reconcileGraphNodeIdentities } from './incremental/write-reconciliation.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
@@ -5360,6 +5361,12 @@ async function runFullAnalysisInner(
       // Git-only: non-git repos never take the incremental path.
       schemaFingerprint: hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
       unresolvedReceiverMembers: summarizeUnresolvedReceivers(resolutionOutcomes),
+      // Resolution runs again on warm parse-cache hits. Replace the receipt,
+      // including complete-empty, so corrected/deleted source clears old gaps.
+      unresolvedOverloads: summarizeUnresolvedOverloads(
+        resolutionOutcomes,
+        pipelineResult.resolutionOutcomes !== undefined,
+      ),
       nameFallbackEdges: nameFallbackSummary,
       scopeExtractionFailures: summarizeScopeExtractionFailures(
         pipelineResult.scopeExtractionFailures,
