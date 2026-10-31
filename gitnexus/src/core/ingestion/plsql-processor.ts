@@ -196,6 +196,10 @@ export function processPlSql(
   }
   for (const entry of packageDefs) {
     entry.nodeId = packageNodeByInstance.get(instanceOfPackage(entry.def, entry.filePath));
+    entry.instance = instanceOfPackage(entry.def, entry.filePath);
+  }
+  for (const entry of entryOf.values()) {
+    if (entry.def.kind !== 'package') entry.instance = memberInstance(entry.def, entry.filePath);
   }
 
   // ── subprograms and triggers ──
@@ -335,21 +339,26 @@ export function processPlSql(
     for (const access of f.accesses) {
       const sourceId = ownerNode(filePath, f, access);
       if (!sourceId) continue;
-      const tableId = plsqlTableNodeId(access.table);
-      if (!tables.has(access.table)) {
-        tables.add(access.table);
+      // A table over a database link is a remote object, not the local table
+      // of the same name: its identity keeps the link.
+      const tableName = access.dbLink ? `${access.table}@${access.dbLink}` : access.table;
+      const tableId = plsqlTableNodeId(tableName);
+      if (!tables.has(tableName)) {
+        tables.add(tableName);
         graph.addNode({
           id: tableId,
           label: 'Record',
           properties: {
-            name: access.table,
+            name: tableName,
             // A table is a database object, not source; anchor it at its first
             // reference so it stays navigable.
             filePath,
             startLine: toZeroBasedLine(access.line),
             endLine: toZeroBasedLine(access.line),
             language: SupportedLanguages.PlSql,
-            description: 'database table or view referenced from PL/SQL',
+            description: access.dbLink
+              ? `remote table or view over database link ${access.dbLink}, referenced from PL/SQL`
+              : 'database table or view referenced from PL/SQL',
           },
         });
       }

@@ -132,6 +132,38 @@ END caller;
     expect(targets).toEqual([3]);
   });
 
+  it('keeps a table over a database link apart from the local table of the same name', () => {
+    const { graph } = run({
+      'p.prc': `CREATE OR REPLACE PROCEDURE p IS
+BEGIN
+  INSERT INTO t_orders SELECT * FROM t_orders@core_link;
+END p;
+/
+`,
+    });
+    const records: string[] = [];
+    graph.forEachNode((n) => {
+      if (n.label === 'Record') records.push(n.properties.name);
+    });
+    expect(records.sort()).toEqual(['T_ORDERS', 'T_ORDERS@CORE_LINK']);
+  });
+
+  it('binds to the body when the caller sits next to the spec and the body lives elsewhere', () => {
+    const { graph } = run({
+      'db/api/pkg_fee.pks':
+        'CREATE OR REPLACE PACKAGE pkg_fee AS\n  FUNCTION fee RETURN NUMBER;\nEND pkg_fee;\n/\n',
+      'db/api/settle.prc':
+        'CREATE OR REPLACE PROCEDURE settle IS\n  x NUMBER;\nBEGIN\n  x := pkg_fee.fee();\nEND settle;\n/\n',
+      'db/impl/pkg_fee.pkb':
+        'CREATE OR REPLACE PACKAGE BODY pkg_fee AS\n  FUNCTION fee RETURN NUMBER IS BEGIN RETURN 1; END fee;\nEND pkg_fee;\n/\n',
+    });
+    const targets: string[] = [];
+    for (const rel of graph.iterRelationships()) {
+      if (rel.type === 'CALLS') targets.push(graph.getNode(rel.targetId)!.properties.filePath);
+    }
+    expect(targets).toEqual(['db/impl/pkg_fee.pkb']);
+  });
+
   it('keeps forward-declared private subprograms private', () => {
     const { graph } = run({
       'p.pkb': `CREATE OR REPLACE PACKAGE BODY p AS

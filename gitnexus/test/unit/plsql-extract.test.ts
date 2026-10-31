@@ -159,6 +159,18 @@ END pkg_x;
     expect(f.definitions.map((d) => d.name)).toEqual(['P']);
   });
 
+  it('abandons a segment at the deadline, including while lexing, and falls back', () => {
+    const body = Array.from(
+      { length: 200 },
+      (_, i) => `  PROCEDURE p${i} IS BEGIN x := ${i}; END p${i};`,
+    ).join('\n');
+    const f = extractPlSqlFacts(`CREATE OR REPLACE PACKAGE BODY big AS\n${body}\nEND big;\n/\n`, {
+      segmentDeadlineMs: 0,
+    });
+    expect(f.segmentsTimedOut).toBe(1);
+    expect(f.definitions.filter((d) => d.fromFallback).length).toBeGreaterThan(100);
+  });
+
   it('keeps one segment per `/`-terminated unit so an error stays local', () => {
     const f = extractPlSqlFacts(
       'CREATE PROCEDURE ok1 IS BEGIN NULL; END;\n/\nCREATE PROCEDURE bad IS BEGIN ((( END;\n/\nCREATE PROCEDURE ok2 IS BEGIN NULL; END;\n/\n',
@@ -226,6 +238,18 @@ describe('file classification', () => {
     expect(looksLikeOraclePlSql('CREATE PROCEDURE p AS\nBEGIN\n  SELECT 1;\nEND;')).toBe(false);
     expect(
       looksLikeOraclePlSql('CREATE PROCEDURE p AS\nBEGIN\n  SET @x = NULL;\n  SELECT @x;\nEND;'),
+    ).toBe(false);
+    // T-SQL triggers name the table (`ON …`) before the timing keyword, so the
+    // Oracle trigger header never matches them.
+    expect(
+      looksLikeOraclePlSql(
+        'CREATE TRIGGER t ON dbo.x AFTER INSERT AS BEGIN UPDATE dbo.x SET a = 1; END;',
+      ),
+    ).toBe(false);
+    expect(
+      looksLikeOraclePlSql(
+        'CREATE OR ALTER TRIGGER t ON dbo.v INSTEAD OF INSERT AS BEGIN SELECT 1; END;',
+      ),
     ).toBe(false);
     // `IS` after the header is Oracle-only, no other marker needed.
     expect(looksLikeOraclePlSql('CREATE PROCEDURE p IS BEGIN NULL; END;')).toBe(true);

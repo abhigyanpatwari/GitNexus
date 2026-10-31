@@ -24,6 +24,12 @@ export interface PlSqlIndexEntry {
   readonly filePath: string;
   /** Schema written on the enclosing package (`CREATE PACKAGE loan.pkg`), if any. */
   readonly packageSchema?: string;
+  /**
+   * Package instance (`PlSqlPackageInstances.instanceOf`) of a package member,
+   * so a spec declaration and its body — often in different folders — are
+   * weighed as one entity when proximity picks between copies.
+   */
+  instance?: string;
 }
 
 /**
@@ -139,8 +145,37 @@ export class PlSqlNameIndex<E extends PlSqlIndexEntry> {
     fromFile: string,
   ): E[] {
     const narrowed = preferWrittenSchema(narrowOverloads(this.candidates(call), call), call);
-    return preferImplementations(nearestByPath(narrowed, fromFile));
+    return preferImplementations(nearestEntities(narrowed, fromFile));
   }
+}
+
+/**
+ * Proximity over entities, not entries: a spec declaration and its body (same
+ * package instance and signature) form one entity whose distance is that of
+ * its nearest member, so a body in another folder is not discarded because
+ * the caller sits next to the spec. Standalone subprograms are one entity per
+ * file.
+ */
+function nearestEntities<E extends PlSqlIndexEntry>(candidates: E[], fromFile: string): E[] {
+  if (candidates.length <= 1) return candidates;
+  const groups = new Map<string, E[]>();
+  for (const c of candidates) {
+    const key = `${c.instance ?? c.filePath}\0${plsqlSignatureKey(c.def)}`;
+    const group = groups.get(key);
+    if (group) group.push(c);
+    else groups.set(key, [c]);
+  }
+  const distance = (group: E[]) =>
+    Math.max(
+      ...group.map((c) =>
+        c.filePath === fromFile
+          ? Number.MAX_SAFE_INTEGER
+          : sharedDirectoryDepth(c.filePath, fromFile),
+      ),
+    );
+  const scored = [...groups.values()].map((g) => ({ g, d: distance(g) }));
+  const best = Math.max(...scored.map((s) => s.d));
+  return scored.filter((s) => s.d === best).flatMap((s) => s.g);
 }
 
 /** In `S.A.N`, keep members of packages declared in schema `S` when any are indexed. */

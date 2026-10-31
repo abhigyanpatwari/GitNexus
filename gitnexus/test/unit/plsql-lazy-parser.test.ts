@@ -40,12 +40,15 @@ const HEAVY = /(?:^|\/)(?:extract|parse)\.js$|\/generated\/|^antlr4ng$/;
  */
 function valueImports(source: string): string[] {
   const out: string[] = [];
-  for (const m of source.matchAll(/^import\s+(type\s+)?[^;']*?\s+from\s+'([^']+)';/gm)) {
-    if (!m[1]) out.push(m[2]!);
+  // Either quote style; clauses may span lines but never cross a `;`.
+  for (const m of source.matchAll(/^import\s+(type\s+)?[^;'"]*?\s+from\s+(['"])([^'"]+)\2/gm)) {
+    if (!m[1]) out.push(m[3]!);
   }
-  for (const m of source.matchAll(/^import\s+'([^']+)';/gm)) out.push(m[1]!);
-  for (const m of source.matchAll(/^export\s+(type\s+)?(?:\*|\{[^}]*\})\s+from\s+'([^']+)';/gm)) {
-    if (!m[1]) out.push(m[2]!);
+  for (const m of source.matchAll(/^import\s+(['"])([^'"]+)\1/gm)) out.push(m[2]!);
+  for (const m of source.matchAll(
+    /^export\s+(type\s+)?(?:\*(?:\s+as\s+[\w$]+)?|\{[^}]*\})\s+from\s+(['"])([^'"]+)\2/gm,
+  )) {
+    if (!m[1]) out.push(m[3]!);
   }
   return out;
 }
@@ -59,13 +62,31 @@ describe('PL/SQL parser loads lazily', () => {
   it('the scanner sees side-effect imports and re-exports', () => {
     expect(
       valueImports(
-        "import './generated/PlSqlParser.js';\nexport { extractPlSqlFacts } from './extract.js';\nexport type { X } from './extract.js';\n",
+        [
+          "import './generated/PlSqlParser.js';",
+          "export { extractPlSqlFacts } from './extract.js';",
+          "export type { X } from './extract.js';",
+          'import { PlSqlLexer } from "./generated/PlSqlLexer.js";',
+          'import {',
+          '  ParseTreeWalker,',
+          '  ParserRuleContext,',
+          "} from 'antlr4ng';",
+          "import type { Y } from './extract.js';",
+          "export * as all from './parse.js';",
+        ].join('\n'),
       ),
-    ).toEqual(['./generated/PlSqlParser.js', './extract.js']);
+    ).toEqual([
+      './generated/PlSqlLexer.js',
+      'antlr4ng',
+      './generated/PlSqlParser.js',
+      './extract.js',
+      './parse.js',
+    ]);
   });
 
-  it('facts-store reaches the extractor only through dynamic loading', () => {
+  it('facts-store is the one place the extractor is loaded: dynamically, or by its require fallback', () => {
     const source = readFileSync(path.join(INGESTION, 'plsql/facts-store.ts'), 'utf8');
     expect(source).toMatch(/await import\('\.\/extract\.js'\)/);
+    expect(source).toMatch(/createRequire\(import\.meta\.url\)\('\.\/extract\.js'\)/);
   });
 });

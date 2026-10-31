@@ -16,6 +16,7 @@ import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolv
 import { plsqlProvider } from '../plsql.js';
 import {
   PlSqlNameIndex,
+  PlSqlPackageInstances,
   nearestByPath,
   rootPackageOf,
   type PlSqlIndexEntry,
@@ -64,6 +65,7 @@ const plsqlScopeResolver: ScopeResolver = {
     const record = context.recordSourceBinding;
 
     const index = new PlSqlNameIndex<BoundEntry>();
+    const entries: Array<{ entry: BoundEntry; fileDefs: readonly PlSqlDefinition[] }> = [];
     const symbolOf = new Map<PlSqlDefinition, SymbolDefinition>();
     const files = parsedFiles.map((parsed) => {
       const facts = plsqlFactsFor(context.fileContents.get(parsed.filePath) ?? '', parsed.filePath);
@@ -74,16 +76,35 @@ const plsqlScopeResolver: ScopeResolver = {
         const symbol = byNameRange.get(plsqlRangeKey(plsqlNameRange(def)));
         if (!symbol) continue;
         symbolOf.set(def, symbol);
-        index.add({
+        const entry: BoundEntry = {
           def,
           filePath: parsed.filePath,
           symbol,
           packageSchema:
             def.kind === 'package' ? undefined : rootPackageOf(def, facts.definitions)?.schema,
-        });
+        };
+        entries.push({ entry, fileDefs: facts.definitions });
+        index.add(entry);
       }
       return { parsed, facts };
     });
+
+    // Same package instances as the processor, so a declaration and its body
+    // are weighed as one entity (see `PlSqlNameIndex.resolve`).
+    const instances = new PlSqlPackageInstances(
+      entries
+        .filter(({ entry }) => entry.def.kind === 'package')
+        .map(({ entry }) => ({
+          name: entry.def.name,
+          schema: entry.def.schema,
+          filePath: entry.filePath,
+          isSpec: entry.def.isSpec,
+        })),
+    );
+    for (const { entry, fileDefs } of entries) {
+      const pkg = rootPackageOf(entry.def, fileDefs);
+      if (pkg) entry.instance = instances.instanceOf(pkg.name, pkg.schema, entry.filePath);
+    }
 
     // A package name denotes the package instance nearest the reference; its
     // spec when indexed.

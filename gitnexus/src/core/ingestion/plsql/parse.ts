@@ -19,6 +19,8 @@ import {
   CharStream,
   CommonTokenStream,
   DefaultErrorStrategy,
+  ListTokenSource,
+  Token,
   ParseCancellationException,
   PredictionMode,
   type ATNSimulator,
@@ -26,7 +28,6 @@ import {
   type ParserRuleContext,
   type RecognitionException,
   type Recognizer,
-  type Token,
 } from 'antlr4ng';
 import { PlSqlLexer } from './generated/PlSqlLexer.js';
 import { PlSqlParser, type Sql_scriptContext } from './generated/PlSqlParser.js';
@@ -96,66 +97,92 @@ class CountingErrorListener extends BaseErrorListener {
 
 class DeadlineExceeded extends Error {}
 
-/** Parse listener that aborts once the deadline passes (checked every 512 rules). */
-function deadlineListener(deadline: number): ParseTreeListener {
+/** Throws once `deadline` has passed; checked on every 256th call to stay cheap. */
+function deadlineGuard(deadline: number): () => void {
   let ticks = 0;
+  return () => {
+    if ((++ticks & 255) === 0 && performance.now() > deadline) throw new DeadlineExceeded();
+  };
+}
+
+/** Parse listener that runs the guard on every rule entry and every consumed token. */
+function deadlineListener(check: () => void): ParseTreeListener {
   return {
-    visitTerminal() {},
+    visitTerminal: check,
     visitErrorNode() {},
-    enterEveryRule() {
-      if ((++ticks & 511) === 0 && performance.now() > deadline) throw new DeadlineExceeded();
-    },
+    enterEveryRule: check,
     exitEveryRule() {},
   };
 }
 
 /**
- * Parser over `text`. Lexer errors (characters no token rule matches) are
- * counted too: the lexer skips them and the parser may then succeed, so they
- * must still mark the segment as degraded.
+ * Tokens of `text`, lexed once under the deadline (SLL and LL re-use them).
+ * Lexer errors (characters no token rule matches) are counted: the lexer
+ * skips them and the parser may then succeed, so they must still mark the
+ * segment as degraded.
  */
-function newParser(text: string): { parser: PlSqlParser; lexerErrors: CountingErrorListener } {
+function lex(
+  text: string,
+  check: () => void,
+): { tokens: Token[]; lexerErrors: CountingErrorListener } {
   const lexer = new PlSqlLexer(CharStream.fromString(text));
   lexer.removeErrorListeners();
   const lexerErrors = new CountingErrorListener();
   lexer.addErrorListener(lexerErrors);
-  const parser = new PlSqlParser(new CommonTokenStream(lexer));
+  const tokens: Token[] = [];
+  for (;;) {
+    check();
+    const token = lexer.nextToken();
+    tokens.push(token);
+    if (token.type === Token.EOF) break;
+  }
+  return { tokens, lexerErrors };
+}
+
+/**
+ * Parser over pre-lexed tokens with the deadline checked on rule entry, on
+ * every consumed token and before every adaptive prediction. A single
+ * prediction cannot be interrupted (ANTLR exposes no hook inside one).
+ */
+function newParser(tokens: Token[], check: () => void): PlSqlParser {
+  const parser = new PlSqlParser(new CommonTokenStream(new ListTokenSource(tokens)));
   parser.removeErrorListeners();
-  return { parser, lexerErrors };
+  parser.addParseListener(deadlineListener(check));
+  const interpreter = parser.interpreter;
+  const predict = interpreter.adaptivePredict.bind(interpreter);
+  interpreter.adaptivePredict = (...args: Parameters<typeof predict>) => {
+    check();
+    return predict(...args);
+  };
+  return parser;
 }
 
 function parseSegment(
   text: string,
   deadlineMs: number,
 ): Omit<PlSqlSegment, 'startLine' | 'endLine' | 'text'> {
-  const deadline = performance.now() + deadlineMs;
+  const check = deadlineGuard(performance.now() + deadlineMs);
   try {
-    const sll = newParser(text);
-    sll.parser.interpreter.predictionMode = PredictionMode.SLL;
-    sll.parser.errorHandler = new BailErrorStrategy();
-    sll.parser.addParseListener(deadlineListener(deadline));
+    const { tokens, lexerErrors } = lex(text, check);
+    const sll = newParser(tokens, check);
+    sll.interpreter.predictionMode = PredictionMode.SLL;
+    sll.errorHandler = new BailErrorStrategy();
     try {
-      const tree = sll.parser.sql_script();
-      return {
-        tree,
-        syntaxErrors: sll.lexerErrors.count,
-        firstError: sll.lexerErrors.first,
-        mode: 'sll',
-      };
+      const tree = sll.sql_script();
+      return { tree, syntaxErrors: lexerErrors.count, firstError: lexerErrors.first, mode: 'sll' };
     } catch (e) {
       if (!(e instanceof ParseCancellationException)) throw e;
     }
-    const ll = newParser(text);
+    const ll = newParser(tokens, check);
     const errors = new CountingErrorListener();
-    ll.parser.addErrorListener(errors);
-    ll.parser.interpreter.predictionMode = PredictionMode.LL;
-    ll.parser.errorHandler = new DefaultErrorStrategy();
-    ll.parser.addParseListener(deadlineListener(deadline));
-    const tree = ll.parser.sql_script();
+    ll.addErrorListener(errors);
+    ll.interpreter.predictionMode = PredictionMode.LL;
+    ll.errorHandler = new DefaultErrorStrategy();
+    const tree = ll.sql_script();
     return {
       tree,
-      syntaxErrors: errors.count + ll.lexerErrors.count,
-      firstError: ll.lexerErrors.first ?? errors.first,
+      syntaxErrors: errors.count + lexerErrors.count,
+      firstError: lexerErrors.first ?? errors.first,
       mode: 'll',
     };
   } catch (e) {
