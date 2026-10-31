@@ -109,15 +109,13 @@ it('preserves original overload callers and omission receipts across cold, durab
     // External.value() has no available return type. Neither overload can be
     // chosen; known callers stay intact and each queried candidate is hedged.
     const unknownPath = path.join(repo, 'src/main/java/demo/UnknownCalls.java');
-    await writeFile(
-      unknownPath,
-      `package demo;
+    const unknownSource = `package demo;
 class UnknownCalls {
   LookupService lookup;
   Perm unknown() { return lookup.resolve(External.value()); }
 }
-`,
-    );
+`;
+    await writeFile(unknownPath, unknownSource);
     const unresolved = await child<AnalysisReceipt>('analyze');
     expect(unresolved.meta.unresolvedOverloads?.totalSites).toBeGreaterThan(0);
     const uncertainResults = await child<Record<string, ImpactReceipt>>('inspect');
@@ -140,7 +138,9 @@ class UnknownCalls {
 }
 `,
     );
-    await child<AnalysisReceipt>('analyze');
+    const correction = await child<AnalysisReceipt>('analyze');
+    expect(correction.reparsed).toBe(1);
+    expect(correction.hits).toBe(5);
     const corrected = await child<Record<string, ImpactReceipt>>('inspect');
     expect(corrected[prefix + 'resolve#1~String'].summary.direct).toBe(2);
     expect(
@@ -152,8 +152,19 @@ class UnknownCalls {
       expect(corrected[uid].causes).toEqual(coldResults[uid].causes);
     }
 
+    // Delete a file with a persisted unresolved call, so stale omission
+    // metadata cannot hide behind the earlier correction's empty receipt.
+    await writeFile(unknownPath, unknownSource);
+    const unresolvedAgain = await child<AnalysisReceipt>('analyze');
+    expect(unresolvedAgain.meta.unresolvedOverloads?.totalSites).toBeGreaterThan(0);
     await rm(unknownPath);
-    await child<AnalysisReceipt>('analyze');
+    const deletion = await child<AnalysisReceipt>('analyze');
+    expect(deletion.meta.unresolvedOverloads).toMatchObject({
+      complete: true,
+      totalSites: 0,
+      omittedSites: 0,
+      sites: [],
+    });
     const restored = await child<Record<string, ImpactReceipt>>('inspect');
     assertCallers(restored);
     for (const uid of targets) {

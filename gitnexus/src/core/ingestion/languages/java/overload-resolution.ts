@@ -577,7 +577,7 @@ function inheritsPackageMember(
 function eligible(
   definition: SymbolDefinition,
   receiver: SymbolDefinition,
-  caller: SymbolDefinition | undefined,
+  site: ReferenceSite,
   call: JavaOverloadCallFact | undefined,
   state: State,
 ): JavaVerdict {
@@ -595,6 +595,7 @@ function eligible(
   )
     return 'no';
   if (fact.modifiers.includes('public')) return 'yes';
+  const caller = findEnclosingClassDef(site.inScope, state.scopes);
   const callerPackage = caller === undefined ? undefined : packageName(caller.filePath);
   const ownerPackage = packageName(owner.filePath);
   const receiverPackage = packageName(receiver.filePath);
@@ -621,13 +622,27 @@ function eligible(
   }
   if (callerPackage !== undefined && callerPackage === ownerPackage) return 'yes';
   if (caller === undefined) return 'unknown';
-  if (!state.scopes.methodDispatch.mroFor(caller.nodeId).includes(owner.nodeId)) return 'no';
-  return isStatic ||
-    call?.receiverSpelling === 'super' ||
-    receiver.nodeId === caller.nodeId ||
-    state.scopes.methodDispatch.mroFor(receiver.nodeId).includes(caller.nodeId)
-    ? 'yes'
-    : 'no';
+  // JLS 6.6.2.1 permits access within any enclosing subclass body, but
+  // an instance receiver must be that qualifying subclass or its subtype.
+  const receiverMro = state.scopes.methodDispatch.mroFor(receiver.nodeId);
+  for (const scopeId of [site.inScope, ...state.scopes.scopeTree.getAncestors(site.inScope)]) {
+    const scope = state.scopes.scopeTree.getScope(scopeId);
+    if (scope?.kind !== 'Class') continue;
+    const enclosing = scope.ownedDefs.find((def) => isClassLike(def.type));
+    if (
+      enclosing === undefined ||
+      !state.scopes.methodDispatch.mroFor(enclosing.nodeId).includes(owner.nodeId)
+    )
+      continue;
+    if (
+      isStatic ||
+      call?.receiverSpelling === 'super' ||
+      receiver.nodeId === enclosing.nodeId ||
+      receiverMro.includes(enclosing.nodeId)
+    )
+      return 'yes';
+  }
+  return 'no';
 }
 
 function coversObjectSignature(owner: SymbolDefinition, name: string, state: State): boolean {
@@ -705,7 +720,7 @@ function hierarchyComplete(
 function receiverInventory(
   owner: SymbolDefinition,
   name: string,
-  caller: SymbolDefinition | undefined,
+  site: ReferenceSite,
   call: JavaOverloadCallFact | undefined,
   state: State,
 ) {
@@ -717,7 +732,7 @@ function receiverInventory(
     for (const declaration of state.model.methods.lookupAllByOwner(ownerId, name)) {
       if (originalDeclarationIds.has(declaration.nodeId)) continue;
       originalDeclarationIds.add(declaration.nodeId);
-      const verdict = eligible(declaration, owner, caller, call, state);
+      const verdict = eligible(declaration, owner, site, call, state);
       if (verdict === 'no') continue;
       declarations.push(declaration);
       if (verdict === 'unknown') complete = false;
@@ -826,7 +841,7 @@ export function resolveJavaReceiverMember(
     }
   }
   const caller = findEnclosingClassDef(site.inScope, scopes);
-  const inventory = receiverInventory(owner, memberName, caller, call, state);
+  const inventory = receiverInventory(owner, memberName, site, call, state);
   if (inventory.declarations.length === 0) return undefined;
   const candidateIds = inventory.declarations.map((candidate) => candidate.nodeId);
   if (!inventory.complete)
@@ -942,7 +957,6 @@ export function resolveJavaUnqualifiedCall(
         ) ?? []);
   if (imported.length > 0) {
     const state = stateFor(scopes, model);
-    const caller = findEnclosingClassDef(site.inScope, scopes);
     const call = getJavaOverloadCall(filePath!, site.atRange, site.name);
     const claim = lookupNameClaim(site.inScope, site.name, scopes);
     const candidates = new Map<
@@ -966,7 +980,7 @@ export function resolveJavaUnqualifiedCall(
         if (ownerAccess === 'unknown') complete = false;
         continue;
       }
-      const inventory = receiverInventory(owner, site.name, caller, call, state);
+      const inventory = receiverInventory(owner, site.name, site, call, state);
       complete &&= inventory.complete;
       for (const candidate of inventory.normalized) {
         const fact = methodFact(candidate.definition, state);

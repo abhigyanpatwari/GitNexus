@@ -183,7 +183,10 @@ describe('persisted unresolved overload coverage', () => {
     expect(summary.sites).toHaveLength(MAX_UNRESOLVED_OVERLOAD_SITES);
     const retained = new Set(summary.sites.flatMap((site) => site.candidateIds));
     const omitted = outcomes.find((outcome) => !retained.has(outcome.candidateGraphIds![0]))!;
-    expect(probe(summary, omitted.candidateGraphIds!).notes.join(' ')).toContain('partial');
+    expect(probe(summary, omitted.candidateGraphIds!)).toEqual({
+      sites: 0,
+      notes: [expect.stringContaining('partial')],
+    });
   });
 
   it('bounds per-site identities and serialized bytes with explicit partial coverage', () => {

@@ -11,6 +11,28 @@ const javacAvailable =
 
 describe('javac oracle for Java overload resolution', () => {
   it.runIf(javacAvailable)(
+    'confirms enclosing-subclass access and protected receiver restrictions',
+    () => {
+      const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-javac-protected-'));
+      try {
+        const sources = path.join(FIXTURES, 'java-protected-overloads');
+        execFileSync('javac', [
+          ...compilerLocale,
+          '-d',
+          root,
+          path.join(sources, 'a/A.java'),
+          path.join(sources, 'b/B.java'),
+        ]);
+        expect(execFileSync('java', ['-cp', root, 'b.B'], { encoding: 'utf8' }).trim()).toBe(
+          'string,object,object,string,string,string,static-string',
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(javacAvailable)(
     'compiles the exact issue fixture and confirms its six target descriptors',
     () => {
       const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-javac-overloads-'));
