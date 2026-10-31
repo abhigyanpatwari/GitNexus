@@ -643,6 +643,65 @@ withTestLbugDB(
   },
 );
 
+withTestLbugDB(
+  'taint-explain-adonis',
+  (handle) => {
+    it('explain reports persisted AdonisJS input reaching rawQuery (#2982)', async () => {
+      const backend = (handle as typeof handle & { _backend: LocalBackend })._backend;
+      const unsafe = await backend.callTool('explain', { target: 'unsafeQuery' });
+      expect(unsafe).not.toHaveProperty('error');
+      expect(unsafe.totalFindings).toBe(1);
+      expect(unsafe.findings).toEqual([
+        expect.objectContaining({ sinkKind: 'sql-injection', file: 'controller.ts' }),
+      ]);
+      const safe = await backend.callTool('explain', { target: 'boundQuery' });
+      expect(safe).not.toHaveProperty('error');
+      expect(safe.totalFindings).toBe(0);
+    });
+  },
+  {
+    poolAdapter: true,
+    beforeFTS: async (dbPath) => {
+      const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-adonis-explain-'));
+      try {
+        fs.writeFileSync(
+          path.join(repoDir, 'controller.ts'),
+          `import db from '@adonisjs/lucid/services/db';
+export function unsafeQuery(ctx) {
+  const name = ctx.request.input('name');
+  return db.rawQuery('select * from users where name = ' + name);
+}
+export function boundQuery({ request }) {
+  const name = request.input('name');
+  return db.rawQuery('select * from users where name = ?', [name]);
+}
+`,
+        );
+        const result = await runPipelineFromRepo(repoDir, () => {}, { pdg: true });
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+        await adapter.loadGraphToLbug(result.graph, repoDir, path.dirname(dbPath));
+      } finally {
+        fs.rmSync(repoDir, { recursive: true, force: true });
+      }
+    },
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'adonis-taint-repo',
+          path: '/adonis-taint/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'adonis001',
+          stats: { files: 1, nodes: 1, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as typeof handle & { _backend: LocalBackend })._backend = backend;
+    },
+  },
+);
+
 // ─── Block 4: symbol-anchor window correctness (#2188 _explainImpl off-by-one) ──
 //
 // Hand-seeded with controlled line numbers (no parser dependency). `tailFn`

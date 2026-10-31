@@ -36,6 +36,29 @@ export const TS_JS_TAINT_MODEL: SourceSinkSanitizerSpec = {
       objects: ['req', 'request'],
       properties: ['body', 'query', 'params', 'headers', 'cookies'],
     },
+    // AdonisJS reads request data through methods, including when the
+    // request is accessed through HttpContext rather than destructured.
+    // Schema validation can still allow arbitrary strings: validateUsing
+    // does not by itself neutralize SQL, shell, path, or markup injection.
+    {
+      type: 'call-result',
+      kind: 'remote-input',
+      receivers: ['req', 'request', 'ctx.request'],
+      methods: [
+        'input',
+        'qs',
+        'header',
+        'param',
+        'cookie',
+        'all',
+        'body',
+        'params',
+        'headers',
+        'only',
+        'except',
+        'validateUsing',
+      ],
+    },
   ],
   sinks: [
     // Command execution — shell strings are arg 0; argv-form APIs also treat
@@ -99,6 +122,16 @@ export const TS_JS_TAINT_MODEL: SourceSinkSanitizerSpec = {
       receivers: ['db', 'database', 'conn', 'client', 'pool'],
     },
     { name: 'raw', kind: 'sql-injection', args: [0], receivers: ['db', 'knex', 'sequelize'] },
+    // Lucid consumes SQL at argument 0; argument 1 contains value bindings.
+    // Preserve import provenance for aliases of the Adonis database service
+    // alongside conventional database/transaction handles.
+    {
+      name: 'rawQuery',
+      kind: 'sql-injection',
+      args: [0],
+      module: '@adonisjs/lucid/services/db',
+    },
+    { name: 'rawQuery', kind: 'sql-injection', args: [0], receivers: ['db', 'database', 'trx'] },
     // Reflected XSS — Express response writes, conventional receiver `res`.
     { name: 'send', kind: 'xss', args: [0], receivers: ['res'] },
     { name: 'write', kind: 'xss', args: [0], receivers: ['res'] },
