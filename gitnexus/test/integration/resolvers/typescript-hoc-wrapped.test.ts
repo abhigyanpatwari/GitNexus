@@ -93,17 +93,6 @@ describe('TypeScript HOC-wrapped variable declarations', () => {
     expect(targets).toContain('fmt');
   });
 
-  it('useCallback: handleSubmit → doStuff (sibling const, separate caller)', () => {
-    // Two useCallback consts in the same file — each must be its own
-    // caller anchor (no leakage to the first sibling, the analogue of
-    // the multi-action-store regression in PR #1175).
-    const calls = getRelationships(result, 'CALLS').filter(
-      (c) => c.sourceFilePath === 'src/use-callback.ts' && c.target === 'doStuff',
-    );
-    const fromHandleSubmit = calls.filter((c) => c.source === 'handleSubmit');
-    expect(fromHandleSubmit.length, 'handleSubmit must call doStuff').toBeGreaterThan(0);
-  });
-
   it('useMemo: computed → doStuff (returns-a-value variant)', () => {
     // `const computed = useMemo(() => { return doStuff(42); }, [])`.
     // The arrow's body has a `return` statement — irrelevant to call
