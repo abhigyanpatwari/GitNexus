@@ -15,10 +15,12 @@ import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
 import { ANALYZE_STORAGE_REQUIREMENTS, requireStoragePath } from '../storage/storage-resolver.js';
 import { GITNEXUS_DIR } from '../storage/repo-meta.js';
 import {
+  GITNEXUS_RC_ENV,
   loadAnalyzeConfigStrict,
   mergeAnalyzeOptions,
   validateBranchName,
 } from './analyze-config.js';
+import { logger } from '../core/logger.js';
 import type { AnalyzeOptions } from './analyze-options.js';
 import { ensureHeap } from './analyze.js';
 import { cliError, cliInfo, cliWarn } from './cli-message.js';
@@ -60,8 +62,15 @@ function isIgnoreControlPath(filePath: string): boolean {
   return normalized === '.gitignore' || normalized === '.gitnexusignore';
 }
 
+/**
+ * Queue entry for a change to the `GITNEXUS_RC` file. It lives outside the
+ * repository, so it has no repo-relative path; the leading NUL keeps it apart
+ * from every real path.
+ */
+export const EXTERNAL_CONFIG_WATCH_PATH = '\u0000GITNEXUS_RC';
+
 function isConfigControlPath(filePath: string): boolean {
-  return posixWatchPath(filePath) === '.gitnexusrc';
+  return filePath === EXTERNAL_CONFIG_WATCH_PATH || posixWatchPath(filePath) === '.gitnexusrc';
 }
 
 function isAnalyzerOwnedWatchPath(filePath: string): boolean {
@@ -202,6 +211,10 @@ export async function resolveWatchOptions(
     maxProcessTraceDepth: processDetection.maxProcessTraceDepth,
     maxEntryPointCandidates: processDetection.maxEntryPointCandidates,
     fetchWrappers: merged.fetchWrappers,
+    routeHookConfig: {
+      routeFrameworkAliases: merged.routeFrameworkAliases,
+      routeHandlerWrappers: merged.routeHandlerWrappers,
+    },
     skipAgentsMd: true,
     skipSkills: true,
     noStats: true,
@@ -279,6 +292,8 @@ export async function startWatchFileLoop(
   refresh: (paths: readonly string[]) => Promise<void>,
   onError: WatchRefreshError,
   onWatcherError: (error: unknown) => void = (error) => onError(error, []),
+  /** Absolute `GITNEXUS_RC` path; its edits, replacements and removal reload config. */
+  externalConfigPath?: string,
 ): Promise<WatchFileLoop> {
   let ignorePath = await createWatchIgnorePredicate(repoPath);
   let ignoreControlValid = true;
@@ -366,6 +381,34 @@ export async function startWatchFileLoop(
 
   let watcher: FSWatcher = createWatcher();
 
+  // The external config file is outside the repository watcher. Watch its
+  // directory, not the file: an editor's atomic save replaces the inode, and
+  // a watch on the file itself would go quiet after the first replacement.
+  const createExternalConfigWatcher = (configPath: string): FSWatcher => {
+    const directory = path.dirname(configPath);
+    const created: FSWatcher = watch(directory, {
+      ignoreInitial: true,
+      atomic: true,
+      depth: 0,
+      followSymlinks: false,
+      awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 20 },
+      ignored: (candidate) =>
+        path.resolve(candidate) !== directory && path.resolve(candidate) !== configPath,
+    });
+    created.on('all', (event, changedPath) => {
+      if (event !== 'add' && event !== 'change' && event !== 'unlink') return;
+      if (path.resolve(changedPath) !== configPath) return;
+      logger.debug({ event, file: configPath }, 'watch: GITNEXUS_RC changed; reloading config');
+      queue.enqueue(EXTERNAL_CONFIG_WATCH_PATH);
+    });
+    created.on('error', (error) => onWatcherError(error));
+    return created;
+  };
+  const externalConfigWatcher =
+    externalConfigPath === undefined
+      ? undefined
+      : createExternalConfigWatcher(path.resolve(externalConfigPath));
+
   // Chokidar emits `ready` once per instance and `add()` returns before the
   // rescan it starts has finished, with no signal for that completion. A file
   // an ignore-rule reload has just unignored is therefore still unregistered
@@ -401,10 +444,12 @@ export async function startWatchFileLoop(
 
   try {
     await waitUntilReady(watcher);
+    if (externalConfigWatcher) await waitUntilReady(externalConfigWatcher);
     await queue.runInitial();
   } catch (error) {
     closed = true;
     await watcher.close();
+    await externalConfigWatcher?.close();
     await queue.close();
     throw error;
   }
@@ -414,6 +459,7 @@ export async function startWatchFileLoop(
     close: async () => {
       closed = true;
       await watcher.close();
+      await externalConfigWatcher?.close();
       await queue.close();
     },
   };
@@ -578,6 +624,7 @@ export async function watchCommandWithRunnerIdentity(
             );
             stopWatching();
           },
+          process.env[GITNEXUS_RC_ENV]?.trim() || undefined,
         );
       } catch (error) {
         cliError(

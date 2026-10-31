@@ -24,6 +24,39 @@ afterEach(async () => {
 });
 
 describe('watch path selection', () => {
+  it('forwards and removes route configuration on subsequent refreshes', async () => {
+    const aliases = [{ importPath: 'example.com/core', type: 'Engine', framework: 'gin' }];
+    const baseline = { maxFileSize: undefined, workerTimeout: undefined, verbose: undefined };
+    for (const name of [
+      'GITNEXUS_MAX_FILE_SIZE',
+      'GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS',
+      'GITNEXUS_VERBOSE',
+    ]) {
+      vi.stubEnv(name, process.env[name]);
+    }
+    vi.stubEnv('GITNEXUS_RC', '');
+    try {
+      await fs.writeFile(
+        path.join(repoPath, '.gitnexusrc'),
+        JSON.stringify({
+          goRouterAliases: aliases,
+          goHandlerWrappers: ['common.Wrapper'],
+        }),
+      );
+      expect((await resolveWatchOptions(repoPath, {}, baseline)).routeHookConfig).toEqual({
+        routeFrameworkAliases: aliases,
+        routeHandlerWrappers: ['common.Wrapper'],
+      });
+      await fs.writeFile(path.join(repoPath, '.gitnexusrc'), '{}');
+      expect((await resolveWatchOptions(repoPath, {}, baseline)).routeHookConfig).toEqual({
+        routeFrameworkAliases: undefined,
+        routeHandlerWrappers: undefined,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('forwards explicit FTS opt-out without changing the default', async () => {
     const names = [
       'GITNEXUS_MAX_FILE_SIZE',

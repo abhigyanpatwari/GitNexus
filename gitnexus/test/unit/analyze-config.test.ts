@@ -289,6 +289,176 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     expect(() => loadAnalyzeConfig(dir)).toThrow(/at least one string/);
   });
 
+  // ── Go route aliases and handler wrappers ──────────────────────────
+
+  const CORE = 'example.com/infra/pkg';
+
+  it('normalizes goRouterAliases and goHandlerWrappers (de-duped)', async () => {
+    await writeRc(
+      JSON.stringify({
+        goRouterAliases: [
+          { importPath: ` ${CORE} `, type: 'Engine', framework: 'gin' },
+          { importPath: CORE, type: 'Engine', framework: 'gin' },
+        ],
+        goHandlerWrappers: ['common.Wrapper', 'common.WrapperWithSuccessCode', 'common.Wrapper'],
+      }),
+    );
+    expect(loadAnalyzeConfig(dir)).toEqual({
+      routeFrameworkAliases: [{ importPath: CORE, type: 'Engine', framework: 'gin' }],
+      routeHandlerWrappers: ['common.Wrapper', 'common.WrapperWithSuccessCode'],
+    });
+  });
+
+  it.each([
+    [[{ importPath: CORE, type: 'Engine', framework: 'chi' }], /"gin" or "echo"/],
+    [
+      [
+        { importPath: CORE, type: 'Engine', framework: 'gin' },
+        { importPath: CORE, type: 'Engine', framework: 'echo' },
+      ],
+      /as both "gin" and "echo"/,
+    ],
+    [[{ type: 'Engine', framework: 'gin' }], /"importPath" must be a non-empty string/],
+    [[{ importPath: CORE, type: 'Engine', framework: 'gin', extra: 1 }], /unknown field "extra"/],
+    [[{ importPath: CORE, type: '*Engine', framework: 'gin' }], /must be a Go type name/],
+    [[{ importPath: 'a b', type: 'Engine', framework: 'gin' }], /must be a Go import path/],
+    [[], /non-empty array/],
+    [['gin'], /entries must be objects/],
+  ])('rejects malformed goRouterAliases %j', async (aliases, message) => {
+    await writeRc(JSON.stringify({ goRouterAliases: aliases }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(message);
+  });
+
+  it('rejects more router aliases than the cap instead of truncating', async () => {
+    const alias = (i: number) => ({ importPath: `${CORE}${i}`, type: 'Engine', framework: 'gin' });
+    await writeRc(
+      JSON.stringify({ goRouterAliases: Array.from({ length: 100 }, (_, i) => alias(i)) }),
+    );
+    expect(loadAnalyzeConfig(dir)?.routeFrameworkAliases).toHaveLength(100);
+    await writeRc(
+      JSON.stringify({ goRouterAliases: Array.from({ length: 101 }, (_, i) => alias(i)) }),
+    );
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/declares 101 aliases; at most 100/);
+  });
+
+  describe('GITNEXUS_RC out-of-repo config', () => {
+    let outside: string;
+    const saved = process.env.GITNEXUS_RC;
+
+    beforeEach(async () => {
+      outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-rc-env-'));
+    });
+
+    afterEach(async () => {
+      if (saved === undefined) delete process.env.GITNEXUS_RC;
+      else process.env.GITNEXUS_RC = saved;
+      await fs.rm(outside, { recursive: true, force: true });
+    });
+
+    const writeEnvRc = async (contents: unknown): Promise<string> => {
+      const file = path.join(outside, 'service.json');
+      await fs.writeFile(file, JSON.stringify(contents));
+      process.env.GITNEXUS_RC = file;
+      return file;
+    };
+
+    it('applies the file when the repository has no .gitnexusrc', async () => {
+      await writeEnvRc({ goHandlerWrappers: ['common.Wrapper'] });
+      expect(loadAnalyzeConfig(dir)).toEqual({ routeHandlerWrappers: ['common.Wrapper'] });
+      await expect(loadAnalyzeConfigStrict(dir)).resolves.toEqual({
+        routeHandlerWrappers: ['common.Wrapper'],
+      });
+    });
+
+    it('overrides the repository .gitnexusrc key by key, and CLI still wins', async () => {
+      await writeRc(JSON.stringify({ defaultBranch: 'develop', skipSkills: true }));
+      await writeEnvRc({ defaultBranch: 'release' });
+      const config = loadAnalyzeConfig(dir);
+      expect(config).toEqual({ defaultBranch: 'release', skipSkills: true });
+      expect(mergeAnalyzeOptions({ skipSkills: false }, config).skipSkills).toBe(false);
+    });
+
+    it('rejects a relative path, a missing file, and invalid content', async () => {
+      process.env.GITNEXUS_RC = 'relative/rc.json';
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/must be an absolute path/);
+      process.env.GITNEXUS_RC = path.join(outside, 'missing.json');
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/Could not read GITNEXUS_RC file/);
+      await writeEnvRc({ goRouterAliases: 'gin' });
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/GITNEXUS_RC file .*non-empty array/);
+    });
+
+    it('rejects a directory and an oversized file', async () => {
+      process.env.GITNEXUS_RC = outside;
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/not a regular file/);
+      const big = path.join(outside, 'big.json');
+      await fs.writeFile(big, `{"skipSkills": true}${' '.repeat(MAX_REPO_CONTROL_FILE_BYTES)}`);
+      process.env.GITNEXUS_RC = big;
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/larger than/);
+    });
+
+    it('rejects a file that grows past the cap after fstat, without reading it all', async () => {
+      const file = await writeEnvRc({ skipSkills: true });
+      const realFstat = fsSync.fstatSync;
+      const readSpy = vi.spyOn(fsSync, 'readSync');
+      const readFileSpy = vi.spyOn(fsSync, 'readFileSync');
+      const fstatSpy = vi.spyOn(fsSync, 'fstatSync').mockImplementation(((fd: number) => {
+        const stat = realFstat(fd);
+        // The writer appends after the size check has already passed.
+        fsSync.appendFileSync(file, ' '.repeat(2 * MAX_REPO_CONTROL_FILE_BYTES));
+        return stat;
+      }) as typeof fsSync.fstatSync);
+      try {
+        expect(() => loadAnalyzeConfig(dir)).toThrow(/larger than/);
+        // Bytes pulled from the file by either read API: the bound must hold
+        // regardless of how the reader is written.
+        const bytesRead =
+          readSpy.mock.results.reduce(
+            (sum, result) => sum + (result.type === 'return' ? (result.value as number) : 0),
+            0,
+          ) +
+          readFileSpy.mock.results.reduce(
+            (sum, result) =>
+              sum + (result.type === 'return' ? Buffer.byteLength(result.value as string) : 0),
+            0,
+          );
+        expect(bytesRead).toBeLessThanOrEqual(MAX_REPO_CONTROL_FILE_BYTES + 1);
+      } finally {
+        fstatSpy.mockRestore();
+        readSpy.mockRestore();
+        readFileSpy.mockRestore();
+      }
+    });
+
+    it.skipIf(process.platform === 'win32')(
+      'rejects a FIFO promptly instead of blocking on open',
+      async () => {
+        const fifo = path.join(outside, 'rc.fifo');
+        execFileSync('mkfifo', [fifo]);
+        const script = path.join(outside, 'load.mts');
+        const configModule = path.resolve(__dirname, '../../src/cli/analyze-config.ts');
+        await fs.writeFile(
+          script,
+          `import { loadAnalyzeConfig } from ${JSON.stringify(configModule)};\n` +
+            `try { loadAnalyzeConfig(${JSON.stringify(dir)}); console.log('loaded'); }\n` +
+            `catch (error) { console.log(String((error as Error).message)); }\n`,
+        );
+        const tsx = path.resolve(__dirname, '../../node_modules/.bin/tsx');
+        const output = execFileSync(tsx, [script], {
+          env: { ...process.env, GITNEXUS_RC: fifo },
+          encoding: 'utf-8',
+          timeout: 20_000,
+        });
+        expect(output).toMatch(/not a regular file/);
+      },
+      30_000,
+    );
+
+    it('is ignored when unset or blank', async () => {
+      process.env.GITNEXUS_RC = '  ';
+      expect(loadAnalyzeConfig(dir)).toBeUndefined();
+    });
+  });
+
   // ── Spring Actuator runtime enrichment (#2418) ────────────────────
 
   it('normalizes a Spring Actuator snapshot path', async () => {

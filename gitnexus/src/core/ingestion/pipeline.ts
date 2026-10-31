@@ -17,6 +17,7 @@
 
 import { createKnowledgeGraph } from '../graph/graph.js';
 import type { KnowledgeGraph } from '../graph/types.js';
+import type { RouteHookConfig } from './language-provider.js';
 import { GLOBAL_NAME_FALLBACK_REASON } from '../graph/edge-reasons.js';
 import { GraphEmitSink, type GraphEmitManifest } from '../lbug/graph-emit-sink.js';
 import { type PipelineProgress } from 'gitnexus-shared';
@@ -307,6 +308,13 @@ export interface PipelineOptions {
    * traced. Empty/undefined leaves behavior unchanged.
    */
   fetchWrappers?: readonly string[];
+  /**
+   * Declared router-framework aliases and handler-wrapper callees, threaded
+   * from `.gitnexusrc` / `GITNEXUS_RC`. Applied on the main thread by the
+   * provider route hooks — never sent to parse workers, so they never enter a
+   * parse-cache key. Empty/undefined leaves route extraction unchanged.
+   */
+  routeHookConfig?: RouteHookConfig;
 }
 
 // ── Phase registry ─────────────────────────────────────────────────────────

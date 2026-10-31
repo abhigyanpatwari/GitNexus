@@ -191,6 +191,77 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     );
   });
 
+  describe('route configuration', () => {
+    const launchWith = async () => {
+      const launch = createLaunchAnalysisWorker({
+        jobManager,
+        backend: { init: backendInit },
+        acquireRepoLock: () => null,
+        releaseRepoLock: () => {
+          calls.push('releaseRepoLock');
+        },
+        closeDbHandle,
+      });
+      const job = jobManager.createJob({ repoPath: REPO_PATH });
+      await launch(job, REPO_PATH, {});
+      return jobManager.getJob(job.id);
+    };
+    let rcDir: string;
+
+    beforeEach(async () => {
+      const fsp = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      const os = await vi.importActual<typeof import('node:os')>('node:os');
+      rcDir = await fsp.mkdtemp(`${os.tmpdir()}/gitnexus-launch-rc-`);
+    });
+
+    afterEach(async () => {
+      vi.unstubAllEnvs();
+      const fsp = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      await fsp.rm(rcDir, { recursive: true, force: true });
+    });
+
+    it('forwards the GITNEXUS_RC aliases and wrappers the CLI would use', async () => {
+      const fsp = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      const rc = `${rcDir}/service.json`;
+      await fsp.writeFile(
+        rc,
+        JSON.stringify({
+          goRouterAliases: [
+            { importPath: 'example.com/infra/pkg', type: 'Engine', framework: 'gin' },
+          ],
+          goHandlerWrappers: ['common.Wrapper'],
+        }),
+      );
+      vi.stubEnv('GITNEXUS_RC', rc);
+
+      await launchWith();
+
+      expect(child.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          options: expect.objectContaining({
+            routeHookConfig: {
+              routeFrameworkAliases: [
+                { importPath: 'example.com/infra/pkg', type: 'Engine', framework: 'gin' },
+              ],
+              routeHandlerWrappers: ['common.Wrapper'],
+            },
+          }),
+        }),
+      );
+    });
+
+    it('fails the job without forking a worker when the explicit config is invalid', async () => {
+      vi.stubEnv('GITNEXUS_RC', `${rcDir}/missing.json`);
+
+      const job = await launchWith();
+
+      expect(forkMock).not.toHaveBeenCalled();
+      expect(job?.status).toBe('failed');
+      expect(job?.error).toMatch(/Could not read GITNEXUS_RC file/);
+      expect(calls).toContain('releaseRepoLock');
+    });
+  });
+
   it('uses the force storage set only when launch options request force', async () => {
     const launch = createLaunchAnalysisWorker({
       jobManager,

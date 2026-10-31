@@ -1589,6 +1589,10 @@ const analyzeCommandImpl = async (
       // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
       // forwarded to the routes phase consumer scan.
       fetchWrappers: options.fetchWrappers,
+      routeHookConfig: {
+        routeFrameworkAliases: options.routeFrameworkAliases,
+        routeHandlerWrappers: options.routeHandlerWrappers,
+      },
       springActuatorPath: options.springActuator,
       asyncApiSpecPath: options.asyncapiSpec,
       // The CLI always process.exit()s after this returns (success path at the

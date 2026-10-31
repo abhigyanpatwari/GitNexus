@@ -56,8 +56,28 @@ import type {
 import type { ExtractedDecoratorRoute, ExtractedToolDef } from './workers/parse-worker.js';
 import type { SemanticModel } from './model/semantic-model.js';
 
+/**
+ * A declared router-framework equivalence: values of type `type` reached
+ * through `importPath` are the `framework`'s router root. Framework names are
+ * opaque here; the provider that owns the framework interprets them.
+ */
+export interface RouteFrameworkAlias {
+  readonly importPath: string;
+  readonly type: string;
+  readonly framework: string;
+}
+
+/** User route configuration handed to provider route hooks on the main thread. */
+export interface RouteHookConfig {
+  /** Declared router-framework aliases; empty when none are configured. */
+  readonly routeFrameworkAliases?: readonly RouteFrameworkAlias[];
+  /** Callee designators (`pkg.Wrap`) whose first argument is the real handler. */
+  readonly routeHandlerWrappers?: readonly string[];
+}
+
 /** What a provider's {@link LanguageProviderConfig.resolveRouteHandler} can see. */
 export interface RouteHandlerResolutionHookContext {
+  readonly routeHookConfig?: RouteHookConfig;
   /** The model after every file has been parsed; scope resolution has not run. */
   readonly model: SemanticModel;
   /**
@@ -647,6 +667,7 @@ interface LanguageProviderConfig {
   readonly resolveRouteFacts?: (
     files: readonly { filePath: string; facts: unknown }[],
     context: {
+      readonly routeHookConfig?: RouteHookConfig;
       resolveImportTargets: (fromFile: string, moduleSpecifier: string) => readonly string[];
     },
   ) => ExtractedDecoratorRoute[];

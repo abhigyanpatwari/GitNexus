@@ -30,7 +30,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { readRepoControlFile } from '../config/repo-control-file.js';
+import { MAX_REPO_CONTROL_FILE_BYTES, readRepoControlFile } from '../config/repo-control-file.js';
+import { logger } from '../core/logger.js';
+import { normalizeRouterAliases } from '../core/ingestion/languages/go/route-config.js';
 import {
   InvalidBranchError,
   sanitizeDetectedBranch,
@@ -64,7 +66,8 @@ type ValueKind =
   | 'numeric-string'
   | 'embeddings'
   | 'branch'
-  | 'path';
+  | 'path'
+  | 'router-aliases';
 
 interface KeySpec {
   /** The `AnalyzeOptions` field this config key normalizes into. */
@@ -116,6 +119,13 @@ const KEY_SPECS: Record<string, KeySpec> = {
   // built-in convention set, is otherwise invisible to route_map consumers.
   // Listing it here adds it to the cross-file consumer scan.
   fetchWrappers: { target: 'fetchWrappers', kind: 'string-array' },
+  // Go router types reached through an in-house wrapper package that are the
+  // gin/echo engine (`type Engine = gin.Engine`). The indexer cannot read the
+  // dependency's source, so the equivalence is declared, never guessed.
+  goRouterAliases: { target: 'routeFrameworkAliases', kind: 'router-aliases' },
+  // Go functions that wrap a route handler (`common.Wrapper(api.CreateJob)`);
+  // the wrapped first argument becomes the route's handler.
+  goHandlerWrappers: { target: 'routeHandlerWrappers', kind: 'string-array' },
   // Explicit local Actuator snapshot input (#2418). The path itself is safe in
   // project config; payload contents are never copied into the graph wholesale.
   springActuator: { target: 'springActuator', kind: 'path' },
@@ -301,6 +311,12 @@ const normalizeValue = (kind: ValueKind, value: unknown, key: string): unknown =
         `${source} must be a boolean or a non-negative integer (node cap; 0 disables the cap).`,
       );
     }
+    case 'router-aliases':
+      try {
+        return normalizeRouterAliases(value, source);
+      } catch (error) {
+        throw new GitNexusRcError((error as Error).message);
+      }
     default:
       // Exhaustive — kept for forward-compat if a new kind is added.
       throw new GitNexusRcError(`${source}: unsupported config value kind.`);
@@ -356,11 +372,11 @@ export function loadAnalyzeConfig(repoRoot: string): Partial<AnalyzeOptions> | u
   try {
     raw = fs.readFileSync(filePath, 'utf-8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined;
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return withEnvConfig(undefined);
     throw new GitNexusRcError(`Could not read ${GITNEXUS_RC_FILENAME}: ${(err as Error).message}`);
   }
 
-  return parseAnalyzeConfig(raw);
+  return withEnvConfig(parseAnalyzeConfig(raw));
 }
 
 /** Load `.gitnexusrc` through the strict bounded reader used by watch mode. */
@@ -373,7 +389,76 @@ export async function loadAnalyzeConfigStrict(
   } catch (err) {
     throw new GitNexusRcError(`Could not read ${GITNEXUS_RC_FILENAME}: ${(err as Error).message}`);
   }
-  return raw === null ? undefined : parseAnalyzeConfig(raw);
+  return withEnvConfig(raw === null ? undefined : parseAnalyzeConfig(raw));
+}
+
+/** Environment variable naming an analyze config file kept outside the repository. */
+export const GITNEXUS_RC_ENV = 'GITNEXUS_RC';
+
+/**
+ * Read an explicitly named config file through one descriptor, never by path
+ * after the check, so it cannot be swapped between the check and the read.
+ *
+ * O_NONBLOCK makes opening a FIFO return at once instead of blocking in
+ * open(2) until a writer appears; fstat then rejects it. It changes nothing
+ * for a regular file (same reasoning as `readNestedGitignore`). The read stops
+ * one byte past the limit, so a file that grows after fstat is rejected
+ * before it is decoded rather than read to EOF.
+ */
+function readBoundedConfigFile(filePath: string): string {
+  const fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0));
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) throw new Error('not a regular file');
+    const tooLarge = () => new Error(`larger than ${MAX_REPO_CONTROL_FILE_BYTES} bytes`);
+    if (stat.size > MAX_REPO_CONTROL_FILE_BYTES) throw tooLarge();
+    const buffer = Buffer.alloc(MAX_REPO_CONTROL_FILE_BYTES + 1);
+    let length = 0;
+    for (;;) {
+      const read = fs.readSync(fd, buffer, length, buffer.length - length, null);
+      if (read === 0) break;
+      length += read;
+      if (length > MAX_REPO_CONTROL_FILE_BYTES) throw tooLarge();
+    }
+    return buffer.toString('utf-8', 0, length);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Layer the `GITNEXUS_RC` file over the repository's `.gitnexusrc`, key by key.
+ * It lets a checkout carry analyze config without a tracked or untracked file
+ * in the working tree. Being an explicit request, a relative path, a missing
+ * file, or an oversized file is an error rather than a silent no-op.
+ */
+function withEnvConfig(
+  repoConfig: Partial<AnalyzeOptions> | undefined,
+): Partial<AnalyzeOptions> | undefined {
+  const envPath = process.env[GITNEXUS_RC_ENV]?.trim();
+  if (!envPath) return repoConfig;
+  const label = `${GITNEXUS_RC_ENV} file "${envPath}"`;
+  if (!path.isAbsolute(envPath)) {
+    throw new GitNexusRcError(`${GITNEXUS_RC_ENV} must be an absolute path (got "${envPath}").`);
+  }
+  let raw: string;
+  try {
+    raw = readBoundedConfigFile(envPath);
+  } catch (err) {
+    throw new GitNexusRcError(`Could not read ${label}: ${(err as Error).message}`);
+  }
+  let envConfig: Partial<AnalyzeOptions>;
+  try {
+    envConfig = parseAnalyzeConfig(raw);
+  } catch (err) {
+    if (err instanceof GitNexusRcError) throw new GitNexusRcError(`${label}: ${err.message}`);
+    throw err;
+  }
+  logger.debug(
+    { file: envPath, keys: Object.keys(envConfig), repoKeys: Object.keys(repoConfig ?? {}) },
+    'analyze config: applied GITNEXUS_RC over .gitnexusrc',
+  );
+  return { ...repoConfig, ...envConfig };
 }
 
 function parseAnalyzeConfig(rawInput: string): Partial<AnalyzeOptions> {
