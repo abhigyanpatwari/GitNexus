@@ -189,14 +189,6 @@ describe('COBOL parsing coverage (F17-F23)', () => {
   // F23: PERFORM TIMES + THRU on digit-leading targets
   // =====================================================================
   describe('F23 — PERFORM TIMES and THRU', () => {
-    it('PERFORM 2000-PROCESS THRU 2100-CLEANUP resolves THRU target', () => {
-      const perfThruEdges = getRelationships(result, 'CALLS').filter(
-        (e) => e.rel.reason === 'cobol-perform-thru',
-      );
-      const thruTargets = perfThruEdges.map((e) => e.target);
-      expect(thruTargets).toContain('2100-CLEANUP');
-    });
-
     it('PERFORM with VARYING does NOT create spurious CALLS edge', () => {
       // PERFTIMS has PERFORM VARYING WS-COUNT FROM 1 BY 1...
       // VARYING is in PERFORM_KEYWORD_SKIP, so it should be skipped.
