@@ -703,7 +703,10 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       bar.stop();
 
       const totalElapsed = ((Date.now() - t0) / 1000).toFixed(1);
-      console.log(`\n  Wiki generated successfully (${totalElapsed}s)\n`);
+      const incomplete = !!continueResult.failedModules?.length;
+      console.log(
+        `\n  ${incomplete ? 'Wiki generation incomplete' : 'Wiki generated successfully'} (${totalElapsed}s)\n`,
+      );
       console.log(`  Mode: ${continueResult.mode}`);
       console.log(`  Pages: ${continueResult.pagesGenerated}`);
       console.log(`  Output: ${wikiDir}`);
@@ -714,6 +717,9 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
         for (const mod of continueResult.failedModules) {
           console.log(`    - ${mod}`);
         }
+        console.log('  Re-run to retry failed modules (pages will be regenerated).\n');
+        process.exitCode = 1;
+        return;
       }
 
       console.log('');
@@ -730,7 +736,10 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       return;
     }
 
-    console.log(`\n  Wiki generated successfully (${elapsed}s)\n`);
+    const incomplete = !!result.failedModules?.length;
+    console.log(
+      `\n  ${incomplete ? 'Wiki generation incomplete' : 'Wiki generated successfully'} (${elapsed}s)\n`,
+    );
     console.log(`  Mode: ${result.mode}`);
     console.log(`  Pages: ${result.pagesGenerated}`);
     console.log(`  Output: ${wikiDir}`);
@@ -742,6 +751,9 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
         console.log(`    - ${mod}`);
       }
       console.log('  Re-run to retry failed modules (pages will be regenerated).');
+      console.log('');
+      process.exitCode = 1;
+      return;
     }
 
     console.log('');

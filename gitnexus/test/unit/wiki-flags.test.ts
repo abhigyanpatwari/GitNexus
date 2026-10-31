@@ -953,6 +953,51 @@ describe('wikiCommand --timeout mapping', () => {
     expect(harness.getCapturedConfig()?.maxTokens).toBe(131072);
   });
 
+  it.each([false, true])(
+    'reports incomplete generation as failure (review: %s)',
+    async (review) => {
+      const harness = await loadWikiCommandHarness();
+      const run = vi.fn().mockResolvedValue({
+        mode: 'full',
+        pagesGenerated: 1,
+        failedModules: ['Billing'],
+      });
+      if (review) {
+        run.mockResolvedValueOnce({ mode: 'full', pagesGenerated: 0, moduleTree: [] });
+      }
+      harness.generatorCtor.mockImplementation(function () {
+        return { run };
+      });
+
+      await harness.wikiCommand('/tmp/repo', { review, gist: true });
+
+      expect(process.exitCode).toBe(1);
+      expect(run).toHaveBeenCalledTimes(review ? 2 : 1);
+      expect(harness.consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Wiki generation incomplete'),
+      );
+      expect(harness.consoleSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('Wiki generated successfully'),
+      );
+      expect(harness.consoleSpy).toHaveBeenCalledWith('    - Billing');
+    },
+  );
+
+  it('reports invalid environment or saved limits before starting generation', async () => {
+    const harness = await loadWikiCommandHarness();
+    harness.resolveLLMConfig.mockRejectedValueOnce(
+      new Error('GITNEXUS_MAX_COMPLETION_TOKENS must be a positive integer'),
+    );
+
+    await harness.wikiCommand('/tmp/repo');
+
+    expect(process.exitCode).toBe(1);
+    expect(harness.generatorCtor).not.toHaveBeenCalled();
+    expect(harness.consoleSpy).toHaveBeenCalledWith(
+      '  Error: GITNEXUS_MAX_COMPLETION_TOKENS must be a positive integer\n',
+    );
+  });
+
   it('rejects a non-integer --max-completion-tokens value before starting generation', async () => {
     const harness = await loadWikiCommandHarness();
 

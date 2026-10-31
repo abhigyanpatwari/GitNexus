@@ -485,12 +485,15 @@ export async function callLLM(
 
   // Streaming path
   if (useStream && response.body) {
-    return await readSSEStream(response.body, options!.onChunk!);
+    return await readSSEStream(response.body, options!.onChunk!, config.maxTokens);
   }
 
   // Non-streaming path
   const json = (await response.json()) as any;
   const choice = json.choices?.[0];
+  if (choice?.finish_reason === 'length') {
+    throw truncatedResponseError(config.maxTokens);
+  }
   if (!choice?.message?.content) {
     throw new Error('LLM returned empty response');
   }
@@ -502,18 +505,28 @@ export async function callLLM(
   };
 }
 
+// A response cut off by the completion limit reads like a finished one, and a
+// reasoning model can spend the whole limit before the answer starts.
+function truncatedResponseError(maxTokens: number): Error {
+  return new Error(
+    `LLM response stopped at the completion token limit (${maxTokens}, finish_reason "length") and is incomplete.`,
+  );
+}
+
 /**
  * Read an SSE stream from an OpenAI-compatible streaming response.
  */
 async function readSSEStream(
   body: ReadableStream<Uint8Array>,
   onChunk: (charsReceived: number) => void,
+  maxTokens: number,
 ): Promise<LLMResponse> {
   const decoder = new TextDecoder();
   const reader = body.getReader();
   let content = '';
   let buffer = '';
   let contentFilterTriggered = false;
+  let lengthLimitReached = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -538,6 +551,9 @@ async function readSSEStream(
           contentFilterTriggered = true;
           continue;
         }
+        if (choice?.finish_reason === 'length') {
+          lengthLimitReached = true;
+        }
 
         const delta = choice?.delta?.content;
         if (delta) {
@@ -554,6 +570,10 @@ async function readSSEStream(
     throw new Error(
       'content filter triggered mid-stream. The generated content was blocked by content policy. Adjust your prompt and retry.',
     );
+  }
+
+  if (lengthLimitReached) {
+    throw truncatedResponseError(maxTokens);
   }
 
   if (!content) {
