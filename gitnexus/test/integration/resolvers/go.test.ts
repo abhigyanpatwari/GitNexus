@@ -980,18 +980,6 @@ describe('Go assignment chain propagation', () => {
     expect(saveMethods.length).toBe(2);
   });
 
-  it('resolves alias.Save() to User#Save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    // Positive: alias.Save() must resolve to User#Save
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'Save' &&
-        c.source === 'processEntities' &&
-        c.targetFilePath.includes('user.go'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
   it('alias.Save() does NOT resolve to Repo#Save', () => {
     const calls = getRelationships(result, 'CALLS');
     // Negative: alias comes from User, so only one edge to user.go
@@ -1002,18 +990,6 @@ describe('Go assignment chain propagation', () => {
         c.targetFilePath.includes('user.go'),
     );
     expect(wrongCall.length).toBe(1);
-  });
-
-  it('resolves rAlias.Save() to Repo#Save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    // Positive: rAlias.Save() must resolve to Repo#Save
-    const repoSave = calls.find(
-      (c) =>
-        c.target === 'Save' &&
-        c.source === 'processEntities' &&
-        c.targetFilePath.includes('repo.go'),
-    );
-    expect(repoSave).toBeDefined();
   });
 
   it('each alias resolves to its own struct, not the other', () => {
