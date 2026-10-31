@@ -1,10 +1,11 @@
 {
-  "coreVersion": "0.21.2",
-  "extensionVersion": "0.21.0",
+  "coreVersion": "0.22.0",
+  "extensionVersion": "0.22.0",
   "filename": "libfts.lbug_extension",
   "officialRepo": "https://extension.ladybugdb.com/",
   "urlTemplate": "{officialRepo}v{extensionVersion}/{upstreamPlatform}/fts/{filename}",
   "upstreamDigestPublished": false,
+  "workflowRun": "https://github.com/LadybugDB/ladybug/actions/runs/40157072171",
   "tuples": [
     { "tuple": "linux-x64", "upstreamPlatform": "linux_amd64" },
     { "tuple": "linux-arm64", "upstreamPlatform": "linux_arm64" },
