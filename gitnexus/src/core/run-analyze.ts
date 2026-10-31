@@ -1563,6 +1563,8 @@ export async function runFullAnalysis(
       else if (options.shareWith) await setShareOptOut(repoPath, false);
       return result;
     } finally {
+      // Readers opened after analyze must not inherit its smaller write budget.
+      setBufferPoolSizeHint(undefined);
       await removeColdParseRebuildDir(parseRun.storagePath, true);
       discardScopedEmbeddingSpills();
       lock.release();

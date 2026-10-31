@@ -81,7 +81,7 @@
     "version": "node scripts/sync-plugin-manifests.mjs"
   },
   "dependencies": {
-    "@ladybugdb/core": "0.21.1",
+    "@ladybugdb/core": "0.22.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
     "busboy": "^1.6.0",

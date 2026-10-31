@@ -1493,14 +1493,6 @@ describe('Write access tracking (PHP)', () => {
     expect(countWrite!.source).toBe('updateUser');
   });
 
-  it('emits ACCESSES write edge for static property assignment', () => {
-    const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter((e) => e.rel.reason === 'write');
-    const countWrite = writes.find((e) => e.target === 'count');
-    expect(countWrite).toBeDefined();
-    expect(countWrite!.source).toBe('updateUser');
-  });
-
   it('write ACCESSES edges have confidence 1.0', () => {
     const accesses = getRelationships(result, 'ACCESSES');
     const writes = accesses.filter((e) => e.rel.reason === 'write');
