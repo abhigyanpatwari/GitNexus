@@ -382,73 +382,73 @@
     },
     {
       "a": "test/unit/shared-type-extractors.test.ts#stripNullable > strips \"| null\": User | null \u2192 User",
-      "b": "test/unit/type-env.test.ts#buildTypeEnv > stripNullable > strips User | null \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > strips User | null \u2192 User",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/shared-type-extractors.test.ts#stripNullable > strips \"| undefined\": User | undefined \u2192 User",
-      "b": "test/unit/type-env.test.ts#buildTypeEnv > stripNullable > strips User | undefined \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > strips User | undefined \u2192 User",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/shared-type-extractors.test.ts#stripNullable > strips both \"| null | undefined\": User | null | undefined \u2192 User",
-      "b": "test/unit/type-env.test.ts#buildTypeEnv > stripNullable > strips User | null | undefined \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > strips User | null | undefined \u2192 User",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/shared-type-extractors.test.ts#stripNullable > strips nullable suffix: User? \u2192 User",
-      "b": "test/unit/type-env.test.ts#buildTypeEnv > stripNullable > strips User? \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > strips User? \u2192 User",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns undefined for genuine union: User | Repo",
-      "b": "test/unit/type-env.test.ts#buildTypeEnv > stripNullable > refuses genuine union User | Repo \u2192 undefined",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > refuses genuine union User | Repo \u2192 undefined",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns undefined for bare \"null\"",
-      "b": "test/unit/type-env.test.ts#buildTypeEnv > stripNullable > returns undefined for null alone",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > returns undefined for null alone",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns undefined for bare \"undefined\"",
-      "b": "test/unit/type-env.test.ts#buildTypeEnv > stripNullable > returns undefined for undefined alone",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > returns undefined for undefined alone",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns undefined for bare \"None\"",
-      "b": "test/unit/type-env.test.ts#buildTypeEnv > stripNullable > returns undefined for None alone",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > returns undefined for None alone",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns undefined for bare \"nil\"",
-      "b": "test/unit/type-env.test.ts#buildTypeEnv > stripNullable > returns undefined for nil alone",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > returns undefined for nil alone",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns undefined for bare \"void\"",
-      "b": "test/unit/type-env.test.ts#buildTypeEnv > stripNullable > returns undefined for void alone",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > returns undefined for void alone",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns undefined for empty string",
-      "b": "test/unit/type-env.test.ts#buildTypeEnv > stripNullable > returns undefined for empty string",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > returns undefined for empty string",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns the type name unchanged when no nullable markers: User \u2192 User",
-      "b": "test/unit/type-env.test.ts#buildTypeEnv > stripNullable > passes through User unchanged",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > passes through User unchanged",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
