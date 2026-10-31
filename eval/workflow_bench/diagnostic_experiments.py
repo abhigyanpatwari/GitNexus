@@ -13,7 +13,8 @@ from typing import Any
 
 import yaml
 
-from .runner_tasks import normalized_model_identifier, select_tasks
+from .process_control import run_checked
+from .runner_tasks import normalized_model_identifier, resolve_task_bindings, select_tasks
 from .session_budget import session_budget
 
 VARIANTS = {
@@ -103,6 +104,7 @@ def prepare_plan(
     return {
         "schema": "gitnexus.diagnostic-experiments/v1", "execution": "not_started",
         "harness_sha": harness_sha, "runtime_sha": runtime_sha, "seed": seed,
+        "task_repository": repository,
         "model": model, "effort": effort, "repeats": repeats, "workers": 1,
         "max_budget_usd_per_cell": max_budget_usd,
         "planned_cli_budget_usd": len(cells) * max_budget_usd if max_budget_usd is not None else None,
@@ -120,6 +122,19 @@ def prepare_plan(
     }
 
 
+def trial_task_bindings(tasks: list[dict[str, Any]], expected: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Pin built dependencies only after checking their tracked source checkout."""
+    for task in tasks:
+        repo = str(Path(task["repo"]).resolve())
+        head = run_checked(["git", "-C", repo, "rev-parse", "HEAD"], timeout=60).stdout_tail.strip()
+        dirty = run_checked(
+            ["git", "-C", repo, "status", "--porcelain", "--untracked-files=no"], timeout=60,
+        ).stdout_tail.strip()
+        if head != task["ref"] or dirty:
+            raise ValueError("trial dependencies require a clean pinned task checkout")
+    return resolve_task_bindings(tasks, expected)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tasks", type=Path, required=True)
@@ -134,6 +149,8 @@ def main() -> None:
     parser.add_argument("--max-budget-usd", type=float, help="CLI-reported budget stop per cell, not an invoice cap")
     parser.add_argument("--variants", nargs="+", choices=VARIANTS, default=list(VARIANTS))
     parser.add_argument("--task-ids", nargs="+")
+    parser.add_argument("--bind-task-dependencies", action="store_true",
+                        help="pin built task dependencies for execution; requires a clean pinned checkout")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     plan = prepare_plan(
@@ -142,6 +159,14 @@ def main() -> None:
         model=args.model, effort=args.effort, repeats=args.repeats, seed=args.seed,
         variants=args.variants, task_ids=args.task_ids, max_budget_usd=args.max_budget_usd,
     )
+    if args.bind_task_dependencies:
+        bindings = {}
+        for cell in plan["cells"]:
+            tasks = cell["task_document"]["tasks"]
+            key = json.dumps(tasks, sort_keys=True)
+            if key not in bindings:
+                bindings[key] = trial_task_bindings(tasks)
+            cell["task_bindings"] = bindings[key]
     # Refuse overwrite: a previous plan/ledger may already be evidence.
     args.out.mkdir(parents=True, exist_ok=False)
     root = args.out.resolve()

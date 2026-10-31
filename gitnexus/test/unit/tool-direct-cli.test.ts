@@ -18,6 +18,58 @@ vi.mock('node:fs', () => ({
 }));
 
 describe('direct CLI tool commands', () => {
+  it.each(['0', '1.5', '10tokens'])('rejects invalid impact budgets: %s', async (maxTokens) => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    try {
+      const { impactCommand } = await import('../../src/cli/tool.js');
+      await impactCommand('auth', { maxTokens });
+      expect(callToolMock).not.toHaveBeenCalled();
+      expect(JSON.parse(writeSyncMock.mock.calls[0][1]).error).toContain('positive integer');
+      expect(exit).toHaveBeenCalledWith(1);
+    } finally {
+      exit.mockRestore();
+    }
+  });
+
+  it('returns a JSON budget error and fails when impact metadata cannot fit', async () => {
+    callToolMock.mockResolvedValue({
+      impactedCount: 1,
+      byDepth: { 1: [{ id: 'caller' }] },
+      affected_processes: [{ name: 'x'.repeat(10_000) }],
+    });
+    const { impactCommand } = await import('../../src/cli/tool.js');
+    await impactCommand('auth', { maxTokens: '100' });
+    const text = writeSyncMock.mock.calls[0][1];
+    expect(JSON.parse(text).error).toContain('Increase maxTokens');
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(400);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('budgets compact output even on a terminal', async () => {
+    const tty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
+    try {
+      callToolMock.mockResolvedValue({
+        byDepth: {
+          1: Array.from({ length: 20 }, (_, i) => ({
+            id: `caller${i}`,
+            name: `caller${i}`,
+            filePath: `src/${i}.ts`,
+          })),
+        },
+      });
+      const { impactCommand } = await import('../../src/cli/tool.js');
+      await impactCommand('auth', { maxTokens: '150' });
+      const text = writeSyncMock.mock.calls[0][1];
+      expect(Buffer.byteLength(text.trim())).toBeLessThanOrEqual(600);
+      expect(JSON.parse(text).pagination.trimmedForBudget.maxTokens).toBe(150);
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      if (tty) Object.defineProperty(process.stdout, 'isTTY', tty);
+      else delete process.stdout.isTTY;
+    }
+  });
+
   beforeEach(() => {
     vi.unstubAllEnvs();
     vi.stubEnv('GITNEXUS_LANG', 'en');

@@ -403,6 +403,56 @@ describe('getNextStepHint rename', () => {
 });
 
 describe('MCP output budgets', () => {
+  it('applies the default impact page with client-supplied schema defaults', async () => {
+    const backend = createMockBackend();
+    const args = { target: 'auth', direction: 'upstream', offset: 0, summaryOnly: false };
+    const response = await callToolThroughServer(backend, 'impact', args);
+    expect(response.isError).toBe(false);
+    expect(backend.callTool).toHaveBeenCalledWith('impact', { ...args, limit: 30 });
+  });
+
+  it.each([1, 4, 20, 100, 800])(
+    'returns a bounded JSON error when impact metadata exceeds %i tokens',
+    async (maxTokens) => {
+      const backend = createMockBackend({
+        callTool: vi.fn().mockResolvedValue({
+          impactedCount: 1,
+          risk: 'HIGH',
+          byDepthCounts: { 1: 1 },
+          byDepth: { 1: [{ id: 'caller' }] },
+          affected_processes: [{ name: '😀'.repeat(3000) }],
+        }),
+      });
+      const { text, isError } = await callToolThroughServer(backend, 'impact', {
+        target: 'auth',
+        direction: 'upstream',
+        maxTokens,
+      });
+      expect(isError).toBe(true);
+      expect(Buffer.byteLength(text)).toBeLessThanOrEqual(maxTokens * 4);
+      expect(() => JSON.parse(text)).not.toThrow();
+      expect(text).not.toContain(MCP_TRUNCATION_MARKER);
+      if (maxTokens >= 4) expect(JSON.parse(text)).toHaveProperty('error');
+    },
+  );
+
+  it.each([
+    { impactedCount: 2, affected_modules: [{ name: 'x'.repeat(10_000) }] },
+    { status: 'ambiguous', candidates: [{ name: 'x'.repeat(10_000) }] },
+    { mode: 'pdg', byDepth: {}, affectedStatements: [{ code: 'x'.repeat(10_000) }] },
+    { group: 'services', local: { payload: 'x'.repeat(10_000) } },
+  ])('bounds impact responses without a trimmable symbol list', async (result) => {
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(result) });
+    const response = await callToolThroughServer(backend, 'impact', {
+      target: 'auth',
+      direction: 'upstream',
+      maxTokens: 100,
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.parse(response.text).error).toContain('Increase maxTokens');
+    expect(Buffer.byteLength(response.text)).toBeLessThanOrEqual(400);
+  });
+
   it('serializes query previews and diagnostics as one JSON document', async () => {
     const result = {
       processes: [{ id: 'process-1', symbol_count: 2 }],

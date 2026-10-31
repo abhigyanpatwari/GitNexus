@@ -428,6 +428,10 @@ program
   .option('--timeout <seconds>', 'LLM request timeout in seconds (default: disabled)')
   .option('--retries <n>', 'Max LLM retry attempts per request (default: 3)')
   .option(
+    '--max-completion-tokens <n>',
+    'Max completion tokens for each LLM request (default: 16384)',
+  )
+  .option(
     '--allow-insecure-connection <host>',
     'Allow exact host(s) for http:// LLM base URLs (comma-separated; HTTPS is preferred)',
   )
@@ -520,7 +524,7 @@ program
   .option('--summary-only', 'Return counts and risk only, omit symbol list')
   .option(
     '--max-tokens <n>',
-    'Fit the result into about N tokens by dropping the deepest symbols first (counts stay complete)',
+    'Fit compact JSON into about N tokens, dropping deepest symbols first; fails if the summary cannot fit',
   )
   .action(createLbugLazyAction(() => import('./tool.js'), 'impactCommand'));
 

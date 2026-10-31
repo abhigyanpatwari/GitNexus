@@ -1,3 +1,5 @@
+import { MCP_TOKEN_ESTIMATE_BYTES } from './output-budget.js';
+
 /**
  * Agent-facing shaping of `impact` results.
  *
@@ -18,8 +20,28 @@ export const IMPACT_AGENT_DEFAULT_LIMIT = 30;
 /** Processes listed per affected symbol; `processCount` carries the full count. */
 export const IMPACT_ITEM_PROCESS_CAP = 3;
 
-/** Bytes per estimated token, the same conservative estimate as output-budget.ts. */
-const TOKEN_ESTIMATE_BYTES = 4;
+/** A budget that cannot hold the summary must never look like a successful empty walk. */
+export class ImpactBudgetExceededError extends Error {
+  constructor(readonly maxTokens: number) {
+    super('Impact result cannot fit maxTokens. Increase maxTokens or narrow the request.');
+    this.name = 'ImpactBudgetExceededError';
+  }
+
+  toJSONText(): string {
+    const budget = this.maxTokens * MCP_TOKEN_ESTIMATE_BYTES;
+    for (const payload of [
+      { error: this.message },
+      { error: 'Increase maxTokens' },
+      { error: true },
+    ]) {
+      const text = JSON.stringify(payload);
+      if (Buffer.byteLength(text, 'utf8') <= budget) return text;
+    }
+    // Even a one-token budget holds valid JSON. The transport's isError or
+    // CLI exit status still signals failure when an error object cannot fit.
+    return 'null';
+  }
+}
 
 /**
  * The default per-depth page for agent calls. `GITNEXUS_IMPACT_DEFAULT_LIMIT=0`
@@ -44,7 +66,11 @@ export function withImpactAgentDefaults<T extends Record<string, unknown> | unde
   env: NodeJS.ProcessEnv = process.env,
 ): T {
   if (!args) return args;
-  if (args.limit !== undefined || args.offset !== undefined || args.summaryOnly !== undefined) {
+  if (
+    args.limit !== undefined ||
+    (args.offset !== undefined && args.offset !== 0) ||
+    (args.summaryOnly !== undefined && args.summaryOnly !== false)
+  ) {
     return args;
   }
   if (typeof args.repo === 'string' && args.repo.startsWith('@')) return args;
@@ -108,16 +134,20 @@ function keepFirst(byDepth: Record<string, unknown[]>, keep: number): Record<str
  * deepest levels first, so the JSON stays valid and the direct dependants
  * survive longest. Counts (`byDepthCounts`, `impactedCount`, `summary`) still
  * describe the full result, and `pagination.trimmedForBudget` says what was
- * cut. A result that cannot fit even without symbols is returned unchanged;
- * the byte-level cap after serialization still applies to it.
+ * cut. If the summary alone cannot fit, fail explicitly instead of letting a
+ * byte-level cap turn a successful response into broken JSON.
  *
  * `reservedBytes` is text appended after serialization (next-step hints).
  */
 export function fitImpactToTokenBudget<T>(result: T, maxTokens: number, reservedBytes = 0): T {
   const input: unknown = result;
-  if (!isRecord(input) || !isRecord(input.byDepth)) return result;
-  const budget = maxTokens * TOKEN_ESTIMATE_BYTES - reservedBytes;
+  const budget = maxTokens * MCP_TOKEN_ESTIMATE_BYTES - reservedBytes;
   if (byteLength(result) <= budget) return result;
+  // PDG's byDepth aliases interproceduralByDepth. Trimming only one would
+  // publish contradictory views of the same slice.
+  if (!isRecord(input) || !isRecord(input.byDepth) || input.mode === 'pdg') {
+    throw new ImpactBudgetExceededError(maxTokens);
+  }
 
   const byDepth = input.byDepth as Record<string, unknown[]>;
   const total = Object.values(byDepth).reduce(
@@ -143,7 +173,7 @@ export function fitImpactToTokenBudget<T>(result: T, maxTokens: number, reserved
   // Largest prefix that fits: one serialization per probe, log2(total) probes.
   let low = 0;
   let high = total;
-  if (byteLength(build(0)) > budget) return result;
+  if (byteLength(build(0)) > budget) throw new ImpactBudgetExceededError(maxTokens);
   while (low < high) {
     const mid = Math.ceil((low + high) / 2);
     if (byteLength(build(mid)) <= budget) low = mid;
@@ -158,7 +188,9 @@ export function shapeImpactForAgent<T>(
   maxTokens: number | undefined,
   reservedBytes = 0,
 ): T {
-  const compact = compactImpactItemProcesses(result);
+  const input: unknown = result;
+  const compact =
+    isRecord(input) && input.mode === 'pdg' ? result : compactImpactItemProcesses(result);
   return maxTokens === undefined
     ? compact
     : fitImpactToTokenBudget(compact, maxTokens, reservedBytes);

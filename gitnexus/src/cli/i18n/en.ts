@@ -361,6 +361,8 @@ export const en = {
   'help.option.wiki.concurrency': 'Parallel LLM calls (default: 3)',
   'help.option.wiki.timeout': 'LLM request timeout in seconds (default: disabled)',
   'help.option.wiki.retries': 'Max LLM retry attempts per request (default: 3)',
+  'help.option.wiki.maxCompletionTokens':
+    'Max completion tokens for each LLM request (default: 16384)',
   'help.option.wiki.allowInsecureConnection':
     'Allow exact host(s) for http:// LLM base URLs (comma-separated; HTTPS is preferred)',
   'help.option.wiki.gist': 'Publish wiki as a public GitHub Gist after generation',
@@ -390,7 +392,7 @@ export const en = {
   'help.option.impact.offset': 'Skip N symbols per depth level for pagination',
   'help.option.impact.summaryOnly': 'Return counts and risk only, omit symbol list',
   'help.option.impact.maxTokens':
-    'Fit the result into about N tokens by dropping the deepest symbols first (counts stay complete)',
+    'Fit compact JSON into about N tokens, dropping deepest symbols first; fails if the summary cannot fit',
   'help.option.trace.fromUid': 'Source symbol UID (zero-ambiguity lookup)',
   'help.option.trace.fromFile': 'Source file path to disambiguate common names',
   'help.option.trace.toUid': 'Target symbol UID (zero-ambiguity lookup)',

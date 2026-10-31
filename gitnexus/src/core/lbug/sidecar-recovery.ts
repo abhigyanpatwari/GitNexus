@@ -241,11 +241,13 @@ export const isReadOnlyShadowReplayError = (err: unknown): boolean => {
 // SIGKILLing a writer mid-CHECKPOINT (homelab 2026-09-19, GitNexus image
 // 1.6.10-20260917, built on 0.19.x). The 0.18.3 binary does NOT contain it
 // (checked via `strings`), and 0.18.3 tolerates the same on-disk state, so on
-// 0.18.x this classifier simply never fires. If the engine pin ever moves
-// back to ^0.19, the read-path self-heal is already in place.
+// 0.18.x this classifier simply never fires. In 0.22.0 the same refusal is
+// reported as "checkpoint recovery is pending".
 export const isReadOnlyCheckpointInProgressError = (err: unknown): boolean => {
   const msg = err instanceof Error ? err.message : String(err);
-  return /cannot open database in read-only mode while checkpoint is in progress/i.test(msg);
+  return /cannot open database in read-only mode while checkpoint (?:is in progress|recovery is pending)/i.test(
+    msg,
+  );
 };
 
 /** Prefix of the interrupted-checkpoint wrap — must not rematch the native classifier. */

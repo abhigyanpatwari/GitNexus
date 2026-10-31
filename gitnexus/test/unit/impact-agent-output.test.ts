@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   compactImpactItemProcesses,
   fitImpactToTokenBudget,
+  ImpactBudgetExceededError,
   IMPACT_AGENT_DEFAULT_LIMIT,
   impactAgentDefaultLimit,
   shapeImpactForAgent,
@@ -29,6 +30,16 @@ const result = (byDepth: Record<string, unknown[]>) => ({
 });
 
 describe('impact agent defaults', () => {
+  it.each([{ offset: 0 }, { summaryOnly: false }, { offset: 0, summaryOnly: false }])(
+    'pages requests with materialized schema defaults: %j',
+    (defaults) => {
+      expect(withImpactAgentDefaults({ target: 't', ...defaults }, {})).toEqual({
+        target: 't',
+        ...defaults,
+        limit: 30,
+      });
+    },
+  );
   it('adds the default page only when the caller chose no pagination', () => {
     expect(withImpactAgentDefaults({ target: 't' }, {})).toEqual({
       target: 't',
@@ -106,11 +117,37 @@ describe('fitImpactToTokenBudget', () => {
     });
   });
 
-  it('keeps a result that already fits, and one that cannot fit without symbols', () => {
+  it('keeps a result that already fits and rejects a budget smaller than its summary', () => {
     const small = result({ '1': [symbol('a')] });
     expect(fitImpactToTokenBudget(small, 10_000)).toBe(small);
-    expect(fitImpactToTokenBudget(small, 1)).toBe(small);
+    expect(() => fitImpactToTokenBudget(small, 1)).toThrow(ImpactBudgetExceededError);
   });
+
+  it.each([
+    { ...result({ '1': [symbol('a')] }), affected_processes: [{ name: 'x'.repeat(10_000) }] },
+    { impactedCount: 1, affected_modules: [{ name: 'x'.repeat(10_000) }] },
+    { status: 'ambiguous', candidates: [{ name: 'x'.repeat(10_000) }] },
+    { group: 'services', local: { payload: 'x'.repeat(10_000) } },
+  ])('fails explicitly when non-symbol fields cannot fit', (input) => {
+    expect(() => fitImpactToTokenBudget(input, 100)).toThrow(ImpactBudgetExceededError);
+  });
+
+  it('does not trim one of the two PDG views independently', () => {
+    const byDepth = { '1': Array.from({ length: 50 }, (_, i) => symbol(`s${i}`, 5)) };
+    const pdg = { ...result(byDepth), mode: 'pdg', interproceduralByDepth: byDepth };
+    expect(shapeImpactForAgent(pdg, undefined)).toBe(pdg);
+    expect(() => shapeImpactForAgent(pdg, 200)).toThrow(ImpactBudgetExceededError);
+  });
+
+  it.each([1, 3, 4, 8, 20, 100])(
+    'keeps even a tiny budget error valid JSON (%i tokens)',
+    (budget) => {
+      const text = new ImpactBudgetExceededError(budget).toJSONText();
+      expect(() => JSON.parse(text)).not.toThrow();
+      expect(Buffer.byteLength(text)).toBeLessThanOrEqual(budget * 4);
+      if (budget >= 4) expect(JSON.parse(text)).toHaveProperty('error');
+    },
+  );
 
   it('reserves room for text appended after serialization', () => {
     const full = result({ '1': Array.from({ length: 30 }, (_, i) => symbol(`s${i}`)) });

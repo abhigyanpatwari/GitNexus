@@ -1,5 +1,23 @@
 # Migration Guide
 
+## LadybugDB 0.22.0 storage and extensions
+
+LadybugDB 0.22.0 reads indexes written by 0.21.1, but a write/checkpoint upgrades
+their storage format from version 47 to 49. No manual data conversion is needed.
+Use the packaged FTS and VECTOR binaries shipped with the new core; older
+extension binaries can load successfully and then crash when building an index.
+
+Before upgrading, stop index writers and readers and retain a backup of the
+complete index storage directory if rollback is required. Include shared stores
+when worktrees or sibling clones share an index. Keep clients sharing a writable
+index on compatible engine versions.
+
+After an index is written by 0.22.0, downgrading the dependency alone is not
+enough: 0.21.1 refuses storage version 49. Restore the backup, or rebuild with the
+older engine using `gitnexus analyze --force`. A rebuild under an engine that
+cannot read the upgraded index cannot recover its cached embeddings; use the
+backup to preserve them, or regenerate them with `--embeddings`.
+
 ## Automatic parser cache identities
 
 Parser caches now use artifact-derived base and PDG identities instead of
