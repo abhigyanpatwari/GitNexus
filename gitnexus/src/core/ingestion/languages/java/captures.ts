@@ -144,7 +144,8 @@ export function emitJavaScopeCaptures(
     recordCacheHit();
   }
   captureJavaPackageFact(filePath, tree.rootNode);
-  setJavaOverloadFacts(filePath, captureJavaOverloadFacts(tree.rootNode));
+  const accessorCaptures = synthesizeJavaRecordComponentAccessorCaptures(tree.rootNode);
+  setJavaOverloadFacts(filePath, captureJavaOverloadFacts(tree.rootNode, accessorCaptures));
 
   const rawMatches = getJavaScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
@@ -486,7 +487,7 @@ export function emitJavaScopeCaptures(
     ...synthesizeJavaInheritanceReferences(tree.rootNode),
     ...synthesizeJavaExplicitConstructorReferences(tree.rootNode),
     ...synthesizeJavaAnonymousClassDeclarations(tree.rootNode),
-    ...synthesizeJavaRecordComponentAccessorCaptures(tree.rootNode),
+    ...accessorCaptures,
     ...synthesizeLombokAccessorCaptures(tree.rootNode),
     ...synthesizeCallableFlowCaptures(tree.rootNode, JAVA_CALLABLE_CAPTURE_OPTIONS),
   ];

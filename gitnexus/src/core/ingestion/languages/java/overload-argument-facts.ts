@@ -1,4 +1,4 @@
-import type { Range } from 'gitnexus-shared';
+import type { CaptureMatch, Range } from 'gitnexus-shared';
 import { synthesizeJavaTypeIdentity, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { synthesizeJavaRecordComponentAccessorCaptures } from './record-components.js';
 
@@ -231,7 +231,10 @@ interface Binding {
 /** One AST walk records declarations and lexical bindings. Calls are evaluated
  * against those bindings after the walk, so fields are visible before their
  * declaration while local declarations retain their source-order boundary. */
-export function captureJavaOverloadFacts(root: SyntaxNode): JavaOverloadFileFacts | undefined {
+export function captureJavaOverloadFacts(
+  root: SyntaxNode,
+  accessorCaptures: readonly CaptureMatch[] = synthesizeJavaRecordComponentAccessorCaptures(root),
+): JavaOverloadFileFacts | undefined {
   const types: JavaOverloadTypeFact[] = [];
   const typeFactsByNode = new Map<number, JavaOverloadTypeFact>();
   const typeNodesByFact = new Map<JavaOverloadTypeFact, SyntaxNode>();
@@ -240,7 +243,7 @@ export function captureJavaOverloadFacts(root: SyntaxNode): JavaOverloadFileFact
   // accessor suppression so generated declarations have the same evidence as
   // source-written methods without creating a second accessor authority.
   const implicitAccessors = new Map(
-    synthesizeJavaRecordComponentAccessorCaptures(root).flatMap((capture) => {
+    accessorCaptures.flatMap((capture) => {
       const declaration = capture['@declaration.method'];
       const name = capture['@declaration.name'];
       return declaration === undefined || name === undefined

@@ -252,8 +252,6 @@ describe('Java inherited overload inventory bounds', () => {
         kind: 'resolved',
         definition: { parameterTypes: ['Long'] },
       });
-      // Count structural work rather than wall time: the old path walk reads
-      // 16,383 / 262,143 base lists for these 27 / 35 type declarations.
       expect(fixture.baseReads()).toBeLessThanOrEqual((declarations.length + 1) * 2);
     },
   );
@@ -301,8 +299,6 @@ describe('Java source subtype conversion bounds', () => {
         kind: 'resolved',
         definition: { parameterTypes: ['Object'] },
       });
-      // The inventory owner has no ancestors. These reads therefore isolate
-      // source-subtype conversion, formerly 16,384 / 262,144 reads per call.
       expect(fixture.baseReads()).toBeLessThanOrEqual((declarations.length + 1) * 2);
     },
   );

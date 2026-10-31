@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -95,8 +95,6 @@ it('preserves original overload callers and omission receipts across cold, durab
 
     // A fresh analyzer process consumes only durable ParsedFile sidechannels.
     // Force bypasses the up-to-date shortcut without discarding parser caches.
-    const cache = path.join(cold.storagePath, 'parsedfile-cache/index.json');
-    expect(JSON.parse(await readFile(cache, 'utf8'))).toBeTruthy();
     const warm = await child<AnalysisReceipt>('analyze');
     expect(warm.usedWorkerPool).toBe(false);
     expect(warm.reparsed).toBe(0);

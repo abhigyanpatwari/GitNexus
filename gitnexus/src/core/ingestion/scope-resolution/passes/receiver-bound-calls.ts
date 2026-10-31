@@ -4081,8 +4081,8 @@ function recordReceiverOverloadSuppression(
   memberName: string,
   model: SemanticModel,
   provider: ReceiverBoundProviderSubset,
-  recordSourceBinding?: SourceBindingRecorder,
-  identityContext?: CallOutcomeContext,
+  recordSourceBinding: SourceBindingRecorder | undefined,
+  identityContext: CallOutcomeContext,
 ): void {
   if (record === undefined && recordSourceBinding === undefined) return;
   const overloads = model.methods.lookupAllByOwner(ownerId, memberName);
@@ -4113,15 +4113,13 @@ function recordReceiverOverloadSuppression(
     range: site.atRange,
     reason,
     candidateIds: candidates.map((d) => d.nodeId),
-    ...(identityContext === undefined
-      ? { siteKind: site.kind }
-      : callSuppressionIdentities(
-          candidates.map((d) => d.nodeId),
-          site,
-          identityContext,
-          true,
-          candidates,
-        )),
+    ...callSuppressionIdentities(
+      candidates.map((d) => d.nodeId),
+      site,
+      identityContext,
+      true,
+      candidates,
+    ),
   });
 }
 
