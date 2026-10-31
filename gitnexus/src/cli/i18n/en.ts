@@ -361,6 +361,8 @@ export const en = {
   'help.option.wiki.concurrency': 'Parallel LLM calls (default: 3)',
   'help.option.wiki.timeout': 'LLM request timeout in seconds (default: disabled)',
   'help.option.wiki.retries': 'Max LLM retry attempts per request (default: 3)',
+  'help.option.wiki.maxCompletionTokens':
+    'Max completion tokens for each LLM request (default: 16384)',
   'help.option.wiki.allowInsecureConnection':
     'Allow exact host(s) for http:// LLM base URLs (comma-separated; HTTPS is preferred)',
   'help.option.wiki.gist': 'Publish wiki as a public GitHub Gist after generation',

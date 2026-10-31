@@ -1848,6 +1848,8 @@ export interface CLIConfig {
   apiVersion?: string;
   /** Set true when the deployment is a reasoning model (o1, o3, o4-mini). Auto-detected for OpenAI; must be set for Azure deployments. */
   isReasoningModel?: boolean;
+  /** Completion-token limit for wiki LLM requests. Flag and GITNEXUS_MAX_COMPLETION_TOKENS win over this. */
+  maxCompletionTokens?: number;
 }
 
 /**
