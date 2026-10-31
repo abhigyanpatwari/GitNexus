@@ -3312,6 +3312,7 @@ export class LocalBackend {
     this.refreshesInFlight.add(repo.storagePath);
     const startedAt = Date.now();
     let analysis: Awaited<ReturnType<typeof runAutoSyncAnalysis>>;
+    let workerExited: Promise<void> | undefined;
     try {
       analysis = await runAutoSyncAnalysis(
         repo.repoPath,
@@ -3329,17 +3330,23 @@ export class LocalBackend {
         context.onProgress,
       );
     } catch (err) {
-      // After a timeout the worker is left to finish the analysis and still
-      // holds the index lock, so a retry waits on it rather than racing it.
+      const failure = err as {
+        abandonedWorker?: boolean;
+        workerExited?: Promise<void>;
+      } | null;
+      // The request can time out before its worker releases the index lock.
+      if (failure?.abandonedWorker) workerExited = failure.workerExited;
       const leftRunning =
-        (err as { abandonedWorker?: unknown } | null)?.abandonedWorker === true
-          ? ' Its worker keeps running until the analysis finishes; a new refresh waits on its index lock.'
+        failure?.abandonedWorker === true
+          ? ' Its worker keeps running until the analysis finishes; another refresh is refused until it exits.'
           : '';
       return {
         error: `Refresh of ${repo.name} failed: ${asSentence(err)}${leftRunning} Run \`gitnexus analyze\` in the repository for the full log.`,
       };
     } finally {
-      this.refreshesInFlight.delete(repo.storagePath);
+      const releaseSlot = () => this.refreshesInFlight.delete(repo.storagePath);
+      if (workerExited) void workerExited.then(releaseSlot);
+      else releaseSlot();
     }
 
     await this.refreshRepos();

@@ -38,6 +38,8 @@ export class AutoSyncAnalysisError extends Error {
   readonly code?: 'index-lock-timeout';
   readonly retryable?: boolean;
   readonly abandonedWorker: boolean;
+  /** Resolves on actual process exit when the request stopped waiting first. */
+  readonly workerExited?: Promise<void>;
 
   constructor(
     message: string,
@@ -45,6 +47,7 @@ export class AutoSyncAnalysisError extends Error {
       code?: 'index-lock-timeout';
       retryable?: boolean;
       abandonedWorker?: boolean;
+      workerExited?: Promise<void>;
     } = {},
   ) {
     super(message);
@@ -52,6 +55,7 @@ export class AutoSyncAnalysisError extends Error {
     this.code = options.code;
     this.retryable = options.retryable;
     this.abandonedWorker = options.abandonedWorker === true;
+    this.workerExited = options.workerExited;
   }
 }
 
@@ -168,12 +172,15 @@ export function createAutoSyncAnalysisRunner(
         // child is deliberately left running rather than killed mid-write.
         graceTimer = deps.setTimeoutFn(() => {
           if (settled) return;
+          const workerExited = new Promise<void>((resolveExited) => {
+            child.on('exit', () => resolveExited());
+          });
           releaseChild();
           settle(
             new AutoSyncAnalysisError(
               `${error.message} The analyze worker did not exit within ${deps.cancelGraceMs}ms; ` +
                 'it was left running so its native work is not interrupted.',
-              { abandonedWorker: true, retryable: true },
+              { abandonedWorker: true, retryable: true, workerExited },
             ),
           );
         }, deps.cancelGraceMs);

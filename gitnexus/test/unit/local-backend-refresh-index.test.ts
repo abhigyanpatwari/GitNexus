@@ -250,16 +250,36 @@ describe('LocalBackend refresh_index (#3524)', () => {
     expect(list.repositories[0].lastCommit).toBe('new');
   });
 
-  it('says when a timed-out worker was left running', async () => {
+  it('keeps a timed-out refresh busy until its abandoned worker exits', async () => {
+    let finishWorker!: () => void;
+    const workerExited = new Promise<void>((resolve) => {
+      finishWorker = resolve;
+    });
     mocks.runAutoSyncAnalysis.mockRejectedValueOnce(
       Object.assign(new Error('Analysis timed out after 5ms. The analyze worker did not exit'), {
         abandonedWorker: true,
+        workerExited,
       }),
     );
     const result = await backend.callTool('refresh_index', { repo: 'shop' });
+    expect(result.error).toContain('Its worker keeps running until the analysis finishes');
+    await expect(backend.callTool('refresh_index', { repo: 'shop' })).resolves.toMatchObject({
+      error: expect.stringContaining('already running'),
+    });
+    await expect(
+      backend.callTool('refresh_index', { repo: 'shop', dry_run: true }),
+    ).resolves.toMatchObject({ wouldRefresh: false, inProgress: true });
+    expect(mocks.runAutoSyncAnalysis).toHaveBeenCalledTimes(1);
+
+    finishWorker();
+    await workerExited;
+    await expect(backend.callTool('refresh_index', { repo: 'shop' })).resolves.toMatchObject({
+      status: 'refreshed',
+    });
+    expect(mocks.runAutoSyncAnalysis).toHaveBeenCalledTimes(2);
     expect(result.error).toBe(
       'Refresh of shop failed: Analysis timed out after 5ms. The analyze worker did not exit. ' +
-        'Its worker keeps running until the analysis finishes; a new refresh waits on its index lock. ' +
+        'Its worker keeps running until the analysis finishes; another refresh is refused until it exits. ' +
         'Run `gitnexus analyze` in the repository for the full log.',
     );
   });

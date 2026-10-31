@@ -250,7 +250,7 @@ describe('auto-sync analysis worker', () => {
     await expect(solo).resolves.toEqual({ stats: { files: 1 } });
   });
 
-  it('stops waiting for a worker that never exits after cancellation', async () => {
+  it.each([0, 1])('tracks an abandoned worker until exit (%s)', async (exitCode) => {
     const child = Object.assign(createChild(), {
       unref: vi.fn(),
       channel: { unref: vi.fn() },
@@ -269,7 +269,7 @@ describe('auto-sync analysis worker', () => {
     timers[0]!();
     expect(child.send).toHaveBeenLastCalledWith({ type: 'cancel' });
 
-    // No 'exit' ever arrives — the worker is wedged past its safe point.
+    // No 'exit' arrives during the grace period.
     timers[1]!();
 
     await expect(result).rejects.toThrow('did not exit within');
@@ -282,6 +282,18 @@ describe('auto-sync analysis worker', () => {
     expect(child.channel.unref).toHaveBeenCalled();
     expect(child.unref).toHaveBeenCalled();
     expect(child.send).toHaveBeenCalledTimes(2);
+
+    const failure = (await result.catch((error) => error)) as AutoSyncAnalysisError;
+    expect(failure.workerExited).toBeInstanceOf(Promise);
+    const exited = vi.fn();
+    void failure.workerExited?.then(exited);
+    // A late completion message is not proof that the process has exited.
+    child.emit('message', { type: 'complete', result: { stats: { files: 1 } } });
+    await Promise.resolve();
+    expect(exited).not.toHaveBeenCalled();
+    child.emit('exit', exitCode, null);
+    await failure.workerExited;
+    expect(exited).toHaveBeenCalledOnce();
   });
 
   it('uses the same cancellation request for an aborted watch run', async () => {
