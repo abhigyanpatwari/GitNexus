@@ -41,9 +41,19 @@ export function callSuppressionIdentities(
   const candidateGraphIds = new Set<string>();
   const candidateOwnerIds = new Set<string>();
   let candidateSetComplete = inventoryComplete;
+  let suppliedById: Map<string, SymbolDefinition> | undefined;
   let byId: Map<string, SymbolDefinition> | undefined;
   for (const id of ids) {
-    let definition = scopes.defs.get(id) ?? definitions.find((item) => item.nodeId === id);
+    let definition = scopes.defs.get(id);
+    if (definition === undefined) {
+      if (suppliedById === undefined) {
+        suppliedById = new Map();
+        for (const item of definitions) {
+          if (!suppliedById.has(item.nodeId)) suppliedById.set(item.nodeId, item);
+        }
+      }
+      definition = suppliedById.get(id);
+    }
     if (definition === undefined) {
       byId ??= new Map(
         [

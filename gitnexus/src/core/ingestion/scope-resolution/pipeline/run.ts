@@ -130,7 +130,6 @@ import { isDebugHeapEnabled, logHeapProbe } from '../../utils/heap-probe.js';
 import { parseTruthyEnv } from '../../utils/env.js';
 import { callResultBindingKey, selectedCallKey } from '../passes/provider-call-outcome.js';
 
-/** Update one inferred binding, retaining the scope that owns its return type. */
 function setCallResultBinding(scope: Scope, name: string, returned: TypeRef | undefined): boolean {
   const bindings = scope.typeBindings as Map<string, TypeRef>;
   if (returned === undefined) return bindings.delete(name);

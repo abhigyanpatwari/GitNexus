@@ -217,13 +217,11 @@ function modifiers(node: SyntaxNode): string[] {
 }
 
 interface Binding {
-  readonly name: string;
   readonly type?: string;
   readonly at: Range;
   readonly scope: Range;
   readonly depth: number;
   readonly available: number;
-  readonly field: boolean;
   readonly owner?: SyntaxNode;
   readonly inheritable: boolean;
 }
@@ -267,21 +265,20 @@ export function captureJavaOverloadFacts(
     field = false,
   ) => {
     if (name === undefined) return;
-    const list = bindings.get(name) ?? [];
     const binding: Binding = {
-      name,
       type,
       at: rangeOf(node),
       scope: rangeOf(scope),
       depth,
       available,
-      field,
       owner: enclosing(node, isType),
       inheritable: !field || node.parent === null || !modifiers(node.parent).includes('private'),
     };
-    list.push(binding);
-    bindings.set(name, list);
-    if (!field) {
+    if (field) {
+      const list = bindings.get(name) ?? [];
+      list.push(binding);
+      bindings.set(name, list);
+    } else {
       const scoped = localBindings.get(scope.id) ?? new Map<string, Binding[]>();
       const locals = scoped.get(name) ?? [];
       locals.push(binding);
@@ -506,9 +503,7 @@ export function captureJavaOverloadFacts(
     seen.add(owner.id);
     const fact = typeFactsByNode.get(owner.id);
     if (fact === undefined) return undefined;
-    const own = (bindings.get(name) ?? []).filter(
-      (binding) => binding.field && binding.owner?.id === owner.id,
-    );
+    const own = (bindings.get(name) ?? []).filter((binding) => binding.owner?.id === owner.id);
     if (own.length > 0) {
       if (inherited && fact.typeParameters.length > 0) return undefined;
       const result = inherited ? own.filter((binding) => binding.inheritable) : own;
@@ -568,7 +563,6 @@ export function captureJavaOverloadFacts(
         let local: Binding | undefined;
         for (const binding of locals) {
           if (
-            binding.field ||
             binding.owner?.id !== owner.id ||
             binding.available > node.startIndex ||
             !javaRangeContains(binding.scope, at)

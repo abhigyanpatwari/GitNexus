@@ -397,6 +397,67 @@ describe('provider call outcomes', () => {
     expect(result.candidateSetComplete).toBe(false);
   });
 
+  it('prefers scope definitions, then the first supplied definition, then the model', () => {
+    const f = fixture();
+    f.context.model.symbols.add('second.ts', 'choose', 'def:supplied', 'Function', {
+      qualifiedName: 'choose',
+    });
+    f.context.model.symbols.add('second.ts', 'choose', 'def:model', 'Function', {
+      qualifiedName: 'choose',
+    });
+    const result = callSuppressionIdentities(
+      [f.member.nodeId, 'def:supplied', 'def:model', 'def:supplied'],
+      f.site,
+      f.context,
+      true,
+      [
+        { ...f.first, nodeId: f.member.nodeId },
+        { ...f.first, nodeId: 'def:supplied' },
+        { ...f.second, nodeId: 'def:supplied' },
+      ],
+    );
+    expect(result).toMatchObject({
+      candidateGraphIds: [
+        'Method:owner.ts:Owner.choose#1',
+        'Function:first.ts:choose',
+        'Function:second.ts:choose',
+      ],
+      candidateOwnerIds: ['Class:owner.ts:Owner'],
+      callerId: 'Function:caller.ts:main',
+      candidateSetComplete: true,
+    });
+  });
+
+  it.each([256, 512])('bounds identity lookup work for %i supplied candidates', (size) => {
+    let reads = 0;
+    const ids = Array.from({ length: size }, (_, i) => `def:candidate:${i}`);
+    const definitions = ids.map(
+      (id, i): SymbolDefinition => ({
+        get nodeId() {
+          reads++;
+          return id;
+        },
+        filePath: `candidate${i}.ts`,
+        type: 'Function',
+        qualifiedName: 'choose',
+      }),
+    );
+    const f = fixture(definitions);
+    const suppliedIds = new Set(ids);
+    const context = {
+      ...f.context,
+      scopes: {
+        ...f.context.scopes,
+        defs: buildDefIndex(f.parsed.localDefs.filter((def) => !suppliedIds.has(def.nodeId))),
+      },
+    };
+    reads = 0;
+    const result = callSuppressionIdentities(ids, f.site, context, true, definitions);
+    expect(reads).toBeLessThanOrEqual(size * 16);
+    expect(result.candidateGraphIds).toEqual(ids.map((id) => `graph:${id}`));
+    expect(result.candidateSetComplete).toBe(true);
+  });
+
   it.each(['unknown', 'ambiguous', 'inapplicable'] as const)(
     'does not resume lexical fallback after a provider %s decision',
     (kind) => {
