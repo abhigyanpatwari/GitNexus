@@ -63,7 +63,13 @@ export function dottedName(parts: readonly string[]): string {
   return parts.map((p) => (p.includes('.') ? `"${p}"` : p)).join('.');
 }
 
-/** Owner path + name + parameter signature: identifies a spec declaration with its body. */
+/**
+ * Owner path + name + parameter signature: identifies a spec declaration with
+ * its body. Oracle requires the two headings to match word for word apart from
+ * white space (PLS-00323 otherwise), so parameter names are part of the key —
+ * which also keeps apart overloads that differ only in parameter names, told
+ * apart by named-argument calls. Type text is whitespace-free and upper-cased.
+ */
 export function plsqlSignatureKey(
   def: Pick<PlSqlDefinition, 'ownerPath' | 'name' | 'parameters'>,
 ): string {
