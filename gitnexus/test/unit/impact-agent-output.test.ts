@@ -128,7 +128,7 @@ describe('fitImpactToTokenBudget', () => {
     { impactedCount: 1, affected_modules: [{ name: 'x'.repeat(10_000) }] },
     { status: 'ambiguous', candidates: [{ name: 'x'.repeat(10_000) }] },
     { group: 'services', local: { payload: 'x'.repeat(10_000) } },
-  ])('fails explicitly when non-symbol fields cannot fit', (input) => {
+  ])('fails explicitly when non-symbol fields cannot fit (case %#)', (input) => {
     expect(() => fitImpactToTokenBudget(input, 100)).toThrow(ImpactBudgetExceededError);
   });
 

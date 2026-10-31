@@ -442,7 +442,7 @@ describe('MCP output budgets', () => {
     { status: 'ambiguous', candidates: [{ name: 'x'.repeat(10_000) }] },
     { mode: 'pdg', byDepth: {}, affectedStatements: [{ code: 'x'.repeat(10_000) }] },
     { group: 'services', local: { payload: 'x'.repeat(10_000) } },
-  ])('bounds impact responses without a trimmable symbol list', async (result) => {
+  ])('bounds impact responses without a trimmable symbol list (case %#)', async (result) => {
     const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(result) });
     const response = await callToolThroughServer(backend, 'impact', {
       target: 'auth',
