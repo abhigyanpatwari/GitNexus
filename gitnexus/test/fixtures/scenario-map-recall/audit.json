@@ -369,12 +369,6 @@
       "basis": "local-backend.ts imports and directly re-exports the same isTestFilePath function. Both tests pass undefined, null and empty string and assert false three times."
     },
     {
-      "a": "test/unit/server.test.ts#server error handling > createMCPServer reads version from package.json",
-      "b": "test/unit/server.test.ts#prompt registration > server registers detect_impact and generate_map prompts",
-      "category": "same-file",
-      "basis": "Identical scenario body in one file, using the same helpers, input data and assertions. Enclosing setup has no relevant difference."
-    },
-    {
       "a": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined when base is not a simple word: user model[]",
       "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined for complex non-word base before []: user model[]",
       "category": "pure-helper",

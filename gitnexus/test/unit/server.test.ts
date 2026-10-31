@@ -28,6 +28,7 @@ import {
 import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
 import { MCP_TRUNCATION_MARKER } from '../../src/mcp/output-budget.js';
 import { createMcpRepositoryPolicy } from '../../src/mcp/repository-policy.js';
+import { packageVersion } from '../../src/core/package-version.js';
 
 // ─── Mock backend ──────────────────────────────────────────────────
 
@@ -750,22 +751,42 @@ describe('server error handling', () => {
     expect(() => createMCPServer(backend)).not.toThrow();
   });
 
-  it('createMCPServer reads version from package.json', () => {
+  it('createMCPServer advertises the package version', async () => {
     const backend = createMockBackend();
     const server = createMCPServer(backend);
-    // Server was created with version from package.json — no crash
-    expect(server).toBeDefined();
+    const client = new Client({ name: 'version-test-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      expect(client.getServerVersion()).toMatchObject({ version: packageVersion() });
+    } finally {
+      await client.close();
+      await server.close();
+    }
   });
 });
 
 // ─── Prompt definitions ───────────────────────────────────────────────
 
 describe('prompt registration', () => {
-  it('server registers detect_impact and generate_map prompts', () => {
+  it('server registers detect_impact and generate_map prompts', async () => {
     const backend = createMockBackend();
-    // Creating the server registers all handlers including prompts
     const server = createMCPServer(backend);
-    expect(server).toBeDefined();
+    const client = new Client({ name: 'prompt-test-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      const response = await client.listPrompts();
+      expect(response.prompts.map((prompt) => prompt.name)).toEqual([
+        'detect_impact',
+        'generate_map',
+      ]);
+    } finally {
+      await client.close();
+      await server.close();
+    }
   });
 });
 
