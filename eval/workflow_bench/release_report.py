@@ -17,6 +17,7 @@ import yaml
 
 from .oracle_assets import capture_task_oracles
 from .runner_tasks import normalized_model_identifier, select_tasks
+from .session_diagnostics import public_cell_diagnostics, render_diagnostics
 from .task_assets import DEPENDENCY_CONTENT_BINDING_FIELD
 
 SCHEMA = "gitnexus.release-evaluation/v1"
@@ -110,7 +111,9 @@ def build_report(rows: list[Any], metadata: dict[str, Any], *, now: datetime | N
             problems.append(f"row {index}: invalid measurement")
             continue
         # Invalid rows still need a public, JSON-serializable failure receipt.
-        safe_rows.append({key: _json_safe(row[key]) for key in ROW_FIELDS if key in row})
+        safe_row = {key: _json_safe(row[key]) for key in ROW_FIELDS if key in row}
+        safe_row.update(public_cell_diagnostics(row))
+        safe_rows.append(safe_row)
         task, run, arm = row.get("task"), row.get("run"), row.get("arm")
         if not isinstance(task, str) or type(run) is not int or not isinstance(arm, str):
             problems.append(f"row {index}: invalid cell identity")
@@ -205,6 +208,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "This small pinned task set is release evidence; it does not establish general gains or statistical significance.",
         "",
     ]
+    lines += render_diagnostics(report.get("per_run", []))
     return "\n".join(lines)
 
 

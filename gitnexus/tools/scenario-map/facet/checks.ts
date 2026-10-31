@@ -247,6 +247,13 @@ export interface Check {
   snapshot: string | null;
 }
 
+const assertionCalls = new WeakMap<Check, t.CallExpression>();
+
+/** Original AST call for a freshly extracted check; absent after serialization. */
+export function assertionCallOf(check: Check): t.CallExpression | null {
+  return assertionCalls.get(check) ?? null;
+}
+
 export interface UnsupportedForm {
   /** 1-based line of the construct. */
   line: number;
@@ -970,17 +977,16 @@ function recordAssertion(call: t.CallExpression, where: string | null, run: Run)
     .map((name) => `.${name}`)
     .join('');
   const shape = `${head}${chain}(${args.join(',')})${snapshot === null ? '' : `#${snapshot}`}`;
-  run.checks.push({
-    start: call.start ?? 0,
-    check: {
-      line: lineOf(call),
-      form: parsed.form,
-      modifiers: parsed.modifiers,
-      matcher: parsed.matcher,
-      shape,
-      snapshot,
-    },
-  });
+  const check: Check = {
+    line: lineOf(call),
+    form: parsed.form,
+    modifiers: parsed.modifiers,
+    matcher: parsed.matcher,
+    shape,
+    snapshot,
+  };
+  assertionCalls.set(check, call);
+  run.checks.push({ start: call.start ?? 0, check });
 }
 
 /** Walks the body; `where` names the first enclosing construct that makes a check conditional. */
