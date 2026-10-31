@@ -38,7 +38,7 @@ describe('source UID/path consistency (#3527)', () => {
     ['Method:checks/test_batch.py:Batch.test_run#0', undefined],
     ['Method:checks/test_batch.py:Batch.test_run#0', null],
     ['Method:checks/test_batch.py:Batch.test_run#0', ''],
-  ])('preserves valid paths and legacy/synthetic identities: %s', (id, filePath) => {
+  ])('preserves valid paths and legacy/synthetic identities: %s / %j', (id, filePath) => {
     expect(() => assertSymbolFilePath(id, filePath)).not.toThrow();
   });
 });
