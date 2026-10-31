@@ -556,7 +556,7 @@ RESULTS: target, impactedCount, summary, affected_processes, affected_modules, b
 COMPLETENESS: epistemic "lower-bound" makes impactedCount a floor (missed callers/failed probes). Read boundaries; branch on causes. Ambiguous/group results may omit this envelope.
 - scopeExtractionFiles: files missing scope edges; analyze --force, inspect warnings.
 - receiverTyping: sites with unknown receiver types; corroborate before deletion/rename.
-- overloadResolution: unique unresolved overload/implementation sites in the expanded traversal before pagination. Missing/invalid/capped receipts imply lower-bound even at 0; analyze --force.
+- overloadResolution: when traversing CALLS, unique unresolved overload/implementation sites in the expanded traversal before pagination. Missing/invalid/capped receipts imply lower-bound even at 0; analyze --force.
 - externalBoundary: calls outside indexed code; compatible with "exact", not a defect.
 - dispatchBoundary: DI/interface symbols, not sites. Runtime-proxy gaps may be uncountable (0 with lower-bound).
 - undecidedSatisfaction: unjudged interface/type pairs without IMPLEMENTS; check dependencies.
