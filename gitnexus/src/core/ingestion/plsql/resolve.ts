@@ -137,9 +137,11 @@ export class PlSqlNameIndex<E extends PlSqlIndexEntry> {
       // `S.NAME`: a standalone subprogram in schema S. Definitions that wrote
       // another schema are excluded; ones that wrote none (current schema) stay
       // candidates, behind any that name S explicitly.
-      const standalone = this.lookup([], name).filter(callable);
-      const exact = standalone.filter((e) => e.def.schema === qualifier);
-      return exact.length > 0 ? exact : standalone.filter((e) => e.def.schema === undefined);
+      return inWrittenSchema(
+        this.lookup([], name).filter(callable),
+        qualifier,
+        (e) => e.def.schema,
+      );
     }
     return [];
   }
@@ -204,15 +206,29 @@ export function nearestGroups<E extends { readonly filePath: string }>(
   return scored.filter((s) => s.d === best).flatMap((s) => s.g);
 }
 
-/** In `S.A.N`, keep members of packages declared in schema `S` when any are indexed. */
+/** In `S.A.N`, only members of package `A` that may live in schema `S`. */
 function preferWrittenSchema<E extends PlSqlIndexEntry>(
   candidates: E[],
   call: Pick<PlSqlCallSite, 'nameParts'>,
 ): E[] {
   if (call.nameParts.length !== 3) return candidates;
-  const schema = call.nameParts[0];
-  const inSchema = candidates.filter((c) => c.packageSchema === schema);
-  return inSchema.length > 0 ? inSchema : candidates;
+  return inWrittenSchema(candidates, call.nameParts[0], (c) => c.packageSchema);
+}
+
+/**
+ * Candidates a reference qualified by schema `schema` can denote: those
+ * declared in that schema when any are indexed, otherwise those declared
+ * without a schema (created in whatever schema ran the script). A definition
+ * that names another schema never qualifies. No written schema keeps all.
+ */
+export function inWrittenSchema<E>(
+  candidates: readonly E[],
+  schema: string | undefined,
+  schemaOf: (candidate: E) => string | undefined,
+): E[] {
+  if (schema === undefined) return [...candidates];
+  const exact = candidates.filter((c) => schemaOf(c) === schema);
+  return exact.length > 0 ? exact : candidates.filter((c) => schemaOf(c) === undefined);
 }
 
 /**

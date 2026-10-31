@@ -298,6 +298,25 @@ CREATE OR REPLACE PROCEDURE caller IS BEGIN b.pkg.f; END caller;
     expect(targets).toEqual([7]); // b.pkg body, not a.pkg
   });
 
+  it('never binds `S.A.N` to package A of another schema; an unqualified package may serve', () => {
+    const pkg = (schema: string) =>
+      `CREATE OR REPLACE PACKAGE ${schema}pkg AS PROCEDURE f; END pkg;\n/\n` +
+      `CREATE OR REPLACE PACKAGE BODY ${schema}pkg AS PROCEDURE f IS BEGIN NULL; END f; END pkg;\n/\n`;
+    const caller = 'CREATE OR REPLACE PROCEDURE caller IS BEGIN c.pkg.f; END caller;\n/\n';
+    const callTargets = (files: Record<string, string>) => {
+      const { graph } = run(files);
+      const out: string[] = [];
+      for (const r of graph.iterRelationships()) {
+        if (r.type === 'CALLS') out.push(graph.getNode(r.targetId)!.properties.filePath);
+      }
+      return out;
+    };
+    expect(callTargets({ 't.pck': pkg('t.'), 'caller.prc': caller })).toEqual([]);
+    expect(callTargets({ 't.pck': pkg('t.'), 'any.pck': pkg(''), 'caller.prc': caller })).toEqual([
+      'any.pck',
+    ]);
+  });
+
   it('does not lose PL/SQL statements when the CREATE header is split across lines', () => {
     const { graph } = run({
       'p.pkb': `CREATE OR REPLACE

@@ -17,6 +17,7 @@ import { plsqlProvider } from '../plsql.js';
 import {
   PlSqlNameIndex,
   PlSqlPackageInstances,
+  inWrittenSchema,
   nearestGroups,
   rootPackageOf,
   type PlSqlIndexEntry,
@@ -137,9 +138,8 @@ const plsqlScopeResolver: ScopeResolver = {
       schema: string | undefined,
     ): SymbolDefinition | undefined => {
       const all = packageSymbols.get(name) ?? [];
-      const inSchema = schema === undefined ? [] : all.filter((p) => p.schema === schema);
       const nearest = nearestGroups(
-        inSchema.length > 0 ? inSchema : all,
+        inWrittenSchema(all, schema, (p) => p.schema),
         fromFile,
         (p) => p.instance,
       );
