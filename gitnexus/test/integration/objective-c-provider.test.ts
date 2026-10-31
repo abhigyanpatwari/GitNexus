@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import type { GraphNode, RelationshipType } from 'gitnexus-shared';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
+import { getEffectiveBufferPoolSize } from '../../src/core/lbug/lbug-config.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { classifyObjectiveCFileContent } from '../../src/core/ingestion/languages/objective-c.js';
 import type { PipelineResult } from '../../src/types/pipeline.js';
@@ -213,6 +214,7 @@ async function analyzeObjectiveCRepo(
   options: { force?: boolean } = {},
 ): Promise<string[]> {
   const logs: string[] = [];
+  const readerBudget = getEffectiveBufferPoolSize();
   await runFullAnalysis(
     repoRoot,
     {
@@ -226,6 +228,7 @@ async function analyzeObjectiveCRepo(
       onLog: (message) => logs.push(message),
     },
   );
+  expect(getEffectiveBufferPoolSize()).toBe(readerBudget);
   return logs;
 }
 

@@ -38,6 +38,7 @@ import {
   SYMBOL_IDENTITY_RECOVERY_SUGGESTION,
   SymbolIdentityError,
   assertSymbolIdentity,
+  assertSymbolFilePath,
   queryRowValue,
   assertIdentityFields,
   assertQueryIdentity,
@@ -399,6 +400,8 @@ function assertResponseIdentities(value: unknown): void {
   if (Array.isArray(value)) {
     for (const item of value) assertResponseIdentities(item);
   } else if (value !== null && typeof value === 'object') {
+    const row = value as Record<string, unknown>;
+    assertSymbolFilePath(row.id ?? row.uid, row.filePath);
     for (const [key, field] of Object.entries(value)) {
       if (key === 'seedBlocks' || key === 'reachableBlocks' || key === 'intraReachableBlocks') {
         if (!Array.isArray(field)) throw new SymbolIdentityError();
