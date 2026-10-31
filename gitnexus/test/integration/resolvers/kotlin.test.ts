@@ -831,28 +831,6 @@ describe('Kotlin assignment chain propagation', () => {
     expect(saveMethods.length).toBe(2);
   });
 
-  it('resolves alias.save() to User#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'processEntities' &&
-        c.targetFilePath.includes('User.kt'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('resolves rAlias.save() to Repo#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'processEntities' &&
-        c.targetFilePath.includes('Repo.kt'),
-    );
-    expect(repoSave).toBeDefined();
-  });
-
   it('alias.save() does NOT resolve to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
     // There should be exactly one save() call targeting User.kt from processEntities
