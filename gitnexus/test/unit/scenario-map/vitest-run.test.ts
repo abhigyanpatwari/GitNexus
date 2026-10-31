@@ -39,6 +39,38 @@ function fakeCreateVitest(seen: CliOptions[]): CreateVitest {
 }
 
 describe('runVitest worker bound', () => {
+  it.each([true, false])(
+    'forwards plugins only when supplied (instrumented: %s)',
+    async (instrumented) => {
+      const plugin = { name: 'fixture-capture-regression' };
+      const plugins = instrumented ? [plugin] : undefined;
+      const create: CreateVitest = async (_options, overrides) => {
+        expect(overrides.plugins).toEqual(plugins);
+        return {
+          projects: [],
+          close: async () => {},
+          collectTests: async () => {
+            throw new Error('unused');
+          },
+          runTestSpecifications: async () => {
+            throw new Error('unused');
+          },
+        };
+      };
+      await expect(
+        runVitest(
+          {
+            packageDir: tempDir(),
+            testIds: ['test/unit/a.test.ts#a'],
+            vitest: { configFile: 'vitest.config.ts', project: 'p' },
+            workDir: tempDir(),
+            ...(instrumented ? { plugins } : {}),
+          },
+          create,
+        ),
+      ).rejects.toThrow(/expected one Vitest project named p/);
+    },
+  );
   it.each([
     ['the given bound', 3, 3],
     ['no bound (Vitest default)', undefined, undefined],

@@ -164,6 +164,7 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
+  'test/integration/dangling-owner-edges.test.ts',
   'test/integration/impact-private-type-file-seed.test.ts',
   'test/integration/impact-private-type-source.test.ts',
   // Inline-handler findings must survive native persistence and cold explain

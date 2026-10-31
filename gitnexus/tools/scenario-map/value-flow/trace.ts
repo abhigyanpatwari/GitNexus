@@ -6,8 +6,8 @@
  *
  * Run ({@link runTrace}). One throwaway copy, `<work>/trace/prepared`, prepared like a shard's
  * copy (tools/mutation/prepare, nothing blanked) and verified against the run manifest (run-group.ts
- * `verifyPreparedCopy`; a mismatch runs nothing). The tests of every pair that the manifest lists
- * run twice through vitest-run.ts `runVitest`, each a fresh Vitest instance with the same
+ * `verifyPreparedCopy`; a mismatch runs nothing). Every runnable manifest test in the candidate tests'
+ * files runs twice through vitest-run.ts `runVitest`, each a fresh Vitest instance with the same
  * selection: a baseline, then the traced run with trace.setup.ts added (`setupFiles`) and its
  * context provided: the raw-record directory `<work>/trace/raw`, the prepared root, the extra
  * path-map roots and the wrap list (builtins.ts `wrapListOf`: the documented base list plus U10's
@@ -72,6 +72,7 @@ import {
   sequentialMatcherFor,
 } from '../path-coverage/partitions.js';
 import { wrapListOf } from './builtins.js';
+import { fixtureCapturePlugin } from '../path-coverage/fixture-plugin.js';
 import {
   RAW_TRACE_PREFIX,
   RAW_TRACE_SCHEMA_VERSION,
@@ -391,6 +392,8 @@ export interface TraceRunOptions {
   manifest: ScenarioRunManifest;
   /** The facet-equal candidate pairs. */
   pairs: readonly TracePair[];
+  /** Siblings explicitly skipped during coverage; candidate members are still requested. */
+  skippedTestIds?: readonly string[];
   /** U10's opaque-sink callees (pdg-walk.ts `opaqueSinks[].callee`), added to the wrap list. */
   opaqueCallees?: readonly string[];
   /** Upper bound of each Vitest run's worker processes (the CLI's `--concurrency`). */
@@ -402,6 +405,8 @@ export interface TraceRunSummary {
   outcome: OutcomeClass;
   /** Selection problems and unhandled errors. */
   problems: string[];
+  /** Includes failing sibling tests that are needed for setup but are not candidate members. */
+  failures?: { id: string; message: string | null; outcome: OutcomeClass | null }[];
 }
 
 export interface TraceRunResult {
@@ -478,6 +483,9 @@ const summaryOf = (run: VitestRunResult): TraceRunSummary => ({
   wallClockMs: run.wallClockMs,
   outcome: run.outcome,
   problems: [...run.problems, ...run.unhandledErrors.map((error) => `unhandled error: ${error}`)],
+  failures: run.tests
+    .filter((test) => test.state === 'failed')
+    .map(({ id, message, outcome }) => ({ id, message, outcome })),
 });
 
 /** Runs the pairs' tests with and without the trace hook and compares them (module header). */
@@ -512,6 +520,14 @@ export async function runTrace(
     listed.has(id),
   );
   if (ids.length === 0) return notRun('no pair test is in the run manifest');
+  // Preserve each file's normal suite lifecycle. A selected test can depend on work performed
+  // by an earlier sibling (e.g. analyze before repair); filtering siblings changes its input.
+  const files = new Set(ids.map((id) => parseTestId(id).file));
+  const skipped = new Set(options.skippedTestIds);
+  const candidates = new Set(ids);
+  const runIds = manifest.tests
+    .map((test) => test.id)
+    .filter((id) => files.has(parseTestId(id).file) && (!skipped.has(id) || candidates.has(id)));
 
   const layout = traceLayout(workDir);
   const extraRoots = extraRootsOf(manifest.mode);
@@ -527,12 +543,6 @@ export async function runTrace(
   const packageDir = path.posix.join(preparedRoot, PACKAGE_DIR);
   copyBuildOutput(manifest.mode.kind, path.join(repoRoot, PACKAGE_DIR), packageDir);
   const vitest = vitestSelectionOf(manifest.mode);
-  const context: TraceContext = {
-    outDir: layout.rawDir,
-    preparedRoot,
-    extraRoots,
-    wrap: wrap.entries,
-  };
   let baseline: VitestRunResult;
   let traced: VitestRunResult;
   try {
@@ -542,23 +552,33 @@ export async function runTrace(
       deps.runVitest,
       {
         packageDir,
-        testIds: ids,
+        testIds: runIds,
         vitest,
         workDir: layout.baselineDir,
         maxWorkers: options.maxWorkers,
       },
       isSequential,
     );
+    const context: TraceContext = {
+      outDir: layout.rawDir,
+      preparedRoot,
+      extraRoots,
+      taskIds: baseline.tests.flatMap((test) =>
+        candidates.has(test.id) && test.taskId !== null ? [test.taskId] : [],
+      ),
+      wrap: wrap.entries,
+    };
     rmSync(layout.rawDir, { recursive: true, force: true });
     mkdirSync(layout.rawDir, { recursive: true });
     traced = await runVitestPartitioned(
       deps.runVitest,
       {
         packageDir,
-        testIds: ids,
+        testIds: runIds,
         vitest,
         workDir: layout.tracedDir,
         setupFiles: [TRACE_SETUP_FILE],
+        plugins: [fixtureCapturePlugin(path.join(packageDir, 'src/core/ingestion/pipeline.ts'))],
         provide: (project) => project.provide(TRACE_KEY, context),
         maxWorkers: options.maxWorkers,
       },

@@ -56,6 +56,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .session_budget import session_budget
+
 import yaml
 
 from .mcp_transport import connector_config, isolated_mcp
@@ -100,7 +102,7 @@ from .oracle_assets import (
     staged_task_oracle,
     with_hidden_harness_apply_exclude,
 )
-from .process_control import cancellation_scope, ManagedProcessError
+from .process_control import cancellation_scope, ManagedProcessError, run_checked
 from .promotion_apply import committed_destination_base_digests
 from .review_scoring import (
     REVIEW_OUTPUT,
@@ -170,6 +172,7 @@ from .runner_sessions import (
     sandbox_mcp_config,
     sum_sessions,
 )
+from .verification_diagnostics import verification_metrics
 from .runner_tasks import (
     normalized_model_identifier,
     resolve_task_bindings,
@@ -331,6 +334,8 @@ def _run_hidden_oracle(
     worktree: Path,
     args: argparse.Namespace,
     sandbox: SandboxSession,
+    *,
+    diagnostics: dict[str, Any] | None = None,
 ) -> tuple[bool, str]:
     """Stage a captured oracle after the model exits, execute it, then erase it."""
 
@@ -353,22 +358,24 @@ def _run_hidden_oracle(
             # credited patch is captured.
             oracle_mount = f"{SANDBOX_WORKSPACE}/{mount_name}"
             oracle_env[ORACLE_ENV_VAR] = str(stage_root) if host_unsafe else oracle_mount
-            passed, _output = _verification_outcome(
-                run_verify(
-                    snapshot.command,
-                    sandbox.clone,
-                    args.timeout,
-                    command_prefix=sandbox.command_prefix_for(
-                        read_only_workspace=True,
-                        unshare_network=True,
-                        extra_read_only_mounts=()
-                        if host_unsafe
-                        else (ReadOnlyMount(source=stage_root, target=oracle_mount),),
-                    ),
-                    env=oracle_env,
-                    require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
-                )
+            started = time.monotonic()
+            result = run_verify(
+                snapshot.command,
+                sandbox.clone,
+                args.timeout,
+                command_prefix=sandbox.command_prefix_for(
+                    read_only_workspace=True,
+                    unshare_network=True,
+                    extra_read_only_mounts=()
+                    if host_unsafe
+                    else (ReadOnlyMount(source=stage_root, target=oracle_mount),),
+                ),
+                env=oracle_env,
+                require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
             )
+            if diagnostics is not None:
+                diagnostics.update(verification_metrics(result, time.monotonic() - started))
+            passed, _output = _verification_outcome(result)
             # Candidate code executes in this process. Never persist its stdout
             # or stderr: it can read the mounted hidden test bytes and print them.
             return passed, "hidden oracle passed" if passed else "hidden oracle failed"
@@ -449,6 +456,13 @@ def _unchanged(value: Any) -> Any:
     return value
 
 
+MCP_REPOSITORY_PROMPT = (
+    "\n\nBenchmark environment: the isolated GitNexus repository is registered as "
+    "benchmark-target. Use that repo name, or omit repo to use the default. "
+    "Repository aliases in checked-in guidance refer to the original checkout."
+)
+
+
 def run_arm(
     arm: str,
     task: dict[str, Any],
@@ -465,6 +479,8 @@ def run_arm(
     mcp_config_json: str | None = None,
 ) -> dict[str, Any]:
     sessions: list[dict[str, Any]] = []
+    if arm != "baseline_nomcp":
+        task = {**task, "prompt": task["prompt"] + MCP_REPOSITORY_PROMPT}
     environment_builder = getattr(sandbox, "environment", build_sandbox_environment)
     host_text = getattr(sandbox, "host_text", _unchanged)
     host_path = getattr(sandbox, "host_path", lambda value: str(value))
@@ -475,6 +491,14 @@ def run_arm(
         model=args.model,
         build_sandbox_environment=environment_builder,
     )
+    baseline_tools = allowed_agent_tools(implementation=True)
+    if arm == "baseline":
+        # Explicit host setting: never inherit ENABLE_TOOL_SEARCH from the
+        # operator. ToolSearch must be in --tools as well as --allowedTools.
+        deferred = getattr(args, "mcp_tool_loading", "eager") == "deferred"
+        env["ENABLE_TOOL_SEARCH"] = "true" if deferred else "false"
+        if deferred:
+            baseline_tools.append("ToolSearch")
     # All arms load ordinary repository context (CLAUDE.md) through the same
     # startup mode. The no-MCP arm instead disables skills/commands and
     # restricts its exact tool surface, with an empty MCP config and no
@@ -484,6 +508,7 @@ def run_arm(
         "progress_label": progress_label,
         "claude_bin": sandbox.claude_bin,
         "timeout": args.timeout,
+        "max_budget_usd": getattr(args, "max_budget_usd", None),
         "model": args.model,
         "effort": args.effort,
         "env": env,
@@ -680,7 +705,7 @@ def run_arm(
                 BASELINE_PROMPT.format(task=task["prompt"]),
                 worktree,
                 disallowed_tools=["Skill"],
-                **{**common, "allowed_tools": allowed_agent_tools(implementation=True)},
+                **{**common, "allowed_tools": baseline_tools},
             )
         )
     record = sum_sessions(sessions)
@@ -698,20 +723,23 @@ def run_arm(
         verify_mounts = (
             ReadOnlyMount(source=review_artifact.parent, target=SANDBOX_REVIEW_OUTPUT),
         )
-    authored_tests_passed, authored_test_output = _verification_outcome(
-        run_verify(
-            task["verify"],
-            worktree,
-            args.timeout,
-            command_prefix=sandbox.command_prefix_for(
-                read_only_workspace=True,
-                unshare_network=True,
-                extra_read_only_mounts=verify_mounts,
-            ),
-            env=verify_env,
-            require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
-        )
+    verification_started = time.monotonic()
+    authored_result = run_verify(
+        task["verify"],
+        worktree,
+        args.timeout,
+        command_prefix=sandbox.command_prefix_for(
+            read_only_workspace=True,
+            unshare_network=True,
+            extra_read_only_mounts=verify_mounts,
+        ),
+        env=verify_env,
+        require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
     )
+    record["verification_diagnostics"] = {
+        "authored": verification_metrics(authored_result, time.monotonic() - verification_started),
+    }
+    authored_tests_passed, authored_test_output = _verification_outcome(authored_result)
     review_score: dict[str, Any] | None = None
     if arm in ("review", "ce_review"):
         try:
@@ -740,12 +768,15 @@ def run_arm(
         )
         oracle_output = "hidden review labels matched" if oracle_passed else "hidden review labels not fully matched"
     else:
+        hidden_diagnostics: dict[str, Any] = {}
         oracle_passed, oracle_output = _run_hidden_oracle(
             oracle_snapshot,
             worktree,
             args,
             sandbox,
+            diagnostics=hidden_diagnostics,
         )
+        record["verification_diagnostics"]["hidden"] = hidden_diagnostics
     record["authored_tests_passed"] = authored_tests_passed
     record["authored_test_output"] = authored_test_output
     record["oracle_passed"] = oracle_passed
@@ -825,7 +856,10 @@ def task_prompt_digest(task: Mapping[str, Any]) -> str:
     stop rows matching, or match rows that should not.
     """
 
-    return hashlib.sha256(str(task["prompt"]).encode()).hexdigest()
+    # Bind the conditional harness instruction as well as the task text. Both
+    # arms retain the same experiment identity; old raw-prompt hashes expire.
+    payload = {"task": str(task["prompt"]), "mcp_environment": MCP_REPOSITORY_PROMPT}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 # A sustained upstream outage shows up as a run of session/infra/cleanup
@@ -1204,6 +1238,18 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
     expected kinds is deliberately left to propagate — a harness bug must not be
     recorded as an ordinary infra-error and averaged into the evidence.
     """
+    cell_started_at = datetime.now(UTC).isoformat()
+    cell_started = time.monotonic()
+    phase_started = cell_started
+    active_phase = "validation"
+    phase_seconds: dict[str, float] = {}
+
+    def enter_phase(name: str) -> None:
+        nonlocal active_phase, phase_started
+        now = time.monotonic()
+        phase_seconds[active_phase] = phase_seconds.get(active_phase, 0.0) + now - phase_started
+        active_phase, phase_started = name, now
+
     args = ctx.args
     task = ctx.task
     worktree: Path | None = None
@@ -1227,6 +1273,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 raise RuntimeError("sanitized graph snapshot is unavailable")
         if ctx.asset_snapshot is None:
             raise RuntimeError("task asset snapshot is unavailable")
+        enter_phase("clone")
         if ctx.clone_template is not None:
             if not ctx.sanitized_head:
                 raise RuntimeError("clone template is missing its sanitized HEAD")
@@ -1235,9 +1282,11 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
         else:
             worktree = make_worktree(ctx.repo, ctx.task_sha, ctx.trees_dir)
             sanitized_head = sanitize_clone_for_hidden_oracles(worktree)
+        enter_phase("graph_materialize")
         if gitnexus_available:
             assert ctx.graph_snapshot is not None
             ctx.graph_snapshot.materialize(worktree, sanitized_head=sanitized_head)
+        enter_phase("dependencies")
         dependency_mounts = stage_task_assets(
             task,
             repo=ctx.repo,
@@ -1250,12 +1299,14 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             else []
         )
         ce_mounts = ce_plugin_mounts_for_arm(execution_arm, ctx.ce_plugin_snapshot)
+        enter_phase("mcp_startup")
         if isolated_baseline:
             endpoint = resources.enter_context(isolated_mcp(
                 clone=worktree, mounts=[*dependency_mounts, *gitnexus_mounts], bwrap_bin=ctx.bwrap_bin,
             ))
             gitnexus_mounts = [endpoint]
             runtime_exposure = "stdio-only"
+        enter_phase("sandbox_setup")
         with prepare_sandbox(
             clone=worktree,
             claude_bin=args.claude_bin,
@@ -1338,6 +1389,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             before_work_digest = (
                 implementation_diff_digest(sandbox, orig_sha) if execution_arm in IMPLEMENTATION_ARMS else ""
             )
+            enter_phase("agent_and_verification")
             record = run_arm(
                 execution_arm,
                 task,
@@ -1352,6 +1404,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 oracle_snapshot=ctx.oracle_snapshot,
                 mcp_config_json=connector_config() if isolated_baseline else None,
             )
+            enter_phase("artifacts")
             if execution_arm in ("review", "ce_review"):
                 review_source = review_output_path(sandbox, REVIEW_OUTPUT)
                 if review_source.is_file() and not review_source.is_symlink():
@@ -1425,6 +1478,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
         detail = redact_text(str(exc), credential_secrets(args))
         print(f"[{task['id']}][{arm}][run {run_idx}] infra-error: {detail}")
     finally:
+        enter_phase("cleanup")
         try:
             resources.close()
         except (SandboxError, OSError, RuntimeError) as exc:
@@ -1445,13 +1499,29 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
         record["error_detail"] = (
             f"primary={primary_kind}: {primary_detail}; cleanup: {type(cleanup_error).__name__}: {cleanup_error}"
         )[:2000]
+    cell_finished = time.monotonic()
+    phase_seconds["cleanup"] = cell_finished - phase_started
     record.update(
         {
+            "cell_started_at": cell_started_at,
+            "cell_finished_at": datetime.now(UTC).isoformat(),
+            "cell_duration_s": cell_finished - cell_started,
+            "cell_phase_seconds": phase_seconds,
             "task": task["id"],
             "class": task.get("class", ""),
             "run": run_idx,
             "sandbox_backend": ctx.sandbox_backend,
             "runtime_exposure": runtime_exposure,
+            "max_budget_usd": getattr(args, "max_budget_usd", None),
+            "model": args.model,
+            "effort": args.effort,
+            "task_base_sha": ctx.task_sha,
+            "task_prompt_digest": task_prompt_digest(task),
+            **getattr(args, "measurement_revisions", {}),
+            "mcp_tool_loading": (
+                getattr(args, "mcp_tool_loading", "eager") if execution_arm == "baseline"
+                else "none" if execution_arm == "baseline_nomcp" else None
+            ),
             "task_asset_snapshot_digest": (ctx.asset_snapshot.digest if ctx.asset_snapshot is not None else None),
             "task_asset_manifest_digest": (
                 ctx.asset_snapshot.manifest_digest if ctx.asset_snapshot is not None else None
@@ -2006,6 +2076,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--claude-bin", default="claude")
     parser.add_argument(
+        "--mcp-tool-loading",
+        choices=("eager", "deferred"),
+        default="eager",
+        help="MCP catalog loading for the baseline arm only (default: eager); other arms are unchanged",
+    )
+    parser.add_argument(
         "--gitnexus-root",
         type=Path,
         default=HARNESS_ROOT,
@@ -2086,6 +2162,10 @@ def build_parser() -> argparse.ArgumentParser:
         "subagent spend — token metrics count only the main loop",
     )
     parser.add_argument("--promotion-min-runs", type=int, default=3)
+    parser.add_argument(
+        "--max-budget-usd", type=float,
+        help="opt-in CLI-reported cost stop per baseline session; provider billing may exceed it",
+    )
     parser.add_argument("--promotion-min-improvement", type=float, default=5.0)
     parser.add_argument("--promotion-max-task-regression", type=float, default=20.0)
     parser.add_argument("--task-bindings-json", default=None, help=argparse.SUPPRESS)
@@ -2107,6 +2187,9 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     try:
+        args.max_budget_usd = session_budget(args.max_budget_usd)
+        if args.max_budget_usd is not None and any(arm not in ("baseline", "baseline_nomcp", "baseline_cli") for arm in args.arms):
+            raise ValueError("--max-budget-usd is limited to single-session baseline arms")
         args.model = normalized_model_identifier(args.model)
         args.proposer_model = (
             normalized_model_identifier(args.proposer_model, flag="--proposer-model")
@@ -2195,7 +2278,15 @@ def main() -> None:
             sandbox_backend = "bwrap"
             require_claude_sandbox_helpers()
         runtime_mounts = trusted_gitnexus_runtime_mounts(root=args.gitnexus_root)
-    except SandboxError as exc:
+        args.measurement_revisions = {}
+        for field, root in (("runtime_sha", args.gitnexus_root), ("harness_sha", HARNESS_ROOT)):
+            sha = run_checked(
+                ["git", "-C", str(root.expanduser().resolve()), "rev-parse", "HEAD^{commit}"], timeout=60,
+            ).stdout_tail.strip()
+            if not re.fullmatch(r"[0-9a-f]{40}", sha):
+                raise SandboxError(f"cannot pin {field} for measurement")
+            args.measurement_revisions[field] = sha
+    except (SandboxError, ManagedProcessError) as exc:
         parser.error(str(exc))
         raise AssertionError("ArgumentParser.error() returned unexpectedly")
     gateway = attach_openai_gateway(args)
@@ -2503,6 +2594,11 @@ def _run_sweep(
     total_cells = len(tasks) * args.runs * len(args.arms)
     started_cells = 0
     sweep_started = time.monotonic()
+    timing: dict[str, Any] = {"complete": False, "workers": args.workers, "total_s": None,
+                              "before_first_cell_s": None, "dependency_setup_s": None,
+                              "foreground_graph_setup_s": 0.0}
+    timing_path = out_dir / "sweep-timing.json"
+    timing_path.write_text(json.dumps(timing) + "\n")
     with (
         tempfile.TemporaryDirectory(prefix="wfbench-trees-") as trees,
         TaskAssetCache(Path(trees) / ".task-assets") as task_asset_cache,
@@ -2540,6 +2636,8 @@ def _run_sweep(
             except (OSError, SandboxError, ValueError) as exc:
                 asset_snapshot_errors[str(_task["id"])] = exc
 
+        timing["dependency_setup_s"] = time.monotonic() - sweep_started
+        timing_path.write_text(json.dumps(timing) + "\n")
         reuse_source = args.reuse_results.expanduser().resolve() if args.reuse_results is not None else None
         reusable_rows: dict[tuple[str, str, int], dict[str, Any]] = {}
         if reuse_source is not None:
@@ -2632,12 +2730,15 @@ def _run_sweep(
                 asset_snapshot = asset_snapshots.get(str(task["id"]))
                 asset_snapshot_error: BaseException | None = asset_snapshot_errors.get(str(task["id"]))
                 graph_key = (str(repo), task_sha)
+                graph_started = time.monotonic()
                 if graph_prefetch is not None and graph_prefetch.key == graph_key:
                     _join_graph_prefetch()
                 if paid_cells:
                     ensure_task_graph(
                         task=task, repo=repo, task_sha=task_sha, graph_key=graph_key, env=graph_env
                     )
+                timing["foreground_graph_setup_s"] += time.monotonic() - graph_started
+                timing_path.write_text(json.dumps(timing) + "\n")
                 graph_snapshot = graph_env.graph_snapshots.get(graph_key)
                 graph_snapshot_error = graph_env.graph_snapshot_errors.get(graph_key)
                 clone_template, template_head = graph_env.clone_templates.get(graph_key, (None, None))
@@ -2665,6 +2766,9 @@ def _run_sweep(
 
                 def announce(run_idx: int, arm: str) -> None:
                     nonlocal started_cells
+                    if timing["before_first_cell_s"] is None:
+                        timing["before_first_cell_s"] = time.monotonic() - sweep_started
+                        timing_path.write_text(json.dumps(timing) + "\n")
                     started_cells += 1
                     print(
                         f"[{task['id']}][{arm}][run {run_idx}] starting "
@@ -2729,6 +2833,8 @@ def _run_sweep(
         finally:
             _join_graph_prefetch()
 
+    timing.update(complete=not outage_tripped and not cancel_event.is_set(), total_s=time.monotonic() - sweep_started)
+    timing_path.write_text(json.dumps(timing) + "\n")
     selection_report = [
         "## Run provenance",
         "",

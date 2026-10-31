@@ -125,7 +125,7 @@ import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 import { narrowOverloadCandidates } from '../passes/overload-narrowing.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
 import { withdrawAnsweredReceiverDrops } from '../resolution-outcome.js';
-import { logHeapProbe } from '../../utils/heap-probe.js';
+import { isDebugHeapEnabled, logHeapProbe } from '../../utils/heap-probe.js';
 import { parseTruthyEnv } from '../../utils/env.js';
 
 /**
@@ -1229,6 +1229,23 @@ export function runScopeResolution(
   const tResolve = PROF ? process.hrtime.bigint() : 0n;
   logHeapProbe('sr-post-resolve', `lang=${provider.language}`);
 
+  const emitStarted = Date.now();
+  const probeEmit = (stage: string, detail = ''): void => {
+    if (!isDebugHeapEnabled()) return;
+    logHeapProbe(
+      `sr-emit-${stage}`,
+      `lang=${provider.language} elapsed_ms=${Date.now() - emitStarted}` +
+        ` nodes=${graph.nodeCount} edges=${graph.relationshipCount} ${detail}`,
+    );
+  };
+  if (isDebugHeapEnabled()) {
+    probeEmit(
+      'start',
+      `references=${indexes.referenceSites.length}` +
+        ` callableFacts=${parsedFiles.reduce((total, parsed) => total + (parsed.callableFlowSites?.length ?? 0), 0)}`,
+    );
+  }
+
   // Value defs bound at MODULE LEVEL. A read of a block-local `const` must not
   // mint an edge — that would retain the inert locals `pruneLocalSymbols` drops.
   //
@@ -1299,6 +1316,7 @@ export function runScopeResolution(
     }
   }
 
+  probeEmit('locals-end', `localValues=${functionLocalValueDefIds.size}`);
   // ── Out-of-core scope seal boundary ─────────────────────────────────────
   // Pass-A (finalize + propagate + resolve) is done; all whole-language reads
   // of `Scope.bindings` are behind us. Emit reaches scopes ONLY via
@@ -1330,6 +1348,10 @@ export function runScopeResolution(
   const handledSites = new Set<string>(preEmittedInheritanceSites);
   const deferredIndirectCollection = collectDeferredIndirectCollection(emitParsedFiles, indexes);
   const deferredIndirectSites = deferredIndirectCollection.sites;
+  probeEmit(
+    'indirect-collection-end',
+    `deferred=${deferredIndirectSites.size} signatures=${deferredIndirectCollection.callSignaturesBySite.size}`,
+  );
   const callableArgumentSites = new Set<string>();
   const callResultAssignmentSites = new Set<string>();
   for (const parsed of emitParsedFiles) {
@@ -1395,6 +1417,7 @@ export function runScopeResolution(
           unresolvedInheritanceByClass,
         },
       );
+  probeEmit('receiver-end', `handled=${handledSites.size} emitted=${receiverBound.emitted}`);
   let receiverExtras = receiverBound.emitted;
   if (receiverBound.dispatchFanoutSkipped > 0) {
     // Never drop dispatch coverage silently (#2829) — same contract as the
@@ -1462,6 +1485,7 @@ export function runScopeResolution(
           skipSites: deferredIndirectSites,
         },
       );
+  probeEmit('free-calls-end', `handled=${handledSites.size} emitted=${freeCallExtras}`);
   const replayedCallResultBindings =
     callableFlowOnly || calleeIdAccumulator === undefined
       ? 0
@@ -1526,7 +1550,13 @@ export function runScopeResolution(
       }
     }
   }
-  const referenceSkipSites = new Set(handledSites);
+  // Receiver/free-call passes have finished reading this set. Extend it for
+  // the remaining passes instead of retaining three whole-program copies.
+  const referenceSkipSites = handledSites;
+  probeEmit(
+    'replay-end',
+    `handled=${handledSites.size} replayedBindings=${replayedCallResultBindings}`,
+  );
   for (const key of deferredIndirectSites) referenceSkipSites.add(key);
   const { emitted, skipped } = callableFlowOnly
     ? { emitted: 0, skipped: 0 }
@@ -1551,7 +1581,8 @@ export function runScopeResolution(
   // first-write-wins per edge id, which stops a DUPLICATE but not a second
   // edge to a DIFFERENT target, and second-guessing a resolved receiver is
   // exactly the wrong-edge-in-the-safety-gate case this must not create.
-  const uniqueNameSkipSites = new Set(referenceSkipSites);
+  const uniqueNameSkipSites = referenceSkipSites;
+  probeEmit('references-end', `emitted=${emitted} skipped=${skipped}`);
   for (const [fromScope, refs] of referenceIndex.bySourceScope) {
     const fromFilePath = indexes.scopeTree.getScope(fromScope)?.filePath;
     if (fromFilePath === undefined) continue;
@@ -1589,6 +1620,7 @@ export function runScopeResolution(
   // several functions returning the same field name. Sites it resolves are
   // added to the skip set, so the fallback below never second-guesses them.
   const sharedPropertyIndex = input.prebuiltPropertyNameIndex ?? buildPropertyNameIndex(graph);
+  probeEmit('imported-values-end', `skipSites=${uniqueNameSkipSites.size}`);
   const answeredAfterReceiverPass = new Set<string>();
   const returnShapeMembers = callableFlowOnly
     ? { emitted: 0, memberNotOnShape: 0 }
@@ -1625,6 +1657,7 @@ export function runScopeResolution(
         answeredAfterReceiverPass,
       );
   withdrawAnsweredReceiverDrops(resolutionOutcomes, answeredAfterReceiverPass);
+  probeEmit('properties-end', `outcomes=${resolutionOutcomes.length}`);
 
   // value-ref registrations (#2437): USES edges at the registration sites
   // plus field-based dispatch — synthesized CALLS from member-call sites to
@@ -1668,6 +1701,7 @@ export function runScopeResolution(
       'property-dispatch: keys over the fan-out cap were dropped (no CALLS synthesized for them)',
     );
   }
+  probeEmit('property-dispatch-end');
   const callableValueFlow =
     calleeIdAccumulator === undefined
       ? {
@@ -1697,9 +1731,11 @@ export function runScopeResolution(
               'callable-value-flow: candidate set exceeded the cap; no partial CALLS emitted',
             ),
         });
+  probeEmit('callable-flow-end', `iterations=${callableValueFlow.iterations}`);
   const importsEmitted = callableFlowOnly
     ? 0
     : emitImportEdges(graph, indexes.imports, indexes.scopeTree, provider.importEdgeReason);
+  probeEmit('imports-end', `emitted=${importsEmitted}`);
 
   // Language-specific supplementary edges (e.g. Vue template-derived
   // BINDS_EVENT_HANDLER / EMITS_EVENT / CALLS / ACCESSES edges).
@@ -1714,6 +1750,7 @@ export function runScopeResolution(
       recordSourceBinding,
     });
   }
+  probeEmit('provider-end');
 
   // ── CFG/PDG emission (#2081 M1, opt-in via `--pdg`) ──────────────────────
   // Emit BasicBlock nodes + CFG edges from each ParsedFile's worker-built
