@@ -396,6 +396,37 @@ export async function loadAnalyzeConfigStrict(
 export const GITNEXUS_RC_ENV = 'GITNEXUS_RC';
 
 /**
+ * Read an explicitly named config file through one descriptor, never by path
+ * after the check, so it cannot be swapped between the check and the read.
+ *
+ * O_NONBLOCK makes opening a FIFO return at once instead of blocking in
+ * open(2) until a writer appears; fstat then rejects it. It changes nothing
+ * for a regular file (same reasoning as `readNestedGitignore`). The read stops
+ * one byte past the limit, so a file that grows after fstat is rejected
+ * before it is decoded rather than read to EOF.
+ */
+function readBoundedConfigFile(filePath: string): string {
+  const fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0));
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) throw new Error('not a regular file');
+    const tooLarge = () => new Error(`larger than ${MAX_REPO_CONTROL_FILE_BYTES} bytes`);
+    if (stat.size > MAX_REPO_CONTROL_FILE_BYTES) throw tooLarge();
+    const buffer = Buffer.alloc(MAX_REPO_CONTROL_FILE_BYTES + 1);
+    let length = 0;
+    for (;;) {
+      const read = fs.readSync(fd, buffer, length, buffer.length - length, null);
+      if (read === 0) break;
+      length += read;
+      if (length > MAX_REPO_CONTROL_FILE_BYTES) throw tooLarge();
+    }
+    return buffer.toString('utf-8', 0, length);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
  * Layer the `GITNEXUS_RC` file over the repository's `.gitnexusrc`, key by key.
  * It lets a checkout carry analyze config without a tracked or untracked file
  * in the working tree. Being an explicit request, a relative path, a missing
@@ -412,23 +443,7 @@ function withEnvConfig(
   }
   let raw: string;
   try {
-    // Check and read through one descriptor, so the file cannot be swapped
-    // between the type/size check and the read.
-    const fd = fs.openSync(envPath, 'r');
-    try {
-      const stat = fs.fstatSync(fd);
-      if (!stat.isFile()) throw new Error('not a regular file');
-      if (stat.size > MAX_REPO_CONTROL_FILE_BYTES) {
-        throw new Error(`larger than ${MAX_REPO_CONTROL_FILE_BYTES} bytes`);
-      }
-      raw = fs.readFileSync(fd, 'utf-8');
-    } finally {
-      fs.closeSync(fd);
-    }
-    // A file that grew after fstat is still bounded.
-    if (Buffer.byteLength(raw) > MAX_REPO_CONTROL_FILE_BYTES) {
-      throw new Error(`larger than ${MAX_REPO_CONTROL_FILE_BYTES} bytes`);
-    }
+    raw = readBoundedConfigFile(envPath);
   } catch (err) {
     throw new GitNexusRcError(`Could not read ${label}: ${(err as Error).message}`);
   }
