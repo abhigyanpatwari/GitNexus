@@ -7,6 +7,9 @@ npm run build
 node bench/java-overload-resolution/measure.js --check --output /tmp/java-overload-check.json
 ```
 
+CI runs this check in the scope-resolution benchmark job and uploads
+`java-overload-resolution-benchmark.json` with that job's measurements.
+
 `measure.js` runs three fresh-process samples at 128, 512 and 2,048 units. Each
 unit adds seven methods and four calls. Two shapes exercise increasing file
 counts and increasing declarations within one class. Every overload family has
