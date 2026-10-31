@@ -16,6 +16,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .workload_diagnostics import COUNT_FIELDS, TOKEN_FIELDS, public_workload, workload_metrics
+from .verification_diagnostics import public_verification
 
 SCHEMA = "gitnexus.session-diagnostics/v1"
 MAX_EVENTS = 100_000
@@ -23,7 +24,7 @@ MAX_CALLS = 2048
 CELL_PHASES = ("validation", "clone", "graph_materialize", "dependencies", "mcp_startup",
                "sandbox_setup", "agent_and_verification", "artifacts", "cleanup")
 COMMANDS = frozenset({
-    "list_repos", "query", "context", "check", "impact", "explain", "pdg_query",
+    "list_repos", "query", "context", "grep", "read_file", "check", "impact", "explain", "pdg_query",
     "route_map", "tool_map", "shape_check", "api_impact", "trace", "detect_changes",
 })
 TOOLS = frozenset({
@@ -364,6 +365,12 @@ def public_diagnostics(value: Any) -> list[dict[str, Any]]:
 def public_cell_diagnostics(row: dict[str, Any]) -> dict[str, Any]:
     """Shared publication boundary for release and optional-arm artifacts."""
     safe = {}
+    verification = row.get("verification_diagnostics")
+    if isinstance(verification, dict):
+        safe["verification_diagnostics"] = {
+            phase: public_verification(verification[phase])
+            for phase in ("authored", "hidden") if phase in verification
+        }
     if "session_diagnostics" in row:
         safe["session_diagnostics"] = public_diagnostics(row["session_diagnostics"])
     if "cell_duration_s" in row:

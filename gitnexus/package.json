@@ -92,7 +92,7 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.4.1",
     "fast-xml-parser": "^5.11.1",
-    "glob": "^13.0.6",
+    "glob": "^14.0.2",
     "graphology": "^0.26.0",
     "graphology-indices": "^0.17.0",
     "graphology-utils": "^2.3.0",
