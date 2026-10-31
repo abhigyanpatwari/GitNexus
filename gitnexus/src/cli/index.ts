@@ -518,7 +518,7 @@ program
   .option('--include-tests', 'Include test files in results')
   .option(
     '-l, --limit <n>',
-    'Max symbols per depth level (default: 30, GITNEXUS_IMPACT_DEFAULT_LIMIT=0 for all); explicit --limit also caps affected processes/modules/routes',
+    'Max symbols per depth level in callgraph mode (default: 30, GITNEXUS_IMPACT_DEFAULT_LIMIT=0 for all); explicit --limit also caps affected processes/modules/routes',
   )
   .option('--offset <n>', 'Skip N symbols per depth level for pagination')
   .option('--summary-only', 'Return counts and risk only, omit symbol list')

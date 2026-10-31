@@ -679,7 +679,7 @@ ${HOT_READ_STALENESS_NOTE}`,
         limit: {
           type: 'integer',
           description:
-            'Max symbols per depth level in byDepth (default: 30; byDepthCounts stays full, page with offset). Symbols list ≤3 processes plus processCount. Single-repo only.',
+            'Max symbols per depth level in byDepth (default: 30; byDepthCounts stays full, page with offset). Symbols list ≤3 processes plus processCount. Single-repo callgraph only.',
           default: 30,
           minimum: 1,
           maximum: 10000,

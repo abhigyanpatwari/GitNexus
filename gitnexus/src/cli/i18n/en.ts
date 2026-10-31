@@ -388,7 +388,7 @@ export const en = {
   'help.option.impact.depth': 'Max relationship depth (default: 3)',
   'help.option.impact.includeTests': 'Include test files in results',
   'help.option.impact.limit':
-    'Max symbols per depth level (default: 30, GITNEXUS_IMPACT_DEFAULT_LIMIT=0 for all); explicit --limit also caps affected processes/modules/routes',
+    'Max symbols per depth level in callgraph mode (default: 30, GITNEXUS_IMPACT_DEFAULT_LIMIT=0 for all); explicit --limit also caps affected processes/modules/routes',
   'help.option.impact.offset': 'Skip N symbols per depth level for pagination',
   'help.option.impact.summaryOnly': 'Return counts and risk only, omit symbol list',
   'help.option.impact.maxTokens':

@@ -352,7 +352,7 @@ export const zhCN = {
   'help.option.impact.depth': '最大关系遍历深度（默认：3）',
   'help.option.impact.includeTests': '在结果中包含测试文件',
   'help.option.impact.limit':
-    '每层深度最大符号数（默认：30，设 GITNEXUS_IMPACT_DEFAULT_LIMIT=0 返回全部）；显式指定 --limit 时，也限制受影响流程/模块/路由数',
+    '调用图模式下每层深度最大符号数（默认：30，设 GITNEXUS_IMPACT_DEFAULT_LIMIT=0 返回全部）；显式指定 --limit 时，也限制受影响流程/模块/路由数',
   'help.option.impact.offset': '每层深度跳过 N 个符号（分页用）',
   'help.option.impact.summaryOnly': '仅返回计数和风险等级，省略符号列表',
   'help.option.impact.maxTokens':
