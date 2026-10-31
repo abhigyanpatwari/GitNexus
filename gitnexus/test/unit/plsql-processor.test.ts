@@ -7,6 +7,7 @@ import {
   plsqlFactsForFile,
   resetPlSqlFactsStore,
 } from '../../src/core/ingestion/plsql/facts-store.js';
+import { nearestGroups } from '../../src/core/ingestion/plsql/resolve.js';
 import {
   segmentDeadlineMs,
   SEGMENT_DEADLINE_FLOOR_MS,
@@ -162,6 +163,36 @@ END p;
       if (rel.type === 'CALLS') targets.push(graph.getNode(rel.targetId)!.properties.filePath);
     }
     expect(targets).toEqual(['db/impl/pkg_fee.pkb']);
+  });
+
+  it('never lets the body of one package copy hide the declaration of another', () => {
+    const spec =
+      'CREATE OR REPLACE PACKAGE pkg_fee AS\n  FUNCTION fee RETURN NUMBER;\nEND pkg_fee;\n/\n';
+    const { graph, result } = run({
+      'a/pkg_fee.pks': spec,
+      'a/pkg_fee.pkb':
+        'CREATE OR REPLACE PACKAGE BODY pkg_fee AS\n  FUNCTION fee RETURN NUMBER IS BEGIN RETURN 1; END fee;\nEND pkg_fee;\n/\n',
+      'b/pkg_fee.pks': spec,
+      'settle.prc':
+        'CREATE OR REPLACE PROCEDURE settle IS\n  x NUMBER;\nBEGIN\n  x := pkg_fee.fee();\nEND settle;\n/\n',
+    });
+    // Both copies are equally near: the body of `a` and the spec of `b` stay candidates.
+    expect(edges(graph, 'CALLS')).toEqual([
+      'SETTLE@L1 -> FEE@a/pkg_fee.pkb',
+      'SETTLE@L1 -> FEE@b/pkg_fee.pks',
+    ]);
+    expect(result.ambiguousCalls).toBe(1);
+  });
+
+  it('measures a package instance by its nearest spec or body file', () => {
+    const pkg = [
+      { filePath: 'db/api/pkg_fee.pks', instance: 'A', isSpec: true },
+      { filePath: 'db/impl/pkg_fee.pkb', instance: 'A', isSpec: false },
+      { filePath: 'other/pkg_fee.pks', instance: 'B', isSpec: true },
+    ];
+    const nearest = nearestGroups(pkg, 'db/impl/settle.prc', (p) => p.instance);
+    // The whole instance is kept, so a qualifier binds to its spec, not just the nearer body.
+    expect(nearest.map((p) => p.filePath)).toEqual(['db/api/pkg_fee.pks', 'db/impl/pkg_fee.pkb']);
   });
 
   it('keeps forward-declared private subprograms private', () => {

@@ -157,10 +157,27 @@ export class PlSqlNameIndex<E extends PlSqlIndexEntry> {
  * file.
  */
 function nearestEntities<E extends PlSqlIndexEntry>(candidates: E[], fromFile: string): E[] {
-  if (candidates.length <= 1) return candidates;
+  return nearestGroups<E>(candidates, fromFile, entityKey);
+}
+
+/** One subprogram of one package instance (or of one standalone file). */
+function entityKey(e: PlSqlIndexEntry): string {
+  return `${e.instance ?? e.filePath}\0${plsqlSignatureKey(e.def)}`;
+}
+
+/**
+ * Keep the candidates of the nearest group(s), where a group (all entries
+ * sharing `keyOf`) is as near to `fromFile` as its nearest member.
+ */
+export function nearestGroups<E extends { readonly filePath: string }>(
+  candidates: readonly E[],
+  fromFile: string,
+  keyOf: (candidate: E) => string,
+): E[] {
+  if (candidates.length <= 1) return [...candidates];
   const groups = new Map<string, E[]>();
   for (const c of candidates) {
-    const key = `${c.instance ?? c.filePath}\0${plsqlSignatureKey(c.def)}`;
+    const key = keyOf(c);
     const group = groups.get(key);
     if (group) group.push(c);
     else groups.set(key, [c]);
@@ -221,13 +238,13 @@ function narrowOverloads<E extends PlSqlIndexEntry>(
 
 /**
  * A spec (or forward) declaration and its body describe one subprogram; prefer
- * the body. Declaration-only entries remain when no body is a candidate.
+ * the body. Pairing is per package instance, so a body in one copy of a
+ * package never hides the declaration of another copy. Declaration-only
+ * entries remain when their own instance has no body among the candidates.
  */
 function preferImplementations<E extends PlSqlIndexEntry>(defs: E[]): E[] {
-  const bodies = new Set(
-    defs.filter((d) => !d.def.declarationOnly).map((d) => plsqlSignatureKey(d.def)),
-  );
-  return defs.filter((d) => !d.def.declarationOnly || !bodies.has(plsqlSignatureKey(d.def)));
+  const bodies = new Set(defs.filter((d) => !d.def.declarationOnly).map(entityKey));
+  return defs.filter((d) => !d.def.declarationOnly || !bodies.has(entityKey(d)));
 }
 
 /**

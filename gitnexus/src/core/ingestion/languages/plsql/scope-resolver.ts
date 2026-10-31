@@ -17,7 +17,7 @@ import { plsqlProvider } from '../plsql.js';
 import {
   PlSqlNameIndex,
   PlSqlPackageInstances,
-  nearestByPath,
+  nearestGroups,
   rootPackageOf,
   type PlSqlIndexEntry,
 } from '../../plsql/resolve.js';
@@ -106,16 +106,28 @@ const plsqlScopeResolver: ScopeResolver = {
       if (pkg) entry.instance = instances.instanceOf(pkg.name, pkg.schema, entry.filePath);
     }
 
-    // A package name denotes the package instance nearest the reference; its
-    // spec when indexed.
+    // A package name denotes the package instance nearest the reference (as
+    // near as its nearest spec or body file); its spec when indexed.
     const packageSymbols = new Map<
       string,
-      Array<{ filePath: string; symbol: SymbolDefinition; isSpec: boolean; schema?: string }>
+      Array<{
+        filePath: string;
+        symbol: SymbolDefinition;
+        isSpec: boolean;
+        schema?: string;
+        instance: string;
+      }>
     >();
     for (const [def, symbol] of symbolOf) {
       if (def.kind !== 'package') continue;
       const list = packageSymbols.get(def.name) ?? [];
-      list.push({ filePath: symbol.filePath, symbol, isSpec: def.isSpec, schema: def.schema });
+      list.push({
+        filePath: symbol.filePath,
+        symbol,
+        isSpec: def.isSpec,
+        schema: def.schema,
+        instance: instances.instanceOf(def.name, def.schema, symbol.filePath),
+      });
       packageSymbols.set(def.name, list);
     }
     /** In `S.A.N` the written schema `S` narrows same-named packages first. */
@@ -126,7 +138,11 @@ const plsqlScopeResolver: ScopeResolver = {
     ): SymbolDefinition | undefined => {
       const all = packageSymbols.get(name) ?? [];
       const inSchema = schema === undefined ? [] : all.filter((p) => p.schema === schema);
-      const nearest = nearestByPath(inSchema.length > 0 ? inSchema : all, fromFile);
+      const nearest = nearestGroups(
+        inSchema.length > 0 ? inSchema : all,
+        fromFile,
+        (p) => p.instance,
+      );
       return (nearest.find((p) => p.isSpec) ?? nearest[0])?.symbol;
     };
 
