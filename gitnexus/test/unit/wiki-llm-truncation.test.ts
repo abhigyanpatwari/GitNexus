@@ -1,0 +1,150 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { callLLM, type LLMConfig } from '../../src/core/wiki/llm-client.js';
+
+const config: LLMConfig = {
+  apiKey: 'sk-test',
+  baseUrl: 'https://api.openai.com/v1',
+  model: 'gpt-4o',
+  maxTokens: 16_384,
+  temperature: 0,
+};
+
+function jsonResponse(choice: Record<string, unknown>): Response {
+  return new Response(JSON.stringify({ choices: [choice], usage: {} }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function sseResponse(chunks: Array<{ content?: string; finish_reason: string | null }>): Response {
+  const lines = chunks.map(
+    ({ content, finish_reason }) =>
+      `data: ${JSON.stringify({ choices: [{ delta: content ? { content } : {}, finish_reason }] })}\n\n`,
+  );
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode([...lines, 'data: [DONE]\n\n'].join('')));
+      controller.close();
+    },
+  });
+  return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+}
+
+const LIMIT_ERROR =
+  'LLM response stopped at the completion token limit (16384, finish_reason "length") and is incomplete.';
+
+describe('callLLM — responses cut off by the completion limit', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('rejects a non-streaming answer that stopped at the limit', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          message: { content: '| col | col |\n| --- | -' },
+          finish_reason: 'length',
+        }),
+      ),
+    );
+
+    await expect(callLLM('prompt', config)).rejects.toThrow(LIMIT_ERROR);
+  });
+
+  it('names the limit when reasoning used it all and no answer came back', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(jsonResponse({ message: { content: '' }, finish_reason: 'length' })),
+    );
+
+    await expect(callLLM('prompt', config)).rejects.toThrow(LIMIT_ERROR);
+  });
+
+  it('rejects a streamed answer that stopped at the limit', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        sseResponse([
+          { content: '# Module\n\n| col | col |\n', finish_reason: null },
+          { content: '| --- | -', finish_reason: 'length' },
+        ]),
+      ),
+    );
+    const onChunk = vi.fn();
+
+    await expect(callLLM('prompt', config, undefined, { onChunk })).rejects.toThrow(LIMIT_ERROR);
+    expect(onChunk).toHaveBeenCalled();
+  });
+
+  it('keeps answers that finished on their own', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          jsonResponse({ message: { content: 'done' }, finish_reason: 'stop' }),
+        )
+        .mockResolvedValueOnce(
+          sseResponse([
+            { content: 'do', finish_reason: null },
+            { content: 'ne', finish_reason: 'stop' },
+          ]),
+        ),
+    );
+
+    await expect(callLLM('prompt', config)).resolves.toMatchObject({ content: 'done' });
+    await expect(
+      callLLM('prompt', config, undefined, { onChunk: () => {} }),
+    ).resolves.toMatchObject({ content: 'done' });
+  });
+
+  it.each([false, true])('reports the configured limit (streaming: %s)', async (streaming) => {
+    const limit = 65_536;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        streaming
+          ? sseResponse([{ finish_reason: 'length' }])
+          : jsonResponse({ message: { content: '' }, finish_reason: 'length' }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      callLLM('prompt', { ...config, maxTokens: limit }, undefined, {
+        onChunk: streaming ? vi.fn() : undefined,
+      }),
+    ).rejects.toThrow(
+      'LLM response stopped at the completion token limit (65536, finish_reason "length")',
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).max_completion_tokens).toBe(limit);
+  });
+
+  it('recognizes a separate finish chunk split across network reads, followed by usage', async () => {
+    const chunks = [
+      { choices: [{ delta: { content: 'Partial answer' }, finish_reason: null }] },
+      { choices: [{ delta: {}, finish_reason: 'length' }] },
+      { choices: [], usage: { completion_tokens: 16_384 } },
+    ];
+    const bytes = new TextEncoder().encode(
+      chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\r\n\r\n`).join('') +
+        'data: [DONE]\r\n\r\n',
+    );
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < bytes.length; i += 7) {
+          controller.enqueue(bytes.slice(i, i + 7));
+        }
+        controller.close();
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body)));
+
+    await expect(callLLM('prompt', config, undefined, { onChunk: vi.fn() })).rejects.toThrow(
+      LIMIT_ERROR,
+    );
+  });
+});
