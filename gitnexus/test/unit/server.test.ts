@@ -12,7 +12,7 @@
  * NOTE: We test the server handler logic by calling the request handlers
  * directly through the MCP Server's handler dispatch.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -21,6 +21,7 @@ import {
   createMCPServer,
   getNextStepHint,
   installSignalShutdown,
+  installParentShutdown,
   startMCPServer,
   SHUTDOWN_EXIT_CODES,
 } from '../../src/mcp/server.js';
@@ -187,31 +188,50 @@ describe('createMCPServer', () => {
     }
   });
 
-  it('keeps repo optional when a default repo is configured', async () => {
-    const backend = createMockBackend({
-      listRepos: vi.fn().mockResolvedValue([
-        { name: 'alpha', path: '/tmp/alpha' },
-        { name: 'beta', path: '/tmp/beta' },
-      ]),
-    });
-    const repositoryPolicy = await createMcpRepositoryPolicy(backend, {
-      GITNEXUS_MCP_DEFAULT_REPO: 'alpha',
-    });
-    const server = createMCPServer(backend, { repositoryPolicy });
-    const client = new Client({ name: 'default-repo-client', version: '0.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  it.each(
+    [{ GITNEXUS_MCP_DEFAULT_REPO: 'alpha' }, { GITNEXUS_MCP_ALLOWED_REPOS: 'alpha' }].flatMap(
+      (env) => [false, true].map((readOnly) => ({ env, readOnly })),
+    ),
+  )(
+    'advertises the resolved repository default in tool schemas (%j)',
+    async ({ env, readOnly }) => {
+      vi.stubEnv('GITNEXUS_MCP_READ_ONLY', readOnly ? '1' : '0');
+      const backend = createMockBackend({
+        listRepos: vi.fn().mockResolvedValue([
+          { name: 'alpha', path: '/tmp/alpha' },
+          { name: 'beta', path: '/tmp/beta' },
+        ]),
+      });
+      const repositoryPolicy = await createMcpRepositoryPolicy(backend, env);
+      const server = createMCPServer(backend, { repositoryPolicy });
+      const client = new Client({ name: 'default-repo-client', version: '0.0.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
-    try {
-      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-      const tools = await client.listTools();
-      const query = tools.tools.find((tool) => tool.name === 'query');
+      try {
+        await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+        const tools = await client.listTools();
+        const query = tools.tools.find((tool) => tool.name === 'query');
 
-      expect(query?.inputSchema.required).not.toContain('repo');
-    } finally {
-      await client.close();
-      await server.close();
-    }
-  });
+        expect(query?.inputSchema.required).not.toContain('repo');
+        expect(query?.inputSchema.properties?.repo).toMatchObject({
+          default: '/tmp/alpha',
+          description: expect.stringContaining('"alpha"'),
+        });
+        await client.callTool({ name: 'query', arguments: { search_query: 'auth' } });
+        expect(backend.callTool).toHaveBeenLastCalledWith('query', {
+          search_query: 'auth',
+          repo: '/tmp/alpha',
+        });
+        expect(
+          GITNEXUS_TOOLS.find((tool) => tool.name === 'query')?.inputSchema.properties.repo,
+        ).not.toHaveProperty('default');
+      } finally {
+        vi.unstubAllEnvs();
+        await client.close();
+        await server.close();
+      }
+    },
+  );
 
   it('requires repo when multiple allowed repositories are visible without a default', async () => {
     const backend = createMockBackend({
@@ -261,9 +281,9 @@ describe('getNextStepHint (via tool call response)', () => {
   });
 
   const QUERY_HINT_BASE =
-    '\n\n---\n**Next:** To understand a specific symbol in depth, use context({name: "<symbol_name>", repo: "demo"}) to see categorized refs and process participation.';
+    'Use context({uid: "<id>", repo: "demo"}) for a symbol\'s references and processes.';
 
-  it('query hint is unchanged when include_content is not set', async () => {
+  it('query hint uses the returned identity and repository', async () => {
     const backend = createMockBackend({
       callTool: vi.fn().mockResolvedValue({ processes: [] }),
     });
@@ -271,8 +291,8 @@ describe('getNextStepHint (via tool call response)', () => {
       search_query: 'auth',
       repo: 'demo',
     });
-    expect(text.endsWith(QUERY_HINT_BASE)).toBe(true);
-    expect(text).not.toContain('context({uid:');
+    expect(JSON.parse(text).next).toBe(QUERY_HINT_BASE);
+    expect(text).not.toContain('content_truncated');
   });
 
   it('query hint names the context({uid, include_content}) fallback when include_content is true', async () => {
@@ -284,11 +304,9 @@ describe('getNextStepHint (via tool call response)', () => {
       repo: 'demo',
       include_content: true,
     });
-    expect(
-      text.endsWith(
-        `${QUERY_HINT_BASE} For source of a process_symbols row without content, use context({uid: "<id>", include_content: true, repo: "demo"}).`,
-      ),
-    ).toBe(true);
+    expect(JSON.parse(text).next).toBe(
+      `${QUERY_HINT_BASE} Source previews marked content_truncated are incomplete; use context({uid: "<id>", include_content: true, repo: "demo"}) or read_file with a bounded line range for more.`,
+    );
   });
 
   it('grep hint converts the 1-based hit line to a 0-based read_file window', async () => {
@@ -384,7 +402,45 @@ describe('getNextStepHint rename', () => {
 });
 
 describe('MCP output budgets', () => {
-  it('leaves the complete formatted response unchanged when no budget is configured', async () => {
+  it('serializes query previews and diagnostics as one JSON document', async () => {
+    const result = {
+      processes: [{ id: 'process-1', symbol_count: 2 }],
+      process_symbols: [
+        { id: 'Function:small', process_id: 'process-1', content: 'function small() {}' },
+        {
+          id: 'Function:large',
+          process_id: 'process-1',
+          content: 'large preview',
+          content_truncated: true,
+        },
+      ],
+      definitions: [
+        {
+          id: 'File:large.ts',
+          filePath: 'large.ts',
+          content: 'file preview',
+          content_truncated: true,
+        },
+      ],
+      warning: 'Some keyword indexes are unavailable',
+      partial: true,
+      staleness: { status: 'behind', commitsBehind: 2 },
+      contentAvailability: 'available',
+    };
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(result) });
+    const { text, isError } = await callToolThroughServer(backend, 'query', {
+      search_query: 'large',
+      include_content: true,
+    });
+
+    expect(isError).toBe(false);
+    const { next, ...body } = JSON.parse(text);
+    expect(body).toEqual(result);
+    expect(next).toContain('read_file');
+    expect(result).not.toHaveProperty('next');
+  });
+
+  it('preserves small query data and guidance without source omissions', async () => {
     const previous = process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
     delete process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
     try {
@@ -395,8 +451,10 @@ describe('MCP output budgets', () => {
         search_query: 'auth',
       });
       expect(isError).toBe(false);
-      expect(text).toContain('"payload":"complete"');
-      expect(text).toContain('**Next:**');
+      expect(JSON.parse(text)).toMatchObject({
+        payload: 'complete',
+        next: expect.stringContaining('context'),
+      });
       expect(text.endsWith('\n…')).toBe(false);
     } finally {
       if (previous === undefined) delete process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
@@ -625,6 +683,7 @@ describe('prompt registration', () => {
 
 describe('startMCPServer', () => {
   it('registers stdin shutdown listeners before awaiting Server.prototype.connect', async () => {
+    vi.useFakeTimers();
     // P1 finding: startMCPServer must register process.stdin end/close/error
     // shutdown listeners before calling server.connect(), so that a stdin
     // closure during transport setup is safely handled.
@@ -661,6 +720,8 @@ describe('startMCPServer', () => {
     try {
       await startMCPServer(backend);
     } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
       connectSpy.mockRestore();
       exitStub.mockRestore();
       // Remove only listeners added by startMCPServer so no side effects leak.
@@ -703,6 +764,81 @@ describe('startMCPServer', () => {
       }
     }
   });
+});
+
+describe('installParentShutdown', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(process, 'ppid', 'get').mockReturnValue(1234);
+    vi.spyOn(process, 'kill').mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('leaves a live parent alone and stops probing when disposed', () => {
+    const shutdown = vi.fn();
+    const stop = installParentShutdown(shutdown);
+    vi.advanceTimersByTime(1_000);
+    expect(process.kill).toHaveBeenCalledWith(1234, 0);
+    expect(shutdown).not.toHaveBeenCalled();
+    stop();
+    vi.advanceTimersByTime(2_000);
+    expect(process.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it('shuts down once after reparenting, including adoption by a subreaper', () => {
+    const shutdown = vi.fn();
+    installParentShutdown(shutdown);
+    vi.spyOn(process, 'ppid', 'get').mockReturnValue(4321);
+    vi.advanceTimersByTime(3_000);
+    expect(shutdown).toHaveBeenCalledExactlyOnceWith(0);
+    expect(process.kill).not.toHaveBeenCalled();
+  });
+
+  it('detects a missing parent even when the OS retains the original PPID', () => {
+    const shutdown = vi.fn();
+    installParentShutdown(shutdown);
+    vi.mocked(process.kill).mockImplementation(() => {
+      throw Object.assign(new Error('No such process'), { code: 'ESRCH' });
+    });
+    vi.advanceTimersByTime(3_000);
+    expect(shutdown).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  it.each(['EPERM', 'EACCES', undefined])(
+    'keeps serving after an inconclusive probe (%s)',
+    (code) => {
+      const shutdown = vi.fn();
+      installParentShutdown(shutdown);
+      vi.mocked(process.kill).mockImplementation(() => {
+        throw Object.assign(new Error('Cannot inspect parent'), { code });
+      });
+      vi.advanceTimersByTime(2_000);
+      expect(shutdown).not.toHaveBeenCalled();
+      expect(process.kill).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('does not keep the event loop alive', () => {
+    const interval = vi.spyOn(globalThis, 'setInterval');
+    const stop = installParentShutdown(vi.fn());
+    expect(interval.mock.results[0].value.hasRef()).toBe(false);
+    stop();
+  });
+
+  it.each([0, 1])(
+    'does not probe a process group or init when started under PPID %s',
+    (parentPid) => {
+      const shutdown = vi.fn();
+      installParentShutdown(shutdown, parentPid)();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(shutdown).not.toHaveBeenCalled();
+    },
+  );
 });
 
 // ─── Graceful shutdown signal handling (#1132) ────────────────────────

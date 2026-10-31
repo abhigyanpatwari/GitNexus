@@ -46,6 +46,64 @@ const currentParserProvenance = () => {
 };
 
 describe('run-analyze module', () => {
+  it('adds and removes dot-directory coverage on a clean same-commit analyze', async () => {
+    const tmpRepo = await createTempDir('gitnexus-dotdirs-policy-');
+    const tmpHome = await createTempDir('gitnexus-dotdirs-home-');
+    const savedHome = process.env.GITNEXUS_HOME;
+    const savedDirs = process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+    try {
+      const git = (...args: string[]) =>
+        execFileSync('git', args, { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      git('init');
+      await fs.mkdir(path.join(tmpRepo.dbPath, '.source'));
+      await fs.writeFile(
+        path.join(tmpRepo.dbPath, 'main.ts'),
+        'export function main() { return 1; }',
+      );
+      await fs.writeFile(
+        path.join(tmpRepo.dbPath, '.source', 'hidden.ts'),
+        'export function hidden() { return 2; }',
+      );
+      git('add', '.');
+      git('-c', 'user.name=test', '-c', 'user.email=test@test', 'commit', '-m', 'fixture');
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const analyze = () =>
+        runFullAnalysis(
+          tmpRepo.dbPath,
+          { skipAgentsMd: true, skipSkills: true, skipFts: true },
+          { onProgress: () => {} },
+        );
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await analyze();
+      expect((await loadMeta(storagePath))?.fileHashes).not.toHaveProperty('.source/hidden.ts');
+      expect((await analyze()).alreadyUpToDate).toBe(true);
+
+      process.env.GITNEXUS_INCLUDE_DOT_DIRS = '.source';
+      expect((await analyze()).alreadyUpToDate).not.toBe(true);
+      const included = await loadMeta(storagePath);
+      expect(Object.keys(included?.fileHashes ?? {})).toContain('.source/hidden.ts');
+      expect(included?.indexCoverage?.includeDotDirs).toEqual(['.source']);
+
+      process.env.GITNEXUS_INCLUDE_DOT_DIRS = ' .source/, .source ';
+      expect((await analyze()).alreadyUpToDate).toBe(true);
+      delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      expect((await analyze()).alreadyUpToDate).not.toBe(true);
+      expect(Object.keys((await loadMeta(storagePath))?.fileHashes ?? {})).not.toContain(
+        '.source/hidden.ts',
+      );
+      expect((await loadMeta(storagePath))?.indexCoverage?.includeDotDirs).toBeUndefined();
+    } finally {
+      if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedHome;
+      if (savedDirs === undefined) delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      else process.env.GITNEXUS_INCLUDE_DOT_DIRS = savedDirs;
+      await tmpRepo.cleanup();
+      await tmpHome.cleanup();
+    }
+  }, 120_000);
+
   it('exports runFullAnalysis as a function', async () => {
     const mod = await import('../../src/core/run-analyze.js');
     expect(typeof mod.runFullAnalysis).toBe('function');

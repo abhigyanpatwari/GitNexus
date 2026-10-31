@@ -18,6 +18,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .process_control import run_managed
+from .session_budget import session_budget
+from .session_diagnostics import EventClock, diagnose_session
 from .proposer_sandbox import (
     SANDBOX_GITNEXUS,
     SANDBOX_GITNEXUS_REGISTRY,
@@ -36,7 +38,10 @@ USAGE_FIELDS = (
     "cache_read_input_tokens",
     "output_tokens",
 )
-MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
+# A successful 142-turn release session exceeded 8 MiB (#3500, run
+# 40181565589). Keep capture, redacted artifacts, and reuse bounded together,
+# with headroom for verbose tool results in the three concurrent paid cells.
+MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 # Wall-clock ceiling for one headless session, shared by the runner and the
 # evolution loop so both CLIs kill a session at the same point. 3600s was too
 # tight for the `workflow` arm: run 29907431284 lost two investigation-task
@@ -351,6 +356,8 @@ GITNEXUS_READ_ONLY_TOOLS = (
     "mcp__gitnexus__list_repos",
     "mcp__gitnexus__query",
     "mcp__gitnexus__context",
+    "mcp__gitnexus__grep",
+    "mcp__gitnexus__read_file",
     "mcp__gitnexus__check",
     "mcp__gitnexus__impact",
     "mcp__gitnexus__explain",
@@ -725,6 +732,7 @@ def run_claude(
     transcript_secrets: tuple[str, ...] = (),
     plugin_dirs: Sequence[str] = (),
     progress_label: str | None = None,
+    max_budget_usd: float | None = None,
 ) -> dict[str, Any]:
     """Run one headless session and return its usage record."""
 
@@ -732,6 +740,7 @@ def run_claude(
     # every file under the sandbox HOME is writable by agent tools and cannot
     # serve as trusted evidence.
     del transcript_projects, transcript_cwd, transcript_wait_seconds
+    max_budget_usd = session_budget(max_budget_usd)
 
     cmd = [
         claude_bin,
@@ -763,10 +772,13 @@ def run_claude(
         cmd += ["--model", model]
     if effort:
         cmd += ["--effort", effort]
+    if max_budget_usd is not None:
+        cmd += ["--max-budget-usd", str(max_budget_usd)]
     for tool in disallowed_tools or []:
         cmd += ["--disallowedTools", tool]
     managed_cmd = [*(command_prefix or []), *cmd]
     started = time.monotonic()
+    event_clock = EventClock()
     with contextlib.ExitStack() as progress_stack:
         progress = (
             progress_stack.enter_context(
@@ -778,6 +790,11 @@ def run_claude(
             if progress_label
             else None
         )
+        def observe(chunk: bytes) -> None:
+            event_clock.observe(chunk)
+            if progress is not None:
+                progress.observe(chunk)
+
         proc = run_managed(
             managed_cmd,
             cwd=None if command_prefix else cwd,
@@ -786,17 +803,19 @@ def run_claude(
             require_pid_namespace=require_pid_namespace,
             stdin_data=prompt.encode(),
             capture_stdout_bytes=MAX_TRANSCRIPT_BYTES,
-            stdout_observer=progress.observe if progress is not None else None,
+            stdout_observer=observe,
         )
     wall_s = time.monotonic() - started
     event_stream_error: str | None = None
     events: list[dict[str, Any]] = []
+    event_offsets: list[float] | None = None
     try:
         if proc.stdout_capture is None:
             raise ValueError("parent process did not capture Claude stdout")
         if proc.stdout_capture_overflow:
             raise ValueError(f"parent-captured event stream exceeds {MAX_TRANSCRIPT_BYTES} bytes")
         events = _parse_parent_event_stream(proc.stdout_capture)
+        event_offsets = event_clock.finish(len(events))
         data, result_index = _session_result(events, proc.duration_s)
         # A session that used a background task drains its bookkeeping after
         # the final result event (`background_tasks_changed`, `task_updated`,
@@ -808,9 +827,12 @@ def run_claude(
         # a property of what the evidence readers below can see, rather than an
         # assumption that a `system` event never carries a tool_use block.
         events = events[: result_index + 1]
+        if event_offsets is not None:
+            event_offsets = event_offsets[: result_index + 1]
     except (UnicodeError, ValueError) as exc:
         event_stream_error = str(exc)
         data = {}
+        event_offsets = None
     usage = data.get("usage") or {}
     subtype = data.get("subtype")
     well_formed = all(field in usage for field in USAGE_FIELDS)
@@ -857,6 +879,8 @@ def run_claude(
         "transcript_missing": False,
         "tool_use_counts": tool_use_counts,
         "gitnexus_tool_uses": sum(count for name, count in tool_use_counts.items() if name.startswith("mcp__gitnexus")),
+        "session_diagnostics": [diagnose_session(events, event_offsets, wall_s)],
+        "max_budget_usd": max_budget_usd,
         **{field: usage.get(field, 0) for field in USAGE_FIELDS},
     }
     needs_evidence = expected_skill is not None or transcript_output_dir is not None
@@ -952,4 +976,7 @@ def sum_sessions(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         for name, count in session.get("tool_use_counts", {}).items():
             tool_use_counts[name] = tool_use_counts.get(name, 0) + int(count)
     total["tool_use_counts"] = tool_use_counts
+    total["session_diagnostics"] = [
+        diagnostic for session in sessions for diagnostic in session.get("session_diagnostics", [])
+    ]
     return total

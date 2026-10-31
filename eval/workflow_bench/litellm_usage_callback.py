@@ -19,6 +19,7 @@ accounting because the log write failed would be the worse outcome.
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 from typing import Any
@@ -65,6 +66,36 @@ def _plain(value: Any) -> Any:
     if isinstance(value, dict):
         return value
     return None
+
+
+def _request_metrics(kwargs: dict, start_time: Any, end_time: Any) -> dict:
+    """Numeric envelope evidence only; never log request content or headers."""
+    optional = kwargs.get("optional_params")
+    optional = optional if isinstance(optional, dict) else {}
+    metrics = {}
+    for field in ("messages", "tools", "system"):
+        value = kwargs.get(field, optional.get(field))
+        metrics[f"{field}_bytes"] = None
+        if isinstance(value, (str, dict, list)):
+            try:
+                metrics[f"{field}_bytes"] = len(json.dumps(
+                    value, ensure_ascii=False, separators=(",", ":"),
+                ).encode(errors="backslashreplace"))
+            except (TypeError, ValueError, RecursionError):
+                # Keep size unknown when serialization fails; usage accounting
+                # must still be recorded even without this optional metric.
+                pass
+        if field != "system":
+            metrics[f"{field}_count"] = len(value) if isinstance(value, list) else None
+    try:
+        elapsed = end_time - start_time
+        elapsed = elapsed.total_seconds() if hasattr(elapsed, "total_seconds") else elapsed
+    except (TypeError, ValueError):
+        elapsed = None
+    metrics["duration_s"] = elapsed if type(elapsed) in (int, float) and math.isfinite(elapsed) and elapsed >= 0 else None
+    cost = kwargs.get("response_cost")
+    metrics["proxy_estimated_cost_usd"] = cost if type(cost) in (int, float) and math.isfinite(cost) and cost >= 0 else None
+    return metrics
 
 
 class ProviderUsageLogger(CustomLogger):
@@ -123,6 +154,7 @@ class ProviderUsageLogger(CustomLogger):
                 "completed_at": str(end_time),
                 # Verbatim. Not flattened, not renamed, not summed.
                 "native_usage": _plain(getattr(response_obj, "usage", None)),
+                "request_metrics": _request_metrics(kwargs, start_time, end_time),
             }
             line = json.dumps(event, default=str) + "\n"
             with _LOCK, open(path, "a", encoding="utf-8") as handle:

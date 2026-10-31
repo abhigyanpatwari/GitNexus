@@ -118,6 +118,12 @@ def test_pr_preview_uses_trusted_main_and_authenticates_history_before_paid_sess
     paid = next(step for step in steps if "workflow_bench.runner" in step.get("run", ""))
     assert steps.index(baseline) < steps.index(paid)
     assert "inputs.candidate_pr != ''" in baseline["if"]
+    assert '--env-out "$GITHUB_ENV"' in baseline["run"]
+    assert "--model" not in baseline["run"] and "--effort" not in baseline["run"]
+    prepare = next(step for step in steps if step.get("name") == "Prepare pinned task set")
+    assert steps.index(baseline) < steps.index(prepare) < steps.index(paid)
+    for step in (prepare, paid):
+        assert '--model "$MODEL" --effort "$EFFORT"' in step["run"]
     assert 'arms=(baseline)' in paid["run"]
     dependencies = next(step for step in steps if "workflow_bench.pr_evaluation dependencies" in step.get("run", ""))
     assert steps.index(dependencies) < steps.index(paid)
@@ -316,6 +322,12 @@ def test_shared_lifecycle_jobs_stay_identical_across_both_ec2_workflows():
     renamed = {"watch-evaluate-pickup": "watch-evolve-pickup", "evaluate": "evolve"}
     for job in ("start-runner", "check-runner", "runner-ready", "stop-runner"):
         expected = {key: value for key, value in evaluation[job].items() if key != "name"}
+        if job == "start-runner":
+            guard, *lifecycle = expected["steps"]
+            assert guard["name"] == "Validate diagnostic trial authorization scope"
+            assert "uses" not in guard and "secrets." not in json.dumps(guard)
+            # Input rejection precedes EC2 startup; compare every lifecycle step.
+            expected["steps"] = lifecycle
         if job != "stop-runner":
             preview = "(github.event_name == 'pull_request_target' && inputs.candidate_pr != '') ||\n "
             assert expected["if"].count(preview) == 1

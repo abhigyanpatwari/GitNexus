@@ -13,8 +13,11 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { isBuiltin } from 'node:module';
-import { createClassExtractor } from '../class-extractors/generic.js';
-import { vueClassConfig } from '../class-extractors/configs/typescript-javascript.js';
+import {
+  vueClassConfig,
+  resolveTsJsContainerTypeOwner,
+  createTsJsClassExtractor,
+} from '../class-extractors/configs/typescript-javascript.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
@@ -77,7 +80,7 @@ const VUE_SPECIFIC_BUILT_INS = [
 
 const VUE_BUILT_INS: ReadonlySet<string> = new Set([...TS_BUILT_INS, ...VUE_SPECIFIC_BUILT_INS]);
 
-const vueClassExtractor = createClassExtractor(vueClassConfig);
+const vueClassExtractor = createTsJsClassExtractor(vueClassConfig);
 
 export const vueProvider = defineLanguage({
   id: SupportedLanguages.Vue,
@@ -92,6 +95,7 @@ export const vueProvider = defineLanguage({
   fieldExtractor: typescriptFieldExtractor,
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
   classExtractor: vueClassExtractor,
+  resolveContainerTypeOwner: resolveTsJsContainerTypeOwner,
   builtInNames: VUE_BUILT_INS,
   // A `<script>` block runs on the same host as any other module.
   externalReceiverNames: TS_EXTERNAL_RECEIVER_NAMES,

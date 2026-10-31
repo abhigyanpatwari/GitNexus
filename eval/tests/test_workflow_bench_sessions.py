@@ -463,6 +463,23 @@ def test_graph_enabled_cell_retains_its_graph_registry_and_runtime(monkeypatch, 
     assert sandbox_calls[0]["read_only_mounts"] == [dependencies, runtime, registry]
 
 
+def test_baseline_cell_mounts_only_the_endpoint_and_dependencies(monkeypatch, tmp_path):
+    ctx, clone, dependencies, runtime, registry, _, _, sandbox_calls = _probe_cell_provisioning(monkeypatch, tmp_path)
+    endpoint = runner.ReadOnlyMount(tmp_path / "mcp.sock", "/run/gitnexus-mcp.sock")
+    servers = []
+
+    def endpoint_context(**kwargs):
+        servers.append(kwargs)
+        return nullcontext(endpoint)
+
+    monkeypatch.setattr(runner, "isolated_mcp", endpoint_context)
+    runner.run_cell(ctx, 0, "baseline")
+    assert servers[0]["clone"] == clone
+    assert servers[0]["mounts"] == [dependencies, runtime, registry]
+    assert sandbox_calls[0]["read_only_mounts"] == [dependencies, endpoint]
+    assert sandbox_calls[0]["gitnexus_cli_available"] is False
+
+
 def test_nomcp_cell_does_not_require_an_available_graph(monkeypatch, tmp_path):
     ctx, _, dependencies, _, _, _, _, sandbox_calls = _probe_cell_provisioning(monkeypatch, tmp_path)
     ctx = replace(ctx, graph_snapshot=None, graph_snapshot_error=RuntimeError("graph unavailable"))
@@ -1279,6 +1296,53 @@ def test_overflowed_parent_capture_is_ineligible_evidence(monkeypatch, tmp_path)
     assert rec["skill_invoked"] is None
     assert rec["error_kind"] == "session-error"
     assert "exceeds" in rec["error_detail"]["event_stream_error"]
+
+
+@pytest.mark.parametrize("overflow", [False, True], ids=["complete-12MiB-stream", "bounded-overflow"])
+def test_large_session_stream_preserves_usage_and_redacted_evidence(monkeypatch, tmp_path, overflow):
+    # Run a real child through the supervisor: a mocked completed capture misses
+    # the 8 MiB truncation that invalidated release evaluation 40181565589.
+    if overflow:
+        monkeypatch.setattr(runner_sessions, "MAX_TRANSCRIPT_BYTES", 64 * 1024)
+    secret = "large-stream-test-secret"
+    child = tmp_path / "large_session.py"
+    child.write_text(
+        "import json\n"
+        f"content = 'x' * (768 * 1024) + {secret!r}\n"
+        "for i in range(16):\n"
+        "    print(json.dumps({'type': 'user', 'message': {'content': [\n"
+        "        {'type': 'tool_result', 'tool_use_id': f'read-{i}', 'content': content}]}}))\n"
+        f"print({VALID_REPORT!r})\n"
+    )
+    record = runner_sessions.run_claude(
+        "task", tmp_path, claude_bin="unused", command_prefix=[sys.executable, str(child)],
+        timeout=30, transcript_output_dir=tmp_path, transcript_secrets=(secret,),
+    )
+    if overflow:
+        assert record["ok"] is False
+        assert record["error_kind"] == "session-error"
+        assert record["transcript_missing"] is True
+        assert record["cost_usd"] is None
+        assert "exceeds" in record["error_detail"]["event_stream_error"]
+        assert not (tmp_path / "transcripts").exists()
+        return
+
+    assert record["ok"] is True, record["error_detail"]
+    assert record["transcript_missing"] is False
+    assert record["cost_usd"] == 0.1
+    assert {field: record[field] for field in runner_sessions.USAGE_FIELDS} == json.loads(VALID_REPORT)["usage"]
+    artifact = record["transcript_artifact"]
+    payload = (tmp_path / artifact["path"]).read_bytes()
+    assert artifact["bytes"] == len(payload) > 8 * 1024 * 1024
+    assert artifact["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert secret.encode() not in payload
+    assert payload.count(b"[REDACTED]") == 16
+    assert json.loads(payload.splitlines()[-1]) == json.loads(VALID_REPORT)
+    # The same limit must admit the persisted evidence for evolution and reuse.
+    from workflow_bench import comparator_reuse
+
+    assert evolve._transcript_artifact_metadata(artifact)[2] == len(payload)
+    assert comparator_reuse._transcript_metadata(artifact)[2] == len(payload)
 
 
 def test_final_result_event_must_be_last(monkeypatch, tmp_path):

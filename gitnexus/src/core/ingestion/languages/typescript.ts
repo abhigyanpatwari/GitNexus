@@ -13,10 +13,11 @@ import { unboundCallableName } from './typescript/unbound-callables.js';
 import type { CaptureMatch, NodeLabel, ParsedFile } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
-import { createClassExtractor } from '../class-extractors/generic.js';
 import {
   typescriptClassConfig,
   javascriptClassConfig,
+  resolveTsJsContainerTypeOwner,
+  createTsJsClassExtractor,
 } from '../class-extractors/configs/typescript-javascript.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import {
@@ -78,6 +79,7 @@ const memberAssignmentLabel = (node: SyntaxNode): NodeLabel | null => {
 import { createTypeScriptCfgVisitor } from '../cfg/visitors/typescript.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
+import { hasFilePrivateExportSemantics } from './typescript/file-private-exports.js';
 import { TYPESCRIPT_QUERIES, JAVASCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
@@ -516,6 +518,7 @@ export const typescriptProvider = defineLanguage({
   typeConfig: typescriptConfig,
   scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
+  notExportedIsFilePrivate: hasFilePrivateExportSemantics,
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   methodExtractor: createMethodExtractor({
@@ -524,7 +527,8 @@ export const typescriptProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
   definitionPropertiesExtractor: extractConvexEndpointProperties,
-  classExtractor: createClassExtractor(typescriptClassConfig),
+  classExtractor: createTsJsClassExtractor(typescriptClassConfig),
+  resolveContainerTypeOwner: resolveTsJsContainerTypeOwner,
   // ── JSDoc → description (issue #2270). An exported decl is captured as the
   //    inner declaration; its JSDoc precedes the wrapping `export_statement`. ──
   descriptionExtractor: createLeadingDocDescriptionExtractor({
@@ -619,6 +623,7 @@ export const javascriptProvider = defineLanguage({
   typeConfig: typescriptConfig,
   scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
+  notExportedIsFilePrivate: hasFilePrivateExportSemantics,
   callExtractor: createCallExtractor(javascriptCallConfig),
   fieldExtractor: createFieldExtractor(javascriptConfig),
   methodExtractor: createMethodExtractor({
@@ -627,7 +632,8 @@ export const javascriptProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(javascriptVariableConfig),
   definitionPropertiesExtractor: extractConvexEndpointProperties,
-  classExtractor: createClassExtractor(javascriptClassConfig),
+  classExtractor: createTsJsClassExtractor(javascriptClassConfig),
+  resolveContainerTypeOwner: resolveTsJsContainerTypeOwner,
   // ── JSDoc → description (issue #2270). An exported decl is captured as the
   //    inner declaration; its JSDoc precedes the wrapping `export_statement`. ──
   descriptionExtractor: createLeadingDocDescriptionExtractor({

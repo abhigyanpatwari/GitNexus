@@ -73,7 +73,7 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** READ gitnexus://repo/{name}/context for any repo above to get its overview and check staleness. If pagination.hasMore is true, call list_repos again with offset set to pagination.nextOffset to fetch the rest.`;
 
     case 'query':
-      return `\n\n---\n**Next:** To understand a specific symbol in depth, use context({name: "<symbol_name>"${repoParam}}) to see categorized refs and process participation.${args?.include_content === true ? ` For source of a process_symbols row without content, use context({uid: "<id>", include_content: true${repoParam}}).` : ''}`;
+      return `Use context({uid: "<id>"${repoParam}}) for a symbol's references and processes.${args?.include_content === true ? ` Source previews marked content_truncated are incomplete; use context({uid: "<id>", include_content: true${repoParam}}) or read_file with a bounded line range for more.` : ''}`;
 
     case 'context':
       return `\n\n---\n**Next:** If planning changes, use impact({target: "${args?.name || '<name>'}", direction: "upstream"${repoParam}}) to check blast radius. To see execution flows, READ gitnexus://repo/${repoPath}/processes.`;
@@ -242,7 +242,7 @@ export function createMCPServer(
           (!readOnly || MCP_READ_ONLY_TOOLS.has(tool.name)) &&
           repositoryPolicy.toolAllowed(tool.name),
       )
-        .map((tool) => toolForReadOnlyMcp(repositoryPolicy.toolForMcp(tool), readOnly))
+        .map((tool) => repositoryPolicy.toolForMcp(toolForReadOnlyMcp(tool, readOnly)))
         .map((tool) => ({
           name: tool.name,
           description: tool.description,
@@ -271,7 +271,7 @@ export function createMCPServer(
       const schemaSource = schemaSourceToolName(name);
       const advertisedTool = GITNEXUS_TOOLS.find((tool) => tool.name === schemaSource);
       if (advertisedTool) {
-        const listed = toolForReadOnlyMcp(repositoryPolicy.toolForMcp(advertisedTool), readOnly);
+        const listed = repositoryPolicy.toolForMcp(toolForReadOnlyMcp(advertisedTool, readOnly));
         assertKnownMcpToolArguments(name, typedArgs, listed.inputSchema.properties);
       }
       const responseFilter = resolveMcpResponseFilter(schemaSource, typedArgs);
@@ -284,15 +284,17 @@ export function createMCPServer(
         await scopedBackend.callTool(name, backendArgs),
         responseFilter,
       );
-      // Formatting whitespace costs model input tokens; keep every value and hint.
-      const resultText = typeof result === 'string' ? result : JSON.stringify(result);
       const hint = getNextStepHint(name, args as Record<string, any> | undefined, readOnly, result);
+      const resultText =
+        name === 'query' && result !== null && typeof result === 'object' && !Array.isArray(result)
+          ? JSON.stringify({ ...result, next: hint })
+          : (typeof result === 'string' ? result : JSON.stringify(result)) + hint;
 
       return {
         content: [
           {
             type: 'text',
-            text: applyMcpMaxTokens(resultText + hint, maxTokens),
+            text: applyMcpMaxTokens(resultText, maxTokens),
           },
         ],
       };
@@ -431,10 +433,37 @@ export function installSignalShutdown(
   on('SIGTERM', () => void shutdown(SHUTDOWN_EXIT_CODES.SIGTERM));
 }
 
+/** Stdio can outlive its launcher when another process holds the pipe open. */
+export function installParentShutdown(
+  shutdown: (exitCode?: number) => unknown,
+  parentPid = process.ppid,
+): () => void {
+  if (parentPid <= 1) return () => {};
+  const timer = setInterval(() => {
+    // Reparenting also detects death when the original PID has been reused.
+    let parentGone = process.ppid !== parentPid;
+    if (!parentGone) {
+      try {
+        process.kill(parentPid, 0);
+      } catch (error) {
+        // EPERM (or any unrecognized failure) is not proof of parent death.
+        parentGone = (error as NodeJS.ErrnoException).code === 'ESRCH';
+      }
+    }
+    if (parentGone) {
+      clearInterval(timer);
+      void shutdown(0);
+    }
+  }, 1_000);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
 export async function startMCPServer(
   backend: LocalBackend,
   repositoryPolicy?: McpRepositoryPolicy,
 ): Promise<void> {
+  const parentPid = process.ppid;
   const validatedRepositoryPolicy = repositoryPolicy ?? (await createMcpRepositoryPolicy(backend));
   const server = createMCPServer(backend, { repositoryPolicy: validatedRepositoryPolicy });
 
@@ -471,6 +500,7 @@ export async function startMCPServer(
   const shutdown = async (exitCode = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    stopParentWatch();
     // Safety net: if backend.disconnect()/server.close() hangs, still exit so a
     // SIGINT/SIGTERM reliably terminates the process. Unref'd so the timer alone
     // never keeps the event loop alive.
@@ -487,6 +517,7 @@ export async function startMCPServer(
     clearTimeout(forceExit);
     process.exit(exitCode);
   };
+  const stopParentWatch = installParentShutdown(shutdown, parentPid);
 
   // Handle graceful shutdown. Node invokes signal listeners with the signal
   // NAME (e.g. 'SIGTERM') as the first argument; registering `shutdown`

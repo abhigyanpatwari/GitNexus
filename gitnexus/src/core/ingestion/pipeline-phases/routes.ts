@@ -554,7 +554,11 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
           while ((match = pattern.exec(content)) !== null) {
             const url = match[2] ?? match[1];
             if (url && url.startsWith('/')) {
-              allFetchCalls.push({ filePath, fetchURL: url, lineNumber: 0 });
+              // 0-based like the AST sites, so the navigation call is attributed
+              // to the component that contains it rather than to whatever spans
+              // line 0.
+              const lineNumber = content.slice(0, match.index).split('\n').length - 1;
+              allFetchCalls.push({ filePath, fetchURL: url, lineNumber });
             }
           }
         }

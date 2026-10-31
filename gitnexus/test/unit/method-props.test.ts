@@ -119,7 +119,7 @@ describe('typeTagForId', () => {
 
   it('returns empty string for variadic method (arity undefined)', () => {
     const m = makeMethodInfo('log', [{ name: 'args', type: 'String' }]);
-    m.parameters[0].isVariadic = true;
+    m.parameters = m.parameters.map((parameter) => ({ ...parameter, isVariadic: true }));
     const map = buildMethodMap([m]);
 
     expect(typeTagForId(map, 'log', undefined, m)).toBe('');
@@ -204,7 +204,7 @@ describe('arityForIdFromInfo', () => {
 
   it('returns undefined for variadic methods', () => {
     const m = makeMethodInfo('log', [{ name: 'args', type: 'String' }]);
-    m.parameters[0].isVariadic = true;
+    m.parameters = m.parameters.map((parameter) => ({ ...parameter, isVariadic: true }));
     expect(arityForIdFromInfo(m)).toBeUndefined();
   });
 
