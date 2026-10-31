@@ -1116,22 +1116,6 @@ describe('PHP assignment chain propagation', () => {
     expect(saveMethods.length).toBe(2);
   });
 
-  it('resolves alias->save() to User#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.php'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('resolves rAlias->save() to Repo#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('Repo.php'),
-    );
-    expect(repoSave).toBeDefined();
-  });
-
   it('alias->save() does NOT resolve to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
     // There should be exactly one save() call targeting User.php from process

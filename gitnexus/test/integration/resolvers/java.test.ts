@@ -1058,18 +1058,6 @@ describe('Java assignment chain propagation', () => {
     expect(saveMethods.length).toBe(2);
   });
 
-  it('resolves alias.save() to User#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    // Positive: alias.save() must resolve to User#save
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'processEntities' &&
-        c.targetFilePath.includes('User.java'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
   it('alias.save() does NOT resolve to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
     // Negative: alias comes from User, so only one edge to User.java
@@ -1080,18 +1068,6 @@ describe('Java assignment chain propagation', () => {
         c.targetFilePath.includes('User.java'),
     );
     expect(wrongCall.length).toBe(1);
-  });
-
-  it('resolves rAlias.save() to Repo#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    // Positive: rAlias.save() must resolve to Repo#save
-    const repoSave = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'processEntities' &&
-        c.targetFilePath.includes('Repo.java'),
-    );
-    expect(repoSave).toBeDefined();
   });
 
   it('each alias resolves to its own class, not the other', () => {
