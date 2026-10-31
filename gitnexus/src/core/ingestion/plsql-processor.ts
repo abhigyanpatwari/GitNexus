@@ -217,7 +217,10 @@ export function processPlSql(
     const key = pairingKey(def, filePath);
     // A spec/forward declaration with an indexed body is the same subprogram.
     if (def.declarationOnly && bodyKeys.has(key)) continue;
-    entry.nodeId = plsqlSubprogramNodeId(filePath, def, entry.packageSchema);
+    // Package members carry their package's schema; standalone subprograms
+    // their own (`CREATE PROCEDURE a.p` and `b.p` in one file are two objects).
+    const schema = entry.packageSchema ?? (def.ownerPath.length === 0 ? def.schema : undefined);
+    entry.nodeId = plsqlSubprogramNodeId(filePath, def, schema);
     if (!def.declarationOnly) bodyNodeByKey.set(key, entry.nodeId);
     if (def.kind === 'trigger') triggers++;
     else subprograms++;

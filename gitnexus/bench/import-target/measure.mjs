@@ -2287,8 +2287,10 @@ const HEAP_PROBE_TARGET = {
   // miss after the full component walk, which is the longest leg the resolver
   // has (a by-name miss returns before any walk).
   zig: '../vendor0/missing.zig',
-  // Both bases and both spellings probed and missed — the longest leg.
-  plsql: '../vendor0/missing.sql',
+  // No extension and no `..`: the repository root and the caller's directory
+  // are each probed with `.sql` appended and as written — four misses, the
+  // longest leg the resolver has.
+  plsql: 'vendor0/missing',
   typescript: 'vendor0/lib/missing',
   vue: 'vendor0/lib/Missing.vue',
   cpp: 'vendor0/missing.hpp',

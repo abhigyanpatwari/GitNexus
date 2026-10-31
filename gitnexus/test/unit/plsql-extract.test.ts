@@ -138,6 +138,27 @@ END pkg_x;
     expect(paths).not.toContain('PKG_X.INNER_P');
   });
 
+  it('does not split at a lone `/` inside a block comment or a string literal', () => {
+    const src = [
+      'CREATE OR REPLACE PROCEDURE p IS',
+      '  /* usage:',
+      '/',
+      '  */',
+      "  l VARCHAR2(10) := 'a",
+      '/',
+      "b';",
+      "  m VARCHAR2(10) := q'[x",
+      '/',
+      "]';",
+      'BEGIN NULL; END;',
+      '/',
+    ].join('\n');
+    const f = extractPlSqlFacts(src);
+    expect(f.segments).toBe(1);
+    expect(f.segmentsWithErrors).toBe(0);
+    expect(f.definitions.map((d) => d.name)).toEqual(['P']);
+  });
+
   it('keeps one segment per `/`-terminated unit so an error stays local', () => {
     const f = extractPlSqlFacts(
       'CREATE PROCEDURE ok1 IS BEGIN NULL; END;\n/\nCREATE PROCEDURE bad IS BEGIN ((( END;\n/\nCREATE PROCEDURE ok2 IS BEGIN NULL; END;\n/\n',
@@ -194,6 +215,17 @@ describe('file classification', () => {
     ).toBe(false);
     expect(
       looksLikeOraclePlSql('CREATE TRIGGER t BEFORE INSERT ON `x` FOR EACH ROW SET NEW.a = 1;'),
+    ).toBe(false);
+    // `AS` headers are shared with T-SQL: PL/SQL statement syntax decides.
+    expect(looksLikeOraclePlSql('CREATE PROCEDURE p AS BEGIN NULL; END;')).toBe(true);
+    expect(
+      looksLikeOraclePlSql(
+        'CREATE OR REPLACE FUNCTION f RETURN NUMBER AS\nBEGIN\n  RETURN 1;\nEND;',
+      ),
+    ).toBe(true);
+    expect(looksLikeOraclePlSql('CREATE PROCEDURE p AS\nBEGIN\n  SELECT 1;\nEND;')).toBe(false);
+    expect(
+      looksLikeOraclePlSql('CREATE PROCEDURE p AS\nBEGIN\n  SET @x = NULL;\n  SELECT @x;\nEND;'),
     ).toBe(false);
     // `IS` after the header is Oracle-only, no other marker needed.
     expect(looksLikeOraclePlSql('CREATE PROCEDURE p IS BEGIN NULL; END;')).toBe(true);

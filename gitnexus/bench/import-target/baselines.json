@@ -1210,7 +1210,7 @@
         "files_small": 8000,
         "files_large": 32000,
         "path_segments": 11,
-        "probe": "../vendor0/missing.sql"
+        "probe": "vendor0/missing"
       },
       "_measured": {
         "collide_ms": 2.354,

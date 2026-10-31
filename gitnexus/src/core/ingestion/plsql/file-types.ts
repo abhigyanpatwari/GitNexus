@@ -70,13 +70,16 @@ function looksLikeOracleTrigger(content: string): boolean {
 const POSTGRES_DOLLAR_BODY = /\bas\s+\$[\w]*\$|\blanguage\s+plpgsql\b/i;
 const TSQL_MARKERS = /^\s*go\s*$|\bnvarchar\s*\(\s*max\s*\)|@@identity|\bset\s+nocount\s+on\b/im;
 /**
- * Constructs that only appear in Oracle PL/SQL. A trigger header alone is
+ * Constructs that only appear in Oracle PL/SQL — among them PL/SQL statement
+ * syntax T-SQL does not have (`:=`, `END IF;`, `ELSIF`, a `NULL;` statement,
+ * `EXCEPTION WHEN`, a function's `RETURN <type> IS|AS`), which is what tells an
+ * Oracle `CREATE PROCEDURE p AS …` from a T-SQL one. A trigger header alone is
  * not one — PostgreSQL and MySQL write `CREATE TRIGGER t BEFORE …` too — so
  * triggers are recognised by Oracle-only bodies: `:NEW.` / `:OLD.` bind
  * references, `COMPOUND TRIGGER`, or the SQL*Plus `/` terminator.
  */
 const ORACLE_MARKERS =
-  /%(?:row)?type\b|^\s*\/\s*$|\bpragma\s+(?:autonomous_transaction|exception_init|serially_reusable|restrict_references)\b|\bexecute\s+immediate\b|\bdbms_\w+\.|\braise_application_error\b|\bsys_refcursor\b|\bvarchar2\b|\bnvl\s*\(|:(?:new|old)\.|\bcompound\s+trigger\b/im;
+  /%(?:row)?type\b|^\s*\/\s*$|\bpragma\s+(?:autonomous_transaction|exception_init|serially_reusable|restrict_references)\b|\bexecute\s+immediate\b|\bdbms_\w+\.|\braise_application_error\b|\bsys_refcursor\b|\bvarchar2\b|\bnvl\s*\(|:(?:new|old)\.|\bcompound\s+trigger\b|:=|\bend\s+(?:if|loop|case)\s*;|\belsif\b|(?:^|\bbegin|\bthen|\belse|\bloop|;)\s*null\s*;|\bexception\s+when\b|\breturn\s+[\w.%]+\s+(?:is|as)\b/im;
 
 /**
  * A SQL*Plus script inclusion of a PL/SQL or SQL file on its own line. `@@`,
@@ -96,7 +99,8 @@ export function looksLikeOraclePlSql(content: string): boolean {
   if (POSTGRES_DOLLAR_BODY.test(content) || TSQL_MARKERS.test(content)) return false;
   // `IS` after a unit header is Oracle-only syntax (T-SQL, PostgreSQL and
   // MySQL write `AS` or `BEGIN`), so a plain `CREATE PROCEDURE p IS …` needs
-  // no further marker; an `AS` header still does.
+  // no further marker; an `AS` header (shared with T-SQL) needs PL/SQL syntax
+  // from ORACLE_MARKERS in its body.
   return (
     ORACLE_IS_HEADER.test(content) ||
     looksLikeOracleTrigger(content) ||

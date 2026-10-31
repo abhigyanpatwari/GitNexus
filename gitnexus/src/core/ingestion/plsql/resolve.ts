@@ -28,19 +28,25 @@ export interface PlSqlIndexEntry {
 
 /**
  * The package a definition belongs to: the root of its `ownerIndex` chain,
- * or — for fallback definitions without an index — the first package of
- * that name in the same file.
+ * or — for fallback definitions without an index — the first package of that
+ * name among `fileDefs`.
+ *
+ * `fileDefs` must be the definitions of the file `def` was extracted from (one
+ * `PlSqlFileFacts.definitions` array): `ownerIndex` indexes into it, and the
+ * fallback lookup is then same-file by construction.
  */
 export function rootPackageOf(
   def: PlSqlDefinition,
-  defs: readonly PlSqlDefinition[],
+  fileDefs: readonly PlSqlDefinition[],
 ): PlSqlDefinition | undefined {
   if (def.kind === 'package') return def;
   let current: PlSqlDefinition | undefined = def;
-  while (current?.ownerIndex !== undefined) current = defs[current.ownerIndex];
+  while (current?.ownerIndex !== undefined) current = fileDefs[current.ownerIndex];
   if (current && current !== def && current.kind === 'package') return current;
   const pkg = def.ownerPath[0];
-  return pkg === undefined ? undefined : defs.find((d) => d.kind === 'package' && d.name === pkg);
+  return pkg === undefined
+    ? undefined
+    : fileDefs.find((d) => d.kind === 'package' && d.name === pkg);
 }
 
 /** NUL-separated: a quoted identifier may itself contain `.` (`"A.B"` ≠ `A`.`B`). */
@@ -112,7 +118,14 @@ export class PlSqlNameIndex<E extends PlSqlIndexEntry> {
     const qualifier = parts[parts.length - 2]!;
     const member = this.lookup([qualifier], name).filter(callable);
     if (member.length > 0) return member;
-    if (parts.length === 2) return this.lookup([], name).filter(callable);
+    if (parts.length === 2) {
+      // `S.NAME`: a standalone subprogram in schema S. Definitions that wrote
+      // another schema are excluded; ones that wrote none (current schema) stay
+      // candidates, behind any that name S explicitly.
+      const standalone = this.lookup([], name).filter(callable);
+      const exact = standalone.filter((e) => e.def.schema === qualifier);
+      return exact.length > 0 ? exact : standalone.filter((e) => e.def.schema === undefined);
+    }
     return [];
   }
 

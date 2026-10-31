@@ -86,6 +86,21 @@ describe('stripSqlPlusCommands', () => {
     ]);
   });
 
+  it('keeps SET TRANSACTION / SET ROLE / SET CONSTRAINTS, which are SQL statements', () => {
+    const src = [
+      'SET TRANSACTION READ ONLY;',
+      'SET ROLE app_role;',
+      'SET CONSTRAINTS ALL DEFERRED;',
+      'SET ECHO ON',
+    ].join('\n');
+    expect(lines(stripSqlPlusCommands(src))).toEqual([
+      'SET TRANSACTION READ ONLY;',
+      'SET ROLE app_role;',
+      'SET CONSTRAINTS ALL DEFERRED;',
+      '',
+    ]);
+  });
+
   it('reports blanked commands to the sink', () => {
     const commands: SqlPlusCommand[] = [];
     stripSqlPlusCommands('REM header\n@@a.sql\n', commands);

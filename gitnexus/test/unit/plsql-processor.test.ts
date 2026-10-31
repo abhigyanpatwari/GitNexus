@@ -109,6 +109,29 @@ END a;
     expect(calls).toEqual(['F@L7']);
   });
 
+  it('binds `S.P` to the standalone subprogram of schema S, never one of another schema', () => {
+    const { graph } = run({
+      'db/procs.sql': `CREATE OR REPLACE PROCEDURE a.p IS BEGIN NULL; END p;
+/
+CREATE OR REPLACE PROCEDURE b.p IS BEGIN NULL; END p;
+/
+CREATE OR REPLACE PROCEDURE caller IS
+BEGIN
+  b.p;
+  c.p;
+END caller;
+/
+`,
+    });
+    const targets: number[] = [];
+    for (const rel of graph.iterRelationships()) {
+      if (rel.type === 'CALLS')
+        targets.push(graph.getNode(rel.targetId)!.properties.startLine! + 1);
+    }
+    // b.p resolves to line 3; c.p names a schema with no indexed P and stays unresolved.
+    expect(targets).toEqual([3]);
+  });
+
   it('keeps forward-declared private subprograms private', () => {
     const { graph } = run({
       'p.pkb': `CREATE OR REPLACE PACKAGE BODY p AS

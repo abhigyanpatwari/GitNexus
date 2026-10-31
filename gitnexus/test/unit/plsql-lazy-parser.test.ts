@@ -33,10 +33,18 @@ const LIGHT_MODULES = [
 
 const HEAVY = /(?:^|\/)(?:extract|parse)\.js$|\/generated\/|^antlr4ng$/;
 
-/** Every `import … from '…'` whose clause is not `import type`. */
+/**
+ * Every module specifier this file evaluates at load: `import … from '…'`
+ * (not `import type`), side-effect `import '…'`, and `export … from '…'`
+ * (not `export type`) — a re-export evaluates its target too.
+ */
 function valueImports(source: string): string[] {
   const out: string[] = [];
-  for (const m of source.matchAll(/^import\s+(type\s+)?[\s\S]*?\s+from\s+'([^']+)';/gm)) {
+  for (const m of source.matchAll(/^import\s+(type\s+)?[^;']*?\s+from\s+'([^']+)';/gm)) {
+    if (!m[1]) out.push(m[2]!);
+  }
+  for (const m of source.matchAll(/^import\s+'([^']+)';/gm)) out.push(m[1]!);
+  for (const m of source.matchAll(/^export\s+(type\s+)?(?:\*|\{[^}]*\})\s+from\s+'([^']+)';/gm)) {
     if (!m[1]) out.push(m[2]!);
   }
   return out;
@@ -46,6 +54,14 @@ describe('PL/SQL parser loads lazily', () => {
   it.each(LIGHT_MODULES)('%s imports the parser and extractor by type only', (file) => {
     const source = readFileSync(path.join(INGESTION, file), 'utf8');
     expect(valueImports(source).filter((spec) => HEAVY.test(spec))).toEqual([]);
+  });
+
+  it('the scanner sees side-effect imports and re-exports', () => {
+    expect(
+      valueImports(
+        "import './generated/PlSqlParser.js';\nexport { extractPlSqlFacts } from './extract.js';\nexport type { X } from './extract.js';\n",
+      ),
+    ).toEqual(['./generated/PlSqlParser.js', './extract.js']);
   });
 
   it('facts-store reaches the extractor only through dynamic loading', () => {

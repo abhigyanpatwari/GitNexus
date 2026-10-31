@@ -11,7 +11,7 @@
  */
 
 const SQLPLUS_COMMAND =
-  /^\s*(?:set|define|def|undefine|undef|prompt|pro|rem|remark|spool|spo|whenever|column|col|connect|conn|accept|acc|pause|show|sho|exit|quit|host|ttitle|btitle|break|compute|clear|var|variable|print|timing|exec|execute|start|sta|disconnect|disc|store|repheader|repfooter|attribute|copy|describe|desc|get|help|list|password|run|save|xquery)\b/i;
+  /^\s*(?:set(?!\s+(?:transaction|role|constraints?)\b)|define|def|undefine|undef|prompt|pro|rem|remark|spool|spo|whenever|column|col|connect|conn|accept|acc|pause|show|sho|exit|quit|host|ttitle|btitle|break|compute|clear|var|variable|print|timing|exec|execute|start|sta|disconnect|disc|store|repheader|repfooter|attribute|copy|describe|desc|get|help|list|password|run|save|xquery)\b/i;
 
 /**
  * Statements that start a PL/SQL unit, which only a lone `/` terminates.

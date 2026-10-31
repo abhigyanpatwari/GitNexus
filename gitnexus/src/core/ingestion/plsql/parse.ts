@@ -165,7 +165,68 @@ function parseSegment(
   }
 }
 
-/** Split pre-processed text at lone `/` lines; each segment keeps its line offset. */
+/**
+ * Lexical state carried from one line to the next while looking for `/`
+ * terminators: a lone `/` inside a block comment or a (multi-line) string
+ * literal is text, not a terminator.
+ */
+type CarryState =
+  | { kind: 'code' }
+  | { kind: 'block-comment' }
+  | { kind: 'string' }
+  | { kind: 'q-string'; close: string };
+
+const Q_CLOSE: Record<string, string> = { '[': ']', '(': ')', '{': '}', '<': '>' };
+
+/** Scan one line from `state`; returns the state at the end of the line. */
+function scanLine(line: string, state: CarryState): CarryState {
+  let i = 0;
+  let st = state;
+  while (i < line.length) {
+    if (st.kind === 'block-comment') {
+      const end = line.indexOf('*/', i);
+      if (end < 0) return st;
+      i = end + 2;
+      st = { kind: 'code' };
+    } else if (st.kind === 'string') {
+      const end = line.indexOf("'", i);
+      if (end < 0) return st;
+      if (line[end + 1] === "'") {
+        i = end + 2; // '' escape
+        continue;
+      }
+      i = end + 1;
+      st = { kind: 'code' };
+    } else if (st.kind === 'q-string') {
+      const end = line.indexOf(`${st.close}'`, i);
+      if (end < 0) return st;
+      i = end + 2;
+      st = { kind: 'code' };
+    } else {
+      const ch = line[i]!;
+      const next = line[i + 1];
+      if (ch === '-' && next === '-') return st; // line comment
+      if (ch === '/' && next === '*') {
+        st = { kind: 'block-comment' };
+        i += 2;
+      } else if ((ch === 'q' || ch === 'Q') && next === "'" && !/[\w$#]/.test(line[i - 1] ?? '')) {
+        const open = line[i + 2] ?? '';
+        st = { kind: 'q-string', close: Q_CLOSE[open] ?? open };
+        i += 3;
+      } else if (ch === "'") {
+        st = { kind: 'string' };
+        i += 1;
+      } else i += 1;
+    }
+  }
+  return st;
+}
+
+/**
+ * Split pre-processed text at lone `/` terminator lines; each segment keeps
+ * its line offset. A `/` line inside a block comment or a string literal does
+ * not split.
+ */
 export function splitSegments(
   text: string,
 ): Array<{ startLine: number; endLine: number; body: string }> {
@@ -176,11 +237,15 @@ export function splitSegments(
     const body = lines.slice(start, endExclusive).join('\n');
     if (body.trim() !== '') out.push({ startLine: start + 1, endLine: endExclusive, body });
   };
+  let state: CarryState = { kind: 'code' };
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i]!.trim() === '/') {
+    const line = lines[i]!;
+    if (state.kind === 'code' && line.trim() === '/') {
       flush(i + 1);
       start = i + 1;
+      continue;
     }
+    state = scanLine(line, state);
   }
   flush(lines.length);
   return out;
