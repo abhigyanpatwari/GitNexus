@@ -179,7 +179,10 @@ export function extractPythonInstanceFields(
     while (nodes.length > 0) {
       const node = nodes.pop()!;
       if (['function_definition', 'class_definition', 'lambda'].includes(node.type)) continue;
-      if (node.type === 'assignment' && node.childForFieldName('right') !== null) {
+      if (
+        (node.type === 'assignment' && node.childForFieldName('right') !== null) ||
+        node.type === 'for_statement'
+      ) {
         const left = node.childForFieldName('left');
         if (left !== null) visitTarget(left, node.childForFieldName('type'));
       }
@@ -191,17 +194,13 @@ export function extractPythonInstanceFields(
       ) {
         rebound = true;
       }
-      if (
-        node.type === 'for_statement' ||
-        node.type === 'delete_statement' ||
-        node.type === 'augmented_assignment'
-      ) {
+      if (node.type === 'delete_statement' || node.type === 'augmented_assignment') {
         const target = node.childForFieldName('left') ?? node.firstNamedChild;
         if (target !== null && rebindsReceiver(target)) rebound = true;
       }
       if (node.type === 'as_pattern') {
         const alias = node.childForFieldName('alias');
-        if (alias !== null && rebindsReceiver(alias)) rebound = true;
+        if (alias !== null) visitTarget(alias);
       }
       nodes.push(...[...node.namedChildren].reverse());
     }

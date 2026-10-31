@@ -25,6 +25,21 @@ describe('Python constructor field declarations', () => {
       fields: ['value'],
     },
     {
+      name: 'loop attribute target',
+      body: 'def __init__(self, values):\n    for self.value in values:\n        pass',
+      fields: ['value'],
+    },
+    {
+      name: 'destructured loop attribute targets',
+      body: 'def __init__(self, values):\n    for self.x, self.y in values:\n        pass',
+      fields: ['x', 'y'],
+    },
+    {
+      name: 'context manager attribute target',
+      body: 'def __init__(self):\n    with ctx() as self.value:\n        pass',
+      fields: ['value'],
+    },
+    {
       name: 'repeated assignment',
       body: 'def __init__(self):\n    self.value = 1\n    self.value = 2',
       fields: ['value'],

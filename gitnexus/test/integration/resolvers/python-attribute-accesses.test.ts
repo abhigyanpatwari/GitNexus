@@ -30,6 +30,8 @@ class Result:
 class Plain:
     def __init__(self) -> None:
         self.value = 1
+        for self.loop in (1,):
+            pass
 
 class Decoy:
     def __init__(self):
@@ -56,6 +58,9 @@ def read_from_constructor() -> dict[str, str]:
 
 def read_from_annotated_param(p: Plain) -> int:
     return p.value
+
+def read_from_loop_target(p: Plain) -> int:
+    return p.loop
 `,
       'ts/box.ts': `export class Box { size = 1; }
 export function readBox(b: Box): number { return b.size; }
@@ -102,6 +107,19 @@ export function readBox(b: Box): number { return b.size; }
       label: 'Property',
       properties: { name: 'live' },
     });
+  });
+
+  it('links reads to a field introduced by a constructor loop target', () => {
+    expect(result.graph.getNode('Property:pkg/model.py:Plain.loop')).toMatchObject({
+      label: 'Property',
+      properties: { name: 'loop' },
+    });
+    const accesses = getRelationships(result, 'ACCESSES').filter(
+      (edge) => edge.source === 'read_from_loop_target',
+    );
+    expect(accesses.map((edge) => [edge.rel.targetId, edge.rel.reason])).toEqual([
+      ['Property:pkg/model.py:Plain.loop', 'read'],
+    ]);
   });
 
   it('retains the TypeScript control edge', () => {
