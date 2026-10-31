@@ -701,7 +701,7 @@ ${HOT_READ_STALENESS_NOTE}`,
           type: 'integer',
           minimum: 1,
           description:
-            'Token budget including hints. Trims deepest symbols; preserves counts/risk. Errors if the summary cannot fit. Overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS.',
+            'Token budget including hints. Trims callgraph symbols; PDG/group and required content must fit or error. Overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS.',
         },
         timeoutMs: {
           type: 'number',

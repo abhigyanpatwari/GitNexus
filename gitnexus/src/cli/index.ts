@@ -524,7 +524,7 @@ program
   .option('--summary-only', 'Return counts and risk only, omit symbol list')
   .option(
     '--max-tokens <n>',
-    'Fit compact JSON into about N tokens, dropping deepest symbols first; fails if the summary cannot fit',
+    'Fit compact JSON into about N tokens; trim deepest callgraph symbols or fail if required content cannot fit. PDG/group results must fit intact',
   )
   .action(createLbugLazyAction(() => import('./tool.js'), 'impactCommand'));
 

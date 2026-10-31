@@ -356,7 +356,7 @@ export const zhCN = {
   'help.option.impact.offset': '每层深度跳过 N 个符号（分页用）',
   'help.option.impact.summaryOnly': '仅返回计数和风险等级，省略符号列表',
   'help.option.impact.maxTokens':
-    '将紧凑 JSON 控制在约 N 个 token 内，优先舍弃最深层的符号；摘要无法容纳时返回错误',
+    '将紧凑 JSON 控制在约 N 个 token 内；调用图优先舍弃最深层符号，必要内容无法容纳时返回错误。PDG 和仓库组结果必须完整容纳',
   'help.option.trace.fromUid': '源符号 UID（零歧义查找）',
   'help.option.trace.fromFile': '源文件路径，用于消除常见名称歧义',
   'help.option.trace.toUid': '目标符号 UID（零歧义查找）',

@@ -392,7 +392,7 @@ export const en = {
   'help.option.impact.offset': 'Skip N symbols per depth level for pagination',
   'help.option.impact.summaryOnly': 'Return counts and risk only, omit symbol list',
   'help.option.impact.maxTokens':
-    'Fit compact JSON into about N tokens, dropping deepest symbols first; fails if the summary cannot fit',
+    'Fit compact JSON into about N tokens; trim deepest callgraph symbols or fail if required content cannot fit. PDG/group results must fit intact',
   'help.option.trace.fromUid': 'Source symbol UID (zero-ambiguity lookup)',
   'help.option.trace.fromFile': 'Source file path to disambiguate common names',
   'help.option.trace.toUid': 'Target symbol UID (zero-ambiguity lookup)',
