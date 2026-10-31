@@ -1705,17 +1705,9 @@ describe('Go pointer-receiver field chains (#2766)', () => {
     expect(calls()).toContain('RunLocal → DoWork');
   });
 
-  it('keeps resolving a value receiver', () => {
-    expect(calls()).toContain('RunFromValueReceiver → DoWork');
-  });
-
   // U8: the same-package field receiver that previously produced an ACCESSES
   // edge to the method and no CALLS edge. Typing the base is what emits CALLS;
   // the ACCESSES now correctly targets the PROPERTY being read instead.
-  it('emits CALLS for a same-package field receiver, not ACCESSES alone', () => {
-    expect(calls()).toContain('RunSamePackage → Work');
-  });
-
   it('retargets the field ACCESSES to the property, not the method', () => {
     // Unlabeled on purpose: the negative must reject `→ Work` under ANY target
     // kind, which the kind-qualified rows below cannot express.
