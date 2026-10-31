@@ -40,6 +40,8 @@ describe('refresh_index through a real analyze worker (#3524)', () => {
     vi.stubEnv('GITNEXUS_STORAGE_PATH', undefined);
     vi.stubEnv('GITNEXUS_STORAGE_ROOT', undefined);
     vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
+    vi.stubEnv('GITNEXUS_ATOMIC_INCREMENTAL', undefined);
+    vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', undefined);
     vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
     vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', '1');
     vi.stubEnv('GITNEXUS_MCP_REFRESH_MAX_FILES', undefined);
@@ -94,8 +96,61 @@ describe('refresh_index through a real analyze worker (#3524)', () => {
     expect(list.repositories[0].lastCommit).toBe(indexedCommit);
   });
 
-  it('brings the index to HEAD without touching tracked or agent files', async () => {
-    const result = await backend.callTool('refresh_index', { repo });
+  it('refreshes with an open reader and concurrent query without touching source files', async () => {
+    const read = () =>
+      backend.callTool('cypher', {
+        repo,
+        statement: 'MATCH (n:Function) RETURN n.name AS name ORDER BY n.name',
+      });
+    const oldRows = '| name |\n| --- |\n| placeOrder |';
+    const newRows = '| name |\n| --- |\n| issueInvoice |\n| placeOrder |';
+    const before = await read();
+    expect(before).toMatchObject({
+      row_count: 1,
+      markdown: oldRows,
+      staleness: { status: 'behind', lastCommit: indexedCommit },
+    });
+
+    // The first query leaves the native pool open. Start another query from
+    // real worker progress, so it overlaps refresh without holding a query
+    // past its own deadline on slower CI hosts.
+    let concurrentRead: ReturnType<typeof read> | undefined;
+    let result = await backend.callTool(
+      'refresh_index',
+      { repo },
+      {
+        onProgress: () => {
+          concurrentRead ??= read();
+        },
+      },
+    );
+    expect(concurrentRead).toBeDefined();
+    const during = await concurrentRead;
+    expect(during).not.toHaveProperty('error');
+    // Scheduling may let the query observe either generation, but never a
+    // partial inventory or old rows labelled with the new commit.
+    expect([
+      { row_count: 1, markdown: oldRows, lastCommit: indexedCommit },
+      { row_count: 2, markdown: newRows, lastCommit: head },
+    ]).toContainEqual({
+      row_count: during.row_count,
+      markdown: during.markdown,
+      lastCommit: during.staleness.lastCommit,
+    });
+
+    // POSIX publishes a staged database while readers retain the old inode.
+    // Windows defaults to in-place writes, which may refuse the open reader;
+    // require an explicit lock error, an unchanged index, and a successful retry.
+    if (process.platform === 'win32' && result.error) {
+      expect(result.error).toMatch(
+        /could not set lock on file|database.*(?:locked|busy)|(?:locked|busy).*database/i,
+      );
+      const list = await backend.callTool('list_repos', {});
+      expect(list.repositories[0].lastCommit).toBe(indexedCommit);
+      await backend.dispose();
+      await backend.init();
+      result = await backend.callTool('refresh_index', { repo });
+    }
     expect(result).toMatchObject({
       status: 'refreshed',
       previous: { lastCommit: indexedCommit, staleness: { status: 'behind' } },
@@ -117,7 +172,13 @@ describe('refresh_index through a real analyze worker (#3524)', () => {
     // The same backend serves the rebuilt index without a restart.
     const found = await backend.callTool('context', { name: 'issueInvoice', repo });
     expect(found).not.toHaveProperty('error');
+    expect(found.symbol).toMatchObject({ name: 'issueInvoice', filePath: 'src/invoices.ts' });
     expect(found.staleness).toMatchObject({ status: 'current', lastCommit: head });
+    expect(await read()).toMatchObject({
+      row_count: 2,
+      markdown: newRows,
+      staleness: { status: 'current', lastCommit: head },
+    });
   }, 180_000);
 
   it('refuses once the working tree outgrows the limit, whatever the last index counted', async () => {

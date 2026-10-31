@@ -48,6 +48,7 @@ async function connect(
   return {
     backend,
     client,
+    serverTransport,
     close: async () => {
       await client.close();
       await server.close();
@@ -148,7 +149,7 @@ describe('refresh_index MCP gate (#3524)', () => {
     }
   });
 
-  it('forwards analysis progress to a client that sent a progress token', async () => {
+  it('forwards strictly increasing progress and clamps it to the advertised total', async () => {
     const backend = createMockBackend();
     backend.callTool.mockImplementation(
       async (
@@ -156,8 +157,14 @@ describe('refresh_index MCP gate (#3524)', () => {
         _args: unknown,
         context?: { onProgress?: (progress: number, message: string) => Promise<void> },
       ) => {
+        await context?.onProgress?.(0, 'starting');
         await context?.onProgress?.(10, 'parsing');
+        await context?.onProgress?.(10, 'repeated');
+        await context?.onProgress?.(5, 'decreasing');
         await context?.onProgress?.(90, 'communities');
+        await context?.onProgress?.(105, 'complete');
+        await context?.onProgress?.(100, 'repeated completion');
+        await context?.onProgress?.(150, 'above total again');
         return { status: 'refreshed' };
       },
     );
@@ -172,10 +179,65 @@ describe('refresh_index MCP gate (#3524)', () => {
       expect(response.isError).not.toBe(true);
       expect(JSON.stringify(response.content)).toContain('it now reads the refreshed one');
       expect(updates).toEqual([
+        { progress: 0, total: 100, message: 'starting' },
         { progress: 10, total: 100, message: 'parsing' },
         { progress: 90, total: 100, message: 'communities' },
+        { progress: 100, total: 100, message: 'complete' },
       ]);
     } finally {
+      await session.close();
+    }
+  });
+
+  it('finishes the refresh and sends later progress when a notification send rejects', async () => {
+    const backend = createMockBackend();
+    backend.callTool.mockImplementation(
+      async (
+        _method: string,
+        _args: unknown,
+        context?: { onProgress?: (progress: number, message: string) => Promise<void> },
+      ) => {
+        await context?.onProgress?.(10, 'parsing');
+        await context?.onProgress?.(90, 'communities');
+        return { status: 'refreshed' };
+      },
+    );
+    const session = await connect({ refreshIndex: true }, backend);
+    const send = session.serverTransport.send.bind(session.serverTransport);
+    const rejected = vi.fn();
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    const spy = vi
+      .spyOn(session.serverTransport, 'send')
+      .mockImplementation(async (message, options) => {
+        if (
+          'method' in message &&
+          message.method === 'notifications/progress' &&
+          message.params?.progress === 10
+        ) {
+          rejected();
+          throw new Error('notification transport unavailable');
+        }
+        await send(message, options);
+      });
+    try {
+      const updates: Array<{ progress: number; total?: number; message?: string }> = [];
+      const response = await session.client.callTool(
+        { name: 'refresh_index', arguments: { repo: 'test' } },
+        undefined,
+        { onprogress: (update) => updates.push(update) },
+      );
+      expect(rejected).toHaveBeenCalledOnce();
+      expect(response.isError).not.toBe(true);
+      expect(JSON.stringify(response.content)).toContain('refreshed');
+      expect(updates).toEqual([{ progress: 90, total: 100, message: 'communities' }]);
+      // The suite tolerates native teardown errors globally, so assert this
+      // rejection explicitly after Node has had a turn to report it.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+      spy.mockRestore();
       await session.close();
     }
   });
