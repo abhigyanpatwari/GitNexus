@@ -1016,12 +1016,28 @@ budget stop per cell. This checks telemetry delivery before a larger comparison:
 ```bash
 uv run --locked python -m workflow_bench.diagnostic_experiments \
   --tasks workflow_bench/tasks.scenarios.yaml \
-  --repository /path/to/GitNexus --runtime /path/to/built/GitNexus \
+  --repository /path/to/tasks-base --runtime /path/to/built/GitNexus \
   --harness-sha FULL_HARNESS_SHA --runtime-sha FULL_RUNTIME_SHA \
   --model gpt-5.6-sol --effort xhigh --seed 3762 --repeats 1 \
   --variants no_graph mcp_eager --task-ids trivial-status-json-alias \
-  --max-budget-usd 5 --out /tmp/gitnexus-diagnostics-trial
+  --max-budget-usd 5 --bind-task-dependencies --out /tmp/gitnexus-diagnostics-trial
 ```
+
+`--repository` must be the checkout built at the task's pinned commit, including
+its dependency trees. `--runtime` is the separately built GitNexus candidate.
+`--bind-task-dependencies` requires a clean tracked checkout at the task ref and
+records the built dependency contents. The trial executor rejects missing bindings,
+dirty tracked files, a different HEAD, or dependency drift. Each runner receives
+the saved bindings and checks its captured dependencies again before model calls.
+The release workflow also runs offline negative and reference grading controls
+with those dependency snapshots and the runner's read-only verifier sandbox.
+The unmodified source must fail a behavioral assertion; the reference repair
+must pass the hidden oracle and TypeScript. A setup crash is not a negative
+control. These checks make no model requests.
+
+The recorded task prompt digest includes the conditional MCP environment
+instruction. Comparator reuse rejects older raw-prompt hashes and changes to
+that instruction, while keeping the two arms under the same task identity.
 
 The runner forwards `--max-budget-usd` to Claude Code and accepts it only for
 single-session baseline arms. The default remains uncapped. Budget-stopped
@@ -1064,7 +1080,7 @@ new dispatch after failure; the executor never retries or resumes a used plan.
 | Task fit and quality ceiling | Per-task cost distribution, solved/failed/missing counts, cost per solved task | Add harder independently validated tasks before claiming a quality improvement at 100% success |
 | Order, concurrency, warm caches | Seeded rotated order, one worker and separate ledger per cell | Run matched worker-count/cold-start studies separately; fresh processes do not guarantee cold provider/filesystem caches |
 | Retries, provider translation and accounting | CLI retry events; deduplicated success/failure callbacks, native normalized usage, reasoning tokens, proxy durations and estimates | Reconcile with provider billing; do not join concurrent requests to cells by timestamp |
-| Setup, indexing and infrastructure | Cell start/finish timestamps, total duration, clone/index-materialization/dependency/MCP-startup/sandbox/agent-and-verification/artifact/cleanup spans | Shared index-build preparation, CPU/RSS, isolated oracle spans and infrastructure prices need separate evidence; do not fold them into model dollars |
+| Setup, indexing and infrastructure | Sweep wall time, time before the first cell, dependency preparation, foreground graph setup/waits, cell phases, authored/hidden grading durations | Background graph work can overlap cells; CPU/RSS, workflow provisioning, proxy startup and infrastructure prices need separate evidence; do not fold them into model dollars |
 
 Summarize a runner result file (including failed cells) and optionally its proxy
 ledger. Historical release reports with `per_run` rows are also accepted:
@@ -1078,6 +1094,15 @@ uv run --locked python -m workflow_bench.cost_diagnostics \
 
 Unknown fields remain null. Distinct model/effort/source/prompt/runtime/loading
 cohorts are kept separate. Duplicate exported cell identities are rejected.
+Runtime and harness commit SHAs, task prompt digest, and the per-cell CLI budget
+survive public export. The legacy evolution `runtime_digest` is optional when
+the required commit provenance is present. All-zero CLI usage snapshots are
+treated as unavailable; provider-normalized per-request token distributions
+give a separate view of context size without guessing from aggregate usage.
+When `sweep-timing.json` exists beside the results, the summary includes its
+setup measurements. They overlap and must not be added together. Grading
+receipts expose duration, exit code, process state, and fixed failure markers;
+they never expose hidden-test output. Failure markers are clues, not diagnoses.
 Provider response-ID conflicts withhold token totals; missing IDs prevent a
 deduplicated total. Failed requests remain in the accounting. Proxy cost is an
 estimate, not a provider invoice. The report is descriptive and does not change

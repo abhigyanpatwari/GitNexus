@@ -394,11 +394,11 @@ jobs:
         run: |
           uv run --locked --extra dev python -m workflow_bench.diagnostic_experiments \
             --tasks "$RUNNER_TEMP/release-evaluation/candidate/tasks.yaml" \
-            --repository "$GITHUB_WORKSPACE/candidate" --runtime "$GITHUB_WORKSPACE/candidate" \
+            --repository "$GITHUB_WORKSPACE/tasks-base" --runtime "$GITHUB_WORKSPACE/candidate" \
             --harness-sha "$GITHUB_SHA" --runtime-sha "$RUNTIME_SHA" \
             --model "$MODEL" --effort "$EFFORT" --seed 3762 --repeats 1 \
             --variants no_graph mcp_eager --task-ids trivial-status-json-alias \
-            --max-budget-usd 5 --out "$RUNNER_TEMP/release-evaluation/trial"
+            --max-budget-usd 5 --bind-task-dependencies --out "$RUNNER_TEMP/release-evaluation/trial"
       - name: Require historical task dependencies before paid PR sessions
         if: inputs.candidate_pr != ''
         working-directory: eval
@@ -425,6 +425,7 @@ jobs:
           if [[ "${DIAGNOSTIC_TRIAL:-false}" == true ]]; then
             uv run --locked --extra dev python -m workflow_bench.release_preflight \
               --tasks "$RUNNER_TEMP/release-evaluation/trial/cell-0000.tasks.json" \
+              --grading-controls \
               --gitnexus-root "$GITHUB_WORKSPACE/candidate" \
               --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
             exit 0
@@ -433,6 +434,7 @@ jobs:
             if [[ -n "$INPUT_PR" && "$runtime" == stable ]]; then continue; fi
             uv run --locked --extra dev python -m workflow_bench.release_preflight \
               --tasks "$RUNNER_TEMP/release-evaluation/$runtime/tasks.yaml" \
+              --grading-controls \
               --gitnexus-root "$GITHUB_WORKSPACE/$runtime" \
               --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
           done
