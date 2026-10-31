@@ -36,81 +36,34 @@ for (const language of (await fs.readdir(fixtures, { withFileTypes: true })).fil
 
 renameCases.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
 
-// A language whose fixtures outgrow one CI shard budget moves part of them into an overflow file.
-// The ids listed here are skipped by `defineRenameFixtureTests` and run only through
-// `defineRenameOverflowFixtureTests`, so every fixture is registered exactly once. Keyed by id,
-// so a fixture added later stays in the primary file until it is listed.
-export const renameOverflowIds: ReadonlySet<string> = new Set([
-  'r/assign-local-conditional',
-  'r/assign-local-constant-call',
-  'r/assign-local-function-literal-no-call',
-  'r/assign-local-nested-function',
-  'r/assign-local-no-call',
-  'r/backtick-definition',
-  'r/block-def-conditional',
-  'r/chained-receiver-same-name',
-  'r/collision-new-name-parameter-call',
-  'r/collision-unrelated-uses',
-  'r/collision-variable-before',
-  'r/cross-file-qualified-call',
-  'r/duplicate-definition-other-file',
-  'r/duplicate-definition-test-stub',
-  'r/export-name-null',
-  'r/function-call-chain',
-  'r/generated-cpp11-wrapper',
-  'r/infix-operator',
-  'r/invalid-name-invalid-start',
-  'r/local-def-call-before',
-  'r/local-def-first',
-  'r/local-def-loop',
-  'r/namespace-export',
-  'r/namespace-export-new-name',
-  'r/namespace-pattern-new-name-exported',
-  'r/namespace-pattern-word-boundary',
-  'r/namespace-private-external-call',
-  'r/namespace-private-local-import',
-  'r/newname-pretty-dot',
-  'r/parameter-body-read',
-  'r/parameter-constant-default-call-and-read',
-  'r/parameter-no-default-call',
-  'r/r6-class',
-  'r/r6-member-shadow-private',
-  'r/r6-method',
-  'r/rawnamespace-attached',
-  'r/rc-own-method-shadow',
-  'r/refclass-methods-call',
-  'r/refclass-parent-without-member',
-  'r/replacement-getter',
-  'r/replacement-setter',
-  'r/rprofile-mention',
-  'r/s3-method',
-  'r/s3-new-method-dotted-generic',
-  'r/s3-new-method-name',
-  'r/s4-class',
-  'r/self-method-same-name',
-  'r/string-built-name',
-  'r/string-glue-call',
-  'r/string-lookup-escaped',
-  'r/string-parse-text',
-  'r/superassign-in-function',
-  'r/toplevel-call-before-definition-attached',
-  'r/unindexed-no-mention',
-  'r/unparseable-other-file',
-  'r/value-reference-default',
-  'r/value-reference-function-argument',
-]);
+// A language whose fixtures outgrow one CI shard budget runs them from several files. Its sorted
+// fixture ids are dealt round-robin into `renameFixtureParts[language]` parts: part 1 runs from the
+// language's main file through `defineRenameFixtureTests`, parts 2..n from their own files through
+// `defineRenameFixturePartTests`, so every fixture is registered exactly once.
+export const renameFixtureParts: Readonly<Record<string, number>> = { r: 5 };
+
+const partById = new Map<string, number>();
+const dealt = new Map<string, number>();
+for (const fixture of renameCases) {
+  const index = dealt.get(fixture.language) ?? 0;
+  dealt.set(fixture.language, index + 1);
+  partById.set(fixture.id, (index % (renameFixtureParts[fixture.language] ?? 1)) + 1);
+}
+
+/** The 1-based part (test file) that registers this fixture id. */
+export function renameFixturePart(id: string): number {
+  return partById.get(id) ?? 1;
+}
 
 // Separate files let CI distribute these real indexing runs across its shards.
 export function defineRenameFixtureTests(language: string): void {
-  defineRenameFixtureCases(
-    (fixture) => fixture.language === language && !renameOverflowIds.has(fixture.id),
-  );
+  defineRenameFixturePartTests(language, 1);
 }
 
-// Registers only the overflow fixtures of `language`, for its second test file.
-export function defineRenameOverflowFixtureTests(language: string): void {
+// Registers only part `part` of `language`'s fixtures, for that part's own test file.
+export function defineRenameFixturePartTests(language: string, part: number): void {
   defineRenameFixtureCases(
-    (fixture) => fixture.language === language && renameOverflowIds.has(fixture.id),
+    (fixture) => fixture.language === language && renameFixturePart(fixture.id) === part,
   );
 }
 

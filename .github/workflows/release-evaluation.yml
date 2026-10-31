@@ -17,6 +17,14 @@ on:
         description: Start, probe, and stop EC2 without paid model calls
         type: boolean
         default: false
+      diagnostic_trial:
+        description: 'Two serial cells, $5 CLI stop each; requires a full candidate SHA, gpt-5.6-sol/xhigh, and no other experiment flags'
+        type: boolean
+        default: false
+      mcp_tool_loading:
+        description: Add candidate deferred-MCP experiment (12 extra paid cells)
+        type: boolean
+        default: false
       candidate_ref:
         description: 'Full commit SHA or version tag to evaluate; latest-rc resolves the newest published RC'
         type: string
@@ -30,6 +38,10 @@ on:
         type: choice
         default: xhigh
         options: [low, medium, high, xhigh, max]
+      cli_arm:
+        description: 'Also run baseline_cli (same tools via a gitnexus shell command, no MCP catalog) on the candidate; adds 12 paid cells, descriptive only, never gates'
+        type: boolean
+        default: false
   # PR preview inputs are available only to the maintainer-authorized label
   # workflow. Manual dispatch cannot select an unmerged PR runtime.
   workflow_call:
@@ -85,6 +97,25 @@ jobs:
       cleanup_required: ${{ steps.boot.outputs.cleanup_required }}
       stop_deadline_epoch: ${{ steps.boot.outputs.stop_deadline_epoch }}
     steps:
+      - name: Validate diagnostic trial authorization scope
+        env:
+          TRIAL: ${{ inputs.diagnostic_trial }}
+          RUNNER_ONLY: ${{ inputs.runner_only }}
+          CLI_ARM: ${{ inputs.cli_arm }}
+          DEFERRED_ARM: ${{ inputs.mcp_tool_loading }}
+          CANDIDATE_REF: ${{ inputs.candidate_ref }}
+          MODEL: ${{ inputs.model }}
+          EFFORT: ${{ inputs.effort }}
+        run: |
+          set -euo pipefail
+          if [[ "$TRIAL" == true ]]; then
+            if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch || "$GITHUB_RUN_ATTEMPT" != 1 ||
+                  "$RUNNER_ONLY" == true || "$CLI_ARM" == true || "$DEFERRED_ARM" == true ||
+                  "$MODEL" != gpt-5.6-sol || "$EFFORT" != xhigh || ! "$CANDIDATE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+              echo '::error::Trial requires a fresh manual dispatch, a full candidate SHA, gpt-5.6-sol/xhigh, and no other experiment flags. Paid trials are never retried automatically.'
+              exit 1
+            fi
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -207,6 +238,8 @@ jobs:
       COMPARISON_RUN_ID: ${{ inputs.comparison_run_id }}
       MODEL: ${{ inputs.model || 'gpt-5.6-sol' }}
       EFFORT: ${{ inputs.effort || 'xhigh' }}
+      # Manual dispatch only; schedules and PR previews never pay for the extra arm.
+      CLI_ARM: ${{ inputs.cli_arm == true && inputs.candidate_pr == '' && 'true' || 'false' }}
     steps:
       - name: Require startup in this run attempt
         run: |
@@ -224,6 +257,7 @@ jobs:
         working-directory: eval
         env:
           GH_TOKEN: ${{ github.token }}
+          DIAGNOSTIC_TRIAL: ${{ inputs.diagnostic_trial }}
         run: |
           set -euo pipefail
           if [[ -n "$INPUT_PR" ]]; then
@@ -234,10 +268,12 @@ jobs:
           fi
           [[ -z "$INPUT_PR_SHA" && -z "$COMPARISON_RUN_ID" ]] || { echo '::error::PR preview inputs require candidate_pr.'; exit 1; }
           # Resolve last stable once; both runtimes use the same trusted tasks.
-          stable="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')"
-          [[ "$stable" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo '::error::No stable release found.'; exit 1; }
-          stable_sha="$(git rev-parse --verify "$stable^{commit}")"
-          echo "stable_sha=$stable_sha" >> "$GITHUB_OUTPUT"
+          if [[ "${DIAGNOSTIC_TRIAL:-false}" != true ]]; then
+            stable="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')"
+            [[ "$stable" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo '::error::No stable release found.'; exit 1; }
+            stable_sha="$(git rev-parse --verify "$stable^{commit}")"
+            echo "stable_sha=$stable_sha" >> "$GITHUB_OUTPUT"
+          fi
           ref="$INPUT_REF"
           if [[ "$ref" == 'latest-rc' ]]; then
             ref="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq \
@@ -265,7 +301,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: inputs.candidate_pr == ''
+        if: inputs.candidate_pr == '' && inputs.diagnostic_trial != true
         with:
           ref: ${{ steps.resolve.outputs.stable_sha }}
           path: stable
@@ -280,7 +316,7 @@ jobs:
           node-version: '22.18.0'
           cache: npm
           cache-dependency-path: candidate/gitnexus/package-lock.json
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
         with:
           version: '0.11.23'
           python-version: '3.13'
@@ -294,7 +330,7 @@ jobs:
         run: |
           uv run --locked --extra dev python -m workflow_bench.pr_evaluation baseline \
             --repo "$GITHUB_REPOSITORY" --run-id "$COMPARISON_RUN_ID" \
-            --harness-sha "$GITHUB_SHA" --model "$MODEL" --effort "$EFFORT" \
+            --harness-sha "$GITHUB_SHA" --env-out "$GITHUB_ENV" \
             --out "$RUNNER_TEMP/release-evaluation/previous.json"
       # Both runtimes grade the pinned task source against one dependency tree
       # built from that commit's lockfile, never the runtime under test's.
@@ -328,24 +364,41 @@ jobs:
           test "$("$cli/node_modules/@anthropic-ai/claude-code-linux-x64/claude" --version)" = '2.1.214 (Claude Code)'
       - name: Build pinned runtime and task dependencies
         working-directory: eval
+        env:
+          DIAGNOSTIC_TRIAL: ${{ inputs.diagnostic_trial }}
         run: |
           set -euo pipefail
           for checkout in tasks-base stable candidate; do
-            if [[ -n "$INPUT_PR" && "$checkout" == stable ]]; then continue; fi
+            if [[ ( -n "$INPUT_PR" || "${DIAGNOSTIC_TRIAL:-false}" == true ) && "$checkout" == stable ]]; then continue; fi
             uv run --locked --extra dev python -m workflow_bench.release_build \
               --repo "$GITHUB_WORKSPACE/$checkout"
           done
       - name: Prepare pinned task set
         working-directory: eval
+        env:
+          DIAGNOSTIC_TRIAL: ${{ inputs.diagnostic_trial }}
         run: |
           set -euo pipefail
           for runtime in stable candidate; do
-            if [[ -n "$INPUT_PR" && "$runtime" == stable ]]; then continue; fi
+            if [[ ( -n "$INPUT_PR" || "${DIAGNOSTIC_TRIAL:-false}" == true ) && "$runtime" == stable ]]; then continue; fi
             uv run --locked --extra dev python -m workflow_bench.release_report prepare \
               --repo "$GITHUB_WORKSPACE/$runtime" --task-repo "$GITHUB_WORKSPACE/tasks-base" \
               --out "$RUNNER_TEMP/release-evaluation/$runtime" \
               --model "$MODEL" --effort "$EFFORT" --runs 3
           done
+      - name: Prepare the capped diagnostic trial
+        if: inputs.diagnostic_trial == true
+        working-directory: eval
+        env:
+          RUNTIME_SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          uv run --locked --extra dev python -m workflow_bench.diagnostic_experiments \
+            --tasks "$RUNNER_TEMP/release-evaluation/candidate/tasks.yaml" \
+            --repository "$GITHUB_WORKSPACE/tasks-base" --runtime "$GITHUB_WORKSPACE/candidate" \
+            --harness-sha "$GITHUB_SHA" --runtime-sha "$RUNTIME_SHA" \
+            --model "$MODEL" --effort "$EFFORT" --seed 3762 --repeats 1 \
+            --variants no_graph mcp_eager --task-ids trivial-status-json-alias \
+            --max-budget-usd 5 --bind-task-dependencies --out "$RUNNER_TEMP/release-evaluation/trial"
       - name: Require historical task dependencies before paid PR sessions
         if: inputs.candidate_pr != ''
         working-directory: eval
@@ -360,20 +413,39 @@ jobs:
           GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'
           CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
         run: >-
-          uv run --locked --extra dev python -m pytest tests/test_proposer_sandbox.py
+          uv run --locked --extra dev python -m pytest tests/test_proposer_sandbox.py tests/test_cli_shim.py
           tests/test_workflow_bench_sessions.py::test_real_cli_background_completion_is_one_complete_measurement -q
       - name: Materialize both release graphs before paid sessions
         timeout-minutes: 120
         working-directory: eval
+        env:
+          DIAGNOSTIC_TRIAL: ${{ inputs.diagnostic_trial }}
         run: |
           set -euo pipefail
+          if [[ "${DIAGNOSTIC_TRIAL:-false}" == true ]]; then
+            uv run --locked --extra dev python -m workflow_bench.release_preflight \
+              --tasks "$RUNNER_TEMP/release-evaluation/trial/cell-0000.tasks.json" \
+              --grading-controls \
+              --gitnexus-root "$GITHUB_WORKSPACE/candidate" \
+              --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
+            exit 0
+          fi
           for runtime in stable candidate; do
             if [[ -n "$INPUT_PR" && "$runtime" == stable ]]; then continue; fi
             uv run --locked --extra dev python -m workflow_bench.release_preflight \
               --tasks "$RUNNER_TEMP/release-evaluation/$runtime/tasks.yaml" \
+              --grading-controls \
               --gitnexus-root "$GITHUB_WORKSPACE/$runtime" \
               --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
           done
+      - name: Require offline deferred-tool compatibility before paid sessions
+        if: inputs.mcp_tool_loading == true
+        working-directory: eval
+        env:
+          GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'
+          CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
+        run: >-
+          uv run --locked --extra dev python -m pytest tests/test_mcp_tool_loading.py -q
       - name: Recheck PR opt-in and pinned head immediately before paid sessions
         if: inputs.candidate_pr != ''
         working-directory: eval
@@ -388,25 +460,87 @@ jobs:
         env:
           GITNEXUS_BENCH_OPENAI_API_KEY: ${{ secrets.GITNEXUS_BENCH_OPENAI_API_KEY }}
           GITNEXUS_BENCH_ANTHROPIC_API_KEY: ${{ secrets.GITNEXUS_BENCH_ANTHROPIC_API_KEY }}
+          DIAGNOSTIC_TRIAL: ${{ inputs.diagnostic_trial }}
         run: |
           set -euo pipefail
+          if [[ "${DIAGNOSTIC_TRIAL:-false}" == true ]]; then
+            remaining=$(( ${{ needs.start-runner.outputs.stop_deadline_epoch }} - $(date +%s) - 5400 ))
+            [[ "$GITHUB_RUN_ATTEMPT" == 1 ]] || { echo '::error::Paid trials cannot be rerun, including failed-job retries.'; exit 1; }
+            (( remaining > 0 )) || { echo '::error::No time remains before the stop and evidence reserve.'; exit 1; }
+            (( remaining <= 3600 )) || remaining=3600
+            timeout --signal=TERM --kill-after=60 "${remaining}s" \
+              uv run --locked --extra dev python -m workflow_bench.diagnostic_trial --execute \
+              --plan "$RUNNER_TEMP/release-evaluation/trial/plan.json" \
+              --runtime "$GITHUB_WORKSPACE/candidate" \
+              --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
+            exit 0
+          fi
           arms=(baseline_nomcp baseline)
           if [[ -n "$INPUT_PR" ]]; then arms=(baseline); fi
           for runtime in stable candidate; do
             if [[ -n "$INPUT_PR" && "$runtime" == stable ]]; then continue; fi
             remaining=$(( ${{ needs.start-runner.outputs.stop_deadline_epoch }} - $(date +%s) - 5400 ))
             (( remaining > 0 )) || { echo '::error::No time remains before the stop and evidence reserve.'; exit 1; }
+            GITNEXUS_BENCH_PROVIDER_USAGE="$RUNNER_TEMP/release-evaluation/$runtime/provider-usage.jsonl" \
+            GITNEXUS_BENCH_SWEEP_ID="release-${{ github.run_id }}-${{ github.run_attempt }}-$runtime" \
             timeout --signal=TERM --kill-after=60 "${remaining}s" \
               uv run --locked --extra dev python -m workflow_bench.runner \
               --tasks "$RUNNER_TEMP/release-evaluation/$runtime/tasks.yaml" \
               --gitnexus-root "$GITHUB_WORKSPACE/$runtime" \
-              --arms "${arms[@]}" --runs 3 --include-expensive \
+              --arms "${arms[@]}" --runs 3 --include-expensive --mcp-tool-loading eager \
               --workers 3 --timeout 3600 --model "$MODEL" --effort "$EFFORT" \
               --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
               --out "$RUNNER_TEMP/release-evaluation/$runtime/raw"
           done
+      # Descriptive only: its own output directory leaves the paired evidence
+      # that release_report and release_gate read exactly as without the opt-in.
+      # Trials reject these opt-ins before startup. Preserve the exact gates
+      # recognized by the historical measurement-protocol validator.
+      - name: Run the opt-in CLI-only arm on the candidate
+        if: env.CLI_ARM == 'true'
+        continue-on-error: true
+        timeout-minutes: 600
+        working-directory: eval
+        env:
+          GITNEXUS_BENCH_OPENAI_API_KEY: ${{ secrets.GITNEXUS_BENCH_OPENAI_API_KEY }}
+          GITNEXUS_BENCH_ANTHROPIC_API_KEY: ${{ secrets.GITNEXUS_BENCH_ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          remaining=$(( ${{ needs.start-runner.outputs.stop_deadline_epoch }} - $(date +%s) - 5400 ))
+          (( remaining > 0 )) || { echo '::warning::No time remains for the CLI-only arm.'; exit 1; }
+          GITNEXUS_BENCH_PROVIDER_USAGE="$RUNNER_TEMP/release-evaluation/candidate/cli-provider-usage.jsonl" \
+          GITNEXUS_BENCH_SWEEP_ID="release-${{ github.run_id }}-${{ github.run_attempt }}-cli" \
+          timeout --signal=TERM --kill-after=60 "${remaining}s" \
+            uv run --locked --extra dev python -m workflow_bench.runner \
+            --tasks "$RUNNER_TEMP/release-evaluation/candidate/tasks.yaml" \
+            --gitnexus-root "$GITHUB_WORKSPACE/candidate" \
+            --arms baseline_cli --runs 3 --include-expensive \
+            --workers 3 --timeout 3600 --model "$MODEL" --effort "$EFFORT" \
+            --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
+            --out "$RUNNER_TEMP/release-evaluation/candidate/cli-raw"
+      - name: Measure candidate with deferred MCP descriptions
+        if: inputs.mcp_tool_loading == true && inputs.candidate_pr == ''
+        timeout-minutes: 360
+        working-directory: eval
+        env:
+          GITNEXUS_BENCH_OPENAI_API_KEY: ${{ secrets.GITNEXUS_BENCH_OPENAI_API_KEY }}
+          GITNEXUS_BENCH_ANTHROPIC_API_KEY: ${{ secrets.GITNEXUS_BENCH_ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          remaining=$(( ${{ needs.start-runner.outputs.stop_deadline_epoch }} - $(date +%s) - 5400 ))
+          (( remaining > 0 )) || { echo '::error::No time remains for deferred sessions before the evidence reserve.'; exit 1; }
+          GITNEXUS_BENCH_PROVIDER_USAGE="$RUNNER_TEMP/release-evaluation/candidate/deferred-provider-usage.jsonl" \
+          GITNEXUS_BENCH_SWEEP_ID="release-${{ github.run_id }}-${{ github.run_attempt }}-deferred" \
+          timeout --signal=TERM --kill-after=60 "${remaining}s" \
+            uv run --locked --extra dev python -m workflow_bench.runner \
+            --tasks "$RUNNER_TEMP/release-evaluation/candidate/tasks.yaml" \
+            --gitnexus-root "$GITHUB_WORKSPACE/candidate" \
+            --arms baseline --mcp-tool-loading deferred --runs 3 --include-expensive \
+            --workers 3 --timeout 3600 --model "$MODEL" --effort "$EFFORT" \
+            --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
+            --out "$RUNNER_TEMP/release-evaluation/candidate/deferred"
       - name: Summarize complete or incomplete measurements
-        if: ${{ always() && steps.resolve.outputs.sha != '' }}
+        if: ${{ always() && steps.resolve.outputs.sha != '' && inputs.diagnostic_trial != true }}
         working-directory: eval
         run: |
           if [[ -n "$INPUT_PR" ]]; then
@@ -432,7 +566,7 @@ jobs:
           done
           exit "$failed"
       - name: Require complete paired evidence and no task regression
-        if: ${{ always() && steps.resolve.outputs.sha != '' && inputs.candidate_pr == '' }}
+        if: ${{ always() && steps.resolve.outputs.sha != '' && inputs.candidate_pr == '' && inputs.diagnostic_trial != true }}
         working-directory: eval
         run: |
           uv run --locked --extra dev python -m workflow_bench.release_gate \
@@ -441,8 +575,17 @@ jobs:
             --stable "$RUNNER_TEMP/release-evaluation/stable/public/agent-evaluation.json" \
             --stable-sha '${{ steps.resolve.outputs.stable_sha }}' \
             --out "$RUNNER_TEMP/release-evaluation/public"
+      - name: Summarize matched MCP loading experiment
+        if: ${{ always() && inputs.mcp_tool_loading == true && steps.resolve.outputs.sha != '' && inputs.candidate_pr == '' && inputs.diagnostic_trial != true }}
+        working-directory: eval
+        run: |
+          uv run --locked --extra dev python -m workflow_bench.mcp_loading_report \
+            --eager "$RUNNER_TEMP/release-evaluation/candidate/raw/results.jsonl" \
+            --deferred "$RUNNER_TEMP/release-evaluation/candidate/deferred/results.jsonl" \
+            --metadata "$RUNNER_TEMP/release-evaluation/candidate/metadata.json" \
+            --out "$RUNNER_TEMP/release-evaluation/public"
       - name: Collect sanitized evidence and publish summary
-        if: ${{ always() && steps.resolve.outputs.sha != '' }}
+        if: ${{ always() && steps.resolve.outputs.sha != '' && inputs.diagnostic_trial != true }}
         run: |
           set -euo pipefail
           public="$RUNNER_TEMP/release-evaluation/public"
@@ -457,11 +600,97 @@ jobs:
             if [[ -f "$candidate" ]]; then cp "$candidate" "$public/agent-evaluation.$extension"; fi
             if [[ -f "$stable" ]]; then cp "$stable" "$public/stable-agent-evaluation.$extension"; fi
           done
-          for report in release-quality-gate agent-evaluation; do
+          for report in release-quality-gate agent-evaluation mcp-tool-loading; do
             if [[ -f "$public/$report.md" ]]; then cat "$public/$report.md" >> "$GITHUB_STEP_SUMMARY"; fi
           done
+      - name: Summarize the opt-in CLI-only arm
+        if: ${{ always() && env.CLI_ARM == 'true' && steps.resolve.outputs.sha != '' && inputs.diagnostic_trial != true }}
+        continue-on-error: true
+        working-directory: eval
+        run: |
+          set -euo pipefail
+          candidate="$RUNNER_TEMP/release-evaluation/candidate"
+          uv run --locked --extra dev python -m workflow_bench.cli_arm_report \
+            --paired "$candidate/raw/results.jsonl" --cli "$candidate/cli-raw/results.jsonl" \
+            --out "$RUNNER_TEMP/release-evaluation/public"
+          cat "$RUNNER_TEMP/release-evaluation/public/cli-arm-comparison.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Summarize time, cost, and tool measurements
+        if: ${{ always() && steps.resolve.outputs.sha != '' && inputs.diagnostic_trial != true }}
+        working-directory: eval
+        env:
+          DEFERRED_ARM: ${{ inputs.mcp_tool_loading }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/release-evaluation"
+          public="$root/public"
+          mkdir -p "$public"
+          failed=0
+          for variant in stable candidate cli deferred; do
+            case "$variant" in
+              stable)
+                if [[ -n "$INPUT_PR" ]]; then continue; fi
+                results="$root/stable/raw/results.jsonl"
+                ledger="$root/stable/provider-usage.jsonl" ;;
+              candidate)
+                results="$root/candidate/raw/results.jsonl"
+                ledger="$root/candidate/provider-usage.jsonl" ;;
+              cli)
+                if [[ "$CLI_ARM" != true ]]; then continue; fi
+                results="$root/candidate/cli-raw/results.jsonl"
+                ledger="$root/candidate/cli-provider-usage.jsonl" ;;
+              deferred)
+                if [[ "$DEFERRED_ARM" != true || -n "$INPUT_PR" ]]; then continue; fi
+                results="$root/candidate/deferred/results.jsonl"
+                ledger="$root/candidate/deferred-provider-usage.jsonl" ;;
+            esac
+            if ! uv run --locked --extra dev python -m workflow_bench.cost_diagnostics \
+              --results "$results" --provider-usage "$ledger" --allow-incomplete \
+              --out "$public/$variant-diagnostics.json" --markdown-out "$public/$variant-diagnostics.md"; then
+              printf '\nDetailed measurements for %s could not be validated; inspect the step log.\n' "$variant" >> "$GITHUB_STEP_SUMMARY"
+              failed=1
+              continue
+            fi
+            {
+              printf '\n<details><summary>Detailed measurements: %s</summary>\n\n' "$variant"
+              cat "$public/$variant-diagnostics.md"
+              printf '\n</details>\n'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+          exit "$failed"
+      - name: Summarize the diagnostic trial
+        if: ${{ always() && inputs.diagnostic_trial == true && steps.resolve.outputs.sha != '' }}
+        working-directory: eval
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/release-evaluation"
+          mkdir -p "$root/public"
+          printf "\n## Two-cell diagnostic trial\n\nOne task, one repetition per arm. \$5 CLI budget stop per cell; provider billing can exceed the planned \$10. This trial checks telemetry and is not release-quality evidence.\n" >> "$GITHUB_STEP_SUMMARY"
+          failed=0
+          for cell in cell-0000 cell-0001; do
+            if ! uv run --locked --extra dev python -m workflow_bench.cost_diagnostics \
+              --results "$root/trial/results/$cell/results.jsonl" \
+              --provider-usage "$root/trial/results/$cell.provider.jsonl" --allow-incomplete \
+              --out "$root/public/trial-$cell-diagnostics.json" \
+              --markdown-out "$root/public/trial-$cell-diagnostics.md"; then
+              printf '\nMeasurements for %s could not be validated.\n' "$cell" >> "$GITHUB_STEP_SUMMARY"
+              failed=1
+              continue
+            fi
+            cat "$root/public/trial-$cell-diagnostics.md" >> "$GITHUB_STEP_SUMMARY"
+          done
+          exit "$failed"
+      - name: Upload sanitized diagnostic trial measurements
+        if: ${{ always() && inputs.diagnostic_trial == true && steps.resolve.outputs.sha != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diagnostic-trial-${{ steps.resolve.outputs.sha }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/release-evaluation/public/trial-*-diagnostics.json
+            ${{ runner.temp }}/release-evaluation/public/trial-*-diagnostics.md
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload sanitized release evidence
-        if: ${{ always() && steps.resolve.outputs.sha != '' && inputs.candidate_pr == '' }}
+        if: ${{ always() && steps.resolve.outputs.sha != '' && inputs.candidate_pr == '' && inputs.diagnostic_trial != true }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-agent-evaluation-${{ steps.resolve.outputs.sha }}
@@ -472,16 +701,34 @@ jobs:
             ${{ runner.temp }}/release-evaluation/public/stable-agent-evaluation.md
             ${{ runner.temp }}/release-evaluation/public/release-quality-gate.json
             ${{ runner.temp }}/release-evaluation/public/release-quality-gate.md
+            ${{ runner.temp }}/release-evaluation/public/mcp-tool-loading.json
+            ${{ runner.temp }}/release-evaluation/public/mcp-tool-loading.md
+            ${{ runner.temp }}/release-evaluation/public/*-diagnostics.json
+            ${{ runner.temp }}/release-evaluation/public/*-diagnostics.md
           if-no-files-found: error
           retention-days: 30
+      - name: Upload the opt-in CLI-only arm comparison
+        if: ${{ always() && env.CLI_ARM == 'true' && steps.resolve.outputs.sha != '' && inputs.diagnostic_trial != true }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-cli-arm-${{ steps.resolve.outputs.sha }}
+          path: |
+            ${{ runner.temp }}/release-evaluation/public/cli-arm-comparison.json
+            ${{ runner.temp }}/release-evaluation/public/cli-arm-comparison.md
+            ${{ runner.temp }}/release-evaluation/public/cli-diagnostics.json
+            ${{ runner.temp }}/release-evaluation/public/cli-diagnostics.md
+          if-no-files-found: warn
+          retention-days: 30
       - name: Upload sanitized PR cost comparison
-        if: ${{ always() && steps.resolve.outputs.sha != '' && inputs.candidate_pr != '' }}
+        if: ${{ always() && steps.resolve.outputs.sha != '' && inputs.candidate_pr != '' && inputs.diagnostic_trial != true }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pr-cost-comparison-${{ steps.resolve.outputs.sha }}
           path: |
             ${{ runner.temp }}/release-evaluation/public/pr-cost-comparison.json
             ${{ runner.temp }}/release-evaluation/public/pr-cost-comparison.md
+            ${{ runner.temp }}/release-evaluation/public/*-diagnostics.json
+            ${{ runner.temp }}/release-evaluation/public/*-diagnostics.md
           if-no-files-found: error
           retention-days: 30
 

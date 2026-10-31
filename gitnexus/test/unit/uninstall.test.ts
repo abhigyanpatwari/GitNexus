@@ -418,6 +418,83 @@ describe('uninstallCommand', () => {
     expect(raw).toContain('"gitnexus"');
   });
 
+  // ── OpenCode hooks plugin: a single auto-loaded file ──
+  it('removes the OpenCode hooks plugin file, preserving sibling plugins', async () => {
+    const pluginFile = path.join(tempHome, '.config', 'opencode', 'plugins', 'gitnexus.js');
+    const sibling = path.join(tempHome, '.config', 'opencode', 'plugins', 'mine.js');
+    await fs.mkdir(path.dirname(pluginFile), { recursive: true });
+    await fs.writeFile(pluginFile, '// gitnexus', 'utf-8');
+    await fs.writeFile(sibling, '// mine', 'utf-8');
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    await expect(fs.access(pluginFile)).rejects.toThrow();
+    expect(await fs.readFile(sibling, 'utf-8')).toBe('// mine');
+  });
+
+  it('dry-run keeps the OpenCode hooks plugin file', async () => {
+    const pluginFile = path.join(tempHome, '.config', 'opencode', 'plugins', 'gitnexus.js');
+    await fs.mkdir(path.dirname(pluginFile), { recursive: true });
+    await fs.writeFile(pluginFile, '// gitnexus', 'utf-8');
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand();
+
+    expect(await fs.readFile(pluginFile, 'utf-8')).toBe('// gitnexus');
+  });
+
+  it('reports a non-ENOENT stat error on the plugin file instead of silently skipping', async () => {
+    const pluginFile = path.join(tempHome, '.config', 'opencode', 'plugins', 'gitnexus.js');
+    await fs.mkdir(path.dirname(pluginFile), { recursive: true });
+    await fs.writeFile(pluginFile, '// gitnexus', 'utf-8');
+
+    // Simulate EACCES on the plugin lookup only; every other call passes
+    // through. removeFile uses lstat (symlink-safe), so spy on that.
+    const realLstat = fs.lstat.bind(fs);
+    const statSpy = vi.spyOn(fs, 'lstat').mockImplementation((async (p: any, ...rest: any[]) => {
+      if (String(p).endsWith(path.join('plugins', 'gitnexus.js'))) {
+        const err: any = new Error(`EACCES: permission denied, stat '${p}'`);
+        err.code = 'EACCES';
+        throw err;
+      }
+      return (realLstat as any)(p, ...rest);
+    }) as any);
+
+    const logSpy = vi.spyOn(console, 'log');
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    // Before the fix, removeFile swallowed every stat error → plugin left in
+    // place with no error reported. Now EACCES surfaces in the Errors block.
+    const output = logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(output).toContain('hooks plugin');
+    expect(statSpy).toHaveBeenCalled();
+    // The plugin file was never reached (rm), so it still exists.
+    expect(await fs.readFile(pluginFile, 'utf-8')).toBe('// gitnexus');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('removes a dangling plugin symlink instead of treating it as absent', async () => {
+    const pluginFile = path.join(tempHome, '.config', 'opencode', 'plugins', 'gitnexus.js');
+    const missingTarget = path.join(tempHome, 'does-not-exist.js');
+    await fs.mkdir(path.dirname(pluginFile), { recursive: true });
+    try {
+      await fs.symlink(missingTarget, pluginFile);
+    } catch (err: any) {
+      // Windows without developer mode / admin cannot create symlinks.
+      if (['EPERM', 'EOPNOTSUPP', 'UNKNOWN'].includes(err?.code)) return;
+      throw err;
+    }
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    // Before the fix, stat() followed the link, ENOENT'd, and the symlink
+    // survived at the auto-loaded plugins path.
+    await expect(fs.lstat(pluginFile)).rejects.toThrow();
+  });
+
   // ── Antigravity MCP + hooks (AfterTool / gitnexus-antigravity-hook) ──
   it('removes Antigravity MCP and AfterTool hooks plus the adapter script dir', async () => {
     const mcpPath = path.join(tempHome, '.gemini', 'antigravity', 'mcp_config.json');

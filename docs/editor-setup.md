@@ -13,12 +13,18 @@
 | **Antigravity** (Google) | Yes | Yes    | Yes (AfterTool, [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/))[¹](#fn-antigravity-hooks) | **Full**     |
 | **Codex**                | Yes | Yes    | Yes (PreToolUse + PostToolUse, [Codex hooks](https://developers.openai.com/codex/hooks))                          | **Full**     |
 | **Factory** (Droid)      | Yes | Yes    | Yes (PostToolUse, [plugin](../gitnexus-factory-plugin/))                                                          | **Full**     |
-| **OpenCode**             | Yes | Yes    | —                                                                                                                 | MCP + Skills |
+| **OpenCode**             | Yes | Yes    | Yes (`tool.execute.after`, [plugin](https://opencode.ai/docs/plugins/))                                            | **Full**     |
 | **CodeBuddy** (Tencent)  | Yes | Yes    | —                                                                                                                 | MCP + Skills |
 | **Qoder** (Alibaba)      | Yes | Yes    | —                                                                                                                 | MCP + Skills |
 | **Windsurf**             | Yes | —      | —                                                                                                                 | MCP          |
 
 > **Full** means MCP tools + agent skills + hooks that enrich searches with graph context. **Claude Code** and **Codex** go deepest: their PreToolUse hooks enrich the search before it runs, and their PostToolUse hooks also detect a stale index after commits and prompt the agent to reindex. **Cursor**, **Antigravity**, and **Factory** augment from a post-tool hook only, so they enrich the result rather than the query and do not carry the stale-index hint.
+
+OpenCode's plugin uses the v1 `tool.execute.after` API: it enriches search results and adds a stale-index hint after git mutations. The integration is verified with OpenCode 1.19.5; OpenCode v2 uses a different plugin API.
+
+For Bash tools, the hooks recognize literal commands and known options; ambiguous shell constructs are skipped. Stale-index hints concern the current OpenCode project.
+
+Bash search augmentation requires `rg` or `grep` to be the first command. A search preceded by `cd`, such as `cd src && rg UserService .`, runs normally but receives no graph augmentation. Use a direct search command or OpenCode's `grep`/`glob` tools to get graph context.
 
 <a id="fn-antigravity-hooks"></a>
 
@@ -104,7 +110,7 @@ codex plugin marketplace add abhigyanpatwari/GitNexus
 
 > `gitnexus setup` also merges an `AfterTool` entry into `~/.gemini/settings.json` (under the canonical [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/)) and installs skills to `~/.gemini/antigravity/skills/`. Existing user hooks are preserved. The hook adapter's path is rewritten at install time, so run `gitnexus setup` rather than hand-editing.
 
-**OpenCode** (`~/.config/opencode/config.json`):
+**OpenCode** (`~/.config/opencode/opencode.json`):
 
 ```json
 {
@@ -116,6 +122,8 @@ codex plugin marketplace add abhigyanpatwari/GitNexus
   }
 }
 ```
+
+Run `gitnexus setup -c opencode` to also install skills and the auto-loaded plugin at `~/.config/opencode/plugins/gitnexus.js`. Restart OpenCode after setup. The plugin runs GitNexus asynchronously with the interpreter captured during setup, enriches `grep`/`glob`/`bash` searches, and suggests `gitnexus analyze` after a git mutation leaves the index stale. Rerun setup after moving or reinstalling GitNexus. `gitnexus uninstall --force` removes this plugin while preserving sibling plugins.
 
 **CodeBuddy** (Tencent) — priority chain, edit the **first non-empty file that exists**: `~/.codebuddy/.mcp.json` (recommended) → `~/.codebuddy/mcp.json` (deprecated) → `~/.codebuddy.json` (legacy). CodeBuddy reads only the first existing file, so adding servers to a higher-priority file than the one currently in use would hide the servers below it. Create `~/.codebuddy/.mcp.json` only if none exist:
 

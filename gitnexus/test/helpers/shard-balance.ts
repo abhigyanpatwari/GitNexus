@@ -24,8 +24,6 @@ const SEQUENTIAL_COVERAGE_SECONDS: Readonly<Record<string, number>> = {
   'test/integration/rename-provider-kotlin.test.ts': 93,
   'test/integration/rename-provider-objective-c.test.ts': 82,
   'test/integration/rename-provider-python.test.ts': 91,
-  'test/integration/rename-provider-r-part2.test.ts': 122,
-  'test/integration/rename-provider-r.test.ts': 120,
   'test/integration/rename-provider-swift.test.ts': 72,
   'test/integration/rename-provider-typescript.test.ts': 173,
   'test/integration/rename-provider-vue.test.ts': 48,

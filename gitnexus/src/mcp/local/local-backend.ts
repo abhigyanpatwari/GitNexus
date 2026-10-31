@@ -38,6 +38,7 @@ import {
   SYMBOL_IDENTITY_RECOVERY_SUGGESTION,
   SymbolIdentityError,
   assertSymbolIdentity,
+  assertSymbolFilePath,
   queryRowValue,
   assertIdentityFields,
   assertQueryIdentity,
@@ -131,6 +132,7 @@ import {
   isFullSourceAvailable,
 } from '../../core/content-retention.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
+import { MCP_REFRESH_TOOL, resolveMcpRefreshLimits } from '../refresh-policy.js';
 import {
   stalenessPayload,
   type IndexedRef,
@@ -216,6 +218,12 @@ const VALUE_CANDIDATE_TYPES: ReadonlySet<string> = new Set(['Const', 'Variable',
  * only truncation signal available when the COUNT leg fails.
  */
 const CANDIDATE_WINDOW = 20;
+
+/**
+ * Most relationship rows `_runImpactBFS` reads per depth level (#3696). Real
+ * hub walks stay in the tens of thousands.
+ */
+export const IMPACT_FRONTIER_ROW_CAP = 100_000;
 
 /**
  * Concurrent BFS walks when `query()` attaches per-process `chain`. Each walk
@@ -388,6 +396,8 @@ function assertResponseIdentities(value: unknown): void {
   if (Array.isArray(value)) {
     for (const item of value) assertResponseIdentities(item);
   } else if (value !== null && typeof value === 'object') {
+    const row = value as Record<string, unknown>;
+    assertSymbolFilePath(row.id ?? row.uid, row.filePath);
     for (const [key, field] of Object.entries(value)) {
       if (key === 'seedBlocks' || key === 'reachableBlocks' || key === 'intraReachableBlocks') {
         if (!Array.isArray(field)) throw new SymbolIdentityError();
@@ -1195,6 +1205,18 @@ async function callableValueReferenceBoundaries(
         `from this result — actual impact may be higher.`,
     ],
   };
+}
+
+/** Per-call extras the MCP server hands to {@link LocalBackend.callTool}. */
+export interface McpToolCallContext {
+  /** `refresh_index` progress, as the analyze worker reports it (percent 0-100). */
+  onProgress?: (percent: number, message: string) => void;
+}
+
+/** An error's message as one sentence, so further sentences can follow it. */
+function asSentence(err: unknown): string {
+  const message = (err instanceof Error ? err.message : String(err)).trim();
+  return /[.!?]$/u.test(message) ? message : `${message}.`;
 }
 
 interface RepoHandle {
@@ -3107,7 +3129,7 @@ export class LocalBackend {
     return entry.value;
   }
 
-  async callTool(method: string, params: any): Promise<any> {
+  async callTool(method: string, params: any, context: McpToolCallContext = {}): Promise<any> {
     if (method === 'list_repos') {
       // Paginated tool surface (#2119). `listRepos()` is unchanged for internal
       // callers; the tool wraps it in { repositories, pagination } and forwards
@@ -3158,7 +3180,12 @@ export class LocalBackend {
     const repo = await this.selectToolRepository(
       p.repo as string | undefined,
       p.branch as string | undefined,
-      { allowCwdDefault: method !== 'rename' || p.dry_run === undefined || p.dry_run === true },
+      {
+        allowCwdDefault:
+          method === MCP_REFRESH_TOOL
+            ? false
+            : method !== 'rename' || p.dry_run === undefined || p.dry_run === true,
+      },
     );
 
     switch (method) {
@@ -3206,9 +3233,157 @@ export class LocalBackend {
         return this.withToolStaleness(repo, await this.readFile(repo, p));
       case 'grep':
         return this.withToolStaleness(repo, await this.grep(repo, p));
+      case MCP_REFRESH_TOOL:
+        return this.refreshIndex(repo, p, context);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
+  }
+
+  /** Indexes with a `refresh_index` run in flight, keyed by storage slot (#3524). */
+  private readonly refreshesInFlight = new Set<string>();
+
+  /**
+   * `refresh_index` (#3524): rebuild one registered index through the same
+   * forked worker and options auto-sync uses, so nothing in the repository is
+   * written and the analysis runs outside this process. The worker takes the
+   * index lock and publishes the way `analyze` does (atomic swap on POSIX; see
+   * run-analyze). The server only dispatches here when the local operator
+   * enabled the tool; see refresh-policy.ts.
+   */
+  private async refreshIndex(
+    repo: RepoHandle,
+    params: Record<string, unknown>,
+    context: McpToolCallContext,
+  ): Promise<unknown> {
+    if (params.dry_run !== undefined && typeof params.dry_run !== 'boolean') {
+      return { error: 'Parameter "dry_run" must be a boolean.' };
+    }
+    const { maxFiles, timeoutMs } = resolveMcpRefreshLimits();
+    const [{ runAutoSyncAnalysis }, { embeddingsFromGitnexusRc }, { countScanCandidates }] =
+      await Promise.all([
+        import('../../core/auto-sync/analysis-worker-launch.js'),
+        import('../../core/gitnexus-rc-embeddings.js'),
+        import('../../core/ingestion/filesystem-walker.js'),
+      ]);
+    let rcEmbeddings: Awaited<ReturnType<typeof embeddingsFromGitnexusRc>>;
+    // The working tree, not the last index, decides the rebuild's size: a stale
+    // index is exactly the one that may have fallen far behind it. Counting
+    // stops one past the limit, so a huge tree costs no more than a small one.
+    let treeFiles: number | undefined;
+    try {
+      rcEmbeddings = await embeddingsFromGitnexusRc(repo.repoPath);
+      if (maxFiles > 0) treeFiles = await countScanCandidates(repo.repoPath, maxFiles);
+    } catch (err) {
+      return { error: `Cannot refresh ${repo.name}: ${asSentence(err)}` };
+    }
+    const previous = await this.refreshSnapshot(repo);
+    const lastIndexedFiles = repo.stats?.files ?? null;
+    const refusal =
+      treeFiles !== undefined && treeFiles > maxFiles
+        ? `${repo.name} has more than ${maxFiles} files in its working tree${
+            lastIndexedFiles === null ? '' : ` (${lastIndexedFiles} at its last index)`
+          }, over this server's refresh limit of ${maxFiles} (GITNEXUS_MCP_REFRESH_MAX_FILES). Run \`gitnexus analyze\` in the repository instead.`
+        : undefined;
+    const running = this.refreshesInFlight.has(repo.storagePath);
+
+    if (params.dry_run === true) {
+      return {
+        status: 'dry_run',
+        repo: repo.name,
+        ...previous,
+        // Exact up to the limit; past it, only "more than maxFiles" is known.
+        estimatedFiles: treeFiles === undefined || refusal ? null : treeFiles,
+        lastIndexedFiles,
+        maxFiles,
+        // `.gitnexusrc` can ask for embeddings, which the file limit does not bound.
+        embeddings: rcEmbeddings.embeddings === true,
+        wouldRefresh: refusal === undefined && !running,
+        ...(refusal ? { refusal } : {}),
+        ...(running ? { inProgress: true } : {}),
+      };
+    }
+    if (running) {
+      return { error: `A refresh of ${repo.name} is already running; wait for it to finish.` };
+    }
+    if (refusal) return { error: refusal };
+
+    // No abort signal is passed: the worker never interrupts an analysis it has
+    // started (analyze-worker.ts), so a cancelled call would only free this slot
+    // while the rebuild runs on. Holding it keeps "already running" and
+    // `inProgress` true until the worker is done.
+    this.refreshesInFlight.add(repo.storagePath);
+    const startedAt = Date.now();
+    let analysis: Awaited<ReturnType<typeof runAutoSyncAnalysis>>;
+    let workerExited: Promise<void> | undefined;
+    try {
+      analysis = await runAutoSyncAnalysis(
+        repo.repoPath,
+        {
+          skipAgentsMd: true,
+          skipSkills: true,
+          preserveExistingPdg: true,
+          atomicIncremental: true,
+          ...rcEmbeddings,
+        },
+        timeoutMs,
+        undefined,
+        undefined,
+        undefined,
+        context.onProgress,
+      );
+    } catch (err) {
+      const failure = err as {
+        abandonedWorker?: boolean;
+        workerExited?: Promise<void>;
+      } | null;
+      // The request can time out before its worker releases the index lock.
+      if (failure?.abandonedWorker) workerExited = failure.workerExited;
+      const leftRunning =
+        failure?.abandonedWorker === true
+          ? ' Its worker keeps running until the analysis finishes; another refresh is refused until it exits.'
+          : '';
+      return {
+        error: `Refresh of ${repo.name} failed: ${asSentence(err)}${leftRunning} Run \`gitnexus analyze\` in the repository for the full log.`,
+      };
+    } finally {
+      const releaseSlot = () => this.refreshesInFlight.delete(repo.storagePath);
+      if (workerExited) void workerExited.then(releaseSlot);
+      else releaseSlot();
+    }
+
+    await this.refreshRepos();
+    // Same verdict as `gitnexus analyze` and `serve`: most edges are missing,
+    // so this is a failure, not a refresh.
+    if (analysis.graphWriteCollapsed) {
+      const { expected, persisted } = analysis.graphWriteCollapsed;
+      return {
+        error: `${repo.name} was indexed INCOMPLETELY: only ${persisted} of ${expected} expected relationships are readable, so queries will answer with missing edges. Run \`gitnexus analyze --force\` in the repository; if it recurs, check disk space and run \`gitnexus doctor\`.`,
+      };
+    }
+    const refreshed = this.resolveRepoFromCache(repo.repoPath) ?? repo;
+    return {
+      status: 'refreshed',
+      repo: refreshed.name,
+      previous,
+      ...(await this.refreshSnapshot(refreshed)),
+      stats: refreshed.stats ?? {},
+      durationMs: Date.now() - startedAt,
+    };
+  }
+
+  private async refreshSnapshot(repo: RepoHandle) {
+    const info = await checkStalenessAsync(repo.repoPath, repo.lastCommit).catch(() => undefined);
+    return {
+      indexedAt: repo.indexedAt,
+      lastCommit: repo.lastCommit,
+      // `stalenessPayload` omits `current`; this result always states it, and a
+      // check that could not run is `unknown`, never `current`.
+      staleness:
+        info === undefined
+          ? { status: 'unknown' }
+          : (stalenessPayload(info, { includeUnknown: true }) ?? { status: 'current' }),
+    };
   }
 
   // ─── Tool Implementations ────────────────────────────────────────
@@ -8517,6 +8692,7 @@ export class LocalBackend {
     let frontier = [symId];
     const objectCallableFrontier: string[] = [];
     let traversalComplete = true;
+    let traversalCappedAtDepth: number | undefined;
     // Fetch one sentinel row beyond the cap so generated object bindings
     // degrade visibly instead of allocating an unbounded seed frontier.
     const OBJECT_CALLABLE_MEMBER_CAP = 5000;
@@ -8528,9 +8704,28 @@ export class LocalBackend {
     // The owning File is kept only as an internal seed (frontier/visited) and
     // is NOT added to impacted — it is the definition container, not an
     // upstream dependent. The BFS will discover IMPORTS edges on it naturally.
+    //
+    // #3602: the file's importers stand in for the type's importers, which
+    // only holds when the type can leave the file. Where the index recorded
+    // `isExported = false` AND the language's provider confirms that verdict
+    // is file-private (checking indexed source where needed), no
+    // importer can name the type, so seeding its file would report every
+    // importer of the file as a direct dependant. The seed is skipped for it;
+    // its real dependants still arrive through USES/EXTENDS/IMPLEMENTS edges
+    // inside the file. Everything else keeps the seed: a missing verdict
+    // (NULL) proves nothing; JS/TS also need to exclude indirect exports,
+    // CommonJS and ambient files even when the stored flag is false. Where
+    // `false` means package-, assembly- or module-private (Java, C#, Kotlin,
+    // Go, …) a sibling file can still name the type, so the over-approximation
+    // is the safe side. Downstream still needs the file's imports: a private
+    // type can depend on other files even though they cannot import its name.
     if (symType === 'Class' || symType === 'Interface') {
       try {
         // Run both seed queries in parallel — they are independent.
+        // The label is literal: only these two tables reach this branch, and
+        // not every node table carries `isExported` (Protocol/Category do
+        // not), so an untyped `n.isExported` is not a safe projection.
+        const typeLabel = symType === 'Class' ? 'Class' : 'Interface';
         const [ctorRows, fileRows] = await Promise.all([
           executeParameterized(
             repo.lbugPath,
@@ -8546,9 +8741,10 @@ export class LocalBackend {
           executeParameterized(
             repo.lbugPath,
             `
-            MATCH (f:File)-[rel:CodeRelation]->(n)
+            MATCH (f:File)-[rel:CodeRelation]->(n:${typeLabel})
             WHERE n.id = $symId AND rel.type = 'DEFINES'
-            RETURN f.id AS id, f.name AS name, labels(f)[0] AS type, f.filePath AS filePath
+            RETURN f.id AS id, f.name AS name, labels(f)[0] AS type, f.filePath AS filePath, n.isExported AS isExported,
+                   CASE WHEN n.isExported = false THEN f.content ELSE NULL END AS content
           `,
             { symId },
           ),
@@ -8564,6 +8760,21 @@ export class LocalBackend {
         }
         for (const r of fileRows) {
           assertSymbolRowIdentity(r);
+          const exported = r.isExported ?? r[4];
+          if (direction === 'upstream' && exported === false) {
+            // Lazy like the other provider lookups on this backend: the
+            // registry pulls every language module, and this branch is the
+            // only reader on the impact path.
+            const { getProviderForFile } = await import('../../core/ingestion/languages/index.js');
+            const filePath = String(r.filePath ?? r[3] ?? '');
+            const filePrivate = getProviderForFile(filePath)?.notExportedIsFilePrivate;
+            if (
+              filePrivate === true ||
+              (typeof filePrivate === 'function' &&
+                filePrivate(filePath, String(r.content ?? r[5] ?? '')))
+            )
+              continue;
+          }
           const rid = r.id || r[0];
           if (rid && !visited.has(rid)) {
             visited.add(rid);
@@ -8702,17 +8913,29 @@ export class LocalBackend {
       // strongest edge makes the stamped pair fully determined by the key AND
       // retains the strongest evidence, the safer default for a blast-radius
       // tool. `sourceId` closes the order for edges that tie on both.
+      //
+      // `LIMIT` bounds one level's rows (#3696); the sentinel row past the cap
+      // marks the level as cut. A cut level is an arbitrary subset, so the
+      // walk stops there and reports partial.
       const query =
         direction === 'upstream'
-          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated`
-          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated`;
+          ? // determinism: probe — safety ceiling, not a page; rows vary only past the cap, which marks the walk partial.
+            `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`
+          : // determinism: probe — safety ceiling, not a page; rows vary only past the cap, which marks the walk partial.
+            `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`;
 
       try {
-        const related = await executeParameterized(repo.lbugPath, query, {
+        const fetched = await executeParameterized(repo.lbugPath, query, {
           frontierIds: frontier,
           relTypes: relationTypes,
           ...(safeMinConfidence > 0 ? { minConfidence: safeMinConfidence } : {}),
         });
+        const levelCapped = fetched.length > IMPACT_FRONTIER_ROW_CAP;
+        const related = levelCapped ? fetched.slice(0, IMPACT_FRONTIER_ROW_CAP) : fetched;
+        if (levelCapped) {
+          traversalComplete = false;
+          traversalCappedAtDepth = depth;
+        }
         // Validate before filtering/deduplication; a discarded corrupt edge is
         // still evidence that this result's counts cannot be trusted.
         for (const row of related) {
@@ -8830,6 +9053,8 @@ export class LocalBackend {
         traversalComplete = false;
         break;
       }
+
+      if (traversalCappedAtDepth !== undefined) break;
 
       frontier =
         depth === 1 && objectCallableFrontier.length > 0
@@ -9275,7 +9500,11 @@ export class LocalBackend {
       enrichmentTruncated:
         !skipEnrichment && MAX_CHUNKS > 0 && impacted.length > MAX_CHUNKS * CHUNK_SIZE,
     });
-    const { risk, riskSharedAxes, riskScale } = scoreImpactRisk({
+    const {
+      risk: scoredRisk,
+      riskSharedAxes: scoredSharedAxes,
+      riskScale,
+    } = scoreImpactRisk({
       direction,
       directCount,
       processCount,
@@ -9283,6 +9512,12 @@ export class LocalBackend {
       impactedCount: impacted.length,
       unusedAxes,
     });
+    // Capped counts are lower bounds: keep a proven HIGH/CRITICAL, never a LOW/MEDIUM (#3442).
+    const traversalCapped = traversalCappedAtDepth !== undefined;
+    const riskAfterCap = (score: typeof scoredRisk) =>
+      traversalCapped && (score === 'LOW' || score === 'MEDIUM') ? 'UNKNOWN' : score;
+    const risk = riskAfterCap(scoredRisk);
+    const riskSharedAxes = riskAfterCap(scoredSharedAxes);
 
     // Build per-depth counts (always included, even in summaryOnly mode)
     const byDepthCounts: Record<number, number> = {};
@@ -9314,8 +9549,12 @@ export class LocalBackend {
       riskScale,
       ...(risk === 'UNKNOWN'
         ? {
-            riskNote:
-              processQueryFailed || moduleQueryFailed
+            riskNote: traversalCapped
+              ? `Risk is unresolved because depth ${traversalCappedAtDepth} returned more than ` +
+                `${IMPACT_FRONTIER_ROW_CAP} relationships and the walk stopped there. Observed ` +
+                'counts are lower bounds; narrow the walk (relationTypes, maxDepth, minConfidence) ' +
+                'before treating the change as safe.'
+              : processQueryFailed || moduleQueryFailed
                 ? 'Risk is unresolved because process/module enrichment failed. Observed counts ' +
                   'are lower bounds; retry impact before treating the change as safe.'
                 : unusedAxes.some((axis) => axis.reason === 'enrichment-truncated')

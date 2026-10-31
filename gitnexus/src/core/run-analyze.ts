@@ -278,6 +278,7 @@ import {
 } from '../storage/git.js';
 import { isGitNexusManagedPath } from '../storage/gitnexus-managed-paths.js';
 import { getMaxFileSizeBytes } from './ingestion/utils/max-file-size.js';
+import { getIncludeDotDirs, includeDotDirsCoverage } from './ingestion/utils/include-dot-dirs.js';
 import {
   cacheRowCount,
   discardScopedEmbeddingSpills,
@@ -1555,6 +1556,8 @@ export async function runFullAnalysis(
       else if (options.shareWith) await setShareOptOut(repoPath, false);
       return result;
     } finally {
+      // Readers opened after analyze must not inherit its smaller write budget.
+      setBufferPoolSizeHint(undefined);
       await removeColdParseRebuildDir(parseRun.storagePath, true);
       discardScopedEmbeddingSpills();
       lock.release();
@@ -2572,13 +2575,17 @@ async function runFullAnalysisInner(
   applyCollectedForce();
 
   // ── Early-return: already up to date ──────────────────────────────
+  const includeDotDirsChanged =
+    JSON.stringify(existingMeta?.indexCoverage?.includeDotDirs ?? []) !==
+    JSON.stringify(getIncludeDotDirs());
   if (
     existingMeta &&
     !existingMeta.embeddingCheckpoint &&
     !options.force &&
     existingMeta.lastCommit === currentCommit &&
     !ftsModeChanged &&
-    !processDetectionMismatch
+    !processDetectionMismatch &&
+    !includeDotDirsChanged
   ) {
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
     if (currentCommit !== '') {
@@ -5388,6 +5395,9 @@ async function runFullAnalysisInner(
       indexCoverage: hasGitDir(repoPath)
         ? {
             maxFileSizeBytes: getMaxFileSizeBytes(),
+            // Stamped only when set, so indexes built without the option keep
+            // their existing metadata shape.
+            ...includeDotDirsCoverage(),
             dirtyPaths: (
               listWorkingTreeDirtyPaths(repoPath) ?? Object.keys(newFileHashesRecord)
             ).filter(

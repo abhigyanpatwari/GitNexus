@@ -93,6 +93,7 @@ vi.mock('../../src/core/group/resolve-at-member.js', () => ({
 }));
 
 import {
+  IMPACT_FRONTIER_ROW_CAP,
   LocalBackend,
   REPO_ID_HASH_LENGTH,
   parseListReposPagination,
@@ -1935,9 +1936,10 @@ describe('LocalBackend.callTool', () => {
         .filter((q: string) => q.includes('$frontierIds'));
       expect(frontierQueries.length).toBeGreaterThan(0);
       expect(frontierQueries.filter((q: string) => /ORDER BY/.test(q))).toEqual([]);
-      // …and equally: no LIMIT was added in its place. The traversal must see
-      // every neighbour edge; only the ORDERING moved.
-      expect(frontierQueries.filter((q: string) => /LIMIT/.test(q))).toEqual([]);
+      for (const query of frontierQueries) {
+        expect(query.match(/\bLIMIT\b/gi)).toHaveLength(1);
+        expect(query.endsWith(` LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`)).toBe(true);
+      }
     });
 
     // (a) Diamond: `delta` and `epsilon` are each reached at depth 2 from BOTH

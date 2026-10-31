@@ -2882,15 +2882,6 @@ describe('Python assignment chain propagation', () => {
     expect(saveFns.length).toBe(2);
   });
 
-  it('resolves alias.save() to User#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    // Positive: alias.save() must resolve to User#save
-    const userSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('user.py'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
   it('alias.save() does NOT resolve to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
     // Negative: only one save call from process to User#save
@@ -2898,15 +2889,6 @@ describe('Python assignment chain propagation', () => {
       (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('user.py'),
     );
     expect(wrongCall.length).toBe(1);
-  });
-
-  it('resolves r_alias.save() to Repo#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    // Positive: r_alias.save() must resolve to Repo#save
-    const repoSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('repo.py'),
-    );
-    expect(repoSave).toBeDefined();
   });
 
   it('each alias resolves to its own class, not the other', () => {

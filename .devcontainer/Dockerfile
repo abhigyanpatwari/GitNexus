@@ -14,14 +14,16 @@
 # `@devcontainers/cli` / the VS Code Dev Containers resolver. That resolver's
 # image-name parser rejects the combined `name:tag@sha256:...` form.
 #
-# The digest below is for `5.2.3-22-bookworm` (Node 22.23.3). Workspace
+# The digest below is for `5.2.3-22-trixie` (Node 22.23.3). Workspace
 # dependencies require at least Node 22.22.2 on the Node 22 line. It is the
 # multi-arch manifest-list digest, so it still picks the right platform.
+# Debian 13's libstdc++ supplies GLIBCXX_3.4.31, required by the packaged
+# tree-sitter runtime. Debian 12's runtime is too old even with g++ installed.
 # To refresh it when bumping the readable tag, run:
 #   docker buildx imagetools inspect \
-#     mcr.microsoft.com/devcontainers/typescript-node:5.2.3-22-bookworm \
+#     mcr.microsoft.com/devcontainers/typescript-node:5.2.3-22-trixie \
 #     --format '{{json .Manifest.Digest}}'
-FROM mcr.microsoft.com/devcontainers/typescript-node@sha256:0cb6b4bfcb0458a6c1d2345934fb9de35da7b9d32343f47e49d9bd66feeac780
+FROM mcr.microsoft.com/devcontainers/typescript-node@sha256:e17cfac65d32af8e488fb00ee7b51b1e508b21958c05c8b652224a1f739deb08
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -48,13 +50,14 @@ ENV BUN_VERSION=${BUN_VERSION} \
 # Native build toolchain that gitnexus/postinstall needs. It compiles
 # tree-sitter native bindings, the vendored Dart/Proto/Swift grammars, and the
 # @ladybugdb/core N-API addon (a native Node add-on). python3, make, and g++ are
-# required. util-linux supplies findmnt/mount for the 9p helper; the remaining
-# diagnostic tools support investigating process, memory and filesystem delays.
+# required; libstdc++6 provides the C++ runtime for shipped native prebuilds.
+# util-linux supplies findmnt/mount for the 9p helper; the remaining diagnostic
+# tools support investigating process, memory and filesystem delays.
 # This mirrors the apt block in the existing Dockerfile.cli /
 # gitnexus/Dockerfile.test images.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        python3 make g++ git curl ca-certificates bash unzip util-linux procps lsof strace time jq ripgrep \
+        python3 make g++ libstdc++6 git curl ca-certificates bash unzip util-linux procps lsof strace time jq ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 # UI profile: install OS dependencies at image-build time as root. Runtime

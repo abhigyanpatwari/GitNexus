@@ -1,19 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
-  defineRenameOverflowFixtureTests,
+  defineRenameFixturePartTests,
   renameCases,
-  renameOverflowIds,
+  renameFixturePart,
 } from '../helpers/rename-integration-cases.js';
 
-// Second half of the R rename fixtures, split out to fit the Windows shard budget; the first half
+// Part 2 of the five R rename fixture parts, split out to fit the Windows shard budget; part 1
 // and the partition pins live in rename-provider-r.test.ts.
-describe('R rename overflow fixtures', () => {
+describe('R rename fixtures, part 2', () => {
   it('are all discovered', () => {
-    const overflow = renameCases.filter(
-      (fixture) => fixture.language === 'r' && renameOverflowIds.has(fixture.id),
+    const part = renameCases.filter(
+      (fixture) => fixture.language === 'r' && renameFixturePart(fixture.id) === 2,
     );
-    expect(overflow).toHaveLength(57);
+    expect(part).toHaveLength(23);
   });
 });
 
-defineRenameOverflowFixtureTests('r');
+defineRenameFixturePartTests('r', 2);

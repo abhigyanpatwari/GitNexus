@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { LocalBackend, RepoListing } from './local/local-backend.js';
+import type { LocalBackend, McpToolCallContext, RepoListing } from './local/local-backend.js';
 import { parseListReposPagination } from './local/local-backend.js';
 import { scrubGroupDescription } from './read-only-policy.js';
 import { LIST_REPOS_DEFAULT_LIMIT, LIST_REPOS_MAX_LIMIT } from './tools.js';
@@ -258,13 +258,14 @@ export class McpRepositoryPolicy {
     backend: LocalBackend,
     method: string,
     params: Record<string, unknown> | undefined,
+    ...context: [McpToolCallContext?]
   ): Promise<unknown> {
-    if (!this.configured) return backend.callTool(method, params);
+    if (!this.configured) return backend.callTool(method, params, ...context);
     if (method === 'list_repos') return this.listReposPage(backend, params);
     if (this.restricted && method.startsWith('group_')) {
       throw new Error('Group tools are unavailable when an MCP repository allowlist is set.');
     }
-    return backend.callTool(method, this.normalizeToolArgs(params));
+    return backend.callTool(method, this.normalizeToolArgs(params), ...context);
   }
 
   private async resolveRepo(
@@ -366,8 +367,11 @@ export class McpRepositoryPolicy {
     return new Proxy(backend, {
       get(target, property, receiver) {
         if (property === 'callTool') {
-          return (method: string, params: Record<string, unknown> | undefined) =>
-            policy.callTool(target, method, params);
+          return (
+            method: string,
+            params: Record<string, unknown> | undefined,
+            ...context: [McpToolCallContext?]
+          ) => policy.callTool(target, method, params, ...context);
         }
         if (property === 'listRepos') return () => policy.listAllowedRepos(target);
         if (property === 'resolveRepo') {

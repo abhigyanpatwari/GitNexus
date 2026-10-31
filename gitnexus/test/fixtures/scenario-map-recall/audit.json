@@ -1,0 +1,560 @@
+{
+  "revision": "f354e66ff4a9515c8e4b33c4d39a94fc56846444",
+  "method": "Independently generated callback candidates; source review of setup, helper targets, fixture paths, inputs and assertions. Hand-adjudicated subset, not an exhaustive semantic oracle.",
+  "positives": [
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Java > detects User class with save and getName methods",
+      "b": "test/integration/resolvers/java.test.ts#Java cross-file binding propagation > detects User class with save and getName methods",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Kotlin > detects User class with save and getName methods",
+      "b": "test/integration/resolvers/kotlin.test.ts#Kotlin cross-file binding propagation > detects User class with save and getName methods",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: JavaScript > detects User class with save and getName methods",
+      "b": "test/integration/resolvers/javascript.test.ts#JavaScript cross-file binding propagation > detects User class with save and getName methods",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: PHP > detects User class with save and getName methods",
+      "b": "test/integration/resolvers/php.test.ts#PHP cross-file binding propagation > detects User class with save and getName methods",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Rust > resolves u.save() in process() to User#save via cross-file return type",
+      "b": "test/integration/resolvers/rust.test.ts#Rust cross-file binding propagation > resolves u.save() in process() to User#save via cross-file return type propagation",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Ruby > resolves user.save in process() to User#save via cross-file return type",
+      "b": "test/integration/resolvers/ruby.test.ts#Ruby cross-file binding propagation > resolves user.save in process to User#save via cross-file propagation",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/resolvers/rust-scope.test.ts#Rust scope: impl block method classification > classifies save as a function owned by User (HAS_METHOD edge)",
+      "b": "test/integration/resolvers/rust-scope.test.ts#Rust scope: impl block method classification > emits HAS_METHOD edge from User to save",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Kotlin > resolves u.save() in run() to User#save via cross-file return type",
+      "b": "test/integration/resolvers/kotlin.test.ts#Kotlin cross-file binding propagation > resolves u.save() in run() to User#save via cross-file return type propagation",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Python > resolves u.save() in run() to User#save via cross-file return type",
+      "b": "test/integration/resolvers/python.test.ts#Python cross-file binding propagation > resolves u.save() in run() to User#save via cross-file return type propagation",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: JavaScript > resolves u.save() in run() to User#save via cross-file return type",
+      "b": "test/integration/resolvers/javascript.test.ts#JavaScript cross-file binding propagation > resolves u.save() in run() to User#save via cross-file return type propagation",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: C++ > detects User class with save and get_name methods",
+      "b": "test/integration/resolvers/cpp.test.ts#C++ cross-file binding propagation > detects User class with save and get_name methods",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Ruby > detects User class with save and get_name methods",
+      "b": "test/integration/resolvers/ruby.test.ts#Ruby cross-file binding propagation > detects User class with save and get_name methods",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > bare [] prefix with spaces only \u2192 undefined",
+      "b": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > empty array suffix \u2192 undefined",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > bare [] prefix with spaces only \u2192 undefined",
+      "b": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > [] suffix with no base \u2192 undefined",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > bare [] prefix with spaces only \u2192 undefined",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined for just brackets: []",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > empty array suffix \u2192 undefined",
+      "b": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > [] suffix with no base \u2192 undefined",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > empty array suffix \u2192 undefined",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined for just brackets: []",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > [] suffix with no base \u2192 undefined",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined for just brackets: []",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Rust > detects get_user function and process function",
+      "b": "test/integration/resolvers/rust.test.ts#Rust cross-file binding propagation > detects get_user and process functions",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/resolvers/java.test.ts#Java same-arity overload cross-file and chain resolution > crossFileByName() emits exactly one CALLS edge to find(String) in DbLookup",
+      "b": "test/integration/resolvers/java.test.ts#Java same-arity overloads (worker path) > crossFileByName() \u2192 find(String) \u2014 sequential path",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/resolvers/java.test.ts#Java same-arity overload cross-file and chain resolution > emits METHOD_IMPLEMENTS from DbLookup.find(int) \u2192 ILookup.find(int)",
+      "b": "test/integration/resolvers/java.test.ts#Java same-arity overloads (worker path) > METHOD_IMPLEMENTS edges match interface methods \u2014 sequential path",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/unit/pdg-mode-flip.test.ts#pdgModeMismatch \u2014 M1\u2192M2 stamp upgrade (#2082 M2, pure) > an identical resolved M2 config compares equal (steady state keeps incremental)",
+      "b": "test/unit/pdg-mode-flip.test.ts#pdgModeMismatch \u2014 M2\u2192M3 stamp upgrade (#2083 M3 U5, pure) > an identical resolved M3 config compares equal (steady state keeps incremental)",
+      "category": "import-initialization",
+      "basis": "Identical scenario body in one file, using the same helpers, input data and assertions. Enclosing setup has no relevant difference."
+    },
+    {
+      "a": "test/unit/pdg-mode-flip.test.ts#pdgModeMismatch \u2014 M1\u2192M2 stamp upgrade (#2082 M2, pure) > an identical resolved M2 config compares equal (steady state keeps incremental)",
+      "b": "test/unit/pdg-mode-flip.test.ts#pdgModeMismatch \u2014 pre-#2201\u2192SSA reaching-defs solver upgrade (#2201 review R3, pure) > an identical post-#2201 stamp compares equal (no spurious re-analysis churn)",
+      "category": "import-initialization",
+      "basis": "Identical scenario body in one file, using the same helpers, input data and assertions. Enclosing setup has no relevant difference."
+    },
+    {
+      "a": "test/unit/pdg-mode-flip.test.ts#pdgModeMismatch \u2014 M2\u2192M3 stamp upgrade (#2083 M3 U5, pure) > an identical resolved M3 config compares equal (steady state keeps incremental)",
+      "b": "test/unit/pdg-mode-flip.test.ts#pdgModeMismatch \u2014 pre-#2201\u2192SSA reaching-defs solver upgrade (#2201 review R3, pure) > an identical post-#2201 stamp compares equal (no spurious re-analysis churn)",
+      "category": "import-initialization",
+      "basis": "Identical scenario body in one file, using the same helpers, input data and assertions. Enclosing setup has no relevant difference."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Python > detects User class with save and get_name methods",
+      "b": "test/integration/resolvers/python.test.ts#Python cross-file binding propagation > detects User class with save and get_name methods",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Python > detects get_user function and run function",
+      "b": "test/integration/resolvers/python.test.ts#Python cross-file binding propagation > detects get_user and run functions",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Python > resolves u.get_name() in run() to User#get_name via cross-file return type",
+      "b": "test/integration/resolvers/python.test.ts#Python cross-file binding propagation > resolves u.get_name() in run() to User#get_name via cross-file return type propagation",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Go > detects User struct with Save and GetName methods",
+      "b": "test/integration/resolvers/go.test.ts#Go cross-file binding propagation > detects User struct with Save and GetName methods",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Go > resolves user.Save() in main() to User#Save via cross-file return type",
+      "b": "test/integration/resolvers/go.test.ts#Go cross-file binding propagation > resolves user.Save() in main() to User#Save via cross-file propagation",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Rust > detects User struct with save and get_name methods",
+      "b": "test/integration/resolvers/rust.test.ts#Rust cross-file binding propagation > detects User struct with save and get_name methods",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: JavaScript > detects getUser factory and run function",
+      "b": "test/integration/resolvers/javascript.test.ts#JavaScript cross-file binding propagation > detects getUser and run functions",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: C# > detects User class with Save and GetName methods",
+      "b": "test/integration/resolvers/csharp.test.ts#C# cross-file binding propagation > detects User class with Save and GetName methods",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/resolvers/java.test.ts#Java same-arity overload cross-file and chain resolution > crossFileById() emits exactly one CALLS edge to find(int) in DbLookup",
+      "b": "test/integration/resolvers/java.test.ts#Java same-arity overloads (worker path) > crossFileById() \u2192 find(int) \u2014 sequential path",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/resolvers/javascript-object-properties.test.ts#JavaScript plain-object property access (A1/A5) > emits NOTHING when two objects share the key name",
+      "b": "test/integration/resolvers/javascript-object-properties.test.ts#JavaScript plain-object property access (A1/A5) > scope narrowing for multi-candidate names (R2) > keeps refusing two same-named keys in the reading file",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/resolvers/rust.test.ts#Rust qualified paths resolve against the module tree (#2730) > ignores a function-local fn of the same name in the target module (H3)",
+      "b": "test/integration/resolvers/rust.test.ts#Rust qualified paths resolve against the module tree (#2730) > follows a `pub use` re-export through to the original definition",
+      "category": "integration-same-fixture",
+      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
+    },
+    {
+      "a": "test/integration/tree-sitter-languages.test.ts#Tree-sitter multi-language parsing > unhappy path > handles empty string file path",
+      "b": "test/unit/ingestion-utils.test.ts#getLanguageFromFilename > unsupported > returns null for empty string",
+      "category": "irrelevant-setup",
+      "basis": "Both import getLanguageFromFilename from gitnexus-shared, pass empty string and assert toBeNull. Loading a parser in an unrelated beforeAll does not change this pure function."
+    },
+    {
+      "a": "test/unit/analyze-api.test.ts#analyze API logic > rejects when job already active for different repo",
+      "b": "test/unit/analyze-job.test.ts#JobManager > enforces single-slot concurrency",
+      "category": "cleanup-context",
+      "basis": "Both instantiate JobManager before each test, use identical URLs and job transitions, and assert the same result. Extra mock/timer restoration happens after the assertions."
+    },
+    {
+      "a": "test/unit/analyze-api.test.ts#analyze API logic > returns existing job for same repo URL",
+      "b": "test/unit/analyze-job.test.ts#JobManager > returns existing job for same repoUrl when active",
+      "category": "cleanup-context",
+      "basis": "Both instantiate JobManager before each test, use identical URLs and job transitions, and assert the same result. Extra mock/timer restoration happens after the assertions."
+    },
+    {
+      "a": "test/unit/cobol-preprocessor.test.ts#extractCobolSymbolsWithRegex > Linkage & Data Flow > PROCEDURE DIVISION USING RETURNING excludes return value from USING list",
+      "b": "test/unit/cobol-preprocessor.test.ts#extractCobolSymbolsWithRegex > PROCEDURE DIVISION USING edge cases > excludes RETURNING value from USING parameter list",
+      "category": "same-file",
+      "basis": "Identical scenario body in one file, using the same helpers, input data and assertions. Enclosing setup has no relevant difference."
+    },
+    {
+      "a": "test/unit/embedder.test.ts#embedder > getEmbeddingDims > returns 384 (MiniLM default)",
+      "b": "test/unit/http-embedder.test.ts#HTTP embedding backend > MCP embedder > returns 384 dimensions by default",
+      "category": "cleanup-context",
+      "basis": "Same getEmbeddingDims import, default environment and 384 assertion; additional afterEach restoration adds no scenario input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > array suffix (TypeScript / Java / C#) > User[] \u2192 User",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > strips array suffix: User[] \u2192 User",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > array suffix (TypeScript / Java / C#) > string[] \u2192 string",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > strips array suffix for primitive: string[] \u2192 string",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > Go slice prefix > []User \u2192 User",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > strips Go slice prefix: []User \u2192 User",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > Go slice prefix > []string \u2192 string",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > strips Go slice prefix for primitive: []string \u2192 string",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > Swift array sugar > [User] \u2192 User",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > unwraps Swift array sugar: [User] \u2192 User",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > generic angle-bracket containers > Array<User> \u2192 User",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > unwraps single-arg generic angle: Array<User> \u2192 User",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > generic angle-bracket containers > Vec<User> \u2192 User (Rust)",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > unwraps single-arg generic angle: Rust Vec<User> \u2192 User",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > generic angle-bracket containers > vector<User> \u2192 User (C++)",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > unwraps single-arg generic angle: C++ vector<User> \u2192 User",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > Python subscript-style generics > List[User] \u2192 User",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > unwraps Python subscript: List[User] \u2192 User",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > multi-argument generics \u2014 default returns last (value) arg > Map<String, User> \u2192 User (default: last/value arg)",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns last arg by default for Map<String, User>: \u2192 User",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > multi-argument generics \u2014 default returns last (value) arg > Map<String, User> \u2192 String (pos=first: key arg)",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns first arg with pos=first for Map<String, User>: \u2192 String",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > multi-argument generics \u2014 default returns last (value) arg > Map<String, List<User>> \u2192 undefined (last arg is nested generic)",
+      "b": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > cross-bracket nesting (bracket depth fix) > Map<String, List<User>> \u2192 undefined (default: last arg is nested generic)",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > multi-argument generics \u2014 default returns last (value) arg > Map<String, List<User>> \u2192 String (pos=first: key arg)",
+      "b": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > cross-bracket nesting (bracket depth fix) > Map<String, List<User>> \u2192 String (pos=first: key arg)",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > empty string \u2192 undefined",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined for empty string",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > plain type name (no container) \u2192 undefined",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined when no brackets are present: User",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/group/storage.test.ts#Group storage > getGroupDir returns correct path for group name",
+      "b": "test/unit/group/storage.test.ts#Group storage > getGroupDir rejects invalid names > test_getGroupDir_valid_name_returns_path",
+      "category": "same-file",
+      "basis": "Identical scenario body in one file, using the same helpers, input data and assertions. Enclosing setup has no relevant difference."
+    },
+    {
+      "a": "test/unit/has-method.test.ts#findEnclosingClassId > Rust > finds enclosing impl_item for a method",
+      "b": "test/unit/has-method.test.ts#findEnclosingClassId > Rust > still picks struct name for plain impl Struct (no trait)",
+      "category": "native-parser",
+      "basis": "Identical scenario body in one file, using the same helpers, input data and assertions. Enclosing setup has no relevant difference."
+    },
+    {
+      "a": "test/unit/index-repo-command.test.ts#indexCommand > fails when meta.json is missing and --force is not set",
+      "b": "test/unit/index-repo-command.test.ts#indexCommand > fails without --force when LadybugDB exists but metadata is missing",
+      "category": "same-file",
+      "basis": "Identical scenario body in one file, using the same helpers, input data and assertions. Enclosing setup has no relevant difference."
+    },
+    {
+      "a": "test/unit/model/registration-table.test.ts#behavior group isolation > Impl hooks write to types.registerImpl, never to types.registerClass",
+      "b": "test/unit/model/registration-table.test.ts#hook behavior (real registries, no mocks) > implHook writes to types.registerImpl, NOT types.registerClass",
+      "category": "same-file",
+      "basis": "Identical scenario body in one file, using the same helpers, input data and assertions. Enclosing setup has no relevant difference."
+    },
+    {
+      "a": "test/unit/scope-resolution/function-local-import-chain.test.ts#Python: a function-local import reaches the IMPORTS reason > `def f(): from m import X` is deferred",
+      "b": "test/unit/scope-resolution/function-local-import-chain.test.ts#Rust: a function-local `use` is NOT deferred > Python still defers on the same run",
+      "category": "native-parser",
+      "basis": "Identical scenario body in one file, using the same helpers, input data and assertions. Enclosing setup has no relevant difference."
+    },
+    {
+      "a": "test/unit/security.test.ts#path traversal (isTestFilePath as proxy for path handling) > isTestFilePath returns false for nodes without a filePath",
+      "b": "test/unit/test-file-path.test.ts#isTestFilePath \u2014 shared predicate > returns false for nullish input rather than throwing",
+      "category": "reexport-context",
+      "basis": "local-backend.ts imports and directly re-exports the same isTestFilePath function. Both tests pass undefined, null and empty string and assert false three times."
+    },
+    {
+      "a": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined when base is not a simple word: user model[]",
+      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined for complex non-word base before []: user model[]",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/shared-type-extractors.test.ts#stripNullable > strips \"| null\": User | null \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > strips User | null \u2192 User",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/shared-type-extractors.test.ts#stripNullable > strips \"| undefined\": User | undefined \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > strips User | undefined \u2192 User",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/shared-type-extractors.test.ts#stripNullable > strips both \"| null | undefined\": User | null | undefined \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > strips User | null | undefined \u2192 User",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/shared-type-extractors.test.ts#stripNullable > strips nullable suffix: User? \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > strips User? \u2192 User",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns undefined for genuine union: User | Repo",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > refuses genuine union User | Repo \u2192 undefined",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns undefined for bare \"null\"",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > returns undefined for null alone",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns undefined for bare \"undefined\"",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > returns undefined for undefined alone",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns undefined for bare \"None\"",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > returns undefined for None alone",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns undefined for bare \"nil\"",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > returns undefined for nil alone",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns undefined for bare \"void\"",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > returns undefined for void alone",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns undefined for empty string",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > returns undefined for empty string",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/shared-type-extractors.test.ts#stripNullable > returns the type name unchanged when no nullable markers: User \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-type-env.ts#buildTypeEnv > stripNullable > passes through User unchanged",
+      "category": "pure-helper",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/stdout-silence.test.ts#stdout silencing > handles nested silence/restore (reference counting)",
+      "b": "test/unit/stdout-silence.test.ts#stdout silencing > simulates embedder + pool-adapter concurrent usage without conflict",
+      "category": "same-file",
+      "basis": "Identical scenario body in one file, using the same helpers, input data and assertions. Enclosing setup has no relevant difference."
+    },
+    {
+      "a": "test/unit/type-env.test.ts#buildTypeEnv > constructor inference (Tier 1 fallback) > Rust if-let / while-let pattern bindings > extracts binding from if let Some(x) = opt via Phase 5.2 pattern binding",
+      "b": "test/unit/type-env.test.ts#buildTypeEnv > constructor inference (Tier 1 fallback) > Rust if-let / while-let pattern bindings > Phase 5.2: extracts binding from if let Some(x) = opt where opt: Option<User>",
+      "category": "native-parser",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/type-env.test.ts#buildTypeEnv > previously-skipped limitations (now resolved) > TS instanceof narrowing: if (x instanceof User) \u2014 first-writer-wins, not block-scoped",
+      "b": "test/unit/type-env.test.ts#buildTypeEnv > null-check narrowing via patternOverrides (Phase C Task 7) > TS: instanceof still works alongside null-check narrowing",
+      "category": "native-parser",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/type-env.test.ts#buildTypeEnv > previously-skipped limitations (now resolved) > Rust for with .iter(): for user in users.iter() \u2014 call_expression iterable",
+      "b": "test/unit/type-env.test.ts#buildTypeEnv > container descriptor-aware type arg selection > Vec.iter() resolves to element type (User) \u2014 arity 1 always returns last",
+      "category": "native-parser",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/type-env.test.ts#buildTypeEnv > method-aware type arg selection (.keys() vs .values()) > Rust for key in map.keys() resolves to key type (String)",
+      "b": "test/unit/type-env.test.ts#buildTypeEnv > container descriptor-aware type arg selection > HashMap.keys() resolves to key type (String) via descriptor",
+      "category": "native-parser",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/type-env.test.ts#buildTypeEnv > method-aware type arg selection (.keys() vs .values()) > Rust for user in map.values() resolves to value type (User)",
+      "b": "test/unit/type-env.test.ts#buildTypeEnv > container descriptor-aware type arg selection > HashMap.values() resolves to value type (User) via descriptor",
+      "category": "native-parser",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    },
+    {
+      "a": "test/unit/type-env.test.ts#buildTypeEnv > Kotlin when/is pattern binding (Phase 6) > when (x) { is User -> } binds x to User",
+      "b": "test/unit/type-env.test.ts#buildTypeEnv > null-check narrowing via patternOverrides (Phase C Task 7) > Kotlin: when/is still works alongside null-check narrowing",
+      "category": "native-parser",
+      "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
+    }
+  ],
+  "negatives": [
+    {
+      "a": "test/integration/resolvers/swift.test.ts#Swift return type inference > resolves user.save() to User#save via return type of getUser() -> User",
+      "b": "test/integration/resolvers/swift.test.ts#Swift return-type inference via function return type > resolves user.save() to User#save via return type of getUser()",
+      "audit": "distinct",
+      "reason": "Different fixtures: swift-return-type versus swift-return-type-inference; latter tests competing methods."
+    },
+    {
+      "a": "test/unit/cursor-hook.test.ts#Cursor hook source regressions > uses npx.cmd for Windows",
+      "b": "test/unit/factory-plugin.test.ts#Factory hook source regressions > invokes npx.cmd directly on Windows instead of a shell",
+      "audit": "distinct",
+      "reason": "The captured source is a different integration hook implementation."
+    },
+    {
+      "a": "test/unit/cursor-hook.test.ts#Cursor hook source regressions > passes pattern after end-of-options marker (--)",
+      "b": "test/unit/factory-plugin.test.ts#Factory hook source regressions > passes the pattern after the -- end-of-options marker",
+      "audit": "distinct",
+      "reason": "The captured source is a different integration hook implementation."
+    },
+    {
+      "a": "test/unit/scope-resolution/c/c-captures.test.ts#emitCScopeCaptures \u2014 scopes > captures translation_unit as @scope.module",
+      "b": "test/unit/scope-resolution/cpp/cpp-captures.test.ts#emitCppScopeCaptures \u2014 scopes > captures translation_unit as @scope.module",
+      "audit": "distinct",
+      "reason": "Same snippet and assertion text, but different language parser/provider helpers."
+    },
+    {
+      "a": "test/unit/scope-resolution/c/c-captures.test.ts#emitCScopeCaptures \u2014 scopes > captures struct_specifier as @scope.class",
+      "b": "test/unit/scope-resolution/cpp/cpp-captures.test.ts#emitCppScopeCaptures \u2014 scopes > captures struct_specifier as @scope.class",
+      "audit": "distinct",
+      "reason": "Same snippet and assertion text, but different language parser/provider helpers."
+    },
+    {
+      "a": "test/unit/scope-resolution/c/c-captures.test.ts#emitCScopeCaptures \u2014 other declarations > captures typedef as @declaration.typedef",
+      "b": "test/unit/scope-resolution/cpp/cpp-captures.test.ts#emitCppScopeCaptures \u2014 typedef/alias declarations > captures typedef as @declaration.typedef",
+      "audit": "distinct",
+      "reason": "Same snippet and assertion text, but different language parser/provider helpers."
+    },
+    {
+      "a": "test/unit/scope-resolution/c/c-captures.test.ts#emitCScopeCaptures \u2014 other declarations > captures variable with initializer as @declaration.variable",
+      "b": "test/unit/scope-resolution/cpp/cpp-captures.test.ts#emitCppScopeCaptures \u2014 variable declarations > captures variable with initializer",
+      "audit": "distinct",
+      "reason": "Same snippet and assertion text, but different language parser/provider helpers."
+    },
+    {
+      "a": "test/unit/scope-resolution/c/c-captures.test.ts#emitCScopeCaptures \u2014 other declarations > captures macro as @declaration.macro",
+      "b": "test/unit/scope-resolution/cpp/cpp-captures.test.ts#emitCppScopeCaptures \u2014 macro declarations > captures #define as @declaration.macro",
+      "audit": "distinct",
+      "reason": "Same snippet and assertion text, but different language parser/provider helpers."
+    },
+    {
+      "a": "test/unit/setup.test.ts#setupQoder > writes the MCP entry to ~/.qoder.json",
+      "b": "test/unit/setup.test.ts#setupDroid (Factory) > writes the MCP entry to ~/.factory/mcp.json under mcpServers",
+      "audit": "distinct",
+      "reason": "Different selected editors and configPath helpers: Qoder versus Factory."
+    },
+    {
+      "a": "test/unit/setup.test.ts#setupQoder > leaves a corrupt ~/.qoder.json untouched",
+      "b": "test/unit/setup.test.ts#setupDroid (Factory) > leaves a corrupt ~/.factory/mcp.json untouched",
+      "audit": "distinct",
+      "reason": "Different selected editors and configPath helpers: Qoder versus Factory."
+    },
+    {
+      "a": "test/unit/verify-workflow-run-pr-identity.test.ts#commit-fork-prebuilds.yml contract > does not call commits/{sha}/pulls (empty for fork SHAs; comments may name it)",
+      "b": "test/unit/verify-workflow-run-pr-identity.test.ts#pr-autofix-publish.yml contract > does not call commits/{sha}/pulls (empty for fork SHAs; comments may name it)",
+      "audit": "distinct",
+      "reason": "The captured workflow source is a different file in each suite."
+    }
+  ]
+}

@@ -22,12 +22,22 @@
  *     when stdout is a TTY AND CI is unset AND VITEST is unset, so test
  *     and pipeline output stay parseable.
  *
+ * Host sink (#3620):
+ *   A process that embeds GitNexus (its own service around `serve` or the MCP
+ *   server) can route the records into its own logging with
+ *   `configureLoggerSink({ destination, level, mixin })`: the `logger`
+ *   singleton and every `createLogger()` call made after it write to that
+ *   destination instead of stderr, with the mixin's fields on each record. The
+ *   returned function restores what was there before. Without a call nothing
+ *   changes, and the check costs one branch at logger construction, not per
+ *   record.
+ *
  * Test capture:
  *   The exported `logger` singleton is a Proxy that forwards every call to a
  *   lazily-built pino instance. Tests use `_captureLogger()` to redirect that
  *   inner instance to a memory stream so they can assert on records the
  *   production code logged. See `gitnexus/test/unit/logger.test.ts` for the
- *   pattern.
+ *   pattern. A capture takes precedence over a host sink while it is active.
  */
 import pino, { type Logger, type LoggerOptions, type DestinationStream } from 'pino';
 import { Writable } from 'node:stream';
@@ -101,6 +111,17 @@ function defaultDestination(): DestinationStream {
  * test mode (tests use an in-memory destination).
  */
 export function flushLoggerSync(): void {
+  // A host sink that buffers (a SonicBoom, a file stream of its own) is
+  // flushed the same way; one without `flushSync` has nothing to flush here.
+  const sinkDestination = _sink?.destination as { flushSync?: () => void } | undefined;
+  if (typeof sinkDestination?.flushSync === 'function') {
+    try {
+      sinkDestination.flushSync();
+    } catch {
+      // Same trade-off as below: a closed destination must not turn a
+      // shutdown into a crash.
+    }
+  }
   if (!_dest) return;
   try {
     _dest.flushSync();
@@ -215,10 +236,129 @@ function buildBaseOptions(): LoggerOptions {
   return opts;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Host sink (#3620)                                                  */
+/* ------------------------------------------------------------------ */
+
+export interface LoggerSinkOptions {
+  /** Where records go instead of stderr: any writable stream, a pino destination included. */
+  destination: DestinationStream;
+  /**
+   * Base level for the singleton and for later children. When unset,
+   * `GITNEXUS_LOG_LEVEL` applies as it does on stderr. A child's `debugEnvVar`
+   * still wins when truthy.
+   */
+  level?: string;
+  /**
+   * Extra fields merged into every record (pino's `mixin`), for example a
+   * request id read from an AsyncLocalStorage. Called once per record; a field
+   * the record carries itself wins over the mixin's. A mixin that throws does
+   * not break the record: it is written without the mixin's fields and the
+   * failure is reported on stderr once.
+   */
+  mixin?: () => Record<string, unknown>;
+}
+
+interface ActiveSink {
+  readonly destination: DestinationStream;
+  readonly level: string | undefined;
+  readonly mixin: (() => Record<string, unknown>) | undefined;
+  /** The sink that was active when this one was configured. */
+  readonly previous: ActiveSink | undefined;
+  /** Set by this sink's restore; a retired sink is never made active again. */
+  retired: boolean;
+}
+
+let _sink: ActiveSink | undefined;
+
+/** The nearest sink in the chain whose owner has not restored it yet. */
+function nearestLiveSink(from: ActiveSink | undefined): ActiveSink | undefined {
+  let sink = from;
+  while (sink !== undefined && sink.retired) sink = sink.previous;
+  return sink;
+}
+
+/**
+ * A host mixin runs inside every log call of GitNexus, so a bug in it must not
+ * turn a `logger.warn` deep in the ingestion into a crash. The record goes out
+ * without the mixin's fields, and the failure is reported once, the same way
+ * a missing pino-pretty is: on stderr directly, since the logger is what is
+ * failing.
+ */
+function guardMixin(mixin: () => Record<string, unknown>): () => Record<string, unknown> {
+  let warned = false;
+  return () => {
+    try {
+      const fields = mixin();
+      return fields !== null && typeof fields === 'object' ? fields : {};
+    } catch (error) {
+      if (!warned) {
+        warned = true;
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(
+          `[gitnexus:logger] host mixin threw; records continue without its fields: ${message}\n`,
+        );
+      }
+      return {};
+    }
+  };
+}
+
+/**
+ * Route the default `logger` and every `createLogger()` call made from now on
+ * into the host's own sink. The singleton is a Proxy, so modules that imported
+ * it before this call pick the sink up on their next record; a named child
+ * built before this call keeps the destination it was built with.
+ *
+ * Returns a function that retires this sink. When it is the active one, the
+ * nearest earlier sink that has not been retired itself becomes active again,
+ * or stderr when there is none. When a later `configureLoggerSink()` has
+ * replaced it, the active state is left alone, but the sink stays retired, so
+ * a later restore never brings it back: host and plugin lifetimes do not have
+ * to end in strict LIFO order.
+ *
+ * No pretty transport and no `beforeExit` flush hook are installed for a host
+ * sink: the destination belongs to the host, which decides how it is flushed
+ * (`flushLoggerSync()` calls the destination's `flushSync` when it has one).
+ */
+export function configureLoggerSink(opts: LoggerSinkOptions): () => void {
+  const destination = opts?.destination as { write?: unknown } | undefined;
+  if (typeof destination?.write !== 'function') {
+    throw new TypeError(
+      'configureLoggerSink: `destination` must be a writable stream (an object with a write() method)',
+    );
+  }
+  if (opts.level !== undefined && !PINO_LEVELS.has(opts.level.toLowerCase())) {
+    throw new RangeError(
+      `configureLoggerSink: unknown level "${opts.level}"; expected one of ${[...PINO_LEVELS].join(', ')}`,
+    );
+  }
+  if (opts.mixin !== undefined && typeof opts.mixin !== 'function') {
+    throw new TypeError('configureLoggerSink: `mixin` must be a function returning an object');
+  }
+  const sink: ActiveSink = {
+    destination: opts.destination,
+    level: opts.level?.toLowerCase(),
+    mixin: opts.mixin ? guardMixin(opts.mixin) : undefined,
+    previous: _sink,
+    retired: false,
+  };
+  _sink = sink;
+  // The singleton is rebuilt on its next call so it picks the sink up.
+  _cached = undefined;
+  return () => {
+    sink.retired = true;
+    if (_sink !== sink) return;
+    _sink = nearestLiveSink(sink.previous);
+    _cached = undefined;
+  };
+}
+
 /**
  * Create a named child logger. When `opts.destination` is provided it bypasses
  * the default stdout sink (useful for test capture). When `opts.debugEnvVar` is
- * set and truthy at call time, the child runs at 'debug' level.
+ * set and truthy at call time, the child runs at 'debug' level. With a host
+ * sink configured (`configureLoggerSink`), the child writes there.
  */
 export function createLogger(name: string, opts?: CreateLoggerOptions): Logger {
   const debugRequested = opts?.debugEnvVar ? isTruthyEnv(process.env[opts.debugEnvVar]) : false;
@@ -227,6 +367,19 @@ export function createLogger(name: string, opts?: CreateLoggerOptions): Logger {
     return pino(
       { level: debugRequested ? 'debug' : (opts.level ?? 'info'), base: undefined, name },
       opts.destination,
+    );
+  }
+
+  const sink = _sink;
+  if (sink) {
+    return pino(
+      {
+        level: debugRequested ? 'debug' : (sink.level ?? resolveBaseLevel()),
+        base: undefined,
+        name,
+        ...(sink.mixin ? { mixin: sink.mixin } : {}),
+      },
+      sink.destination,
     );
   }
 
