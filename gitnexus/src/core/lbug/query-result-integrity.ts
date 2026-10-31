@@ -1,3 +1,4 @@
+import { getLanguageFromFilename } from 'gitnexus-shared';
 import { SYMBOL_NODE_LABELS } from '../ingestion/utils/symbol-labels.js';
 
 /** Shared integrity boundary for identities returned by graph and search queries. */
@@ -54,6 +55,12 @@ export function assertSymbolFilePath(id: unknown, filePath: unknown): void {
   if (label === 'File' || label === 'Folder') {
     if (id !== `${label}:${filePath}`) throw new SymbolIdentityError();
   } else if (sourceLabels.has(label) && id.indexOf(':', separator + 1) >= 0) {
+    // A node label does not define its ID format. Providers also emit semantic
+    // IDs (objc:class:..., spring-config:..., etc.) without a leading file path.
+    // Only compare paths when that leading component identifies a source file;
+    // opaque IDs and ambiguous colon-containing paths cannot be decoded here.
+    const leadingComponent = id.slice(separator + 1, id.indexOf(':', separator + 1));
+    if (!getLanguageFromFilename(leadingComponent)) return;
     // Match against the supplied path rather than splitting it: filenames can contain colons.
     if (!id.startsWith(`${label}:${filePath}:`)) throw new SymbolIdentityError();
   }
