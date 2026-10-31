@@ -4,6 +4,7 @@ import type { CaptureMatch } from 'gitnexus-shared';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import { syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { classifyPythonBoundReceiver } from './receiver-binding.js';
+import { pythonFieldVisibility, pythonReceiverField } from './field-helpers.js';
 
 export const synthesizePythonInstanceFields: NonNullable<
   LanguageProvider['synthesizeStructureMembers']
@@ -150,20 +151,14 @@ export function extractPythonInstanceFields(
         return;
       }
       if (target.type === 'attribute') {
-        const object = target.childForFieldName('object');
-        const name = target.childForFieldName('attribute');
-        if (object?.type !== 'identifier' || object.text !== receiver.name || name === null) return;
+        const name = pythonReceiverField(target, receiver.name);
+        if (name === null) return;
         if (declaredNames.has(name.text) || candidates.has(name.text)) return;
         candidates.set(name.text, {
           name: name.text,
           type: annotation ? (extractSimpleTypeName(annotation) ?? annotation.text) : null,
           ...(annotation ? { rawDeclaredType: annotation.text } : {}),
-          visibility:
-            name.text.startsWith('__') && !name.text.endsWith('__')
-              ? 'private'
-              : name.text.startsWith('_')
-                ? 'protected'
-                : 'public',
+          visibility: pythonFieldVisibility(name.text),
           isStatic: false,
           isReadonly: false,
           sourceFile: context.filePath,
