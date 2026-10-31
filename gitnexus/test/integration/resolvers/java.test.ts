@@ -1134,28 +1134,6 @@ describe('Java Optional<User> receiver resolution via wrapper unwrapping', () =>
     expect(saveMethods.length).toBe(2);
   });
 
-  it('resolves user.save() to User#save with Optional<User> in scope', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'processEntities' &&
-        c.targetFilePath?.includes('User.java'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('resolves repo.save() to Repo#save alongside Optional usage', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'processEntities' &&
-        c.targetFilePath?.includes('Repo.java'),
-    );
-    expect(repoSave).toBeDefined();
-  });
-
   it('disambiguates user.save() and repo.save() to different files', () => {
     const calls = getRelationships(result, 'CALLS');
     const userSave = calls.find(
