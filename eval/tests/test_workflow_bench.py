@@ -255,6 +255,9 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         "npm ci",
         "npm run build",
     ]
+    task_build = containment_steps["Build the pinned task toolchain that grades release evaluation"]["run"]
+    assert "python -m workflow_bench.release_build" in task_build
+    assert '--repo "${RUNNER_TEMP}/tasks-base"' in task_build
     selected_containment_tests = containment_steps["Prove process-tree and sandbox containment"]["run"].split()
     assert selected_containment_tests == [
         "uv",
@@ -281,6 +284,7 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         # Paired prepare/session/oracle/report composition uses that same native
         # CLI and containment; it must execute here rather than skip everywhere.
         "tests/test_release_evaluation_smoke.py",
+        "tests/test_release_controls.py",
         # These also need runtime dependencies absent from the locked pytest job.
         "tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant",
         "tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout",
@@ -298,7 +302,8 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         for path in (repo_root / "eval" / "tests").glob("test_*.py")
         if bwrap_canary_marker.search(path.read_text())
     )
-    assert bwrap_canary_files == ["test_cli_shim.py", "test_proposer_sandbox.py", "test_workflow_bench_sessions.py"]
+    assert bwrap_canary_files == ["test_cli_shim.py", "test_proposer_sandbox.py", "test_release_controls.py",
+                                 "test_workflow_bench_sessions.py"]
     assert all(f"tests/{name}" in selected_containment_tests for name in bwrap_canary_files)
     assert "eval-containment-windows:" in workflow
 
