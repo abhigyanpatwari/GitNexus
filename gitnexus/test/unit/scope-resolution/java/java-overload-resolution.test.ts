@@ -212,6 +212,108 @@ function hierarchyFixture(
 
 afterEach(clearJavaOverloadFacts);
 
+describe('Java overload fact lookup work', () => {
+  it.each(['none', 'method', 'nested'])(
+    'bounds declaration reads across independent families (generics=%s)',
+    (generics) => {
+      const size = 64;
+      const generic = generics !== 'none';
+      const filePath = 'Wide.java';
+      const source = `class Wide${generics === 'nested' ? '<String>' : ''} { ${Array.from(
+        { length: size },
+        (_, i) => `
+      void pick${i}(Object value) {}
+      void pick${i}(String value) {}
+      ${generic ? '<String>' : ''} void run${i}(${generic ? 'String value' : ''}) { pick${i}(${generic ? 'value' : '"text"'}); }
+    `,
+      ).join('\n')} }`;
+      const facts = captureJavaOverloadFacts(getJavaParser().parse(source).rootNode)!;
+      const owner: SymbolDefinition = {
+        nodeId: `Class:${filePath}:Wide`,
+        filePath,
+        type: 'Class',
+        qualifiedName: 'Wide',
+        declarationRange: facts.types[0]!.range,
+      };
+      const methods: SymbolDefinition[] = facts.methods
+        .filter((fact) => fact.name.startsWith('pick'))
+        .map((fact) => ({
+          nodeId: `Method:${filePath}:Wide.${fact.name}#1~${fact.parameterTypes[0]}`,
+          filePath,
+          type: 'Method',
+          ownerId: owner.nodeId,
+          qualifiedName: `Wide.${fact.name}`,
+          declarationRange: fact.range,
+          parameterCount: 1,
+          parameterTypes: [...fact.parameterTypes],
+        }));
+      const classScope: Scope = {
+        id: 'class',
+        kind: 'Class',
+        parent: 'module',
+        filePath,
+        range: owner.declarationRange!,
+        ownedDefs: [owner, ...methods],
+        imports: [],
+        bindings: new Map(),
+        typeBindings: new Map(),
+      };
+      const definitions = [owner, ...methods];
+      const scopes = {
+        scopeTree: buildScopeTree([
+          { ...classScope, id: 'module', kind: 'Module', parent: null },
+          classScope,
+        ]),
+        defs: buildDefIndex(definitions),
+        qualifiedNames: buildQualifiedNameIndex(definitions),
+        methodDispatch: buildMethodDispatchIndex({
+          owners: [owner.nodeId],
+          computeMro: () => [],
+          implementsOf: () => [],
+        }),
+      } as ScopeResolutionIndexes;
+      const model = createSemanticModel();
+      for (const method of methods)
+        model.methods.register(owner.nodeId, method.qualifiedName!.split('.')[1]!, method);
+      setJavaOverloadFacts(filePath, facts);
+      let reads = 0;
+      for (const fact of facts.methods)
+        for (const key of ['name', 'range', 'typeParameters'] as const) {
+          const value = fact[key];
+          Object.defineProperty(fact, key, {
+            get() {
+              reads++;
+              return value;
+            },
+          });
+        }
+      for (const call of facts.calls) {
+        expect(
+          resolveJavaReceiverMember(
+            owner,
+            call.name,
+            {
+              inScope: 'class',
+              kind: 'call',
+              callForm: 'member',
+              name: call.name,
+              atRange: call.range,
+              arity: 1,
+            },
+            scopes,
+            model,
+          ),
+        ).toMatchObject(
+          generic
+            ? { kind: 'unknown' }
+            : { kind: 'resolved', definition: { parameterTypes: ['String'] } },
+        );
+      }
+      expect(reads).toBeLessThanOrEqual(facts.methods.length * 20);
+    },
+  );
+});
+
 describe('Java overload families with synthetic signature metadata', () => {
   it.each([
     { label: 'missing', types: undefined },

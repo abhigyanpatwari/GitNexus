@@ -253,6 +253,7 @@ export function captureJavaOverloadFacts(
   );
   const callNodes: SyntaxNode[] = [];
   const bindings = new Map<string, Binding[]>();
+  const localBindings = new Map<number, Map<string, Binding[]>>();
   const imports: { name: string; wildcard: boolean; static: boolean }[] = [];
   let packageName = '';
   const stack = [{ node: root, depth: 0 }];
@@ -267,7 +268,7 @@ export function captureJavaOverloadFacts(
   ) => {
     if (name === undefined) return;
     const list = bindings.get(name) ?? [];
-    list.push({
+    const binding: Binding = {
       name,
       type,
       at: rangeOf(node),
@@ -277,8 +278,16 @@ export function captureJavaOverloadFacts(
       field,
       owner: enclosing(node, isType),
       inheritable: !field || node.parent === null || !modifiers(node.parent).includes('private'),
-    });
+    };
+    list.push(binding);
     bindings.set(name, list);
+    if (!field) {
+      const scoped = localBindings.get(scope.id) ?? new Map<string, Binding[]>();
+      const locals = scoped.get(name) ?? [];
+      locals.push(binding);
+      scoped.set(name, locals);
+      localBindings.set(scope.id, scoped);
+    }
   };
   while (stack.length > 0) {
     const { node, depth } = stack.pop()!;
@@ -472,8 +481,9 @@ export function captureJavaOverloadFacts(
           addBinding(parameter.text, undefined, parameter, node, depth + 1, node.startIndex);
       }
     }
-    for (let i = node.namedChildren.length - 1; i >= 0; i--)
-      stack.push({ node: node.namedChildren[i]!, depth: depth + 1 });
+    const children = node.namedChildren;
+    for (let i = children.length - 1; i >= 0; i--)
+      stack.push({ node: children[i]!, depth: depth + 1 });
   }
   if (types.length === 0 && methods.length === 0 && callNodes.length === 0) return undefined;
 
@@ -545,11 +555,18 @@ export function captureJavaOverloadFacts(
   };
   const bindingAt = (name: string, node: SyntaxNode, fieldOnly = false): Binding | undefined => {
     const at = rangeOf(node);
+    const locals: Binding[] = [];
+    if (!fieldOnly) {
+      // Every recorded local scope is an AST ancestor of its uses. Restrict
+      // candidates before applying the existing shadowing and owner checks.
+      for (let scope: SyntaxNode | null = node; scope !== null; scope = scope.parent)
+        locals.push(...(localBindings.get(scope.id)?.get(name) ?? []));
+    }
     let owner = enclosing(node, isType);
     while (owner !== undefined) {
       if (!fieldOnly) {
         let local: Binding | undefined;
-        for (const binding of bindings.get(name) ?? []) {
+        for (const binding of locals) {
           if (
             binding.field ||
             binding.owner?.id !== owner.id ||

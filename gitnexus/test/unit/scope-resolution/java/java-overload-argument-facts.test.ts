@@ -16,6 +16,53 @@ function capture(source: string) {
 afterEach(clearJavaOverloadFacts);
 
 describe('Java lossless overload argument facts', () => {
+  it('does not compare bindings from unrelated methods with the same parameter name', () => {
+    const size = 128;
+    const tree = getJavaParser().parse(
+      `class Wide { ${Array.from(
+        { length: size },
+        (_, i) => `void method${i}(String value) { use(value); }`,
+      ).join('\n')} }`,
+    );
+    const owner = tree.rootNode.namedChildren[0]!;
+    const id = owner.id;
+    let reads = 0;
+    Object.defineProperty(owner, 'id', {
+      get() {
+        reads++;
+        return id;
+      },
+    });
+    const facts = captureJavaOverloadFacts(tree.rootNode)!;
+    expect(facts.calls.map((call) => call.arguments[0])).toEqual(
+      Array.from({ length: size }, () =>
+        expect.objectContaining({ kind: 'typed', spelling: 'String' }),
+      ),
+    );
+    expect(reads).toBeLessThanOrEqual(size * 16);
+  });
+
+  it('materializes a wide class body once during traversal', () => {
+    const source = `class Wide { ${Array.from(
+      { length: 128 },
+      (_, i) => `void method${i}() { use("text"); }`,
+    ).join('\n')} }`;
+    const tree = getJavaParser().parse(source);
+    const body = tree.rootNode.namedChildren[0]!.childForFieldName('body')!;
+    const children = body.namedChildren;
+    let reads = 0;
+    Object.defineProperty(body, 'namedChildren', {
+      get() {
+        reads++;
+        return children;
+      },
+    });
+    const facts = captureJavaOverloadFacts(tree.rootNode)!;
+    expect(facts.methods).toHaveLength(128);
+    expect(facts.calls).toHaveLength(128);
+    expect(reads).toBe(1);
+  });
+
   it('keeps formal parameters in their own methods and respects field/block shadowing', () => {
     const facts = capture(`class A {
       Long value;

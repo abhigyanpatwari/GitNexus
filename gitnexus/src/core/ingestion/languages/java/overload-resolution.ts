@@ -14,6 +14,7 @@ import {
   javaRangeContains,
   type JavaArgumentFact,
   type JavaOverloadCallFact,
+  type JavaOverloadFileFacts,
   type JavaOverloadMethodFact,
   type JavaOverloadTypeFact,
 } from './overload-argument-facts.js';
@@ -40,11 +41,17 @@ interface TypeContext {
   readonly filePath: string;
   readonly at: Range;
 }
+interface FileFactIndex {
+  readonly methods: Map<string, JavaOverloadMethodFact[]>;
+  readonly ownedMethods: Map<string, Map<string, JavaOverloadMethodFact[]>>;
+  readonly typeParameters: Map<string, { starts: Range[]; widest: Range[] }>;
+}
 interface State {
   readonly model: SemanticModel;
   readonly scopes: ScopeResolutionIndexes;
   readonly types: Map<string, JavaType>;
   readonly methodFacts: Map<string, JavaOverloadMethodFact | undefined>;
+  readonly files: WeakMap<JavaOverloadFileFacts, FileFactIndex>;
   readonly typeFacts: Map<string, JavaOverloadTypeFact | undefined>;
   readonly hierarchyCompleteness: Map<string, boolean>;
   readonly relations: JavaTypeRelations;
@@ -73,6 +80,7 @@ function stateFor(scopes: ScopeResolutionIndexes, model: SemanticModel): State {
     model,
     types: new Map(),
     methodFacts: new Map(),
+    files: new WeakMap(),
     typeFacts: new Map(),
     hierarchyCompleteness: new Map(),
     relations: {
@@ -125,6 +133,68 @@ function methodName(definition: SymbolDefinition): string {
     .at(-1)!;
 }
 
+function fileFactIndex(facts: JavaOverloadFileFacts, state: State): FileFactIndex {
+  const cached = state.files.get(facts);
+  if (cached !== undefined) return cached;
+  const index: FileFactIndex = {
+    methods: new Map(),
+    ownedMethods: new Map(),
+    typeParameters: new Map(),
+  };
+  for (const method of facts.methods) {
+    const named = index.methods.get(method.name) ?? [];
+    named.push(method);
+    index.methods.set(method.name, named);
+    const owner =
+      index.ownedMethods.get(method.owner) ?? new Map<string, JavaOverloadMethodFact[]>();
+    const owned = owner.get(method.name) ?? [];
+    owned.push(method);
+    owner.set(method.name, owned);
+    index.ownedMethods.set(method.owner, owner);
+  }
+  for (const declaration of [...facts.methods, ...facts.types]) {
+    for (const name of declaration.typeParameters) {
+      const ranges = index.typeParameters.get(name) ?? { starts: [], widest: [] };
+      ranges.starts.push(declaration.range);
+      index.typeParameters.set(name, ranges);
+    }
+  }
+  for (const ranges of index.typeParameters.values()) {
+    ranges.starts.sort((a, b) => a.startLine - b.startLine || a.startCol - b.startCol);
+    let widest = ranges.starts[0]!;
+    for (const range of ranges.starts) {
+      if (
+        range.endLine > widest.endLine ||
+        (range.endLine === widest.endLine && range.endCol > widest.endCol)
+      )
+        widest = range;
+      ranges.widest.push(widest);
+    }
+  }
+  state.files.set(facts, index);
+  return index;
+}
+
+function hasTypeParameter(index: FileFactIndex, name: string, at: Range): boolean {
+  const ranges = index.typeParameters.get(name);
+  if (ranges === undefined) return false;
+  // Find declarations starting before this context. The greatest end in that
+  // prefix answers containment, including nested and same-named parameters.
+  let low = 0,
+    high = ranges.starts.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    const start = ranges.starts[mid]!;
+    if (
+      start.startLine < at.startLine ||
+      (start.startLine === at.startLine && start.startCol <= at.startCol)
+    )
+      low = mid + 1;
+    else high = mid;
+  }
+  return low > 0 && javaRangeContains(ranges.widest[low - 1]!, at);
+}
+
 function methodFact(
   definition: SymbolDefinition,
   state: State,
@@ -133,11 +203,12 @@ function methodFact(
   const owner =
     definition.ownerId === undefined ? undefined : state.scopes.defs.get(definition.ownerId);
   const ownerFact = owner === undefined ? undefined : typeFact(owner, state);
-  const candidates = (getJavaOverloadFacts(definition.filePath)?.methods ?? []).filter(
-    (method) =>
-      method.name === methodName(definition) &&
-      (ownerFact === undefined || method.owner === ownerFact.name),
-  );
+  const facts = getJavaOverloadFacts(definition.filePath);
+  const index = facts === undefined ? undefined : fileFactIndex(facts, state);
+  const candidates =
+    (ownerFact === undefined
+      ? index?.methods.get(methodName(definition))
+      : index?.ownedMethods.get(ownerFact.name)?.get(methodName(definition))) ?? [];
   const byPosition =
     definition.declarationRange === undefined
       ? undefined
@@ -203,16 +274,7 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
   const facts = getJavaOverloadFacts(context.filePath);
   if (facts === undefined)
     return name.includes('.') ? qualifiedReference(name, state) : UNKNOWN_JAVA_TYPE;
-  if (
-    facts.methods.some(
-      (method) =>
-        javaRangeContains(method.range, context.at) && method.typeParameters.includes(name),
-    ) ||
-    facts.types.some(
-      (type) => javaRangeContains(type.range, context.at) && type.typeParameters.includes(name),
-    )
-  )
-    return UNKNOWN_JAVA_TYPE;
+  if (hasTypeParameter(fileFactIndex(facts, state), name, context.at)) return UNKNOWN_JAVA_TYPE;
   const first = name.split('.')[0]!;
   const lexical = facts.types.filter(
     (type) => type.simpleName === first && javaRangeContains(type.visible, context.at),
