@@ -30,6 +30,26 @@ describe('Python constructor field declarations', () => {
       fields: ['value'],
     },
     {
+      name: 'later constructor replaces the earlier definition',
+      body: 'def __init__(self):\n    self.stale = 1\ndef __init__(self):\n    self.live = 2',
+      fields: ['live'],
+    },
+    {
+      name: 'later static constructor replaces the earlier instance method',
+      body: 'def __init__(self):\n    self.stale = 1\n@staticmethod\ndef __init__():\n    pass',
+      fields: [],
+    },
+    {
+      name: 'conditional replacement leaves constructor ownership uncertain',
+      body: 'def __init__(self):\n    self.stale = 1\nif flag:\n    def __init__(self):\n        self.possible = 2',
+      fields: [],
+    },
+    {
+      name: 'unconditional constructor replaces earlier conditional definitions',
+      body: 'if flag:\n    def __init__(self):\n        self.stale = 1\ndef __init__(self):\n    self.live = 2',
+      fields: ['live'],
+    },
+    {
       name: 'class declaration already owns the field',
       body: 'value: int\ndef __init__(self):\n    self.value = 1',
       fields: [],

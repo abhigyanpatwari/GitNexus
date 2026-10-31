@@ -109,7 +109,6 @@ export function extractPythonInstanceFields(
 ): FieldInfo[] {
   const body = owner.childForFieldName('body');
   if (body === null) return [];
-  const fields = new Map<string, FieldInfo>();
   const declaredNames = new Set<string>();
   for (const statement of body.namedChildren) {
     const declaration =
@@ -125,6 +124,7 @@ export function extractPythonInstanceFields(
     if (left?.type === 'identifier') declaredNames.add(left.text);
   }
 
+  // Reverse source order: a later class binding replaces an earlier __init__.
   const classNodes = [...body.namedChildren];
   while (classNodes.length > 0) {
     const method = classNodes.pop()!;
@@ -134,9 +134,13 @@ export function extractPythonInstanceFields(
       continue;
     }
     if (method.childForFieldName('name')?.text !== '__init__') continue;
+    const declaration = method.parent?.type === 'decorated_definition' ? method.parent : method;
+    // A conditional replacement can leave either definition live. Do not
+    // synthesize definite ownership from an arbitrarily selected branch.
+    if (declaration.parent?.id !== body.id) return [];
     const receiver = classifyPythonBoundReceiver(method);
     const methodBody = method.childForFieldName('body');
-    if (receiver?.kind !== 'instance' || methodBody === null) continue;
+    if (receiver?.kind !== 'instance' || methodBody === null) return [];
 
     const candidates = new Map<string, FieldInfo>();
     let rebound = false;
@@ -201,11 +205,7 @@ export function extractPythonInstanceFields(
       }
       nodes.push(...[...node.namedChildren].reverse());
     }
-    if (!rebound) {
-      for (const [name, field] of candidates) {
-        if (!fields.has(name)) fields.set(name, field);
-      }
-    }
+    return rebound ? [] : [...candidates.values()];
   }
-  return [...fields.values()];
+  return [];
 }

@@ -35,6 +35,12 @@ class Decoy:
     def __init__(self):
         self.value = 2
 
+class Replaced:
+    def __init__(self):
+        self.stale = 1
+    def __init__(self):
+        self.live = 2
+
 def check() -> Result:
     return Result()
 `,
@@ -88,6 +94,14 @@ export function readBox(b: Box): number { return b.size; }
     expect(accesses.map((edge) => [edge.rel.targetId, edge.rel.reason])).toEqual([
       ['Property:pkg/model.py:Plain.value', 'read'],
     ]);
+  });
+
+  it('does not create fields from a replaced constructor', () => {
+    expect(result.graph.getNode('Property:pkg/model.py:Replaced.stale')).toBeUndefined();
+    expect(result.graph.getNode('Property:pkg/model.py:Replaced.live')).toMatchObject({
+      label: 'Property',
+      properties: { name: 'live' },
+    });
   });
 
   it('retains the TypeScript control edge', () => {
