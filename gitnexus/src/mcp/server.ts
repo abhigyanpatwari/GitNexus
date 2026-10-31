@@ -41,7 +41,13 @@ import {
   McpRepositoryPolicy,
   mcpRepositoryPolicyConfigured,
 } from './repository-policy.js';
-import { applyMcpMaxTokens, resolveMcpMaxTokens, withoutMcpBudgetArg } from './output-budget.js';
+import {
+  applyMcpMaxTokens,
+  MCP_TRUNCATION_MARKER,
+  resolveMcpMaxTokens,
+  withoutMcpBudgetArg,
+} from './output-budget.js';
+import { shapeImpactForAgent, withImpactAgentDefaults } from './impact-agent-output.js';
 import { assertKnownMcpToolArguments, schemaSourceToolName } from './tool-arguments.js';
 import {
   applyMcpResponseFilter,
@@ -276,15 +282,31 @@ export function createMCPServer(
       }
       const responseFilter = resolveMcpResponseFilter(schemaSource, typedArgs);
       maxTokens = resolveMcpMaxTokens(name, typedArgs);
-      const backendArgs = withoutMcpResponseFilterArgs(
+      const isImpact = schemaSource === 'impact';
+      const strippedArgs = withoutMcpResponseFilterArgs(
         withoutMcpBudgetArg(typedArgs),
         responseFilter,
       );
-      const result = applyMcpResponseFilter(
+      const backendArgs = isImpact ? withImpactAgentDefaults(strippedArgs) : strippedArgs;
+      const rawResult = applyMcpResponseFilter(
         await scopedBackend.callTool(name, backendArgs),
         responseFilter,
       );
-      const hint = getNextStepHint(name, args as Record<string, any> | undefined, readOnly, result);
+      const hint = getNextStepHint(
+        name,
+        args as Record<string, any> | undefined,
+        readOnly,
+        rawResult,
+      );
+      // Trim whole impact records to the budget so the JSON stays valid; the
+      // byte cap below remains the backstop for everything else.
+      const result = isImpact
+        ? shapeImpactForAgent(
+            rawResult,
+            maxTokens,
+            Buffer.byteLength(hint, 'utf8') + Buffer.byteLength(MCP_TRUNCATION_MARKER, 'utf8'),
+          )
+        : rawResult;
       const resultText =
         name === 'query' && result !== null && typeof result === 'object' && !Array.isArray(result)
           ? JSON.stringify({ ...result, next: hint })

@@ -90,7 +90,7 @@ describe('direct CLI tool commands', () => {
 
     await checkCommand({ cycles: true, json: true });
 
-    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('"status": "clean"'));
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('"status":"clean"'));
     expect(process.exitCode).toBeUndefined();
   });
 
@@ -156,7 +156,7 @@ describe('direct CLI tool commands', () => {
 
     await cypherCommand('MATCH (n) RETURN count(n) AS count');
 
-    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('"row_count": 1'));
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('"row_count":1'));
     expect(process.exitCode).toBeUndefined();
   });
 
@@ -177,7 +177,7 @@ describe('direct CLI tool commands', () => {
 
     await queryCommand('auth flow');
 
-    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('"definitions": []'));
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('"definitions":[]'));
     expect(disconnectMock).toHaveBeenCalledOnce();
   });
 

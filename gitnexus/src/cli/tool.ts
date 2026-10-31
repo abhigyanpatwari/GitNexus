@@ -19,6 +19,7 @@ import { writeSync } from 'node:fs';
 import { LocalBackend, VALID_NODE_LABELS } from '../mcp/local/local-backend.js';
 import { cliErrorKey, cliWarnKey } from './cli-message.js';
 import { formatDetectChangesResult } from './detect-changes-format.js';
+import { shapeImpactForAgent, withImpactAgentDefaults } from '../mcp/impact-agent-output.js';
 
 let _backend: LocalBackend | null = null;
 
@@ -53,7 +54,9 @@ function output<T>(data: T, render?: (data: T) => string): void {
     ? render(data)
     : typeof data === 'string'
       ? data
-      : JSON.stringify(data, null, 2);
+      : // Indent for a terminal only: agents and pipes re-read this output, and
+        // indentation made impact results ~45% larger with no added information.
+        JSON.stringify(data, null, process.stdout.isTTY ? 2 : undefined);
   try {
     writeSync(1, text + '\n');
   } catch (err: any) {
@@ -234,6 +237,7 @@ export async function impactCommand(
     limit?: string;
     offset?: string;
     summaryOnly?: boolean;
+    maxTokens?: string;
   },
 ): Promise<void> {
   // A `--`-prefixed uid means Commander swallowed a following flag as the uid
@@ -266,7 +270,12 @@ export async function impactCommand(
     // rather than on a silently-dropped flag. A non-numeric `--line` parses to
     // NaN, which the backend rejects as a non-positive integer (loud, not silent).
     const parsedLine = options?.line !== undefined ? parseInt(options.line, 10) : undefined;
-    const result = await backend.callTool('impact', {
+    const maxTokens = parseLimit(options?.maxTokens);
+    if (options?.maxTokens !== undefined && maxTokens === undefined) {
+      cliErrorKey('tool.usage.impact');
+      process.exit(1);
+    }
+    const impactArgs = withImpactAgentDefaults({
       target: target || undefined,
       target_uid: options?.uid,
       file_path: options?.file,
@@ -285,6 +294,7 @@ export async function impactCommand(
       offset: parsedOffset,
       summaryOnly: options?.summaryOnly ?? undefined,
     });
+    const result = shapeImpactForAgent(await backend.callTool('impact', impactArgs), maxTokens);
     // Client-side cap of the affected-list payload to --limit (parity with the
     // other tool commands). The backend already paginates byDepth per level to
     // the same limit, so byDepth needs no client-side re-slice.

@@ -671,8 +671,8 @@ ${HOT_READ_STALENESS_NOTE}`,
         limit: {
           type: 'integer',
           description:
-            'Max symbols returned in byDepth per depth level (default: 100). Single-repo only; ignored in group mode (@groupName). Use small values for hub symbols to avoid output truncation.',
-          default: 100,
+            'Max symbols per depth level in byDepth (default: 30; byDepthCounts stays full, page with offset). Symbols list ≤3 processes plus processCount. Single-repo only.',
+          default: 30,
           minimum: 1,
           maximum: 10000,
         },

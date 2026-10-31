@@ -386,9 +386,11 @@ export const en = {
   'help.option.impact.depth': 'Max relationship depth (default: 3)',
   'help.option.impact.includeTests': 'Include test files in results',
   'help.option.impact.limit':
-    'Max symbols per depth level (default: 100); explicit --limit also caps affected processes/modules/routes',
+    'Max symbols per depth level (default: 30, GITNEXUS_IMPACT_DEFAULT_LIMIT=0 for all); explicit --limit also caps affected processes/modules/routes',
   'help.option.impact.offset': 'Skip N symbols per depth level for pagination',
   'help.option.impact.summaryOnly': 'Return counts and risk only, omit symbol list',
+  'help.option.impact.maxTokens':
+    'Fit the result into about N tokens by dropping the deepest symbols first (counts stay complete)',
   'help.option.trace.fromUid': 'Source symbol UID (zero-ambiguity lookup)',
   'help.option.trace.fromFile': 'Source file path to disambiguate common names',
   'help.option.trace.toUid': 'Target symbol UID (zero-ambiguity lookup)',

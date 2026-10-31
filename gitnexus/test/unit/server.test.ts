@@ -26,6 +26,7 @@ import {
   SHUTDOWN_EXIT_CODES,
 } from '../../src/mcp/server.js';
 import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
+import { MCP_TRUNCATION_MARKER } from '../../src/mcp/output-budget.js';
 import { createMcpRepositoryPolicy } from '../../src/mcp/repository-policy.js';
 
 // ─── Mock backend ──────────────────────────────────────────────────
@@ -528,6 +529,43 @@ describe('MCP output budgets', () => {
     expect(backend.callTool).not.toHaveBeenCalled();
   });
 
+  it('fits an over-budget impact result by dropping whole symbols, keeping valid JSON', async () => {
+    const item = (id: string) => ({
+      id,
+      name: id,
+      filePath: `src/${id}.ts`,
+      relationType: 'CALLS',
+      processes: Array.from({ length: 6 }, (_, i) => ({ id: `proc_${i}`, label: `Flow ${i}` })),
+    });
+    const impact = {
+      target: { id: 'Function:src/auth.ts:auth', name: 'auth' },
+      impactedCount: 62,
+      byDepthCounts: { 1: 2, 2: 60 },
+      byDepth: {
+        1: [item('direct0'), item('direct1')],
+        2: Array.from({ length: 60 }, (_, i) => item(`indirect${i}`)),
+      },
+    };
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(impact) });
+    const { text, isError } = await callToolThroughServer(backend, 'impact', {
+      target: 'auth',
+      direction: 'upstream',
+      maxTokens: 800,
+    });
+
+    expect(isError).toBe(false);
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(800 * 4);
+    expect(text.endsWith(MCP_TRUNCATION_MARKER)).toBe(false);
+    // The result is one compact JSON line; the next-step hint follows it.
+    const body = JSON.parse(text.split('\n')[0]);
+    expect(body.byDepth[1]).toHaveLength(2);
+    expect(body.byDepth[2].length).toBeLessThan(60);
+    expect(body.byDepthCounts).toEqual({ 1: 2, 2: 60 });
+    expect(body.byDepth[1][0].processes).toHaveLength(3);
+    expect(body.byDepth[1][0].processCount).toBe(6);
+    expect(body.pagination.trimmedForBudget.maxTokens).toBe(800);
+  });
+
   it('accepts CLI-style depth as a known impact alias (#3261)', async () => {
     // The CLI flag is --depth; since #3261 MCP advertises it alongside maxDepth
     // as a compatibility alias. Before #3261, `depth` was silently dropped.
@@ -543,6 +581,8 @@ describe('MCP output budgets', () => {
       target: 'auth',
       direction: 'downstream',
       depth: 2,
+      // The agent boundary adds the default per-depth page (impact-agent-output.ts).
+      limit: 30,
     });
   });
 
