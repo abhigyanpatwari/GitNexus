@@ -129,13 +129,17 @@ class _FakeMcpServer:
         self.listener = socket.socket(socket.AF_UNIX)
         self.listener.bind(str(path))
         self.listener.listen(1)
+        self.listener.settimeout(0.1)
+        self.stopped = threading.Event()
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
 
     def _serve(self) -> None:
-        while True:
+        while not self.stopped.is_set():
             try:
                 connection, _ = self.listener.accept()
+            except TimeoutError:
+                continue
             except OSError:
                 return
             with connection, connection.makefile("rwb") as stream:
@@ -157,7 +161,20 @@ class _FakeMcpServer:
                     stream.flush()
 
     def close(self) -> None:
-        self.listener.close()
+        self.stopped.set()
+        try:
+            # Wait for accept to exit before releasing its fd for another server.
+            self.thread.join(timeout=5)
+        finally:
+            self.listener.close()
+        assert not self.thread.is_alive(), "fake MCP server did not stop"
+
+
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="the shim speaks MCP over a Unix socket")
+def test_fake_mcp_server_close_stops_idle_accept_thread(tmp_path):
+    server = _FakeMcpServer(tmp_path / "mcp.sock", [])
+    server.close()
+    assert not server.thread.is_alive()
 
 
 @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="the shim speaks MCP over a Unix socket")

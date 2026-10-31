@@ -138,6 +138,7 @@ import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
+import { createOwnerEdgeGuard, type OwnerEdgeGuard } from './owner-edge-guard.js';
 import { defaultExportNameCollides } from '../languages/typescript/cjs-export-assignment.js';
 import {
   extractVueScript,
@@ -1596,6 +1597,23 @@ const processFileGroup = (
   result: ParseWorkerResult,
   onFileProcessed?: () => void,
 ): void => {
+  const ownerEdgeGuard = createOwnerEdgeGuard(result);
+  try {
+    processFileGroupFiles(files, language, queryString, result, ownerEdgeGuard, onFileProcessed);
+  } finally {
+    // Also on a throw: processBatch keeps the partial result of a failed group.
+    ownerEdgeGuard.settle();
+  }
+};
+
+const processFileGroupFiles = (
+  files: ParseWorkerInput[],
+  language: SupportedLanguages,
+  queryString: string,
+  result: ParseWorkerResult,
+  ownerEdgeGuard: OwnerEdgeGuard,
+  onFileProcessed?: () => void,
+): void => {
   let query: Parser.Query;
   try {
     const lang = parser.getLanguage();
@@ -1615,6 +1633,8 @@ const processFileGroup = (
   }
 
   for (const file of files) {
+    // Settles the previous file, so every `continue` below still gets checked.
+    ownerEdgeGuard.open(file.path);
     // Skip files larger than the max tree-sitter buffer (32 MB)
     if (getTreeSitterContentByteLength(file.content) > TREE_SITTER_MAX_BUFFER) continue;
 

@@ -302,8 +302,8 @@
       "verdict": "inconclusive",
       "rule": "isolation-disagrees",
       "fingerprint": {
-        "verdict": "inconclusive",
-        "rule": "not-passing"
+        "verdict": "table-row",
+        "rule": "input-values-differ"
       },
       "stages": {
         "facet": "equal",
