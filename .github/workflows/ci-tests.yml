@@ -140,7 +140,7 @@ jobs:
         run: npx tsx scripts/ensure-fts.ts
         working-directory: gitnexus
       - name: Download frozen timing snapshot
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        uses: ./.github/actions/download-test-artifact
         with:
           name: shard-timing-input
           path: gitnexus/.vitest/timings
@@ -201,7 +201,7 @@ jobs:
           path: gitnexus/.vitest/blob
           merge-multiple: true
       - name: Download frozen timing snapshot
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        uses: ./.github/actions/download-test-artifact
         with:
           name: shard-timing-input
           path: gitnexus/.vitest/timings
@@ -291,7 +291,7 @@ jobs:
       - name: Reuse this run's timing input on a retry
         id: previous-input
         if: steps.execution.outputs.initialize != 'true'
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        uses: ./.github/actions/download-test-artifact
         with:
           name: shard-timing-input
           path: .vitest/timings
@@ -404,7 +404,7 @@ jobs:
         run: npx tsx scripts/ensure-fts.ts
         working-directory: gitnexus
       - name: Download frozen timing snapshot
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        uses: ./.github/actions/download-test-artifact
         with:
           name: shard-timing-input
           path: gitnexus/.vitest/timings
@@ -455,7 +455,7 @@ jobs:
         with:
           lifecycle-scripts: 'false'
       - name: Download frozen timing snapshot
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        uses: ./.github/actions/download-test-artifact
         with:
           name: shard-timing-input
           path: gitnexus/.vitest/timings
@@ -1534,10 +1534,8 @@ jobs:
           sha="$(uv run --locked --extra dev python -m workflow_bench.release_report task-sha)"
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
           git -C .. worktree add --detach "${RUNNER_TEMP}/tasks-base" "$sha"
-          cd "${RUNNER_TEMP}/tasks-base"
-          npm ci --audit=false --fund=false
-          npm ci --prefix gitnexus --audit=false --fund=false
-          npm run build --prefix gitnexus
+          uv run --locked --extra dev python -m workflow_bench.release_build \
+            --repo "${RUNNER_TEMP}/tasks-base"
       - name: Prove process-tree and sandbox containment
         env:
           CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
@@ -1553,6 +1551,7 @@ jobs:
           tests/test_mock_provider.py
           tests/test_mcp_tool_loading.py
           tests/test_release_evaluation_smoke.py
+          tests/test_release_controls.py
           tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant
           tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout
           tests/test_oracle_assets.py::test_shipped_oracles_reject_task_base_and_accept_reference_fixes
