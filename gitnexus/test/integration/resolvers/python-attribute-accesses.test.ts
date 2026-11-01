@@ -43,6 +43,17 @@ class Replaced:
     def __init__(self):
         self.live = 2
 
+class AssignedConstructor:
+    def __init__(self):
+        self.stale = 1
+    __init__ = object.__init__
+
+class ReboundReceiver:
+    def __init__(self):
+        def self():
+            pass
+        self.foreign = 1
+
 def check() -> Result:
     return Result()
 `,
@@ -61,6 +72,12 @@ def read_from_annotated_param(p: Plain) -> int:
 
 def read_from_loop_target(p: Plain) -> int:
     return p.loop
+
+def increment(p: Plain) -> None:
+    p.value += 1
+
+def increment_fallback(p) -> None:
+    p.loop += 1
 `,
       'ts/box.ts': `export class Box { size = 1; }
 export function readBox(b: Box): number { return b.size; }
@@ -120,6 +137,27 @@ export function readBox(b: Box): number { return b.size; }
     expect(accesses.map((edge) => [edge.rel.targetId, edge.rel.reason])).toEqual([
       ['Property:pkg/model.py:Plain.loop', 'read'],
     ]);
+  });
+
+  it.each([
+    ['increment', 'value'],
+    ['increment_fallback', 'loop'],
+  ])('retains both access kinds for %s', (caller, field) => {
+    const accesses = getRelationships(result, 'ACCESSES').filter((edge) => edge.source === caller);
+    expect(accesses.map((edge) => edge.rel.targetId)).toEqual([
+      `Property:pkg/model.py:Plain.${field}`,
+      `Property:pkg/model.py:Plain.${field}`,
+    ]);
+    expect(accesses.map((edge) => edge.rel.reason?.split(': ').at(-1)).sort()).toEqual([
+      'read',
+      'write',
+    ]);
+    expect(new Set(accesses.map((edge) => edge.rel.id)).size).toBe(2);
+  });
+
+  it('rejects replaced constructors and locally rebound receivers', () => {
+    expect(result.graph.getNode('Property:pkg/model.py:AssignedConstructor.stale')).toBeUndefined();
+    expect(result.graph.getNode('Property:pkg/model.py:ReboundReceiver.foreign')).toBeUndefined();
   });
 
   it('retains the TypeScript control edge', () => {

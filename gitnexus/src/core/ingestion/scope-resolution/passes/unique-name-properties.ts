@@ -68,6 +68,7 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId } from '../graph-bridge/ids.js';
+import { referenceEdgeKey } from '../graph-bridge/edges.js';
 import { callableFlowSiteKey } from './callable-value-flow.js';
 import { isTestFile } from '../../entry-point-scoring.js';
 import { answeredSiteKey } from '../resolution-outcome.js';
@@ -499,7 +500,7 @@ export function emitUniqueNamePropertyAccesses(
       // A property reading itself is not a fact about anything.
       if (callerGraphId === targetId) continue;
 
-      const dedupKey = `ACCESSES:${callerGraphId}->${targetId}:${site.atRange.startLine}:${site.atRange.startCol}`;
+      const dedupKey = referenceEdgeKey('ACCESSES', callerGraphId, targetId, site);
       if (seen.has(dedupKey)) continue;
       seen.add(dedupKey);
 

@@ -5,6 +5,7 @@ import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import { syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { classifyPythonBoundReceiver } from './receiver-binding.js';
 import { pythonFieldVisibility, pythonReceiverField } from './field-helpers.js';
+import { pythonValueBindingsInScope } from './builtin-descriptors.js';
 
 export const synthesizePythonInstanceFields: NonNullable<
   LanguageProvider['synthesizeStructureMembers']
@@ -124,87 +125,62 @@ export function extractPythonInstanceFields(
     if (left?.type === 'identifier') declaredNames.add(left.text);
   }
 
-  // Reverse source order: a later class binding replaces an earlier __init__.
-  const classNodes = [...body.namedChildren];
-  while (classNodes.length > 0) {
-    const method = classNodes.pop()!;
-    if (method.type === 'class_definition' || method.type === 'lambda') continue;
-    if (method.type !== 'function_definition') {
-      classNodes.push(...method.namedChildren);
-      continue;
-    }
-    if (method.childForFieldName('name')?.text !== '__init__') continue;
-    const declaration = method.parent?.type === 'decorated_definition' ? method.parent : method;
-    // A conditional replacement can leave either definition live. Do not
-    // synthesize definite ownership from an arbitrarily selected branch.
-    if (declaration.parent?.id !== body.id) return [];
-    const receiver = classifyPythonBoundReceiver(method);
-    const methodBody = method.childForFieldName('body');
-    if (receiver?.kind !== 'instance' || methodBody === null) return [];
+  // Only a final, unconditional method definition proves which constructor runs.
+  const method = pythonValueBindingsInScope(owner, '__init__').at(-1)?.parent;
+  if (method?.type !== 'function_definition') return [];
+  const declaration = method.parent?.type === 'decorated_definition' ? method.parent : method;
+  if (declaration.parent?.id !== body.id) return [];
+  const receiver = classifyPythonBoundReceiver(method);
+  const methodBody = method.childForFieldName('body');
+  if (receiver?.kind !== 'instance' || methodBody === null) return [];
+  // Any local rebinding makes ownership uncertain. Nested definitions bind
+  // their names here, while bindings inside their bodies belong to that scope.
+  if (
+    pythonValueBindingsInScope(method, receiver.name).some(
+      (binding) => binding.startIndex >= methodBody.startIndex,
+    )
+  )
+    return [];
 
-    const candidates = new Map<string, FieldInfo>();
-    let rebound = false;
-    const rebindsReceiver = (target: SyntaxNode): boolean => {
-      if (target.type === 'identifier') return target.text === receiver.name;
-      if (target.type === 'attribute' || target.type === 'subscript') return false;
-      return target.namedChildren.some(rebindsReceiver);
-    };
-    const visitTarget = (target: SyntaxNode, annotation?: SyntaxNode | null): void => {
-      if (target.type === 'identifier') {
-        if (target.text === receiver.name) rebound = true;
-        return;
-      }
-      if (target.type === 'attribute') {
-        const name = pythonReceiverField(target, receiver.name);
-        if (name === null) return;
-        if (declaredNames.has(name.text) || candidates.has(name.text)) return;
-        candidates.set(name.text, {
-          name: name.text,
-          type: annotation ? (extractSimpleTypeName(annotation) ?? annotation.text) : null,
-          ...(annotation ? { rawDeclaredType: annotation.text } : {}),
-          visibility: pythonFieldVisibility(name.text),
-          isStatic: false,
-          isReadonly: false,
-          sourceFile: context.filePath,
-          line: name.startPosition.row + 1,
-          column: name.startPosition.column,
-        });
-        return;
-      }
-      if (target.type === 'subscript') return;
-      for (const child of target.namedChildren) visitTarget(child, annotation);
-    };
-
-    const nodes = [...methodBody.namedChildren].reverse();
-    while (nodes.length > 0) {
-      const node = nodes.pop()!;
-      if (['function_definition', 'class_definition', 'lambda'].includes(node.type)) continue;
-      if (
-        (node.type === 'assignment' && node.childForFieldName('right') !== null) ||
-        node.type === 'for_statement'
-      ) {
-        const left = node.childForFieldName('left');
-        if (left !== null) visitTarget(left, node.childForFieldName('type'));
-      }
-      // Rebinding the injected parameter makes ownership uncertain. Decline
-      // the constructor's candidates rather than assign another object's fields.
-      if (
-        node.type === 'named_expression' &&
-        node.childForFieldName('name')?.text === receiver.name
-      ) {
-        rebound = true;
-      }
-      if (node.type === 'delete_statement' || node.type === 'augmented_assignment') {
-        const target = node.childForFieldName('left') ?? node.firstNamedChild;
-        if (target !== null && rebindsReceiver(target)) rebound = true;
-      }
-      if (node.type === 'as_pattern') {
-        const alias = node.childForFieldName('alias');
-        if (alias !== null) visitTarget(alias);
-      }
-      nodes.push(...[...node.namedChildren].reverse());
+  const candidates = new Map<string, FieldInfo>();
+  const visitTarget = (target: SyntaxNode, annotation?: SyntaxNode | null): void => {
+    if (target.type === 'attribute') {
+      const name = pythonReceiverField(target, receiver.name);
+      if (name === null) return;
+      if (declaredNames.has(name.text) || candidates.has(name.text)) return;
+      candidates.set(name.text, {
+        name: name.text,
+        type: annotation ? (extractSimpleTypeName(annotation) ?? annotation.text) : null,
+        ...(annotation ? { rawDeclaredType: annotation.text } : {}),
+        visibility: pythonFieldVisibility(name.text),
+        isStatic: false,
+        isReadonly: false,
+        sourceFile: context.filePath,
+        line: name.startPosition.row + 1,
+        column: name.startPosition.column,
+      });
+      return;
     }
-    return rebound ? [] : [...candidates.values()];
+    if (target.type === 'subscript') return;
+    for (const child of target.namedChildren) visitTarget(child, annotation);
+  };
+
+  const nodes = [...methodBody.namedChildren].reverse();
+  while (nodes.length > 0) {
+    const node = nodes.pop()!;
+    if (['function_definition', 'class_definition', 'lambda'].includes(node.type)) continue;
+    if (
+      (node.type === 'assignment' && node.childForFieldName('right') !== null) ||
+      node.type === 'for_statement'
+    ) {
+      const left = node.childForFieldName('left');
+      if (left !== null) visitTarget(left, node.childForFieldName('type'));
+    }
+    if (node.type === 'as_pattern') {
+      const alias = node.childForFieldName('alias');
+      if (alias !== null) visitTarget(alias);
+    }
+    nodes.push(...[...node.namedChildren].reverse());
   }
-  return [];
+  return [...candidates.values()];
 }

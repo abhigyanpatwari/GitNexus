@@ -69,6 +69,60 @@ describe('Python constructor field declarations', () => {
       body: 'value: int\ndef __init__(self):\n    self.value = 1',
       fields: [],
     },
+    ...[
+      '__init__ = object.__init__',
+      'del __init__',
+      'if flag:\n    __init__ = object.__init__',
+      'import module as __init__',
+    ].map((replacement) => ({
+      name: `constructor replaced by ${replacement}`,
+      body: `def __init__(self):\n    self.stale = 1\n${replacement}`,
+      fields: [],
+    })),
+    {
+      name: 'constructor annotation does not replace its value',
+      body: 'def __init__(self):\n    self.value = 1\n__init__: Callable',
+      fields: ['value'],
+    },
+    {
+      name: 'method definition replaces an earlier assignment',
+      body: '__init__ = object.__init__\ndef __init__(self):\n    self.value = 1',
+      fields: ['value'],
+    },
+    ...[
+      'def self():\n    pass',
+      'class self:\n    pass',
+      'import module as self',
+      'import self.module',
+      'from module import value as self',
+      'from module import self',
+      'match value:\n    case {"receiver": self}:\n        pass',
+      'match value:\n    case [*self]:\n        pass',
+      'del self',
+      'self += other',
+      '(self := other)',
+      'try:\n    pass\nexcept Error as self:\n    pass',
+    ].map((binding) => ({
+      name: `receiver rebound by ${binding}`,
+      body: `def __init__(self):\n${binding
+        .split('\n')
+        .map((line) => `    ${line}`)
+        .join('\n')}\n    self.value = 1`,
+      fields: [],
+    })),
+    ...[
+      'self: Model',
+      'def nested():\n    self = other',
+      'values = [self for self in items]',
+      'match value:\n    case constants.self:\n        pass',
+    ].map((statement) => ({
+      name: `receiver preserved by ${statement}`,
+      body: `def __init__(self):\n${statement
+        .split('\n')
+        .map((line) => `    ${line}`)
+        .join('\n')}\n    self.value = 1`,
+      fields: ['value'],
+    })),
     {
       name: 'property setter already owns the attribute',
       body: '@property\ndef value(self):\n    return 1\n@value.setter\ndef value(self, value):\n    pass\ndef __init__(self):\n    self.value = 1',
