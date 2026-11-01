@@ -53,10 +53,49 @@ function valueImports(source: string): string[] {
   return out;
 }
 
+/**
+ * Every module specifier this file loads at run time: `import('…')` and
+ * `require('…')`, including a `createRequire(…)('…')` call, but not a
+ * type-only `typeof import('…')`. A top-level
+ * `void import('./extract.js')` would load the parser at evaluation even
+ * though no import statement names it.
+ */
+function dynamicLoads(source: string): string[] {
+  return [
+    ...source.matchAll(
+      /(?<!\btypeof\s+)\b(?:import|require|createRequire\([^)]*\))\s*\(\s*(['"`])([^'"`]+)\1/g,
+    ),
+  ].map((m) => m[2]!);
+}
+
+const FACTS_STORE = 'plsql/facts-store.ts';
+
 describe('PL/SQL parser loads lazily', () => {
   it.each(LIGHT_MODULES)('%s imports the parser and extractor by type only', (file) => {
     const source = readFileSync(path.join(INGESTION, file), 'utf8');
     expect(valueImports(source).filter((spec) => HEAVY.test(spec))).toEqual([]);
+  });
+
+  it.each(LIGHT_MODULES.filter((file) => file !== FACTS_STORE))(
+    '%s never loads the parser or extractor dynamically either',
+    (file) => {
+      const source = readFileSync(path.join(INGESTION, file), 'utf8');
+      expect(dynamicLoads(source).filter((spec) => HEAVY.test(spec))).toEqual([]);
+    },
+  );
+
+  it('the dynamic-load scanner sees import(), require() and createRequire()()', () => {
+    expect(
+      dynamicLoads(
+        [
+          "void import('./extract.js');",
+          'const p = await import("./generated/PlSqlParser.js");',
+          "require('antlr4ng');",
+          "createRequire(import.meta.url)('./extract.js');",
+          "const t: typeof import('./extract.js') = x;",
+        ].join('\n'),
+      ),
+    ).toEqual(['./extract.js', './generated/PlSqlParser.js', 'antlr4ng', './extract.js']);
   });
 
   it('the scanner sees side-effect imports and re-exports', () => {
@@ -85,8 +124,14 @@ describe('PL/SQL parser loads lazily', () => {
   });
 
   it('facts-store is the one place the extractor is loaded: dynamically, or by its require fallback', () => {
-    const source = readFileSync(path.join(INGESTION, 'plsql/facts-store.ts'), 'utf8');
+    const source = readFileSync(path.join(INGESTION, FACTS_STORE), 'utf8');
     expect(source).toMatch(/await import\('\.\/extract\.js'\)/);
     expect(source).toMatch(/createRequire\(import\.meta\.url\)\('\.\/extract\.js'\)/);
+    // Exactly those two (inside loadPlSqlParser and the fallback): any other
+    // load, such as an eager top-level `void import(…)`, changes this list.
+    expect(dynamicLoads(source).filter((spec) => HEAVY.test(spec))).toEqual([
+      './extract.js',
+      './extract.js',
+    ]);
   });
 });
