@@ -1,7 +1,8 @@
 # Analyze phase breakdown — where the time actually goes
 
-Updated 2026-10-31 with measurements from main on LadybugDB **0.22.0** and an
-experimental fast path for unchanged dirty checkouts. Records what the `analyze`
+Updated 2026-11-01 with production hardening and measurements from main on
+LadybugDB **0.22.0** and an experimental fast path for unchanged dirty checkouts.
+Records what the `analyze`
 pipeline costs per phase and the results of optimization experiments.
 The September measurements remain below as historical
 evidence; the corpus and analyzer have changed, so they are not a controlled
@@ -60,15 +61,15 @@ deletions, or large change sets.
 All values below are seconds. Each column is one complete sample; rounding can
 make the components differ from the total by 1ms.
 
-| Step | Fresh | Edit 1 | Edit 2 | Edit 3 | Dirty repeat |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| **Total** | **166.015** | **120.361** | **122.634** | **126.342** | **110.820** |
-| Parsing | 62.823 | 6.598 | 6.995 | 6.750 | 6.748 |
-| Scope resolution | 70.335 | 73.987 | 75.941 | 77.268 | 87.054 |
-| Graph load | 10.145 | 5.141 | 5.251 | 4.813 | 0.007 |
-| FTS | 16.072 | 12.792 | 13.095 | 15.731 | 0.510 |
-| Other pipeline phases | 3.143 | 3.307 | 3.255 | 3.308 | 1.025 |
-| Residual outside those intervals | 3.498 | 18.536 | 18.097 | 18.472 | 15.476 |
+| Step                             |       Fresh |      Edit 1 |      Edit 2 |      Edit 3 | Dirty repeat |
+| -------------------------------- | ----------: | ----------: | ----------: | ----------: | -----------: |
+| **Total**                        | **166.015** | **120.361** | **122.634** | **126.342** |  **110.820** |
+| Parsing                          |      62.823 |       6.598 |       6.995 |       6.750 |        6.748 |
+| Scope resolution                 |      70.335 |      73.987 |      75.941 |      77.268 |       87.054 |
+| Graph load                       |      10.145 |       5.141 |       5.251 |       4.813 |        0.007 |
+| FTS                              |      16.072 |      12.792 |      13.095 |      15.731 |        0.510 |
+| Other pipeline phases            |       3.143 |       3.307 |       3.255 |       3.308 |        1.025 |
+| Residual outside those intervals |       3.498 |      18.536 |      18.097 |      18.472 |       15.476 |
 
 The edit median is **122.634s**, range **120.361–126.342s**, with three samples
 on a shared host. This sequence measures the unmodified main baseline.
@@ -110,13 +111,13 @@ configuration, not complete graph coverage.
 In Edit 2, the sample with the median total, scope resolution is **61.9%** of
 wall time. Summing the existing per-language profiler gives:
 
-| Scope-resolution work | Seconds |
-| --- | ---: |
-| `emit` | **49.604** |
-| `resolve` | 7.043 |
-| Other work inside the internal timers | 4.482 |
-| Phase time outside those internal timers | 14.812 |
-| **Whole phase** | **75.941** |
+| Scope-resolution work                    |    Seconds |
+| ---------------------------------------- | ---------: |
+| `emit`                                   | **49.604** |
+| `resolve`                                |      7.043 |
+| Other work inside the internal timers    |      4.482 |
+| Phase time outside those internal timers |     14.812 |
+| **Whole phase**                          | **75.941** |
 
 `emit` alone is **40.4% of the entire edit run**. TypeScript reports **2,865 /
 2,865 pre-extracted hits** in every edit sample, yet resolution and emission
@@ -156,11 +157,11 @@ Run order was candidate 1, baseline 1, baseline 2, candidate 2, candidate 3,
 baseline 3. Each run used a new Node process and made no source change.
 
 | Unchanged dirty snapshot | Main baseline (s) | Candidate (s) |
-| --- | ---: | ---: |
-| Sample 1 | 102.494 | 1.657 |
-| Sample 2 | 101.905 | 1.640 |
-| Sample 3 | 102.688 | 1.552 |
-| **Median** | **102.494** | **1.640** |
+| ------------------------ | ----------------: | ------------: |
+| Sample 1                 |           102.494 |         1.657 |
+| Sample 2                 |           101.905 |         1.640 |
+| Sample 3                 |           102.688 |         1.552 |
+| **Median**               |       **102.494** |     **1.640** |
 
 The ratio of medians is **62.50×**, a **98.40% reduction** in elapsed analysis
 time for this workload. All three baseline runs reported zero changed files,
@@ -210,6 +211,63 @@ runtime fixed after seeding. Record `alreadyUpToDate`, rebuild reasons, graph
 counts, and a database-file hash before/after each repeat. Follow with the same
 real edit in both corpora and verify persisted symbol, call-edge, and FTS results.
 Do not combine these no-op timings with the actual-edit baseline.
+
+### Production hardening — 2026-11-01
+
+Review found a freshness race in the experiment: per-file hashes were read from
+disk after parsing. A file edited between parsing and hashing could therefore
+have a new hash beside an older graph; the next dirty repeat incorrectly returned
+already up to date. A regression test reproduced that behavior before the fix.
+
+Git repositories now capture hashes before parsing and retain only paths that
+the pipeline actually indexed. An edit during analysis differs from that receipt
+on the next run, which reconciles the graph before allowing another unchanged
+repeat. This moves the existing content-hash pass and adds a path-only scan; it
+does not introduce another full-content hashing pass. The analyzer still reads a
+live working tree, not an atomic filesystem snapshot.
+
+The dedicated native integration suite, `test/integration/analyze-dirty-snapshot.test.ts`,
+covers both fresh and incremental versions of the race, as well as the original
+fast-path and fallback cases. It is registered in the sequential LadybugDB
+project and in the Windows/macOS CI subset. Database preservation uses an exact
+byte comparison; the FTS check fails rather than skips when CI requires FTS.
+
+The hardened build was reseeded and measured against the same pinned main
+runtime, with three unchanged dirty repeats per variant. The corpora retained
+the identical exported function from the October functional control, so both
+contained **117,438 nodes / 352,782 relationships**. The seed rebuild took
+150.305s and is excluded. Options and timing boundaries are unchanged.
+
+| Unchanged dirty snapshot | Main baseline (s) | Hardened candidate (s) |
+| ------------------------ | ----------------: | ---------------------: |
+| Sample 1                 |           134.649 |                  2.200 |
+| Sample 2                 |           127.837 |                  1.868 |
+| Sample 3                 |           101.765 |                  1.960 |
+| **Median**               |       **127.837** |              **1.960** |
+
+This is **65.21×** by ratio of medians (**98.47% less elapsed time**). Every
+candidate repeat returned already up to date without running the pipeline and
+preserved the complete database file's SHA-256. All six runs retained native
+FTS and matched graph counts. Run order was candidate, baseline, baseline,
+candidate, candidate, baseline. Other validation ran on the same host; observed
+one-minute load ranged from 9.23 to 16.69. These results confirm the benefit for
+unchanged dirty repeats, not a speedup for real edits or an improvement over the
+October speedup ratio.
+
+A subsequent real-edit control added the same exported function and search
+token to both corpora. Main took **121.055s**, candidate **140.828s**. Both
+reported one changed file, 22 reparsed files, six importer dependents, an
+incremental write and no rebuild reasons. Filtered in-memory graph hashes and
+the persisted new function, its File FTS hit, and all 34 call edges touching the
+edited file matched. Counts were **117,439 nodes / 352,783 relationships**.
+The next candidate repeat returned already up to date in **1.545s**.
+
+The candidate was slower in this single real-edit pair. Scope-resolution time
+was 73.939s on main and 91.838s on the candidate, accounting for most of the
+19.773s difference; the first pipeline progress event arrived at 0.923s and
+1.569s respectively. Those phase timings locate the difference, but do not
+establish its cause. Host load changed and this pair has one sample per
+variant: neither a real-edit speedup nor a stable regression is established.
 
 ### Reproducing the timing boundaries
 

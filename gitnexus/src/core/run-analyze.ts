@@ -3120,7 +3120,21 @@ async function runFullAnalysisInner(
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
   let pipelineResult;
+  let inputFileHashes: Map<string, string> | undefined;
   try {
+    if (repoHasGit) {
+      // Capture freshness before parsing. Hashing afterward can certify an edit
+      // the graph never saw and let the dirty fast path preserve stale results.
+      // A concurrent edit now differs from this receipt on the next analysis.
+      const inputs = await walkRepositoryPaths(repoPath, undefined, {
+        quiet: true,
+        onPathsDiscovered: async () => {},
+      });
+      inputFileHashes = await computeFileHashes(
+        repoPath,
+        inputs.map((file) => file.path),
+      );
+    }
     pipelineResult = await runPipelineFromRepo(
       repoPath,
       (p) => {
@@ -3207,7 +3221,7 @@ async function runFullAnalysisInner(
   // before any graph rows, FTS values, or embeddings are persisted.
   applyContentRetention(pipelineResult.graph, contentRetention);
 
-  // Compute current per-file content hashes from the pipeline's File nodes.
+  // Restrict the pre-parse hashes to the pipeline's actual File nodes.
   // Used both to drive the incremental DB writeback (when eligible) and to
   // populate meta.json.fileHashes for the next run.
   const allFilePaths: string[] = [];
@@ -3217,7 +3231,14 @@ async function runFullAnalysisInner(
       if (fp) allFilePaths.push(fp);
     }
   });
-  const newFileHashes = await computeFileHashes(repoPath, allFilePaths);
+  const newFileHashes = inputFileHashes
+    ? new Map(
+        allFilePaths.flatMap((rel) => {
+          const hash = inputFileHashes.get(rel);
+          return hash === undefined ? [] : [[rel, hash] as const];
+        }),
+      )
+    : await computeFileHashes(repoPath, allFilePaths);
   const currentAnalysisFeatures = resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, allFilePaths);
   const currentAnalysisFeatureMismatches = existingMeta
     ? findAnalysisFeatureMismatches(existingMeta.analysisFeatures, currentAnalysisFeatures)

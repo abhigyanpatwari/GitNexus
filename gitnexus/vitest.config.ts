@@ -72,6 +72,7 @@ export default defineConfig({
         test: {
           name: 'lbug-db',
           include: [
+            'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',
             'test/integration/class-expression-owners.test.ts',
             'test/integration/rename-provider-*.test.ts',
@@ -186,6 +187,7 @@ export default defineConfig({
           sequence: { groupOrder: 3 },
           include: ['test/**/*.test.ts'],
           exclude: [
+            'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',
             'test/integration/class-expression-owners.test.ts',
             'test/integration/rename-provider-*.test.ts',
