@@ -940,6 +940,19 @@ jobs:
         run: node --import tsx bench/trpc-route-extractor/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Go route-fact correctness and linear scaling (#3750)
+        if: ${{ !cancelled() }}
+        run: node --expose-gc --import tsx bench/go-route-facts/measure.js --check --output go-route-facts.json
+        working-directory: gitnexus
+
+      - name: Upload Go route-fact measurements
+        if: always()
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: go-route-facts-benchmark
+          path: gitnexus/go-route-facts.json
+          retention-days: 5
+
       - name: Cross-language scope-capture fingerprint + scaling guards
         # Runs even after an earlier guard fails (#2895). Every step here was
         # fail-fast, so the FIRST failing --check aborted the job and every guard
