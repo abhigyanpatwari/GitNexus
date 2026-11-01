@@ -64,6 +64,34 @@ const targetsFor = (nodes: readonly StubNode[], defs: readonly ReturnType<typeof
     .sort();
 
 describe('buildGraphTargetIndex — value bindings join by position', () => {
+  it.each([128, 512])(
+    'rejects %i unrelated value names without reading definition positions',
+    (count) => {
+      let positionReads = 0;
+      const definitions = Array.from({ length: count }, (_, index) => {
+        const definition = def('Variable', 'a.ts', `config${index}`, index + 1);
+        return {
+          ...definition,
+          get nodeId() {
+            positionReads++;
+            return definition.nodeId;
+          },
+        };
+      });
+      const scopes = scopesOf(definitions);
+      positionReads = 0;
+      expect(
+        buildGraphTargetIndex(
+          scopes,
+          new Map() as GraphNodeLookup,
+          undefined,
+          graphOf([node('Function', 'a.ts', 'handler', 3)]),
+        ).size,
+      ).toBe(0);
+      expect(positionReads).toBe(0);
+    },
+  );
+
   it('admits a value binding whose callable node sits at its own line', () => {
     // The #2687 closure-binding shape: the value def and the Function node are
     // the same construct, so they share file, line and name.
@@ -78,6 +106,21 @@ describe('buildGraphTargetIndex — value bindings join by position', () => {
     expect(
       targetsFor([node('Function', 'a.ts', 'save', 2)], [def('Variable', 'a.ts', 'save', 7)]),
     ).toEqual([]);
+  });
+
+  it('rejects a same-name callable at the same line in another file', () => {
+    expect(
+      targetsFor(
+        [node('Function', 'other.ts', 'handler', 3)],
+        [def('Variable', 'a.ts', 'handler', 3)],
+      ),
+    ).toEqual([]);
+  });
+
+  it('normalises the value binding sigil before looking for callable names', () => {
+    expect(
+      targetsFor([node('Function', 'a.php', 'save', 5)], [def('Variable', 'a.php', '$save', 5)]),
+    ).toEqual(['def:a.php#5:0:Variable:$save => Function:a.php:save']);
   });
 
   it('REJECTS a value binding whose node at that position is NOT callable', () => {

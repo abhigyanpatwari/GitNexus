@@ -12,6 +12,7 @@ import {
   runPipelineFromRepo,
   getRelationships,
   getNodesByLabelFull,
+  getResolutionOutcomes,
 } from './helpers.js';
 import {
   loadParseCache,
@@ -44,6 +45,39 @@ function projectCallsToGetName(result: Awaited<ReturnType<typeof runPipelineFrom
 }
 
 describe('Java Lombok accessor synthesis (pipeline)', () => {
+  it('keeps an inherited synthetic setter in the overload family when its formal types are unavailable', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-lombok-overload-'));
+    try {
+      writeFixtureRepo(root, {
+        'Inheritance.java': `import lombok.Data;
+@Data class GeneratedBase { private String value; }
+class GeneratedChild extends GeneratedBase { public void setValue(Object value) {} }
+class Consumer { void choose(GeneratedChild target) { target.setValue("x"); } }
+`,
+      });
+      const linked = await runPipelineFromRepo(root, () => {});
+      expect(
+        getRelationships(linked, 'CALLS').filter(
+          (edge) => edge.source === 'choose' && edge.target === 'setValue',
+        ),
+      ).toEqual([]);
+      expect(getResolutionOutcomes(linked)).toContainEqual(
+        expect.objectContaining({
+          kind: 'suppressed',
+          reason: 'overload-unknown',
+          name: 'setValue',
+          candidateGraphIds: expect.arrayContaining([
+            'Method:Inheritance.java:GeneratedBase.setValue#1',
+            'Method:Inheritance.java:GeneratedChild.setValue#1',
+          ]),
+          candidateSetComplete: true,
+        }),
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60000);
+
   it.each(['same-file', 'cross-file'] as const)(
     'resolves all getter and setter calls to their owner in a %s fixture',
     async (layout) => {

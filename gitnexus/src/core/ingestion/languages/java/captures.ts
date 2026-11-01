@@ -63,6 +63,7 @@ import {
 } from './spring-non-http-handlers.js';
 import { synthesizeJavaRecordComponentAccessorCaptures } from './record-components.js';
 import { synthesizeLombokAccessorCaptures } from './lombok-synthesizer.js';
+import { captureJavaOverloadFacts, setJavaOverloadFacts } from './overload-argument-facts.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
@@ -143,6 +144,8 @@ export function emitJavaScopeCaptures(
     recordCacheHit();
   }
   captureJavaPackageFact(filePath, tree.rootNode);
+  const accessorCaptures = synthesizeJavaRecordComponentAccessorCaptures(tree.rootNode);
+  setJavaOverloadFacts(filePath, captureJavaOverloadFacts(tree.rootNode, accessorCaptures));
 
   const rawMatches = getJavaScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
@@ -333,6 +336,14 @@ export function emitJavaScopeCaptures(
       // directly on the method/constructor node.
       const fnNode = findFunctionNode(nodeMap[declTag]);
       if (fnNode !== null) {
+        const returnType = fnNode.childForFieldName('type');
+        if (returnType !== null && fnNode.type === 'method_declaration') {
+          grouped['@declaration.return-type'] = syntheticCapture(
+            '@declaration.return-type',
+            fnNode,
+            returnType.text + (fnNode.childForFieldName('dimensions')?.text ?? ''),
+          );
+        }
         const arity = computeJavaArityMetadata(fnNode);
         if (arity.parameterCount !== undefined) {
           grouped['@declaration.parameter-count'] = syntheticCapture(
@@ -392,6 +403,30 @@ export function emitJavaScopeCaptures(
         'object_creation_expression',
       );
       if (callNode !== null) {
+        if (callNode.type === 'method_invocation') {
+          let initializer = callNode;
+          while (initializer.parent?.type === 'parenthesized_expression')
+            initializer = initializer.parent;
+          const declarator = initializer.parent;
+          const declaration = declarator?.parent;
+          const name = declarator?.childForFieldName('name');
+          if (
+            declarator?.type === 'variable_declarator' &&
+            declaration?.type === 'local_variable_declaration' &&
+            declaration.childForFieldName('type')?.text === 'var' &&
+            declarator.childForFieldName('value')?.id === initializer.id &&
+            name !== null &&
+            name !== undefined
+          ) {
+            out.push({
+              '@call-result-assignment.call': nodeToCapture(
+                '@call-result-assignment.call',
+                callNode,
+              ),
+              '@call-result-assignment.lhs': nodeToCapture('@call-result-assignment.lhs', name),
+            });
+          }
+        }
         const argList = callNode.childForFieldName('arguments');
         // Exclude interleaved comments — tree-sitter-java emits `block_comment` /
         // `line_comment` as named children of argument_list, which would inflate
@@ -452,7 +487,7 @@ export function emitJavaScopeCaptures(
     ...synthesizeJavaInheritanceReferences(tree.rootNode),
     ...synthesizeJavaExplicitConstructorReferences(tree.rootNode),
     ...synthesizeJavaAnonymousClassDeclarations(tree.rootNode),
-    ...synthesizeJavaRecordComponentAccessorCaptures(tree.rootNode),
+    ...accessorCaptures,
     ...synthesizeLombokAccessorCaptures(tree.rootNode),
     ...synthesizeCallableFlowCaptures(tree.rootNode, JAVA_CALLABLE_CAPTURE_OPTIONS),
   ];

@@ -53,12 +53,15 @@ export const javaExportChecker: ExportChecker = (node, _name) => {
       let isPublic = javaPublicModifierCache.get(parent);
       if (isPublic === undefined) {
         isPublic = false;
-        for (let i = 0; i < parent.childCount; i++) {
-          const child = parent.child(i);
+        // Java modifiers precede the declaration's other named children.
+        // Skip comments, but never scan a class body full of sibling methods.
+        for (let i = 0; i < parent.namedChildCount; i++) {
+          const child = parent.namedChild(i);
+          if (child?.type === 'line_comment' || child?.type === 'block_comment') continue;
           if (child?.type === 'modifiers' && child.text?.includes('public')) {
             isPublic = true;
-            break;
           }
+          break;
         }
         if (parent.type === 'method_declaration' || parent.type === 'constructor_declaration') {
           isPublic ||= parent.text?.trimStart().startsWith('public') ?? false;
