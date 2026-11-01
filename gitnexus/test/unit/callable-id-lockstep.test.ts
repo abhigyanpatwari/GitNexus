@@ -69,6 +69,26 @@ const semanticDef = (
 });
 
 describe('boundCallableStartRow - #2735 semantic position join', () => {
+  it('reads unrelated definition names only while building the per-file index', () => {
+    let reads = 0;
+    const defs = Array.from({ length: 128 }, (_, i) => {
+      const def = semanticDef('src/file.ext', 'Method', `Owner.method${i}`, i + 1, 0);
+      const qualifiedName = def.qualifiedName;
+      Object.defineProperty(def, 'qualifiedName', {
+        get() {
+          reads++;
+          return qualifiedName;
+        },
+      });
+      return def;
+    });
+    for (let i = 0; i < defs.length; i++) {
+      const wrapper = stubNode({ type: 'binding_wrapper', id: i, row: i, endColumn: 20 });
+      expect(boundCallableStartRow(wrapper, `method${i}`, 'Method', defs)).toBe(i);
+    }
+    expect(reads).toBeLessThanOrEqual(defs.length * 2);
+  });
+
   it('keeps the wrapper row when no semantic definition is available', () => {
     const wrapper = stubNode({
       type: 'binding_wrapper',

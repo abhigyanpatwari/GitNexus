@@ -32,6 +32,12 @@ import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
+import {
+  callSuppressionIdentities,
+  providerCallOutcome,
+  selectedCallKey,
+  type CallOutcomeContext,
+} from './provider-call-outcome.js';
 import type {
   ResolutionOutcomeRecorder,
   ResolutionSuppressionReason,
@@ -65,7 +71,9 @@ export function emitFreeCallFallback(
   scopes: ScopeResolutionIndexes,
   parsedFiles: readonly ParsedFile[],
   nodeLookup: GraphNodeLookup,
-  _referenceIndex: { readonly bySourceScope: ReadonlyMap<ScopeId, readonly Reference[]> },
+  _referenceIndex: {
+    readonly bySourceScope: ReadonlyMap<ScopeId, readonly Reference[]>;
+  },
   handledSites: Set<string>,
   model: SemanticModel,
   workspaceIndex: WorkspaceResolutionIndex,
@@ -98,7 +106,10 @@ export function emitFreeCallFallback(
         readonly name: string;
         readonly arity?: number;
         readonly argumentTypes?: readonly string[];
-        readonly atRange: { readonly startLine: number; readonly startCol: number };
+        readonly atRange: {
+          readonly startLine: number;
+          readonly startCol: number;
+        };
       },
       callerParsed: ParsedFile,
       scopes: ScopeResolutionIndexes,
@@ -107,6 +118,9 @@ export function emitFreeCallFallback(
     /** Module-qualified free-call resolver (#2730) — see
      *  `ScopeResolver.resolveQualifiedFreeCall`. */
     readonly resolveQualifiedFreeCall?: ScopeResolver['resolveQualifiedFreeCall'];
+    readonly resolveUnqualifiedCall?: ScopeResolver['resolveUnqualifiedCall'];
+    readonly selectedCalls?: Map<string, SymbolDefinition | null>;
+    readonly onSelectedCall?: (key: string, definition: SymbolDefinition | null) => void;
     readonly conversionRankFn?: ConversionRankFn;
     readonly conversionOnlyArgTypePrefixes?: readonly string[];
     /** Optional per-language constraint hook threaded into
@@ -139,6 +153,17 @@ export function emitFreeCallFallback(
 ): number {
   let emitted = 0;
   const seen = new Set<string>();
+  const outcomeContext: CallOutcomeContext = {
+    graph,
+    scopes,
+    nodeLookup,
+    model,
+  };
+  const recordSuppressed = (input: Parameters<typeof recordSuppressedOutcome>[1]): void =>
+    recordSuppressedOutcome(options.recordResolutionOutcome, {
+      ...input,
+      identityContext: outcomeContext,
+    });
 
   // Build an O(1) simple-name -> callable defs index over scopes.defs once
   // per pass so pickUniqueGlobalCallable doesn't re-scan defs.byId.values()
@@ -241,7 +266,10 @@ export function emitFreeCallFallback(
         targetDefIds: [],
         basis: 'free-call',
       });
-      const lookupOptions = { position: site.atRange, purpose: 'value' as const };
+      const lookupOptions = {
+        position: site.atRange,
+        purpose: 'value' as const,
+      };
       const nameClaim = lookupNameClaim(site.inScope, site.name, scopes, lookupOptions);
       const strictClaim = hasExplicitNameClaim(nameClaim, site.name);
       const blocksCall =
@@ -264,7 +292,7 @@ export function emitFreeCallFallback(
           basis: 'lexical-name-claim',
         });
         if (options.resolveAdlCandidates !== undefined) {
-          recordSuppressedOutcome(options.recordResolutionOutcome, {
+          recordSuppressed({
             recordSourceBinding: options.recordSourceBinding,
             site,
             phase: 'free-call-fallback',
@@ -284,6 +312,7 @@ export function emitFreeCallFallback(
       // to the Class node itself (implicit constructor). Legacy emits
       // the same two targets; see test expectations.
       let fnDef: SymbolDefinition | undefined;
+      let fnDefFromProvider = false;
       let writtenDefinition: SymbolDefinition | undefined;
       let sourceCandidates: readonly SymbolDefinition[] | undefined;
       // Guess flag starts here so the constructor unique-class pick can mark
@@ -294,6 +323,41 @@ export function emitFreeCallFallback(
       // Language visibility vetoes the constructed TYPE (Class/Struct), not a
       // Constructor child — Go refuses any `qualifiedName` containing `.`.
       let globalFallbackVetoTarget: SymbolDefinition | undefined;
+      if (site.callForm !== 'constructor' && site.rawQualifiedName === undefined) {
+        const resolution = options.resolveUnqualifiedCall?.(site, scopes, model);
+        if (resolution !== undefined && resolution.kind !== 'resolved') {
+          options.selectedCalls?.set(selectedCallKey(parsed.filePath, site.atRange), null);
+          options.onSelectedCall?.(selectedCallKey(parsed.filePath, site.atRange), null);
+          options.recordSourceBinding?.(site, {
+            status:
+              resolution.kind === 'ambiguous'
+                ? 'ambiguous'
+                : resolution.kind === 'inapplicable'
+                  ? 'blocked'
+                  : 'unresolved',
+            targetDefIds: resolution.candidateIds,
+            basis:
+              resolution.kind === 'ambiguous'
+                ? 'member-lookup-ambiguous'
+                : `overload-${resolution.kind}`,
+          });
+          options.recordResolutionOutcome?.(
+            providerCallOutcome(
+              resolution,
+              site,
+              parsed.filePath,
+              'free-call-fallback',
+              outcomeContext,
+            ),
+          );
+          handledSites.add(siteKey(parsed.filePath, site));
+          continue;
+        }
+        if (resolution?.kind === 'resolved') {
+          fnDef = resolution.definition;
+          fnDefFromProvider = true;
+        }
+      }
       if (site.callForm === 'constructor') {
         // `ns.Type{}` names its type through a namespace import: a type the
         // language will not let that qualifier reach is not found, rather than
@@ -448,7 +512,7 @@ export function emitFreeCallFallback(
             fnDef = eligibleBindingCandidates[0]?.def;
             sourceCandidates = eligibleBindingCandidates.map((candidate) => candidate.def);
             if (fnDef === undefined && bindingCandidates.length > 0) {
-              recordSuppressedOutcome(options.recordResolutionOutcome, {
+              recordSuppressed({
                 recordSourceBinding: options.recordSourceBinding,
                 site,
                 phase: 'free-call-fallback',
@@ -524,7 +588,7 @@ export function emitFreeCallFallback(
                 // Cross-file candidates are shadowing; keep first-match.
                 const sameFile = narrowed.every((d) => d.filePath === narrowed[0]!.filePath);
                 if (sameFile) {
-                  recordSuppressedOutcome(options.recordResolutionOutcome, {
+                  recordSuppressed({
                     recordSourceBinding: options.recordSourceBinding,
                     site,
                     phase: 'free-call-fallback',
@@ -562,7 +626,10 @@ export function emitFreeCallFallback(
                   name: site.name,
                   arity: site.arity,
                   argumentTypes: site.argumentTypes,
-                  atRange: { startLine: site.atRange.startLine, startCol: site.atRange.startCol },
+                  atRange: {
+                    startLine: site.atRange.startLine,
+                    startCol: site.atRange.startCol,
+                  },
                 },
                 parsed,
                 scopes,
@@ -571,7 +638,7 @@ export function emitFreeCallFallback(
 
           const key = siteKey(parsed.filePath, site);
           if (adlSuppressed && ordinary.length === 0) {
-            recordSuppressedOutcome(options.recordResolutionOutcome, {
+            recordSuppressed({
               recordSourceBinding: options.recordSourceBinding,
               site,
               phase: 'free-call-fallback',
@@ -616,7 +683,7 @@ export function emitFreeCallFallback(
               } else {
                 // These candidates share the selected lexical tier. Different
                 // files do not establish precedence between imported overloads.
-                recordSuppressedOutcome(options.recordResolutionOutcome, {
+                recordSuppressed({
                   recordSourceBinding: options.recordSourceBinding,
                   site,
                   phase: 'free-call-fallback',
@@ -659,7 +726,7 @@ export function emitFreeCallFallback(
               handledSites.add(key);
               continue;
             } else if (narrowed.length > 1) {
-              recordSuppressedOutcome(options.recordResolutionOutcome, {
+              recordSuppressed({
                 recordSourceBinding: options.recordSourceBinding,
                 site,
                 phase: 'free-call-fallback',
@@ -804,7 +871,7 @@ export function emitFreeCallFallback(
         continue;
       }
       if (fnDef.isDeleted === true) {
-        recordSuppressedOutcome(options.recordResolutionOutcome, {
+        recordSuppressed({
           recordSourceBinding: options.recordSourceBinding,
           site,
           phase: 'free-call-fallback',
@@ -889,9 +956,22 @@ export function emitFreeCallFallback(
         nodeLookup,
         site.atRange,
       );
-      if (callerGraphId === undefined) continue;
       const tgtGraphId = resolveDefGraphId(fnDef.filePath, fnDef, nodeLookup);
-      if (tgtGraphId === undefined) continue;
+      options.selectedCalls?.set(selectedCallKey(parsed.filePath, site.atRange), fnDef);
+      options.onSelectedCall?.(selectedCallKey(parsed.filePath, site.atRange), fnDef);
+      if (fnDefFromProvider) {
+        handledSites.add(siteKey(parsed.filePath, site));
+        options.recordResolutionOutcome?.(
+          providerCallOutcome(
+            { kind: 'resolved', definition: fnDef },
+            site,
+            parsed.filePath,
+            'free-call-fallback',
+            outcomeContext,
+          ),
+        );
+      }
+      if (callerGraphId === undefined || tgtGraphId === undefined) continue;
       // Always mark the site as handled — even when the dedup-collapse
       // means we don't add a new edge — so `emit-references` skips its
       // potentially-wrong fallback for the same site.
@@ -1000,7 +1080,9 @@ export function constructionSiteReason(
 
 function siteKey(
   filePath: string,
-  site: { readonly atRange: { readonly startLine: number; readonly startCol: number } },
+  site: {
+    readonly atRange: { readonly startLine: number; readonly startCol: number };
+  },
 ): string {
   return `${filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
 }
@@ -1042,6 +1124,7 @@ function recordSuppressedOutcome(
     readonly candidates: readonly SymbolDefinition[];
     readonly site?: ReferenceSite;
     readonly recordSourceBinding?: SourceBindingRecorder;
+    readonly identityContext?: CallOutcomeContext;
   },
 ): void {
   if (input.site !== undefined)
@@ -1058,6 +1141,15 @@ function recordSuppressedOutcome(
     range: input.range,
     reason: input.reason,
     candidateIds: input.candidates.map((d) => d.nodeId),
+    ...(input.site !== undefined && input.identityContext !== undefined
+      ? callSuppressionIdentities(
+          input.candidates.map((d) => d.nodeId),
+          input.site,
+          input.identityContext,
+          true,
+          input.candidates,
+        )
+      : { siteKind: input.site?.kind }),
   });
 }
 

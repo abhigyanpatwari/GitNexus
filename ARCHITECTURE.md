@@ -436,6 +436,56 @@ Python's provider classifies attribute reads and assignment targets separately; 
 
 Property references declined across language boundaries are recorded in `crossLanguageProperties`. Both `context` and upstream `impact` on an affected property report `epistemic: 'lower-bound'`, with the explanation in `boundaries` and `unresolved`, and the definition languages in `anchorLanguages`. This evidence does not fabricate cross-language edges and does not qualify a downstream walk.
 
+### Java overload selection and missing call edges (#3789)
+
+Java resolves an overload family through provider hooks before the shared passes
+prune candidates by owner or conversion rank. The provider gathers eligible
+members across the receiver's compile-time hierarchy, removes overridden
+signatures, and applies the JLS 15.12.2 phases in order: strict invocation, loose
+invocation, then variable arity. Within the first applicable phase it compares
+parameter types pairwise for specificity. Boxing, primitive widening, arrays,
+null, and concrete invariant generic arguments retain their distinct meanings.
+Lexically scoped argument facts travel in Java's existing `captureSideChannel`,
+so parse workers and durable cache replay make the same decisions.
+Static imports use accessible overload families; an explicit import shadows only
+the same signature from an on-demand import. Enum constant bodies and implicit
+record accessors reuse the provider's existing synthetic identities. Field,
+hierarchy, and subtype walks memoize shared ancestors while preserving cycle and
+depth bounds.
+
+The provider models a bounded set of qualified JDK type relationships and
+`Arrays.asList` / `Collections.singletonList` calls. These factories are poly
+expressions: their type arguments depend on the candidate's parameter type.
+Source declarations and lexical shadowing take precedence over these summaries.
+Unsupported generic inference, unavailable argument types, and incomplete
+inherited inventories leave an overload unresolved. A complete original family
+containing only one declaration may retain the existing unique-member inference
+for opaque arguments; this exception does not apply to a family narrowed to one
+candidate. Runtime implementation dispatch follows the selected signature.
+It preserves the original receiver's subtype bound and excludes static and private
+methods from virtual dispatch.
+
+Captures also retain callable-owned return annotations and structural identities
+for `var` initializers. The shared passes keep the selected compile-time method
+separate from runtime dispatch targets, then propagate owned return types to
+untyped assignments and revisit waiting receiver calls through a dependency
+queue. Sequential assignments have no expression-depth cutoff. Unresolved producers
+cannot restore an earlier name-based return guess. Generic implementation
+signatures substitute a whole formal type parameter only when concrete source
+heritage proves its binding; unsupported substitutions remain unknown.
+
+Suppressed overload calls record graph identities for their candidate methods,
+declaring owners, and caller. `unresolved-overloads.ts` reconciles decisions per
+call site and resolution phase and persists a bounded `unresolvedOverloads`
+receipt, including an explicit complete-empty receipt. `impact` and `context`
+report matching omitted sites through `causes.overloadResolution` and
+`epistemic: 'lower-bound'`; possible callers never become ordinary `CALLS`
+edges or inflate known caller counts. Impact checks the nodes whose neighbors
+were actually expanded before pagination, using candidate identities upstream
+and caller identities downstream. Missing, malformed, or capped receipts retain
+an uncertainty boundary. Re-analyze with the current build (`--force` when
+repairing metadata) to replace a legacy receipt.
+
 ### Optional CFG/PDG emission (`--pdg`, #2081–#2086)
 
 On a `--pdg` run providers build control-flow graphs through `LanguageProvider.cfgVisitor` (Tree-sitter ASTs) or `collectSourceCfgs` (standalone source processing). Every supported language supplies one of these hooks; Vue covers executable scripts. AST visitors run in the parse worker, while source-backed providers run during fresh scope extraction. Both produce plain `ParsedFile.cfgSideChannel` data. Scope-resolution emits the program-dependence layers **inside Phase 4 of `runScopeResolution`, while the disk-backed ParsedFile store is still live**. The store is cleared after that phase, so a later standalone phase cannot consume it.

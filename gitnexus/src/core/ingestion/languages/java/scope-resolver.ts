@@ -42,6 +42,12 @@ import {
   clearJavaClassAnnotationFacts,
 } from './capture-side-channel.js';
 import { clearJavaPackageFacts } from './package-facts.js';
+import {
+  resolveJavaReceiverMember,
+  resolveJavaSelectedMethodImplementation,
+  resolveJavaUnqualifiedCall,
+  resolveJavaReceiverCallSite,
+} from './overload-resolution.js';
 
 const javaScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Java,
@@ -75,6 +81,11 @@ const javaScopeResolver: ScopeResolver = {
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
   applyCaptureSideChannel: applyJavaCaptureSideChannel,
+  resolveReceiverMember: resolveJavaReceiverMember,
+  resolveUnqualifiedCall: resolveJavaUnqualifiedCall,
+  resolveSelectedMethodImplementation: resolveJavaSelectedMethodImplementation,
+  receiverMemberLookupCoversAllCalls: true,
+  receiverCallSite: resolveJavaReceiverCallSite,
 
   isSuperReceiver: (text) => text.trim() === 'super',
 
