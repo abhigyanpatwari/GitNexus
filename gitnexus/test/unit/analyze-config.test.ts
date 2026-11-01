@@ -413,22 +413,28 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     });
 
     it.each([
-      ['invalid JSON', '{'],
-      ['non-object', '[]'],
-      ['unknown key', '{"unknownOption": true}'],
-      ['conflicting keys', '{"skipSkills": true, "skip-skills": false}'],
-      ['invalid value', '{"skipSkills": "yes"}'],
-      ['invalid nested block', '{"analyze": []}'],
-      ['invalid nested value', '{"analyze": {"goRouterAliases": "gin"}}'],
-    ])('names only the external file for %s errors', async (_name, raw) => {
+      ['invalid JSON', '{', /not valid JSON/],
+      ['non-object', '[]', /must contain a JSON object/],
+      ['unknown key', '{"unknownOption": true}', /Unknown key/],
+      [
+        'conflicting keys',
+        '{"defaultBranch": "main", "branch": "develop"}',
+        /both configure the same option/,
+      ],
+      ['invalid value', '{"skipSkills": "yes"}', /must be a boolean/],
+      ['invalid nested block', '{"analyze": []}', /"analyze" must be a JSON object/],
+      ['invalid nested value', '{"analyze": {"goRouterAliases": "gin"}}', /non-empty array/],
+    ])('names only the external file for %s errors', async (_name, raw, reason) => {
       const file = await writeEnvRc({});
       await fs.writeFile(file, raw);
       const expected = expect.objectContaining({
         message: expect.stringContaining(`GITNEXUS_RC file "${file}"`),
       });
       expect(() => loadAnalyzeConfig(dir)).toThrow(expected);
+      expect(() => loadAnalyzeConfig(dir)).toThrow(reason);
       expect(() => loadAnalyzeConfig(dir)).not.toThrow(/\.gitnexusrc/);
       await expect(loadAnalyzeConfigStrict(dir)).rejects.toThrow(expected);
+      await expect(loadAnalyzeConfigStrict(dir)).rejects.toThrow(reason);
       await expect(loadAnalyzeConfigStrict(dir)).rejects.not.toThrow(/\.gitnexusrc/);
     });
 
