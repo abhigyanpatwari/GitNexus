@@ -43,14 +43,16 @@ jobs:
             const path = require('path');
             const runId = context.payload.workflow_run.id;
 
-            const allArtifacts = await github.rest.actions.listWorkflowRunArtifacts({
+            // Sharded CI runs can upload more than one page of artifacts.
+            const allArtifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               run_id: runId,
+              per_page: 100,
             });
 
             async function downloadArtifact(name, dest) {
-              const match = allArtifacts.data.artifacts.find(a => a.name === name);
+              const match = allArtifacts.find(a => a.name === name);
               if (!match) {
                 core.warning(`Artifact "${name}" not found`);
                 return false;
@@ -74,6 +76,8 @@ jobs:
       - name: Extract artifacts
         shell: bash
         run: |
+          # With no artifacts, let the metadata step skip the report cleanly.
+          mkdir -p "$RUNNER_TEMP/dl"
           cd "$RUNNER_TEMP/dl"
           # Extract each artifact into its own directory to avoid filename collisions
           for z in *.zip; do
@@ -160,13 +164,14 @@ jobs:
 
             // Try each run until we find a downloadable test-reports artifact
             for (const run of runs.data.workflow_runs) {
-              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+              const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 run_id: run.id,
+                per_page: 100,
               });
 
-              const testReports = artifacts.data.artifacts.find(a => a.name === 'test-reports');
+              const testReports = artifacts.find(a => a.name === 'test-reports');
               if (!testReports) {
                 core.info(`Run ${run.id}: no test-reports artifact, trying next`);
                 continue;
