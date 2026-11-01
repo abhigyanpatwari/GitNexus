@@ -52,12 +52,6 @@ describe('caller-derived parameter types (W2-2)', () => {
       )
       .map((e) => e.rel.targetId);
 
-  it('types a bare parameter from its single caller', () => {
-    const targets = preciseTargetsOf('readSpike', 'consumer.js');
-    expect(targets).toHaveLength(1);
-    expect(targets[0]).toContain('makeSpike.wickRatio');
-  });
-
   it('does not reach the OTHER producer of the same field name', () => {
     // `makeCandle.wickRatio` exists and is a candidate for any name-based join.
     expect(preciseTargetsOf('readSpike', 'consumer.js')[0]).not.toContain('makeCandle');

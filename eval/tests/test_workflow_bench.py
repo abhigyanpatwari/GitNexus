@@ -210,7 +210,7 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         step for step in containment["steps"] if str(step.get("uses", "")).startswith("actions/setup-node@")
     )
     claude_lock = json.loads((repo_root / ".github" / "claude-canary-runtime" / "package-lock.json").read_text())
-    setup_uv = "astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884"
+    setup_uv = "astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa"
     assert workflow.count(setup_uv) >= 3
     assert workflow.count("version: '0.11.23'") >= 3
     assert workflow.count("uv run --locked --extra dev python -m pytest") >= 3
@@ -255,6 +255,9 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         "npm ci",
         "npm run build",
     ]
+    task_build = containment_steps["Build the pinned task toolchain that grades release evaluation"]["run"]
+    assert "python -m workflow_bench.release_build" in task_build
+    assert '--repo "${RUNNER_TEMP}/tasks-base"' in task_build
     selected_containment_tests = containment_steps["Prove process-tree and sandbox containment"]["run"].split()
     assert selected_containment_tests == [
         "uv",
@@ -267,6 +270,8 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         "pytest",
         "tests/test_process_control.py",
         "tests/test_proposer_sandbox.py",
+        # Real-Bubblewrap baseline_cli shim canary; skipped everywhere else.
+        "tests/test_cli_shim.py",
         "tests/test_workflow_bench_sessions.py",
         "tests/test_ce_plugin_runtime.py",
         # The offline sweep, run here with nothing stubbed: this job is the only
@@ -275,9 +280,11 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         # Carries the real-CLI identity probe, which needs CLAUDE_CANARY_BIN -
         # set only on this job. Omitted from this list it skipped everywhere.
         "tests/test_mock_provider.py",
+        "tests/test_mcp_tool_loading.py",
         # Paired prepare/session/oracle/report composition uses that same native
         # CLI and containment; it must execute here rather than skip everywhere.
         "tests/test_release_evaluation_smoke.py",
+        "tests/test_release_controls.py",
         # These also need runtime dependencies absent from the locked pytest job.
         "tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant",
         "tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout",
@@ -295,7 +302,8 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         for path in (repo_root / "eval" / "tests").glob("test_*.py")
         if bwrap_canary_marker.search(path.read_text())
     )
-    assert bwrap_canary_files == ["test_proposer_sandbox.py", "test_workflow_bench_sessions.py"]
+    assert bwrap_canary_files == ["test_cli_shim.py", "test_proposer_sandbox.py", "test_release_controls.py",
+                                 "test_workflow_bench_sessions.py"]
     assert all(f"tests/{name}" in selected_containment_tests for name in bwrap_canary_files)
     assert "eval-containment-windows:" in workflow
 
@@ -321,7 +329,7 @@ def test_platform_ci_preserves_required_check_names_with_complete_execution_gate
         for platform in ("windows-latest", "macos-latest")
         for check in (1, 2, 3)
     }
-    plan = jobs["shard-plan"]["steps"][0]["run"]
+    plan = next(step["run"] for step in jobs["shard-plan"]["steps"] if step.get("id") == "gen")
     total = int(re.search(r"^TOTAL=(\d+)\b", plan, re.MULTILINE)[1])
     native_names = {
         "tests / "
@@ -406,6 +414,132 @@ def test_test_artifact_retries_cannot_hide_missing_evidence(ci_test_jobs):
                     assert "${{ matrix." + axis + " }}" in name, (
                         f"Artifact {name} must distinguish matrix axis {axis}"
                     )
+
+
+def test_test_artifact_download_retries_require_a_verified_artifact():
+    repo_root = Path(__file__).resolve().parents[2]
+    action = yaml.safe_load((repo_root / ".github/actions/download-test-artifact/action.yml").read_text())
+    assert action["runs"]["using"] == "composite"
+    assert action["inputs"]["name"]["required"] is True
+    assert action["inputs"]["path"]["required"] is True
+    first, wait, second, final_wait, final = action["runs"]["steps"]
+    assert "if" not in first
+    assert first["id"] == "first" and second["id"] == "second"
+    assert first["continue-on-error"] is True
+    assert second["continue-on-error"] is True
+    assert not final.get("continue-on-error", False)
+
+    # Use raw outcomes: continue-on-error turns a failed attempt's conclusion
+    # into success. Stop retrying after recovery or cancellation.
+    for pause, attempt, previous, delay in (
+        (wait, second, "first", 10),
+        (final_wait, final, "second", 30),
+    ):
+        assert pause["if"] == attempt["if"] == "${{ !cancelled() && steps." + previous + ".outcome == 'failure' }}"
+        assert pause["shell"] == "bash"
+        assert pause["run"] == f"sleep {delay}"
+
+    assert len({step["uses"] for step in (first, second, final)}) == 1
+    for step in (first, second, final):
+        assert re.fullmatch(r"actions/download-artifact@[a-f0-9]{40}", step["uses"])
+        # Every attempt must fetch and verify the same artifact in this run;
+        # no pattern, alternate run, or relaxed digest check may substitute it.
+        assert step["with"] == {
+            "name": "${{ inputs.name }}",
+            "path": "${{ inputs.path }}",
+            "digest-mismatch": "error",
+        }
+
+
+@pytest.mark.parametrize("job_name", ["tests", "coverage-merge", "shard-plan", "cross-platform", "native-timings"])
+def test_frozen_timing_consumers_retry_required_downloads(ci_test_jobs, job_name):
+    job = ci_test_jobs[job_name]
+    downloads = [
+        step for step in job["steps"]
+        if step.get("with", {}).get("name") == "shard-timing-input"
+        and step.get("uses") != "./.github/actions/upload-test-artifact"
+    ]
+    assert len(downloads) == 1
+    download = downloads[0]
+    assert download["uses"] == "./.github/actions/download-test-artifact"
+    assert not download.get("continue-on-error", False)
+    assert not job.get("continue-on-error", False)
+    expected_path = ".vitest/timings" if job_name == "shard-plan" else "gitnexus/.vitest/timings"
+    assert download["with"] == {"name": "shard-timing-input", "path": expected_path}
+    assert any(
+        step.get("uses", "").startswith("actions/checkout@")
+        for step in job["steps"][:job["steps"].index(download)]
+    )
+
+
+def test_shard_plan_retry_cannot_replace_frozen_timing_input(ci_test_jobs):
+    steps = ci_test_jobs["shard-plan"]["steps"]
+    restore = next(step for step in steps if step.get("id") == "previous-input")
+    assert restore["if"] == "steps.execution.outputs.initialize != 'true'"
+    assert not restore.get("continue-on-error", False)
+    assert restore["with"]["name"] == "shard-timing-input"
+
+    # A failed restore must never fall through to newer history, including
+    # upload retries that may overwrite an artifact left by a previous attempt.
+    for name in (
+        "Restore last trusted timing history",
+        "Prepare timing snapshot",
+        "Freeze timing input for every shard and retry",
+    ):
+        step = next(step for step in steps if step.get("name") == name)
+        assert step["if"] == "steps.execution.outputs.initialize == 'true'", name
+
+
+@pytest.mark.parametrize(
+    "attempt,conclusion,jobs,api_status,expected",
+    [
+        (1, "", 0, 1, "true"),
+        (2, "action_required", 0, 0, "true"),
+        (2, "action_required", 1, 0, "false"),
+        (2, "success", 0, 0, "false"),
+        (2, "failure", 0, 0, "false"),
+        (2, "cancelled", 0, 0, "false"),
+        (3, "action_required", 0, 1, "false"),
+        (2, "", 0, 1, None),
+    ],
+)
+def test_shard_plan_initializes_only_before_any_execution(
+    ci_test_jobs, tmp_path, attempt, conclusion, jobs, api_status, expected
+):
+    step = next(step for step in ci_test_jobs["shard-plan"]["steps"] if step.get("id") == "execution")
+    output = tmp_path / "output"
+    stub = """
+    gh() {
+      if [[ "$API_STATUS" != 0 ]]; then return "$API_STATUS"; fi
+      case "$2" in
+        */jobs) printf '%s\\n' "$INITIAL_JOBS" ;;
+        *) printf '%s\\n' "$INITIAL_CONCLUSION" ;;
+      esac
+    }
+    """
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", stub + step["run"]],
+        env={
+            **os.environ,
+            "GITHUB_OUTPUT": str(output),
+            "CI_REPOSITORY": "owner/repo",
+            "CI_RUN_ID": "123",
+            "CI_RUN_ATTEMPT": str(attempt),
+            "INITIAL_CONCLUSION": conclusion,
+            "INITIAL_JOBS": str(jobs),
+            "API_STATUS": str(api_status),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if expected is None:
+        assert result.returncode != 0
+        assert not output.exists()
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert output.read_text() == f"initialize={expected}\n"
 
 
 @pytest.mark.parametrize("native_result", ["success", "failure", "cancelled", "skipped", ""])

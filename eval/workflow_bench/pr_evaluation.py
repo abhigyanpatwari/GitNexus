@@ -18,6 +18,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .session_diagnostics import public_cell_diagnostics, render_diagnostics
+
 SHA = re.compile(r"[0-9a-f]{40}")
 REPO = re.compile(r"[\w.-]+/[\w.-]+")
 COST_LABEL = "run-cost-evaluation"
@@ -30,6 +32,12 @@ PREVIEW_PATHS = {
     "eval/workflow_bench/README.md",
 }
 EVALUATION_WORKFLOW = ".github/workflows/release-evaluation.yml"
+# Exact `if:` gates of the dispatch-only descriptive arms (never PR previews).
+OPT_IN_ARM_CONDITIONS = frozenset({
+    "env.CLI_ARM == 'true'",
+    "env.CODE_ARM == 'true'",
+    "inputs.mcp_tool_loading == true && inputs.candidate_pr == ''",
+})
 MEASUREMENT_PATHS = ("eval/", ".github/claude-canary-runtime/", EVALUATION_WORKFLOW)
 
 
@@ -121,8 +129,18 @@ def measurement_protocol(source: str) -> dict[str, Any]:
         key: value for key, value in job["env"].items() if key not in {"INPUT_PR", "INPUT_PR_SHA", "COMPARISON_RUN_ID"}
     }
     steps = []
-    if sum(step.get("run", "").count("-m workflow_bench.runner") for step in job["steps"]) != 1:
+    invocations = [
+        (index, step.get("run", "").count("-m workflow_bench.runner"), step.get("if"))
+        for index, step in enumerate(job["steps"])
+        if "-m workflow_bench.runner" in step.get("run", "")
+    ]
+    paid = [(index, count) for index, count, condition in invocations if condition not in OPT_IN_ARM_CONDITIONS]
+    if len(paid) != 1 or paid[0][1] != 1:
         raise ValueError("expected one paid measurement step")
+    # Descriptive opt-in arms run after the paired measurement, which the
+    # fingerprint below ends at; one placed earlier could alter what it measures.
+    if any(count != 1 or index < paid[0][0] for index, count, condition in invocations if condition in OPT_IN_ARM_CONDITIONS):
+        raise ValueError("opt-in arm runs must follow the paid measurement step")
     for step in job["steps"]:
         if step.get("id") == "resolve":
             continue  # Runtime selection is intentionally different for an unmerged PR.
@@ -333,6 +351,7 @@ def compare_candidate(
             and _number(row.get("duration_s"))
         )
         safe = {field: row[field] for field in ROW_FIELDS if field in row}
+        safe.update(public_cell_diagnostics(row))
         try:
             json.dumps(safe, allow_nan=False)
         except (ValueError, TypeError, OverflowError):
@@ -398,7 +417,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
     ]
     if not report["complete"]:
-        return "\n".join([*lines, "**Incomplete evidence; no savings conclusion.**", "", *report["problems"], ""])
+        return "\n".join([*lines, "**Incomplete evidence; no savings conclusion.**", "", *report["problems"],
+                          *render_diagnostics(report.get("per_run", [])), ""])
     lines += [
         "| MCP sessions | Solved | Total model cost | Mean model cost |",
         "| --- | --- | --- | --- |",
@@ -430,6 +450,7 @@ def render_markdown(report: dict[str, Any]) -> str:
             "",
             "Only the PR MCP cells are newly measured; no-MCP and stable sessions are not rerun.",
             "Historical comparisons are descriptive and do not establish statistical significance or isolate this PR from other runtime changes.",
+            *render_diagnostics(report.get("per_run", [])),
             "",
         ]
     )

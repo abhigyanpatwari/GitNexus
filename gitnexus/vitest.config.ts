@@ -51,10 +51,8 @@ export default defineConfig({
       },
     },
 
-    // Balance shards by estimated work rather than file count, so the
-    // spawn-heavy sequential suites spread evenly across shard runners instead
-    // of clustering onto one (see test/helpers/perf-sequencer.ts). Only shard()
-    // is overridden — groupOrder and sort order are left to the base sequencer.
+    // Balance shards using vitest-shard-balancer and the frozen CI timing history.
+    // groupOrder and sort order are left to the base sequencer.
     sequence: {
       sequencer: PerfSequencer,
     },
@@ -74,6 +72,7 @@ export default defineConfig({
         test: {
           name: 'lbug-db',
           include: [
+            'test/integration/dangling-owner-edges.test.ts',
             'test/integration/class-expression-owners.test.ts',
             'test/integration/rename-provider-*.test.ts',
             'test/integration/pdg-explicit-owner.test.ts',
@@ -87,6 +86,7 @@ export default defineConfig({
             'test/integration/go-incremental-method-owners.test.ts',
             'test/integration/query-symbol-integrity.test.ts',
             'test/integration/mcp-index-generation.test.ts',
+            'test/integration/mcp-refresh-index-e2e.test.ts',
             'test/integration/fts-repair-warm-session.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
@@ -119,6 +119,7 @@ export default defineConfig({
             'test/integration/lbug-orphan-sidecar-recovery.test.ts',
             'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
             'test/integration/lbug-checkpoint-accounting.test.ts',
+            'test/integration/lbug-rel-copy-page-padding.test.ts',
             'test/integration/lbug-incremental-search.test.ts',
             'test/integration/lbug-readonly-init.test.ts',
             // Shared sibling store (#3352): each file runs real analyses and opens
@@ -165,7 +166,7 @@ export default defineConfig({
             // file-lock exposure this project exists to serialize (TESTING.md
             // § Vitest projects). Registering it here does NOT narrow where it
             // runs: vitest applies `--shard` once to the combined cross-project
-            // spec list (PerfSequencer/assignShards is a complete, disjoint
+            // spec list (PerfSequencer is a complete, disjoint
             // partition), and run-cross-platform.ts hands vitest explicit file
             // paths, which resolve against every project's include list. Its
             // `incremental-vector-extension-ordering` /
@@ -185,6 +186,7 @@ export default defineConfig({
           sequence: { groupOrder: 3 },
           include: ['test/**/*.test.ts'],
           exclude: [
+            'test/integration/dangling-owner-edges.test.ts',
             'test/integration/class-expression-owners.test.ts',
             'test/integration/rename-provider-*.test.ts',
             'test/integration/pdg-explicit-owner.test.ts',
@@ -198,6 +200,7 @@ export default defineConfig({
             'test/integration/go-incremental-method-owners.test.ts',
             'test/integration/query-symbol-integrity.test.ts',
             'test/integration/mcp-index-generation.test.ts',
+            'test/integration/mcp-refresh-index-e2e.test.ts',
             'test/integration/fts-repair-warm-session.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
@@ -228,6 +231,7 @@ export default defineConfig({
             'test/integration/lbug-orphan-sidecar-recovery.test.ts',
             'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
             'test/integration/lbug-checkpoint-accounting.test.ts',
+            'test/integration/lbug-rel-copy-page-padding.test.ts',
             'test/integration/lbug-incremental-search.test.ts',
             'test/integration/lbug-readonly-init.test.ts',
             'test/integration/analyze-wal-checkpoint-failure.test.ts',
