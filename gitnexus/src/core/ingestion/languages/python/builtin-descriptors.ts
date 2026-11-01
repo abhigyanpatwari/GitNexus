@@ -156,6 +156,22 @@ function bindingOf(identifier: SyntaxNode): Omit<NameBinding, 'redirect'> | null
   }
 }
 
+/** Value bindings (including deletion) owned by this scope, in source order.
+ * Reuse the descriptor classifier so constructor ownership observes the same
+ * imports, pattern captures, and nested-scope boundaries as decorator lookup. */
+export function pythonValueBindingsInScope(scope: SyntaxNode, name: string): SyntaxNode[] {
+  return scope.descendantsOfType('identifier').filter((node) => {
+    if (node.text !== name || scopeOf(node)?.id !== scope.id || bindingOf(node) === null) {
+      return false;
+    }
+    // A bare annotation does not replace the current value.
+    if (node.parent?.type === 'assignment' && node.parent.childForFieldName('right') === null) {
+      return false;
+    }
+    return name !== '_' || !inCasePattern(node);
+  });
+}
+
 const bindingsByTree = new WeakMap<object, ReadonlyMap<string, readonly NameBinding[]>>();
 
 /** Every binding of a builtin descriptor name in the file, in source order. */

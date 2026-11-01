@@ -72,6 +72,7 @@ export default defineConfig({
         test: {
           name: 'lbug-db',
           include: [
+            'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',
             'test/integration/class-expression-owners.test.ts',
             'test/integration/rename-provider-*.test.ts',
@@ -115,6 +116,7 @@ export default defineConfig({
             'test/integration/api-impact-e2e.test.ts',
             'test/integration/shape-check-regression.test.ts',
             'test/integration/java-class-impact.test.ts',
+            'test/integration/java-overload-impact-persistence.test.ts',
             'test/integration/class-impact-all-languages.test.ts',
             'test/integration/lbug-orphan-sidecar-recovery.test.ts',
             'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
@@ -186,6 +188,7 @@ export default defineConfig({
           sequence: { groupOrder: 3 },
           include: ['test/**/*.test.ts'],
           exclude: [
+            'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',
             'test/integration/class-expression-owners.test.ts',
             'test/integration/rename-provider-*.test.ts',
@@ -227,6 +230,7 @@ export default defineConfig({
             'test/integration/api-impact-e2e.test.ts',
             'test/integration/shape-check-regression.test.ts',
             'test/integration/java-class-impact.test.ts',
+            'test/integration/java-overload-impact-persistence.test.ts',
             'test/integration/class-impact-all-languages.test.ts',
             'test/integration/lbug-orphan-sidecar-recovery.test.ts',
             'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',

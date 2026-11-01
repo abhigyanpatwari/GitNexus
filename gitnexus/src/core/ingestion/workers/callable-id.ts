@@ -24,6 +24,12 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { definitionIdPosition } from '../scope-resolution/utils/definition-id.js';
 
 const LOCAL_IDENTITY_SUFFIX = /@\d+:\d+$/;
+// Parsed-file definitions are finalized before worker graph extraction. Index
+// once per immutable array; weak keys release the index with its parse result.
+const definitionsByName = new WeakMap<
+  readonly SymbolDefinition[],
+  Map<string, SymbolDefinition[]>
+>();
 
 function simpleDefinitionName(def: SymbolDefinition): string | undefined {
   const qualifiedName = def.qualifiedName;
@@ -67,17 +73,26 @@ export function boundCallableStartPosition(
 ): { readonly row: number; readonly column: number } {
   if (localDefs === undefined) return definitionNode.startPosition;
 
+  let index = definitionsByName.get(localDefs);
+  if (index === undefined) {
+    index = new Map();
+    for (const def of localDefs) {
+      for (const name of new Set([simpleDefinitionName(def), def.qualifiedName])) {
+        if (name === undefined) continue;
+        const key = `${def.type}\0${name}`;
+        const matches = index.get(key) ?? [];
+        matches.push(def);
+        index.set(key, matches);
+      }
+    }
+    definitionsByName.set(localDefs, index);
+  }
+
   const origin = nameNode?.startPosition ?? definitionNode.startPosition;
   let best: { row: number; column: number; distance: number } | undefined;
   let tied = false;
 
-  for (const def of localDefs) {
-    if (
-      def.type !== nodeLabel ||
-      (simpleDefinitionName(def) !== nodeName && def.qualifiedName !== nodeName)
-    ) {
-      continue;
-    }
+  for (const def of index.get(`${nodeLabel}\0${nodeName}`) ?? []) {
     const position = definitionIdPosition(def.nodeId, def.filePath);
     if (position === undefined) continue;
 

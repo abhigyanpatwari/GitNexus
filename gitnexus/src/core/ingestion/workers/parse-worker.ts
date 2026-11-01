@@ -3434,7 +3434,18 @@ const processFileGroupFiles = (
     if (provider.synthesizeStructureMembers) {
       const synthetic = provider.synthesizeStructureMembers(tree, file.path, classOwnersByNodeId);
       for (const node of synthetic.nodes) {
-        result.nodes.push(node as ParsedNode);
+        result.nodes.push({
+          ...node,
+          properties: {
+            ...node.properties,
+            ...(typeof node.properties.startLine === 'number'
+              ? { startLine: mapRow(node.properties.startLine) }
+              : {}),
+            ...(typeof node.properties.endLine === 'number'
+              ? { endLine: mapRow(node.properties.endLine) }
+              : {}),
+          },
+        } as ParsedNode);
       }
       for (const sym of synthetic.symbols) {
         result.symbols.push(sym as ParsedSymbol);

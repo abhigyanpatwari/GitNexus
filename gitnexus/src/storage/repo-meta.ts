@@ -29,6 +29,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
+import type { UnresolvedOverloadSummary } from '../core/ingestion/scope-resolution/unresolved-overloads.js';
 import type { NameFallbackSummary } from '../core/ingestion/scope-resolution/name-fallback-summary.js';
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { resolveStoragePath } from './storage-resolver.js';
@@ -346,6 +347,12 @@ export interface RepoMeta {
    * this adds no runtime dependency from storage/ on core/.
    */
   unresolvedReceiverMembers?: UnresolvedReceiverSummary;
+  /**
+   * Final unresolved overload/implementation call sites, attributed by public
+   * candidate, caller and declaring-owner identity. A complete empty summary
+   * certifies measured-clean coverage; absence or invalid metadata is unverified.
+   */
+  unresolvedOverloads?: UnresolvedOverloadSummary;
   /**
    * Files omitted from scope-resolution because their provider capture or
    * extraction step threw. The rest of each file may still be present in the

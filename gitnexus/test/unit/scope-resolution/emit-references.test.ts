@@ -179,7 +179,7 @@ describe('emitReferencesToGraph: kind mapping', () => {
     expect(edge.reason).toContain('0.750');
   });
 
-  it('maps read / write → ACCESSES and stamps step=1 / step=2 for discrimination', () => {
+  it('retains read / write at the same position and stamps step=1 / step=2', () => {
     const fn = def('def:render', 'Function');
     const field = def('def:User.name', 'Property');
     const mod = scope('scope:m', null, 'Module', [fn, field]);
@@ -196,7 +196,7 @@ describe('emitReferencesToGraph: kind mapping', () => {
     const writeRef: Reference = {
       fromScope: 'scope:m',
       toDef: 'def:User.name',
-      atRange: range(6, 0, 6, 4),
+      atRange: readRef.atRange,
       kind: 'write',
       confidence: 0.55,
       evidence: [{ kind: 'local', weight: 0.55 }],

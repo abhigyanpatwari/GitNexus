@@ -9,7 +9,11 @@
  * wrapper or server worker) is responsible for process lifecycle.
  */
 
-import { detectGraphWriteCollapse, type GraphWriteCollapseVerdict } from './index-freshness.js';
+import {
+  detectGraphWriteCollapse,
+  getIndexIncompleteReasons,
+  type GraphWriteCollapseVerdict,
+} from './index-freshness.js';
 import {
   resolveFtsDisableReason,
   getFtsDisabledReason,
@@ -59,6 +63,7 @@ import {
 } from './ingestion/scope-resolution/unresolved-receivers.js';
 import { summarizeUndecidedSatisfaction } from './ingestion/scope-resolution/undecided-satisfaction.js';
 import { summarizeScopeExtractionFailures } from './ingestion/scope-resolution/scope-extraction-failures.js';
+import { summarizeUnresolvedOverloads } from './ingestion/scope-resolution/unresolved-overloads.js';
 import type { KnowledgeGraph } from './graph/types.js';
 import { reconcileGraphNodeIdentities } from './incremental/write-reconciliation.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
@@ -279,6 +284,7 @@ import {
   resolveRepoIdentityRoot,
 } from '../storage/git.js';
 import { isGitNexusManagedPath } from '../storage/gitnexus-managed-paths.js';
+import { walkRepositoryPaths } from './ingestion/filesystem-walker.js';
 import { getMaxFileSizeBytes } from './ingestion/utils/max-file-size.js';
 import { getIncludeDotDirs, includeDotDirsCoverage } from './ingestion/utils/include-dot-dirs.js';
 import {
@@ -1572,6 +1578,64 @@ export async function runFullAnalysis(
   });
 }
 
+/** Prove that a previously indexed dirty snapshot still covers the same readable bytes. */
+async function matchesIndexedDirtyWorktree(repoPath: string, meta: RepoMeta): Promise<boolean> {
+  const { fileHashes, indexCoverage } = meta;
+  const indexedDirtyPaths = indexCoverage?.dirtyPaths;
+  if (
+    !fileHashes ||
+    !Array.isArray(indexedDirtyPaths) ||
+    indexedDirtyPaths.length === 0 ||
+    indexedDirtyPaths.some((rel) => typeof rel !== 'string') ||
+    getIndexIncompleteReasons(meta).length > 0 ||
+    indexCoverage?.maxFileSizeBytes !== getMaxFileSizeBytes()
+  ) {
+    return false;
+  }
+
+  const liveDirtyPaths = listWorkingTreeDirtyPaths(repoPath);
+  const indexedDirtySet = new Set(indexedDirtyPaths);
+  if (!liveDirtyPaths?.length || liveDirtyPaths.some((rel) => !indexedDirtySet.has(rel))) {
+    return false;
+  }
+
+  // Reject ordinary edits before scanning the repo. Include previously dirty
+  // paths so reverting one file while another stays dirty cannot look current.
+  const dirtyHashes = await computeFileHashes(repoPath, indexedDirtyPaths);
+  if (
+    indexedDirtyPaths.some(
+      (rel) => !dirtyHashes.has(rel) || dirtyHashes.get(rel) !== fileHashes[rel],
+    )
+  ) {
+    return false;
+  }
+
+  try {
+    const files = await walkRepositoryPaths(repoPath, undefined, {
+      quiet: true,
+      // Enable the walker's enumeration-error reporting: an unreadable subtree
+      // must not be mistaken for an unchanged input set.
+      onPathsDiscovered: async () => {},
+    });
+    const currentPaths = files
+      .map((file) => file.path)
+      .filter((rel) => !isGitNexusManagedPath(rel));
+    const recordedPaths = Object.keys(fileHashes).filter((rel) => !isGitNexusManagedPath(rel));
+    if (
+      currentPaths.length !== recordedPaths.length ||
+      currentPaths.some((rel) => fileHashes[rel] === undefined)
+    ) {
+      return false;
+    }
+    // Check all covered files, including changes hidden from Git's status and
+    // changes to the scan's coverage through ignore rules outside the worktree.
+    const hashes = await computeFileHashes(repoPath, currentPaths);
+    return currentPaths.every((rel) => hashes.has(rel) && hashes.get(rel) === fileHashes[rel]);
+  } catch {
+    return false;
+  }
+}
+
 async function runFullAnalysisInner(
   repoPath: string,
   options: AnalyzeOptions,
@@ -2614,9 +2678,8 @@ async function runFullAnalysisInner(
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
     if (currentCommit !== '') {
       // For git repos, even if HEAD matches lastCommit, the working tree
-      // may have uncommitted changes. Only short-circuit when the working
-      // tree is also clean — otherwise fall through to the incremental
-      // path which will hash-diff and update only changed files.
+      // may have uncommitted changes. A dirty checkout can short-circuit only
+      // after proving it still matches a successfully indexed dirty snapshot.
       //
       // We exclude paths that GitNexus itself writes during analyze:
       //   .gitnexus/                  — db / parse cache / meta.json
@@ -2626,6 +2689,10 @@ async function runFullAnalysisInner(
       // fast path because the previous analyze just wrote them
       // (regression vs PR #1233 behavior).
       const dirty = isWorkingTreeDirty(repoPath);
+      const dirtySnapshotMatches =
+        dirty &&
+        existsSync(placement.branch ? lbugPath : resolveGraphPath(storagePath)) &&
+        (await matchesIndexedDirtyWorktree(repoPath, existingMeta));
       // A clean porcelain status is not enough when the previous index captured
       // uncommitted content at this same HEAD: assume-unchanged and skip-worktree
       // paths are deliberately absent from porcelain. Re-hash only the paths
@@ -2701,7 +2768,7 @@ async function runFullAnalysisInner(
       // re-analysis whenever an index authored where FTS was unavailable was
       // later read on a host where it loads — which is a legitimate, common
       // state, and the invariant `analyzer-identity-cli.test.ts` pins.
-      if (!dirty && !indexedContentChanged && !healUnregistered) {
+      if (((!dirty && !indexedContentChanged) || dirtySnapshotMatches) && !healUnregistered) {
         const processDetectionStamp =
           existingMeta.processDetection ?? toProcessDetectionStamp(processDetectionBudget);
         if (options.registryName) {
@@ -3078,7 +3145,21 @@ async function runFullAnalysisInner(
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
   let pipelineResult;
+  let inputFileHashes: Map<string, string> | undefined;
   try {
+    if (repoHasGit) {
+      // Capture freshness before parsing. Hashing afterward can certify an edit
+      // the graph never saw and let the dirty fast path preserve stale results.
+      // A concurrent edit now differs from this receipt on the next analysis.
+      const inputs = await walkRepositoryPaths(repoPath, undefined, {
+        quiet: true,
+        onPathsDiscovered: async () => {},
+      });
+      inputFileHashes = await computeFileHashes(
+        repoPath,
+        inputs.map((file) => file.path),
+      );
+    }
     pipelineResult = await runPipelineFromRepo(
       repoPath,
       (p) => {
@@ -3166,7 +3247,7 @@ async function runFullAnalysisInner(
   // before any graph rows, FTS values, or embeddings are persisted.
   applyContentRetention(pipelineResult.graph, contentRetention);
 
-  // Compute current per-file content hashes from the pipeline's File nodes.
+  // Restrict the pre-parse hashes to the pipeline's actual File nodes.
   // Used both to drive the incremental DB writeback (when eligible) and to
   // populate meta.json.fileHashes for the next run.
   const allFilePaths: string[] = [];
@@ -3176,7 +3257,14 @@ async function runFullAnalysisInner(
       if (fp) allFilePaths.push(fp);
     }
   });
-  const newFileHashes = await computeFileHashes(repoPath, allFilePaths);
+  const newFileHashes = inputFileHashes
+    ? new Map(
+        allFilePaths.flatMap((rel) => {
+          const hash = inputFileHashes.get(rel);
+          return hash === undefined ? [] : [[rel, hash] as const];
+        }),
+      )
+    : await computeFileHashes(repoPath, allFilePaths);
   const currentAnalysisFeatures = resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, allFilePaths);
   const currentAnalysisFeatureMismatches = existingMeta
     ? findAnalysisFeatureMismatches(existingMeta.analysisFeatures, currentAnalysisFeatures)
@@ -5387,6 +5475,12 @@ async function runFullAnalysisInner(
       // Git-only: non-git repos never take the incremental path.
       schemaFingerprint: hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
       unresolvedReceiverMembers: summarizeUnresolvedReceivers(resolutionOutcomes),
+      // Resolution runs again on warm parse-cache hits. Replace the receipt,
+      // including complete-empty, so corrected/deleted source clears old gaps.
+      unresolvedOverloads: summarizeUnresolvedOverloads(
+        resolutionOutcomes,
+        pipelineResult.resolutionOutcomes !== undefined,
+      ),
       nameFallbackEdges: nameFallbackSummary,
       scopeExtractionFailures: summarizeScopeExtractionFailures(
         pipelineResult.scopeExtractionFailures,
