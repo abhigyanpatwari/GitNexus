@@ -12,8 +12,15 @@ import { describe, expect, it } from 'vitest';
 
 const INGESTION = path.resolve(__dirname, '../../src/core/ingestion');
 
-/** Modules reachable from the provider registry, the scope resolver and the pipeline phase. */
+/**
+ * The shared registries that register PL/SQL (provider list, scope-resolver
+ * table, phase index and phase list) plus every module they reach through it.
+ */
 const LIGHT_MODULES = [
+  'languages/index.ts',
+  'scope-resolution/pipeline/registry.ts',
+  'pipeline-phases/index.ts',
+  'pipeline.ts',
   'languages/plsql.ts',
   'languages/plsql/index.ts',
   'languages/plsql/captures.ts',
@@ -31,7 +38,13 @@ const LIGHT_MODULES = [
   'plsql/script-include.ts',
 ];
 
-const HEAVY = /(?:^|\/)(?:extract|parse)\.js$|\/generated\/|^antlr4ng$/;
+/** The ANTLR runtime, or (resolved from `file`) the PL/SQL extractor, parse module or generated parser. */
+function isHeavy(file: string, spec: string): boolean {
+  if (spec === 'antlr4ng') return true;
+  if (!spec.startsWith('.')) return false;
+  const target = path.posix.join(path.posix.dirname(file), spec);
+  return /^plsql\/(?:extract|parse)\.js$|^plsql\/generated\//.test(target);
+}
 
 /**
  * Every module specifier this file evaluates at load: `import … from '…'`
@@ -73,16 +86,25 @@ const FACTS_STORE = 'plsql/facts-store.ts';
 describe('PL/SQL parser loads lazily', () => {
   it.each(LIGHT_MODULES)('%s imports the parser and extractor by type only', (file) => {
     const source = readFileSync(path.join(INGESTION, file), 'utf8');
-    expect(valueImports(source).filter((spec) => HEAVY.test(spec))).toEqual([]);
+    expect(valueImports(source).filter((spec) => isHeavy(file, spec))).toEqual([]);
   });
 
   it.each(LIGHT_MODULES.filter((file) => file !== FACTS_STORE))(
     '%s never loads the parser or extractor dynamically either',
     (file) => {
       const source = readFileSync(path.join(INGESTION, file), 'utf8');
-      expect(dynamicLoads(source).filter((spec) => HEAVY.test(spec))).toEqual([]);
+      expect(dynamicLoads(source).filter((spec) => isHeavy(file, spec))).toEqual([]);
     },
   );
+
+  it('resolves specifiers before judging them: only the PL/SQL parser modules are heavy', () => {
+    expect(isHeavy('pipeline-phases/index.ts', './parse.js')).toBe(false);
+    expect(isHeavy('pipeline-phases/index.ts', '../plsql/parse.js')).toBe(true);
+    expect(isHeavy('languages/index.ts', '../plsql/extract.js')).toBe(true);
+    expect(isHeavy('plsql/facts-store.ts', './generated/PlSqlParser.js')).toBe(true);
+    expect(isHeavy('plsql/resolve.ts', './names.js')).toBe(false);
+    expect(isHeavy('pipeline.ts', 'antlr4ng')).toBe(true);
+  });
 
   it('the dynamic-load scanner sees import(), require() and createRequire()()', () => {
     expect(
@@ -129,7 +151,7 @@ describe('PL/SQL parser loads lazily', () => {
     expect(source).toMatch(/createRequire\(import\.meta\.url\)\('\.\/extract\.js'\)/);
     // Exactly those two (inside loadPlSqlParser and the fallback): any other
     // load, such as an eager top-level `void import(…)`, changes this list.
-    expect(dynamicLoads(source).filter((spec) => HEAVY.test(spec))).toEqual([
+    expect(dynamicLoads(source).filter((spec) => isHeavy(FACTS_STORE, spec))).toEqual([
       './extract.js',
       './extract.js',
     ]);
