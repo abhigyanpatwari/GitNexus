@@ -24,7 +24,13 @@ export default defineConfig({
     // caller's `atomicIncremental: true`, so an exported `=0` would silently
     // turn off every staging test. Empty is neither '0' nor '1', i.e. unset;
     // a test that needs a value stubs it.
-    env: { GITNEXUS_MEMORY: 'off', GITNEXUS_LANG: 'en', GITNEXUS_ATOMIC_INCREMENTAL: '' },
+    // Config tests supply their own files; never read a developer's GITNEXUS_RC.
+    env: {
+      GITNEXUS_MEMORY: 'off',
+      GITNEXUS_LANG: 'en',
+      GITNEXUS_ATOMIC_INCREMENTAL: '',
+      GITNEXUS_RC: '',
+    },
     // N-API destructors can crash worker forks on macOS during process exit.
     // This is independent of the QueryResult lifetime fix in @ladybugdb/core 0.15.2 —
     // it's a vitest forks + native addon interaction where destructors run in

@@ -69,7 +69,7 @@ export function normalizeRouterAliases(value: unknown, source: string): RouteFra
       /^[A-Za-z0-9._~-]+(\/[A-Za-z0-9._~-]+)*$/,
       'must be a Go import path (e.g. "example.com/org/pkg")',
     );
-    const type = field('type', /^[A-Za-z_][A-Za-z0-9_]*$/, 'must be a Go type name');
+    const type = field('type', /^[\p{L}_][\p{L}\p{Nd}_]*$/u, 'must be a Go type name');
     if (type === '_' || GO_KEYWORDS.has(type)) {
       throw new Error(
         `${source} entry field "type" must be a Go type name, not a keyword or blank identifier.`,

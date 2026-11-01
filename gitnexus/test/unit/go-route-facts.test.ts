@@ -12,6 +12,7 @@ import {
 import { resolveGoRouteFacts } from '../../src/core/ingestion/languages/go/route-facts.js';
 import type { RouteFrameworkAlias } from '../../src/core/ingestion/language-provider.js';
 import { routeHookConfigKey } from '../../src/core/ingestion/route-hook-config.js';
+import { normalizeRouterAliases } from '../../src/core/ingestion/languages/go/route-config.js';
 
 const parser = new Parser();
 parser.setLanguage(Go);
@@ -35,6 +36,28 @@ const resolve = (aliases: RouteFrameworkAlias[]) =>
   );
 
 describe('resolveGoRouteFacts', () => {
+  it('matches a configured Unicode type name against parsed route facts', () => {
+    const facts = collectGoRouteFacts(
+      parser.parse(`package routes
+import core "${CORE_PATH}"
+func R(s *core.ΔEngine) {
+  s.GET("/unicode", Handler)
+}`),
+    );
+    const routes = resolveGoRouteFacts([{ filePath: 'r.go', facts }], {
+      resolveImportTargets: () => [],
+      routeHookConfig: {
+        routeFrameworkAliases: normalizeRouterAliases(
+          [{ importPath: CORE_PATH, type: 'ΔEngine', framework: 'gin' }],
+          'goRouterAliases',
+        ),
+      },
+    });
+    expect(routes.map((route) => [route.routePath, route.handlerName])).toEqual([
+      ['/unicode', 'Handler'],
+    ]);
+  });
+
   it('replays serialized direct and alias facts with changed or removed configuration', () => {
     const facts = JSON.parse(
       JSON.stringify(

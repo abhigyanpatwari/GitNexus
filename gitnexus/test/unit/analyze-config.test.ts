@@ -336,6 +336,22 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     expect(() => loadAnalyzeConfig(dir)).toThrow(/must be a Go type name/);
   });
 
+  it.each(['ΔEngine', 'ÉEngine٢'])('accepts Unicode Go alias type %s', async (type) => {
+    const alias = { importPath: CORE, type, framework: 'gin' };
+    await writeRc(JSON.stringify({ goRouterAliases: [alias] }));
+    expect(loadAnalyzeConfig(dir)?.routeFrameworkAliases).toEqual([alias]);
+  });
+
+  it.each(['٢Engine', 'Engine²', 'E\u0301ngine'])(
+    'rejects invalid Go identifier %s',
+    async (type) => {
+      await writeRc(
+        JSON.stringify({ goRouterAliases: [{ importPath: CORE, type, framework: 'gin' }] }),
+      );
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/must be a Go type name/);
+    },
+  );
+
   it('rejects more router aliases than the cap instead of truncating', async () => {
     const alias = (i: number) => ({ importPath: `${CORE}${i}`, type: 'Engine', framework: 'gin' });
     await writeRc(
