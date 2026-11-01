@@ -44,6 +44,71 @@ const indexes = (fileScopes: Scope[]): ScopeResolutionIndexes =>
 const parsed = (fileScopes: Scope[]) => ({ moduleScope: 'module', scopes: fileScopes });
 
 describe('namespace target activation cache', () => {
+  it('shares a proven empty namespace map without discarding lexical receiver lookup', () => {
+    const module = scope('module', null, {
+      imports: [{ ...edge('values.ts', 0, 'value'), kind: 'named' }],
+      nameClaims: [{ name: 'value', kind: 'import', range: range(0) }],
+    });
+    const fn = scope('function', module.id, {
+      nameClaims: [{ name: 'local', kind: 'blocked', range: range(10), availableFrom: at(10) }],
+    });
+    const fileScopes = [module, fn];
+    const base = indexes(fileScopes);
+    const cache = createNamespaceTargetCache(parsed(fileScopes), base, {}, false);
+    const getScope = vi.spyOn(base.scopeTree, 'getScope');
+    expect(cache.requiresLexicalLookup).toBe(true);
+    const empty = cache.at();
+    expect(empty.size).toBe(0);
+    for (let line = 1; line <= 1000; line++) {
+      expect(cache.at(module.id, at(line))).toBe(empty);
+      expect(cache.at(fn.id, at(line))).toBe(empty);
+    }
+    // Once absence is proven, new receiver positions require no scope walks.
+    expect(getScope).not.toHaveBeenCalled();
+  });
+
+  it.each(['memory', 'sealed'] as const)(
+    'finds nested namespace imports when the module has none (%s)',
+    (storage) => {
+      const module = scope('module', null);
+      const fn = scope('function', module.id, { imports: [edge('inner.ts', 10)] });
+      const fileScopes = [module, fn];
+      const base = indexes(fileScopes);
+      const scopeTree =
+        storage === 'sealed'
+          ? new DiskBackedScopeTree(tmp, persistScopeShards(tmp, fileScopes))
+          : base.scopeTree;
+      const cache = createNamespaceTargetCache(parsed([]), { ...base, scopeTree }, {}, true);
+      expect(cache.at().size).toBe(0);
+      expect(cache.at(fn.id, at(11)).get('pkg')).toEqual(['inner.ts']);
+    },
+  );
+
+  it('looks up scopes outside the file even when its own namespace maps are empty', () => {
+    const module = scope('module', null);
+    const foreign = scope('foreign', null, { imports: [edge('foreign.ts', 0)] });
+    const cache = createNamespaceTargetCache(
+      parsed([module]),
+      indexes([module, foreign]),
+      {},
+      false,
+    );
+    expect(cache.at().size).toBe(0);
+    expect(cache.at(foreign.id, at(1)).get('pkg')).toEqual(['foreign.ts']);
+  });
+
+  it('retains exact-position lookup when an import-free index view is incomplete', () => {
+    const module = scope('module', null);
+    const base = indexes([module]);
+    const scopeTree = { getScope: base.scopeTree.getScope } as ScopeResolutionIndexes['scopeTree'];
+    const cache = createNamespaceTargetCache(parsed([]), { ...base, scopeTree }, {}, false);
+    expect(cache.requiresLexicalLookup).toBe(true);
+    const first = cache.at(module.id, at(1));
+    expect(first.size).toBe(0);
+    expect(cache.at(module.id, at(2))).not.toBe(first);
+    expect(cache.at(module.id, at(1))).toBe(first);
+  });
+
   it('collects stable imports once for a thousand distinct receiver positions', () => {
     const imports = Array.from({ length: 32 }, (_, i) => edge(`pkg${i}.ts`, 0, `pkg${i}`));
     const module = scope('module', null, {
