@@ -1,7 +1,7 @@
 # Analyze phase breakdown — where the time actually goes
 
-Updated 2026-11-01 with production hardening and measurements from main on
-LadybugDB **0.22.0** and an experimental fast path for unchanged dirty checkouts.
+Updated 2026-11-01 with scope-emission measurements after #3796 merged, plus
+production-hardening measurements on LadybugDB **0.22.0** for unchanged dirty checkouts.
 Records what the `analyze`
 pipeline costs per phase and the results of optimization experiments.
 The September measurements remain below as historical
@@ -268,6 +268,83 @@ was 73.939s on main and 91.838s on the candidate, accounting for most of the
 1.569s respectively. Those phase timings locate the difference, but do not
 establish its cause. Host load changed and this pair has one sample per
 variant: neither a real-edit speedup nor a stable regression is established.
+
+### Scope-emission experiment after #3796 — 2026-11-01
+
+Baseline runtime and corpus: merged main at
+`568ebdc1d9e6fce80a4da306bcb1ecebb20b60e4`. This includes the dirty-snapshot
+shortcut and the intervening Java overload changes. The corpus now has **3,375
+indexed files**, **3,111 parseable files**, **118,517 nodes / 356,369 relationships /
+3,495 communities / 767 processes**. These measurements form a new paired
+comparison; the earlier corpus timings are not its baseline.
+
+A separate Node CPU profile of a one-file edit identified repeated namespace
+lookups inside receiver-bound call emission. The main-thread profile recorded
+**29.6s in garbage collection**, **21.7s inclusive in `emitReceiverBoundCalls`**,
+and **6.2s inclusive in `collectNamespaceTargets`**. Those intervals overlap and
+must not be added. The profile includes startup and post-run graph hashing;
+its **140.158s** analysis run is excluded from the timing comparison below.
+
+The candidate adds a proof to `createNamespaceTargetCache`: while traversing a
+file's scopes, record whether any resolved namespace import could produce a
+target. If that traversal is complete and has none, return one empty map for
+covered scopes instead of repeatedly resolving named imports and rebuilding
+empty maps. The lexical receiver-position policy remains unchanged. Incomplete
+scope views and lookups outside the traversed scopes retain the existing path.
+This changes no native bindings, dependencies, public flags or graph schema.
+
+Each runtime and corpus has its own index and stable runner identity. Both are
+on local overlay storage. The first use of the separate baseline runtime caused
+an identity rebuild; that setup run is excluded. Candidate seeding is also
+excluded. The timer, options and instrumentation match the method above:
+Node **22.23.3**, LadybugDB/FTS **0.22.0**, Tree-sitter **0.25.1**, 16 workers,
+8 GiB parent heap limit, full retention and FTS, no embeddings or PDG. CPU
+profiling is disabled for every sample in the table.
+
+Each edit replaces `gitnexus/src/cli/update-notice.ts` with its pristine contents
+plus `\n// scope-emission profile trial N\n`, for `N = 3, 4, 5`. These measure the
+smallest one-file edit path. Run order is baseline 1, candidate 1, candidate 2,
+baseline 2, baseline 3, candidate 3. No local test suite runs alongside them.
+The host remains shared; one-minute loads recorded before and after the samples
+range from **1.67 to 4.51**.
+
+| One-file edit | Main baseline (s) | Candidate (s) |
+| ------------- | ----------------: | ------------: |
+| Sample 1      |           122.120 |       111.554 |
+| Sample 2      |           126.536 |       114.429 |
+| Sample 3      |           124.307 |       116.258 |
+| **Median**    |       **124.307** |   **114.429** |
+
+The ratio of medians is **1.086×**, or **7.95% less elapsed time**. Every paired
+candidate sample is faster. This is an edit-path improvement; the earlier 65×
+result measures unchanged dirty repeats.
+
+Independent medians of the existing phase timers locate the reduction:
+
+| Interval                                                  | Main baseline (s) | Candidate (s) |
+| --------------------------------------------------------- | ----------------: | ------------: |
+| Scope resolution                                          |            77.028 |        66.340 |
+| `emit`, summed across languages (inside scope resolution) |            50.616 |        38.961 |
+| Parsing                                                   |             6.995 |         6.966 |
+| Graph load                                                |             5.044 |         5.179 |
+| FTS                                                       |            13.041 |        12.510 |
+
+All six runs reported **one changed file**, **22 reparsed / 3,089 cached files**,
+six importer dependents, an incremental write, no rebuild reasons, and available
+native FTS. Their reported graph counts and filtered in-memory node/relationship
+hashes matched exactly under the exclusions defined above. The same default
+bounded-analysis configuration applies; this is not exhaustive persisted-graph
+equivalence or a claim about every repository, language mix or change-set size.
+
+A functional control then added two exported functions, one calling the other,
+and a unique search token to the same file in both corpora. Both produced
+**118,519 nodes / 356,372 relationships** and matching filtered graph hashes.
+Read-only native queries returned identical function IDs and source spans, the
+same File FTS hit, and all **35** Function-to-Function call edges touching the
+file, including confidence and reason. The new caller-to-callee edge was present
+with confidence **0.85** and reason `local-call`. This control took 138.832s on
+main and 117.450s on the candidate; it is one pair and is excluded from the
+comment-edit medians above.
 
 ### Reproducing the timing boundaries
 
