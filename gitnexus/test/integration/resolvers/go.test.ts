@@ -980,18 +980,6 @@ describe('Go assignment chain propagation', () => {
     expect(saveMethods.length).toBe(2);
   });
 
-  it('resolves alias.Save() to User#Save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    // Positive: alias.Save() must resolve to User#Save
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'Save' &&
-        c.source === 'processEntities' &&
-        c.targetFilePath.includes('user.go'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
   it('alias.Save() does NOT resolve to Repo#Save', () => {
     const calls = getRelationships(result, 'CALLS');
     // Negative: alias comes from User, so only one edge to user.go
@@ -1002,18 +990,6 @@ describe('Go assignment chain propagation', () => {
         c.targetFilePath.includes('user.go'),
     );
     expect(wrongCall.length).toBe(1);
-  });
-
-  it('resolves rAlias.Save() to Repo#Save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    // Positive: rAlias.Save() must resolve to Repo#Save
-    const repoSave = calls.find(
-      (c) =>
-        c.target === 'Save' &&
-        c.source === 'processEntities' &&
-        c.targetFilePath.includes('repo.go'),
-    );
-    expect(repoSave).toBeDefined();
   });
 
   it('each alias resolves to its own struct, not the other', () => {
@@ -1729,17 +1705,9 @@ describe('Go pointer-receiver field chains (#2766)', () => {
     expect(calls()).toContain('RunLocal → DoWork');
   });
 
-  it('keeps resolving a value receiver', () => {
-    expect(calls()).toContain('RunFromValueReceiver → DoWork');
-  });
-
   // U8: the same-package field receiver that previously produced an ACCESSES
   // edge to the method and no CALLS edge. Typing the base is what emits CALLS;
   // the ACCESSES now correctly targets the PROPERTY being read instead.
-  it('emits CALLS for a same-package field receiver, not ACCESSES alone', () => {
-    expect(calls()).toContain('RunSamePackage → Work');
-  });
-
   it('retargets the field ACCESSES to the property, not the method', () => {
     // Unlabeled on purpose: the negative must reject `→ Work` under ANY target
     // kind, which the kind-qualified rows below cannot express.

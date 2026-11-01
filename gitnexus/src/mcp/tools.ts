@@ -62,6 +62,14 @@ const DESTRUCTIVE_TOOL_ANNOTATIONS: ToolAnnotations = {
   openWorldHint: false,
 };
 
+/** Rebuilds GitNexus's own index; never touches the repository's files. */
+const REFRESH_TOOL_ANNOTATIONS: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
 /**
  * Pagination bounds for the `list_repos` tool. Exported so the backend
  * validation (`local-backend.ts`) and the schema below stay a single source of
@@ -671,8 +679,8 @@ ${HOT_READ_STALENESS_NOTE}`,
         limit: {
           type: 'integer',
           description:
-            'Max symbols returned in byDepth per depth level (default: 100). Single-repo only; ignored in group mode (@groupName). Use small values for hub symbols to avoid output truncation.',
-          default: 100,
+            'Max symbols per depth level in byDepth (default: 30; byDepthCounts stays full, page with offset). Symbols list ≤3 processes plus processCount. Single-repo callgraph only.',
+          default: 30,
           minimum: 1,
           maximum: 10000,
         },
@@ -693,7 +701,7 @@ ${HOT_READ_STALENESS_NOTE}`,
           type: 'integer',
           minimum: 1,
           description:
-            'Maximum estimated tokens in the complete formatted MCP response. Explicit request overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS.',
+            'Token budget including hints. Trims callgraph symbols; PDG/group and required content must fit or error. Overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS.',
         },
         timeoutMs: {
           type: 'number',
@@ -1120,6 +1128,45 @@ Optional caseSensitive and literal match HTTP /api/grep (default: case-insensiti
 ];
 
 /**
+ * `refresh_index` (#3524) lives outside GITNEXUS_TOOLS: it is opt-in, so it is
+ * neither part of the default catalog nor of its byte budget. The local server
+ * appends it only when refresh-policy.ts enables it.
+ */
+export const REFRESH_INDEX_TOOL: ToolDefinition = {
+  name: 'refresh_index',
+  description: `Rebuild a registered repository's index from its working tree, for agents that see a stale index but cannot run \`gitnexus analyze\`.
+
+Index-only: never writes AGENTS.md, CLAUDE.md, skills, hooks, or any repository file. Incremental where possible; keeps embeddings and PDG mode. Waits for the rebuild, then returns indexedAt, lastCommit, stats, and staleness before and after; clients that send a progress token get progress notifications. One refresh per repository at a time.
+
+WHEN TO USE: staleness.status is "behind" or "diverged". Call with dry_run:true first; repositories over the server's file limit are refused.`,
+  annotations: REFRESH_TOOL_ANNOTATIONS,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      dry_run: {
+        type: 'boolean',
+        description:
+          'Report staleness, file count, embeddings, and whether a refresh would run (default: false).',
+        default: false,
+      },
+      repo: {
+        type: 'string',
+        description:
+          'Repository name or path. Omit only when one repo is indexed or an MCP default is configured; dry runs included.',
+      },
+    },
+    required: [],
+  },
+};
+
+/** Schema for a tool name, including opt-in tools outside the default catalog. */
+export function findToolDefinition(name: string): ToolDefinition | undefined {
+  return name === REFRESH_INDEX_TOOL.name
+    ? REFRESH_INDEX_TOOL
+    : GITNEXUS_TOOLS.find((tool) => tool.name === name);
+}
+
+/**
  * Per-repo tools that accept an optional `branch` scope (#2106). Single source
  * of truth: the schema property is injected here so it cannot drift from the
  * server-side default in `local-backend.ts` (`resolveRepo(repo, branch)`).
@@ -1129,7 +1176,7 @@ Optional caseSensitive and literal match HTTP /api/grep (default: case-insensiti
  * loop below skips `branch` for `CHECKOUT_SOURCE_TOOLS` — a pin would label
  * checkout bytes with another commit.
  */
-export const CHECKOUT_SOURCE_TOOLS = new Set(['read_file', 'grep', 'rename']);
+export const CHECKOUT_SOURCE_TOOLS = new Set(['read_file', 'grep', 'rename', 'refresh_index']);
 
 export const REPO_SCOPED_TOOLS = new Set([
   'read_file',
@@ -1148,9 +1195,10 @@ export const REPO_SCOPED_TOOLS = new Set([
   'shape_check',
   'api_impact',
   'trace',
+  'refresh_index',
 ]);
 
-for (const tool of GITNEXUS_TOOLS) {
+for (const tool of [...GITNEXUS_TOOLS, REFRESH_INDEX_TOOL]) {
   // Advertises a closed schema; tools/call still fail-closes on the scrubbed key list.
   // The unpublished handler aliases in tool-arguments.ts stay off this schema on
   // purpose (#2175), and closing it strands no caller: every alias has an

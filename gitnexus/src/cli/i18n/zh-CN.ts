@@ -329,6 +329,7 @@ export const zhCN = {
   'help.option.wiki.concurrency': '并行 LLM 调用数（默认：3）',
   'help.option.wiki.timeout': 'LLM 请求超时时间（秒，默认：禁用）',
   'help.option.wiki.retries': '每个请求的最大 LLM 重试次数（默认：3）',
+  'help.option.wiki.maxCompletionTokens': '每次 LLM 请求的最大 completion token 数（默认：16384）',
   'help.option.wiki.allowInsecureConnection':
     '允许 http:// LLM base URL 使用的精确主机（逗号分隔；推荐使用 HTTPS）',
   'help.option.wiki.gist': '生成后发布 Wiki 为公开 GitHub Gist',
@@ -351,9 +352,11 @@ export const zhCN = {
   'help.option.impact.depth': '最大关系遍历深度（默认：3）',
   'help.option.impact.includeTests': '在结果中包含测试文件',
   'help.option.impact.limit':
-    '每层深度最大符号数（默认：100）；显式指定 --limit 时，也限制受影响流程/模块/路由数',
+    '调用图模式下每层深度最大符号数（默认：30，设 GITNEXUS_IMPACT_DEFAULT_LIMIT=0 返回全部）；显式指定 --limit 时，也限制受影响流程/模块/路由数',
   'help.option.impact.offset': '每层深度跳过 N 个符号（分页用）',
   'help.option.impact.summaryOnly': '仅返回计数和风险等级，省略符号列表',
+  'help.option.impact.maxTokens':
+    '将紧凑 JSON 控制在约 N 个 token 内；调用图优先舍弃最深层符号，必要内容无法容纳时返回错误。PDG 和仓库组结果必须完整容纳',
   'help.option.trace.fromUid': '源符号 UID（零歧义查找）',
   'help.option.trace.fromFile': '源文件路径，用于消除常见名称歧义',
   'help.option.trace.toUid': '目标符号 UID（零歧义查找）',

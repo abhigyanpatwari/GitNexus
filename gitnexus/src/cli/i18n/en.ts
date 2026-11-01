@@ -361,6 +361,8 @@ export const en = {
   'help.option.wiki.concurrency': 'Parallel LLM calls (default: 3)',
   'help.option.wiki.timeout': 'LLM request timeout in seconds (default: disabled)',
   'help.option.wiki.retries': 'Max LLM retry attempts per request (default: 3)',
+  'help.option.wiki.maxCompletionTokens':
+    'Max completion tokens for each LLM request (default: 16384)',
   'help.option.wiki.allowInsecureConnection':
     'Allow exact host(s) for http:// LLM base URLs (comma-separated; HTTPS is preferred)',
   'help.option.wiki.gist': 'Publish wiki as a public GitHub Gist after generation',
@@ -386,9 +388,11 @@ export const en = {
   'help.option.impact.depth': 'Max relationship depth (default: 3)',
   'help.option.impact.includeTests': 'Include test files in results',
   'help.option.impact.limit':
-    'Max symbols per depth level (default: 100); explicit --limit also caps affected processes/modules/routes',
+    'Max symbols per depth level in callgraph mode (default: 30, GITNEXUS_IMPACT_DEFAULT_LIMIT=0 for all); explicit --limit also caps affected processes/modules/routes',
   'help.option.impact.offset': 'Skip N symbols per depth level for pagination',
   'help.option.impact.summaryOnly': 'Return counts and risk only, omit symbol list',
+  'help.option.impact.maxTokens':
+    'Fit compact JSON into about N tokens; trim deepest callgraph symbols or fail if required content cannot fit. PDG/group results must fit intact',
   'help.option.trace.fromUid': 'Source symbol UID (zero-ambiguity lookup)',
   'help.option.trace.fromFile': 'Source file path to disambiguate common names',
   'help.option.trace.toUid': 'Target symbol UID (zero-ambiguity lookup)',
