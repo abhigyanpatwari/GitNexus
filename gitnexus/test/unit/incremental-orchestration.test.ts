@@ -20,7 +20,7 @@
  * (Windows LadybugDB handle release can lag; `cleanupTempDir` retries).
  */
 
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import { writeFile, readFile, mkdir, rm } from 'fs/promises';
 import path from 'path';
 import { afterEach, beforeAll, beforeEach, describe, it, expect, vi } from 'vitest';
@@ -694,7 +694,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
           { onProgress: () => {} },
         );
         if (branch) {
-          execSync(`git checkout -b ${branch}`, { cwd: repo.dbPath, stdio: 'pipe' });
+          execFileSync('git', ['checkout', '-b', branch], { cwd: repo.dbPath, stdio: 'pipe' });
           await runFullAnalysis(
             repo.dbPath,
             { branch, skipAgentsMd: true, skipSkills: true },
