@@ -25,8 +25,8 @@ import { createMethodExtractor } from '../method-extractors/generic.js';
 import { goMethodConfig } from '../method-extractors/configs/go.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { goVariableConfig } from '../variable-extractors/configs/go.js';
-import { extractGoGinEchoRoutes } from '../route-extractors/go-gin-echo.js';
 import { resolveGoRouteHandler } from './go/route-handler.js';
+import { extractGoRouteFacts, resolveGoRouteFacts } from './go/route-facts.js';
 import { goPackageDir } from './go/package-clause.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { goCallConfig } from '../call-extractors/configs/go.js';
@@ -162,9 +162,10 @@ export const goProvider = defineLanguage({
     wrapperNodeTypes: ['type_declaration'],
   }),
   builtInNames: GO_BUILT_INS,
-  // gin / echo verb registrations with in-function Group prefixes (#3402).
-  extractDecoratorRoutes: extractGoGinEchoRoutes,
   resolveRouteHandler: resolveGoRouteHandler,
+  // One config-free collection for direct engines and wrapper-package roots.
+  extractRouteFacts: extractGoRouteFacts,
+  resolveRouteFacts: resolveGoRouteFacts,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────
   emitScopeCaptures: emitGoScopeCaptures,

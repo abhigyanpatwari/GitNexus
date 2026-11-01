@@ -306,4 +306,47 @@ describe('resolveGoRouteHandler', () => {
       ).toBeUndefined();
     });
   });
+
+  describe('configured handler wrappers', () => {
+    const wrapped = {
+      handlerWrapper: {
+        callee: 'common.Wrapper',
+        handlerName: 'api.CreateJob',
+        handlerReceiver: { kind: 'type', name: 'API', qualifier: 'consoleApi' },
+      },
+    } as const;
+    const model = (): Model => {
+      const m = createSemanticModel();
+      struct(m, 'app/api/api.go', 'API');
+      method(m, 'app/api/job.go', 'API', 'CreateJob');
+      return m;
+    };
+    const imports = { consoleApi: ['app/api/api.go', 'app/api/job.go'] };
+
+    it('resolves the wrapped handler when the callee is configured', () => {
+      expect(
+        resolveGoRouteHandler(route(wrapped), {
+          model: model(),
+          importTargetsFor: (_from, name) => imports[name as keyof typeof imports] ?? [],
+          routeHookConfig: { routeHandlerWrappers: ['common.Wrapper'] },
+        }),
+      ).toBe('Method:app/api/job.go:API.CreateJob');
+    });
+
+    it('declines an unconfigured wrapper, as before wrappers were recorded', () => {
+      expect(resolve(model(), wrapped, imports)).toBeUndefined();
+    });
+
+    it('prefers a direct handler designator over a wrapper', () => {
+      const m = model();
+      fn(m, ROUTER, 'Direct');
+      expect(
+        resolveGoRouteHandler(route({ ...wrapped, handlerName: 'Direct' }), {
+          model: m,
+          importTargetsFor: () => [],
+          routeHookConfig: { routeHandlerWrappers: ['common.Wrapper'] },
+        }),
+      ).toBe(`Function:${ROUTER}:Direct`);
+    });
+  });
 });

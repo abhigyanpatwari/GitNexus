@@ -405,6 +405,8 @@ const FILESYSTEM = [
   'test/integration/filesystem-walker.test.ts',
   'test/integration/analyze-directory-symlinks.test.ts',
   'test/integration/watch-filesystem.test.ts',
+  'test/unit/watch-external-config.test.ts',
+  'test/integration/server-route-hook-config.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
   'test/integration/ignore-and-skip-e2e.test.ts',
   // Pins that the bridge pairing verdict is measured before the database is
