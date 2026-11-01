@@ -2,6 +2,34 @@ import type { RouteFrameworkAlias } from '../../language-provider.js';
 import { goRouteFramework } from '../../route-extractors/go-gin-echo.js';
 
 const FIELDS = new Set(['importPath', 'type', 'framework']);
+// https://go.dev/ref/spec#Keywords — these cannot name a type declaration.
+const GO_KEYWORDS = new Set([
+  'break',
+  'case',
+  'chan',
+  'const',
+  'continue',
+  'default',
+  'defer',
+  'else',
+  'fallthrough',
+  'for',
+  'func',
+  'go',
+  'goto',
+  'if',
+  'import',
+  'interface',
+  'map',
+  'package',
+  'range',
+  'return',
+  'select',
+  'struct',
+  'switch',
+  'type',
+  'var',
+]);
 
 /** Upper bound on declared aliases; a longer list is rejected, never truncated. */
 export const MAX_ROUTER_ALIASES = 100;
@@ -42,6 +70,11 @@ export function normalizeRouterAliases(value: unknown, source: string): RouteFra
       'must be a Go import path (e.g. "example.com/org/pkg")',
     );
     const type = field('type', /^[A-Za-z_][A-Za-z0-9_]*$/, 'must be a Go type name');
+    if (type === '_' || GO_KEYWORDS.has(type)) {
+      throw new Error(
+        `${source} entry field "type" must be a Go type name, not a keyword or blank identifier.`,
+      );
+    }
     const framework = field('framework', /^[a-z]+$/, 'must be "gin" or "echo"');
     if (!goRouteFramework(framework)) {
       throw new Error(`${source} entry field "framework" must be "gin" or "echo".`);

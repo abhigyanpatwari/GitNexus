@@ -329,6 +329,13 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     expect(() => loadAnalyzeConfig(dir)).toThrow(message);
   });
 
+  it.each(['func', 'type', 'return', '_'])('rejects unusable Go alias type %s', async (type) => {
+    await writeRc(
+      JSON.stringify({ goRouterAliases: [{ importPath: CORE, type, framework: 'gin' }] }),
+    );
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/must be a Go type name/);
+  });
+
   it('rejects more router aliases than the cap instead of truncating', async () => {
     const alias = (i: number) => ({ importPath: `${CORE}${i}`, type: 'Engine', framework: 'gin' });
     await writeRc(
@@ -387,6 +394,26 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
       expect(() => loadAnalyzeConfig(dir)).toThrow(/Could not read GITNEXUS_RC file/);
       await writeEnvRc({ goRouterAliases: 'gin' });
       expect(() => loadAnalyzeConfig(dir)).toThrow(/GITNEXUS_RC file .*non-empty array/);
+    });
+
+    it.each([
+      ['invalid JSON', '{'],
+      ['non-object', '[]'],
+      ['unknown key', '{"unknownOption": true}'],
+      ['conflicting keys', '{"skipSkills": true, "skip-skills": false}'],
+      ['invalid value', '{"skipSkills": "yes"}'],
+      ['invalid nested block', '{"analyze": []}'],
+      ['invalid nested value', '{"analyze": {"goRouterAliases": "gin"}}'],
+    ])('names only the external file for %s errors', async (_name, raw) => {
+      const file = await writeEnvRc({});
+      await fs.writeFile(file, raw);
+      const expected = expect.objectContaining({
+        message: expect.stringContaining(`GITNEXUS_RC file "${file}"`),
+      });
+      expect(() => loadAnalyzeConfig(dir)).toThrow(expected);
+      expect(() => loadAnalyzeConfig(dir)).not.toThrow(/\.gitnexusrc/);
+      await expect(loadAnalyzeConfigStrict(dir)).rejects.toThrow(expected);
+      await expect(loadAnalyzeConfigStrict(dir)).rejects.not.toThrow(/\.gitnexusrc/);
     });
 
     it('rejects a directory and an oversized file', async () => {

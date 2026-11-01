@@ -188,8 +188,13 @@ export function validateBranchName(value: string, source: string): string {
   }
 }
 
-const normalizeValue = (kind: ValueKind, value: unknown, key: string): unknown => {
-  const source = `${GITNEXUS_RC_FILENAME} "${key}"`;
+const normalizeValue = (
+  kind: ValueKind,
+  value: unknown,
+  key: string,
+  configSource: string,
+): unknown => {
+  const source = `${configSource} "${key}"`;
   switch (kind) {
     case 'boolean':
       if (typeof value !== 'boolean') {
@@ -330,7 +335,7 @@ const normalizeValue = (kind: ValueKind, value: unknown, key: string): unknown =
  */
 const normalizeLevel = (
   obj: Record<string, unknown>,
-  { allowNestedKey }: { allowNestedKey: boolean },
+  { allowNestedKey, source }: { allowNestedKey: boolean; source: string },
 ): Partial<AnalyzeOptions> => {
   const out: Partial<AnalyzeOptions> = {};
   const setBy = new Map<keyof AnalyzeOptions, string>();
@@ -342,19 +347,17 @@ const normalizeLevel = (
     // truthy) and would slip past `if (!spec)`, hitting the wrong error branch
     // instead of the documented "Unknown key" message (#1996 tri-review P3).
     if (!Object.hasOwn(KEY_SPECS, key)) {
-      throw new GitNexusRcError(
-        `Unknown key "${key}" in ${GITNEXUS_RC_FILENAME}. ${ALLOWED_KEYS_HINT}`,
-      );
+      throw new GitNexusRcError(`Unknown key "${key}" in ${source}. ${ALLOWED_KEYS_HINT}`);
     }
     const spec = KEY_SPECS[key];
     const prev = setBy.get(spec.target);
     if (prev && prev !== key) {
       throw new GitNexusRcError(
-        `${GITNEXUS_RC_FILENAME}: "${prev}" and "${key}" both configure the same option; set only one.`,
+        `${source}: "${prev}" and "${key}" both configure the same option; set only one.`,
       );
     }
     setBy.set(spec.target, key);
-    (out as Record<string, unknown>)[spec.target] = normalizeValue(spec.kind, value, key);
+    (out as Record<string, unknown>)[spec.target] = normalizeValue(spec.kind, value, key, source);
   }
 
   return out;
@@ -447,13 +450,7 @@ function withEnvConfig(
   } catch (err) {
     throw new GitNexusRcError(`Could not read ${label}: ${(err as Error).message}`);
   }
-  let envConfig: Partial<AnalyzeOptions>;
-  try {
-    envConfig = parseAnalyzeConfig(raw);
-  } catch (err) {
-    if (err instanceof GitNexusRcError) throw new GitNexusRcError(`${label}: ${err.message}`);
-    throw err;
-  }
+  const envConfig = parseAnalyzeConfig(raw, label);
   logger.debug(
     { file: envPath, keys: Object.keys(envConfig), repoKeys: Object.keys(repoConfig ?? {}) },
     'analyze config: applied GITNEXUS_RC over .gitnexusrc',
@@ -461,7 +458,10 @@ function withEnvConfig(
   return { ...repoConfig, ...envConfig };
 }
 
-function parseAnalyzeConfig(rawInput: string): Partial<AnalyzeOptions> {
+function parseAnalyzeConfig(
+  rawInput: string,
+  source = GITNEXUS_RC_FILENAME,
+): Partial<AnalyzeOptions> {
   let raw = rawInput;
 
   // Strip a leading UTF-8 BOM: Node's 'utf-8' decode keeps it, and JSON.parse
@@ -475,25 +475,28 @@ function parseAnalyzeConfig(rawInput: string): Partial<AnalyzeOptions> {
     parsed = JSON.parse(raw);
   } catch (err) {
     throw new GitNexusRcError(
-      `${GITNEXUS_RC_FILENAME} is not valid JSON: ${(err as Error).message}. ` +
+      `${source} is not valid JSON: ${(err as Error).message}. ` +
         `Expected a JSON object such as {"defaultBranch": "develop", "skipContextFiles": true}.`,
     );
   }
 
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new GitNexusRcError(`${GITNEXUS_RC_FILENAME} must contain a JSON object.`);
+    throw new GitNexusRcError(`${source} must contain a JSON object.`);
   }
 
   const obj = parsed as Record<string, unknown>;
-  const flat = normalizeLevel(obj, { allowNestedKey: true });
+  const flat = normalizeLevel(obj, { allowNestedKey: true, source });
 
   let nested: Partial<AnalyzeOptions> = {};
   if (Object.prototype.hasOwnProperty.call(obj, NESTED_KEY)) {
     const nestedRaw = obj[NESTED_KEY];
     if (nestedRaw === null || typeof nestedRaw !== 'object' || Array.isArray(nestedRaw)) {
-      throw new GitNexusRcError(`${GITNEXUS_RC_FILENAME} "${NESTED_KEY}" must be a JSON object.`);
+      throw new GitNexusRcError(`${source} "${NESTED_KEY}" must be a JSON object.`);
     }
-    nested = normalizeLevel(nestedRaw as Record<string, unknown>, { allowNestedKey: false });
+    nested = normalizeLevel(nestedRaw as Record<string, unknown>, {
+      allowNestedKey: false,
+      source,
+    });
   }
 
   // Nested `analyze` block overrides flat top-level keys for the same option.
