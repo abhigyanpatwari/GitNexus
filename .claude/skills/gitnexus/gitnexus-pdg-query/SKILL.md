@@ -36,24 +36,50 @@ All three are `BasicBlock → BasicBlock` edges in the single `CodeRelation` tab
 
 - `pdg_query({ mode: 'controls', target })` — CDG. For the anchored function,
   each edge: controlling predicate block → dependent block + branch sense in
-  `label` (`'T'` = predicate's true/taken arm, `'F'` = false/fall-through). An
-  edge into an early-return/throw block is flagged `guard: true`.
+  `label` (`'T'` = predicate's true/taken arm, `'F'` = false/fall-through).
+  The tool maps the stored edge's `reason` to this response field. An
+  edge into a `return`, `throw`, `continue`, or `break` block is flagged
+  `guard: true` (early control transfer, not just a function exit).
 - `pdg_query({ mode: 'flows', target, variable? })` — REACHING_DEF def→use
   edges; `variable` filters to one binding.
 
 `target` is **required** — a file path or a symbol/function name (resolved like
 `context()`). There is no anchorless mode (see below).
 
-## The corrected guard-clause Cypher
+## Guard-clause queries
 
-The RFC #567 §2 form (`[:CDG {label:'F'}]`) does **not** run as written. Edges
-are values of the single `CodeRelation` table's `type` property, and the branch
-sense is in `reason`, NOT a `label` column:
+Prefer the dedicated, bounded `pdg_query` surface for guard discovery:
+
+```text
+pdg_query({ mode: 'controls', target: '<function-or-file>' })
+```
+
+Filter the returned rows for `guard: true` to find early control-transfer
+guards (`return`, `throw`, `continue`, or `break`). If you only need function
+exits, also filter `dependent.text` for a leading `return` or `throw`; the
+`guard` flag alone includes loop `continue`/`break` statements. The tool
+requires an explicit target and applies its own bounded result limit, so it
+cannot accidentally turn a local guard lookup into a repository-wide CDG scan.
+
+If you are debugging the graph and truly need raw Cypher, keep the same two
+constraints explicit: anchor the blocks to one known function/file span **and**
+add a deterministic `LIMIT`. CDG edges are values of the single `CodeRelation`
+table's `type` property. Raw Cypher reads the branch sense from `r.reason`
+(not a `label` column); `pdg_query` exposes the same value as `label`.
+For example, after resolving a function to its file and line span:
 
 ```cypher
 MATCH (pred:BasicBlock)-[r:CodeRelation {type: 'CDG'}]->(dep:BasicBlock)
-WHERE dep.text STARTS WITH 'return' OR dep.text STARTS WITH 'throw'
+WHERE pred.filePath = $filePath
+  AND dep.filePath = $filePath
+  AND pred.startLine >= $startLine
+  AND pred.startLine <= $endLine
+  AND dep.startLine >= $startLine
+  AND dep.startLine <= $endLine
+  AND (dep.text STARTS WITH 'return' OR dep.text STARTS WITH 'throw')
 RETURN pred.startLine, r.reason AS branch, dep.startLine, dep.text
+ORDER BY dep.startLine, pred.startLine
+LIMIT 100
 ```
 
 `r.reason` is the sense the predicate took to reach the early exit. For
@@ -66,7 +92,7 @@ so don't hard-code one sense.
 - **Always anchored + LIMIT-bounded.** LadybugDB has no rel-property index, so
   an unanchored `[:CDG*]`/`[:REACHING_DEF*]` path scan is unbounded. `pdg_query`
   requires `target` and bounds the page; raw `cypher` callers must anchor on a
-  file id-prefix or symbol span themselves.
+  file id-prefix or symbol span themselves and include a deterministic `LIMIT`.
 - **BasicBlock↔symbol join is reconstructed.** No `Function→BasicBlock` edge:
   the block is matched by its id-prefix (`BasicBlock:<file>:<fnStartLine>:…`)
   plus `startLine` within the symbol's span. BasicBlock `startLine` is **1-based**
