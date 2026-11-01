@@ -365,16 +365,64 @@ const CURSOR_NPX_MAX_BUDGET_MS = 45000;
 const CURSOR_HOOK_START_MS = Date.now();
 const HOOK_ENV = process['env'];
 
-function resolveCursorHostBudgetMs() {
-  try {
-    // hooks.json ships next to this hook script
-    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'hooks.json'), 'utf-8'));
-    const seconds = manifest.hooks.postToolUse[0].timeout;
-    if (typeof seconds === 'number' && seconds > 0) {
-      return seconds * 1000;
+/**
+ * Pick THIS hook's own entry out of `hooks.postToolUse` instead of assuming
+ * entry zero: a project that merges GitNexus' hook into an existing manifest
+ * can have other postToolUse entries whose timeout has nothing to do with
+ * this hook, and only the entry that runs this script carries the deadline
+ * Cursor will enforce on it.
+ *
+ * Returns the timeout in SECONDS, or null when the manifest declares no
+ * usable timeout for this hook.
+ */
+function selectHookTimeoutSeconds(manifest) {
+  const entries = manifest && manifest.hooks && manifest.hooks.postToolUse;
+  if (!Array.isArray(entries)) return null;
+  const timeoutOf = (entry) =>
+    entry && typeof entry.timeout === 'number' && entry.timeout > 0 ? entry.timeout : null;
+  const own = entries.find(
+    (entry) =>
+      entry && typeof entry.command === 'string' && entry.command.includes('gitnexus-hook.cjs'),
+  );
+  if (own) return timeoutOf(own);
+  // A single-entry manifest is unambiguous even when the command was renamed
+  // or the script was copied under another name.
+  if (entries.length === 1) return timeoutOf(entries[0]);
+  return null;
+}
+
+/**
+ * The Cursor host's deadline for this hook, in milliseconds.
+ *
+ * `scriptDir` is the directory THIS script lives in (its `__dirname`); it is
+ * a parameter so the installed layout can be exercised without relocating
+ * the shipped file.
+ */
+function resolveCursorHostBudgetMs(scriptDir = __dirname) {
+  // Cursor reads the ACTIVE hook manifest from `<project>/.cursor/hooks.json`,
+  // but the documented install copies THIS script to `<project>/hooks/` — so
+  // in the installed layout the manifest is NOT next to the script. Reading
+  // only the adjacent `hooks.json` therefore failed after installation and
+  // silently fell back to the 60s default; the shipped manifest happens to
+  // declare 60s, which is exactly why the bug hid behind a passing install.
+  //
+  // Two layouts are supported, in this order:
+  //   installed : <project>/hooks/gitnexus-hook.cjs + <project>/.cursor/hooks.json
+  //               (the manifest Cursor actually honors)
+  //   source    : gitnexus-cursor-integration/hooks/{gitnexus-hook.cjs,hooks.json}
+  //               (running the hook straight out of the repo)
+  const manifestPaths = [
+    path.resolve(scriptDir, '..', '.cursor', 'hooks.json'),
+    path.join(scriptDir, 'hooks.json'),
+  ];
+  for (const manifestPath of manifestPaths) {
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+      const seconds = selectHookTimeoutSeconds(manifest);
+      if (seconds !== null) return seconds * 1000;
+    } catch {
+      /* try the next layout */
     }
-  } catch {
-    /* fall through to the shipped default */
   }
   return 60000;
 }
@@ -644,13 +692,15 @@ function main() {
 
 if (require.main === module) main();
 
-// resolveUnixGuardTimeout / resolveNpxTimeoutMs are exported for the unit
-// tests, which exercise the real resolver and budget arithmetic rather than
-// grepping this file for substrings. They are pure helpers with no effect on
-// the hook's own execution path.
+// resolveUnixGuardTimeout / resolveNpxTimeoutMs / resolveCursorHostBudgetMs
+// are exported for the unit tests, which exercise the real resolver and
+// budget arithmetic rather than grepping this file for substrings. They are
+// pure helpers with no effect on the hook's own execution path.
 module.exports = {
   parseRgGrepPattern,
   tokenizeShellWords,
   resolveUnixGuardTimeout,
   resolveNpxTimeoutMs,
+  resolveCursorHostBudgetMs,
+  CURSOR_NPX_MAX_BUDGET_MS,
 };

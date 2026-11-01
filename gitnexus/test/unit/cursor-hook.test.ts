@@ -17,7 +17,7 @@
  * repo, so behavior tests stick to early-exit paths to avoid spawning
  * `npx gitnexus`.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
 import { createRequire } from 'module';
 import fs from 'fs';
@@ -476,10 +476,118 @@ describe('Cursor hook npx fallback host budget', () => {
   });
 
   it('reads the shipped timeout value, not a detached literal', () => {
-    // resolveCursorHostBudgetMs must parse hooks.json so changing the
-    // manifest cannot silently desync from the hook budget.
-    expect(source).toContain('postToolUse[0].timeout');
+    // resolveCursorHostBudgetMs must parse the manifest so changing it
+    // cannot silently desync from the hook budget. It must NOT assume
+    // entry zero: the hook's own entry is selected by command, because a
+    // merged manifest can hold other postToolUse entries.
     expect(source).toContain('return seconds * 1000;');
+    expect(source).not.toContain('postToolUse[0].timeout');
+    expect(source).toContain('gitnexus-hook.cjs');
+  });
+});
+
+// ─── Host budget: the manifest of the INSTALLED Cursor layout ──────
+//
+// The documented install puts this script at <project>/hooks/ and the
+// ACTIVE manifest at <project>/.cursor/hooks.json — the manifest is NOT
+// next to the script. Reading only the adjacent hooks.json therefore
+// failed after installation and silently used the 60s default, which
+// happened to match the shipped manifest and hid the bug.
+
+describe('Cursor hook host budget from the installed manifest', () => {
+  const hook = require(CURSOR_HOOK) as {
+    resolveCursorHostBudgetMs: (scriptDir?: string) => number;
+  };
+
+  let projectRoot: string;
+  let installedHooksDir: string;
+
+  beforeEach(() => {
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-cursor-layout-'));
+    installedHooksDir = path.join(projectRoot, 'hooks');
+    fs.mkdirSync(installedHooksDir, { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, '.cursor'), { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  function writeManifest(manifest: unknown) {
+    fs.writeFileSync(
+      path.join(projectRoot, '.cursor', 'hooks.json'),
+      JSON.stringify(manifest, null, 2),
+    );
+  }
+
+  it('reads the timeout from <project>/.cursor/hooks.json, not from beside the script', () => {
+    // 30s — deliberately NOT the 60s default, so a silent fallback to the
+    // default cannot pass this test.
+    writeManifest({
+      version: 1,
+      hooks: {
+        postToolUse: [
+          { matcher: 'Shell|Read|Grep', command: 'node ./hooks/gitnexus-hook.cjs', timeout: 30 },
+        ],
+      },
+    });
+    expect(hook.resolveCursorHostBudgetMs(installedHooksDir)).toBe(30_000);
+  });
+
+  it("selects this hook's own entry instead of assuming entry zero", () => {
+    writeManifest({
+      version: 1,
+      hooks: {
+        postToolUse: [
+          { matcher: 'Bash', command: 'node ./hooks/some-other-hook.cjs', timeout: 5 },
+          {
+            matcher: 'Shell|Read|Grep',
+            command: 'node ./hooks/gitnexus-hook.cjs',
+            timeout: 45,
+          },
+        ],
+      },
+    });
+    expect(hook.resolveCursorHostBudgetMs(installedHooksDir)).toBe(45_000);
+  });
+
+  it('keeps the adjacent manifest working for source-tree execution', () => {
+    // The repo ships the manifest next to the script, so that layout must
+    // still resolve — it is how the hook runs straight out of a checkout.
+    fs.writeFileSync(
+      path.join(installedHooksDir, 'hooks.json'),
+      JSON.stringify({
+        version: 1,
+        hooks: {
+          postToolUse: [
+            { matcher: 'Shell|Read|Grep', command: 'node ./hooks/gitnexus-hook.cjs', timeout: 25 },
+          ],
+        },
+      }),
+    );
+    expect(hook.resolveCursorHostBudgetMs(installedHooksDir)).toBe(25_000);
+  });
+
+  it('falls back to the shipped default when no manifest declares a timeout', () => {
+    expect(hook.resolveCursorHostBudgetMs(installedHooksDir)).toBe(60_000);
+  });
+});
+
+// ─── The npx budget must fit inside the shared lock's stale bound ──
+//
+// The hook holds its per-repo slot for the whole npx fallback, and every
+// adapter shares one `.hook-locks` directory: a slot must stay valid for
+// the hook's ENTIRE execution, or a concurrent hook evicts a live owner
+// and the per-repo concurrency cap is defeated.
+
+describe('Cursor hook slot lifetime vs the shared lock stale bound', () => {
+  it('keeps the whole npx fallback inside the lock stale threshold', () => {
+    const hook = require(CURSOR_HOOK) as { CURSOR_NPX_MAX_BUDGET_MS: number };
+    const lock = require(CURSOR_HOOK_LOCK) as { HOOK_LOCK_STALE_MS: number };
+    // Worst-case slot hold: the clamped npx budget + the spawnSync teardown
+    // allowance + the one-shot guard self-test.
+    const maxHoldMs = hook.CURSOR_NPX_MAX_BUDGET_MS + 2_000 + 3_000;
+    expect(lock.HOOK_LOCK_STALE_MS).toBeGreaterThan(maxHoldMs);
   });
 });
 

@@ -1066,6 +1066,101 @@ describe('acquireHookSlot stale-slot eviction', () => {
   }
 });
 
+// ─── Unit: a LIVE slot stays valid for its owner's whole execution ──
+//
+// All four adapter copies of hook-lock share ONE `.hook-locks` directory
+// per repo (the key is the repo's storage path), so a slot written by the
+// cursor adapter's slow npx fallback must not be evicted by a concurrent
+// hook — from ANY adapter — while its owner is still running. Age is only
+// ever a PID-reuse defense, so the bound has to exceed the longest hook
+// lifetime that legitimately holds a slot; the cursor adapter's npx
+// fallback can hold one for ~50s (CURSOR_NPX_MAX_BUDGET_MS + the spawnSync
+// teardown allowance + the guard self-test).
+
+describe('acquireHookSlot keeps live slots valid past the old 30s bound', () => {
+  const LOCK_COPIES = [
+    ['CJS', CJS_HOOK_LOCK],
+    ['Plugin', PLUGIN_HOOK_LOCK],
+    [
+      'Factory',
+      path.resolve(__dirname, '..', '..', '..', 'gitnexus-factory-plugin', 'hooks', 'hook-lock.js'),
+    ],
+    [
+      'Cursor',
+      path.resolve(
+        __dirname,
+        '..',
+        '..',
+        '..',
+        'gitnexus-cursor-integration',
+        'hooks',
+        'hook-lock.cjs',
+      ),
+    ],
+  ] as const;
+
+  for (const [label, lockPath] of LOCK_COPIES) {
+    it(`${label}: rejects a fourth acquisition while three live owners are past 30s`, async () => {
+      const { spawn } = await import('child_process');
+      const lock = createRequire(import.meta.url)(lockPath) as {
+        acquireHookSlot: (dir: string) => (() => void) | null;
+        HOOK_LOCK_STALE_MS: number;
+      };
+
+      // The bound must have moved past the old 30s threshold.
+      expect(lock.HOOK_LOCK_STALE_MS).toBeGreaterThan(30_000);
+
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-hook-live-slot-'));
+      const lockDir = path.join(dir, '.hook-locks');
+      fs.mkdirSync(lockDir, { recursive: true });
+
+      const sleepers = [0, 1, 2].map(() =>
+        spawn(process.execPath, ['-e', 'setTimeout(()=>{},60000)'], {
+          stdio: 'ignore',
+          detached: false,
+        }),
+      );
+      try {
+        // Let the children come up so their PIDs are real and alive.
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        // Age every slot past the OLD 30s threshold while keeping it inside
+        // the owner's valid execution window.
+        const aged = new Date(Date.now() - 31_000);
+        for (let i = 0; i < sleepers.length; i++) {
+          const p = path.join(lockDir, `slot-${i}.lock`);
+          fs.writeFileSync(p, String(sleepers[i].pid));
+          fs.utimesSync(p, aged, aged);
+        }
+
+        // A fourth acquisition must be refused: all three slots are held by
+        // processes that are demonstrably still running.
+        const release = lock.acquireHookSlot(dir);
+        expect(release).toBeNull();
+        for (let i = 0; i < sleepers.length; i++) {
+          const p = path.join(lockDir, `slot-${i}.lock`);
+          expect(fs.readFileSync(p, 'utf-8').trim()).toBe(String(sleepers[i].pid));
+        }
+      } finally {
+        for (const child of sleepers) {
+          try {
+            child.kill();
+          } catch {
+            /* ignore */
+          }
+        }
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it('keeps the four adapter copies byte-identical', () => {
+    // They share one `.hook-locks` directory, so a divergence in the stale
+    // bound would let one adapter evict another adapter's live slot.
+    const [primary, ...copies] = LOCK_COPIES.map(([, p]) => fs.readFileSync(p, 'utf-8'));
+    for (const copy of copies) expect(copy).toBe(primary);
+  });
+});
+
 // ─── Integration: concurrency guard skips when slots are full ──────
 
 // The burst tests spawn real child processes; under CI load a child can exit
