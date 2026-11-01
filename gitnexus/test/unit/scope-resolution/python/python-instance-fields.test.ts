@@ -173,7 +173,7 @@ describe('Python constructor field declarations', () => {
       body: 'def __init__(self):\n    with ctx() as self:\n        self.value = 1',
       fields: [],
     },
-  ])('$name', ({ body, fields }) => {
+  ])('%# $name', ({ body, fields }) => {
     const source = `class Model:\n${body
       .split('\n')
       .map((line) => `    ${line}`)
