@@ -11,6 +11,38 @@ const javacAvailable =
 
 describe('javac oracle for Java overload resolution', () => {
   it.runIf(javacAvailable)(
+    'selects the accessible Object overload for a declared method return and known arguments',
+    () => {
+      const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-javac-accessible-'));
+      try {
+        const source = path.join(root, 'Oracle.java');
+        writeFileSync(
+          source,
+          `class AccessFilter {
+ private String accessFiltered(String value) { return "private"; }
+ public String accessFiltered(Object value) { return "object"; }
+}
+public class Oracle {
+ static Object external() { return null; }
+ public static void main(String[] args) {
+   AccessFilter value = new AccessFilter();
+   Object argument = external();
+   System.out.println(String.join(",", value.accessFiltered(external()),
+     value.accessFiltered(argument), value.accessFiltered("x")));
+ }
+}`,
+        );
+        execFileSync('javac', [...compilerLocale, '-d', root, source]);
+        expect(execFileSync('java', ['-cp', root, 'Oracle'], { encoding: 'utf8' }).trim()).toBe(
+          'object,object,object',
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(javacAvailable)(
     'confirms enclosing-subclass access and protected receiver restrictions',
     () => {
       const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-javac-protected-'));

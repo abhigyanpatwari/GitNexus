@@ -297,6 +297,7 @@ class Cases {
   void genericCall(Generic<String> value) { value.genericDispatch("x"); }
   void inaccessibleAlternate(AccessFilter value) { value.accessFiltered(external()); }
   void accessibleKnown(AccessFilter value) { value.accessFiltered("x"); }
+  void accessibleObject(AccessFilter value, Object argument) { value.accessFiltered(argument); }
   <T> void genericAny(Generic<T> value, T item) { value.genericDispatch(item); }
 }`,
       'api/Service.java': `package api; public interface Service { void select(long value); void select(Integer value); }`,
@@ -356,6 +357,7 @@ class ObjectOverload {
     ['trailingDimension', 'dimension', 'Cases.dimension#1~Object'],
     ['nestedPrivate', 'nest', 'Nest.nest#1~long'],
     ['accessibleKnown', 'accessFiltered', 'AccessFilter.accessFiltered#1~Object'],
+    ['accessibleObject', 'accessFiltered', 'AccessFilter.accessFiltered#1~Object'],
     ['declaredReceiver', 'declared', 'Base.declared#1'],
   ])('%s selects %s by the earliest applicable JLS phase', (caller, method, signature) => {
     expect(targets(result, caller, method)).toEqual([`Method:Cases.java:${signature}`]);
@@ -467,7 +469,6 @@ class ObjectOverload {
     ['implicitObject', 'wait'],
     ['staticTypeImport', 'select'],
     ['equivalentPreferred', 'preferred'],
-    ['inaccessibleAlternate', 'accessFiltered'],
   ])('records uncertainty for %s without a guessed overload edge', (caller, method) => {
     expect(targets(result, caller, method)).toEqual([]);
     expect(
@@ -479,6 +480,21 @@ class ObjectOverload {
           outcome.callerId?.includes(`.${caller}#`),
       ),
     ).toBe(true);
+  });
+
+  it('reports unmodeled method-call arguments even when javac can select an overload', () => {
+    expect(targets(result, 'inaccessibleAlternate', 'accessFiltered')).toEqual([]);
+    expect(getResolutionOutcomes(result)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'suppressed',
+          name: 'accessFiltered',
+          reason: 'overload-unknown',
+          callerId: expect.stringContaining('.inaccessibleAlternate#'),
+          detail: 'Unsupported Java argument, generic constraint, or subtype evidence',
+        }),
+      ]),
+    );
   });
 
   it.each(['chain', 'assignedChain', 'nestedChain'])(

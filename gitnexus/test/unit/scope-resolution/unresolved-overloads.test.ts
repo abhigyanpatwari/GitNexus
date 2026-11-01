@@ -144,12 +144,12 @@ describe('persisted unresolved overload coverage', () => {
   });
 
   it.each([
-    { candidateGraphIds: undefined },
-    { candidateGraphIds: [] },
-    { callerId: undefined },
-    { candidateSetComplete: undefined },
-    { candidateSetComplete: false },
-  ])('does not certify absent keys when attribution is incomplete: %j', (overrides) => {
+    ['missing candidate identities', { candidateGraphIds: undefined }],
+    ['empty candidate identities', { candidateGraphIds: [] }],
+    ['missing caller identity', { callerId: undefined }],
+    ['missing candidate completeness', { candidateSetComplete: undefined }],
+    ['incomplete candidates', { candidateSetComplete: false }],
+  ])('does not certify absent keys with %s', (_description, overrides) => {
     const summary = summarizeUnresolvedOverloads([suppressed(overrides)]);
     expect(summary.complete).toBe(false);
     expect(probe(summary, ['Method:elsewhere:unseen'])).toEqual({
