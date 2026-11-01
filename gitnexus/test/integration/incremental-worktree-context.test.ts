@@ -150,6 +150,8 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Swift))(
         git(main, 'worktree', 'add', '-q', '-b', 'lookup-refresh', worktree);
         expect((await fs.stat(path.join(worktree, '.git'))).isFile()).toBe(true);
         expect(git(worktree, 'rev-parse', 'HEAD')).toBe(git(main, 'rev-parse', 'HEAD'));
+        // Preserve the checkout's actual bytes, including CRLF on Windows.
+        const swiftBefore = await fs.readFile(path.join(worktree, SWIFT_PATH));
 
         const { storagePath, lbugPath } = getStoragePaths(worktree);
         expect(storagePath).toBe(path.join(worktree, '.gitnexus'));
@@ -256,7 +258,7 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Swift))(
         );
         expect(writePaths).not.toContain(SWIFT_PATH);
         expect((await loadMeta(storagePath))?.runnerIdentity).toEqual(baselineMeta?.runnerIdentity);
-        expect(await fs.readFile(path.join(worktree, SWIFT_PATH), 'utf8')).toBe(SWIFT_SOURCE);
+        expect(await fs.readFile(path.join(worktree, SWIFT_PATH))).toEqual(swiftBefore);
         await readPublicContexts();
         expectCurrentStatus();
         expect(await readPropertyFts()).toEqual(propertyBefore);
