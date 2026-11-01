@@ -146,6 +146,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'impact|-l, --limit <n>': 'help.option.impact.limit',
   'impact|--offset <n>': 'help.option.impact.offset',
   'impact|--summary-only': 'help.option.impact.summaryOnly',
+  'impact|--max-tokens <n>': 'help.option.impact.maxTokens',
   'cypher|-r, --repo <name>': 'help.option.repo.target',
   'cypher|--branch <name>': 'help.option.branch',
   'cypher|-l, --limit <n>': 'help.option.cypher.limit',
