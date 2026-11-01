@@ -1500,8 +1500,8 @@ Indexed as **${name}**${counts}. Lean block.
   it('preserves the existing stats-line prefix when updating a keep marker', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-prefix-'));
     const storage = path.join(dir, '.gitnexus');
-    await fs.mkdir(storage, { recursive: true });
     try {
+      await fs.mkdir(storage, { recursive: true });
       const original = `# Guide
 
 <!-- gitnexus:start -->
