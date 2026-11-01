@@ -11,6 +11,11 @@ export function normalizeRouterAliases(value: unknown, source: string): RouteFra
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error(`${source} must be a non-empty array of alias objects.`);
   }
+  if (value.length > MAX_ROUTER_ALIASES) {
+    throw new Error(
+      `${source} declares ${value.length} aliases; at most ${MAX_ROUTER_ALIASES} are allowed.`,
+    );
+  }
   const out = new Map<string, RouteFrameworkAlias>();
   for (const entry of value) {
     if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
@@ -49,11 +54,6 @@ export function normalizeRouterAliases(value: unknown, source: string): RouteFra
       );
     }
     out.set(key, { importPath, type, framework });
-  }
-  if (out.size > MAX_ROUTER_ALIASES) {
-    throw new Error(
-      `${source} declares ${out.size} aliases; at most ${MAX_ROUTER_ALIASES} are allowed.`,
-    );
   }
   return [...out.values()];
 }

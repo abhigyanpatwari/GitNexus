@@ -1,6 +1,7 @@
 /** Local incremental watch (`gitnexus analyze --watch`). Remote auto-sync lives in `auto-sync.ts`. */
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { watchFile, unwatchFile } from 'node:fs';
 import { watch, type FSWatcher } from 'chokidar';
 import { createWatchIgnorePredicate } from '../config/ignore-service.js';
 import {
@@ -381,33 +382,15 @@ export async function startWatchFileLoop(
 
   let watcher: FSWatcher = createWatcher();
 
-  // The external config file is outside the repository watcher. Watch its
-  // directory, not the file: an editor's atomic save replaces the inode, and
-  // a watch on the file itself would go quiet after the first replacement.
-  const createExternalConfigWatcher = (configPath: string): FSWatcher => {
-    const directory = path.dirname(configPath);
-    const created: FSWatcher = watch(directory, {
-      ignoreInitial: true,
-      atomic: true,
-      depth: 0,
-      followSymlinks: false,
-      awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 20 },
-      ignored: (candidate) =>
-        path.resolve(candidate) !== directory && path.resolve(candidate) !== configPath,
-    });
-    created.on('all', (event, changedPath) => {
-      if (event !== 'add' && event !== 'change' && event !== 'unlink') return;
-      if (path.resolve(changedPath) !== configPath) return;
-      logger.debug({ event, file: configPath }, 'watch: GITNEXUS_RC changed; reloading config');
-      queue.enqueue(EXTERNAL_CONFIG_WATCH_PATH);
-    });
-    created.on('error', (error) => onWatcherError(error));
-    return created;
+  // Poll this one explicit path: stat follows symlinks, and continues observing
+  // the path after atomic saves, target deletion/restoration or link retargeting.
+  // Watching only the link's directory misses writes in the target directory.
+  const configPath =
+    externalConfigPath === undefined ? undefined : path.resolve(externalConfigPath);
+  const configChanged = () => {
+    logger.debug({ file: configPath }, 'watch: GITNEXUS_RC changed; reloading config');
+    queue.enqueue(EXTERNAL_CONFIG_WATCH_PATH);
   };
-  const externalConfigWatcher =
-    externalConfigPath === undefined
-      ? undefined
-      : createExternalConfigWatcher(path.resolve(externalConfigPath));
 
   // Chokidar emits `ready` once per instance and `add()` returns before the
   // rescan it starts has finished, with no signal for that completion. A file
@@ -443,13 +426,13 @@ export async function startWatchFileLoop(
   };
 
   try {
+    if (configPath) watchFile(configPath, { interval: 100 }, configChanged);
     await waitUntilReady(watcher);
-    if (externalConfigWatcher) await waitUntilReady(externalConfigWatcher);
     await queue.runInitial();
   } catch (error) {
     closed = true;
     await watcher.close();
-    await externalConfigWatcher?.close();
+    if (configPath) unwatchFile(configPath, configChanged);
     await queue.close();
     throw error;
   }
@@ -459,7 +442,7 @@ export async function startWatchFileLoop(
     close: async () => {
       closed = true;
       await watcher.close();
-      await externalConfigWatcher?.close();
+      if (configPath) unwatchFile(configPath, configChanged);
       await queue.close();
     },
   };
@@ -543,7 +526,9 @@ export async function watchCommandWithRunnerIdentity(
           repoPath,
           debounceMs,
           async (paths) => {
-            if (paths.some(isConfigControlPath) || !configControlValid) {
+            // Initial validation precedes watcher setup. Read again after it is
+            // armed so a change during startup cannot leave stale options live.
+            if (paths.length === 0 || paths.some(isConfigControlPath) || !configControlValid) {
               const retryingInvalidConfig = !configControlValid;
               try {
                 analyzeOptions = await resolveWatchOptions(

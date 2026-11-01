@@ -7,7 +7,8 @@
  * (e.g. an earlier commit of this feature), not a build from before it.
  *
  * Parsing and module startup are excluded. Nine batches alternate build order;
- * serialized bytes measure the worker payload, not heap or whole-index memory.
+ * serialized bytes measure the collected direct routes and facts, excluding
+ * worker-envelope metadata, heap usage and whole-index memory.
  */
 import assert from 'node:assert/strict';
 import path from 'node:path';

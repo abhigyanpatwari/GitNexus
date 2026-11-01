@@ -260,6 +260,30 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
       expect(job?.error).toMatch(/Could not read GITNEXUS_RC file/);
       expect(calls).toContain('releaseRepoLock');
     });
+
+    it('preserves cancellation during storage resolution when config is invalid', async () => {
+      vi.stubEnv('GITNEXUS_RC', `${rcDir}/missing.json`);
+      const launch = createLaunchAnalysisWorker({
+        jobManager,
+        backend: { init: backendInit },
+        acquireRepoLock: () => null,
+        releaseRepoLock: () => calls.push('releaseRepoLock'),
+        closeDbHandle,
+      });
+      const queued = jobManager.createJob({ repoPath: REPO_PATH });
+      H.requireStoragePath.mockImplementationOnce(async () => {
+        jobManager.cancelJob(queued.id, 'Cancelled during storage resolution');
+        return H.STORAGE_PATH;
+      });
+
+      await launch(queued, REPO_PATH, {});
+      const job = jobManager.getJob(queued.id);
+
+      expect(job?.error).toBe('Cancelled during storage resolution');
+      expect(jobManager.hasPendingCancel(queued.id)).toBe(false);
+      expect(forkMock).not.toHaveBeenCalled();
+      expect(calls.filter((call) => call === 'releaseRepoLock')).toHaveLength(1);
+    });
   });
 
   it('uses the force storage set only when launch options request force', async () => {

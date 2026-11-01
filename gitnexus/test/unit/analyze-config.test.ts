@@ -339,6 +339,8 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
       JSON.stringify({ goRouterAliases: Array.from({ length: 101 }, (_, i) => alias(i)) }),
     );
     expect(() => loadAnalyzeConfig(dir)).toThrow(/declares 101 aliases; at most 100/);
+    await writeRc(JSON.stringify({ goRouterAliases: Array.from({ length: 101 }, () => alias(0)) }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/declares 101 aliases; at most 100/);
   });
 
   describe('GITNEXUS_RC out-of-repo config', () => {

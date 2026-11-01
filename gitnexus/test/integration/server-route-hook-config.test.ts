@@ -6,17 +6,19 @@
  * omission as "configuration removed" and drop alias Routes and wrapped
  * HANDLES_ROUTE edges, even with the same `GITNEXUS_RC` in the environment.
  *
- * Drives CLI-style indexing, then the server path: options resolved by
- * `resolveLaunchRouteHookConfig` (what the launch forwards) and run through
- * `runWorkerAnalysis` (what the forked worker runs).
+ * Drives CLI-style indexing, then the real server launcher and its forked
+ * worker, so omitting configuration from the start message loses evidence.
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { once } from 'node:events';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
-import { resolveLaunchRouteHookConfig } from '../../src/server/analyze-launch.js';
-import { runWorkerAnalysis } from '../../src/server/analyze-worker-core.js';
-import type { WorkerMessage } from '../../src/server/analyze-worker-protocol.js';
+import {
+  createLaunchAnalysisWorker,
+  resolveLaunchRouteHookConfig,
+} from '../../src/server/analyze-launch.js';
+import { JobManager } from '../../src/server/analyze-job.js';
 import { getStoragePaths } from '../../src/storage/repo-manager.js';
 import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 import { createTempDir } from '../helpers/test-db.js';
@@ -80,7 +82,7 @@ describe('server reindex with route aliases from GITNEXUS_RC', () => {
     await temp.cleanup();
   });
 
-  it('keeps alias Routes and wrapped handler edges across an HTTP reindex', async () => {
+  it('keeps alias Routes and wrapped handler edges across a server-launched reindex', async () => {
     const routeHookConfig = resolveLaunchRouteHookConfig(repo);
     await runFullAnalysis(
       repo,
@@ -89,26 +91,38 @@ describe('server reindex with route aliases from GITNEXUS_RC', () => {
     );
     expect(await routeEvidence(repo)).toEqual({ routes: 3, handled: 2 });
 
-    const send = vi.fn<(message: WorkerMessage) => void>();
-    await runWorkerAnalysis(
-      repo,
-      // Exactly what `createLaunchAnalysisWorker` sends for a forced reindex.
-      { force: true, embeddings: false, dropEmbeddings: false, routeHookConfig },
-      {
-        runFullAnalysis: (repoPath, options, callbacks, ...rest) =>
-          runFullAnalysis(
-            repoPath,
-            { ...options, skipNativeCloseOnExit: false },
-            callbacks,
-            ...rest,
-          ),
-        assertAnalysisFinalized: async () => undefined,
-        send,
-        claimTerminal: () => true,
-      },
-    );
-
-    expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: 'complete' }));
+    const jobManager = new JobManager();
+    const childExits: Promise<unknown>[] = [];
+    const registerChild = jobManager.registerChild.bind(jobManager);
+    vi.spyOn(jobManager, 'registerChild').mockImplementation((id, child) => {
+      childExits.push(once(child, 'exit'));
+      registerChild(id, child);
+    });
+    const releaseRepoLock = vi.fn();
+    const backendInit = vi.fn(async () => undefined);
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock,
+      closeDbHandle: async () => (await import('../../src/core/lbug/lbug-adapter.js')).closeLbug(),
+    });
+    const job = jobManager.createJob({ repoPath: repo });
+    try {
+      await launch(job, repo, { force: true });
+      await vi.waitFor(
+        () => expect(['complete', 'failed']).toContain(jobManager.getJob(job.id)?.status),
+        { timeout: 180_000, interval: 100 },
+      );
+      // The completion IPC precedes process exit, which releases the worker's
+      // native database handle. Only then can this process reopen the graph.
+      await Promise.all(childExits);
+      expect(jobManager.getJob(job.id)?.status).toBe('complete');
+      expect(backendInit).toHaveBeenCalledOnce();
+      expect(releaseRepoLock).toHaveBeenCalledOnce();
+    } finally {
+      jobManager.dispose();
+    }
     expect(await routeEvidence(repo)).toEqual({ routes: 3, handled: 2 });
   }, 300_000);
 
