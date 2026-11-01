@@ -12,6 +12,103 @@ import { getStoragePaths, registerRepo, saveMeta } from '../../src/storage/repo-
 import { createTempDir } from '../helpers/test-db.js';
 
 const REPO = 'query-integrity';
+
+describe.each(['current', 'without staticGated'] as const)('native impact schema: %s', (schema) => {
+  let temp: Awaited<ReturnType<typeof createTempDir>>;
+  let backend: LocalBackend;
+  let lbugPath: string;
+
+  beforeAll(async () => {
+    temp = await createTempDir();
+    vi.stubEnv('GITNEXUS_HOME', path.join(temp.dbPath, 'home'));
+    vi.stubEnv('GITNEXUS_STORAGE_PATH', path.join(temp.dbPath, 'index'));
+    vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
+    const paths = getStoragePaths(temp.dbPath);
+    lbugPath = paths.lbugPath;
+    await adapter.initLbug(lbugPath);
+    try {
+      for (const name of ['target', 'caller', 'root']) {
+        await adapter.executeQuery(
+          `CREATE (:Function {id: 'Function:src/${name}.ts:${name}', name: '${name}', filePath: 'src/${name}.ts', startLine: 1, endLine: 3})`,
+        );
+      }
+      for (const [caller, callee, gated] of [
+        ['caller', 'target', true],
+        ['root', 'caller', false],
+      ]) {
+        await adapter.executeQuery(
+          `MATCH (a:Function {name: '${caller}'}), (b:Function {name: '${callee}'}) CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, staticGated: ${gated}}]->(b)`,
+        );
+      }
+      if (schema === 'without staticGated') {
+        await adapter.executeQuery('ALTER TABLE CodeRelation DROP staticGated');
+      }
+      await adapter.flushWAL();
+    } finally {
+      await adapter.closeLbug();
+    }
+    const meta = {
+      repoPath: temp.dbPath,
+      storagePath: paths.storagePath,
+      lastCommit: 'legacy-fixture',
+      indexedAt: new Date().toISOString(),
+      scopeExtractionReceipt: 1 as const,
+      stats: { files: 3, nodes: 3, processes: 0, communities: 0 },
+    };
+    await saveMeta(paths.storagePath, meta);
+    await registerRepo(temp.dbPath, meta, { name: REPO });
+    backend = new LocalBackend();
+    expect(await backend.init()).toBe(true);
+  });
+
+  afterAll(async () => {
+    try {
+      await backend?.dispose();
+    } finally {
+      await adapter.closeLbug();
+      vi.unstubAllEnvs();
+      await temp?.cleanup();
+    }
+  });
+
+  it.each(['upstream', 'downstream'] as const)(
+    'walks two levels %s after a schema miss',
+    async (direction) => {
+      const result = await backend.callTool('impact', {
+        repo: REPO,
+        target: direction === 'upstream' ? 'target' : 'root',
+        direction,
+        maxDepth: 3,
+      });
+      if (schema === 'without staticGated') {
+        // The backend opens its pool lazily. Verify that a successful walk
+        // did not depend on adding the missing property to the database.
+        await expect(
+          executeParameterized(
+            lbugPath,
+            'MATCH ()-[r:CodeRelation]->() RETURN r.staticGated AS staticGated',
+            {},
+          ),
+        ).rejects.toThrow(/Cannot find property staticGated for r/);
+      }
+      expect(result).not.toHaveProperty('error');
+      expect(result).not.toHaveProperty('partial');
+      expect(result.impactedCount).toBe(2);
+      expect(result.byDepthCounts).toEqual({ 1: 1, 2: 1 });
+      expect(result.byDepth[1].map((item: any) => item.name)).toEqual(['caller']);
+      expect(result.byDepth[2].map((item: any) => item.name)).toEqual([
+        direction === 'upstream' ? 'root' : 'target',
+      ]);
+      const gatedDepth = direction === 'upstream' ? 1 : 2;
+      if (schema === 'current') expect(result.byDepth[gatedDepth][0].staticGated).toBe(true);
+      else {
+        for (const depth of [1, 2])
+          expect(result.byDepth[depth][0]).not.toHaveProperty('staticGated');
+      }
+    },
+  );
+});
+
 const nodes = {
   alpha: { id: 'Function:src/alpha.ts:runSweep', name: 'runSweep', filePath: 'src/alpha.ts' },
   alphaCaller: {

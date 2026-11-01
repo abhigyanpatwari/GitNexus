@@ -229,6 +229,16 @@ const CANDIDATE_WINDOW = 20;
  */
 export const IMPACT_FRONTIER_ROW_CAP = 100_000;
 
+/** The binder error from an index whose CodeRelation table predates `staticGated`. */
+export function isMissingStaticGatedError(error: unknown): boolean {
+  return error instanceof Error && /Cannot find property staticGated for r\b/i.test(error.message);
+}
+
+/** The impact frontier query with `staticGated` read as NULL, for older indexes. */
+export function withoutStaticGatedColumn(query: string): string {
+  return query.replace('r.staticGated AS staticGated', 'NULL AS staticGated');
+}
+
 /**
  * Concurrent BFS walks when `query()` attaches per-process `chain`. Each walk
  * is already node-capped inside `_computeContextChain`; this bounds how many
@@ -8750,6 +8760,7 @@ export class LocalBackend {
     const objectCallableFrontier: string[] = [];
     let traversalComplete = true;
     let traversalCappedAtDepth: number | undefined;
+    let staticGatedAvailable = true;
     // Fetch one sentinel row beyond the cap so generated object bindings
     // degrade visibly instead of allocating an unbounded seed frontier.
     const OBJECT_CALLABLE_MEMBER_CAP = 5000;
@@ -8985,11 +8996,31 @@ export class LocalBackend {
             `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`;
 
       try {
-        const fetched = await executeParameterized(repo.lbugPath, query, {
+        const queryParams = {
           frontierIds: frontier,
           relTypes: relationTypes,
           ...(safeMinConfidence > 0 ? { minConfidence: safeMinConfidence } : {}),
-        });
+        };
+        let fetched: any[];
+        try {
+          fetched = await executeParameterized(
+            repo.lbugPath,
+            staticGatedAvailable ? query : withoutStaticGatedColumn(query),
+            queryParams,
+          );
+        } catch (e) {
+          // An index built before edges carried `staticGated` has no such
+          // property, so the binder rejects every level and the walk would
+          // report no dependants at all. A missing column only means "not
+          // proven dead"; retry without it.
+          if (!staticGatedAvailable || !isMissingStaticGatedError(e)) throw e;
+          staticGatedAvailable = false;
+          fetched = await executeParameterized(
+            repo.lbugPath,
+            withoutStaticGatedColumn(query),
+            queryParams,
+          );
+        }
         const levelCapped = fetched.length > IMPACT_FRONTIER_ROW_CAP;
         const related = levelCapped ? fetched.slice(0, IMPACT_FRONTIER_ROW_CAP) : fetched;
         if (levelCapped) {

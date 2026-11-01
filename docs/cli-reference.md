@@ -43,6 +43,10 @@ query: shared `--http` ran the batch in 7.7 s at a flat 517 MB, versus 30.0 s an
 
 You can also query the graph directly from the terminal — `gitnexus query`, `context`, `impact`, `trace`, `cypher`, `detect-changes`, and `check` mirror the MCP tools of the same names, and `gitnexus doctor` prints runtime platform capabilities.
 
+`gitnexus impact <symbol> --max-tokens 1000` budgets compact JSON at four UTF-8 bytes per token. Single-repo callgraph results retain the nearest dependants first. Counts and risk remain complete; `pagination.trimmedForBudget` describes omitted symbols. Group and PDG results must fit intact. If required content cannot fit, the command returns a JSON error and exits nonzero. Extremely small budgets return JSON `null` with the same failure status. Budgeted output is compact even on a terminal; other direct tool output is compact when piped and indented on a terminal.
+
+Impact defaults to 30 symbols per depth when pagination is omitted. Use `--limit` and `--offset` for explicit pages, or `GITNEXUS_IMPACT_DEFAULT_LIMIT=0` for all symbols. `--summary-only`, group queries and PDG mode bypass this default. Symbols list at most three processes, with `processCount` preserving the full count when shortened. `--max-tokens` is explicit on the CLI; `GITNEXUS_MCP_DEFAULT_MAX_TOKENS` applies only to MCP.
+
 `gitnexus analyze --watch` requires a Git repository. It runs one initial
 analysis, then debounces scanner-admitted working-tree changes for 300 ms by
 default and applies serialized incremental refreshes. Events arriving during a
