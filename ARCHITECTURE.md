@@ -432,6 +432,10 @@ Wire format is **v2**: `2|<base>|<step>|<step>…`, one-character version prefix
 
 Receivers the resolver could not type are not silently dropped. Each records a `ResolutionOutcome` (`scope-resolution/resolution-outcome.ts`) carrying the receiver's *shape* (`classifyReceiverShape`: `chain-call` / `chain-field` / `chain-mixed` / `chain-unwrap` / `no-chain` — the bench censuses these) and its *origin* (`in-program` / `external` / `unknown`). `scope-resolution/unresolved-receivers.ts` aggregates them per member name into the index-persisted `unresolvedReceiverMembers` summary, keeping in-program and external counts under separate keys. Only in-program drops make a count short: an external-rooted call (`System.out.println`, `fetch(...)`) has no in-graph node an edge could have reached, so it is reported but does not hedge. `impact` / `context` read that summary and publish `epistemic: 'exact' | 'lower-bound'`, prose `boundaries`, and the machine-readable `causes` split (`EpistemicCauses` in `mcp/local/local-backend.ts`).
 
+Python's provider classifies attribute reads and assignment targets separately; augmented assignments produce both read and write references. Constructor assignments on a proven instance receiver also create `Property` nodes without requiring a value type annotation. Annotation-only targets do not assign a value. These rules follow the [Python attribute-reference](https://docs.python.org/3/reference/expressions.html#attribute-references) and [assignment](https://docs.python.org/3/reference/simple_stmts.html#assignment-statements) semantics.
+
+Property references declined across language boundaries are recorded in `crossLanguageProperties`. Both `context` and upstream `impact` on an affected property report `epistemic: 'lower-bound'`, with the explanation in `boundaries` and `unresolved`, and the definition languages in `anchorLanguages`. This evidence does not fabricate cross-language edges and does not qualify a downstream walk.
+
 ### Java overload selection and missing call edges (#3789)
 
 Java resolves an overload family through provider hooks before the shared passes

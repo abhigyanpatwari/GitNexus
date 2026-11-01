@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
+import { summarizeUnresolvedOverloads } from '../../src/core/ingestion/scope-resolution/unresolved-overloads.js';
 import { withTestLbugDB, type IndexedDBHandle } from '../helpers/test-indexed-db.js';
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
@@ -70,6 +71,65 @@ withTestLbugDB(
         expect(String(result.unresolved)).toMatch(/not linked/i);
         // The note must not be mistakable for "unused".
         expect(String(result.unresolved)).toMatch(/not evidence the field is unused/i);
+        expect(result.epistemic).toBe('lower-bound');
+        expect(result.boundaries).toContain(result.unresolved);
+      });
+
+      it('carries the same warning and lower bound in upstream impact', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'wickRatio',
+          direction: 'upstream',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.anchorLanguages).toEqual(['typescript']);
+        expect(String(result.unresolved)).toMatch(/not linked/i);
+        expect(result.epistemic).toBe('lower-bound');
+        expect(result.boundaries).toContain(result.unresolved);
+      });
+
+      it.each(['context', 'impact'] as const)(
+        'preserves cross-language details alongside overload uncertainty in %s',
+        async (tool) => {
+          const metaDir = path.dirname(handle.dbPath);
+          const meta = await loadMeta(metaDir);
+          if (meta === null) throw new Error('Missing fixture metadata');
+          try {
+            await saveMeta(metaDir, {
+              ...meta,
+              unresolvedOverloads: summarizeUnresolvedOverloads([], false),
+            });
+            const result = await backend.callTool(
+              tool,
+              tool === 'context'
+                ? { name: 'wickRatio' }
+                : { target: 'wickRatio', direction: 'upstream' },
+            );
+            expect(result).not.toHaveProperty('error');
+            expect(result.epistemic).toBe('lower-bound');
+            expect(result.anchorLanguages).toEqual(['typescript']);
+            expect(String(result.unresolved)).toMatch(/not linked/i);
+            expect(result.boundaries).toEqual(
+              expect.arrayContaining([
+                result.unresolved,
+                expect.stringMatching(/Overload-resolution coverage is partial/),
+              ]),
+            );
+            expect(result.causes.overloadResolution).toBe(0);
+          } finally {
+            await saveMeta(metaDir, meta);
+          }
+        },
+      );
+
+      it('does not apply an incoming-reference warning to downstream impact', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'wickRatio',
+          direction: 'downstream',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.epistemic).toBe('exact');
+        expect(result.unresolved).toBeUndefined();
+        expect(result.anchorLanguages).toBeUndefined();
       });
 
       it('says nothing for a property with no cross-language story', async () => {
@@ -77,6 +137,7 @@ withTestLbugDB(
         expect(result).not.toHaveProperty('error');
         expect(result.unresolved).toBeUndefined();
         expect(result.anchorLanguages).toBeUndefined();
+        expect(result.epistemic).toBe('exact');
       });
     });
   },
@@ -101,6 +162,8 @@ withTestLbugDB(
       const meta = (await loadMeta(metaDir)) ?? {};
       await saveMeta(metaDir, {
         ...meta,
+        scopeExtractionReceipt: 1,
+        unresolvedOverloads: summarizeUnresolvedOverloads([]),
         crossLanguageProperties: [{ name: 'wickRatio', languages: ['typescript'] }],
       } as never);
       expect(fs.existsSync(metaDir)).toBe(true);
