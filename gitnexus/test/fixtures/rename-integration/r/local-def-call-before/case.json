@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when a body calls the name before its local function literal is assigned: that call reaches the function being renamed, but the index binds every body call to the local definition.",
+  "categories": ["assignment-shadowing", "call-order", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

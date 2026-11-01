@@ -1,0 +1,7 @@
+export(foo)
+export(bar)
+export(baz)
+S3method(print, foo)
+S3method(print, bar)
+S3method(summary, baz)
+export(qux)

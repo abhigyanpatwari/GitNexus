@@ -16,6 +16,7 @@
  *
  * Added after Ring 1: zig enters as `experimental` (new language
  * integration; promotion to `production` is a separate governance PR).
+ * Same for r, added later.
  */
 
 import { SupportedLanguages } from '../languages.js';
@@ -47,6 +48,7 @@ export const LanguageClassifications: Readonly<Record<SupportedLanguages, Langua
     [SupportedLanguages.Vue]: 'experimental',
     [SupportedLanguages.Cobol]: 'experimental',
     [SupportedLanguages.Zig]: 'experimental',
+    [SupportedLanguages.R]: 'experimental',
   };
 
 /** Convenience predicate: is this language gating Ring 4 retirement? */

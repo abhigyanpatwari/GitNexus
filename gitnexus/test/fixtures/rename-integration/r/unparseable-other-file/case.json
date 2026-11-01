@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "A syntax error in an unrelated indexed R file refuses the rename: the file cannot be proven free of the name.",
+  "categories": ["parse-error", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "a.R", "startLine": 0 },
+  "newName": "secret",
+  "expect": { "status": "error", "code": "parse_error", "planningStatus": "blocked" },
+  "edges": []
+}

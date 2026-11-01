@@ -36,10 +36,42 @@ for (const language of (await fs.readdir(fixtures, { withFileTypes: true })).fil
 
 renameCases.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
 
+// A language whose fixtures outgrow one CI shard budget runs them from several files. Its sorted
+// fixture ids are dealt round-robin into `renameFixtureParts[language]` parts: part 1 runs from the
+// language's main file through `defineRenameFixtureTests`, parts 2..n from their own files through
+// `defineRenameFixturePartTests`, so every fixture is registered exactly once.
+export const renameFixtureParts: Readonly<Record<string, number>> = { r: 5 };
+
+const partById = new Map<string, number>();
+const dealt = new Map<string, number>();
+for (const fixture of renameCases) {
+  const index = dealt.get(fixture.language) ?? 0;
+  dealt.set(fixture.language, index + 1);
+  partById.set(fixture.id, (index % (renameFixtureParts[fixture.language] ?? 1)) + 1);
+}
+
+/** The 1-based part (test file) that registers this fixture id. */
+export function renameFixturePart(id: string): number {
+  return partById.get(id) ?? 1;
+}
+
 // Separate files let CI distribute these real indexing runs across its shards.
 export function defineRenameFixtureTests(language: string): void {
+  defineRenameFixturePartTests(language, 1);
+}
+
+// Registers only part `part` of `language`'s fixtures, for that part's own test file.
+export function defineRenameFixturePartTests(language: string, part: number): void {
+  defineRenameFixtureCases(
+    (fixture) => fixture.language === language && renameFixturePart(fixture.id) === part,
+  );
+}
+
+function defineRenameFixtureCases(
+  include: (fixture: (typeof renameCases)[number]) => boolean,
+): void {
   describe('persisted semantic rename across providers (no mocks)', () => {
-    it.each(renameCases.filter((fixture) => fixture.language === language))(
+    it.each(renameCases.filter(include))(
       '$id',
       async ({ directory }) => {
         const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'rename-integration-'));

@@ -1,0 +1,3 @@
+Package: pkgA
+Version: 1
+Imports: dplyr

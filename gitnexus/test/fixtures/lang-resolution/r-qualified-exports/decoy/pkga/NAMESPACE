@@ -1,0 +1,3 @@
+importFrom(other, fmt)
+export(fmt)
+export(a_other)

@@ -1,0 +1,6 @@
+same_pkg_foo <- function(v) foo(v)
+same_pkg_bar <- function(v) bar(v)
+same_pkg_baz <- function(v) baz(v)
+dotted_call <- function(x) print.foo(x)
+same_pkg_qux <- function(v) qux(v)
+same_pkg_odd <- function(v) `odd name`(v)

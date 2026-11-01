@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a new name that a function assigns globally with <<-.",
+  "categories": ["name-collision", "superassignment", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "sup.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "error", "code": "name_collision", "planningStatus": "blocked" },
+  "edges": []
+}

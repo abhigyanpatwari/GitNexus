@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse to rename the setter itself: helper(z) <- 5 would keep calling the missing helper<-.",
+  "categories": ["replacement-function", "getter-setter", "negative", "unchanged-on-error"],
+  "target": { "name": "`helper<-`", "kind": "Function", "file": "setter.R", "startLine": 2 },
+  "newName": "setter",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

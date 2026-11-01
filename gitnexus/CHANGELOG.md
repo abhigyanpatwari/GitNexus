@@ -4,8 +4,13 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **R language support (experimental)** — `.r` and `.R` files are indexed with the `@eagleoutice/tree-sitter-r` grammar and resolved through the scope-resolution pipeline: functions, S4, R6 and RefClass classes and members, `library()` / `source()` / NAMESPACE imports and exports, `pkg::fn` calls, typed `obj$method()` and `self$method()` receivers, plus a fail-closed `rename` provider. Boundaries and known wrong or lost results are inventoried in `docs/languages/r-ingestion-gaps.md` (#3513)
+
 ### Changed
 
+- **Qualified free calls outrank a lexical name claim** — the shared free-call pass resolves a qualified site before it applies a lexical name claim; Rust and PHP implement the same hook, publish no such claim, and measure unchanged (#3513)
 - **MCP `query` / `context` / `impact` / `cypher` always attach a ref-carrying `staleness` field** — object results include it even when `status` is `current`. Absence is no longer the freshness signal: read `staleness.status` (`behind`/`diverged` vs `current`/`unknown`) and `branch`/`lastCommit` for which index answered. `list_repos` and the HTTP repo routes are unchanged (still omit `staleness` when current; the ref is top-level) (#3291, #3293)
 - **MCP `query` keeps one `process_symbols` row per `(id, process_id)`** — a symbol in more than one execution flow stays on each process card, and `symbol_count` is the number of those emitted rows after `max_symbols`. A `repo` of `@<group>` returns `{ group, query, results, per_repo }` and does not include `process_symbols`; `results[].symbol_count` is that member's post-slice count, and a `service` prefix counts only attaches under the prefix. Query `@<group>/<memberPath>` for that member's attach rows (#3351)
 

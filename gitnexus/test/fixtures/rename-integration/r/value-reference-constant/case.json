@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a new name that the sources read as a base constant (x <- letters): the renamed function would shadow it.",
+  "categories": ["name-collision", "value-reference", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "ref.R", "startLine": 0 },
+  "newName": "letters",
+  "expect": { "status": "error", "code": "name_collision", "planningStatus": "blocked" },
+  "edges": []
+}
