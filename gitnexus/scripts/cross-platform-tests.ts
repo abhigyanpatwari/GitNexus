@@ -186,11 +186,9 @@ const LBUG_NATIVE = [
   'test/integration/rename-provider-objective-c.test.ts',
   'test/integration/rename-provider-php.test.ts',
   'test/integration/rename-provider-python.test.ts',
+  // R parts 2-5 run on the Linux coverage shards only: cmd.exe's 8191-char limit leaves no room
+  // (the Windows shard command for this list is already 7827 chars without R).
   'test/integration/rename-provider-r.test.ts',
-  'test/integration/rename-provider-r-part2.test.ts',
-  'test/integration/rename-provider-r-part3.test.ts',
-  'test/integration/rename-provider-r-part4.test.ts',
-  'test/integration/rename-provider-r-part5.test.ts',
   'test/integration/rename-provider-ruby.test.ts',
   'test/integration/rename-provider-rust.test.ts',
   'test/integration/rename-provider-swift.test.ts',

@@ -204,6 +204,6 @@ Unit tests are under `gitnexus/test/unit/` (`r-*.test.ts`, `type-env-r.test.ts` 
 - package visibility, S3 registration and S4 generators (`r-package-visibility`, `r-s3method-registration`, `r-s4-generator`);
 - work bounds and pathological inputs (`r-replacement-scaling`, `r-pathological-inputs`);
 - the shared free-call ordering that lets a qualified hit outrank a lexical name claim (`free-call-qualified-over-name-claim`, `rust-qualified-over-local`, `php-qualified-over-local`);
-- rename (`rename-provider-r` and `rename-provider-r-part2` to `-part5`, which deal one fixture list into five parts so each shard stays inside the CI time budget; `r-rename-*`, including `r-rename-unindexed-sources`);
+- rename (`rename-provider-r` and `rename-provider-r-part2` to `-part5`, which deal one fixture list into five parts so each shard stays inside the CI time budget; only part 1 runs on the Windows and macOS shards, because the Windows command line has no room for the other four; `r-rename-*`, including `r-rename-unindexed-sources`);
 - roxygen2 `@param` types (`type-env-r`, `r-roxygen-param`);
 - control flow (`test/unit/cfg/r-visitor.test.ts`, `test/integration/cfg/r-cfg-join.test.ts`).

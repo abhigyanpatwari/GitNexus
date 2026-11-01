@@ -164,7 +164,8 @@ measured in the audit and are not pinned by a repo test; the others are pinned b
   [r-s4-generator.test.ts](../../gitnexus/test/integration/resolvers/r-s4-generator.test.ts).
 - Rename: [rename-provider-r.test.ts](../../gitnexus/test/integration/rename-provider-r.test.ts) and
   `rename-provider-r-part2.test.ts` to `rename-provider-r-part5.test.ts` (one fixture list dealt
-  into five parts for the CI time budget), and
+  into five parts for the CI time budget; only part 1 is on the Windows and macOS list, since
+  cmd.exe's 8191-char command limit leaves no room for the other four), and
   [r-rename-unindexed-sources.test.ts](../../gitnexus/test/unit/r-rename-unindexed-sources.test.ts),
   with fixtures under `gitnexus/test/fixtures/rename-integration/r/`.
 - Work bounds:

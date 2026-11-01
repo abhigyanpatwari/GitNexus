@@ -8,8 +8,9 @@ import {
 
 // The fixture runner builds its test list from the directory, so an empty or renamed directory
 // would define no test and stay green. Pin the number of R cases: adding one means raising it.
-// A Windows shard holds about a fifth of them, so the sorted ids are dealt into five parts: part 1
-// runs here, parts 2 to 5 from rename-provider-r-part2.test.ts to rename-provider-r-part5.test.ts.
+// A shard holds about a fifth of them, so the sorted ids are dealt into five parts: part 1 runs
+// here (also on Windows and macOS), parts 2 to 5 from rename-provider-r-part2.test.ts to
+// rename-provider-r-part5.test.ts (Linux only: the Windows command line has no room for them).
 describe('R rename fixtures', () => {
   it('are all discovered', () => {
     expect(renameCases.filter((fixture) => fixture.language === 'r')).toHaveLength(114);
