@@ -281,6 +281,7 @@ const SPAWN_CLI = [
   'test/integration/resolvers/java-javac-overloads.test.ts',
   // Real shard/blob/JSON roundtrip: path identities and child invocation vary by OS.
   'test/unit/shard-timings-roundtrip.test.ts',
+  'test/unit/run-cross-platform.test.ts',
   'test/integration/cli-e2e.test.ts',
   'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',
