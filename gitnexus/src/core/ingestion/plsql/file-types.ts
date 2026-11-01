@@ -97,10 +97,27 @@ const SQLPLUS_INCLUDE =
   /^[ \t]*(?:@@|@|sta(?:rt)?[ \t]+)[\w./\\-]+\.(?:sql|pks|pkb|pck|pls|plb|prc|fnc|trg|tps|tpb)[ \t]*\r?$/im;
 
 /**
+ * Comments, then string literals (`'…'` with `''` escapes, and `q'[…]'`
+ * alternative quoting), whichever starts first.
+ */
+const COMMENT_OR_STRING =
+  /--[^\n]*|\/\*[\s\S]*?(?:\*\/|$)|(?<![\w$#])[qQ]'(?:\[[\s\S]*?\]|\([\s\S]*?\)|\{[\s\S]*?\}|<[\s\S]*?>|(\S)[\s\S]*?\1)'|'(?:[^']|'')*(?:'|$)/g;
+
+/**
+ * `content` with comments and string literals blanked, line breaks kept, so
+ * dialect evidence comes from code only: `-- :=` in a T-SQL comment or
+ * `'END IF;'` in a literal says nothing about the dialect.
+ */
+function codeOf(content: string): string {
+  return content.replace(COMMENT_OR_STRING, (text) => text.replace(/[^\n]/g, ' '));
+}
+
+/**
  * True when `.sql` content holds at least one Oracle PL/SQL compilation unit,
  * or is a SQL*Plus script that includes other scripts.
  */
-export function looksLikeOraclePlSql(content: string): boolean {
+export function looksLikeOraclePlSql(source: string): boolean {
+  const content = codeOf(source);
   if (SQLPLUS_INCLUDE.test(content) && !TSQL_MARKERS.test(content)) return true;
   if (!ORACLE_UNIT_HEADER.test(content)) return false;
   if (POSTGRES_DOLLAR_BODY.test(content) || TSQL_MARKERS.test(content)) return false;

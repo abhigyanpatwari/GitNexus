@@ -18,7 +18,8 @@ ${previous(i, (p) => `  usePrevious() { return new C${p}().make${p}_0().make${p}
 }`;
 
 // Each arm has one chain of cross-file uses and distinct method names. Swift
-// uses same-module visibility; COBOL uses program calls and procedure pointers.
+// uses same-module visibility; COBOL uses program calls and procedure pointers;
+// PL/SQL uses package-qualified calls.
 export const generators = {
   javascript: (i, n) => ({ path: `src/C${i}.js`, content: script(i, n, false, 'js') }),
   typescript: (i, n) => ({ path: `src/C${i}.ts`, content: script(i, n, true, 'js') }),
@@ -175,6 +176,24 @@ ${previous(i, (p) => `           SET TARGET-PTR TO ENTRY 'C${p}'\n           CAL
            PERFORM MAKE-${i}-0
            GOBACK.
 ${members(n, (j) => `       MAKE-${i}-${j}.\n           CONTINUE.`)}
+`,
+  }),
+  plsql: (i, n) => ({
+    path: `src/pkg_c${i}.pck`,
+    content: `CREATE OR REPLACE PACKAGE pkg_c${i} AS
+${members(n, (j) => `  PROCEDURE make${i}_${j};`)}
+  PROCEDURE use_previous;
+END pkg_c${i};
+/
+CREATE OR REPLACE PACKAGE BODY pkg_c${i} AS
+${members(n, (j) => `  PROCEDURE make${i}_${j} IS BEGIN NULL; END make${i}_${j};`)}
+  PROCEDURE use_previous IS
+  BEGIN
+${previous(i, (p) => `    pkg_c${p}.make${p}_0;\n    pkg_c${p}.make${p}_1;`)}
+    NULL;
+  END use_previous;
+END pkg_c${i};
+/
 `,
   }),
   zig: (i, n) => ({

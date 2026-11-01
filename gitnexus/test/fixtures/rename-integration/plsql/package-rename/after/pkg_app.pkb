@@ -1,0 +1,7 @@
+CREATE OR REPLACE PACKAGE BODY core AS
+  PROCEDURE info IS
+  BEGIN
+    NULL;
+  END info;
+END core;
+/

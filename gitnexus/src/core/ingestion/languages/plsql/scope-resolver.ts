@@ -17,8 +17,6 @@ import { plsqlProvider } from '../plsql.js';
 import {
   PlSqlNameIndex,
   PlSqlPackageInstances,
-  inWrittenSchema,
-  nearestGroups,
   rootPackageOf,
   type PlSqlIndexEntry,
 } from '../../plsql/resolve.js';
@@ -107,43 +105,45 @@ const plsqlScopeResolver: ScopeResolver = {
       if (pkg) entry.instance = instances.instanceOf(pkg.name, pkg.schema, entry.filePath);
     }
 
-    // A package name denotes the package instance nearest the reference (as
-    // near as its nearest spec or body file); its spec when indexed.
-    const packageSymbols = new Map<
-      string,
-      Array<{
-        filePath: string;
-        symbol: SymbolDefinition;
-        isSpec: boolean;
-        schema?: string;
-        instance: string;
-      }>
-    >();
+    // The symbol a package instance is known by: its spec when indexed.
+    const packageOfInstance = new Map<string, { symbol: SymbolDefinition; isSpec: boolean }>();
     for (const [def, symbol] of symbolOf) {
       if (def.kind !== 'package') continue;
-      const list = packageSymbols.get(def.name) ?? [];
-      list.push({
-        filePath: symbol.filePath,
-        symbol,
-        isSpec: def.isSpec,
-        schema: def.schema,
-        instance: instances.instanceOf(def.name, def.schema, symbol.filePath),
-      });
-      packageSymbols.set(def.name, list);
+      const instance = instances.instanceOf(def.name, def.schema, symbol.filePath);
+      const known = packageOfInstance.get(instance);
+      if (!known || (def.isSpec && !known.isSpec))
+        packageOfInstance.set(instance, { symbol, isSpec: def.isSpec });
     }
-    /** In `S.A.N` the written schema `S` narrows same-named packages first. */
-    const packageSymbol = (
-      name: string,
+
+    const resolved = new Map<PlSqlCallSite, BoundEntry[]>();
+    const resolveCall = (call: PlSqlCallSite, fromFile: string): BoundEntry[] => {
+      let targets = resolved.get(call);
+      if (!targets) {
+        targets = call.dbLink ? [] : index.resolve(call, fromFile);
+        resolved.set(call, targets);
+      }
+      return targets;
+    };
+    /**
+     * The package a qualifier names, read off the resolved callee: `A` in
+     * `A.N` / `S.A.N` denotes a package only when `N` resolves to members of
+     * exactly one instance of package `A`. A schema (`S.N` reaching a
+     * standalone subprogram), a database link, an unresolved callee or members
+     * of several instances leave the qualifier unproven.
+     */
+    const qualifierPackage = (
+      call: PlSqlCallSite,
+      qualifier: string,
       fromFile: string,
-      schema: string | undefined,
     ): SymbolDefinition | undefined => {
-      const all = packageSymbols.get(name) ?? [];
-      const nearest = nearestGroups(
-        inWrittenSchema(all, schema, (p) => p.schema),
-        fromFile,
-        (p) => p.instance,
+      const owners = new Set<string | undefined>(
+        resolveCall(call, fromFile).map((t) =>
+          t.def.ownerPath.length === 1 && t.def.ownerPath[0] === qualifier ? t.instance : undefined,
+        ),
       );
-      return (nearest.find((p) => p.isSpec) ?? nearest[0])?.symbol;
+      if (owners.size !== 1) return undefined;
+      const [instance] = owners;
+      return instance === undefined ? undefined : packageOfInstance.get(instance)?.symbol;
     };
 
     for (const { parsed, facts } of files) {
@@ -180,11 +180,7 @@ const plsqlScopeResolver: ScopeResolver = {
           // In `S.A.N` only `A` (the part before the callee) can name a package.
           const symbol =
             m.part === m.call.nameParts.length - 2
-              ? packageSymbol(
-                  m.call.nameParts[m.part]!,
-                  parsed.filePath,
-                  m.part > 0 ? m.call.nameParts[m.part - 1] : undefined,
-                )
+              ? qualifierPackage(m.call, m.call.nameParts[m.part]!, parsed.filePath)
               : undefined;
           record(
             site,
@@ -198,8 +194,7 @@ const plsqlScopeResolver: ScopeResolver = {
           );
           continue;
         }
-        const targets = m.call.dbLink ? [] : index.resolve(m.call, parsed.filePath);
-        const ids = targets.map((t) => t.symbol.nodeId);
+        const ids = resolveCall(m.call, parsed.filePath).map((t) => t.symbol.nodeId);
         record(
           site,
           ids.length === 1

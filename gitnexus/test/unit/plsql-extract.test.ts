@@ -274,6 +274,23 @@ describe('file classification', () => {
         'CREATE PROCEDURE p()\nBEGIN\n  -- nvl( is not MySQL\n  SELECT 1;\nEND\n/\n',
       ),
     ).toBe(false);
+    // Dialect evidence comes from code, never from comments or string literals.
+    expect(looksLikeOraclePlSql('CREATE PROCEDURE p AS BEGIN SELECT 1; -- :=\nEND;')).toBe(false);
+    expect(
+      looksLikeOraclePlSql("CREATE PROCEDURE p AS\nBEGIN\n  SELECT 'END IF; x := 1';\nEND;"),
+    ).toBe(false);
+    expect(
+      looksLikeOraclePlSql(
+        '/* CREATE PROCEDURE p IS */\nCREATE PROCEDURE p AS\nBEGIN\n  SELECT 1;\nEND;',
+      ),
+    ).toBe(false);
+    expect(
+      looksLikeOraclePlSql("CREATE PROCEDURE p AS\nBEGIN\n  SELECT q'[it's -- not]';\nEND;"),
+    ).toBe(false);
+    // …while code next to a comment or literal still counts.
+    expect(
+      looksLikeOraclePlSql("CREATE PROCEDURE p AS -- note\nBEGIN\n  x := 'a';\nEND;\n/\n"),
+    ).toBe(true);
     // A package header is Oracle-only even with `AS` and no other marker.
     expect(looksLikeOraclePlSql('CREATE PACKAGE p AS PROCEDURE q(x NUMBER); END p;')).toBe(true);
     expect(
