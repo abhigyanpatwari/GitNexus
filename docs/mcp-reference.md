@@ -30,6 +30,40 @@
 
 > Per-repo read-only tools take an optional `repo` parameter. Omit it when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout; otherwise pass it explicitly. Mutating tools require `repo` when multiple repos are indexed and no MCP default exists. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`, except `read_file` and `grep`, which read the checkout and do not accept `branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree — switching branches and re-running `gitnexus analyze` updates it incrementally. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
 
+### AdonisJS taint coverage
+
+The TypeScript/JavaScript model recognizes directly assigned or destructured results of `input`, `qs`,
+`header`, `param`, `cookie`, `all`, `body`, `params`, `headers`, `only`, `except`,
+and `validateUsing` calls on `req`, `request`, or `ctx.request`. The request call
+must supply the entire assigned value; `await`, parentheses, and TypeScript
+`as`, `satisfies`, and non-null assertions may wrap it. For example:
+
+```ts
+const name = request.input('name');
+await db.rawQuery('select * from users where name = ' + name); // SQL injection finding
+await db.rawQuery('select * from users where name = ?', [name]); // value binding
+```
+
+`rawQuery` consumes SQL at argument 0. The model recognizes `db`, `database`, and
+`trx` receivers, plus aliases imported from `@adonisjs/lucid/services/db`.
+`Model.query()` without arguments starts a query builder and is not itself a
+SQL injection sink. `validateUsing()` remains a source: schema validation can
+accept strings that are unsafe when concatenated into SQL or executable code.
+
+Request receiver matching is conventional and exact; arbitrary aliases are not
+modeled. The call-result rules also do not cover inline calls, concatenation,
+template interpolation, method chains, `??` / `||` expressions, or wrapper calls
+such as `String(request.input('name'))`, even when the containing expression is
+assigned to a variable. For example, neither of these introduces a modeled source:
+
+```ts
+db.rawQuery(request.input('sql'));
+const name = request.input('name', '').trim();
+```
+
+A zero-finding result does not establish safety. Re-run
+`gitnexus analyze --pdg` after upgrading to rebuild findings with the new model.
+
 ### Resources for instant context
 
 | Resource                                | Purpose                                              |
