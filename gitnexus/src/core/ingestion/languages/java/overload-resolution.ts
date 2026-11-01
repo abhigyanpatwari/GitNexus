@@ -242,11 +242,15 @@ function sourceDefinitions(name: string, state: State): readonly SymbolDefinitio
   // whose definitions share the inheritance and owner lookup key space.
   const qualifiedNames = new Set([
     name,
-    ...state.model.types
-      .lookupClassByName(name)
-      .flatMap((definition) =>
-        definition.qualifiedName === undefined ? [] : [definition.qualifiedName],
-      ),
+    ...state.model.types.lookupClassByName(name).flatMap((definition) => {
+      const qualified = definition.qualifiedName;
+      if (qualified === undefined) return [];
+      const pkg = packageName(definition.filePath);
+      // Model names include the package; nested scope names retain only owners.
+      return pkg && qualified.startsWith(`${pkg}.`)
+        ? [qualified, qualified.slice(pkg.length + 1)]
+        : [qualified];
+    }),
   ]);
   return [
     ...new Set(
@@ -299,15 +303,22 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
     return unique.length === 1 ? sourceReference(unique[0]!) : UNKNOWN_JAVA_TYPE;
   }
   if (name.includes('.')) return qualifiedReference(name, state);
-  // A static import can introduce a member TYPE as well as a value or method.
-  // Without proof of its namespace, it must not silently become java.lang.Long
-  // (or another platform type) solely because the simple spelling matches.
+  // Static imports can name types, values or methods. Require a source type
+  // identity before resolving one; an unproven import must not become a JDK type.
   if (
     facts.imports.some(
       (item) => item.static && (item.wildcard || item.name.split('.').at(-1) === name),
     )
-  )
+  ) {
+    const explicit = facts.imports.filter(
+      (item) => item.static && !item.wildcard && item.name.split('.').at(-1) === name,
+    );
+    if (explicit.length === 1) {
+      const imported = qualifiedReference(explicit[0]!.name, state);
+      if (imported.kind === 'reference' && imported.sourceId !== undefined) return imported;
+    }
     return UNKNOWN_JAVA_TYPE;
+  }
   for (const enclosing of facts.types.filter((type) => javaRangeContains(type.range, context.at))) {
     for (const owner of sourceDefinitions(enclosing.name, state).filter(
       (definition) => definition.filePath === context.filePath,

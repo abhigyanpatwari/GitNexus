@@ -303,8 +303,17 @@ class Cases {
       'api/Service.java': `package api; public interface Service { void select(long value); void select(Integer value); }`,
       'client/Client.java': `package client; class Client { void acrossPackages(api.Service service) { service.select(1); } }`,
       'names/Names.java': `package names; public class Names { public static class Long {} }`,
+      'names/Other.java': `package names; public class Other { public static class Long {} }`,
       'client/StaticType.java': `package client; import static names.Names.Long;
-class StaticType { void select(Long value) {} void select(Number value) {} void staticTypeImport() { select(1L); } }`,
+class StaticType {
+ void select(Long value) {} void select(Number value) {}
+ void staticTypeImport() { select(1L); }
+ void staticSourceType(Long value) { select(value); }
+}`,
+      'client/MissingStaticType.java': `package client; import static external.Names.Long;
+class MissingStaticType { void select(Long value) {} void select(Number value) {} void missingStaticType() { select(1L); } }`,
+      'client/ConflictingStaticType.java': `package client; import static names.Names.Long; import static names.Other.Long;
+class ConflictingStaticType { void select(Long value) {} void select(Number value) {} void conflictingStaticTypes() { select(1L); } }`,
       'first/Base.java': `package first; public class Base { void access(String value) {} protected void protectedChoice(Integer value) {} protected void protectedChoice(long value) {} }`,
       'second/Middle.java': `package second; public class Middle extends first.Base {}`,
       'second/ProtectedChild.java': `package second; import first.Base; class ProtectedChild extends Base { void superProtected() { super.protectedChoice(1); } }`,
@@ -448,6 +457,18 @@ class ObjectOverload {
     ]);
   });
 
+  it.each([
+    ['staticTypeImport', 'Number'],
+    ['staticSourceType', 'Long'],
+  ])(
+    'resolves %s with the statically imported source type distinct from java.lang.Long',
+    (caller, parameter) => {
+      expect(targets(result, caller, 'select')).toEqual([
+        `Method:client/StaticType.java:StaticType.select#1~${parameter}`,
+      ]);
+    },
+  );
+
   it('does not re-inherit a package member after an intermediate class in another package', () => {
     expect(targets(result, 'interruptedPackage', 'access')).toEqual([
       'Method:first/Child.java:Child.access#1',
@@ -467,7 +488,8 @@ class ObjectOverload {
     ['typeParameter', 'generic'],
     ['inheritedUnknown', 'select'],
     ['implicitObject', 'wait'],
-    ['staticTypeImport', 'select'],
+    ['missingStaticType', 'select'],
+    ['conflictingStaticTypes', 'select'],
     ['equivalentPreferred', 'preferred'],
   ])('records uncertainty for %s without a guessed overload edge', (caller, method) => {
     expect(targets(result, caller, method)).toEqual([]);

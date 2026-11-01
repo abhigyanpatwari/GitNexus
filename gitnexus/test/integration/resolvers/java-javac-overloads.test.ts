@@ -11,6 +11,42 @@ const javacAvailable =
 
 describe('javac oracle for Java overload resolution', () => {
   it.runIf(javacAvailable)(
+    'distinguishes a statically imported source type from the boxed long type',
+    () => {
+      const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-javac-static-type-'));
+      try {
+        const sources = {
+          'names/Names.java': 'package names; public class Names { public static class Long {} }',
+          'client/Oracle.java': `package client; import static names.Names.Long;
+public class Oracle {
+ static String select(Long value) { return "source"; }
+ static String select(Number value) { return "number"; }
+ public static void main(String[] args) {
+   System.out.println(select(1L) + "," + select(new Long()));
+ }
+}`,
+        };
+        for (const [name, source] of Object.entries(sources)) {
+          const file = path.join(root, name);
+          mkdirSync(path.dirname(file), { recursive: true });
+          writeFileSync(file, source);
+        }
+        execFileSync('javac', [
+          ...compilerLocale,
+          '-d',
+          root,
+          ...Object.keys(sources).map((name) => path.join(root, name)),
+        ]);
+        expect(
+          execFileSync('java', ['-cp', root, 'client.Oracle'], { encoding: 'utf8' }).trim(),
+        ).toBe('number,source');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(javacAvailable)(
     'selects the accessible Object overload for a declared method return and known arguments',
     () => {
       const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-javac-accessible-'));
