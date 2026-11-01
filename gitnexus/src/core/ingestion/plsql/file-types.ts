@@ -56,6 +56,18 @@ const ORACLE_IS_HEADER =
 const ORACLE_PACKAGE_HEADER =
   /^[ \t]*create\s+(?:or\s+replace\s+)?(?:(?:non)?editionable\s+)?package(?:\s+body)?\s+[\w$#."]+(?:(?!\bbegin\b)[\s\S]){0,4000}?\b(?:is|as)\b/im;
 /**
+ * `CREATE OR REPLACE PROCEDURE|FUNCTION <name> … IS|AS`. T-SQL writes
+ * `CREATE OR ALTER`; MySQL/MariaDB, DB2 and BigQuery procedures go straight to
+ * `BEGIN`; PostgreSQL, Redshift and Snowflake declare a `LANGUAGE` or
+ * `RETURNS` and quote the body; a BigQuery SQL function writes `AS (expr)`.
+ * Without those, an `OR REPLACE` routine with `IS|AS` is Oracle even when its
+ * body is plain SQL. The header must not cross a `;`.
+ */
+const OR_REPLACE_ROUTINE_HEADER =
+  /^[ \t]*create\s+or\s+replace\s+(?:(?:non)?editionable\s+)?(?:procedure|function)\s+[\w$#."]+(?:(?!\bbegin\b)[^;]){0,4000}?\b(?:is|as)\b(?!\s*\()/im;
+/** `LANGUAGE <x>` other than an Oracle Java/C call spec, or `RETURNS`. */
+const NON_ORACLE_ROUTINE = /\breturns\b|\blanguage\s+(?!java\b|c\b)\w+/i;
+/**
  * A trigger whose body is a PL/SQL block. The header is shared with
  * PostgreSQL and MySQL/MariaDB, so the dialects are told apart by what they
  * cannot write: PostgreSQL triggers call `EXECUTE FUNCTION|PROCEDURE` instead
@@ -123,11 +135,13 @@ export function looksLikeOraclePlSql(source: string): boolean {
   if (POSTGRES_DOLLAR_BODY.test(content) || TSQL_MARKERS.test(content)) return false;
   // `IS` after a unit header is Oracle-only syntax (T-SQL, PostgreSQL and
   // MySQL write `AS` or `BEGIN`), so a plain `CREATE PROCEDURE p IS …` needs
-  // no further marker, nor does any package header; a procedure or function
-  // `AS` header (shared with T-SQL) needs PL/SQL syntax from ORACLE_MARKERS.
+  // no further marker, nor does any package header or `OR REPLACE` routine;
+  // a plain `CREATE PROCEDURE|FUNCTION … AS` header (shared with T-SQL) needs
+  // PL/SQL syntax from ORACLE_MARKERS.
   return (
     ORACLE_IS_HEADER.test(content) ||
     ORACLE_PACKAGE_HEADER.test(content) ||
+    (OR_REPLACE_ROUTINE_HEADER.test(content) && !NON_ORACLE_ROUTINE.test(content)) ||
     looksLikeOracleTrigger(content) ||
     ORACLE_MARKERS.test(content)
   );

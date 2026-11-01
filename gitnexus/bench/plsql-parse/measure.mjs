@@ -30,8 +30,11 @@ const FIXTURE_ROOT = path.resolve(__dirname, '..', '..', 'test', 'fixtures', 'la
 const BASELINE_PATH = path.resolve(__dirname, 'baselines.json');
 const PLSQL_EXTENSIONS = ['.sql', '.pks', '.pkb', '.pck', '.pls', '.plb', '.prc', '.fnc', '.trg'];
 
-/** No deadline: the bench measures the parse, not the fallback. */
-const OPTIONS = { segmentDeadlineMs: Number.POSITIVE_INFINITY };
+/**
+ * The production, size-scaled segment deadline: a parse that stalls ends as a
+ * timed-out segment, which `--check` rejects, instead of hanging the job.
+ */
+const OPTIONS = {};
 
 const SMALL = 60;
 const LARGE = 240;
@@ -136,6 +139,7 @@ function measure() {
     },
     scaling_ratio: +(l.ms / s.ms / (largeLines / smallLines)).toFixed(3),
     synthetic_errors: s.facts.segmentsWithErrors + l.facts.segmentsWithErrors,
+    synthetic_timeouts: s.facts.segmentsTimedOut + l.facts.segmentsTimedOut,
     synthetic_calls: l.facts.calls.length,
     synthetic_accesses: l.facts.accesses.length,
   };
@@ -150,6 +154,10 @@ if (process.argv.includes('--check')) {
   if (result.fingerprint !== baseline.fingerprint)
     failures.push(
       `fingerprint drift: ${result.fingerprint} != baseline ${baseline.fingerprint} (re-baseline only for an intended facts change)`,
+    );
+  if (result.synthetic_timeouts !== 0)
+    failures.push(
+      `synthetic bodies hit the parse deadline in ${result.synthetic_timeouts} segments`,
     );
   if (result.synthetic_errors !== 0)
     failures.push(`synthetic bodies parsed with ${result.synthetic_errors} erroneous segments`);

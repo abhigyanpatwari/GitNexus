@@ -274,6 +274,35 @@ describe('file classification', () => {
         'CREATE PROCEDURE p()\nBEGIN\n  -- nvl( is not MySQL\n  SELECT 1;\nEND\n/\n',
       ),
     ).toBe(false);
+    // `CREATE OR REPLACE … AS` is Oracle even with a plain-SQL body; other
+    // dialects that write OR REPLACE declare LANGUAGE/RETURNS or skip IS/AS.
+    expect(
+      looksLikeOraclePlSql(
+        'CREATE OR REPLACE PROCEDURE p AS BEGIN INSERT INTO audit_log VALUES (1); END;',
+      ),
+    ).toBe(true);
+    expect(
+      looksLikeOraclePlSql(
+        "CREATE OR REPLACE PROCEDURE p() AS 'INSERT INTO t VALUES (1)' LANGUAGE sql;",
+      ),
+    ).toBe(false);
+    expect(looksLikeOraclePlSql("CREATE OR REPLACE FUNCTION f() RETURNS FLOAT AS '3.14';")).toBe(
+      false,
+    );
+    expect(looksLikeOraclePlSql('CREATE OR REPLACE FUNCTION ds.f(x INT64) AS (x + 1);')).toBe(
+      false,
+    );
+    expect(
+      looksLikeOraclePlSql(
+        'CREATE OR REPLACE FUNCTION ds.f(x INT64) AS (x + 1);\nSELECT a AS b FROM t;',
+      ),
+    ).toBe(false);
+    expect(
+      looksLikeOraclePlSql('CREATE OR REPLACE PROCEDURE p() BEGIN INSERT INTO t VALUES (1); END;'),
+    ).toBe(false);
+    expect(
+      looksLikeOraclePlSql('CREATE OR ALTER PROCEDURE p AS BEGIN INSERT INTO t VALUES (1); END;'),
+    ).toBe(false);
     // Dialect evidence comes from code, never from comments or string literals.
     expect(looksLikeOraclePlSql('CREATE PROCEDURE p AS BEGIN SELECT 1; -- :=\nEND;')).toBe(false);
     expect(
