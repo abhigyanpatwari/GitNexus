@@ -33,6 +33,10 @@ import {
 } from '../../src/core/lbug/sidecar-recovery.js';
 
 const logger = () => ({ warn: vi.fn(), info: vi.fn(), debug: vi.fn() });
+const CHECKPOINT_RECOVERY_PENDING =
+  'Runtime exception: Cannot open database in read-only mode while checkpoint recovery is pending. ' +
+  'If another process is checkpointing, retry after it finishes; otherwise reopen in read-write mode ' +
+  'to complete recovery before reopening read-only.';
 
 describe('LadybugDB sidecar recovery', () => {
   let dir: string;
@@ -255,6 +259,13 @@ describe('LadybugDB sidecar recovery', () => {
       expect(isReadOnlyCheckpointInProgressError(new Error(CANONICAL))).toBe(true);
     });
 
+    it('matches the 0.22 checkpoint-recovery refusal', () => {
+      expect(isReadOnlyCheckpointInProgressError(new Error(CHECKPOINT_RECOVERY_PENDING))).toBe(
+        true,
+      );
+      expect(isReadOnlyCheckpointInProgressError(CHECKPOINT_RECOVERY_PENDING)).toBe(true);
+    });
+
     it('matches prefix-wrapped and case-variant forms', () => {
       expect(
         isReadOnlyCheckpointInProgressError(
@@ -328,16 +339,19 @@ describe('LadybugDB sidecar recovery', () => {
     const SHADOW =
       "Runtime exception: Couldn't replay shadow pages under read-only mode. Please re-open the database with read-write mode to replay shadow pages.";
 
-    it('wraps checkpoint refusal without rematching the native classifier', () => {
-      const wrapped = readOnlyRecoveryFailureMessage(dbPath, new Error(CANONICAL));
-      expect(wrapped.startsWith(INTERRUPTED_CHECKPOINT_RECOVERY_PREFIX)).toBe(true);
-      expect(wrapped).toMatch(/gitnexus analyze/);
-      expect(wrapped).not.toMatch(/sidecar is missing/i);
-      expect(wrapped).not.toMatch(/--force/);
-      expect(wrapped).not.toContain(CANONICAL);
-      expect(isReadOnlyCheckpointInProgressError(new Error(wrapped))).toBe(false);
-      expect(isReadOnlyRecoveryFailure(new Error(wrapped))).toBe(true);
-    });
+    it.each([CANONICAL, CHECKPOINT_RECOVERY_PENDING])(
+      'wraps checkpoint refusal without rematching the native classifier (%#)',
+      (refusal) => {
+        const wrapped = readOnlyRecoveryFailureMessage(dbPath, new Error(refusal));
+        expect(wrapped.startsWith(INTERRUPTED_CHECKPOINT_RECOVERY_PREFIX)).toBe(true);
+        expect(wrapped).toMatch(/gitnexus analyze/);
+        expect(wrapped).not.toMatch(/sidecar is missing/i);
+        expect(wrapped).not.toMatch(/--force/);
+        expect(wrapped).not.toContain(refusal);
+        expect(isReadOnlyCheckpointInProgressError(new Error(wrapped))).toBe(false);
+        expect(isReadOnlyRecoveryFailure(new Error(wrapped))).toBe(true);
+      },
+    );
 
     it('wraps shadow-replay refusal without rematching the native classifier', () => {
       const wrapped = readOnlyRecoveryFailureMessage(dbPath, new Error(SHADOW));

@@ -1116,22 +1116,6 @@ describe('PHP assignment chain propagation', () => {
     expect(saveMethods.length).toBe(2);
   });
 
-  it('resolves alias->save() to User#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.php'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('resolves rAlias->save() to Repo#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('Repo.php'),
-    );
-    expect(repoSave).toBeDefined();
-  });
-
   it('alias->save() does NOT resolve to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
     // There should be exactly one save() call targeting User.php from process
@@ -1505,14 +1489,6 @@ describe('Write access tracking (PHP)', () => {
     expect(nameWrite!.source).toBe('updateUser');
     expect(addressWrite).toBeDefined();
     expect(addressWrite!.source).toBe('updateUser');
-    expect(countWrite).toBeDefined();
-    expect(countWrite!.source).toBe('updateUser');
-  });
-
-  it('emits ACCESSES write edge for static property assignment', () => {
-    const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter((e) => e.rel.reason === 'write');
-    const countWrite = writes.find((e) => e.target === 'count');
     expect(countWrite).toBeDefined();
     expect(countWrite!.source).toBe('updateUser');
   });

@@ -1,16 +1,16 @@
 # LadybugDB VECTOR artifacts
 
 These unmodified binaries come from the official LadybugDB
-[v0.21.1 build](https://github.com/LadybugDB/ladybug/actions/runs/36647903773),
-at core commit `17a70e51c31b50d30231da32154d9ff4bef0d95f` and extensions
-commit `bf74ab654af6bd40a0e3208ac4e8bcf5cb45a7a0`.
+[v0.22.0 build](https://github.com/LadybugDB/ladybug/actions/runs/40157072171),
+at core commit `4ca22377b85a33a10247410fe3944a5224b1169d` and extensions
+commit `119912e604ebbaad64072a701698d6fcf4140051`.
 
 `manifest.json` records each GitHub artifact ID, the archive digest supplied by
 GitHub, and the extracted binary's SHA-256. Every archive was checked against
 that digest before extracting `vector/libvector.lbug_extension`.
 
-The core's `0.21.0` CDN compatibility path can serve a VECTOR binary built
-against incompatible core symbols. Load the matching packaged artifact first
+The CDN compatibility path can serve a VECTOR binary built against
+incompatible core symbols. Load the matching packaged artifact first
 so vector indexes work without a network install or a mutable home-cache copy.
 The existing `never` policy still disables the extension; missing artifacts
 retain the normal named-load and install fallback.
@@ -23,7 +23,7 @@ native tests before changing the pin. Do not substitute a nightly binary.
 For example, the Linux x64 archive is available with:
 
 ```sh
-gh api repos/LadybugDB/ladybug/actions/artifacts/11069747578/zip > vector-linux.zip
+gh api repos/LadybugDB/ladybug/actions/artifacts/12584987551/zip > vector-linux.zip
 ```
 
 GitHub Actions artifacts expire; the committed binaries and checksums preserve
