@@ -2,6 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'node:module';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { escapeCypherString } from './cypher-escape.js';
+import { resolveVendoredFtsPath, resolveVendoredVectorPath } from './vendored-extension-path.js';
 
 /** Cap the out-of-process native load probe so a hung filesystem cannot wedge a
  *  CLI startup gate (same bounding rationale as the extension probe below). */
@@ -198,6 +200,22 @@ function unrestorableBinaryFailure(
     kind: outcome === 'copy-failed' ? 'binary_unwritable' : 'binary_missing',
     message: lines.join('\n'),
   };
+}
+
+/**
+ * Materialize a skipped install-script copy before recording analyzer identity.
+ * This only copies the already-installed prebuilt; it never loads native code.
+ * checkLbugNative still owns load probing and diagnostics after identity capture.
+ */
+export function prepareLbugNativeBinary(overridePkgDir?: string): void {
+  try {
+    const pkgDir =
+      overridePkgDir ?? path.dirname(createRequire(import.meta.url).resolve('@ladybugdb/core'));
+    const binaryPath = path.join(pkgDir, 'lbugjs.node');
+    if (!fs.existsSync(binaryPath)) restorePrebuiltNativeBinary(pkgDir, binaryPath);
+  } catch {
+    // The normal check reports missing packages and failed recovery unchanged.
+  }
 }
 
 export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
@@ -399,7 +417,17 @@ export interface FtsProbeResult {
   loaded: boolean;
   /** Collapsed LadybugDB error when `loaded` is false. */
   reason?: string;
+  /** Policy `never` refused the probe — not a load failure. */
+  suppressed?: boolean;
 }
+
+export type FtsAvailabilityLabel = 'available' | 'unavailable' | 'suppressed';
+
+export const ftsAvailabilityLabel = (probe: FtsProbeResult): FtsAvailabilityLabel => {
+  if (probe.loaded) return 'available';
+  if (probe.suppressed) return 'suppressed';
+  return 'unavailable';
+};
 
 /** Same shape for every optional extension; `FtsProbeResult` is the legacy name. */
 export type ExtensionProbeResult = FtsProbeResult;
@@ -441,10 +469,38 @@ const closeProbeResults = (result: unknown): void => {
  * cannot cancel an in-flight native call, so a future thread-blocking case
  * would need an out-of-process probe.
  */
+/** Local copy of the env policy parse — must not import extension-loader
+ *  (that module statically pulls lbug-config, which would break doctor when
+ *  the native addon is missing). */
+type ProbeInstallPolicy = 'auto' | 'load-only' | 'never';
+
+const resolveProbeInstallPolicy = (): ProbeInstallPolicy => {
+  const raw = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+  if (raw === 'load-only' || raw === 'never' || raw === 'auto') return raw;
+  return 'load-only';
+};
+
+export interface FtsProbeOptions {
+  policy?: ProbeInstallPolicy;
+  /** Injected vendored path. `null` skips path-LOAD; omit to resolve from disk. */
+  vendoredPath?: string | null;
+}
+
 export async function probeFtsExtensionLoad(
   timeoutMs: number = DEFAULT_FTS_PROBE_TIMEOUT_MS,
+  opts?: FtsProbeOptions,
 ): Promise<FtsProbeResult> {
-  return await probeExtensionLoad('fts', timeoutMs);
+  const policy = opts?.policy ?? resolveProbeInstallPolicy();
+  if (policy === 'never') {
+    return {
+      loaded: false,
+      suppressed: true,
+      reason: 'suppressed by policy GITNEXUS_LBUG_EXTENSION_INSTALL=never',
+    };
+  }
+  const vendoredPath =
+    opts?.vendoredPath !== undefined ? opts.vendoredPath : resolveVendoredFtsPath();
+  return await probeExtensionLoad('fts', timeoutMs, vendoredPath);
 }
 
 /**
@@ -465,7 +521,7 @@ export async function probeFtsExtensionLoad(
 export async function probeVectorExtensionLoad(
   timeoutMs: number = DEFAULT_FTS_PROBE_TIMEOUT_MS,
 ): Promise<ExtensionProbeResult> {
-  return await probeExtensionLoad('vector', timeoutMs);
+  return await probeExtensionLoad('vector', timeoutMs, resolveVendoredVectorPath());
 }
 
 /**
@@ -474,6 +530,7 @@ export async function probeVectorExtensionLoad(
 async function probeExtensionLoad(
   extension: 'fts' | 'vector',
   timeoutMs: number,
+  vendoredPath?: string | null,
 ): Promise<ExtensionProbeResult> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<ExtensionProbeResult>((resolve) => {
@@ -487,6 +544,12 @@ async function probeExtensionLoad(
     );
   });
 
+  const statements: string[] = [];
+  if (vendoredPath) {
+    statements.push(`LOAD EXTENSION '${escapeCypherString(path.resolve(vendoredPath))}'`);
+  }
+  statements.push(`LOAD EXTENSION ${extension}`);
+
   const probe = (async (): Promise<ExtensionProbeResult> => {
     try {
       const { default: lbug } = await import('@ladybugdb/core');
@@ -495,9 +558,18 @@ async function probeExtensionLoad(
       try {
         const conn = new lbug.Connection(db);
         try {
-          const result = await conn.query(`LOAD EXTENSION ${extension}`);
-          closeProbeResults(result);
-          return { loaded: true };
+          let lastReason: string | undefined;
+          for (const sql of statements) {
+            try {
+              const result = await conn.query(sql);
+              closeProbeResults(result);
+              return { loaded: true };
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              lastReason = message.replace(/\s+/g, ' ').trim();
+            }
+          }
+          return { loaded: false, reason: lastReason };
         } finally {
           await conn.close().catch(() => {});
         }

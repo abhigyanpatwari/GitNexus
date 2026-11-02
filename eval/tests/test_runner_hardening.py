@@ -3,13 +3,14 @@
 import hashlib
 import json
 import shutil
+import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from workflow_bench import runner, runner_artifacts, runner_sessions
+from workflow_bench import proposer_sandbox, runner, runner_artifacts, runner_sessions
 from workflow_bench.evolution import skill_fingerprint
 from workflow_bench.oracle_assets import review_case_setup_command
 from workflow_bench.process_control import ManagedProcessError, ManagedProcessResult
@@ -485,6 +486,7 @@ def _stub_cell_dependencies(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "ce_plugin_mounts_for_arm", lambda *_a, **_k: [])
     monkeypatch.setattr(runner, "ce_plugin_dir_for_arm", lambda *_a, **_k: None)
     monkeypatch.setattr(runner, "prepare_sandbox", lambda **_k: nullcontext(SimpleNamespace(run=None)))
+    monkeypatch.setattr(runner, "seed_evaluated_skills", lambda *_a, **_k: None)
     monkeypatch.setattr(runner, "skill_fingerprint", lambda *_a, **_k: "skill-digest")
     monkeypatch.setattr(runner, "require_skill_fingerprint", lambda *_a, **_k: None)
     monkeypatch.setattr(runner, "_sandbox_git", lambda *_a, **_k: "c" * 40)
@@ -606,6 +608,67 @@ def test_run_cell_reports_a_cleanup_failure_over_its_primary_outcome(monkeypatch
     assert record["resolved"] is False
     assert "primary=None" in record["error_detail"]
     assert "clone is busy" in record["error_detail"]
+
+
+def _git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+
+
+def test_run_cell_runs_the_arm_against_a_copy_of_the_clone_template(monkeypatch, tmp_path):
+    """run_cell must copy the template, never re-clone.
+
+    run_cell takes the clone-template branch on essentially every multi-cell
+    sweep: it copies a pre-sanitized template rather than paying `git clone
+    --no-local` plus repack/prune/fsck per cell. Asserting on a copy the test
+    makes itself proves nothing about that branch — the clone the arm receives
+    is what has to come from the template, carrying the template's sanitized
+    HEAD rather than a recomputed one.
+    """
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "checkout", "--quiet", "-b", "main")
+    (repo / "from-template.txt").write_text("sanitized\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.name=test", "-c", "user.email=test@invalid", "commit", "--quiet", "-m", "base")
+    sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    trees = tmp_path / "trees"
+    trees.mkdir()
+    template = runner.make_worktree(repo, sha, trees)
+    template_head = _git(template, "rev-parse", "HEAD").stdout.strip()
+
+    _stub_cell_dependencies(monkeypatch, tmp_path)
+
+    def fail_if_recloned(*_args, **_kwargs):
+        raise AssertionError("clone template present: run_cell must not re-clone")
+
+    monkeypatch.setattr(runner, "make_worktree", fail_if_recloned)
+    monkeypatch.setattr(runner, "sanitize_clone_for_hidden_oracles", fail_if_recloned)
+
+    seen: dict[str, object] = {}
+
+    def record_arm(_arm, _task, worktree, _args, **_kwargs):
+        seen["worktree"] = worktree
+        seen["head"] = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+        seen["content"] = (worktree / "from-template.txt").read_text()
+        # The copy is a private checkout: what the cell writes must not reach
+        # the template the other cells of this task still copy from.
+        (worktree / "from-template.txt").write_text("cell-local\n")
+        return {"resolved": True, "ok": True, "error_kind": None}
+
+    monkeypatch.setattr(runner, "run_arm", record_arm)
+
+    runner.run_cell(
+        _cell_context(tmp_path, clone_template=template, sanitized_head=template_head),
+        0,
+        "workflow",
+    )
+
+    assert seen["content"] == "sanitized\n"
+    assert seen["head"] == template_head
+    assert seen["worktree"] != template
+    assert (template / "from-template.txt").read_text() == "sanitized\n"
 
 
 def test_run_cell_does_not_mask_the_staged_review_patch_before_setup(monkeypatch, tmp_path):
@@ -1002,3 +1065,83 @@ def test_progress_line_reports_the_numbers_a_real_run_measured():
     assert "cost=$0.5" in line
     assert "took=12.0s" in line
     assert "error_kind=none" in line
+
+
+def test_claude_settings_allow_the_review_artifact_directory():
+    """The second gate on the artifact path.
+
+    The bwrap bind is not the only thing that decides whether the agent can
+    write: the CLI applies this filesystem policy to its own tools, so a path
+    missing from allowWrite is unwritable however the mount is shaped. The
+    artifact lived under /workspace when this list was written, which is why
+    moving it out needed this entry and nothing caught the omission.
+    """
+
+    settings = json.loads(proposer_sandbox.build_claude_settings(sandbox_enabled=True))
+    filesystem = settings["sandbox"]["filesystem"]
+    assert proposer_sandbox.SANDBOX_REVIEW_OUTPUT in filesystem["allowWrite"]
+    assert proposer_sandbox.SANDBOX_REVIEW_OUTPUT in filesystem["allowRead"]
+    assert filesystem["denyRead"] == ["/"]
+
+
+def test_review_contract_tells_the_agent_the_writable_path():
+    prompt = runner.REVIEW_PROMPT.format(task="task text")
+    assert f"{runner.SANDBOX_REVIEW_OUTPUT}/{runner.REVIEW_OUTPUT}" in prompt
+    assert f"{runner.SANDBOX_WORKSPACE}/{runner.REVIEW_OUTPUT}" not in prompt
+    # The JSON shape survives .format() with its braces intact.
+    assert '{"schema_version":1' in prompt
+    artifact = f"{runner.SANDBOX_REVIEW_OUTPUT}/{runner.REVIEW_OUTPUT}"
+    assert runner.CE_REVIEW_PROMPT.format(task="task text").count(artifact) == 1
+
+
+def test_enforce_phase_workspace_can_require_an_untouched_workspace(tmp_path):
+    (tmp_path / "tracked.py").write_text("original\n")
+    before = runner_artifacts.workspace_snapshot(tmp_path)
+    runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=None)
+
+    (tmp_path / "tracked.py").write_text("the review edited the code it was reviewing\n")
+    with pytest.raises(ValueError, match="changed the read-only workspace"):
+        runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=None)
+
+
+class _PatchSinkSandbox:
+    """Sandbox double whose sink either writes a fixed patch or fails."""
+
+    synthetic_guidance_paths = ()
+
+    def __init__(self, worktree: Path, *, patch: bytes | None) -> None:
+        self.worktree = worktree
+        self.patch = patch
+
+    def run(self, command, **_kwargs):
+        if self.patch is None:
+            return ManagedProcessResult(
+                state="exited", returncode=1, stdout_tail="", stderr_tail="git diff failed", duration_s=0.0
+            )
+        sink_output = command[5]  # sink script argv: limit, output path, git command
+        host_path = self.worktree / sink_output.removeprefix("/workspace/")
+        host_path.write_bytes(self.patch)
+        return ManagedProcessResult(state="exited", returncode=0, stdout_tail="", stderr_tail="", duration_s=0.0)
+
+
+def _failing_rmtree(path, *_args, **_kwargs):
+    raise PermissionError(13, "Permission denied", str(path))
+
+
+def test_capture_patch_returns_read_patch_and_reports_when_artifact_cleanup_fails(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(runner_artifacts.shutil, "rmtree", _failing_rmtree)
+
+    patch = runner_artifacts.capture_patch(_PatchSinkSandbox(tmp_path, patch=b"diff --git a b\n"), tmp_path, "abc")
+
+    assert patch == b"diff --git a b\n"
+    assert "patch artifact cleanup failed" in capsys.readouterr().err
+
+
+def test_capture_patch_cleanup_failure_does_not_replace_the_session_failure(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(runner_artifacts.shutil, "rmtree", _failing_rmtree)
+
+    with pytest.raises(ManagedProcessError) as caught:
+        runner_artifacts.capture_patch(_PatchSinkSandbox(tmp_path, patch=None), tmp_path, "abc")
+
+    assert any("patch artifact cleanup failed" in note for note in caught.value.__notes__)
+    assert capsys.readouterr().err == ""

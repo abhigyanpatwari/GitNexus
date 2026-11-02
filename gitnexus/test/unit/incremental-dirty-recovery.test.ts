@@ -19,7 +19,7 @@
  */
 
 import { writeFile, readFile } from 'fs/promises';
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getStoragePaths,
   saveMeta,
@@ -35,92 +35,109 @@ import { seedEmbeddingsForFiles } from '../helpers/embedding-seed.js';
 
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-dirty-rec-');
 
+async function parkCrashSidecarsAndRebuild(options?: { alwaysSpill?: boolean }) {
+  vi.stubEnv('GITNEXUS_WORKER_READY_TIMEOUT_MS', '60000');
+  if (options?.alwaysSpill) {
+    vi.stubEnv('GITNEXUS_EMBEDDING_CACHE_IN_MEMORY_LIMIT', '0');
+  }
+  const repo = await setupMiniRepo();
+  try {
+    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+    await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+
+    // Seed real embeddings BEFORE the tamper (tri-review 4669518496 / U5):
+    // with meta.stats.embeddings = 0 the recovery run derived
+    // shouldLoadCache=false and never opened the DB pre-wipe — this test
+    // was vacuous about the exact open the parking protects. Seeded rows +
+    // a stats stamp route the recovery (which runs force:true internally,
+    // so forceRegenerate → shouldLoadCache) through the REAL
+    // embedding-cache preservation open on the just-parked DB.
+    const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
+    const seededIdsByFile = await seedEmbeddingsForFiles(
+      repo.dbPath,
+      ['src/handler.ts', 'src/logger.ts'],
+      1,
+    );
+    const seededNodeIds = [...seededIdsByFile.values()].flat();
+    expect(seededNodeIds.length).toBeGreaterThan(0);
+
+    // Simulate a crashed incremental writeback: dirty flag in meta plus
+    // leftover sidecars whose bytes must never be replayed. 8KB puts the
+    // WAL above the tiny-orphan threshold — the state the sidecar
+    // preflight deliberately leaves in place for engine replay.
+    const meta = await loadMeta(storagePath);
+    const tampered: RepoMeta = {
+      ...meta!,
+      stats: { ...meta!.stats, embeddings: seededNodeIds.length },
+      incrementalInProgress: {
+        startedAt: Date.now() - 60_000,
+        toWriteCount: 12,
+        phase: 'load-graph',
+      },
+    };
+    await saveMeta(storagePath, tampered);
+    const walGarbage = Buffer.alloc(8192, 0xab);
+    const shadowGarbage = Buffer.alloc(4096, 0xcd);
+    await writeFile(`${lbugPath}.wal`, walGarbage);
+    await writeFile(`${lbugPath}.shadow`, shadowGarbage);
+
+    const logs: string[] = [];
+    // embeddingsNodeLimit: 1 (KTD9): the recovery runs force:true
+    // internally, and the seeded stats would otherwise route Phase 4 into
+    // a real embedder in CI — the 1-node cap suppresses generation while
+    // leaving the preserve/restore path fully live. On linux the
+    // wipe-and-restore vector-index seam then fires for real (statically
+    // linked VECTOR): a CREATE_VECTOR_INDEX over the restored rows is
+    // expected and harmless here.
+    const recovered = await runFullAnalysis(
+      repo.dbPath,
+      { skipAgentsMd: true, embeddingsNodeLimit: 1 },
+      { onProgress: () => {}, onLog: (m) => logs.push(m) },
+    );
+    expect(recovered.alreadyUpToDate).toBeUndefined();
+
+    // Both sidecars were parked verbatim (renamed, never deleted) before
+    // any open could replay them…
+    expect(Buffer.compare(await readFile(`${lbugPath}.wal.dirty-recovery`), walGarbage)).toBe(0);
+    expect(Buffer.compare(await readFile(`${lbugPath}.shadow.dirty-recovery`), shadowGarbage)).toBe(
+      0,
+    );
+    const joinedLogs = logs.join('\n');
+    expect(joinedLogs).toContain('Parked lbug.wal.dirty-recovery, lbug.shadow.dirty-recovery');
+
+    // …the run traversed the REAL pre-wipe preservation open — recovery's
+    // internal force on an embedded repo upgrades to regenerate mode, whose
+    // banner only prints when existingEmbeddingCount was read from the
+    // seeded stats and the cache-load path engaged…
+    expect(joinedLogs).toContain(
+      `--force on a repo with ${seededNodeIds.length} existing embeddings`,
+    );
+    // …with generation itself cap-suppressed (no embedder in CI):
+    expect(joinedLogs).toContain('exceeds the 1-node safety cap');
+
+    // …and the rebuild completed into a clean index: dirty flag cleared,
+    // and the seeded embeddings survived the park → open → wipe → restore
+    // round-trip (the strongest signal the preservation open really ran:
+    // the DB was wiped, so these rows can only come from the cache load).
+    const after = await loadMeta(storagePath);
+    expect(after!.incrementalInProgress).toBeUndefined();
+    expect(after!.stats?.embeddings).toBe(seededNodeIds.length);
+  } finally {
+    vi.unstubAllEnvs();
+    await repo.cleanup();
+  }
+}
+
 describe('runFullAnalysis — dirty-flag recovery sidecar parking (#2409)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('parks the crashed run WAL/shadow sidecars before reopening, then rebuilds clean', async () => {
-    const repo = await setupMiniRepo();
-    try {
-      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+    await parkCrashSidecarsAndRebuild();
+  }, 300_000);
 
-      // Seed real embeddings BEFORE the tamper (tri-review 4669518496 / U5):
-      // with meta.stats.embeddings = 0 the recovery run derived
-      // shouldLoadCache=false and never opened the DB pre-wipe — this test
-      // was vacuous about the exact open the parking protects. Seeded rows +
-      // a stats stamp route the recovery (which runs force:true internally,
-      // so forceRegenerate → shouldLoadCache) through the REAL
-      // embedding-cache preservation open on the just-parked DB.
-      const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
-      const seededIdsByFile = await seedEmbeddingsForFiles(
-        repo.dbPath,
-        ['src/handler.ts', 'src/logger.ts'],
-        1,
-      );
-      const seededNodeIds = [...seededIdsByFile.values()].flat();
-      expect(seededNodeIds.length).toBeGreaterThan(0);
-
-      // Simulate a crashed incremental writeback: dirty flag in meta plus
-      // leftover sidecars whose bytes must never be replayed. 8KB puts the
-      // WAL above the tiny-orphan threshold — the state the sidecar
-      // preflight deliberately leaves in place for engine replay.
-      const meta = await loadMeta(storagePath);
-      const tampered: RepoMeta = {
-        ...meta!,
-        stats: { ...meta!.stats, embeddings: seededNodeIds.length },
-        incrementalInProgress: {
-          startedAt: Date.now() - 60_000,
-          toWriteCount: 12,
-          phase: 'load-graph',
-        },
-      };
-      await saveMeta(storagePath, tampered);
-      const walGarbage = Buffer.alloc(8192, 0xab);
-      const shadowGarbage = Buffer.alloc(4096, 0xcd);
-      await writeFile(`${lbugPath}.wal`, walGarbage);
-      await writeFile(`${lbugPath}.shadow`, shadowGarbage);
-
-      const logs: string[] = [];
-      // embeddingsNodeLimit: 1 (KTD9): the recovery runs force:true
-      // internally, and the seeded stats would otherwise route Phase 4 into
-      // a real embedder in CI — the 1-node cap suppresses generation while
-      // leaving the preserve/restore path fully live. On linux the
-      // wipe-and-restore vector-index seam then fires for real (statically
-      // linked VECTOR): a CREATE_VECTOR_INDEX over the restored rows is
-      // expected and harmless here.
-      const recovered = await runFullAnalysis(
-        repo.dbPath,
-        { skipAgentsMd: true, embeddingsNodeLimit: 1 },
-        { onProgress: () => {}, onLog: (m) => logs.push(m) },
-      );
-      expect(recovered.alreadyUpToDate).toBeUndefined();
-
-      // Both sidecars were parked verbatim (renamed, never deleted) before
-      // any open could replay them…
-      expect(Buffer.compare(await readFile(`${lbugPath}.wal.dirty-recovery`), walGarbage)).toBe(0);
-      expect(
-        Buffer.compare(await readFile(`${lbugPath}.shadow.dirty-recovery`), shadowGarbage),
-      ).toBe(0);
-      const joinedLogs = logs.join('\n');
-      expect(joinedLogs).toContain('Parked lbug.wal.dirty-recovery, lbug.shadow.dirty-recovery');
-
-      // …the run traversed the REAL pre-wipe preservation open — recovery's
-      // internal force on an embedded repo upgrades to regenerate mode, whose
-      // banner only prints when existingEmbeddingCount was read from the
-      // seeded stats and the cache-load path engaged…
-      expect(joinedLogs).toContain(
-        `--force on a repo with ${seededNodeIds.length} existing embeddings`,
-      );
-      // …with generation itself cap-suppressed (no embedder in CI):
-      expect(joinedLogs).toContain('exceeds the 1-node safety cap');
-
-      // …and the rebuild completed into a clean index: dirty flag cleared,
-      // and the seeded embeddings survived the park → open → wipe → restore
-      // round-trip (the strongest signal the preservation open really ran:
-      // the DB was wiped, so these rows can only come from the cache load).
-      const after = await loadMeta(storagePath);
-      expect(after!.incrementalInProgress).toBeUndefined();
-      expect(after!.stats?.embeddings).toBe(seededNodeIds.length);
-    } finally {
-      await repo.cleanup();
-    }
+  it('restores seeded embeddings from a spill after wipe when the in-memory limit is 0', async () => {
+    await parkCrashSidecarsAndRebuild({ alwaysSpill: true });
   }, 300_000);
 });

@@ -32,7 +32,6 @@ function createGoRepo(): string {
 async function runWorker(): Promise<PipelineResult> {
   return runPipelineFromRepo(createGoRepo(), () => {}, {
     skipGraphPhases: true,
-    workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
     workerPoolSize: 2,
   });
 }

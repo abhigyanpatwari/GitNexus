@@ -29,7 +29,7 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
   };
 });
 
-import { LocalBackend } from '../../src/mcp/local/local-backend';
+import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 
 describe('ensureInitialized reinit watermark (tri-review NEW-7)', () => {
   const poolKey = '/tmp/nonexistent-repo/.gitnexus/lbug';
@@ -42,7 +42,18 @@ describe('ensureInitialized reinit watermark (tri-review NEW-7)', () => {
     // Seed the "warm, already initialized" precondition ensureInitialized
     // requires to reach the staleness-check branch at all.
     backend.initializedRepos.add(poolKey);
-    backend.lastStalenessCheck.set(poolKey, 0); // force past the 5s throttle
+  });
+
+  it('keeps checkout branches separate for concurrent callers of one branch-neutral pool', async () => {
+    loadMetaMock.mockResolvedValue({ indexedAt: 'shared-v1', lastCommit: 'shared-commit' });
+    initLbugMock.mockResolvedValue(true);
+    const left = { ...repoHandle, branch: 'left', lastCommit: 'shared-commit' };
+    const right = { ...repoHandle, branch: 'right', lastCommit: 'shared-commit' };
+    await Promise.all([backend.ensureInitialized(left), backend.ensureInitialized(right)]);
+    expect(left.branch).toBe('left');
+    expect(right.branch).toBe('right');
+    expect(left.indexedAt).toBe('shared-v1');
+    expect(right.indexedAt).toBe('shared-v1');
   });
 
   it('does not latch the fts-status watermark when initLbug throws, so the next staleness check retries', async () => {
@@ -60,8 +71,7 @@ describe('ensureInitialized reinit watermark (tri-review NEW-7)', () => {
     expect(backend.lastObservedPoolState.get(poolKey)?.ftsStatus).toBeUndefined();
     expect(backend.lastObservedPoolState.get(poolKey)?.indexedAt).toBeUndefined();
 
-    // Second staleness check (throttle reset again) with initLbug now succeeding.
-    backend.lastStalenessCheck.set(poolKey, 0);
+    // Second staleness check with initLbug now succeeding.
     initLbugMock.mockResolvedValueOnce(false); // "no real reopen needed" — still a completed call
 
     await expect(backend.ensureInitialized(repoHandle)).resolves.toBeUndefined();
@@ -92,7 +102,6 @@ describe('ensureInitialized ftsCapsChanged trigger, isolated from identityChange
     vi.clearAllMocks();
     backend = new LocalBackend() as any;
     backend.initializedRepos.add(poolKey);
-    backend.lastStalenessCheck.set(poolKey, 0);
   });
 
   it('fires a reinit on a capabilities.fts.status change alone, with indexedAt and dbIdentity both unchanged', async () => {

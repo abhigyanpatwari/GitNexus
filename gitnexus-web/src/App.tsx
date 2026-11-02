@@ -9,6 +9,7 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { StatusBar } from './components/StatusBar';
 import { FileTreePanel } from './components/FileTreePanel';
 import { CodeReferencesPanel } from './components/CodeReferencesPanel';
+import { ExecutionDashboard } from './components/ExecutionDashboard';
 import { getActiveProviderConfig } from './core/llm/settings-service';
 import { buildGraphFromConnectResult } from './lib/apply-connect-result';
 import {
@@ -44,6 +45,11 @@ const BOTTOM_BANNER_CLASS =
  */
 export const pickRestoreRepo = (params: URLSearchParams): string | undefined =>
   params.get('repo') ?? params.get('project') ?? undefined;
+
+const isOpsView = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  return new URLSearchParams(window.location.search).get('view') === 'ops';
+};
 
 const AppContent = () => {
   const { t } = useTranslation(['common', 'errors']);
@@ -465,6 +471,9 @@ const AppContent = () => {
 };
 
 function App() {
+  if (isOpsView()) {
+    return <ExecutionDashboard />;
+  }
   return (
     <AppStateProvider>
       <AppContent />

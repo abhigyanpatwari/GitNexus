@@ -224,7 +224,7 @@ describe('Step 2 perf contract', () => {
     const callScope: Scope = {
       id: 'scope:method-body',
       parent: 'scope:module',
-      kind: 'Method',
+      kind: 'Function',
       range: { startLine: 2, startCol: 0, endLine: 99, endCol: 0 },
       filePath: 'x.ts',
       bindings: new Map(),
@@ -240,7 +240,9 @@ describe('Step 2 perf contract', () => {
       scopes: buildScopeTree([moduleScope, callScope]),
       defs,
       qualifiedNames: buildQualifiedNameIndex([userClass, saveMethod]),
-      moduleScopes: buildModuleScopeIndex([moduleScope]),
+      moduleScopes: buildModuleScopeIndex([
+        { filePath: moduleScope.filePath, moduleScopeId: moduleScope.id },
+      ]),
       methodDispatch: buildMethodDispatchIndex({
         owners: ['def:User'],
         computeMro: () => [],

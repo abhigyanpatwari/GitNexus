@@ -16,6 +16,10 @@
  * stay well under the limit.
  */
 import { it, expect, afterAll } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import lbug from '@ladybugdb/core';
 import {
   initLbug,
   executeQuery,
@@ -24,6 +28,8 @@ import {
   isLbugReady,
 } from '../../src/mcp/core/lbug-adapter.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+import { createLbugDatabase } from '../../src/core/lbug/lbug-config.js';
+import { closeQueryResults } from '../../src/core/lbug/query-result-utils.js';
 
 const SEED_DATA = [
   `CREATE (f:File {id: 'file:index.ts', name: 'index.ts', filePath: 'src/index.ts', content: ''})`,
@@ -177,4 +183,68 @@ withTestLbugDB(
     seed: SEED_DATA,
     poolAdapter: true,
   },
+);
+
+// Windows cannot atomically replace a file held by a native reader. The same
+// shared-consumer refresh logic has portable coverage in lbug-pool-pinning.
+it.skipIf(process.platform === 'win32')(
+  'keeps shared readers on one native generation until the other consumer releases it',
+  async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-shared-refresh-'));
+    const dbPath = path.join(root, 'lbug');
+    const nextPath = path.join(root, 'next-lbug');
+    const reader = 'generation-reader';
+    const holder = 'generation-holder';
+
+    async function seed(dbFile: string, name: string): Promise<void> {
+      const db = createLbugDatabase(lbug, dbFile);
+      let conn: lbug.Connection | undefined;
+      try {
+        await db.init();
+        conn = new lbug.Connection(db);
+        for (const query of [
+          'CREATE NODE TABLE Entry(name STRING, PRIMARY KEY(name))',
+          `CREATE (:Entry {name: '${name}'})`,
+          'CHECKPOINT',
+        ]) {
+          const result = await conn.query(query);
+          try {
+            for (const item of Array.isArray(result) ? result : [result]) {
+              await item.getAll();
+            }
+          } finally {
+            await closeQueryResults(result);
+          }
+        }
+      } finally {
+        await conn?.close();
+        await db.close();
+      }
+    }
+
+    const read = (repoId: string) => executeQuery(repoId, 'MATCH (n:Entry) RETURN n.name AS name');
+    try {
+      await seed(dbPath, 'before');
+      await seed(nextPath, 'after');
+      await initLbug(reader, dbPath);
+      await initLbug(holder, dbPath);
+      expect(await read(reader)).toEqual([{ name: 'before' }]);
+      await fs.rename(nextPath, dbPath);
+
+      for (let i = 0; i < 3; i++) {
+        expect(await initLbug(reader, dbPath)).toBe(false);
+        expect(await read(reader)).toEqual([{ name: 'before' }]);
+        expect(await read(holder)).toEqual([{ name: 'before' }]);
+      }
+      await closeLbug(holder);
+      expect(await initLbug(reader, dbPath)).toBe(true);
+      expect(await read(reader)).toEqual([{ name: 'after' }]);
+      expect(await initLbug(reader, dbPath)).toBe(false);
+    } finally {
+      await closeLbug(holder);
+      await closeLbug(reader);
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+  120_000,
 );

@@ -6,17 +6,14 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   diagnoseExtensionLoad,
   inspectExtensionBinary,
 } from '../../src/core/lbug/extension-load-error.js';
-import {
-  findInstalledFtsExtension,
-  requireFtsResourceOrSkip,
-} from '../helpers/fts-availability.js';
+import { requireFtsResourceOrSkip, resolveFtsExtension } from '../helpers/fts-availability.js';
 
 /**
  * #2374: exercise the language-independent structural classifier against REAL
@@ -47,13 +44,12 @@ function resolveLbugNative(): string | null {
 }
 
 /**
- * The actual installed FTS extension binary for the running lbug version.
- * `os.homedir()` already honors `$HOME` (POSIX) / `%USERPROFILE%` (Windows) —
- * the same resolution LadybugDB's native layer uses — so it stays correct
- * under the hermetic-home overrides other tests in this suite set via env vars.
+ * The FTS extension for this platform: packaged artifact first, then a
+ * `~/.lbdb` install. `resolveFtsExtension` honors the same home as LadybugDB
+ * (`$HOME` / `%USERPROFILE%`) so hermetic-home overrides still apply.
  */
 function resolveInstalledFtsExtension(): string | null {
-  return findInstalledFtsExtension(join(homedir(), '.lbdb', 'extension'));
+  return resolveFtsExtension();
 }
 
 const lbugNative = resolveLbugNative();

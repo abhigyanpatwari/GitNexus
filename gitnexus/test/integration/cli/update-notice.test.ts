@@ -127,12 +127,31 @@ describe('CLI update notice subprocess behavior', () => {
       'dir',
     );
 
+    // The refresh child parks inside fetch() until this test releases it. That
+    // orders the parent's exit against work that is provably still in flight,
+    // instead of racing it against a wall-clock budget: the child's real cost
+    // (node boot, tsx transpile, a lock acquisition that shells out to
+    // ps/powershell) has no bounded upper limit on a loaded CI runner.
+    const started = path.join(home, 'refresh-started');
+    const release = path.join(home, 'refresh-release');
     const preload = path.join(home, 'mock-refresh.mjs');
     fs.writeFileSync(
       preload,
-      `Object.defineProperty(process.stderr, 'isTTY', { value: true, configurable: true });
+      `import fs from 'node:fs';
+Object.defineProperty(process.stderr, 'isTTY', { value: true, configurable: true });
+// Mark the detached child at --import time, before tsx compiles the CLI.
+// Writing this from fetch() raced a 30s poll against cold boot + lock
+// acquisition on a loaded default-project worker (status: poll timeout).
+if (process.argv.includes('__update-check')) {
+  fs.writeFileSync(${JSON.stringify(started)}, '');
+}
 globalThis.fetch = async () => {
-  await new Promise((resolve) => setTimeout(resolve, 750));
+  // Bounded so an abandoned child (test failed before releasing, temp home
+  // already deleted) still exits instead of spinning forever.
+  const deadline = Date.now() + 90_000;
+  while (!fs.existsSync(${JSON.stringify(release)}) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
   return new Response(JSON.stringify({ version: '99.0.0' }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
@@ -141,7 +160,6 @@ globalThis.fetch = async () => {
 `,
     );
 
-    const startedAt = Date.now();
     await new Promise<void>((resolve, reject) => {
       const parent = spawn(
         process.execPath,
@@ -162,17 +180,22 @@ globalThis.fetch = async () => {
         else reject(new Error(`notifier parent exited ${String(code)}`));
       });
     });
-    const elapsed = Date.now() - startedAt;
 
-    expect(elapsed).toBeLessThan(1_800);
+    // The parent already exited above. `started` is written by the child's
+    // --import hook, so this wait is "did the detached process actually
+    // start?" not "did tsx finish compiling the CLI?" The fetch mock still
+    // parks until `release` so the cache cannot appear before we unblock it.
     const cache = path.join(home, 'update-check.json');
+    await expect.poll(() => fs.existsSync(started), { timeout: 30_000, interval: 50 }).toBe(true);
     expect(fs.existsSync(cache)).toBe(false);
-    await expect.poll(() => fs.existsSync(cache), { timeout: 15_000, interval: 100 }).toBe(true);
+
+    fs.writeFileSync(release, '');
+    await expect.poll(() => fs.existsSync(cache), { timeout: 60_000, interval: 50 }).toBe(true);
     expect(JSON.parse(fs.readFileSync(cache, 'utf8'))).toMatchObject({
       latestVersion: '99.0.0',
       registry: 'https://registry.npmjs.org',
     });
-  }, 20_000);
+  }, 120_000);
 
   it('prints the localized notice on a forced-TTY stderr and keeps stdout clean', () => {
     const home = tempHome();

@@ -1,0 +1,49 @@
+{
+  "language": "csharp",
+  "description": "Retain raw member declaration keys alongside canonical escaped lexical receivers.",
+  "categories": [
+    "escaped-identifier",
+    "call-graph"
+  ],
+  "target": {
+    "name": "@Read",
+    "kind": "Method",
+    "file": "Worker.cs"
+  },
+  "newName": "Fetch",
+  "expectedTargetName": "@Fetch",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "Run",
+        "kind": "Method",
+        "file": "Worker.cs"
+      },
+      "to": {
+        "name": "@Read",
+        "kind": "Method",
+        "file": "Worker.cs"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "Run",
+        "kind": "Method",
+        "file": "Worker.cs"
+      },
+      "to": {
+        "name": "Worker",
+        "kind": "Class",
+        "file": "Worker.cs"
+      }
+    }
+  ],
+  "exactOutgoing": true,
+  "warmParseCache": true
+}

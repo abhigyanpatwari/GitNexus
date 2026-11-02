@@ -34,7 +34,7 @@ const graphWith = (
 ): Pick<KnowledgeGraph, 'forEachRelationshipFields'> => ({
   forEachRelationshipFields(fn) {
     for (const [type, count] of Object.entries(byType)) {
-      for (let i = 0; i < (count ?? 0); i++) fn('src', 'dst', type as RelationshipType, 1);
+      for (let i = 0; i < (count ?? 0); i++) fn('src', 'dst', type as RelationshipType, 1, '');
     }
   },
 });

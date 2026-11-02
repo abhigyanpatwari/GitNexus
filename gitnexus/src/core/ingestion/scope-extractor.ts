@@ -4,7 +4,7 @@
  * (RFC §5.3 + §3.2 Phase 1; Ring 2 PKG #919).
  *
  * Exactly one entry point: `extract(matches, filePath, provider) → ParsedFile`.
- * Runs a five-pass pipeline over the matches. Each pass is internal; the
+ * Runs a seven-pass pipeline over the matches. Each pass is internal; the
  * public contract is the output `ParsedFile`.
  *
  * ## Design principles
@@ -22,7 +22,7 @@
  *     don't overlap) are enforced by `buildScopeTree` from Ring 2 SHARED
  *     (#912). Malformed inputs throw `ScopeTreeInvariantError`.
  *
- * ## The five passes
+ * ## The seven passes
  *
  *   1. **Build scope tree.** Walk `@scope.*` matches. For each, consult
  *      `provider.resolveScopeKind` (default: suffix of the capture name).
@@ -60,6 +60,10 @@
  *      one `ReferenceSite` per match. Classify call form via
  *      `provider.classifyCallForm` (default: the capture's sub-tag if
  *      present; else `'free'`).
+ *   6. **Collect callable-value-flow facts.** Independent of Pass 5 so
+ *      existing reference-site extraction stays byte-identical.
+ *   7. **Preserve call-result assignment identity.** Untyped
+ *      `let lhs = call()` facts used by exact-callee return-type replay.
  *
  * ## What gets attached where
  *
@@ -80,6 +84,7 @@ import type {
   CallableFlowOperand,
   CallableFlowPassingMode,
   CallableFlowSite,
+  CallResultAssignmentSite,
   Capture,
   CaptureMatch,
   ImportEdge,
@@ -95,7 +100,13 @@ import type {
   SymbolDefinition,
   TypeRef,
 } from 'gitnexus-shared';
-import { buildPositionIndex, buildScopeTree, canParentScope, makeScopeId } from 'gitnexus-shared';
+import {
+  buildPositionIndex,
+  buildScopeTree,
+  canParentScope,
+  lookupLexicalName,
+  makeScopeId,
+} from 'gitnexus-shared';
 import type { LanguageProvider } from './language-provider.js';
 import { isValidReceiverChain } from './utils/receiver-chain-codec.js';
 import {
@@ -104,6 +115,7 @@ import {
   typeApplicationArguments,
 } from './utils/template-arguments.js';
 import { parseTypeParameterList } from './utils/type-parameters.js';
+import { followedStep } from './utils/type-ref-chain.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
 
@@ -126,6 +138,7 @@ export type ScopeExtractorHooks = Pick<
   | 'scopeOwnsReceivers'
   | 'bindingScopeFor'
   | 'interpretImport'
+  | 'importOwningScope'
   | 'importsExecuteWhereWritten'
   | 'interpretTypeBinding'
   | 'classifyCallForm'
@@ -134,7 +147,7 @@ export type ScopeExtractorHooks = Pick<
 // ─── Public entry point ─────────────────────────────────────────────────────
 
 /**
- * Drive the five extraction passes and return a `ParsedFile`.
+ * Drive the seven extraction passes and return a `ParsedFile`.
  *
  * Throws `ScopeTreeInvariantError` (from #912) when the provider emits
  * captures that violate structural scope invariants (e.g., overlapping
@@ -173,6 +186,8 @@ export function extract(
         d.filePath,
         d.ownsReceivers,
         d.lexicalNames,
+        d.nameClaims,
+        d.lookupPolicy,
       );
     }
   }
@@ -240,6 +255,15 @@ export function extract(
   const callableFlowSites: CallableFlowSite[] = [];
   pass6CollectCallableFlows(partitioned.callableFlow, positionIndex, filePath, callableFlowSites);
 
+  // ── Pass 7: preserve call-result assignment identity ───────────────
+  const callResultAssignmentSites: CallResultAssignmentSite[] = [];
+  pass7CollectCallResultAssignments(
+    partitioned.callResultAssignment,
+    positionIndex,
+    filePath,
+    callResultAssignmentSites,
+  );
+
   // Freeze Scope drafts into final shape and return.
   const frozenScopes = scopeDrafts.map(draftToScope);
   return Object.freeze({
@@ -251,6 +275,9 @@ export function extract(
     referenceSites: Object.freeze(referenceSites.slice()),
     ...(callableFlowSites.length > 0
       ? { callableFlowSites: Object.freeze(callableFlowSites.slice()) }
+      : {}),
+    ...(callResultAssignmentSites.length > 0
+      ? { callResultAssignmentSites: Object.freeze(callResultAssignmentSites.slice()) }
       : {}),
   });
 }
@@ -264,6 +291,7 @@ interface Partitioned {
   readonly typeBinding: readonly CaptureMatch[];
   readonly reference: readonly CaptureMatch[];
   readonly callableFlow: readonly CaptureMatch[];
+  readonly callResultAssignment: readonly CaptureMatch[];
 }
 
 /**
@@ -283,6 +311,7 @@ function partitionByTopic(matches: readonly CaptureMatch[]): Partitioned {
   const typeBinding: CaptureMatch[] = [];
   const reference: CaptureMatch[] = [];
   const callableFlow: CaptureMatch[] = [];
+  const callResultAssignment: CaptureMatch[] = [];
 
   for (const match of matches) {
     for (const topic of topicsOf(match)) {
@@ -305,14 +334,32 @@ function partitionByTopic(matches: readonly CaptureMatch[]): Partitioned {
         case 'callable-flow':
           callableFlow.push(match);
           break;
+        case 'call-result-assignment':
+          callResultAssignment.push(match);
+          break;
       }
     }
   }
 
-  return { scope, declaration, import_, typeBinding, reference, callableFlow };
+  return {
+    scope,
+    declaration,
+    import_,
+    typeBinding,
+    reference,
+    callableFlow,
+    callResultAssignment,
+  };
 }
 
-type Topic = 'scope' | 'declaration' | 'import' | 'type-binding' | 'reference' | 'callable-flow';
+type Topic =
+  | 'scope'
+  | 'declaration'
+  | 'import'
+  | 'type-binding'
+  | 'reference'
+  | 'callable-flow'
+  | 'call-result-assignment';
 
 function topicsOf(match: CaptureMatch): ReadonlySet<Topic> {
   const topics = new Set<Topic>();
@@ -323,6 +370,7 @@ function topicsOf(match: CaptureMatch): ReadonlySet<Topic> {
     else if (name.startsWith('@type-binding.')) topics.add('type-binding');
     else if (name.startsWith('@reference.')) topics.add('reference');
     else if (name.startsWith('@callable-flow.')) topics.add('callable-flow');
+    else if (name.startsWith('@call-result-assignment.')) topics.add('call-result-assignment');
   }
   return topics;
 }
@@ -344,6 +392,8 @@ interface ScopeDraft {
   readonly ownedDefs: SymbolDefinition[];
   readonly imports: ImportEdge[];
   readonly typeBindings: Map<string, TypeRef>;
+  readonly nameClaims?: readonly import('gitnexus-shared').NameClaim[];
+  readonly lookupPolicy?: import('gitnexus-shared').ScopeLookupPolicy;
   readonly lexicalNames?: ReadonlySet<string>;
   /** See `Scope.ownsReceivers` — set once at pass 1, never mutated. */
   readonly ownsReceivers?: ReadonlySet<string>;
@@ -403,6 +453,8 @@ function draftToScope(draft: ScopeDraft): Scope {
     imports: Object.freeze(draft.imports.slice()),
     typeBindings: new Map(draft.typeBindings),
     lexicalNames: draft.lexicalNames,
+    nameClaims: draft.nameClaims,
+    lookupPolicy: draft.lookupPolicy,
     ownsReceivers: draft.ownsReceivers,
   };
 }
@@ -481,6 +533,8 @@ function pass1BuildScopes(
         filePath,
         provider.scopeOwnsReceivers?.(cand.match),
         parseScopeLexicalNames(cand.match),
+        parseJsonCapture(cand.match['@scope.name-claims']) as ScopeDraft['nameClaims'],
+        parseJsonCapture(cand.match['@scope.lookup-policy']) as ScopeDraft['lookupPolicy'],
       ),
     );
     stack.push(cand);
@@ -528,6 +582,8 @@ function makeDraft(
   filePath: string,
   ownsReceivers?: ReadonlySet<string>,
   lexicalNames?: ReadonlySet<string>,
+  nameClaims?: ScopeDraft['nameClaims'],
+  lookupPolicy?: ScopeDraft['lookupPolicy'],
 ): ScopeDraft {
   return {
     id,
@@ -540,6 +596,8 @@ function makeDraft(
     imports: [],
     typeBindings: new Map(),
     lexicalNames,
+    nameClaims,
+    lookupPolicy,
     ownsReceivers,
   };
 }
@@ -598,17 +656,25 @@ function pass2AttachDeclarations(
     // fact is the failure mode this subsystem rejects everywhere else.
     //
     // Copying the field onto BOTH twins makes the outcome identical whichever
-    // one wins. Deliberately narrow — only `typeParameters`, the one field with
-    // an asymmetric twin today. Widening this to "merge all metadata" would
-    // change what every existing duplicate resolves to, which is a different
-    // change with a different blast radius and no evidence behind it yet.
+    // one wins. Deliberately narrow — only metadata whose asymmetric twins have
+    // executable regressions (`typeParameters` and `returnType`). Widening this
+    // to "merge all metadata" would change what every existing duplicate
+    // resolves to, which is a different change with a different blast radius
+    // and no evidence behind it yet.
     const first = firstDefByNodeId.get(def.nodeId);
     if (first === undefined) {
       firstDefByNodeId.set(def.nodeId, def);
-    } else if (first.typeParameters === undefined && def.typeParameters !== undefined) {
-      first.typeParameters = def.typeParameters;
-    } else if (def.typeParameters === undefined && first.typeParameters !== undefined) {
-      def.typeParameters = first.typeParameters;
+    } else {
+      if (first.typeParameters === undefined && def.typeParameters !== undefined) {
+        first.typeParameters = def.typeParameters;
+      } else if (def.typeParameters === undefined && first.typeParameters !== undefined) {
+        def.typeParameters = first.typeParameters;
+      }
+      if (first.returnType === undefined && def.returnType !== undefined) {
+        first.returnType = def.returnType;
+      } else if (def.returnType === undefined && first.returnType !== undefined) {
+        def.returnType = first.returnType;
+      }
     }
 
     // Find the innermost scope that contains the declaration's anchor range.
@@ -660,7 +726,7 @@ function pass2AttachDeclarations(
     if (nameKey === undefined) continue;
 
     const existing = bindingHost.bindings.get(nameKey) ?? [];
-    existing.push({ def, origin: 'local' });
+    existing.push({ def, origin: 'local', declarationRange: anchor.range });
     bindingHost.bindings.set(nameKey, existing);
   }
 }
@@ -707,11 +773,21 @@ function buildDefFromDeclarationMatch(
   const isExplicit = parseBooleanCapture(match['@declaration.is-explicit']);
   const isDeleted = parseBooleanCapture(match['@declaration.is-deleted']);
   const isSynthetic = parseBooleanCapture(match['@declaration.is-synthetic']);
+  // Tri-state on purpose: only a producer that saw the file's export surface
+  // emits the marker, and both `true` and `false` are verdicts (see
+  // `SymbolDefinition.isExported`). Absent stays absent.
+  const isExported = parseBooleanCapture(match['@declaration.is-exported']);
+  const graphPosition = match['@declaration.graph-position']?.range;
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
+    nameRange: nameCap.range,
+    declarationRange: anchor.range,
     filePath,
     type,
+    ...(graphPosition !== undefined
+      ? { graphPosition: { startLine: graphPosition.startLine, startCol: graphPosition.startCol } }
+      : {}),
     ...(qualifiedName !== undefined ? { qualifiedName } : { qualifiedName: nameCap.text }),
     ...(parameterCount !== undefined ? { parameterCount } : {}),
     ...(requiredParameterCount !== undefined ? { requiredParameterCount } : {}),
@@ -725,6 +801,7 @@ function buildDefFromDeclarationMatch(
     ...(isExplicit === true ? { isExplicit: true } : {}),
     ...(isDeleted === true ? { isDeleted: true } : {}),
     ...(isSynthetic === true ? { isSynthetic: true } : {}),
+    ...(isExported !== undefined ? { isExported } : {}),
   };
 }
 
@@ -821,8 +898,11 @@ function parseJsonStringArrayCapture(
 }
 
 function deriveDeclarationName(match: CaptureMatch, def: SymbolDefinition): string | undefined {
+  // An explicit empty binding override retains the declaration's graph identity
+  // without inventing a source-level name (for example, an anonymous callable).
+  const bindingName = match['@declaration.binding-name'];
+  if (bindingName !== undefined) return bindingName.text || undefined;
   const nameCap =
-    match['@declaration.binding-name'] ??
     match['@declaration.name'] ??
     match[
       Object.keys(match).find((k) => k.startsWith('@declaration.') && k.endsWith('.name')) ?? ''
@@ -847,6 +927,10 @@ function normalizeNodeLabel(kindStr: string): SymbolDefinition['type'] | undefin
   switch (kindStr.toLowerCase()) {
     case 'class':
       return 'Class';
+    case 'protocol':
+      return 'Protocol';
+    case 'category':
+      return 'Category';
     case 'interface':
       return 'Interface';
     case 'enum':
@@ -1033,8 +1117,7 @@ function pass3CollectImports(
   if (provider.interpretImport === undefined) return;
   // Hoisted: the capability is a property of the language, identical for every
   // match in the file. A provider that declares its imports do not execute
-  // where they are written (C/C++ `#include`, Rust `use`, COBOL `COPY`) skips
-  // the position walk entirely — position cannot defer something that never
+  // where they are written skips the execution-deferral walk — position cannot defer something that never
   // runs, and marking one deferred would hide a real cycle. Absent reads as
   // `true`, so an undeclared provider is unchanged. See
   // `LanguageProvider.importsExecuteWhereWritten`.
@@ -1045,14 +1128,29 @@ function pass3CollectImports(
     const parsed = provider.interpretImport(match);
     if (parsed === null) continue;
     // The statement's own position, resolved to the innermost scope holding
-    // it. An unlocatable anchor leaves the import unmarked, which reads as
+    // it. Provenance is retained independently of execution timing. An
+    // unlocatable anchor leaves the import unmarked, which reads as
     // "runs at initialization" — the fail-safe direction, since it can only
     // make `check --cycles` over-report.
-    const inScopeId = positionCanDefer
-      ? positionIndex.atPosition(filePath, anchor.range.startLine, anchor.range.startCol)
-      : undefined;
-    const deferred = inScopeId !== undefined && runsOnlyWhenCalled(scopeTree, inScopeId);
-    parsedImports.push(deferred ? { ...parsed, runsOnlyWhenCalled: true } : parsed);
+    const inScopeId = positionIndex.atPosition(
+      filePath,
+      anchor.range.startLine,
+      anchor.range.startCol,
+    );
+    const deferred =
+      positionCanDefer && inScopeId !== undefined && runsOnlyWhenCalled(scopeTree, inScopeId);
+    const innermost = inScopeId === undefined ? undefined : scopeTree.getScope(inScopeId);
+    const owner =
+      parsed.declaredAtScope ??
+      (innermost === undefined
+        ? undefined
+        : (provider.importOwningScope?.(parsed, innermost, scopeTree) ?? inScopeId));
+    parsedImports.push({
+      ...parsed,
+      atRange: parsed.atRange ?? anchor.range,
+      ...(owner !== undefined ? { declaredAtScope: owner } : {}),
+      ...(deferred ? { runsOnlyWhenCalled: true } : {}),
+    });
   }
 }
 
@@ -1133,13 +1231,25 @@ function pass4CollectTypeBindings(
       declaredSpelling === undefined
         ? {
             rawName: parsed.rawTypeName,
-            declaredAtScope: host.id,
+            bindingRange: anchor.range,
+            declaredAtScope: match['@type.lookup-scope']?.text ?? host.id,
+            lookupPosition: { startLine: anchor.range.startLine, startCol: anchor.range.startCol },
+            lookupPurpose:
+              parsed.source === 'constructor-inferred' || parsed.source === 'assignment-inferred'
+                ? 'value'
+                : 'type',
             source: parsed.source,
           }
         : {
             rawName: parsed.rawTypeName,
             declaredSpelling,
-            declaredAtScope: host.id,
+            bindingRange: anchor.range,
+            declaredAtScope: match['@type.lookup-scope']?.text ?? host.id,
+            lookupPosition: { startLine: anchor.range.startLine, startCol: anchor.range.startCol },
+            lookupPurpose:
+              parsed.source === 'constructor-inferred' || parsed.source === 'assignment-inferred'
+                ? 'value'
+                : 'type',
             source: parsed.source,
           };
     // Prefer stronger sources when multiple matches fire for the same
@@ -1189,23 +1299,21 @@ function followChainedRef(start: TypeRef, draftById: ReadonlyMap<ScopeId, ScopeD
     // `QualifiedNameIndex` at resolution time — don't follow it here.
     if (current.rawName.includes('.')) return current;
 
-    // Look up the current rawName in the declaring scope and walk up
-    // the chain until we hit a scope that has a binding for it.
-    let scopeId: ScopeId | null = current.declaredAtScope;
-    let next: TypeRef | undefined;
-    while (scopeId !== null) {
-      const scope = draftById.get(scopeId);
-      if (scope === undefined) break;
-      next = scope.typeBindings.get(current.rawName);
-      if (next !== undefined) break;
-      scopeId = scope.parent;
-    }
+    const claim = lookupLexicalName(
+      current.declaredAtScope,
+      current.rawName,
+      {
+        scopes: { getScope: (id) => draftById.get(id) },
+      },
+      { position: current.lookupPosition, purpose: current.lookupPurpose },
+    );
+    const next = claim.typeBinding;
 
     if (next === undefined) return current; // dead end — nothing to chain to
     if (next === current) return current; // self-ref
     if (visited.has(next.rawName)) return current; // cycle guard
     visited.add(next.rawName);
-    current = next;
+    current = followedStep(start, next);
   }
   return current;
 }
@@ -1222,6 +1330,11 @@ function followChainedRef(start: TypeRef, draftById: ReadonlyMap<ScopeId, ScopeD
  */
 function typeBindingStrength(source: TypeRef['source']): number {
   switch (source) {
+    // A method decorator may change what the first parameter receives. An
+    // annotation describes intent, not descriptor binding, so it cannot
+    // override this uncertainty for that parameter.
+    case 'decorator-unknown':
+      return 4;
     case 'annotation':
       return 3;
     case 'parameter-annotation':
@@ -1316,8 +1429,20 @@ function pass5CollectReferences(
 
     const site: ReferenceSite = {
       name: nameCap.text,
+      nameRange: nameCap.range,
       atRange: anchor.range,
-      inScope: inScopeId,
+      ...(match['@reference.lookup-purpose']?.text === 'type' ||
+      match['@reference.lookup-purpose']?.text === 'value'
+        ? { lookupPurpose: match['@reference.lookup-purpose'].text as 'type' | 'value' }
+        : {}),
+      inScope:
+        kind === 'inherits' ? inScopeId : (match['@reference.lookup-scope']?.text ?? inScopeId),
+      ...(kind === 'inherits' && match['@reference.lookup-scope'] !== undefined
+        ? { lookupScope: match['@reference.lookup-scope'].text }
+        : {}),
+      ...(match['@reference.caller-scope'] !== undefined
+        ? { callerScope: match['@reference.caller-scope'].text }
+        : {}),
       kind,
       ...(qualifiedCap?.text !== undefined && qualifiedCap.text.length > 0
         ? { rawQualifiedName: qualifiedCap.text }
@@ -1636,6 +1761,24 @@ function pass6CollectCallableFlows(
   }
 }
 
+// ─── Pass 7: collect call-result assignment identity ──────────────────────
+
+function pass7CollectCallResultAssignments(
+  matches: readonly CaptureMatch[],
+  positionIndex: ReturnType<typeof buildPositionIndex>,
+  filePath: string,
+  out: CallResultAssignmentSite[],
+): void {
+  for (const match of matches) {
+    const call = match['@call-result-assignment.call'];
+    const lhs = match['@call-result-assignment.lhs'];
+    if (call === undefined || lhs === undefined || !nonEmpty(lhs.text)) continue;
+    const inScope = positionIndex.atPosition(filePath, call.range.startLine, call.range.startCol);
+    if (inScope === undefined) continue;
+    out.push({ callSite: call.range, inScope, lhs: lhs.text });
+  }
+}
+
 function callableFlowKind(match: CaptureMatch): CallableFlowKind | undefined {
   return CALLABLE_FLOW_KINDS.find((kind) => match[`@callable-flow.${kind}`] !== undefined);
 }
@@ -1781,7 +1924,10 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@scope.lexical-names',
   '@declaration.name',
   '@declaration.qualified_name',
+  '@declaration.graph-position',
   '@declaration.is-synthetic',
+  '@declaration.global',
+  '@declaration.lexical-method',
   '@import.name',
   '@import.source',
   '@import.alias',
@@ -1791,6 +1937,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@import.publishes',
   '@type-binding.name',
   '@type-binding.type',
+  '@type-binding.nullable-field',
   '@reference.name',
   '@reference.qualified-name',
   // The generic arguments a heritage base was written with, when the emitter's

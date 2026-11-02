@@ -15,6 +15,7 @@
 *.so binary
 *.dll binary
 *.dylib binary
+*.lbug_extension binary
 
 # TypeScript sources are always text for diff purposes. Git's binary
 # heuristic fires when EITHER blob in a pair carries a NUL, so a source

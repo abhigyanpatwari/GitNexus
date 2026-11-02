@@ -21,6 +21,16 @@ const mockMeta: any = {
   stats: { files: 1, nodes: 1 },
 };
 
+const materializeLegacyIndex = async (repoPath: string): Promise<void> => {
+  const storagePath = path.join(repoPath, '.gitnexus');
+  await fs.mkdir(path.join(storagePath, 'lbug'), { recursive: true });
+  await fs.writeFile(
+    path.join(storagePath, 'meta.json'),
+    JSON.stringify({ ...mockMeta, repoPath }),
+    'utf8',
+  );
+};
+
 /**
  * Read the persisted registry straight off disk so tests can assert what was
  * actually written — the original bug was about *persisting* the wrong list,
@@ -48,6 +58,7 @@ describe('listRegisteredRepos({ validate: true }) — transient error safety (PR
     tmpRepo = await createTempDir('gitnexus-transient-repo-');
     savedGitnexusHome = process.env.GITNEXUS_HOME;
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    await materializeLegacyIndex(tmpRepo.dbPath);
   });
 
   afterEach(async () => {
@@ -61,17 +72,11 @@ describe('listRegisteredRepos({ validate: true }) — transient error safety (PR
   it('ENOENT prunes the entry (index genuinely removed)', async () => {
     await registerRepo(tmpRepo.dbPath, mockMeta);
 
-    // registerRepo writes the registry entry but doesn't create .gitnexus/meta.json.
-    // That's done by analyze. Create it so the entry passes validation initially.
-    const metaPath = path.join(tmpRepo.dbPath, '.gitnexus', 'meta.json');
-    await fs.mkdir(path.dirname(metaPath), { recursive: true });
-    await fs.writeFile(metaPath, JSON.stringify(mockMeta));
-
     const before = await listRegisteredRepos({ validate: true });
     expect(before).toHaveLength(1);
 
     // Delete meta.json to simulate genuinely removed index
-    await fs.unlink(metaPath);
+    await fs.rm(path.join(tmpRepo.dbPath, '.gitnexus'), { recursive: true, force: true });
 
     const after = await listRegisteredRepos({ validate: true });
     expect(after).toHaveLength(0);
@@ -270,21 +275,22 @@ describe('listRegisteredRepos({ validate: true }) — transient error safety (PR
     try {
       const nameA = await registerRepo(tmpRepo.dbPath, mockMeta);
       const nameB = await registerRepo(tmpRepoB.dbPath, mockMeta);
+      await materializeLegacyIndex(tmpRepoB.dbPath);
 
       const before = await listRegisteredRepos();
       expect(before).toHaveLength(2);
 
+      // Repo A is genuinely gone: drop both metadata files so inspection
+      // cannot treat a leftover `gitnexus.json` from `registerRepo` as owned.
+      await fs.rm(path.join(tmpRepo.dbPath, '.gitnexus', 'gitnexus.json'), { force: true });
+      await fs.rm(path.join(tmpRepo.dbPath, '.gitnexus', 'meta.json'), { force: true });
+
       // Branch on each repo's distinct temp-dir segment — both meta.json paths
       // contain `.gitnexus`/`meta.json`, so matching those shared substrings
-      // alone would mis-route. repo A → ENOENT (prune), repo B → EIO (keep).
+      // alone would mis-route. repo B → EIO (keep).
       const originalAccess = fs.access;
       vi.spyOn(fs, 'access').mockImplementation(async (p, mode) => {
         const pStr = typeof p === 'string' ? p : p.toString();
-        if (pStr.includes('meta.json') && pStr.includes(tmpRepo.dbPath)) {
-          const err = new Error('no such file') as NodeJS.ErrnoException;
-          err.code = 'ENOENT';
-          throw err;
-        }
         if (pStr.includes('meta.json') && pStr.includes(tmpRepoB.dbPath)) {
           const err = new Error('input/output error') as NodeJS.ErrnoException;
           err.code = 'EIO';
@@ -307,6 +313,38 @@ describe('listRegisteredRepos({ validate: true }) — transient error safety (PR
       expect(onDisk.some((e) => e.name === nameA)).toBe(false);
     } finally {
       await tmpRepoB.cleanup();
+    }
+  });
+
+  it('returns only owned entries with a LadybugDB directory', async () => {
+    const foreignRepo = await createTempDir('gitnexus-validation-foreign-');
+    const missingDbRepo = await createTempDir('gitnexus-validation-no-db-');
+    try {
+      await registerRepo(tmpRepo.dbPath, mockMeta, { name: 'owned' });
+      await registerRepo(foreignRepo.dbPath, mockMeta, { name: 'foreign' });
+      await registerRepo(missingDbRepo.dbPath, mockMeta, { name: 'no-db' });
+
+      const foreignStorage = path.join(foreignRepo.dbPath, '.gitnexus');
+      await fs.mkdir(path.join(foreignStorage, 'lbug'), { recursive: true });
+      await fs.writeFile(
+        path.join(foreignStorage, 'meta.json'),
+        JSON.stringify({ ...mockMeta, repoPath: tmpRepo.dbPath }),
+        'utf8',
+      );
+      await fs.mkdir(path.join(missingDbRepo.dbPath, '.gitnexus'), { recursive: true });
+      await fs.writeFile(
+        path.join(missingDbRepo.dbPath, '.gitnexus', 'meta.json'),
+        JSON.stringify({ ...mockMeta, repoPath: missingDbRepo.dbPath }),
+        'utf8',
+      );
+
+      const entries = await listRegisteredRepos({ validate: true });
+
+      expect(entries.map((entry) => entry.name)).toEqual(['owned']);
+      expect(await readRegistryFromDisk()).toHaveLength(3);
+    } finally {
+      await foreignRepo.cleanup();
+      await missingDbRepo.cleanup();
     }
   });
 });

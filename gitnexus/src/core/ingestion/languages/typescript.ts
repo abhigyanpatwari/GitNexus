@@ -7,13 +7,17 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { CaptureMatch, NodeLabel } from 'gitnexus-shared';
+import { isBuiltin } from 'node:module';
+import type Parser from 'tree-sitter';
+import { unboundCallableName } from './typescript/unbound-callables.js';
+import type { CaptureMatch, NodeLabel, ParsedFile } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
-import { createClassExtractor } from '../class-extractors/generic.js';
 import {
   typescriptClassConfig,
   javascriptClassConfig,
+  resolveTsJsContainerTypeOwner,
+  createTsJsClassExtractor,
 } from '../class-extractors/configs/typescript-javascript.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import {
@@ -27,6 +31,7 @@ import {
   isModuleLevelThisExport,
   isShadowedCjsExportAssignmentNode,
 } from './typescript/cjs-export-assignment.js';
+import { collectCommonJsModuleKind, withCommonJsModuleKind } from './typescript/module-kind.js';
 
 const rootOf = (node: SyntaxNode): SyntaxNode | undefined =>
   (node as { tree?: { rootNode?: SyntaxNode } }).tree?.rootNode;
@@ -74,11 +79,7 @@ const memberAssignmentLabel = (node: SyntaxNode): NodeLabel | null => {
 import { createTypeScriptCfgVisitor } from '../cfg/visitors/typescript.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import {
-  typescriptImportConfig,
-  javascriptImportConfig,
-} from '../import-resolvers/configs/typescript-javascript.js';
+import { hasFilePrivateExportSemantics } from './typescript/file-private-exports.js';
 import { TYPESCRIPT_QUERIES, JAVASCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
@@ -102,6 +103,7 @@ import {
   ARRAY_METHOD_HOC_BLOCKLIST_SET,
   DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET,
   deriveDefaultExportHocName,
+  isBlockedCallbackRegistrationCall,
 } from '../ts-js-hoc-utils.js';
 import {
   emitTsScopeCaptures,
@@ -127,13 +129,36 @@ import {
 import { extractDispatchGuardRoutes } from '../route-extractors/dispatch-guard.js';
 import { extractDataRouteTableRoutes } from '../route-extractors/data-route-table.js';
 import { extractNestRoutes } from '../route-extractors/nest.js';
+import {
+  createFetchWrapperContext,
+  type FetchWrapperContext,
+} from '../route-extractors/fetch-wrapper.js';
+import { extractFrameworkRouteFacts } from '../route-extractors/framework-route-facts.js';
+import { resolveProjectFrameworkRouteFacts } from '../route-extractors/framework-route-paths.js';
+import { extractTrpcRoutes, shouldScanForTrpcRoutes } from '../route-extractors/trpc.js';
 import { extractConvexEndpointProperties } from './typescript/convex-endpoint-metadata.js';
+import { extractToolDefinitions } from './typescript/tool-definitions.js';
+import { typescriptRenameProvider } from './typescript/rename.js';
 
 const extractJsTsRoutes = (...args: Parameters<typeof extractDispatchGuardRoutes>) => [
   ...extractDispatchGuardRoutes(...args),
   ...extractDataRouteTableRoutes(...args),
   ...extractNestRoutes(...args),
 ];
+
+const extractJsTsTextRoutes = (path: string, content: string) =>
+  shouldScanForTrpcRoutes(path) ? extractTrpcRoutes(path, content) : [];
+
+const pairKeyName = (keyNode: SyntaxNode | null | undefined): string | null => {
+  if (!keyNode) return null;
+  if (keyNode.type === 'property_identifier' || keyNode.type === 'identifier') {
+    return keyNode.text;
+  }
+  if (keyNode.type === 'string') {
+    return keyNode.children?.find((c: SyntaxNode) => c.type === 'string_fragment')?.text ?? null;
+  }
+  return null;
+};
 
 /**
  * TypeScript/JavaScript: arrow_function and function_expression are
@@ -155,17 +180,25 @@ const extractJsTsRoutes = (...args: Parameters<typeof extractDispatchGuardRoutes
  *     applied to all `useCallback` / `useMemo` callbacks bound to a
  *     const — the sole way to give them a named caller anchor.
  *
- * Returns `null` for funcName when the arrow lives in a context that has
- * no static name — bare call arguments (not bound to a const), computed
- * keys, return-from-arrow positions. The parent walk in
+ * Bare expression-statement callbacks and returned function expressions get
+ * their own name or a position name. Other contexts without a static name
+ * (computed keys, return-from-arrow positions) return null. The parent walk in
  * findEnclosingFunctionId then continues up to the next named ancestor
  * (or to the file).
  */
 const tsExtractFunctionName = (
   node: SyntaxNode,
   filePath?: string,
-): { funcName: string | null; label: NodeLabel } | null => {
+): { funcName: string | null; label: NodeLabel; identityName?: string | null } | null => {
   if (node.type !== 'arrow_function' && node.type !== 'function_expression') return null;
+
+  const unboundName = unboundCallableName(node);
+  if (unboundName !== undefined)
+    return {
+      funcName: unboundName,
+      label: 'Function',
+      ...(node.childForFieldName('name') === null ? { identityName: null } : {}),
+    };
 
   const parent = node.parent;
   if (!parent) return null;
@@ -188,20 +221,9 @@ const tsExtractFunctionName = (
   // tree-sitter-typescript uses `pair`; tree-sitter-javascript also exposes
   // `pair`. (Older grammars used `property_assignment`; we accept both.)
   if (parent.type === 'pair' || parent.type === 'property_assignment') {
-    const keyNode = parent.childForFieldName?.('key');
-    if (!keyNode) return { funcName: null, label: 'Function' };
-    if (keyNode.type === 'property_identifier' || keyNode.type === 'identifier') {
-      return { funcName: keyNode.text, label: 'Function' };
-    }
-    if (keyNode.type === 'string') {
-      // `"add-item": () => ...` — the literal text inside the quotes.
-      const fragment = keyNode.children?.find((c: SyntaxNode) => c.type === 'string_fragment');
-      const text = fragment?.text ?? null;
-      return { funcName: text, label: 'Function' };
-    }
     // computed_property_name (`[ACTION_KEY]`) and other dynamic keys have
-    // no static name — fall through anonymous.
-    return { funcName: null, label: 'Function' };
+    // no static name — pairKeyName returns null and we stay anonymous.
+    return { funcName: pairKeyName(parent.childForFieldName?.('key')), label: 'Function' };
   }
 
   // HOC-wrapped variable declarations: `const Button = forwardRef((p, r) => { ... })`,
@@ -266,6 +288,17 @@ const tsExtractFunctionName = (
         };
       }
       return { funcName: null, label: 'Function' };
+    }
+
+    // HOC-wrapped pair: `create: procedure.mutation(async ({ input }) => { ... })`.
+    // tRPC and similar frameworks wrap callbacks inside .mutation()/.query() calls
+    // that are themselves pair values. The arrow's parent is `arguments`,
+    // grandparent is `call_expression`, great-grandparent is `pair`.
+    if (declarator?.type === 'pair' || declarator?.type === 'property_assignment') {
+      if (isBlockedCallbackRegistrationCall(callExpr)) {
+        return { funcName: null, label: 'Function' };
+      }
+      return { funcName: pairKeyName(declarator.childForFieldName?.('key')), label: 'Function' };
     }
 
     return { funcName: null, label: 'Function' };
@@ -372,6 +405,34 @@ export const BUILT_INS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Host objects a JavaScript runtime supplies as globals, for
+ * `LanguageProvider.externalReceiverNames`: a dropped receiver rooted at one
+ * (`document.body.appendChild`, `process.env.API_BASE`,
+ * `Buffer.from(raw).toString()`) reached code no index contains.
+ *
+ * Separate from `BUILT_INS`, which also filters CALLEE names out of the call
+ * graph — `process` there would drop every call to a program function named
+ * `process`. Here a name counts only when the program binds nothing by it at
+ * the site and declares nothing by it anywhere, so a `document` parameter or a
+ * module-level `function process()` keeps the receiver hedged.
+ *
+ * Host objects only, and only ones an application does not name its own
+ * values after: `location`, `history`, `self` and `crypto` are ordinary local
+ * names, and reaching them through `window` is already covered.
+ */
+export const EXTERNAL_RECEIVER_NAMES: ReadonlySet<string> = new Set([
+  // Browser host.
+  'window',
+  'document',
+  'navigator',
+  'localStorage',
+  'sessionStorage',
+  // Node host.
+  'process',
+  'Buffer',
+]);
+
+/**
  * `this` is the only receiver keyword JavaScript and TypeScript bind, and it
  * is bound by every function form except an arrow (#2701). The query files
  * tag those forms with `@receiver-owner.this`; this hook just reads the tag,
@@ -383,9 +444,47 @@ const TS_OWNED_RECEIVERS: ReadonlySet<string> = new Set(['this']);
 const tsScopeOwnsReceivers = (match: CaptureMatch): ReadonlySet<string> | undefined =>
   match['@receiver-owner.this'] === undefined ? undefined : TS_OWNED_RECEIVERS;
 
+// Keyed by tree, not ParsedFile: workers retain ParsedFiles for the whole chunk,
+// while a file's tree, and with it this AST-holding context, is released per file.
+const httpContexts = new WeakMap<
+  Parser.Tree,
+  { parsedFile: ParsedFile; lineOffset: number; context: FetchWrapperContext }
+>();
+function httpContext(
+  tree: Parser.Tree,
+  parsedFile: ParsedFile,
+  lineOffset: number,
+): FetchWrapperContext {
+  const cached = httpContexts.get(tree);
+  if (cached?.parsedFile === parsedFile && cached.lineOffset === lineOffset) return cached.context;
+  const context = createFetchWrapperContext(tree, parsedFile, lineOffset);
+  httpContexts.set(tree, { parsedFile, lineOffset, context });
+  return context;
+}
+const httpExtraction = {
+  extractRouteFacts: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
+    extractFrameworkRouteFacts(
+      tree,
+      parsedFile,
+      lineOffset,
+      httpContext(tree, parsedFile, lineOffset).bindings,
+    ),
+  extractFetchWrapperCalls: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
+    httpContext(tree, parsedFile, lineOffset).calls(),
+  extractFetchWrapperReexports: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
+    httpContext(tree, parsedFile, lineOffset).reexports(),
+  extractFetchWrapperFacts: (
+    definition: Parser.SyntaxNode,
+    name: Parser.SyntaxNode | undefined,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => httpContext(definition.tree, parsedFile, lineOffset).facts(definition, name),
+};
+
 export const typescriptProvider = defineLanguage({
   id: SupportedLanguages.TypeScript,
-  extensions: ['.ts', '.tsx'],
+  rename: typescriptRenameProvider,
+  extensions: ['.ts', '.tsx', '.mts', '.cts'],
   entryPointPatterns: [/^use[A-Z]/],
   astFrameworkPatterns: [
     {
@@ -408,12 +507,18 @@ export const typescriptProvider = defineLanguage({
         'expo-router',
       ],
     },
+    {
+      framework: 'trpc',
+      entryPointMultiplier: 3.0,
+      reason: 'trpc-procedure',
+      patterns: ['initTRPC', 'createTRPCRouter', '@trpc/server', '@trpc/client'],
+    },
   ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: TYPESCRIPT_QUERIES,
   typeConfig: typescriptConfig,
   scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
-  importResolver: createImportResolver(typescriptImportConfig),
+  notExportedIsFilePrivate: hasFilePrivateExportSemantics,
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   methodExtractor: createMethodExtractor({
@@ -422,13 +527,16 @@ export const typescriptProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
   definitionPropertiesExtractor: extractConvexEndpointProperties,
-  classExtractor: createClassExtractor(typescriptClassConfig),
+  classExtractor: createTsJsClassExtractor(typescriptClassConfig),
+  resolveContainerTypeOwner: resolveTsJsContainerTypeOwner,
   // ── JSDoc → description (issue #2270). An exported decl is captured as the
   //    inner declaration; its JSDoc precedes the wrapping `export_statement`. ──
   descriptionExtractor: createLeadingDocDescriptionExtractor({
     wrapperNodeTypes: ['export_statement'],
   }),
   builtInNames: BUILT_INS,
+  externalReceiverNames: EXTERNAL_RECEIVER_NAMES,
+  isExternalModuleSpecifier: isBuiltin,
 
   // Member-assignment shapes are not free functions (#2723 follow-up). The
   // capture arrives anchored on the assignment, so the shape is decided from
@@ -450,7 +558,8 @@ export const typescriptProvider = defineLanguage({
   // ./typescript/index.ts for the full per-hook rationale and the
   // canonical capture vocabulary in ./typescript/query.ts
   // (TYPESCRIPT_SCOPE_QUERY constant).
-  emitScopeCaptures: emitTsScopeCaptures,
+  emitScopeCaptures: withCommonJsModuleKind(emitTsScopeCaptures),
+  collectCaptureSideChannel: collectCommonJsModuleKind,
   // CFG/PDG substrate (#2081 M1) — runs in the worker on a --pdg run.
   cfgVisitor: createTypeScriptCfgVisitor(),
   interpretImport: interpretTsImport,
@@ -469,10 +578,17 @@ export const typescriptProvider = defineLanguage({
   // to a literal; nothing else in this pipeline can see that shape. TS and JS
   // share the grammar, so they share the extractor.
   extractDecoratorRoutes: extractJsTsRoutes,
+  ...httpExtraction,
+  resolveRouteFacts: resolveProjectFrameworkRouteFacts,
+  // Content-based (not AST): tRPC procedure routers are scanned from source text.
+  // Path-gate lives here (language provider), not in the shared parse worker.
+  extractTextRoutes: extractJsTsTextRoutes,
+  extractToolDefinitions,
 });
 
 export const javascriptProvider = defineLanguage({
   id: SupportedLanguages.JavaScript,
+  rename: typescriptRenameProvider,
   extensions: ['.js', '.jsx', '.mjs', '.cjs'],
   entryPointPatterns: [/^use[A-Z]/],
   astFrameworkPatterns: [
@@ -481,6 +597,12 @@ export const javascriptProvider = defineLanguage({
       entryPointMultiplier: 3.2,
       reason: 'nestjs-decorator',
       patterns: ['@Controller', '@Get', '@Post', '@Put', '@Delete', '@Patch'],
+    },
+    {
+      framework: 'trpc',
+      entryPointMultiplier: 3.0,
+      reason: 'trpc-procedure',
+      patterns: ['initTRPC', 'createTRPCRouter', '@trpc/server', '@trpc/client'],
     },
     {
       framework: 'expo-router',
@@ -501,7 +623,7 @@ export const javascriptProvider = defineLanguage({
   typeConfig: typescriptConfig,
   scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
-  importResolver: createImportResolver(javascriptImportConfig),
+  notExportedIsFilePrivate: hasFilePrivateExportSemantics,
   callExtractor: createCallExtractor(javascriptCallConfig),
   fieldExtractor: createFieldExtractor(javascriptConfig),
   methodExtractor: createMethodExtractor({
@@ -510,13 +632,16 @@ export const javascriptProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(javascriptVariableConfig),
   definitionPropertiesExtractor: extractConvexEndpointProperties,
-  classExtractor: createClassExtractor(javascriptClassConfig),
+  classExtractor: createTsJsClassExtractor(javascriptClassConfig),
+  resolveContainerTypeOwner: resolveTsJsContainerTypeOwner,
   // ── JSDoc → description (issue #2270). An exported decl is captured as the
   //    inner declaration; its JSDoc precedes the wrapping `export_statement`. ──
   descriptionExtractor: createLeadingDocDescriptionExtractor({
     wrapperNodeTypes: ['export_statement'],
   }),
   builtInNames: BUILT_INS,
+  externalReceiverNames: EXTERNAL_RECEIVER_NAMES,
+  isExternalModuleSpecifier: isBuiltin,
 
   // Member-assignment shapes — see the TypeScript provider above.
   labelOverride: (functionNode, defaultLabel) =>
@@ -532,7 +657,8 @@ export const javascriptProvider = defineLanguage({
   // semantics are identical; JS-specific additions (CJS require(),
   // JSDoc type bindings) live in ./javascript/captures.ts.
   // See ./javascript/index.ts for the full per-module rationale.
-  emitScopeCaptures: emitJsScopeCaptures,
+  emitScopeCaptures: withCommonJsModuleKind(emitJsScopeCaptures),
+  collectCaptureSideChannel: collectCommonJsModuleKind,
   // CFG/PDG substrate (#2081 M1) — TS and JS share the same grammar family.
   cfgVisitor: createTypeScriptCfgVisitor(),
   interpretImport: interpretJsImport,
@@ -544,4 +670,9 @@ export const javascriptProvider = defineLanguage({
   arityCompatibility: jsArityCompatibility,
   // See the TypeScript provider above.
   extractDecoratorRoutes: extractJsTsRoutes,
+  ...httpExtraction,
+  resolveRouteFacts: resolveProjectFrameworkRouteFacts,
+  // Content-based (not AST): tRPC procedure routers are scanned from source text.
+  extractTextRoutes: extractJsTsTextRoutes,
+  extractToolDefinitions,
 });

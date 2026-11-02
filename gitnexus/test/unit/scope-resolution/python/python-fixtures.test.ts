@@ -24,7 +24,7 @@
  *   * Parameter type annotations (typed_parameter / typed_default_parameter
  *     / forward-ref strings)
  *   * Call references: free vs member, with explicit-receiver capture
- *   * `global` / `nonlocal` no-op behaviour (documented gap)
+ *   * `global` / `nonlocal` binding destinations
  */
 
 import { describe, it, expect } from 'vitest';
@@ -187,29 +187,81 @@ describe('Python imports — interpretImport', () => {
   it('case 10: `import numpy` → namespace import', () => {
     const f = parse('import numpy\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'namespace', localName: 'numpy', importedName: 'numpy', targetRaw: 'numpy' },
+      {
+        kind: 'namespace',
+        localName: 'numpy',
+        importedName: 'numpy',
+        targetRaw: 'numpy',
+        atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 12 },
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 
   it('case 11: `import numpy as np` → namespace import with rename', () => {
     const f = parse('import numpy as np\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'namespace', localName: 'np', importedName: 'numpy', targetRaw: 'numpy' },
+      {
+        kind: 'namespace',
+        localName: 'np',
+        explicitAlias: true,
+        importedName: 'numpy',
+        targetRaw: 'numpy',
+        atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 18 },
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 
   it('case 12: `import a.b.c` exposes the leading segment as the local name', () => {
     const f = parse('import a.b.c\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'namespace', localName: 'a', importedName: 'a.b.c', targetRaw: 'a.b.c' },
+      {
+        kind: 'namespace',
+        localName: 'a',
+        importedName: 'a.b.c',
+        targetRaw: 'a.b.c',
+        atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 12 },
+        declaredAtScope: f.moduleScope,
+      },
+    ]);
+  });
+
+  it('keeps an explicit alias when it matches the imported path root', () => {
+    const f = parse('import a.b as a\n');
+    expect(f.parsedImports).toEqual([
+      {
+        kind: 'namespace',
+        localName: 'a',
+        explicitAlias: true,
+        importedName: 'a.b',
+        targetRaw: 'a.b',
+        atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 15 },
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 
   it('case 13: `import a, b as c` decomposes into one ParsedImport per name', () => {
     const f = parse('import a, b as c\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'namespace', localName: 'a', importedName: 'a', targetRaw: 'a' },
-      { kind: 'namespace', localName: 'c', importedName: 'b', targetRaw: 'b' },
+      {
+        kind: 'namespace',
+        localName: 'a',
+        importedName: 'a',
+        targetRaw: 'a',
+        atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 16 },
+        declaredAtScope: f.moduleScope,
+      },
+      {
+        kind: 'namespace',
+        localName: 'c',
+        explicitAlias: true,
+        importedName: 'b',
+        targetRaw: 'b',
+        atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 16 },
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 
@@ -218,7 +270,15 @@ describe('Python imports — interpretImport', () => {
     // `reexportsName`: Python republishes the name as `<module>.x`, so it must
     // enter the re-export closure for `from <module> import x` elsewhere.
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'x', importedName: 'x', targetRaw: 'm', reexportsName: true },
+      {
+        kind: 'named',
+        localName: 'x',
+        importedName: 'x',
+        targetRaw: 'm',
+        reexportsName: true,
+        atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 15 },
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 
@@ -232,6 +292,8 @@ describe('Python imports — interpretImport', () => {
         alias: 'y',
         targetRaw: 'm',
         reexportsName: true,
+        atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 20 },
+        declaredAtScope: f.moduleScope,
       },
     ]);
   });
@@ -239,21 +301,60 @@ describe('Python imports — interpretImport', () => {
   it('case 16: `from m import x, y, z` decomposes into three ParsedImports', () => {
     const f = parse('from m import x, y, z\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'x', importedName: 'x', targetRaw: 'm', reexportsName: true },
-      { kind: 'named', localName: 'y', importedName: 'y', targetRaw: 'm', reexportsName: true },
-      { kind: 'named', localName: 'z', importedName: 'z', targetRaw: 'm', reexportsName: true },
+      {
+        kind: 'named',
+        localName: 'x',
+        importedName: 'x',
+        targetRaw: 'm',
+        reexportsName: true,
+        atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 21 },
+        declaredAtScope: f.moduleScope,
+      },
+      {
+        kind: 'named',
+        localName: 'y',
+        importedName: 'y',
+        targetRaw: 'm',
+        reexportsName: true,
+        atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 21 },
+        declaredAtScope: f.moduleScope,
+      },
+      {
+        kind: 'named',
+        localName: 'z',
+        importedName: 'z',
+        targetRaw: 'm',
+        reexportsName: true,
+        atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 21 },
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 
   it('case 17: `from m import *` → wildcard', () => {
     const f = parse('from m import *\n');
-    expect(f.parsedImports).toEqual([{ kind: 'wildcard', targetRaw: 'm' }]);
+    expect(f.parsedImports).toEqual([
+      {
+        kind: 'wildcard',
+        targetRaw: 'm',
+        atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 15 },
+        declaredAtScope: f.moduleScope,
+      },
+    ]);
   });
 
   it('case 18: PEP-328 dotted relative import `from .pkg import x`', () => {
     const f = parse('from .pkg import x\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'x', importedName: 'x', targetRaw: '.pkg', reexportsName: true },
+      {
+        kind: 'named',
+        localName: 'x',
+        importedName: 'x',
+        targetRaw: '.pkg',
+        reexportsName: true,
+        atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 18 },
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 
@@ -266,6 +367,8 @@ describe('Python imports — interpretImport', () => {
         importedName: 'x',
         targetRaw: '..pkg.sub',
         reexportsName: true,
+        atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 23 },
+        declaredAtScope: f.moduleScope,
       },
     ]);
   });
@@ -291,6 +394,8 @@ describe('Python imports — function-local', () => {
         importedName: 'X',
         targetRaw: 'm',
         runsOnlyWhenCalled: true,
+        atRange: { startLine: 2, startCol: 4, endLine: 2, endCol: 19 },
+        declaredAtScope: scopesByKind(f, 'Function')[0]!.id,
       },
     ]);
   });
@@ -305,7 +410,14 @@ describe('Python imports — function-local', () => {
     // initialization order. The two facts are separate on purpose — this is
     // the case where suppression and deferral disagree.
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'X', importedName: 'X', targetRaw: 'm' },
+      {
+        kind: 'named',
+        localName: 'X',
+        importedName: 'X',
+        targetRaw: 'm',
+        atRange: { startLine: 2, startCol: 4, endLine: 2, endCol: 19 },
+        declaredAtScope: scopesByKind(f, 'Class')[0]!.id,
+      },
     ]);
   });
 
@@ -317,9 +429,33 @@ describe('Python imports — function-local', () => {
       'if TYPE_CHECKING:\n    from m import A\ntry:\n    from m import B\nexcept ImportError:\n    B = None\nfor _ in r:\n    from m import C\n',
     );
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'A', importedName: 'A', targetRaw: 'm', reexportsName: true },
-      { kind: 'named', localName: 'B', importedName: 'B', targetRaw: 'm', reexportsName: true },
-      { kind: 'named', localName: 'C', importedName: 'C', targetRaw: 'm', reexportsName: true },
+      {
+        kind: 'named',
+        localName: 'A',
+        importedName: 'A',
+        targetRaw: 'm',
+        reexportsName: true,
+        atRange: { startLine: 2, startCol: 4, endLine: 2, endCol: 19 },
+        declaredAtScope: f.moduleScope,
+      },
+      {
+        kind: 'named',
+        localName: 'B',
+        importedName: 'B',
+        targetRaw: 'm',
+        reexportsName: true,
+        atRange: { startLine: 4, startCol: 4, endLine: 4, endCol: 19 },
+        declaredAtScope: f.moduleScope,
+      },
+      {
+        kind: 'named',
+        localName: 'C',
+        importedName: 'C',
+        targetRaw: 'm',
+        reexportsName: true,
+        atRange: { startLine: 8, startCol: 4, endLine: 8, endCol: 19 },
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 });
@@ -427,13 +563,10 @@ describe('Python reference sites — calls', () => {
   });
 });
 
-// ─── global / nonlocal — documented under-reporting ───────────────────────
+// ─── global / nonlocal binding ownership ─────────────────────────────────
 
-describe('Python `global`/`nonlocal` — documented behavior', () => {
-  it('case 32: `global x` inside a function does NOT promote the binding to module scope', () => {
-    // Documented limitation: the assignment lexically lives in `f`, so
-    // we attach `x` to f's scope. A future Ring may re-bind via
-    // bindingScopeFor; for Ring 3 this is expected behavior.
+describe('Python `global`/`nonlocal` binding destinations', () => {
+  it('case 32: `global x` inside a function promotes the assignment to module scope', () => {
     const f = parse(
       `x = 0
 def f():
@@ -443,11 +576,11 @@ def f():
     );
     const fn = scopesByKind(f, 'Function')[0]!;
     const mod = scopesByKind(f, 'Module')[0]!;
-    expect(mod.bindings.has('x')).toBe(true); // module-level x = 0
-    expect(fn.bindings.has('x')).toBe(true); // local x = 1 — under-reported as fn-local
+    expect(mod.bindings.get('x')).toHaveLength(2);
+    expect(fn.bindings.has('x')).toBe(false);
   });
 
-  it('case 33: `nonlocal x` inside a closure does NOT lift binding to enclosing fn', () => {
+  it('case 33: `nonlocal x` inside a closure lifts the assignment to the owning function', () => {
     const f = parse(
       `def outer():
     x = 0
@@ -457,6 +590,8 @@ def f():
 `,
     );
     const inner = scopesByKind(f, 'Function').find((s) => s.range.startLine === 3)!;
-    expect(inner.bindings.has('x')).toBe(true); // under-reported
+    const outer = scopesByKind(f, 'Function').find((s) => s.range.startLine === 1)!;
+    expect(inner.bindings.has('x')).toBe(false);
+    expect(outer.bindings.get('x')).toHaveLength(2);
   });
 });

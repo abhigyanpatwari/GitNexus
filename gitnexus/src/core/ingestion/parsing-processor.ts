@@ -1,7 +1,8 @@
+import type { FetchWrapperCall, FetchWrapperReexport } from './route-extractors/fetch-wrapper.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import type { SymbolTableWriter } from './model/index.js';
-import { getLanguageFromFilename } from 'gitnexus-shared';
+import { getLanguageForFileContent } from './languages/index.js';
 
 import { accumulateExportedTypesFromParsedNode, type ExportedTypeMap } from './call-processor.js';
 
@@ -37,7 +38,10 @@ export interface WorkerExtractedData {
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
   fetchWrapperDefs: FetchWrapperDef[];
+  fetchWrapperCalls: FetchWrapperCall[];
+  fetchWrapperReexports: FetchWrapperReexport[];
   decoratorRoutes: ExtractedDecoratorRoute[];
+  routeFacts?: { filePath: string; facts: unknown; routePosition: number }[];
   routerIncludes: ExtractedRouterInclude[];
   routerImports: ExtractedRouterImport[];
   routerConstructorPrefixes: ExtractedRouterConstructorPrefix[];
@@ -118,7 +122,10 @@ export const mergeChunkResults = (
   const allRoutes: ExtractedRoute[] = [];
   const allFetchCalls: ExtractedFetchCall[] = [];
   const allFetchWrapperDefs: FetchWrapperDef[] = [];
+  const allFetchWrapperCalls: FetchWrapperCall[] = [];
+  const allFetchWrapperReexports: FetchWrapperReexport[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
+  const allRouteFacts: { filePath: string; facts: unknown; routePosition: number }[] = [];
   const allRouterIncludes: ExtractedRouterInclude[] = [];
   const allRouterImports: ExtractedRouterImport[] = [];
   const allRouterConstructorPrefixes: ExtractedRouterConstructorPrefix[] = [];
@@ -168,6 +175,13 @@ export const mergeChunkResults = (
     for (const item of result.routes) allRoutes.push(item);
     for (const item of result.fetchCalls) allFetchCalls.push(item);
     for (const item of result.fetchWrapperDefs ?? []) allFetchWrapperDefs.push(item);
+    for (const item of result.fetchWrapperCalls ?? []) allFetchWrapperCalls.push(item);
+    for (const item of result.fetchWrapperReexports ?? []) allFetchWrapperReexports.push(item);
+    for (const item of result.routeFacts ?? [])
+      allRouteFacts.push({
+        ...item,
+        routePosition: item.routePosition + allDecoratorRoutes.length,
+      });
     for (const item of result.decoratorRoutes) allDecoratorRoutes.push(item);
     for (const item of result.routerIncludes ?? []) allRouterIncludes.push(item);
     for (const item of result.routerImports ?? []) allRouterImports.push(item);
@@ -191,7 +205,10 @@ export const mergeChunkResults = (
     routes: allRoutes,
     fetchCalls: allFetchCalls,
     fetchWrapperDefs: allFetchWrapperDefs,
+    fetchWrapperCalls: allFetchWrapperCalls,
+    fetchWrapperReexports: allFetchWrapperReexports,
     decoratorRoutes: allDecoratorRoutes,
+    routeFacts: allRouteFacts,
     routerIncludes: allRouterIncludes,
     routerImports: allRouterImports,
     routerConstructorPrefixes: allRouterConstructorPrefixes,
@@ -253,17 +270,14 @@ export const dispatchChunkParse = async (
  * owns it.
  */
 export const dispatchChunkParseRound = async (
-  groups: ReadonlyArray<{
-    items: { path: string; content: string }[];
-    chunkHash?: string;
-  }>,
+  groups: ReadonlyArray<DispatchGroup<{ path: string; content: string }>>,
   workerPool: WorkerPool,
   onFileProgress?: FileProgressCallback,
 ): Promise<ParseWorkerResult[][]> => {
   const dispatchGroups: DispatchGroup<ParseWorkerInput>[] = groups.map((group) => {
     const items: ParseWorkerInput[] = [];
     for (const file of group.items) {
-      const lang = getLanguageFromFilename(file.path);
+      const lang = getLanguageForFileContent(file.path, file.content);
       if (lang) items.push({ path: file.path, content: file.content });
     }
     return { items, chunkHash: group.chunkHash };

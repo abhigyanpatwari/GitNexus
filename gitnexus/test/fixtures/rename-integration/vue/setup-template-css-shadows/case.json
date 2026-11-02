@@ -1,0 +1,23 @@
+{
+  "language": "vue",
+  "description": "Rename one setup binding across event handlers, interpolation, script reads and CSS expressions while preserving template shadows, labels and CSS text.",
+  "categories": [
+    "template",
+    "css-binding",
+    "shadowing",
+    "read",
+    "call-graph"
+  ],
+  "target": {
+    "name": "color",
+    "kind": "Function",
+    "file": "App.vue",
+    "startLine": 6
+  },
+  "newName": "shade",
+  "expect": {
+    "status": "success",
+    "edits": 6
+  },
+  "edges": []
+}

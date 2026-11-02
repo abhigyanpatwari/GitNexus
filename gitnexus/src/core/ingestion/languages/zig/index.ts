@@ -6,6 +6,7 @@ export {
   isZigFileThisAlias,
   isZigKeywordDeclaration,
   isZigRedundantContainerCapture,
+  isZigTypeConstructorCallee,
   isZigTypeShadowingBinding,
   zigCallableQualifiedName,
   zigContainerAnchor,

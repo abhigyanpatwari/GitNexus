@@ -44,12 +44,15 @@ import {
   buildMacroRegistry,
   buildMethodRegistry,
   CLASS_KINDS,
+  EvidenceWeights,
   FIELD_KINDS,
+  lookupLexicalName,
   METHOD_KINDS,
   type ClassRegistry,
   type FieldRegistry,
   type MacroRegistry,
   type MethodRegistry,
+  type NameClaimResult,
   type Reference,
   type ReferenceIndex,
   type ReferenceSite,
@@ -57,9 +60,21 @@ import {
   type RegistryProviders,
   type Resolution,
   type ScopeId,
+  type SymbolDefinition,
 } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from './model/scope-resolution-indexes.js';
-import { bindsTypeParameter } from './scope-resolution/scope/walkers.js';
+import {
+  bindsTypeParameter,
+  findClassBindingInScope,
+  findEnclosingClassDef,
+  lookupNameClaim,
+  resolveQualifiedInheritanceBase,
+} from './scope-resolution/scope/walkers.js';
+import { normalizeQualifiedName } from './utils/qualified-name.js';
+import {
+  sourceBindingForDefinition,
+  type SourceBindingRecorder,
+} from './scope-resolution/source-binding-resolution.js';
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
@@ -69,6 +84,14 @@ export interface ResolveReferencesInput {
   readonly providers?: RegistryProviders;
   /** Required owner-keyed member lookup used by Step 2 receiver/MRO walks. */
   readonly ownedMembersByOwner: RegistryContext['ownedMembersByOwner'];
+  readonly recordSourceBinding?: SourceBindingRecorder;
+  /**
+   * `ScopeResolver.isNamespaceMemberVisible`, bound to the provider. Consulted
+   * for a type written through a namespace import (`x: ns.Type`): a declaration
+   * the language will not let that qualifier reach yields no resolution. Absent
+   * (the default) accepts whatever the namespace's target files declare.
+   */
+  readonly isNamespaceMemberVisible?: (def: SymbolDefinition) => boolean;
 }
 
 export interface ResolveStats {
@@ -88,6 +111,181 @@ export interface ResolveReferencesOutput {
   readonly stats: ResolveStats;
 }
 
+/** Preserve every candidate for callers that must reject ambiguous edits. */
+export function createReferenceLookup(
+  input: ResolveReferencesInput,
+): (site: ReferenceSite) => readonly Resolution[] {
+  const scopes = input.scopes;
+  let currentSite: ReferenceSite | undefined;
+  let lexicalClaim: NameClaimResult | undefined;
+  const ctx: RegistryContext = {
+    // Finalized call candidates belong to the provider-aware free-call and
+    // receiver passes, which enforce ownership and edge deduplication. Keep
+    // the primary call registry lexical; value/type reads still need imports.
+    lexicalLookup: (scope, name, options) =>
+      currentSite?.kind === 'call'
+        ? lookupLexicalName(scope, name, { scopes: scopes.scopeTree }, options)
+        : lookupNameClaim(scope, name, scopes, options),
+    onLexicalClaim:
+      input.recordSourceBinding === undefined
+        ? undefined
+        : (name, claim) => {
+            if (name === currentSite?.name) lexicalClaim = claim;
+          },
+    scopes: scopes.scopeTree,
+    defs: scopes.defs,
+    qualifiedNames: scopes.qualifiedNames,
+    moduleScopes: scopes.moduleScopes,
+    ownedMembersByOwner: input.ownedMembersByOwner,
+    methodDispatch: scopes.methodDispatch,
+    providers: input.providers ?? {},
+  };
+  const classes = buildClassRegistry(ctx);
+  const methods = buildMethodRegistry(ctx);
+  const fields = buildFieldRegistry(ctx);
+  const macros = buildMacroRegistry(ctx);
+  return (site) => {
+    if (site.kind === 'type-reference' && site.rawQualifiedName !== undefined) {
+      const scope = site.lookupScope ?? site.inScope;
+      const qualified = normalizeQualifiedName(site.rawQualifiedName);
+      const root = qualified.split('.', 1)[0]!;
+      const options = { position: site.atRange, purpose: site.lookupPurpose ?? ('type' as const) };
+      const claim = lookupNameClaim(scope, root, scopes, options);
+      if (
+        claim.status === 'blocked' ||
+        bindsTypeParameter(scope, root, scopes) ||
+        (claim.bindings.length > 0 &&
+          claim.bindings.every(
+            ({ def }) =>
+              !CLASS_KINDS.includes(def.type) && def.type !== 'Namespace' && def.type !== 'Module',
+          ))
+      ) {
+        input.recordSourceBinding?.(site, {
+          status: 'blocked',
+          targetDefIds: [],
+          basis: 'qualified-type-root',
+        });
+        return [];
+      }
+      // Namespace aliases are file handles; imported type/module definitions
+      // are owners. Preserve the former's file constraint and require the
+      // latter to own the exact qualified declaration.
+      const namespaceImport = claim.imports.some((edge) => edge.kind === 'namespace');
+      const definition = namespaceImport
+        ? findClassBindingInScope(scope, qualified, scopes, undefined, {
+            ...options,
+            uniqueQualifiedNameFallback: false,
+            namespaceMemberVisible: input.isNamespaceMemberVisible,
+          })
+        : resolveQualifiedInheritanceBase(
+            scope,
+            site.rawQualifiedName,
+            scopes,
+            findEnclosingClassDef(scope, scopes),
+          );
+      if (
+        definition === undefined ||
+        (!namespaceImport &&
+          ((claim.imports.length > 0 && claim.bindings.length === 0) ||
+            !claim.bindings.every(({ def }) => qualifierOwnsDefinition(def, definition, scopes))))
+      ) {
+        input.recordSourceBinding?.(site, {
+          status: 'unresolved',
+          targetDefIds: [],
+          basis: 'qualified-type',
+        });
+        return [];
+      }
+      const resolution: Resolution = {
+        def: definition,
+        confidence: Math.min(1, EvidenceWeights.globalQualified + EvidenceWeights.kindMatch),
+        evidence: [
+          { kind: 'global-qualified', weight: EvidenceWeights.globalQualified },
+          { kind: 'kind-match', weight: EvidenceWeights.kindMatch },
+        ],
+      };
+      input.recordSourceBinding?.(site, {
+        ...sourceBindingForDefinition(definition, 'qualified-type'),
+        evidence: resolution.evidence,
+      });
+      return [resolution];
+    }
+    currentSite = site;
+    lexicalClaim = undefined;
+    const resolutions = lookupForSite(
+      site,
+      classes,
+      methods,
+      fields,
+      macros,
+      scopes,
+      input.recordSourceBinding,
+    );
+    const claim = lexicalClaim as NameClaimResult | undefined;
+    if (input.recordSourceBinding !== undefined) {
+      if (resolutions.length > 0) {
+        const targetDefIds = [...new Set(resolutions.map((resolution) => resolution.def.nodeId))];
+        const evidence = resolutions.flatMap((resolution) => resolution.evidence);
+        const hasFallback = evidence.some(
+          (item) =>
+            item.kind === 'global-name' ||
+            item.kind === 'global-qualified' ||
+            item.kind === 'dynamic-import-unresolved' ||
+            (item.kind === 'arity-match' && item.weight < 0),
+        );
+        input.recordSourceBinding(site, {
+          ...sourceBindingForDefinition(
+            resolutions[0]!.def,
+            hasFallback ? 'registry-fallback' : 'registry',
+            claim?.bindings,
+            claim?.scope?.id,
+          ),
+          status: hasFallback ? 'unresolved' : targetDefIds.length === 1 ? 'resolved' : 'ambiguous',
+          targetDefIds,
+          ...(!hasFallback &&
+          targetDefIds.length > 1 &&
+          targetDefIds.every((id) => claim?.bindings.some((binding) => binding.def.nodeId === id))
+            ? { candidatesComplete: true as const }
+            : {}),
+          evidence,
+        });
+      } else if (claim !== undefined && claim.status !== 'absent') {
+        input.recordSourceBinding(site, {
+          status: 'blocked',
+          targetDefIds: [],
+          basis: 'lexical-name-claim',
+        });
+      }
+    }
+    currentSite = undefined;
+    return resolutions;
+  };
+}
+
+function qualifierOwnsDefinition(
+  qualifier: SymbolDefinition,
+  definition: SymbolDefinition,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  const visited = new Set<string>();
+  for (
+    let owner: SymbolDefinition | undefined = definition;
+    owner !== undefined && !visited.has(owner.nodeId);
+    owner = owner.ownerId === undefined ? undefined : scopes.defs.get(owner.ownerId)
+  ) {
+    if (owner.nodeId === qualifier.nodeId) return true;
+    visited.add(owner.nodeId);
+  }
+  // Namespace declarations can be distributed across files. Their full semantic
+  // qualification, unlike a class-valued local binding, identifies the owner.
+  if (qualifier.type !== 'Namespace' && qualifier.type !== 'Module') return false;
+  const prefix = normalizeQualifiedName(qualifier.qualifiedName ?? '');
+  return (
+    prefix.length > 0 &&
+    normalizeQualifiedName(definition.qualifiedName ?? '').startsWith(`${prefix}.`)
+  );
+}
+
 /**
  * Resolve every `ReferenceSite` in `scopes.referenceSites` against the
  * matching registry and produce a `ReferenceIndex` keyed by source scope
@@ -95,22 +293,7 @@ export interface ResolveReferencesOutput {
  */
 export function resolveReferenceSites(input: ResolveReferencesInput): ResolveReferencesOutput {
   const { scopes } = input;
-  const providers: RegistryProviders = input.providers ?? {};
-
-  const ctx: RegistryContext = {
-    scopes: scopes.scopeTree,
-    defs: scopes.defs,
-    qualifiedNames: scopes.qualifiedNames,
-    moduleScopes: scopes.moduleScopes,
-    ownedMembersByOwner: input.ownedMembersByOwner,
-    methodDispatch: scopes.methodDispatch,
-    providers,
-  };
-
-  const classRegistry = buildClassRegistry(ctx);
-  const methodRegistry = buildMethodRegistry(ctx);
-  const fieldRegistry = buildFieldRegistry(ctx);
-  const macroRegistry = buildMacroRegistry(ctx);
+  const lookup = createReferenceLookup(input);
 
   // bySourceScope is the canonical index; byTargetDef is derived from it.
   const bySourceScope = new Map<ScopeId, Reference[]>();
@@ -128,14 +311,7 @@ export function resolveReferenceSites(input: ResolveReferencesInput): ResolveRef
     if (site.kind === 'value-ref') continue;
     sitesProcessed++;
 
-    const resolutions = lookupForSite(
-      site,
-      classRegistry,
-      methodRegistry,
-      fieldRegistry,
-      macroRegistry,
-      scopes,
-    );
+    const resolutions = lookup(site);
     if (resolutions.length === 0) {
       unresolved++;
       continue;
@@ -145,10 +321,12 @@ export function resolveReferenceSites(input: ResolveReferencesInput): ResolveRef
     const ref = buildReference(site, top);
     referencesEmitted++;
 
-    let bySource = bySourceScope.get(site.inScope);
+    // Source grouping follows the graph caller; lookup has already used the
+    // site's lexical environment, which may differ for a framework invocation.
+    let bySource = bySourceScope.get(ref.fromScope);
     if (bySource === undefined) {
       bySource = [];
-      bySourceScope.set(site.inScope, bySource);
+      bySourceScope.set(ref.fromScope, bySource);
     }
     bySource.push(ref);
 
@@ -207,17 +385,28 @@ function lookupForSite(
   fieldRegistry: FieldRegistry,
   macroRegistry: MacroRegistry,
   scopes: ScopeResolutionIndexes,
+  recordSourceBinding?: SourceBindingRecorder,
 ): readonly Resolution[] {
+  const lookupScope = site.lookupScope ?? site.inScope;
+  const lookupOptions = {
+    lookupPosition: site.atRange,
+    lookupPurpose:
+      site.lookupPurpose ??
+      (site.kind === 'inherits' || site.kind === 'type-reference'
+        ? ('type' as const)
+        : ('value' as const)),
+  };
   switch (site.kind) {
     case 'call': {
       const opts: Parameters<MethodRegistry['lookup']>[2] = {
+        ...lookupOptions,
         ...(site.arity !== undefined ? { callsite: { arity: site.arity } } : {}),
         ...(site.explicitReceiver !== undefined ? { explicitReceiver: site.explicitReceiver } : {}),
       };
-      return methodRegistry.lookup(site.name, site.inScope, opts);
+      return methodRegistry.lookup(site.name, lookupScope, opts);
     }
     case 'inherits': {
-      return classRegistry.lookup(site.name, site.inScope);
+      return classRegistry.lookup(site.name, lookupScope, lookupOptions);
     }
     case 'type-reference': {
       // A TYPE PARAMETER SHADOWS A DECLARED TYPE OF THE SAME NAME (#2899).
@@ -258,17 +447,25 @@ function lookupForSite(
       // `typeParameters` is populated only by languages whose captures were
       // extended for it, so a POSITIVE match declines and an absent list changes
       // nothing — which is what keeps every unconverted language unchanged.
-      if (bindsTypeParameter(site.inScope, site.name, scopes)) return [];
-      return classRegistry.lookup(site.name, site.inScope);
+      if (bindsTypeParameter(lookupScope, site.name, scopes)) {
+        recordSourceBinding?.(site, {
+          status: 'blocked',
+          targetDefIds: [],
+          basis: 'type-parameter',
+        });
+        return [];
+      }
+      return classRegistry.lookup(site.name, lookupScope, lookupOptions);
     }
     case 'read':
     case 'write': {
       // Try field first; fall through to method then class so bare-name
       // reads of a function (e.g. `cb = save`) still resolve.
       const fieldOpts: Parameters<FieldRegistry['lookup']>[2] = {
+        ...lookupOptions,
         ...(site.explicitReceiver !== undefined ? { explicitReceiver: site.explicitReceiver } : {}),
       };
-      const fieldHits = fieldRegistry.lookup(site.name, site.inScope, fieldOpts);
+      const fieldHits = fieldRegistry.lookup(site.name, lookupScope, fieldOpts);
       // A BARE IDENTIFIER is not a member access. With no receiver there is no
       // object whose `Property` this could be, so a hit on one is a false edge:
       // in JS/TS/Python/Ruby a field read needs `this.` / `self.` / `@`, and the
@@ -288,19 +485,19 @@ function lookupForSite(
           ? fieldHits.filter((hit) => hit.def?.type !== 'Property')
           : fieldHits;
       if (receiverlessFieldHits.length > 0) return receiverlessFieldHits;
-      const methodHits = methodRegistry.lookup(site.name, site.inScope);
+      const methodHits = methodRegistry.lookup(site.name, lookupScope, lookupOptions);
       if (methodHits.length > 0) return methodHits;
-      return classRegistry.lookup(site.name, site.inScope);
+      return classRegistry.lookup(site.name, lookupScope, lookupOptions);
     }
     case 'import-use': {
       // Try class, method, then field. The lexical-hit Step 1 in
       // `lookupCore` handles the actual binding lookup; the choice of
       // registry only narrows `acceptedKinds`.
-      const classHits = classRegistry.lookup(site.name, site.inScope);
+      const classHits = classRegistry.lookup(site.name, lookupScope, lookupOptions);
       if (classHits.length > 0) return classHits;
-      const methodHits = methodRegistry.lookup(site.name, site.inScope);
+      const methodHits = methodRegistry.lookup(site.name, lookupScope, lookupOptions);
       if (methodHits.length > 0) return methodHits;
-      return fieldRegistry.lookup(site.name, site.inScope);
+      return fieldRegistry.lookup(site.name, lookupScope, lookupOptions);
     }
     case 'value-ref': {
       // Unreachable — filtered before lookup (post-finalize resolution in
@@ -310,7 +507,7 @@ function lookupForSite(
     case 'macro': {
       // Macro-only namespace: resolves against `Macro`-labeled defs, never
       // functions. No receiver, no arity — see `MacroRegistry`.
-      return macroRegistry.lookup(site.name, site.inScope);
+      return macroRegistry.lookup(site.name, lookupScope);
     }
   }
 }
@@ -318,7 +515,7 @@ function lookupForSite(
 /** Compose a `Reference` record from a site + its top resolution. */
 function buildReference(site: ReferenceSite, top: Resolution): Reference {
   return {
-    fromScope: site.inScope,
+    fromScope: site.callerScope ?? site.inScope,
     toDef: top.def.nodeId,
     atRange: site.atRange,
     kind: site.kind,

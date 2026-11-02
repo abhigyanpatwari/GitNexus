@@ -54,6 +54,7 @@ const TEST_PATH_SUBSTRINGS: readonly string[] = [
 const TEST_PATH_DELIMITED_SUFFIXES: readonly string[] = [
   '_test.py',
   '_test.go',
+  '_test.dart',
   '_spec.rb',
   '_test.rb',
 ];

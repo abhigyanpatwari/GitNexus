@@ -14,17 +14,37 @@
 import { describe, it, expect } from 'vitest';
 import { emitJavaScopeCaptures } from '../../../../src/core/ingestion/languages/java/captures.js';
 
+describe('Java invocation classification', () => {
+  it('does not also emit free references for qualified member calls', () => {
+    const captures = emitJavaScopeCaptures(
+      'class Delivery { void send(Courier courier) { courier.dispatch(); this.dispatch(); super.dispatch(); dispatch(); } }',
+      'Delivery.java',
+    );
+    expect(
+      captures
+        .filter((match) => match['@reference.call.free'])
+        .map((match) => match['@reference.call.free']?.text),
+    ).toEqual(['dispatch()']);
+    expect(
+      captures
+        .filter((match) => match['@reference.call.member'])
+        .map((match) => match['@reference.receiver']?.text),
+    ).toEqual(['courier', 'this', 'super']);
+  });
+});
+
 function wrapExpr(expr: string): string {
   return `class C { void m() { ${expr}; } }`;
 }
 
-/** All constructor-call matches in `src`, as `{ name, qualified, arity }`. */
+/** All constructor-call matches in `src`, as `{ name, qualified, qualifiedName, arity }`. */
 function ctorRefs(src: string) {
   return emitJavaScopeCaptures(src, 'C.java')
     .filter((m) => m['@reference.call.constructor'] !== undefined)
     .map((m) => ({
       name: m['@reference.name']?.text,
       qualified: m['@reference.call.constructor.qualified']?.text,
+      qualifiedName: m['@reference.qualified-name']?.text,
       arity: m['@reference.arity']?.text,
     }));
 }
@@ -51,7 +71,12 @@ function recordAccessorDeclarations(src: string) {
 describe('emitJavaScopeCaptures — constructor reference names (F35 #1928)', () => {
   it('binds the simple name for an unqualified `new User()`', () => {
     const refs = ctorRefs(wrapExpr('new User()'));
-    expect(refs).toContainEqual({ name: 'User', qualified: undefined, arity: '0' });
+    expect(refs).toContainEqual({
+      name: 'User',
+      qualified: undefined,
+      qualifiedName: undefined,
+      arity: '0',
+    });
   });
 
   it('binds the simple-name tail for a qualified `new pkg.Foo()`', () => {
@@ -59,6 +84,7 @@ describe('emitJavaScopeCaptures — constructor reference names (F35 #1928)', ()
     const foo = refs.find((r) => r.name === 'Foo');
     expect(foo).toBeDefined();
     expect(foo!.qualified).toBe('pkg.Foo');
+    expect(foo!.qualifiedName).toBe('pkg.Foo');
     // The name must be the bare tail, never the raw scoped text.
     expect(refs.some((r) => r.name === 'pkg.Foo')).toBe(false);
   });
@@ -68,6 +94,7 @@ describe('emitJavaScopeCaptures — constructor reference names (F35 #1928)', ()
     const foo = refs.find((r) => r.name === 'Foo');
     expect(foo).toBeDefined();
     expect(foo!.qualified).toBe('a.b.Foo');
+    expect(foo!.qualifiedName).toBe('a.b.Foo');
     expect(refs.some((r) => r.name === 'a' || r.name === 'b')).toBe(false);
   });
 
@@ -76,6 +103,7 @@ describe('emitJavaScopeCaptures — constructor reference names (F35 #1928)', ()
     const box = refs.find((r) => r.name === 'Box');
     expect(box).toBeDefined();
     expect(box!.qualified).toBeUndefined();
+    expect(box!.qualifiedName).toBeUndefined();
   });
 
   it('binds the simple-name tail for a qualified-generic `new pkg.Box<String>()`', () => {
@@ -83,6 +111,7 @@ describe('emitJavaScopeCaptures — constructor reference names (F35 #1928)', ()
     const box = refs.find((r) => r.name === 'Box');
     expect(box).toBeDefined();
     expect(box!.qualified).toBe('pkg.Box');
+    expect(box!.qualifiedName).toBe('pkg.Box');
     expect(refs.some((r) => r.name === 'pkg.Box' || r.name === 'String')).toBe(false);
   });
 
@@ -421,4 +450,20 @@ describe('emitJavaScopeCaptures — local-type identities (#2562)', () => {
 
     expect(visibility?.['@scope.block']?.range.endLine).toBe(6);
   });
+});
+
+it('captures primitive parameter bindings so they shadow lexical names', () => {
+  const captures = emitJavaScopeCaptures(
+    'class Model { void use(int first, double second, boolean third) {} }',
+    'model.java',
+  );
+  expect(
+    captures
+      .filter((capture) => capture['@type-binding.parameter'])
+      .map((capture) => [capture['@type-binding.name']?.text, capture['@type-binding.type']?.text]),
+  ).toEqual([
+    ['first', 'int'],
+    ['second', 'double'],
+    ['third', 'boolean'],
+  ]);
 });

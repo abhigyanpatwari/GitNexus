@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
-import type { ParsedImport } from 'gitnexus-shared';
+import type { NodeLabel, ParsedImport } from 'gitnexus-shared';
 import { extractConvexEndpointProperties } from '../../src/core/ingestion/languages/typescript/convex-endpoint-metadata.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 
@@ -27,18 +27,19 @@ const namedImport = (
   importedName: string,
   localName = importedName,
 ): ParsedImport => ({
-  kind: localName === importedName ? 'named' : 'alias',
+  ...(localName === importedName
+    ? { kind: 'named' as const }
+    : { kind: 'alias' as const, alias: localName }),
   targetRaw,
   importedName,
   localName,
-  ...(localName === importedName ? {} : { alias: localName }),
 });
 
 function extract(
   source: string,
   imports: readonly ParsedImport[],
   isExported = true,
-  nodeLabel = 'Const',
+  nodeLabel: NodeLabel = 'Const',
   definitionType = 'export_statement',
 ) {
   return extractConvexEndpointProperties({

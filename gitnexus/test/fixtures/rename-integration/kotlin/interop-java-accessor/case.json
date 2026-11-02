@@ -1,0 +1,20 @@
+{
+  "language": "kotlin",
+  "description": "Refuse an indexed interoperating source name until cross-provider binding coverage is proven.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "comments-and-strings"
+  ],
+  "target": {
+    "name": "title",
+    "kind": "Property",
+    "file": "Writer.kt"
+  },
+  "newName": "heading",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_boundary",
+    "planningStatus": "unsupported"
+  }
+}

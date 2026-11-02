@@ -43,7 +43,7 @@ import {
 import { unquoteSpringLiteral } from '../../src/core/ingestion/route-extractors/spring-shared.js';
 
 // Vendored grammar — loaded from vendor/ by absolute path, never node_modules (#2111).
-let Kotlin: unknown;
+let Kotlin: Parser.Language | null = null;
 try {
   Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 } catch {
@@ -51,7 +51,7 @@ try {
 }
 
 const parser = new Parser();
-if (Kotlin) parser.setLanguage(Kotlin as Parser.Language);
+if (Kotlin) parser.setLanguage(Kotlin);
 
 const parse = (src: string): Parser.Tree => parser.parse(src);
 

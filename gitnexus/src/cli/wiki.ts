@@ -10,12 +10,13 @@ import readline from 'readline';
 import { execSync, execFileSync } from 'child_process';
 import cliProgress from 'cli-progress';
 import { getGitRoot, isGitRepo } from '../storage/git.js';
+import { getStoragePaths, loadCLIConfig, saveCLIConfig } from '../storage/repo-manager.js';
 import {
-  getStoragePaths,
-  loadMeta,
-  loadCLIConfig,
-  saveCLIConfig,
-} from '../storage/repo-manager.js';
+  requireStoragePath,
+  STATUS_STORAGE_REQUIREMENTS,
+  StorageRequirementError,
+  isUnusableIndexInspection,
+} from '../storage/storage-resolver.js';
 import { WikiGenerator, type WikiOptions } from '../core/wiki/generator.js';
 import {
   ATLAS_CLOUD_BASE_URL,
@@ -31,6 +32,7 @@ import { detectCursorCLI } from '../core/wiki/cursor-client.js';
 import { detectGrokCLI } from '../core/wiki/grok-client.js';
 import { detectLocalCLI } from '../core/wiki/local-cli-client.js';
 import { logger } from '../core/logger.js';
+import { parseIntegerOption } from './int-option.js';
 
 export interface WikiCommandOptions {
   force?: boolean;
@@ -48,23 +50,7 @@ export interface WikiCommandOptions {
   retries?: string;
   lang?: string;
   allowInsecureConnection?: string;
-}
-
-function parsePositiveIntegerOption(
-  value: string | undefined,
-  flag: string,
-  multiplier = 1,
-): number | undefined {
-  if (value === undefined) return undefined;
-  const trimmed = value.trim();
-  if (!/^[1-9]\d*$/.test(trimmed)) {
-    throw new Error(`${flag} must be a positive integer`);
-  }
-  const parsed = parseInt(trimmed, 10);
-  if (parsed > Math.floor(Number.MAX_SAFE_INTEGER / multiplier)) {
-    throw new Error(`${flag} is too large`);
-  }
-  return parsed;
+  maxCompletionTokens?: string;
 }
 
 function isLocalProvider(
@@ -186,26 +172,47 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
   }
 
   // ── Check for existing index ────────────────────────────────────────
-  const { storagePath, lbugPath } = getStoragePaths(repoPath);
-  const meta = await loadMeta(storagePath);
-
-  if (!meta) {
-    console.log('  Error: No GitNexus index found.');
+  let storagePath: string;
+  try {
+    storagePath = await requireStoragePath(repoPath, STATUS_STORAGE_REQUIREMENTS);
+  } catch (error) {
+    if (!(error instanceof StorageRequirementError)) throw error;
+    const inspection = error.inspection;
+    if (!isUnusableIndexInspection(inspection)) {
+      console.log(`  Error: ${error.message}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`  Error: No GitNexus index found at ${error.inspection.storagePath}.`);
     console.log('  Run `gitnexus analyze` first to index this repository.\n');
     process.exitCode = 1;
     return;
   }
+  const { lbugPath } = getStoragePaths(repoPath, undefined, storagePath);
 
   let timeoutSeconds: number | undefined;
   let retries: number | undefined;
   let allowedInsecureHttpHosts: string[] | undefined;
+  let maxCompletionTokens: number | undefined;
   try {
-    timeoutSeconds = parsePositiveIntegerOption(options?.timeout, '--timeout', 1000);
-    retries = parsePositiveIntegerOption(options?.retries, '--retries');
+    timeoutSeconds =
+      options?.timeout === undefined
+        ? undefined
+        : parseIntegerOption(options.timeout, '--timeout', { minimum: 1, scale: 1000 });
+    retries =
+      options?.retries === undefined
+        ? undefined
+        : parseIntegerOption(options.retries, '--retries', { minimum: 1 });
     allowedInsecureHttpHosts =
       options?.allowInsecureConnection === undefined
         ? undefined
         : parseLLMAllowedInsecureHttpHosts(options.allowInsecureConnection);
+    maxCompletionTokens =
+      options?.maxCompletionTokens === undefined
+        ? undefined
+        : parseIntegerOption(options.maxCompletionTokens, '--max-completion-tokens', {
+            minimum: 1,
+          });
   } catch (error) {
     console.log(`  Error: ${(error as Error).message}\n`);
     process.exitCode = 1;
@@ -214,7 +221,6 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
 
   // ── Resolve LLM config (with interactive fallback) ─────────────────
   // Save any CLI overrides immediately
-  let switchedToAtlasCloud = false;
   if (
     options?.apiKey ||
     options?.model ||
@@ -236,8 +242,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     if (options.apiKey) updates.apiKey = options.apiKey;
     if (options.baseUrl) updates.baseUrl = options.baseUrl;
     if (options.provider) updates.provider = options.provider;
-    if (options.provider === 'atlascloud' && existing.provider !== 'atlascloud') {
-      switchedToAtlasCloud = true;
+    if (options.provider === 'atlascloud' && providerChanged) {
       if (!options.baseUrl) updates.baseUrl = ATLAS_CLOUD_BASE_URL;
       if (!options.model) updates.model = ATLAS_CLOUD_DEFAULT_MODEL;
     }
@@ -281,18 +286,22 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     options?.reasoningModel !== undefined
   );
 
-  let llmConfig = await resolveLLMConfig({
-    model: options?.model,
-    baseUrl: options?.baseUrl,
-    apiKey: options?.apiKey,
-    provider: options?.provider,
-    apiVersion: options?.apiVersion,
-    isReasoningModel: options?.reasoningModel,
-    allowedInsecureHttpHosts,
-  });
-  if (switchedToAtlasCloud && !options?.apiKey && !getProviderEnvApiKey('atlascloud')) {
-    // Do not send a key saved for a different provider to Atlas Cloud.
-    llmConfig.apiKey = '';
+  let llmConfig;
+  try {
+    llmConfig = await resolveLLMConfig({
+      model: options?.model,
+      baseUrl: options?.baseUrl,
+      apiKey: options?.apiKey,
+      provider: options?.provider,
+      apiVersion: options?.apiVersion,
+      isReasoningModel: options?.reasoningModel,
+      allowedInsecureHttpHosts,
+      maxTokens: maxCompletionTokens,
+    });
+  } catch (error) {
+    console.log(`  Error: ${(error as Error).message}\n`);
+    process.exitCode = 1;
+    return;
   }
 
   // Run interactive setup if no saved config and no CLI flags provided
@@ -706,7 +715,10 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       bar.stop();
 
       const totalElapsed = ((Date.now() - t0) / 1000).toFixed(1);
-      console.log(`\n  Wiki generated successfully (${totalElapsed}s)\n`);
+      const incomplete = !!continueResult.failedModules?.length;
+      console.log(
+        `\n  ${incomplete ? 'Wiki generation incomplete' : 'Wiki generated successfully'} (${totalElapsed}s)\n`,
+      );
       console.log(`  Mode: ${continueResult.mode}`);
       console.log(`  Pages: ${continueResult.pagesGenerated}`);
       console.log(`  Output: ${wikiDir}`);
@@ -717,6 +729,9 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
         for (const mod of continueResult.failedModules) {
           console.log(`    - ${mod}`);
         }
+        console.log('  Re-run to retry failed modules (pages will be regenerated).\n');
+        process.exitCode = 1;
+        return;
       }
 
       console.log('');
@@ -733,7 +748,10 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       return;
     }
 
-    console.log(`\n  Wiki generated successfully (${elapsed}s)\n`);
+    const incomplete = !!result.failedModules?.length;
+    console.log(
+      `\n  ${incomplete ? 'Wiki generation incomplete' : 'Wiki generated successfully'} (${elapsed}s)\n`,
+    );
     console.log(`  Mode: ${result.mode}`);
     console.log(`  Pages: ${result.pagesGenerated}`);
     console.log(`  Output: ${wikiDir}`);
@@ -745,6 +763,9 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
         console.log(`    - ${mod}`);
       }
       console.log('  Re-run to retry failed modules (pages will be regenerated).');
+      console.log('');
+      process.exitCode = 1;
+      return;
     }
 
     console.log('');

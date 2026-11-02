@@ -7,6 +7,7 @@ export {
   parseDurationMs,
   validateAutoSyncBranchName,
   validateAutoSyncRemoteUrl,
+  parseAutoSyncRemoteIdentity,
   type AutoSyncConfig,
   type AutoSyncConfigLoadResult,
   type AutoSyncProjectConfig,

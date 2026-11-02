@@ -27,6 +27,7 @@ describe('scope-resolution source content policy', () => {
   it('still reads uncached files when no post-extraction hook needs source text', () => {
     const hooklessResolver = {
       ...kotlinScopeResolver,
+      populateWorkspaceReferences: undefined,
       populateNamespaceSiblings: undefined,
       emitPostResolutionEdges: undefined,
       postExtractSourceTextPolicy: undefined,

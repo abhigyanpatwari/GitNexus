@@ -57,6 +57,20 @@ version that writes the completeness receipt. An older index or unreadable compl
 `incompleteReasons: ["scope-extraction-unverified"]`; re-analyze it before treating
 empty impact results as exact.
 
+**Invalid symbol identity:** `query`, `context`, or `impact` can return
+`The index returned an invalid symbol identity` with recovery guidance instead
+of returning malformed results. Rebuild from the affected repository root with
+`npx gitnexus analyze --force`. If the error returns, retain the failing command,
+GitNexus/Node versions and `gitnexus doctor` output for investigation. This check
+detects blank IDs and NUL-containing identity fields; it does not prove that
+every otherwise plausible name, path or source range is correct.
+
+**MCP freshness after rebuilding:** a warm session refreshes its index reference
+when it opens the replacement graph, including a rebuild at the same commit.
+A busy reader keeps its old reference until it can reopen. During an observed
+graph/metadata publication gap, freshness is `unknown`; retry after analysis
+finishes rather than treating that response as current.
+
 ---
 
 ## Embeddings
@@ -86,6 +100,14 @@ npx gitnexus analyze --force
 ```
 
 If it recurs, the cause is almost always environmental rather than a code defect: check free disk space on the volume holding `.gitnexus/`, make sure no second `analyze` is running against the same repo (both use `.gitnexus/csv` for staging), then run `npx gitnexus doctor`. The check compares in-memory relationship totals (including streamed rows) against what the DB hands back, and is deliberately skipped on incremental runs, where the two counts are not comparable.
+
+**Weak semantic recall despite existing embeddings:** If paraphrased queries look like keyword-only search, the distance cutoff may be too strict for the embedding model. CLI and MCP `query` default to `0.6`. From the indexed repository, try a broader cutoff:
+
+```bash
+GITNEXUS_VECTOR_MAX_DISTANCE=0.8 npx gitnexus query "how are expired sessions removed" --limit 10
+```
+
+Compare target inclusion and ranking against the default; a broader cutoff also admits less relevant hits. Set the variable in the MCP/serve launch environment and restart that process when tuning a server. A cutoff change needs no reindex and setting it only during `analyze` does not persist it. If the index has no vectors, generate embeddings first; if the embedding model or dimensions differ between indexing and querying, align that configuration and regenerate vectors. See [Vector cutoff tuning](README.md#vector-cutoff-tuning) for validation rules and the limited `voyage-code-4` evidence from #3457.
 
 **Large repos:** Analyze may skip or limit embedding work when node counts are very high; watch CLI output.
 
@@ -173,9 +195,68 @@ Orchestrator: `.github/workflows/ci.yml`.
 
 ---
 
+## Query memory limit
+
+**Symptom:** a CLI, MCP, or HTTP server process exits with code **70** and
+`GitNexus stopped: process memory reached …` on stderr.
+
+The pooled-read guard detected memory above its process-wide budget. Native
+query allocations are outside both V8's heap limit and LadybugDB's buffer pool.
+The Node binding cannot interrupt them, so the guard exits the process to
+release memory. Every request in that process is interrupted; restart the
+CLI/server or reconnect the MCP client. A read-only query does not require a
+reindex after this exit.
+
+To diagnose a repeat, set `GITNEXUS_QUERY_TRACE=1` in the query/server environment
+and retain stderr. It includes query text but not bound parameters. Review the
+output before sharing it with [issue #3696](https://github.com/abhigyanpatwari/GitNexus/issues/3696).
+Set `GITNEXUS_QUERY_MAX_RSS_MB=<MiB>` to change the limit; `0` disables it. The
+default is max(8 GiB, 25% of available RAM), capped at 75% of available RAM,
+including a reported container/runtime constraint.
+
+RSS is checked at query start/end and every 200 ms while reads run. On macOS,
+queries lasting at least one second also sample physical footprint at most
+once per second, including compressed/swapped memory. If the OS footprint
+command is unavailable, monitoring falls back to RSS. Sampling is a mitigation,
+not a hard OS memory limit: rapid allocation or a blocked event loop can outrun
+it. Writes during `analyze` are outside this guard.
+
+The caller's 30-second read deadline covers prepare, execution, and row
+materialization. Timing out does not cancel native work: monitoring and its
+checked-out connection remain owned by that work until it settles. An impact
+frontier is separately capped at 100,000 relationship rows per depth. A capped
+walk stops and reports `partial: true`. Both `risk` and `riskSharedAxes` retain
+HIGH/CRITICAL or report UNKNOWN instead of LOW/MEDIUM. This row cap does not bound the database's
+intermediate allocations. Narrow the target or relation filters before relying
+on a partial result.
+
 ## Memory / analyze crashes
 
 Analyze re-execs Node with a **large old-space heap** when needed (`analyze.ts`). If you still OOM on huge repos, close other processes, avoid `--embeddings` for a first pass, or analyze a smaller path if supported by your workflow.
+
+`Unable to allocate memory` / `The buffer pool is full` during graph writes
+refers to LadybugDB's native buffer pool. Increasing `NODE_OPTIONS`,
+`--memory-budget`, or worker heap limits does not resize that pool. Recognized
+pool exhaustion aborts analysis instead of retrying with row skipping.
+
+If the host has enough memory, set an explicit pool size in **bytes**, then
+rebuild. For example, 3 GiB is `3221225472` bytes:
+
+```bash
+GITNEXUS_LBUG_BUFFER_POOL_SIZE=3221225472 npx gitnexus analyze --force
+```
+
+The override bypasses automatic pool sizing. Budget for the Node heap, parse
+workers, other native allocations, and the OS alongside it; a larger pool can
+exhaust the host. `GITNEXUS_LBUG_BUFFER_POOL_SIZE=0` restores LadybugDB's native
+80%-of-RAM default, not an unlimited supply of memory. If memory is insufficient,
+exclude generated/vendor directories or use a larger host.
+
+A measured graph-write collapse aborts a staged build before publication,
+leaving the previous index, if any, intact. An in-place run cannot roll back:
+it records `graph-write-collapsed` and exits nonzero. Rebuild a previously
+collapsed index with `--force` after addressing memory, disk space, or the
+reported COPY error; do not rely on its incomplete query results.
 
 ---
 
@@ -184,6 +265,58 @@ Analyze re-execs Node with a **large old-space heap** when needed (`analyze.ts`)
 Only one process should open a repo's `.gitnexus/lbug` store at a time. If MCP and a second `analyze` run conflict, stop one process, then retry `analyze` or restart MCP.
 
 If the error text is `"Only one write transaction at a time is allowed in the system."` instead of a lock/busy message, it's the same underlying conflict — our retry matcher (`isDbBusyError` in `src/core/lbug/lbug-config.ts`) recognizes this exact string and auto-retries it. The fix if it still surfaces after retries is the same: stop the overlapping process.
+
+---
+
+## File acquisition/reclaim guard recovery
+
+The portable file-lock backend uses `analyze.lock.guard` beside `analyze.lock`.
+Every acquisition, including an empty slot, exclusively creates the guard before
+inspecting, reclaiming, creating, and verifying the main lock. It removes the
+guard before returning a workload handle or waiting on a live workload holder.
+Linux abstract-socket and Windows named-pipe locking are unchanged.
+
+A stalled or crashed guard owner blocks file acquisition even when its PID is
+dead, its metadata is incomplete, or no main lock exists. **The guard is never
+automatically stolen.** Guard contention times out after at most 30 seconds,
+capped by the remaining acquisition timeout. This separate ceiling applies even
+when `GITNEXUS_INDEX_LOCK_TIMEOUT_MS` is zero or negative (unbounded workload wait).
+A guard-cleanup failure rejects acquisition; it must not start unprotected work.
+
+Manual recovery is an outage procedure, not an age/PID-based cleanup:
+
+1. Identify the exact lock directory named in the error. This shared primitive
+   also protects group sync and registry operations, not just repo analysis.
+2. Stop **all relevant writers** and prevent restart: editor/agent hooks, watch
+   processes, scheduled jobs, services, and any containers sharing the directory.
+   Account for paused processes and every host with access. If quiescence cannot
+   be established, do not remove the guard. PID metadata is diagnostic only.
+3. While restart remains disabled, inspect and preserve the guard/main records
+   for diagnosis, then remove only that directory's orphan `analyze.lock.guard`
+   and, if present, its orphan `analyze.lock`. Do not remove databases or sidecars
+   as part of lock recovery. Do not use a recursive or wildcard cleanup.
+4. Ensure all participating writers use the guarded version and the same locking
+   backend/domain, then restart in a controlled fashion.
+
+**Upgrade requires a coordinated stop/upgrade/restart.** Concurrent older
+versions ignore the guard and can still displace live locks; mixed-version
+mutual exclusion is not guaranteed. The file protocol assumes reliable atomic
+local-filesystem `O_EXCL` creation and cooperating processes. Network/distributed
+filesystems, external file replacement, and uncoordinated manual deletion are not
+covered. A process crash while holding the short-lived guard trades automatic
+recovery for fail-closed safety. Denied file creation returns a non-owning
+`lockFree` handle only when neither workload lock nor acquisition guard exists;
+unreadable paths fail closed. No staging sweep runs without ownership. Analysis,
+registry transactions, group synchronization, and embeddings sync refuse
+`lockFree` handles, including an otherwise up-to-date analysis on a file-backend
+read-only mount.
+The socket backend can still acquire ownership on a read-only index mount.
+Heterogeneous permissions are not proof that another process cannot write.
+
+If guard cleanup fails after this attempt created its workload record, acquisition
+is refused and token-exact workload cleanup is attempted before returning the
+error. Failed or unverifiable cleanup must be diagnosed under the same quiesced
+recovery procedure above; never delete a possibly active successor's record.
 
 ---
 

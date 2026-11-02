@@ -10,6 +10,11 @@ import { checkStaleness } from './staleness.js';
 import { loadMeta } from '../storage/repo-manager.js';
 import { ANALYZER_RUNNER_IDENTITY_SCHEMA_VERSION } from '../core/analyzer-identity.js';
 import { getIndexIncompleteReasons } from '../core/index-freshness.js';
+import {
+  checkoutIsDirectory,
+  contentRetentionFromMeta,
+  isFullSourceAvailable,
+} from '../core/content-retention.js';
 
 export interface ResourceDefinition {
   uri: string;
@@ -346,7 +351,7 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
 
   // Check staleness using the current on-disk lastCommit (not the cached handle)
   const repoPath = repo.repoPath;
-  const lastCommit = freshMeta?.lastCommit ?? repo.lastCommit ?? 'HEAD';
+  const lastCommit = freshMeta?.lastCommit ?? repo.lastCommit ?? '';
   const staleness = repoPath
     ? checkStaleness(repoPath, lastCommit)
     : { isStale: false, commitsBehind: 0 };
@@ -362,9 +367,18 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   // receipt intact lets agents compare every identity field without parsing a
   // lossy human rendering; null explicitly means legacy/unknown provenance.
   lines.push('');
+  const contentRetention = contentRetentionFromMeta(freshMeta);
+  const sourceAvailable = isFullSourceAvailable(
+    contentRetention,
+    repo.repoPath ? await checkoutIsDirectory(repo.repoPath) : false,
+  );
+
   lines.push('index:');
   lines.push(`  commit: ${JSON.stringify(lastCommit)}`);
   lines.push(`  indexed_at: ${JSON.stringify(freshMeta?.indexedAt ?? null)}`);
+  lines.push(`  storage_path: ${JSON.stringify(repo.storagePath)}`);
+  lines.push(`  content_retention: ${JSON.stringify(contentRetention)}`);
+  lines.push(`  source_available: ${JSON.stringify(sourceAvailable)}`);
   lines.push(`  runner_identity: ${JSON.stringify(freshMeta?.runnerIdentity ?? null)}`);
   lines.push(`  incomplete_reasons: ${JSON.stringify(incompleteReasons)}`);
   lines.push(`  spring_actuator: ${JSON.stringify(freshMeta?.springActuator ?? null)}`);
@@ -401,7 +415,9 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
     '  - explain: Persisted taint findings — source→sink data flows with per-hop variables (requires analyze --pdg)',
   );
   lines.push('  - detect_changes: Git-diff impact analysis (what do your changes affect)');
-  lines.push('  - rename: Multi-file coordinated rename with confidence tags');
+  lines.push(
+    '  - rename: Semantic rename; previews by default (dry_run omitted/true), dry_run: false with the preview plan_token applies its exact reviewed edits in the selected project',
+  );
   lines.push('  - cypher: Raw graph queries');
   lines.push('  - list_repos: Discover all indexed repositories');
   lines.push('');
@@ -686,7 +702,7 @@ async function getSetupResource(backend: LocalBackend): Promise<string> {
       '| `context` | 360-degree symbol view — categorized refs, processes it participates in |',
       '| `impact` | Symbol blast radius — what breaks at depth 1/2/3 with confidence |',
       '| `detect_changes` | Git-diff impact — what do your current changes affect |',
-      '| `rename` | Multi-file coordinated rename with confidence-tagged edits |',
+      '| `rename` | Semantic rename: previews by default (dry_run omitted/true), dry_run: false with the preview plan_token applies its exact reviewed edits in the selected project |',
       '| `cypher` | Raw graph queries |',
       '| `list_repos` | Discover indexed repos |',
       '',

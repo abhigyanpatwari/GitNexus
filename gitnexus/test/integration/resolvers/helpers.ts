@@ -6,7 +6,7 @@ import path from 'path';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineOptions } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
-import type { GraphRelationship } from 'gitnexus-shared';
+import type { GraphRelationship, ReferenceKind } from 'gitnexus-shared';
 
 export const FIXTURES = path.resolve(__dirname, '..', '..', 'fixtures', 'lang-resolution');
 export const CROSS_FILE_FIXTURES = path.resolve(
@@ -66,6 +66,59 @@ export function getRelationships(result: PipelineResult, type: string): RelEdge[
 
 export function getResolutionOutcomes(result: PipelineResult) {
   return result.resolutionOutcomes ?? [];
+}
+
+/** File, 1-based start line, column, member name, and reference kind. */
+export type OutcomeSite = readonly [
+  filePath: string,
+  line: number,
+  col: number,
+  name: string,
+  kind: ReferenceKind,
+];
+
+/**
+ * Reasons recorded for the requested kind and member at this start position.
+ *
+ * A call and a read can share both their member name and start position.
+ */
+export function suppressionReasonsAt(
+  result: PipelineResult,
+  [filePath, line, col, name, siteKind]: OutcomeSite,
+): string[] {
+  return getResolutionOutcomes(result)
+    .flatMap((outcome) =>
+      outcome.kind === 'suppressed' &&
+      outcome.filePath === filePath &&
+      outcome.range.startLine === line &&
+      outcome.range.startCol === col &&
+      outcome.name === name &&
+      outcome.siteKind === siteKind
+        ? [outcome.reason]
+        : [],
+    )
+    .sort();
+}
+
+/**
+ * True when an `ACCESSES` edge `sourceId -> targetId` was emitted for the site
+ * at `line:col`. The name-inference and return-shape passes key each edge id by
+ * the site position, which is what ties the edge to one site rather than to any
+ * access between the same two nodes.
+ */
+export function hasAccessesAtSite(
+  result: PipelineResult,
+  sourceId: string,
+  targetId: string,
+  line: number,
+  col: number,
+): boolean {
+  return getRelationships(result, 'ACCESSES').some(
+    (edge) =>
+      edge.rel.sourceId === sourceId &&
+      edge.rel.targetId === targetId &&
+      edge.rel.id.endsWith(`:${line}:${col}`),
+  );
 }
 
 /**

@@ -1,25 +1,11 @@
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import type Parser from 'tree-sitter';
+import { VENDOR_ROOT } from '../vendor-root.js';
 
 const _require = createRequire(import.meta.url);
 
-/**
- * Absolute path to the vendored grammar tree (`<pkg>/vendor`).
- *
- * This module compiles to `<pkg>/dist/core/tree-sitter/vendored-grammars.js`
- * and runs from `<pkg>/src/core/tree-sitter/...` under tsx in dev — both sit
- * three directories below the package root, and the build (`tsc`) never bundles,
- * so `import.meta.url` resolves the same way in both. `vendor/` ships in the
- * published package via package.json `files`.
- */
-export const VENDOR_ROOT = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '..',
-  '..',
-  '..',
-  'vendor',
-);
+export { VENDOR_ROOT };
 
 /**
  * The tree-sitter grammars GitNexus vendors inside its own package (NOT npm
@@ -33,6 +19,7 @@ export const VENDORED_GRAMMAR_PACKAGES: ReadonlySet<string> = new Set([
   'tree-sitter-proto',
   'tree-sitter-swift',
   'tree-sitter-kotlin',
+  'tree-sitter-objc',
   'tree-sitter-zig',
 ]);
 
@@ -43,7 +30,7 @@ export const vendoredGrammarDir = (packageName: string): string =>
 /**
  * Load a vendored tree-sitter grammar by its absolute path under `vendor/`.
  *
- * GitNexus vendors six grammars (c/dart/proto/swift/kotlin/zig) inside its own
+ * GitNexus vendors seven grammars (c/dart/proto/swift/kotlin/objc/zig) inside its own
  * package under `vendor/`, each shipping committed per-platform prebuilds. They
  * are deliberately NOT npm dependencies and must NEVER be copied into
  * `node_modules`: an undeclared package under `node_modules` is "extraneous" to
@@ -59,7 +46,7 @@ export const vendoredGrammarDir = (packageName: string): string =>
  * no `node_modules` copy. (`node-gyp-build` itself IS an npm dependency and
  * resolves normally from the grammar directory.)
  */
-export const requireVendoredGrammar = (packageName: string): unknown => {
+export const requireVendoredGrammar = (packageName: string): Parser.Language => {
   // Fail loudly on a name that isn't actually vendored — a typo or a list that
   // drifted out of sync (VENDORED_GRAMMAR_PACKAGES vs the CLI probe vs the build
   // registry) would otherwise surface as a confusing absolute-path require miss.

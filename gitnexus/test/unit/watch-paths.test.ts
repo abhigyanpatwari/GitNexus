@@ -24,6 +24,54 @@ afterEach(async () => {
 });
 
 describe('watch path selection', () => {
+  it('forwards and removes route configuration on subsequent refreshes', async () => {
+    const aliases = [{ importPath: 'example.com/core', type: 'Engine', framework: 'gin' }];
+    const baseline = { maxFileSize: undefined, workerTimeout: undefined, verbose: undefined };
+    for (const name of [
+      'GITNEXUS_MAX_FILE_SIZE',
+      'GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS',
+      'GITNEXUS_VERBOSE',
+    ]) {
+      vi.stubEnv(name, process.env[name]);
+    }
+    vi.stubEnv('GITNEXUS_RC', '');
+    try {
+      await fs.writeFile(
+        path.join(repoPath, '.gitnexusrc'),
+        JSON.stringify({
+          goRouterAliases: aliases,
+          goHandlerWrappers: ['common.Wrapper'],
+        }),
+      );
+      expect((await resolveWatchOptions(repoPath, {}, baseline)).routeHookConfig).toEqual({
+        routeFrameworkAliases: aliases,
+        routeHandlerWrappers: ['common.Wrapper'],
+      });
+      await fs.writeFile(path.join(repoPath, '.gitnexusrc'), '{}');
+      expect((await resolveWatchOptions(repoPath, {}, baseline)).routeHookConfig).toEqual({
+        routeFrameworkAliases: undefined,
+        routeHandlerWrappers: undefined,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('forwards explicit FTS opt-out without changing the default', async () => {
+    const names = [
+      'GITNEXUS_MAX_FILE_SIZE',
+      'GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS',
+      'GITNEXUS_VERBOSE',
+    ] as const;
+    for (const name of names) vi.stubEnv(name, process.env[name]);
+    const baseline = { maxFileSize: undefined, workerTimeout: undefined, verbose: undefined };
+    try {
+      expect((await resolveWatchOptions(repoPath, { skipFts: true }, baseline)).skipFts).toBe(true);
+      expect((await resolveWatchOptions(repoPath, {}, baseline)).skipFts).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it('accepts every scanner-admitted file instead of maintaining a second allow-list', () => {
     expect(isRelevantWatchPath('src/service.ts')).toBe(true);
     expect(isRelevantWatchPath('server/app.py')).toBe(true);
@@ -154,6 +202,27 @@ describe('watch path selection', () => {
         }),
       ).rejects.toThrow(`analyze --watch does not support ${flag}`);
     }
+  });
+
+  it('applies process-detection budget keys from rc and CLI without throwing (#3313)', async () => {
+    await fs.writeFile(
+      path.join(repoPath, '.gitnexusrc'),
+      JSON.stringify({ maxProcesses: '40', maxEntryPointCandidates: 400 }),
+    );
+    const baseline = { maxFileSize: undefined, workerTimeout: undefined, verbose: undefined };
+    await expect(resolveWatchOptions(repoPath, {}, baseline)).resolves.toMatchObject({
+      maxProcesses: 40,
+      maxEntryPointCandidates: 400,
+    });
+    await expect(
+      resolveWatchOptions(repoPath, { maxProcesses: '25' }, baseline),
+    ).resolves.toMatchObject({
+      maxProcesses: 25,
+      maxEntryPointCandidates: 400,
+    });
+    const zeroBudget = await resolveWatchOptions(repoPath, { maxProcesses: '0' }, baseline);
+    expect(zeroBudget).toMatchObject({ maxEntryPointCandidates: 400 });
+    expect(zeroBudget.maxProcesses).toBeUndefined();
   });
 
   it('rejects a watch file-size threshold above the parser ceiling', async () => {

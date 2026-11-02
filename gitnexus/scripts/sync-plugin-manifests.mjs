@@ -13,6 +13,9 @@
  *   - gitnexus-claude-plugin/.codex-plugin/plugin.json    (top-level version)
  *   - .agents/plugins/marketplace.json                    (plugins[gitnexus])
  *   - gitnexus-claude-plugin/skills/<skill>/mcp.json      (gitnexus@<version> launch arg, x10)
+ *   - gitnexus-factory-plugin/.factory-plugin/plugin.json (top-level version)
+ *   - gitnexus-factory-plugin/mcp.json                    (gitnexus@<version> launch arg)
+ *   - .factory-plugin/marketplace.json                    (plugins[gitnexus])
  *
  * Modes:
  *   node scripts/sync-plugin-manifests.mjs           rewrite stale surfaces
@@ -54,6 +57,16 @@ const MANIFEST_SURFACES = [
     file: `gitnexus-claude-plugin/skills/${name}/mcp.json`,
     kind: 'mcp',
   })),
+  // The Factory plugin's manifest is also its pin source at runtime: the
+  // PostToolUse hook reads this version to build its `npx -y gitnexus@<version>`
+  // fallback, so stamping it here keeps the hook and the MCP entry on the same
+  // released CLI.
+  { file: 'gitnexus-factory-plugin/.factory-plugin/plugin.json', kind: 'plugin' },
+  { file: 'gitnexus-factory-plugin/mcp.json', kind: 'mcp' },
+  // Droid reads .factory-plugin/marketplace.json before .claude-plugin's, so
+  // this entry is what makes `droid plugin install` deliver the Factory plugin
+  // (Execute matcher, pinned mcp.json) instead of the translated Claude one.
+  { file: '.factory-plugin/marketplace.json', kind: 'marketplace' },
 ];
 
 const PLUGIN_NAME = 'gitnexus';

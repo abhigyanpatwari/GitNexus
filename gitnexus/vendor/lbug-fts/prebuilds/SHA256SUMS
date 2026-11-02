@@ -1,0 +1,5 @@
+6fdf9749f47ca2e35c82302055ff441061a68158dfb2c4a61c396ccd6dabe289  ./darwin-arm64/libfts.lbug_extension
+872b46f46468cf27c7f1d26bb0b98ccdc4d17056d73ecd45c6047352e2cda5c9  ./linux-arm64/libfts.lbug_extension
+8fcc16c1f26ddea668ca76bc18f6f83a1588238a4baa08511106baa51e5f4430  ./linux-x64/libfts.lbug_extension
+a016f7d56611a7218d6ac2f4cace083ec414e39ea9ceb601e44233c1f9fa7b4a  ./darwin-x64/libfts.lbug_extension
+dc70aaf9940c204158b8932c67b08c459cd70718748997bfb5b2fba8386cffce  ./win32-x64/libfts.lbug_extension

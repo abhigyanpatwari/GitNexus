@@ -1,0 +1,68 @@
+{
+  "language": "csharp",
+  "description": "Rename a C# interface family through virtual overrides, base calls and three statically typed dispatch paths.",
+  "categories": [
+    "polymorphism",
+    "call-graph",
+    "unrelated-owner",
+    "comments-and-strings"
+  ],
+  "target": {
+    "name": "Dispatch",
+    "kind": "Method",
+    "file": "Delivery.cs",
+    "startLine": 1
+  },
+  "newName": "Deliver",
+  "expect": {
+    "status": "success",
+    "edits": 7
+  },
+  "edges": [
+    {
+      "type": "METHOD_IMPLEMENTS",
+      "from": {
+        "name": "Dispatch",
+        "kind": "Method",
+        "file": "Delivery.cs",
+        "startLine": 4
+      },
+      "to": {
+        "name": "Dispatch",
+        "kind": "Method",
+        "file": "Delivery.cs",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "METHOD_OVERRIDES",
+      "from": {
+        "name": "ExpressCourier",
+        "kind": "Class",
+        "file": "Delivery.cs",
+        "startLine": 6
+      },
+      "to": {
+        "name": "Dispatch",
+        "kind": "Method",
+        "file": "Delivery.cs",
+        "startLine": 4
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "Send",
+        "kind": "Method",
+        "file": "Delivery.cs",
+        "startLine": 10
+      },
+      "to": {
+        "name": "Dispatch",
+        "kind": "Method",
+        "file": "Delivery.cs",
+        "startLine": 1
+      }
+    }
+  ]
+}

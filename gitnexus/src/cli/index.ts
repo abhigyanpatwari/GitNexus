@@ -11,6 +11,7 @@ import {
   createLbugLazyAction,
 } from './lazy-action.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
+import { IntegerOptionError, parseMemoryBudgetMb } from './int-option.js';
 import { registerGroupCommands } from './group.js';
 import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
@@ -28,7 +29,7 @@ program.name('gitnexus').description('GitNexus local CLI and MCP server').versio
 program
   .command('setup')
   .description(
-    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex',
+    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex, Factory Droid',
   )
   .option(
     '-c, --coding-agent <agents>',
@@ -81,6 +82,7 @@ program
     'Re-parse every source file instead of replaying cached parser output',
   )
   .option('--repair-fts', 'Repair/rebuild search FTS indexes without full re-analysis')
+  .option('--skip-fts', 'Skip FTS extension loading and keyword search indexes')
   .option(
     '--embeddings [limit]',
     'Enable embedding generation for semantic search (off by default). ' +
@@ -144,6 +146,18 @@ program
     'Register this repo even if another path already uses the same --name alias. ' +
       'Leaves `-r <name>` ambiguous for the two paths; use -r <path> to disambiguate.',
   )
+  .option(
+    '--share-with <repo>',
+    'Join the shared index store of a registered checkout of the same repository ' +
+      '(name or path); the remote URL must match. Clones join a sibling clone’s store ' +
+      'automatically; this names one explicitly and clears a --no-share opt-out.',
+  )
+  .option(
+    '--no-share',
+    'Clones only: leave the shared index store, index into <repo>/.gitnexus again, and stop ' +
+      'joining sibling clones automatically until --share-with (linked worktrees always share; ' +
+      'set GITNEXUS_SHARED_STORE=off instead)',
+  )
   .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
   .option(
     '--max-file-size <kb>',
@@ -159,8 +173,30 @@ program
       '(integer >= -1; default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).',
   )
   .option(
+    '--memory-budget <mb>',
+    'Main-thread V8 heap size in MB for analyze (integer >= 200). Re-runs analyze with ' +
+      'exactly this heap, overriding the RAM/cgroup auto-sizer and any --max-old-space-size ' +
+      'pin; parse workers keep their own heap caps.',
+  )
+  .option(
     '--workers <n>',
     'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
+  )
+  .option(
+    '--max-processes <n>',
+    'Process-detection process cap (positive integer). Replaces the dynamic max(20, round(symbols/10)) formula. Default: dynamic.',
+  )
+  .option(
+    '--max-process-branching <n>',
+    'Process-detection per-node branching cap (positive integer). Default: 4.',
+  )
+  .option(
+    '--max-process-trace-depth <n>',
+    'Process-detection DFS depth cap (positive integer). Default: 10.',
+  )
+  .option(
+    '--max-entry-point-candidates <n>',
+    'Ranked entry-point candidate pool (positive integer). Default: 200. Raise when the warning names this knob; doubling is the usual first raise.',
   )
   .option(
     '--spring-actuator <path>',
@@ -201,6 +237,18 @@ program
     if (analyzeOpts['debounce'] !== undefined && analyzeOpts['watch'] !== true) {
       process.stderr.write('\n  --debounce requires --watch\n\n');
       process.exit(1);
+    }
+    // Validate --memory-budget here so analyze and --watch both reject a bad
+    // value before ensureHeap sizes (and possibly respawns) the heap (#3137).
+    const budgetOpt = analyzeOpts['memoryBudget'];
+    if (budgetOpt !== undefined) {
+      try {
+        parseMemoryBudgetMb(String(budgetOpt));
+      } catch (error) {
+        if (!(error instanceof IntegerOptionError)) throw error;
+        process.stderr.write(`\n  ${error.message}\n\n`);
+        process.exit(1);
+      }
     }
     // ONLY GITNEXUS_EMBEDDING_DIMS must be set here: schema.ts reads it at
     // module-load time during the lazy import('./analyze.js') below (via the
@@ -289,7 +337,8 @@ program
 
 program
   .command('status')
-  .description('Show index status for current repo')
+  .description('Show index status for the current repo or a registered index')
+  .option('-r, --repo <name>', 'Registered repository alias or path (works after checkout removal)')
   .option('--json', 'Emit machine-readable index and analyzer provenance')
   .addHelpText('after', () => t('help.identityCache.environment'))
   .action(createLazyAction(() => import('./status.js'), 'statusCommand'));
@@ -304,15 +353,13 @@ program
   .description('Install the latest published GitNexus globally (`npm i -g gitnexus@<x.y.z>`).')
   .action(createLazyAction(() => import('./update.js'), 'updateCommand'));
 
-program
+const embeddings = program
   .command('embeddings')
-  .description('Manage the on-demand local embedding runtime')
+  .description(t('help.command.embeddings.description'));
+
+embeddings
   .command('install')
-  .description(
-    'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. ' +
-      'Heals installs where npm skipped the optional packages (e.g. behind an HTTP proxy, #2370). ' +
-      'Downloads only from your configured npm registry — mirrors and proxies apply.',
-  )
+  .description(t('help.command.embeddings.install.description'))
   .option(
     '--cuda',
     "Also download the CUDA GPU binaries (runs onnxruntime-node's NuGet postinstall; " +
@@ -321,12 +368,27 @@ program
   .option('--force', 'Install into the runtime prefix even when the stack already resolves')
   .action(createLazyAction(() => import('./embeddings.js'), 'embeddingsInstallCommand'));
 
+embeddings
+  .command('sync [path]')
+  .description(t('help.command.embeddings.sync.description'))
+  .addHelpText('after', () => t('help.analyze.environment'))
+  .action(createLbugLazyAction(() => import('./embeddings-sync.js'), 'embeddingsSyncCommand'));
+
 program
   .command('clean')
   .description('Delete GitNexus index for current repo')
   .option('-f, --force', 'Skip confirmation prompt')
   .option('--all', 'Clean all indexed repos')
   .option('--branch <name>', 'Delete only the named branch index (not the workspace index)')
+  .option('--stale', 'Reclaim leftover branch indexes that are not a live local head')
+  .option(
+    '--gc',
+    'Drop shared-store checkouts no registry entry uses and delete commit graphs nothing references',
+  )
+  .option(
+    '--local-index',
+    'Delete the index left in <repo>/.gitnexus after this checkout moved into a shared store',
+  )
   .option(
     '--lbug-sidecars',
     'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
@@ -365,6 +427,10 @@ program
   .option('--concurrency <n>', 'Parallel LLM calls (default: 3)', '3')
   .option('--timeout <seconds>', 'LLM request timeout in seconds (default: disabled)')
   .option('--retries <n>', 'Max LLM retry attempts per request (default: 3)')
+  .option(
+    '--max-completion-tokens <n>',
+    'Max completion tokens for each LLM request (default: 16384)',
+  )
   .option(
     '--allow-insecure-connection <host>',
     'Allow exact host(s) for http:// LLM base URLs (comma-separated; HTTPS is preferred)',
@@ -407,7 +473,10 @@ program
   .option('-c, --context <text>', 'Task context to improve ranking')
   .option('-g, --goal <text>', 'What you want to find')
   .option('-l, --limit <n>', 'Max processes to return (default: 5)')
-  .option('--content', 'Include full symbol source code')
+  .option(
+    '--content',
+    'Include retained symbol source text (reports availability when disabled by retention)',
+  )
   .action(createLbugLazyAction(() => import('./tool.js'), 'queryCommand'));
 
 program
@@ -418,7 +487,10 @@ program
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
   .option('-l, --limit <n>', 'Max callers/callees/processes to return')
-  .option('--content', 'Include full symbol source code')
+  .option(
+    '--content',
+    'Include retained symbol source text (reports availability when disabled by retention)',
+  )
   .action(createLbugLazyAction(() => import('./tool.js'), 'contextCommand'));
 
 program
@@ -446,10 +518,14 @@ program
   .option('--include-tests', 'Include test files in results')
   .option(
     '-l, --limit <n>',
-    'Max symbols per depth level and affected processes/modules to return (default: 100)',
+    'Max symbols per depth level in callgraph mode (default: 30, GITNEXUS_IMPACT_DEFAULT_LIMIT=0 for all); explicit --limit also caps affected processes/modules/routes',
   )
   .option('--offset <n>', 'Skip N symbols per depth level for pagination')
   .option('--summary-only', 'Return counts and risk only, omit symbol list')
+  .option(
+    '--max-tokens <n>',
+    'Fit compact JSON into about N tokens; trim deepest callgraph symbols or fail if required content cannot fit. PDG/group results must fit intact',
+  )
   .action(createLbugLazyAction(() => import('./tool.js'), 'impactCommand'));
 
 program

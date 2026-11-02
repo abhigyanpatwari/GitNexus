@@ -5,6 +5,7 @@ import path from 'path';
 import type { CsharpStructureLineScanner } from './languages/csharp/namespace-siblings.js';
 
 import { isDev } from './utils/env.js';
+import { isHardcodedIgnoredDirectoryAtPath } from '../../config/ignore-service.js';
 
 import { mapConcurrent } from '../../lib/utils.js';
 import { logger } from '../logger.js';
@@ -18,12 +19,6 @@ export interface TsconfigPaths {
   aliases: Map<string, string>;
   /** Base URL for path resolution (relative to repo root) */
   baseUrl: string;
-}
-
-/** Go module config parsed from go.mod */
-export interface GoModuleConfig {
-  /** Module path (e.g., "github.com/user/repo") */
-  modulePath: string;
 }
 
 /** PHP Composer PSR-4 autoload config */
@@ -160,11 +155,7 @@ export interface CSharpProjectScan {
   readonly truncated: boolean;
 }
 
-/** Project the one-pass {@link CSharpProjectScan} into the
- *  {@link CSharpNamespaceEvidence} both import-resolution legs thread to the
- *  #1881 gate — one shape, two carriers (`ImportConfigs.csharpNamespaces` for
- *  the legacy DAG, `CsharpResolutionConfig.namespaces` for the scope resolver).
- *  Keeps the field mapping in one place so the two carriers can't drift. */
+/** Project a workspace scan into the namespace evidence used by import resolution. */
 export function csharpScanToEvidence(scan: CSharpProjectScan): CSharpNamespaceEvidence {
   return {
     declaredNamespaces: scan.declaredNamespaces,
@@ -174,21 +165,116 @@ export function csharpScanToEvidence(scan: CSharpProjectScan): CSharpNamespaceEv
 }
 
 /** Swift Package Manager module config */
+export type SwiftPackageConfigOrigin = 'package.swift' | 'directories';
+
 export interface SwiftPackageConfig {
   /** Map of target name -> source directory path (e.g., "SiuperModel" -> "Package/Sources/SiuperModel") */
   targets: Map<string, string>;
+  /**
+   * `package.swift` — extracted from a readable Package.swift with no
+   * completeness hazards. Explicit import resolve may treat this as a
+   * declaration map (empty means every name is external).
+   * `directories` — inferred from `Sources/*` (or Package/Sources / src)
+   * when no usable declaration exists. Grouping uses this; import resolve
+   * must not.
+   * Omitted on hand-built test configs: treated as a declaration map so
+   * existing `{ targets }` fixtures stay valid.
+   */
+  origin?: SwiftPackageConfigOrigin;
+  /**
+   * Declaration map when `origin` is `package.swift` (may be empty).
+   * Grouping uses `targets`, which is this map when it is non-empty and the
+   * inferred `Sources/*` map when the declaration is empty — so a
+   * binary-only Package.swift does not collapse every file into `__default__`.
+   */
+  declaredTargets?: Map<string, string>;
+  /**
+   * Every Swift module the workspace loader found (root and nested SwiftPM
+   * targets, Xcode native targets). When present it is the authority for
+   * module membership and `import` resolution; `targets` stays for callers
+   * that only know the SwiftPM map.
+   */
+  modules?: readonly SwiftModuleSpec[];
+  /**
+   * True when every manifest and Xcode project was read completely and no
+   * module was inferred from folder names, so a name missing from `modules`
+   * is an external module (SDK or dependency), not an unread local one.
+   */
+  moduleNamesComplete?: boolean;
+  /** `sources:` / `exclude:` per target name, relative to the target directory. */
+  targetFilters?: Map<string, SwiftTargetFilter>;
+}
+
+/** One Swift module (compiler unit) found in the workspace. */
+export interface SwiftModuleSpec {
+  /** Stable key: a repo-relative SwiftPM target directory, or `xcode:<project>:<target>`. */
+  readonly key: string;
+  /** Module name as written in `import X`. */
+  readonly name: string;
+  /** SwiftPM: repo-relative target directory ('' is the repo root). */
+  readonly dir?: string;
+  /** Xcode: repo-relative member files. */
+  readonly files?: readonly string[];
+  /** Xcode: repo-relative synchronized folders; files below are members. */
+  readonly folders?: readonly string[];
+  /**
+   * Repo-relative paths this module leaves out: Xcode synchronized-folder
+   * exceptions, SwiftPM `exclude:`.
+   */
+  readonly excluded?: readonly string[];
+  /** SwiftPM `sources:`: repo-relative files or directories; members must be under one. */
+  readonly sources?: readonly string[];
+  /** False for SwiftPM plugins: modules, but never `import`-able. */
+  readonly importable: boolean;
+}
+
+/**
+ * Declaration view for explicit import resolve. `origin: 'directories'`
+ * is grouping-only. A hand-built `{ targets }` with no origin stays a
+ * declaration so existing fixtures keep working.
+ */
+export function coerceDeclaredSwiftTargets(
+  resolutionConfig: unknown,
+): ReadonlyMap<string, string> | null {
+  const config = resolutionConfig as Partial<SwiftPackageConfig> | null | undefined;
+  if (config == null) return null;
+  if (config.origin === 'directories') return null;
+  if (config.declaredTargets instanceof Map) return config.declaredTargets;
+  if (config.targets instanceof Map) return config.targets;
+  return null;
+}
+
+/** Segment-boundary prefix for a Package.swift `path:`. `"."` / `"./"` is the package root. */
+export function swiftDeclaredTargetPrefix(dir: string): string {
+  let norm = dir.replace(/\\/g, '/');
+  while (norm.startsWith('./')) {
+    norm = norm.slice(2);
+  }
+  norm = norm.replace(/\/+$/, '');
+  return norm === '' || norm === '.' ? '' : `${norm}/`;
 }
 
 /** Zig package config parsed from build.zig.zon and the root build.zig */
 export interface ZigBuildZonConfig {
   /**
-   * Map of dependency name -> the raw `.path = "..."` value, exactly as
-   * written in build.zig.zon (relative to the repo root, and possibly
-   * escaping it: `../local_dep`). Consumers normalize — see
-   * `normalizeZigDepPath` below, which rejects absolute
-   * and repo-escaping values. `.url`-based deps cannot be resolved to a
-   * repo-local file (they unpack into a build cache outside the repo) and so
-   * are not included here.
+   * Map of dependency name -> the dep's directory, in one of two spellings
+   * depending on which package this config describes:
+   *
+   *   - ROOT package (`pkg === ''`): the raw `.path = "..."` value, exactly as
+   *     written in build.zig.zon (relative to the repo root, and possibly
+   *     escaping it: `../local_dep`). This is what `parseZigBuildZon` promises
+   *     and what its tests pin.
+   *   - NESTED package: repo-relative and already normalized, because a nested
+   *     package's `.path` is written relative to ITS directory and means
+   *     nothing against the repo-relative keys consumers match on
+   *     (`packages/app`'s `../core` is stored as `packages/core`). A dep
+   *     escaping the REPO root is dropped rather than stored.
+   *
+   * Either spelling is safe to hand to `normalizeZigDepPath` below — it rejects
+   * absolute and repo-escaping values and is idempotent on an already
+   * normalized one, which is what `resolveZigImportInternal` relies on.
+   * `.url`-based deps cannot be resolved to a repo-local file (they unpack into
+   * a build cache outside the repo) and so are not included here.
    */
   pathDeps: Map<string, string>;
   /**
@@ -226,6 +312,29 @@ export interface ZigBuildZonConfig {
    * `resolveZigImportInternal` / `parseZigBuildModules`.
    */
   buildModules?: readonly ZigBuildModule[];
+}
+
+/**
+ * One Zig build package: the directory whose `build.zig` / `build.zig.zon`
+ * declare the config, and that config with every path REPO-relative.
+ *
+ * A Zig module's import table is declared by the `build.zig` of the package it
+ * belongs to, so a repo holding several packages holds several import tables —
+ * the same shape a TypeScript monorepo has with a `tsconfig.json` per package.
+ */
+export interface ZigPackageScope {
+  /** Repo-relative directory the package governs (`''` for the repo root). */
+  readonly dir: string;
+  readonly config: ZigBuildZonConfig;
+}
+
+/**
+ * Every Zig build package in the repo, indexed so the nearest one to a file
+ * wins — the `TsconfigIndex` analogue, and for the same reason.
+ */
+export interface ZigWorkspaceIndex {
+  /** Deepest-first, so the first `dir` that prefixes a file path governs it. */
+  readonly packages: readonly ZigPackageScope[];
 }
 
 /** One build module of the root `build.zig` — see `ZigBuildZonConfig.buildModules`. */
@@ -291,26 +400,6 @@ export async function loadTsconfigPaths(repoRoot: string): Promise<TsconfigPaths
   return null;
 }
 
-/**
- * Parse go.mod to extract module path.
- */
-export async function loadGoModulePath(repoRoot: string): Promise<GoModuleConfig | null> {
-  try {
-    const goModPath = path.join(repoRoot, 'go.mod');
-    const content = await fs.readFile(goModPath, 'utf-8');
-    const match = content.match(/^module\s+(\S+)/m);
-    if (match) {
-      if (isDev) {
-        logger.info(`📦 Loaded Go module path: ${match[1]}`);
-      }
-      return { modulePath: match[1] };
-    }
-  } catch {
-    // No go.mod
-  }
-  return null;
-}
-
 /** Parse composer.json to extract PSR-4 autoload mappings (including autoload-dev). */
 export async function loadComposerConfig(repoRoot: string): Promise<ComposerConfig | null> {
   try {
@@ -347,9 +436,8 @@ const CSHARP_ROOT_NAMESPACE_RE = /<RootNamespace>\s*([^<]+)\s*<\/RootNamespace>/
 // scanner shared with the scope-resolution namespace-siblings pass
 // (`extractCsharpStructureViaScanner`), not a bare regex: a regex matches
 // `namespace` inside comments and string literals, seeding the #1881 gate
-// with phantom namespaces. Imported lazily (and memoized) so the always-on
-// `loadImportConfigs` path — every repo, every language — doesn't eagerly
-// pull tree-sitter-c-sharp in via `namespace-siblings.ts` → `query.ts`.
+// with phantom namespaces. Imported lazily (and memoized) so loading unrelated
+// configs does not pull tree-sitter-c-sharp in via namespace-siblings.ts.
 let csharpScannerFactoryPromise: Promise<() => CsharpStructureLineScanner> | undefined;
 function getCsharpStructureScannerFactory(): Promise<() => CsharpStructureLineScanner> {
   if (csharpScannerFactoryPromise === undefined) {
@@ -581,19 +669,887 @@ async function collectDeclaredNamespaces(
   return structure.incomplete ? 'truncated' : 'ok';
 }
 
-export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPackageConfig | null> {
-  // Swift imports are module-name based (e.g., `import SiuperModel`)
-  // SPM convention: Sources/<TargetName>/ or Package/Sources/<TargetName>/
-  // We scan for these directories to build a target map
-  const targets = new Map<string, string>();
+const SWIFT_SOURCE_FACTORY_NAMES = [
+  'target',
+  'executableTarget',
+  'testTarget',
+  'macro',
+  'plugin',
+] as const;
+/** No Swift sources: a prebuilt artifact or a C module map. */
+const SWIFT_SKIP_FACTORY_NAMES = ['binaryTarget', 'systemLibrary'] as const;
+const SWIFT_SKIP_FACTORIES = new Set<string>(SWIFT_SKIP_FACTORY_NAMES);
+const SWIFT_FACTORY_RE = new RegExp(
+  `\\.(${[...SWIFT_SOURCE_FACTORY_NAMES, ...SWIFT_SKIP_FACTORY_NAMES].join('|')})\\s*\\(`,
+  'g',
+);
+function extractBalancedParen(source: string, openIndex: number): string | null {
+  let depth = 0;
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  for (let i = openIndex; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      // `https://` lives inside a string, already excluded above.
+      inLineComment = true;
+      i++;
+      continue;
+    } else if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return source.slice(openIndex + 1, i);
+    }
+  }
+  return null;
+}
 
-  const sourceDirs = ['Sources', 'Package/Sources', 'src'];
+function isSwiftIdentCont(ch: string | undefined): boolean {
+  return ch !== undefined && /[A-Za-z0-9_]/.test(ch);
+}
+
+function skipSwiftWsAndComments(source: string, start: number): number | null {
+  let i = start;
+  while (i < source.length) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (/\s/.test(ch)) {
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      const nl = source.indexOf('\n', i + 2);
+      if (nl === -1) return null;
+      i = nl + 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      let depth = 1;
+      i += 2;
+      while (i < source.length && depth > 0) {
+        if (source[i] === '/' && source[i + 1] === '*') {
+          depth++;
+          i += 2;
+        } else if (source[i] === '*' && source[i + 1] === '/') {
+          depth--;
+          i += 2;
+        } else {
+          i++;
+        }
+      }
+      if (depth !== 0) return null;
+      continue;
+    }
+    return i;
+  }
+  return null;
+}
+
+/** First `name:` / `path:` string outside comments. Escapes and interpolations are unreadable. */
+/** Where `field:`'s value starts in a factory block, or null when absent. */
+function findSwiftFactoryFieldValue(
+  block: string,
+  field: string,
+): { valueAt: number | null } | null {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  for (let i = 0; i < block.length; i++) {
+    const ch = block[i];
+    const next = block[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (!/[A-Za-z_]/.test(ch)) continue;
+    let j = i + 1;
+    while (j < block.length && isSwiftIdentCont(block[j])) j++;
+    if (block.slice(i, j) !== field) {
+      i = j - 1;
+      continue;
+    }
+    const colonAt = skipSwiftWsAndComments(block, j);
+    if (colonAt === null || block[colonAt] !== ':') {
+      i = j - 1;
+      continue;
+    }
+    return { valueAt: skipSwiftWsAndComments(block, colonAt + 1) };
+  }
+  return null;
+}
+
+function readSwiftFactoryField(
+  block: string,
+  field: 'name' | 'path',
+): { value: string | undefined; keyPresent: boolean } {
+  const found = findSwiftFactoryFieldValue(block, field);
+  if (found === null) return { value: undefined, keyPresent: false };
+  const { valueAt } = found;
+  if (valueAt === null) return { value: undefined, keyPresent: true };
+  const quote = block[valueAt];
+  if (quote !== '"' && quote !== "'") return { value: undefined, keyPresent: true };
+  const parsed = readSwiftSimpleQuotedString(block, valueAt);
+  return { value: parsed ?? undefined, keyPresent: true };
+}
+
+/**
+ * `sources:` / `exclude:` as a list of string literals. `undefined` when the
+ * key is absent; `null` when present but not a plain literal list.
+ */
+function readSwiftFactoryStringList(
+  block: string,
+  field: 'sources' | 'exclude',
+): string[] | null | undefined {
+  const found = findSwiftFactoryFieldValue(block, field);
+  if (found === null) return undefined;
+  let i = found.valueAt;
+  if (i === null || block[i] !== '[') return null;
+  const out: string[] = [];
+  for (;;) {
+    const at = skipSwiftWsAndComments(block, i + 1);
+    if (at === null) return null;
+    if (block[at] === ']') return out;
+    if (block[at] !== '"' && block[at] !== "'") return null;
+    const value = readSwiftSimpleQuotedString(block, at);
+    if (value === null) return null;
+    out.push(value);
+    const after = skipSwiftWsAndComments(block, at + value.length + 2);
+    if (after === null) return null;
+    if (block[after] === ']') return out;
+    if (block[after] !== ',') return null;
+    i = after;
+  }
+}
+
+/** Quoted literal with no escapes. Any `\` (including `\u{…}` and `\(`) is unreadable. */
+function readSwiftSimpleQuotedString(source: string, openIndex: number): string | null {
+  const quote = source[openIndex];
+  let i = openIndex + 1;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === '\\') return null;
+    if (ch === quote) return source.slice(openIndex + 1, i);
+    if (ch === '\n') return null;
+    i++;
+  }
+  return null;
+}
+
+function swiftManifestHasCompletenessHazard(source: string): boolean {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  let atLineStart = true;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') {
+        inLineComment = false;
+        atLineStart = true;
+      }
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      } else if (ch === '\n') {
+        atLineStart = true;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      else if (ch === '\n') atLineStart = true;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      atLineStart = false;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      atLineStart = false;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      atLineStart = false;
+      continue;
+    }
+    if (ch === '\n') {
+      atLineStart = true;
+      continue;
+    }
+    if (atLineStart && /\s/.test(ch)) continue;
+    if (atLineStart && ch === '#') {
+      if (source.startsWith('if', i + 1) && !isSwiftIdentCont(source[i + 3])) return true;
+      if (source.startsWith('elseif', i + 1) && !isSwiftIdentCont(source[i + 7])) return true;
+    }
+    atLineStart = false;
+  }
+  return false;
+}
+
+interface SwiftCommentScan {
+  i: number;
+  inString: '"' | "'" | null;
+  escape: boolean;
+  inLineComment: boolean;
+  blockCommentDepth: number;
+}
+
+function newSwiftCommentScan(): SwiftCommentScan {
+  return { i: 0, inString: null, escape: false, inLineComment: false, blockCommentDepth: 0 };
+}
+
+/** Resume the comment/string walk up to `upTo`. Matches are left-to-right, so this is O(n) over the file. */
+function advanceSwiftCommentScan(source: string, state: SwiftCommentScan, upTo: number): void {
+  let { i, inString, escape, inLineComment, blockCommentDepth } = state;
+  for (; i < upTo; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+    }
+  }
+  state.i = i;
+  state.inString = inString;
+  state.escape = escape;
+  state.inLineComment = inLineComment;
+  state.blockCommentDepth = blockCommentDepth;
+}
+
+function swiftPathIsUnreadable(customPath: string | undefined, hasPathKey: boolean): boolean {
+  if (!hasPathKey) return false;
+  return customPath === undefined || customPath === '' || customPath.includes('\\(');
+}
+
+/** Where SwiftPM looks for a target that declares no `path:`. */
+export type SwiftTargetDirKind = 'source' | 'test' | 'plugin';
+
+export interface SwiftManifestParse {
+  /** Target name -> package-relative directory. */
+  targets: Map<string, string>;
+  /**
+   * Targets with no `path:`. Their directory above is the conventional
+   * default; `loadSwiftPackageConfig` replaces it with the directory SwiftPM
+   * would actually pick (`Sources`, `Source`, `src`, or `srcs`).
+   */
+  implicitDirs: Map<string, SwiftTargetDirKind>;
+  /** Plugin targets: modules for grouping, never `import`-able. */
+  plugins: Set<string>;
+  /** `sources:` / `exclude:` per target name, relative to the target directory. */
+  filters: Map<string, SwiftTargetFilter>;
+  complete: boolean;
+}
+
+/** A target's `sources:` / `exclude:` lists; absent means "no filter". */
+export interface SwiftTargetFilter {
+  readonly sources?: readonly string[];
+  readonly exclude?: readonly string[];
+}
+
+/** Heuristic Package.swift scan. Never shells out to `swift package dump-package`. */
+export function parseSwiftPackageManifest(source: string): SwiftManifestParse {
+  const targets = new Map<string, string>();
+  const implicitDirs = new Map<string, SwiftTargetDirKind>();
+  const plugins = new Set<string>();
+  const filters = new Map<string, SwiftTargetFilter>();
+  if (swiftManifestHasCompletenessHazard(source)) {
+    return { targets, implicitDirs, plugins, filters, complete: false };
+  }
+
+  const packageTargets = inspectSwiftPackageTargets(source);
+
+  SWIFT_FACTORY_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let sawUnreadableFactory = false;
+  const commentScan = newSwiftCommentScan();
+  let coveredEnd = -1;
+  while ((match = SWIFT_FACTORY_RE.exec(source)) !== null) {
+    advanceSwiftCommentScan(source, commentScan, match.index);
+    if (
+      commentScan.inLineComment ||
+      commentScan.blockCommentDepth > 0 ||
+      commentScan.inString !== null
+    ) {
+      continue;
+    }
+    if (
+      packageTargets.sawPackage &&
+      !packageTargets.arraySpans.some(([lo, hi]) => match.index >= lo && match.index <= hi)
+    ) {
+      continue;
+    }
+    if (match.index > 0 && match.index < coveredEnd) continue;
+    const kind = match[1];
+    const paren = source.indexOf('(', match.index);
+    const block = extractBalancedParen(source, paren);
+    if (block === null) {
+      sawUnreadableFactory = true;
+      continue;
+    }
+    coveredEnd = Math.max(coveredEnd, paren + 1 + block.length + 1);
+    if (SWIFT_SKIP_FACTORIES.has(kind)) continue;
+    const nameField = readSwiftFactoryField(block, 'name');
+    if (nameField.value === undefined || nameField.value === '') {
+      sawUnreadableFactory = true;
+      continue;
+    }
+    const name = nameField.value;
+    const pathField = readSwiftFactoryField(block, 'path');
+    const customPath = pathField.value;
+    if (swiftPathIsUnreadable(customPath, pathField.keyPresent)) {
+      sawUnreadableFactory = true;
+      continue;
+    }
+    const sources = readSwiftFactoryStringList(block, 'sources');
+    const exclude = readSwiftFactoryStringList(block, 'exclude');
+    if (sources === null || exclude === null) {
+      sawUnreadableFactory = true;
+      continue;
+    }
+    if (sources !== undefined || exclude !== undefined) {
+      filters.set(name, {
+        ...(sources !== undefined ? { sources } : {}),
+        ...(exclude !== undefined ? { exclude } : {}),
+      });
+    }
+    const dirKind: SwiftTargetDirKind =
+      kind === 'testTarget' ? 'test' : kind === 'plugin' ? 'plugin' : 'source';
+    if (dirKind === 'plugin') plugins.add(name);
+    const dir = customPath ?? `${SWIFT_DEFAULT_TARGET_PARENT[dirKind]}/${name}`;
+    const existing = targets.get(name);
+    if (existing === undefined) {
+      targets.set(name, dir);
+      if (customPath === undefined) implicitDirs.set(name, dirKind);
+    } else if (customPath !== undefined && implicitDirs.has(name)) {
+      // A later `.target(name:path:)` wins over an earlier same-name
+      // factory that only implied the default path.
+      targets.set(name, customPath);
+      implicitDirs.delete(name);
+    }
+  }
+
+  return {
+    targets,
+    implicitDirs,
+    plugins,
+    filters,
+    complete: !sawUnreadableFactory && !packageTargets.helperBuilt,
+  };
+}
+
+/** Conventional parent of a target with no `path:`, before disk lookup. */
+const SWIFT_DEFAULT_TARGET_PARENT: Readonly<Record<SwiftTargetDirKind, string>> = {
+  source: 'Sources',
+  test: 'Tests',
+  plugin: 'Plugins',
+};
+
+/**
+ * SwiftPM's predefined parents, in its search order (`PackageBuilder`):
+ * sources in `Sources`, `Source`, `src`, `srcs`; tests in `Tests` first, then
+ * the source parents; plugins only in `Plugins`.
+ */
+const SWIFT_PREDEFINED_TARGET_PARENTS: Readonly<Record<SwiftTargetDirKind, readonly string[]>> = {
+  source: ['Sources', 'Source', 'src', 'srcs'],
+  test: ['Tests', 'Sources', 'Source', 'src', 'srcs'],
+  plugin: ['Plugins'],
+};
+
+interface SwiftPackageTargetsInspection {
+  helperBuilt: boolean;
+  sawPackage: boolean;
+  arraySpans: Array<[number, number]>;
+}
+
+const SWIFT_ALL_FACTORY_NAMES = new Set<string>([
+  ...SWIFT_SOURCE_FACTORY_NAMES,
+  ...SWIFT_SKIP_FACTORY_NAMES,
+]);
+
+/** Locate `Package(...)`'s `targets:` argument. Product `targets:` stay nested. */
+function inspectSwiftPackageTargets(source: string): SwiftPackageTargetsInspection {
+  const arraySpans: Array<[number, number]> = [];
+  let helperBuilt = false;
+  const seen = { package: false };
+  const unreadable = forEachSwiftPackageArgs(
+    source,
+    (args, argsStart) => {
+      const found = inspectPackageTargetsArg(args);
+      if (found.helperBuilt) {
+        helperBuilt = true;
+        return true;
+      }
+      if (found.arrayStart !== null && found.arrayEnd !== null) {
+        arraySpans.push([argsStart + found.arrayStart, argsStart + found.arrayEnd]);
+      }
+      return false;
+    },
+    seen,
+  );
+  return { helperBuilt: helperBuilt || unreadable, sawPackage: seen.package, arraySpans };
+}
+
+/** Walk `Package(` calls outside comments/strings. Unclosed `Package(` is incomplete. */
+function forEachSwiftPackageArgs(
+  source: string,
+  visit: (args: string, argsStart: number) => boolean,
+  seen: { package: boolean },
+): boolean {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (
+      !source.startsWith('Package', i) ||
+      isSwiftIdentCont(source[i + 7]) ||
+      (i > 0 && isSwiftIdentCont(source[i - 1]))
+    ) {
+      continue;
+    }
+    const parenAt = skipSwiftWsAndComments(source, i + 7);
+    if (parenAt === null || source[parenAt] !== '(') continue;
+    seen.package = true;
+    const args = extractBalancedParen(source, parenAt);
+    if (args === null) return true;
+    if (visit(args, parenAt + 1)) return true;
+    i = parenAt + args.length + 1;
+  }
+  return false;
+}
+
+function inspectPackageTargetsArg(args: string): {
+  helperBuilt: boolean;
+  arrayStart: number | null;
+  arrayEnd: number | null;
+} {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  let paren = 0;
+  for (let i = 0; i < args.length; i++) {
+    const ch = args[i];
+    const next = args[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (ch === '(') {
+      paren++;
+      continue;
+    }
+    if (ch === ')') {
+      paren--;
+      continue;
+    }
+    if (paren !== 0) continue;
+    if (
+      !args.startsWith('targets', i) ||
+      isSwiftIdentCont(args[i + 7]) ||
+      (i > 0 && isSwiftIdentCont(args[i - 1]))
+    ) {
+      continue;
+    }
+    const colonAt = skipSwiftWsAndComments(args, i + 7);
+    if (colonAt === null || args[colonAt] !== ':') {
+      i += 6;
+      continue;
+    }
+    return classifyPackageTargetsValue(args, colonAt + 1);
+  }
+  return { helperBuilt: false, arrayStart: null, arrayEnd: null };
+}
+
+function classifyPackageTargetsValue(
+  args: string,
+  afterColon: number,
+): {
+  helperBuilt: boolean;
+  arrayStart: number | null;
+  arrayEnd: number | null;
+} {
+  const start = skipSwiftWsAndComments(args, afterColon);
+  if (start === null) return { helperBuilt: true, arrayStart: null, arrayEnd: null };
+  if (args[start] === '[') {
+    const close = matchSwiftSquare(args, start);
+    if (close === null) return { helperBuilt: true, arrayStart: null, arrayEnd: null };
+    const next = skipSwiftWsAndComments(args, close + 1);
+    if (next !== null && args[next] === '+') {
+      return { helperBuilt: true, arrayStart: start, arrayEnd: close };
+    }
+    if (packageTargetsArrayHasComputed(args, start, close)) {
+      return { helperBuilt: true, arrayStart: start, arrayEnd: close };
+    }
+    return { helperBuilt: false, arrayStart: start, arrayEnd: close };
+  }
+  return { helperBuilt: true, arrayStart: null, arrayEnd: null };
+}
+
+function packageTargetsArrayHasComputed(source: string, open: number, close: number): boolean {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  let paren = 0;
+  let bracket = 0;
+  for (let i = open; i < close; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (ch === '[') {
+      bracket++;
+      continue;
+    }
+    if (ch === ']') {
+      bracket--;
+      continue;
+    }
+    if (ch === '(') {
+      paren++;
+      continue;
+    }
+    if (ch === ')') {
+      paren--;
+      continue;
+    }
+    if (bracket !== 1 || paren !== 0) continue;
+    if (ch === ',' || /\s/.test(ch)) continue;
+    if (ch === '.') {
+      let j = i + 1;
+      while (j < close && isSwiftIdentCont(source[j])) j++;
+      const name = source.slice(i + 1, j);
+      const after = skipSwiftWsAndComments(source, j);
+      if (after !== null && source[after] === '(' && SWIFT_ALL_FACTORY_NAMES.has(name)) {
+        const block = extractBalancedParen(source, after);
+        if (block === null) return true;
+        i = after + block.length + 1;
+        continue;
+      }
+      return true;
+    }
+    return true;
+  }
+  return false;
+}
+
+function matchSwiftSquare(source: string, openIndex: number): number | null {
+  let depth = 0;
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  for (let i = openIndex; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    } else if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (ch === '[') depth++;
+    else if (ch === ']') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return null;
+}
+
+async function inferSwiftDirectoryTargets(
+  repoRoot: string,
+  packageDir = '',
+): Promise<Map<string, string>> {
+  const targets = new Map<string, string>();
+  const sourceDirs = ['Sources', 'Source', 'Package/Sources', 'src', 'srcs'];
   for (const sourceDir of sourceDirs) {
     try {
-      const fullPath = path.join(repoRoot, sourceDir);
+      const fullPath = path.join(repoRoot, packageDir, sourceDir);
       const entries = await fs.readdir(fullPath, { withFileTypes: true });
       for (const entry of entries) {
-        if (entry.isDirectory()) {
+        // First parent in SwiftPM's search order wins a repeated name.
+        if (entry.isDirectory() && !targets.has(entry.name)) {
           targets.set(entry.name, sourceDir + '/' + entry.name);
         }
       }
@@ -601,12 +1557,116 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
       // Directory doesn't exist
     }
   }
+  return targets;
+}
 
-  if (targets.size > 0) {
-    if (isDev) {
-      logger.info(`📦 Loaded ${targets.size} Swift package targets`);
+/**
+ * Load the SwiftPM config of the package at `packageDir` (repo root when
+ * omitted). Target directories stay package-relative; see
+ * {@link loadSwiftWorkspaceConfig} for the repo-relative merge.
+ */
+export async function loadSwiftPackageConfig(
+  repoRoot: string,
+  packageDir = '',
+): Promise<SwiftPackageConfig | null> {
+  const pkgRoot = path.join(repoRoot, packageDir);
+  try {
+    const source = await fs.readFile(
+      path.join(pkgRoot, await pickSwiftManifestFile(pkgRoot)),
+      'utf-8',
+    );
+    const parsed = parseSwiftPackageManifest(source);
+    if (parsed.complete) {
+      if (isDev) {
+        logger.info(`📦 Loaded ${parsed.targets.size} Swift package targets from Package.swift`);
+      }
+      const parents = new Map<SwiftTargetDirKind, string | null>();
+      for (const [name, kind] of parsed.implicitDirs) {
+        if (!parents.has(kind)) parents.set(kind, await findSwiftPredefinedParent(pkgRoot, kind));
+        const parent = parents.get(kind);
+        if (parent != null) parsed.targets.set(name, `${parent}/${name}`);
+      }
+      // Plugins are modules (grouping) but never `import`-able.
+      const declaredTargets = new Map(
+        [...parsed.targets].filter(([name]) => !parsed.plugins.has(name)),
+      );
+      if (parsed.targets.size > 0) {
+        return {
+          targets: parsed.targets,
+          origin: 'package.swift',
+          declaredTargets,
+          ...(parsed.filters.size > 0 ? { targetFilters: parsed.filters } : {}),
+        };
+      }
+      const inferred = await inferSwiftDirectoryTargets(repoRoot, packageDir);
+      return { targets: inferred, origin: 'package.swift', declaredTargets };
     }
-    return { targets };
+  } catch {
+    // Missing or unreadable — fall through to inferred folders.
+  }
+
+  const inferred = await inferSwiftDirectoryTargets(repoRoot, packageDir);
+  if (inferred.size > 0) {
+    if (isDev) {
+      logger.info(`📦 Inferred ${inferred.size} Swift source folders`);
+    }
+    return { targets: inferred, origin: 'directories' };
+  }
+  return null;
+}
+
+const SWIFT_VERSIONED_MANIFEST_RE = /^Package@swift-(\d+)(?:\.(\d+))?(?:\.(\d+))?\.swift$/;
+
+/**
+ * The manifest SwiftPM would read in `pkgRoot`. A `Package@swift-X.Y.swift`
+ * overrides `Package.swift` for toolchains at or above X.Y; the toolchain is
+ * unknown here, so assume the newest and take the highest version present.
+ */
+async function pickSwiftManifestFile(pkgRoot: string): Promise<string> {
+  let best = 'Package.swift';
+  let bestVersion: readonly number[] = [];
+  let names: string[];
+  try {
+    names = await fs.readdir(pkgRoot);
+  } catch {
+    return best;
+  }
+  for (const name of names) {
+    const m = SWIFT_VERSIONED_MANIFEST_RE.exec(name);
+    if (m === null) continue;
+    const version = [Number(m[1]), Number(m[2] ?? 0), Number(m[3] ?? 0)];
+    if (compareVersions(version, bestVersion) > 0) {
+      best = name;
+      bestVersion = version;
+    }
+  }
+  return best;
+}
+
+function compareVersions(a: readonly number[], b: readonly number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? -1) - (b[i] ?? -1);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/**
+ * SwiftPM's parent directory for targets of `kind` in `pkgRoot`: the first
+ * predefined parent that exists, chosen once per package (a target missing
+ * from it is a manifest error in SwiftPM, not a fallthrough). Null when none
+ * exists.
+ */
+async function findSwiftPredefinedParent(
+  pkgRoot: string,
+  kind: SwiftTargetDirKind,
+): Promise<string | null> {
+  for (const parent of SWIFT_PREDEFINED_TARGET_PARENTS[kind]) {
+    try {
+      if ((await fs.stat(path.join(pkgRoot, parent))).isDirectory()) return parent;
+    } catch {
+      // Not there — try the next predefined parent.
+    }
   }
   return null;
 }
@@ -646,10 +1706,21 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
  *     string literals — a commented-out `.path` or a `}` inside a comment
  *     or string cannot declare a dep or truncate the block.
  */
-export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonConfig | null> {
+export async function loadZigBuildConfig(
+  repoRoot: string,
+  packageDir = '',
+): Promise<ZigBuildZonConfig | null> {
+  // Every path this function returns is REPO-relative, because that is the
+  // keyspace `allFilePaths` uses. The parsers below answer package-relative, so
+  // a nested package rebases them through `inPackage`. For the root package
+  // (`packageDir === ''`) the prefix is empty and every value is byte-identical
+  // to what this function returned before nested packages existed.
+  const pkg = packageDir === '' ? '' : `${packageDir}/`;
+  const inPackage = (relToPackage: string): string => `${pkg}${relToPackage}`;
+  const packageFile = (name: string): string => path.join(repoRoot, packageDir, name);
   let config: ZigBuildZonConfig | null = null;
   try {
-    const raw = await fs.readFile(path.join(repoRoot, 'build.zig.zon'), 'utf-8');
+    const raw = await fs.readFile(packageFile('build.zig.zon'), 'utf-8');
     config = parseZigBuildZon(raw);
   } catch {
     // No zon (or unreadable): the root build.zig may still declare modules.
@@ -661,9 +1732,11 @@ export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonC
   let rootModules: Map<string, string> | undefined;
   let rootBuildZig: string | null = null;
   try {
-    rootBuildZig = await fs.readFile(path.join(repoRoot, 'build.zig'), 'utf-8');
+    rootBuildZig = await fs.readFile(packageFile('build.zig'), 'utf-8');
     const parsed = parseZigRootModules(rootBuildZig);
-    if (parsed.size > 0) rootModules = parsed;
+    if (parsed.size > 0) {
+      rootModules = new Map(Array.from(parsed, ([name, root]) => [name, inPackage(root)]));
+    }
   } catch {
     // No root build.zig — nothing to declare.
   }
@@ -671,7 +1744,7 @@ export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonC
   if (config === null) {
     if (rootBuildZig === null) return null;
     // No zon: no path deps, so `dep.module(…)` operands resolve to nothing.
-    const buildModules = parseZigBuildModules(rootBuildZig);
+    const buildModules = rebaseZigBuildModules(parseZigBuildModules(rootBuildZig), inPackage);
     if (!rootModules && buildModules.length === 0) return null;
     return {
       pathDeps: new Map(),
@@ -688,9 +1761,22 @@ export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonC
   // Per path dep: the modules its build.zig NAMES (`addModule("core", …)`),
   // repo-relative — what a root-build.zig `dep.module("core")` operand means.
   const depModules = new Map<string, ReadonlyMap<string, string>>();
+  // A nested package's `.path` values are written relative to ITS directory, so
+  // they are rebased here and stored repo-relative; `resolveZigImportInternal`
+  // then reads them through the same `normalizeZigDepPath`, which is idempotent
+  // on an already-normalized value. A dep that escapes the REPO root (not merely
+  // the package) resolves to nothing and is dropped. The root package keeps its
+  // raw spelling, which is what `parseZigBuildZon` promises and its tests pin.
+  const pathDeps = pkg === '' ? config.pathDeps : new Map<string, string>();
   for (const [depName, depPath] of config.pathDeps) {
-    const rel = normalizeZigDepPath(depPath);
+    // Asked of the value AS WRITTEN, before the package prefix goes on: an
+    // absolute `.path` points outside the repository whichever package declared
+    // it, and prefixing hides that from `normalizeZigDepPath`. See
+    // `isAbsoluteZigDepPath`.
+    if (isAbsoluteZigDepPath(depPath)) continue;
+    const rel = normalizeZigDepPath(`${pkg}${depPath}`);
     if (rel === null) continue;
+    if (pkg !== '') pathDeps.set(depName, rel);
     let buildZig: string;
     try {
       buildZig = await fs.readFile(path.join(repoRoot, rel, 'build.zig'), 'utf-8');
@@ -706,13 +1792,172 @@ export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonC
     }
     if (named.size > 0) depModules.set(depName, named);
   }
-  const buildModules = rootBuildZig === null ? [] : parseZigBuildModules(rootBuildZig, depModules);
+  const buildModules =
+    rootBuildZig === null
+      ? []
+      : rebaseZigBuildModules(
+          parseZigBuildModules(rootBuildZig, depModules),
+          inPackage,
+          depModules,
+        );
   return {
     ...config,
+    pathDeps,
     ...(moduleRoots.size > 0 ? { moduleRoots } : {}),
     ...(rootModules ? { rootModules } : {}),
     ...(buildModules.length > 0 ? { buildModules } : {}),
   };
+}
+
+/**
+ * Rebase a package's own build modules to repo-relative paths.
+ *
+ * `parseZigBuildModules` answers package-relative for everything it read out of
+ * the `build.zig` it was handed, with one exception: an alias resolved through
+ * `depModules` (`addImport("api", dep.module("core"))`) is already repo-relative,
+ * because `depModules` was built that way. Prefixing that a second time would
+ * point the alias at a path no file has. The already-repo-relative values are
+ * therefore identified by membership in `depModules`, not guessed at from their
+ * shape.
+ */
+function rebaseZigBuildModules(
+  modules: readonly ZigBuildModule[],
+  inPackage: (relToPackage: string) => string,
+  depModules?: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): ZigBuildModule[] {
+  if (inPackage('') === '') return [...modules];
+  const fromDep = new Set<string>();
+  for (const named of depModules?.values() ?? [])
+    for (const root of named.values()) fromDep.add(root);
+  return modules.map((mod) => ({
+    ...(mod.name !== undefined ? { name: mod.name } : {}),
+    root: inPackage(mod.root),
+    imports: new Map(
+      Array.from(mod.imports, ([alias, root]) => [
+        alias,
+        fromDep.has(root) ? root : inPackage(root),
+      ]),
+    ),
+  }));
+}
+
+/** Bounds for the package walk, mirroring the tsconfig scan. */
+const ZIG_SCAN_MAX_DIRS = 20_000;
+const ZIG_SCAN_MAX_DEPTH = 24;
+
+/**
+ * The Zig build package governing `filePath` — the nearest one at or above it.
+ *
+ * A Zig module's import table is declared by the `build.zig` of the package the
+ * file belongs to, so the nearest enclosing package is the faithful reading of
+ * `@import("name")` at that site, exactly as `tsconfigFor` reads a non-relative
+ * specifier against the nearest enclosing project.
+ *
+ * There is deliberately NO fall-through to an enclosing package when the nearest
+ * one does not bind the name. Falling through is how a vendored dependency's
+ * `@import("config")` silently resolved to the outer repo's `config` module —
+ * the same failure `loadTsconfigIndex` documents for a package whose own
+ * tsconfig declares no `baseUrl`, and the same failure the per-module import
+ * tables in `resolveZigImportInternal` already exist to prevent one level down.
+ */
+export function zigPackageFor(
+  index: ZigWorkspaceIndex | null | undefined,
+  filePath: string,
+): ZigBuildZonConfig | null {
+  if (index === null || index === undefined) return null;
+  for (const scope of index.packages) {
+    if (scope.dir === '') return scope.config;
+    if (filePath.startsWith(`${scope.dir}/`)) return scope.config;
+  }
+  return null;
+}
+
+/**
+ * Load every Zig build package in the repo, nearest-first.
+ *
+ * Called with no `packageDir` — which is how every call site read it before
+ * this function existed — `loadZigBuildConfig` reads the ROOT `build.zig` /
+ * `build.zig.zon` and nothing else. That is the whole configuration of a
+ * single-package repo and none of the configuration of a monorepo: a repo
+ * laying its packages out as `packages/<name>/build.zig` has no root build
+ * files at all, so the loader answers `null` and EVERY bare
+ * `@import("<module>")` in it goes unresolved — cross-file resolution silently
+ * degrades to relative imports only. Measured on a two-package fixture:
+ * `config = null`, `@import("core")` → `null`.
+ *
+ * The loader itself is not root-bound any more: this function is what supplies
+ * it a `packageDir`, one per package below.
+ *
+ * So the packages are discovered the way tsconfigs are (`findTsconfigFiles`):
+ * one bounded breadth-first walk that skips the hardcoded ignore set, then
+ * deepest-first ordering so `zigPackageFor` can take the first match.
+ *
+ * Called from `ScopeResolver.loadResolutionConfig`, which the orchestrator runs
+ * once per LANGUAGE workspace pass — so the walk happens only for repos that
+ * actually contain Zig.
+ */
+export async function loadZigWorkspaceIndex(repoRoot: string): Promise<ZigWorkspaceIndex | null> {
+  const dirs = await findZigPackageDirs(repoRoot);
+  if (dirs.length === 0) return null;
+  const packages: ZigPackageScope[] = [];
+  for (const dir of dirs) {
+    const config = await loadZigBuildConfig(repoRoot, dir);
+    // A `build.zig` that declares no module and no path dep contributes nothing
+    // a lookup could answer with. Keeping it as an empty scope would be worse
+    // than dropping it: it would shadow an enclosing package that DOES declare
+    // the name, and answer nothing in its place.
+    if (config !== null) packages.push({ dir, config });
+  }
+  if (packages.length === 0) return null;
+  // Deepest first, so `zigPackageFor` takes the most specific package rather
+  // than whichever the walk reached first.
+  packages.sort((a, b) => b.dir.length - a.dir.length || a.dir.localeCompare(b.dir));
+  return { packages };
+}
+
+/** Repo-relative directories holding a `build.zig` and/or a `build.zig.zon`. */
+async function findZigPackageDirs(repoRoot: string): Promise<string[]> {
+  const found: string[] = [];
+  const queue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
+  // A HEAD INDEX rather than `queue.shift()`. The queue is pushed to while it is
+  // drained, which keeps the array in a mode where `shift()` memmoves the whole
+  // remainder instead of taking V8's left-trimming fast path — so the walk is
+  // quadratic in the frontier, and `ZIG_SCAN_MAX_DIRS` is the bound on how bad
+  // that gets. Measured at that bound (20,000 dequeues): 53 ms at fan-out 4 and
+  // 81 ms at fan-out 20, against 0.8 ms here — 66-106x, paid before any config
+  // is read. Memory is unchanged: entries were already retained by the pushes,
+  // `shift()` only dropped the head.
+  let queueHead = 0;
+  let dirsScanned = 0;
+
+  while (queueHead < queue.length && dirsScanned < ZIG_SCAN_MAX_DIRS) {
+    const { dir, depth } = queue[queueHead++]!;
+    dirsScanned++;
+    let entries: import('fs').Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    let isPackage = false;
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const childDir = path.join(dir, entry.name);
+        if (isHardcodedIgnoredDirectoryAtPath(repoRoot, childDir)) continue;
+        if (depth < ZIG_SCAN_MAX_DEPTH) queue.push({ dir: childDir, depth: depth + 1 });
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      // Either marker declares a package: a `build.zig` with no zon still names
+      // modules, and a zon with no build.zig still names path deps.
+      if (entry.name === 'build.zig' || entry.name === 'build.zig.zon') isPackage = true;
+    }
+    if (isPackage) {
+      const rel = path.relative(repoRoot, dir).split(path.sep).join('/');
+      found.push(rel === '.' || rel === '' ? '' : rel);
+    }
+  }
+  return found;
 }
 
 /**
@@ -722,13 +1967,38 @@ export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonC
  * to the empty string (the repo root itself). Shared with the import
  * resolver so both sides agree on which deps are in-repo.
  */
-export function normalizeZigDepPath(depPath: string): string | null {
-  // Normalize separators BEFORE the absolute check so every Windows spelling
-  // is visible to it: POSIX (`/x`), drive (`C:\x`, `C:/x`), root-relative
-  // (`\x` → `/x`) and UNC (`\\server\share` → `//server/share`) paths all
-  // point outside the repository.
+/**
+ * Does this `.path` value point outside the repository BY ITS SPELLING —
+ * POSIX absolute (`/dep`), Windows drive-qualified (`C:\dep`, `C:/dep`),
+ * root-relative (`\dep`) or UNC (`\\server\share`)?
+ *
+ * Separators are normalized first so every Windows spelling is visible to the
+ * one test. Exported-in-spirit rather than inlined because it must be asked in
+ * TWO places and the two must not drift: `normalizeZigDepPath` asks it of the
+ * value it is given, and `loadZigBuildConfig` asks it of a NESTED package's
+ * value BEFORE prefixing the package directory. That second call is the whole
+ * point — prefixing turns `/dep` into `packages/app//dep`, which is relative by
+ * inspection, so the check inside `normalizeZigDepPath` no longer sees an
+ * absolute path and the empty segment is simply dropped, mapping an
+ * out-of-repo dependency onto a real in-repo directory if one happens to exist.
+ *
+ * `path.posix.join` is NOT a substitute: it strips the leading slash too
+ * (`join('packages/app/', '/dep')` is `packages/app/dep`), so it produces the
+ * same fabricated path without ever rejecting anything.
+ *
+ * A `..` prefix is deliberately NOT handled here. `../core` escapes the
+ * package but not necessarily the repo, and rebasing it is exactly what the
+ * nested-package branch exists to do; `normalizeZigDepPath` rejects the ones
+ * that still escape the ROOT after rebasing.
+ */
+export function isAbsoluteZigDepPath(depPath: string): boolean {
   const normalized = depPath.replace(/\\/g, '/');
-  if (normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) return null;
+  return normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized);
+}
+
+export function normalizeZigDepPath(depPath: string): string | null {
+  const normalized = depPath.replace(/\\/g, '/');
+  if (isAbsoluteZigDepPath(depPath)) return null;
   const parts: string[] = [];
   for (const part of normalized.split('/')) {
     if (part === '' || part === '.') continue;
@@ -1306,46 +2576,4 @@ export function parseZigBuildZon(raw: string): ZigBuildZonConfig | null {
     logger.info(`📦 Loaded ${pathDeps.size} Zig path-dep(s) from build.zig.zon`);
   }
   return { pathDeps };
-}
-
-// ============================================================================
-// BUNDLED CONFIG LOADER
-// ============================================================================
-
-/**
- * Bundled language-specific configs loaded once per ingestion run — the
- * result of {@link loadImportConfigs}, and every field's type is declared
- * above in this module.
- *
- * It lives here rather than in `import-resolvers/types.ts` (its consumer, via
- * `ResolveCtx`) so the dependency runs one way: the import-resolver types
- * import this bundle, and this module imports nothing from them. Homing the
- * producer's result type with the producer also keeps `import-resolvers/
- * types.ts` free of per-language names.
- */
-export interface ImportConfigs {
-  tsconfigPaths: TsconfigPaths | null;
-  goModule: GoModuleConfig | null;
-  composerConfig: ComposerConfig | null;
-  swiftPackageConfig: SwiftPackageConfig | null;
-  csharpConfigs: CSharpProjectConfig[];
-  /** In-repo namespace evidence gating C# suffix-fallback resolution (#1881). */
-  csharpNamespaces?: CSharpNamespaceEvidence;
-  /** Zig `.path` deps from build.zig.zon. Optional so call sites that
-   *  hand-build ImportConfigs (tests) don't have to supply it. */
-  zigBuildZon?: ZigBuildZonConfig | null;
-}
-
-/** Load all language-specific configs once for an ingestion run. */
-export async function loadImportConfigs(repoRoot: string): Promise<ImportConfigs> {
-  const csharpScan = await scanCSharpProject(repoRoot);
-  return {
-    tsconfigPaths: await loadTsconfigPaths(repoRoot),
-    goModule: await loadGoModulePath(repoRoot),
-    composerConfig: await loadComposerConfig(repoRoot),
-    swiftPackageConfig: await loadSwiftPackageConfig(repoRoot),
-    csharpConfigs: csharpScan.configs,
-    csharpNamespaces: csharpScanToEvidence(csharpScan),
-    zigBuildZon: await loadZigBuildConfig(repoRoot),
-  };
 }

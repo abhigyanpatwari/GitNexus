@@ -3,8 +3,13 @@ import {
   generateEmbeddingText,
   truncateDescription,
   extractDeclarationOnly,
+  splitEmbeddingText,
 } from '../../src/core/embeddings/text-generator.js';
-import { isChunkableLabel } from '../../src/core/embeddings/types.js';
+import {
+  CHUNKING_RULES,
+  isChunkableLabel,
+  STRUCTURAL_TEXT_MODE_NONE,
+} from '../../src/core/embeddings/types.js';
 import type { EmbeddableNode } from '../../src/core/embeddings/types.js';
 
 const baseNode: EmbeddableNode = {
@@ -18,6 +23,18 @@ const baseNode: EmbeddableNode = {
 };
 
 describe('text-generator', () => {
+  it.each([2, 17, 4096])(
+    'preserves all final generated text within a %i character budget',
+    (budget) => {
+      const text = 'Header: 超长😀\n' + '中文😀abc'.repeat(3000);
+      const chunks = [...splitEmbeddingText(text, budget)];
+      expect(chunks.join('')).toBe(text);
+      expect(
+        chunks.every((chunk) => chunk.length <= budget && Buffer.from(chunk).toString() === chunk),
+      ).toBe(true);
+    },
+  );
+
   describe('generateEmbeddingText', () => {
     it('leads with name and code, dropping verbose metadata lines (#2333)', () => {
       const node: EmbeddableNode = {
@@ -416,6 +433,59 @@ describe('text-generator', () => {
       expect(text).not.toContain('Properties: options, cache');
     });
 
+    it.each([0, 1])(
+      'preserves Unicode at the compact container cutoff (chunk %i)',
+      (chunkIndex) => {
+        const prefix = 'export interface Handler { value: "';
+        const declaration = `${prefix}${'x'.repeat(199 - prefix.length)}😀"; }`;
+        const node = { ...baseNode, label: 'Interface', name: 'Handler', content: declaration };
+        const text = generateEmbeddingText(node, declaration, {}, chunkIndex);
+        expect(text).toContain('Container: export interface Handler');
+        expect(text).toContain('😀');
+        expect(Buffer.from(text).toString('utf8')).toBe(text);
+        const chunks = [...splitEmbeddingText(text, 200)];
+        expect(chunks.join('')).toBe(text);
+        expect(
+          chunks.every(
+            (chunk) => chunk.length <= 200 && Buffer.from(chunk).toString('utf8') === chunk,
+          ),
+        ).toBe(true);
+      },
+    );
+
+    it('keeps a declaration-aware container on decorated and blank-led later chunks', () => {
+      for (const prefix of ['\n\n', '@Component({\n selector: "app-root",\n})\n']) {
+        const node = {
+          ...baseNode,
+          label: 'Class',
+          name: 'Parser',
+          content: `${prefix}export class Parser {\n parse() { return 1; }\n}`,
+        };
+        expect(generateEmbeddingText(node, 'parse() { return 1; }', {}, 1)).toContain(
+          'Container: export class Parser {',
+        );
+      }
+    });
+
+    it.each([
+      `@Component({ description: "${'x'.repeat(500)}" })\n`,
+      `/* ${'comment '.repeat(80)} */\n`,
+      '\n'.repeat(250),
+    ])('uses graph identity after a long prefix (case %#)', (prefix) => {
+      const node = {
+        ...baseNode,
+        label: 'Class',
+        name: 'Parser',
+        content: `${prefix}export class Parser {\n parse() { return 1; }\n}`,
+      };
+      expect(generateEmbeddingText(node, 'parse() { return 1; }', {}, 0)).toContain(
+        'Container: export class Parser {',
+      );
+      expect(generateEmbeddingText(node, 'parse() { return 1; }', {}, 1)).toContain(
+        'Container: Class Parser',
+      );
+    });
+
     it('adds preceding context to non-structural chunk text', () => {
       const text = generateEmbeddingText(
         baseNode,
@@ -428,6 +498,38 @@ describe('text-generator', () => {
       expect(text).toContain('[preceding context]: ...function parseJSON');
       expect(text).toContain('return JSON.parse(text);');
     });
+
+    it.each([
+      {
+        label: 'Protocol' as const,
+        name: 'Worker',
+        content: ['@protocol Worker', '- (void)run;', '@end'].join('\n'),
+        chunk: '- (void)run;',
+      },
+      {
+        label: 'Category' as const,
+        name: 'Worker (Tracing)',
+        content: ['@interface Worker (Tracing)', '- (void)trace;', '@end'].join('\n'),
+        chunk: '- (void)trace;',
+      },
+    ])(
+      'keeps Objective-C $label embedding text code-oriented',
+      ({ label, name, content, chunk }) => {
+        const node: EmbeddableNode = {
+          ...baseNode,
+          label,
+          name,
+          content,
+        };
+
+        const text = generateEmbeddingText(node, chunk, {}, 1, 'previous declaration');
+
+        expect(CHUNKING_RULES[label]?.structuralTextMode).toBe(STRUCTURAL_TEXT_MODE_NONE);
+        expect(text).toContain(chunk);
+        expect(text).toContain('[preceding context]: ...previous declaration');
+        expect(text).not.toContain('Container:');
+      },
+    );
   });
 
   describe('Constructor label', () => {

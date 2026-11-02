@@ -63,8 +63,11 @@ def test_signal_cancels_active_wave_before_assets_are_released(tmp_path, signum)
     ready = tmp_path / "child-pid"
     assets = tmp_path / "assets"
     assets.write_text("shared")
+    # Publish readiness only after the complete PID is visible to the parent.
     command = (
-        f"import os,time; from pathlib import Path; Path({str(ready)!r}).write_text(str(os.getpid())); time.sleep(60)"
+        f"import os,time; from pathlib import Path; ready=Path({str(ready)!r}); "
+        "staged=ready.with_suffix('.tmp'); staged.write_text(str(os.getpid())); "
+        "staged.replace(ready); time.sleep(60)"
     )
     script = f"""
 import json,sys
@@ -79,11 +82,11 @@ def run(index, arm):
     assert Path({str(assets)!r}).exists(), 'assets removed while a worker was active'
     return {{'resolved': False, 'error_kind': result.state}}
 with cancellation_scope(handle_signals=True) as event:
-    streak, stopped=sweep_task_cells([(i, 'review') for i in range(10)], workers=2, run=run,
+    streak, tripped=sweep_task_cells([(i, 'review') for i in range(10)], workers=2, run=run,
         on_start=lambda *args: None, on_record=lambda i,a,r: rows.append([i,r]),
         outage_streak=0, outage_limit=5, cancel_event=event)
 Path({str(assets)!r}).unlink()
-print(json.dumps({{'rows': rows, 'stopped': stopped}}))
+print(json.dumps({{'rows': rows, 'stopped': event.is_set(), 'tripped': tripped}}))
 """
     process = subprocess.Popen(
         [PYTHON, "-c", script],
@@ -104,7 +107,8 @@ print(json.dumps({{'rows': rows, 'stopped': stopped}}))
         assert process.returncode == 0, stderr
         assert time.monotonic() - started < 15
         report = json.loads(stdout)
-        assert report["stopped"] and [row[0] for row in report["rows"]] == [0, 1]
+        assert report["stopped"] and not report["tripped"], "cancelled, not an outage"
+        assert [row[0] for row in report["rows"]] == [0, 1]
         assert report["rows"][0][1]["resolved"] is True
         assert report["rows"][1][1]["error_kind"] == "cancelled"
         with pytest.raises(ProcessLookupError):

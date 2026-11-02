@@ -24,7 +24,9 @@ describe('WatchRefreshQueue', () => {
     const batches: readonly string[][] = [];
     const mutable = batches as string[][];
     const queue = new WatchRefreshQueue(
-      async (paths) => mutable.push([...paths]),
+      async (paths) => {
+        mutable.push([...paths]);
+      },
       () => {},
       100,
     );
@@ -102,7 +104,9 @@ describe('WatchRefreshQueue', () => {
     vi.useFakeTimers();
     const batches: string[][] = [];
     const queue = new WatchRefreshQueue(
-      async (paths) => batches.push([...paths]),
+      async (paths) => {
+        batches.push([...paths]);
+      },
       () => {},
       50,
       { holdEventsUntilInitialRefresh: true },
@@ -250,7 +254,9 @@ describe('WatchRefreshQueue', () => {
     vi.useFakeTimers();
     const batches: string[][] = [];
     const queue = new WatchRefreshQueue(
-      async (paths) => batches.push([...paths]),
+      async (paths) => {
+        batches.push([...paths]);
+      },
       () => {},
       100,
       { maxWaitMs: 250 },
@@ -271,7 +277,9 @@ describe('WatchRefreshQueue', () => {
     vi.useFakeTimers();
     const batches: string[][] = [];
     const queue = new WatchRefreshQueue(
-      async (paths) => batches.push([...paths]),
+      async (paths) => {
+        batches.push([...paths]);
+      },
       () => {},
       10,
       {
@@ -292,7 +300,9 @@ describe('WatchRefreshQueue', () => {
     vi.useFakeTimers();
     const batches: string[][] = [];
     const queue = new WatchRefreshQueue(
-      async (paths) => batches.push([...paths]),
+      async (paths) => {
+        batches.push([...paths]);
+      },
       () => {},
       10,
       {
@@ -314,7 +324,9 @@ describe('WatchRefreshQueue', () => {
     vi.useFakeTimers();
     const batches: string[][] = [];
     const queue = new WatchRefreshQueue(
-      async (paths) => batches.push([...paths]),
+      async (paths) => {
+        batches.push([...paths]);
+      },
       () => {},
       10,
       { maxPendingPaths: 2 },
@@ -333,7 +345,9 @@ describe('WatchRefreshQueue', () => {
     vi.useFakeTimers();
     const batches: string[][] = [];
     const queue = new WatchRefreshQueue(
-      async (paths) => batches.push([...paths]),
+      async (paths) => {
+        batches.push([...paths]);
+      },
       () => {},
       10,
       { maxPendingPaths: 0 },

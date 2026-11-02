@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 /**
  * End-to-end coverage of imported/composed FastAPI route path constants (#2391).
  *
@@ -21,12 +22,11 @@ import * as os from 'node:os';
 import Parser from 'tree-sitter';
 import Python from 'tree-sitter-python';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
-import type { PipelineResult } from '../../types/pipeline.js';
+import type { PipelineResult } from '../../src/types/pipeline.js';
 import { PYTHON_HTTP_PLUGIN } from '../../src/core/group/extractors/http-patterns/python.js';
 import {
   loadParseCache,
   saveParseCache,
-  PARSE_CACHE_VERSION,
   pruneCache,
   type ParseCache,
 } from '../../src/storage/parse-cache.js';
@@ -34,6 +34,8 @@ import {
   getDurableParsedFileDir,
   pruneAndSaveDurableParsedFileStore,
 } from '../../src/storage/parsedfile-store.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 const FIXTURE = path.resolve(__dirname, '..', 'fixtures', 'fastapi-composed-app');
 
@@ -141,6 +143,7 @@ describe('FastAPI composed route constants — ingestion↔group parity (#2391 R
       return p.parse(src);
     };
     const ctx = PYTHON_HTTP_PLUGIN.prepareRepo?.({
+      repoPath: '/test-repo',
       files: Object.keys(files),
       parser,
       readFile: (r) => files[r] ?? null,
@@ -175,10 +178,11 @@ describe('FastAPI composed routes — warm parse-cache (#2391, #2865)', () => {
     const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-composed-warm-'));
     try {
       const cold: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: parseIdentity,
         entries: new Map(),
         usedKeys: new Set<string>(),
         storagePath: storageDir,
+        writeStoragePath: storageDir,
         onDiskKeys: new Set<string>(),
       };
       const coldResult = await runPipelineFromRepo(FIXTURE, () => {}, {
@@ -191,10 +195,10 @@ describe('FastAPI composed routes — warm parse-cache (#2391, #2865)', () => {
       const savedKeys = await saveParseCache(storageDir, cold);
       await pruneAndSaveDurableParsedFileStore(
         getDurableParsedFileDir(storageDir),
-        PARSE_CACHE_VERSION,
+        parseIdentity.base,
         new Set(savedKeys),
       );
-      const warm = await loadParseCache(storageDir);
+      const warm = await loadParseCache(storageDir, parseIdentity, storageDir);
       const replay = await runPipelineFromRepo(FIXTURE, () => {}, {
         parseCache: warm,
         workerPoolSize: 1,

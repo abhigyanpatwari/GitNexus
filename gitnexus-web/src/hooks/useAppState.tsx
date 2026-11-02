@@ -45,7 +45,7 @@ import {
 } from '../services/backend-client';
 import { ERROR_RESET_DELAY_MS } from '../config/ui-constants';
 import i18n from '../i18n';
-import { normalizePath } from '../lib/path-resolution';
+import { normalizePath, resolveUniqueIndexedPath } from '../lib/path-resolution';
 import { FILE_REF_REGEX, NODE_REF_REGEX } from '../lib/grounding-patterns';
 import { GraphStateProvider, useGraphState, type GraphMode } from './app-state/graph';
 
@@ -68,6 +68,12 @@ const displayNameForIdentity = (repos: BackendRepo[], identity: string): string 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
 export type EmbeddingStatus = 'idle' | 'loading' | 'embedding' | 'indexing' | 'ready' | 'error';
+
+/**
+ * POST /api/embed 409 "Another job is already active for this repository"
+ * is the shared analyze/embed lock, not proof this repo is embedding.
+ */
+export const embeddingStatusForStartFailure = (_error: unknown): EmbeddingStatus => 'error';
 
 export interface QueryResult {
   rows: Record<string, any>[];
@@ -231,6 +237,8 @@ interface AppState {
   isCodePanelOpen: boolean;
   setCodePanelOpen: (open: boolean) => void;
   addCodeReference: (ref: Omit<CodeReference, 'id'>) => void;
+  /** Resolve a (possibly partial) file path cited by the agent to a real graph file path. */
+  resolveFilePath: (requestedPath: string) => string | null;
   removeCodeReference: (id: string) => void;
   clearAICodeReferences: () => void;
   clearCodeReferences: () => void;
@@ -418,16 +426,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   }, [graph]);
 
   const resolveFilePath = useCallback(
-    (requestedPath: string): string | null => {
-      const normalized = normalizePath(requestedPath);
-      // Exact match
-      if (filePathIndex.has(normalized)) return filePathIndex.get(normalized)!;
-      // Suffix match (partial paths like "src/utils.ts")
-      for (const [key, value] of filePathIndex) {
-        if (key.endsWith(normalized)) return value;
-      }
-      return null;
-    },
+    (requestedPath: string): string | null =>
+      resolveUniqueIndexedPath(filePathIndex, requestedPath),
     [filePathIndex],
   );
 
@@ -558,13 +558,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
           },
         );
       });
-    } catch (error: any) {
-      if (error?.message?.includes('already in progress')) {
-        // Dedup — embeddings already running, just wait
-        setEmbeddingStatus('embedding');
-        return;
-      }
-      setEmbeddingStatus('error');
+    } catch (error: unknown) {
+      // Shared acquireRepoLock 409 is used for both analyze-held and embed-held
+      // locks. Never treat it as in-progress embedding — that hid an analyze
+      // occupant as a successful embed start.
+      setEmbeddingStatus(embeddingStatusForStartFailure(error));
       throw error;
     }
   }, []);
@@ -630,6 +628,14 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     graphModeRef.current = graphMode;
   }, [graphMode]);
+  // Same trick for the display name: initializeAgent has empty deps, so a plain
+  // `projectName` read would be trapped at the initial '' for callers that pass
+  // no override (settings-saved re-init, lazy init from sendChatMessage) and
+  // the system prompt would label the codebase the literal 'project'.
+  const projectNameRef = useRef(projectName);
+  useEffect(() => {
+    projectNameRef.current = projectName;
+  }, [projectName]);
 
   const initializeAgent = useCallback(
     async (
@@ -649,7 +655,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setAgentError(null);
 
       try {
-        const effectiveProjectName = overrideProjectName || projectName || 'project';
+        const effectiveProjectName = overrideProjectName || projectNameRef.current || 'project';
 
         // Sync repoRef so all agent backend calls target the correct repo.
         // initializeAgent can be called from App.tsx (handleServerConnect) which
@@ -911,10 +917,14 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
                   addCodeReference({
                     filePath: resolvedPath,
-                    startLine: node.properties.startLine
-                      ? node.properties.startLine - 1
-                      : undefined,
-                    endLine: node.properties.endLine ? node.properties.endLine - 1 : undefined,
+                    startLine:
+                      typeof node.properties.startLine === 'number'
+                        ? node.properties.startLine
+                        : undefined,
+                    endLine:
+                      typeof node.properties.endLine === 'number'
+                        ? node.properties.endLine
+                        : undefined,
                     nodeId: node.id,
                     label: node.label,
                     name: node.properties.name,
@@ -1126,6 +1136,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       clearAIToolHighlights,
       graph,
       embeddingStatus,
+      llmSettings.activeProvider,
     ],
   );
 
@@ -1588,6 +1599,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     isCodePanelOpen,
     setCodePanelOpen,
     addCodeReference,
+    resolveFilePath,
     removeCodeReference,
     clearAICodeReferences,
     clearCodeReferences,

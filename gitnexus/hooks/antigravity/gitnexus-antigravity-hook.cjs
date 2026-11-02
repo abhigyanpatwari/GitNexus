@@ -29,6 +29,12 @@ const {
   resolveUnixGuardTimeout,
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
+const { resolveHookRepo } = (() => {
+  // Installed copies get helpers next to this adapter. The in-tree source
+  // tree only ships the adapter, so fall back to the Claude helper copies.
+  const local = path.join(__dirname, 'registry-query.cjs');
+  return fs.existsSync(local) ? require(local) : require('../claude/registry-query.cjs');
+})();
 
 function readInput() {
   try {
@@ -39,81 +45,8 @@ function readInput() {
   }
 }
 
-function isGlobalRegistryDir(candidate) {
-  if (
-    fs.existsSync(path.join(candidate, 'gitnexus.json')) ||
-    fs.existsSync(path.join(candidate, 'meta.json'))
-  ) {
-    return false;
-  }
-  return (
-    fs.existsSync(path.join(candidate, 'registry.json')) ||
-    fs.existsSync(path.join(candidate, 'repos'))
-  );
-}
-
-/**
- * Read the index metadata file, preferring `gitnexus.json` (current format)
- * and falling back to the legacy `meta.json` mirror. Returns `null` if
- * neither exists or parses.
- */
-function readIndexMeta(gitNexusDir) {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(gitNexusDir, 'gitnexus.json'), 'utf-8'));
-  } catch {
-    try {
-      return JSON.parse(fs.readFileSync(path.join(gitNexusDir, 'meta.json'), 'utf-8'));
-    } catch {
-      return null;
-    }
-  }
-}
-
-function walkForGitNexusDir(startDir) {
-  let dir = startDir;
-  for (let i = 0; i < 5; i++) {
-    const candidate = path.join(dir, '.gitnexus');
-    if (fs.existsSync(candidate)) {
-      if (!isGlobalRegistryDir(candidate)) return candidate;
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
-
-function findCanonicalRepoRoot(cwd) {
-  try {
-    const result = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
-      encoding: 'utf-8',
-      timeout: 2000,
-      cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-    if (result.error || result.status !== 0) return null;
-    const commonDir = (result.stdout || '').trim();
-    if (!commonDir || !path.isAbsolute(commonDir)) return null;
-    return path.dirname(commonDir);
-  } catch {
-    return null;
-  }
-}
-
-function findGitNexusDir(startDir) {
-  const cwd = startDir || process.cwd();
-  const fromCwd = walkForGitNexusDir(cwd);
-  if (fromCwd) return fromCwd;
-  const canonicalRoot = findCanonicalRepoRoot(cwd);
-  if (canonicalRoot && canonicalRoot !== cwd) {
-    return walkForGitNexusDir(canonicalRoot);
-  }
-  return null;
-}
-
-function hasGitNexusServerOwner(gitNexusDir) {
-  return hasGitNexusDbLockedByGitNexusServer(path.join(gitNexusDir, 'lbug'), process.pid);
+function hasGitNexusServerOwner(lbugPath) {
+  return hasGitNexusDbLockedByGitNexusServer(lbugPath, process.pid);
 }
 
 /**
@@ -355,35 +288,39 @@ function toolSucceeded(toolResponse) {
 function buildAfterToolContext(input) {
   const cwd = input.cwd || process.cwd();
   if (!path.isAbsolute(cwd)) return null;
-  const gitNexusDir = findGitNexusDir(cwd);
-  if (!gitNexusDir) return null;
 
   const toolName = input.tool_name || '';
   const toolInput = input.tool_input || {};
   const toolResponse = input.tool_response || {};
+  const succeeded = toolSucceeded(toolResponse);
+  const pattern = succeeded ? extractPattern(toolName, toolInput) : null;
+  const command = toolName === 'run_shell_command' ? toolInput.command || '' : '';
+  const gitMutation =
+    succeeded && /\bgit\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(command);
+  // Cheap tool-result guards first. Registry I/O is only for search augment
+  // or a git mutation that might need a stale-index hint.
+  if (!pattern && !gitMutation) return null;
+
+  const repo = resolveHookRepo(cwd);
+  if (!repo) return null;
+  const storagePath = repo.storagePath;
   const parts = [];
 
-  if (toolSucceeded(toolResponse)) {
-    const pattern = extractPattern(toolName, toolInput);
-    if (pattern) {
-      const augmentText = runAugment(gitNexusDir, cwd, pattern);
-      if (augmentText) parts.push(augmentText);
-    }
+  if (pattern) {
+    const augmentText = runAugment(storagePath, repo.lbugPath, cwd, pattern);
+    if (augmentText) parts.push(augmentText);
   }
 
-  if (toolName === 'run_shell_command' && toolSucceeded(toolResponse)) {
-    const command = toolInput.command || '';
-    if (/\bgit\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(command)) {
-      const hint = buildStaleIndexHint(gitNexusDir, cwd);
-      if (hint) {
-        // The hint always reaches the agent via additionalContext (parts). Mirror
-        // it to stderr (for terminal users) only under GITNEXUS_DEBUG, so strict
-        // hook runners see no unexpected output on this normal path (#1913). The
-        // claude hook never mirrored this to stderr — this aligns the two adapters.
-        parts.push(hint);
-        if (isDebugEnabled()) {
-          process.stderr.write(`${hint}\n`);
-        }
+  if (gitMutation) {
+    const hint = buildStaleIndexHint(repo.metadata, cwd);
+    if (hint) {
+      // The hint always reaches the agent via additionalContext (parts). Mirror
+      // it to stderr (for terminal users) only under GITNEXUS_DEBUG, so strict
+      // hook runners see no unexpected output on this normal path (#1913). The
+      // claude hook never mirrored this to stderr — this aligns the two adapters.
+      parts.push(hint);
+      if (isDebugEnabled()) {
+        process.stderr.write(`${hint}\n`);
       }
     }
   }
@@ -416,11 +353,11 @@ function buildMcpQueryHint(pattern) {
  * ponytail: per-repo mtime marker, shared across concurrent sessions on the same
  * repo; add per-session dedup only if that sharing becomes a problem.
  */
-function shouldEmitMcpHint(gitNexusDir) {
+function shouldEmitMcpHint(storagePath) {
   const raw = process.env.GITNEXUS_MCP_HINT_THROTTLE_MS;
   const windowMs = raw === undefined || raw === '' ? 600000 : Number(raw);
   if (!Number.isFinite(windowMs) || windowMs <= 0) return true;
-  const marker = path.join(gitNexusDir, '.mcp-hint-shown');
+  const marker = path.join(storagePath, '.mcp-hint-shown');
   try {
     if (Date.now() - fs.statSync(marker).mtimeMs < windowMs) return false;
   } catch {
@@ -434,14 +371,14 @@ function shouldEmitMcpHint(gitNexusDir) {
   return true;
 }
 
-function runAugment(gitNexusDir, cwd, pattern) {
+function runAugment(storagePath, lbugPath, cwd, pattern) {
   // Acquire the per-repo slot BEFORE the DB-owner probe (#2163): the probe
   // itself spawns lsof/ps, so it must be bounded by the same ≤3-per-repo cap
   // as the augment, or concurrent sessions fan out unbounded probe
-  // subprocesses. The cheap guards (extractPattern, gitNexusDir lookup) run in
+  // subprocesses. The cheap guards (extractPattern, registry lookup) run in
   // buildAfterToolContext before this — moving the acquire any earlier would
   // churn slot files on tool calls that never probe.
-  const release = acquireHookSlot(gitNexusDir);
+  const release = acquireHookSlot(storagePath);
   if (!release) {
     // Normal skip path: all per-repo hook slots are held by concurrent
     // sessions. Stay silent for strict hook runners (issue #1913); surface
@@ -452,7 +389,7 @@ function runAugment(gitNexusDir, cwd, pattern) {
     return '';
   }
   try {
-    if (hasGitNexusServerOwner(gitNexusDir)) {
+    if (hasGitNexusServerOwner(lbugPath)) {
       // #2396: the MCP server holds the DB write lock, so a competing CLI
       // `augment` would only contend on it (LadybugDB is single-writer). The
       // session has the GitNexus MCP tools live — route the augmentation to the
@@ -462,7 +399,7 @@ function runAugment(gitNexusDir, cwd, pattern) {
       if (isDebugEnabled()) {
         process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
       }
-      return shouldEmitMcpHint(gitNexusDir) ? buildMcpQueryHint(pattern) : '';
+      return shouldEmitMcpHint(storagePath) ? buildMcpQueryHint(pattern) : '';
     }
     const cliPath = resolveCliPath();
     const child = runGitNexusCli(cliPath, ['augment', '--', pattern], cwd, 7000);
@@ -477,7 +414,7 @@ function runAugment(gitNexusDir, cwd, pattern) {
   return '';
 }
 
-function buildStaleIndexHint(gitNexusDir, cwd) {
+function buildStaleIndexHint(meta, cwd) {
   let currentHead = '';
   try {
     const headResult = spawnSync('git', ['rev-parse', 'HEAD'], {
@@ -495,7 +432,6 @@ function buildStaleIndexHint(gitNexusDir, cwd) {
 
   let lastCommit = '';
   let hadEmbeddings = false;
-  const meta = readIndexMeta(gitNexusDir);
   if (meta) {
     lastCommit = meta.lastCommit || '';
     hadEmbeddings = meta.stats && meta.stats.embeddings > 0;

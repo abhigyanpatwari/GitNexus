@@ -12,6 +12,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { SupportedLanguages } from 'gitnexus-shared';
 import { SCOPE_RESOLVERS } from '../../../src/core/ingestion/scope-resolution/pipeline/registry.js';
 
 describe('constructionSyntax wiring inventory', () => {
@@ -33,7 +34,13 @@ describe('constructionSyntax wiring inventory', () => {
   it('leaves the languages that already resolve the shape unwired', () => {
     // Java resolves it via the #2564 object_creation_expression capture
     // rewrite; php/swift/dart/kotlin via their own capture-side paths.
-    for (const language of ['java', 'php', 'swift', 'dart', 'kotlin'] as const) {
+    for (const language of [
+      SupportedLanguages.Java,
+      SupportedLanguages.PHP,
+      SupportedLanguages.Swift,
+      SupportedLanguages.Dart,
+      SupportedLanguages.Kotlin,
+    ] as const) {
       const resolver = SCOPE_RESOLVERS.get(language);
       expect(resolver, `${language} resolver is registered`).toBeDefined();
       expect(resolver!.constructionSyntax, `${language} stays unwired`).toBeUndefined();

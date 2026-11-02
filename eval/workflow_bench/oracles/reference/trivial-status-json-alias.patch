@@ -1,0 +1,11 @@
+--- a/gitnexus/src/cli/index.ts
++++ b/gitnexus/src/cli/index.ts
+@@ -292,7 +292,7 @@
+   .command('status')
+   .description('Show index status for the current repo or a registered index')
+   .option('-r, --repo <name>', 'Registered repository alias or path (works after checkout removal)')
+-  .option('--json', 'Emit machine-readable index and analyzer provenance')
++  .option('-j, --json', 'Emit machine-readable index and analyzer provenance')
+   .addHelpText('after', () => t('help.identityCache.environment'))
+   .action(createLazyAction(() => import('./status.js'), 'statusCommand'));
+ 

@@ -60,12 +60,17 @@ export interface ErrorMessage {
   /**
    * Machine-readable failure code for a parent that wants to branch instead of
    * only surfacing the string. `index-lock-timeout` (#2658 review M2) means
-   * another analyze held the single-writer lock past the wait ceiling — a
-   * transient, retryable condition, not a broken build. Absent for a generic
-   * failure.
+   * acquisition waited past a wait ceiling. Ordinary lock contention is
+   * transient (`retryable: true`). An orphan acquisition/reclaim guard
+   * (`IndexLockTimeoutError.guardPath` set) is not — retries re-hit the 30s
+   * cap and need quiesced recovery (RUNBOOK.md), so `retryable` is false.
+   * Absent for a generic failure.
    */
   code?: 'index-lock-timeout';
-  /** True when the failure is expected to clear on retry (e.g. lock contention). */
+  /**
+   * True when the failure is expected to clear on retry (e.g. lock contention).
+   * False when `code` is `index-lock-timeout` because of guard contention.
+   */
   retryable?: boolean;
 }
 

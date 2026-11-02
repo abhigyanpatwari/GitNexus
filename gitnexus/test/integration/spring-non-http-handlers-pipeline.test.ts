@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,7 +15,6 @@ import {
 } from '../../src/core/ingestion/languages/kotlin/capture-side-channel.js';
 import {
   loadParseCache,
-  PARSE_CACHE_VERSION,
   pruneCache,
   saveParseCache,
   type ParseCache,
@@ -24,6 +24,8 @@ import {
   pruneAndSaveDurableParsedFileStore,
 } from '../../src/storage/parsedfile-store.js';
 import type { PipelineResult } from '../../src/types/pipeline.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 const FIXTURE = path.resolve(__dirname, '..', 'fixtures', 'spring-non-http-handler-app');
 
@@ -267,10 +269,11 @@ describe('Spring non-HTTP handler durable warm parse cache (#2417)', () => {
     const storage = path.join(temp, 'storage');
     try {
       const coldCache: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: parseIdentity,
         entries: new Map(),
         usedKeys: new Set(),
         storagePath: storage,
+        writeStoragePath: storage,
         onDiskKeys: new Set(),
       };
       const cold = await runPipelineFromRepo(FIXTURE, () => {}, {
@@ -289,11 +292,11 @@ describe('Spring non-HTTP handler durable warm parse cache (#2417)', () => {
       expect(savedKeys.length).toBeGreaterThan(0);
       await pruneAndSaveDurableParsedFileStore(
         getDurableParsedFileDir(storage),
-        PARSE_CACHE_VERSION,
+        parseIdentity.base,
         new Set(savedKeys),
       );
 
-      const warmCache = await loadParseCache(storage);
+      const warmCache = await loadParseCache(storage, parseIdentity, storage);
       expect(warmCache.onDiskKeys).toEqual(new Set(savedKeys));
       const warm = await runPipelineFromRepo(FIXTURE, () => {}, {
         skipGraphPhases: true,

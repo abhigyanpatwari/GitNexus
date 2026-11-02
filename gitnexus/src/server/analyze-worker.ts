@@ -14,6 +14,7 @@
 
 import type { ParentMessage, WorkerMessage } from './analyze-worker-protocol.js';
 import { runWorkerAnalysis, createTerminalClaim } from './analyze-worker-core.js';
+import { reapEmbeddingSidecar } from '../core/embeddings/embedding-sidecar-client.js';
 type BoundedCheckpointBeforeExit =
   typeof import('../core/lbug/shutdown-helpers.js').boundedCheckpointBeforeExit;
 
@@ -25,6 +26,11 @@ type BoundedCheckpointBeforeExit =
 // `analyze-launch-collapse.test.ts`. Everything else imports the protocol module
 // directly, so nothing else belongs in this list.
 export type { CompleteMessage, WorkerMessage } from './analyze-worker-protocol.js';
+
+function exitReapingSidecar(code: number): never {
+  reapEmbeddingSidecar();
+  process.exit(code);
+}
 
 function send(msg: WorkerMessage) {
   // No try/catch: if the IPC channel is gone, process.send throws
@@ -50,7 +56,7 @@ process.on('uncaughtException', (err: unknown) => {
     const message = err instanceof Error ? err.message : 'Uncaught exception in worker';
     send({ type: 'error', message });
   } finally {
-    setTimeout(() => process.exit(1), 500);
+    setTimeout(() => exitReapingSidecar(1), 500);
   }
 });
 
@@ -59,7 +65,7 @@ process.on('unhandledRejection', (reason: unknown) => {
     const message = reason instanceof Error ? reason.message : 'Unhandled rejection in worker';
     send({ type: 'error', message });
   } finally {
-    setTimeout(() => process.exit(1), 500);
+    setTimeout(() => exitReapingSidecar(1), 500);
   }
 });
 
@@ -76,13 +82,13 @@ function requestWorkerCancellation(source: string): void {
   }
   if (!started) {
     // No analysis has started, so no native work needs a safe-point handshake.
-    process.exit(0);
+    exitReapingSidecar(0);
   }
 }
 
 function exitAfterCancellation(): void {
   if (!boundedCheckpointBeforeExit) {
-    process.exit(0);
+    exitReapingSidecar(0);
     return;
   }
   void boundedCheckpointBeforeExit({
@@ -154,6 +160,6 @@ process.on('message', async (msg: ParentMessage) => {
     if (cancellationRequested) exitAfterCancellation();
     // Normal terminal outcomes still need the existing process exit because
     // LadybugDB stays live.
-    else setTimeout(() => process.exit(0), 500);
+    else setTimeout(() => exitReapingSidecar(0), 500);
   }
 });

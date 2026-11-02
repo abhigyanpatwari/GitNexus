@@ -33,6 +33,99 @@ function emptyResult(): ParseWorkerResult {
 }
 
 describe('mergeResult', () => {
+  it('retains opaque route facts across worker sub-batches', () => {
+    const target = emptyResult();
+    const first = { filePath: 'mount.ts', routePosition: 0, facts: { privateMountData: ['/api'] } };
+    const second = {
+      filePath: 'router.js',
+      routePosition: 0,
+      facts: { privateRegistrationData: ['/users'] },
+    };
+    mergeResult(target, { ...emptyResult(), routeFacts: [first] });
+    const declaration = {
+      filePath: 'middle.ts',
+      routePath: '/existing',
+      httpMethod: 'GET',
+      decoratorName: 'other',
+      lineNumber: 1,
+    };
+    mergeResult(target, { ...emptyResult(), decoratorRoutes: [declaration] });
+    mergeResult(target, { ...emptyResult(), routeFacts: [second] });
+    expect(target.routeFacts).toEqual([first, { ...second, routePosition: 1 }]);
+    expect(target.decoratorRoutes).toEqual([declaration]);
+    expect(second.routePosition).toBe(0);
+  });
+
+  it('retains wrapper candidates across sub-batches without treating them as HTTP sinks', () => {
+    const target = emptyResult();
+    const first = {
+      filePath: 'a.ts',
+      functionName: 'request',
+      fetchURL: '/a',
+      lineNumber: 1,
+      target: { kind: 'unresolved' as const },
+      callPosition: { row: 0, column: 0 },
+    };
+    const second = {
+      filePath: 'b.ts',
+      functionName: 'client.get',
+      fetchURL: '/b',
+      lineNumber: 2,
+      target: { kind: 'member' as const },
+      callPosition: { row: 0, column: 0 },
+    };
+    mergeResult(target, { ...emptyResult(), fetchWrapperCalls: [first] });
+    mergeResult(target, emptyResult());
+    mergeResult(target, { ...emptyResult(), fetchWrapperCalls: [second] });
+    expect(target.fetchWrapperCalls).toEqual([first, second]);
+    expect(target.fetchCalls).toEqual([]);
+  });
+
+  it('retains barrel re-export facts across sub-batches', () => {
+    const target = emptyResult();
+    const named = {
+      filePath: 'index.ts',
+      exportedName: 'request',
+      from: { specifier: './request', importedName: 'request' },
+    };
+    const star = {
+      filePath: 'index.ts',
+      exportedName: '*',
+      from: { specifier: './star', importedName: '*' },
+    };
+    mergeResult(target, { ...emptyResult(), fetchWrapperReexports: [named] });
+    mergeResult(target, emptyResult());
+    mergeResult(target, { ...emptyResult(), fetchWrapperReexports: [star] });
+    expect(target.fetchWrapperReexports).toEqual([named, star]);
+  });
+
+  it('sums every CFG skip bucket by language across worker sub-batches', () => {
+    const target = emptyResult();
+    const first = {
+      zig: { tooManyLines: 1, tooDeeplyNested: 2, buildError: 1 },
+    };
+    mergeResult(target, { ...emptyResult(), cfgSkipped: first });
+    mergeResult(target, {
+      ...emptyResult(),
+      cfgSkipped: {
+        zig: { tooManyLines: 2, tooDeeplyNested: 1, buildError: 3 },
+        typescript: { tooManyLines: 0, tooDeeplyNested: 1, buildError: 0 },
+      },
+    });
+    expect(target.cfgSkipped).toEqual({
+      zig: { tooManyLines: 3, tooDeeplyNested: 3, buildError: 4 },
+      typescript: { tooManyLines: 0, tooDeeplyNested: 1, buildError: 0 },
+    });
+    expect(first.zig).toEqual({ tooManyLines: 1, tooDeeplyNested: 2, buildError: 1 });
+  });
+
+  it('leaves CFG skip telemetry absent for older or successful results', () => {
+    const target = emptyResult();
+    mergeResult(target, emptyResult());
+    mergeResult(target, { ...emptyResult(), cfgSkipped: {} });
+    expect(target.cfgSkipped).toBeUndefined();
+  });
+
   it('unions skippedPaths across sub-batch results, initializing the target when absent', () => {
     const target = emptyResult(); // no skippedPaths on the target (the `??=` path)
     mergeResult(target, {

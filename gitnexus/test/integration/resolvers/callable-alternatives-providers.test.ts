@@ -1,0 +1,197 @@
+/**
+ * Callable chosen by a value-selecting expression, per provider (#3354).
+ *
+ * The shared branch expansion in `callable-flow-captures.ts` keys on tree-sitter
+ * field names (`left`/`operator`/`right`, `condition`/`consequence`/
+ * `alternative`). Grammars that spell `??` / `?:` / elvis / ternary without
+ * those fields supply their branches through the `valueAlternatives` provider
+ * hook; without it only the LAST operand flowed and `impact` under-reported
+ * callers while still claiming `epistemic: "exact"`. Ruby's statement-bodied
+ * `if` shares the ternary's field names but its branches are statement lists,
+ * so its hook only expands single-statement branches and skips the rest.
+ */
+import { describe, it, expect, beforeAll } from 'vitest';
+import path from 'path';
+import {
+  FIXTURES,
+  getRelationships,
+  edgeSet,
+  runPipelineFromRepo,
+  type PipelineResult,
+} from './helpers.js';
+import {
+  isLanguageAvailable,
+  loadParser,
+  loadLanguage,
+} from '../../../src/core/tree-sitter/parser-loader.js';
+import { SupportedLanguages } from '../../../src/config/supported-languages.js';
+
+// Kotlin, Swift and Dart grammars are optional installs; skip their suites
+// when the grammar did not load, as the per-language resolver suites do.
+const kotlinAvailable = isLanguageAvailable(SupportedLanguages.Kotlin);
+const swiftAvailable = isLanguageAvailable(SupportedLanguages.Swift);
+// A loaded tree-sitter-dart module can still fail on setLanguage, so probe the
+// parser too (same guard as dart.test.ts).
+let dartAvailable = isLanguageAvailable(SupportedLanguages.Dart);
+if (dartAvailable) {
+  try {
+    await loadParser();
+    await loadLanguage(SupportedLanguages.Dart);
+  } catch {
+    dartAvailable = false;
+  }
+}
+
+const runFixture = (name: string): Promise<PipelineResult> =>
+  runPipelineFromRepo(path.join(FIXTURES, name), () => {});
+
+// Only flow edges count: Kotlin's `::fn` reference alone already yields a
+// `local-call` edge to fn, which would make its assertions vacuous.
+const callsOf = (result: PipelineResult): string[] =>
+  edgeSet(
+    getRelationships(result, 'CALLS').filter((edge) => edge.rel.reason === 'callable-value-flow'),
+  );
+
+describe('Python callable chosen by `or` / `and` / `x if c else y`', () => {
+  let result: PipelineResult;
+  beforeAll(async () => {
+    result = await runFixture('python-callable-alternatives');
+  }, 60000);
+
+  it('`override or fn` reaches fn', () => {
+    expect(callsOf(result)).toContain('logical_or → run_sweep');
+  });
+
+  // The `override or fn` case above resolves only its RIGHT operand, so it
+  // would still pass if the fan-out kept just the last branch.
+  it('`fn or fallback` reaches fn through the LEFT operand', () => {
+    expect(callsOf(result)).toContain('callable_left → run_left');
+  });
+
+  it('`f if c else g` reaches both branches', () => {
+    expect(callsOf(result)).toEqual(
+      expect.arrayContaining(['ternary → run_then', 'ternary → run_else']),
+    );
+  });
+
+  it('`x and f or g` reaches f and g, never x', () => {
+    expect(callsOf(result).filter((edge) => edge.startsWith('and_or → '))).toEqual([
+      'and_or → run_and',
+      'and_or → run_or_else',
+    ]);
+  });
+
+  it('a comparison branch of `or` flows nothing, while its designator sibling still does', () => {
+    expect(
+      callsOf(result).filter(
+        (edge) =>
+          edge.startsWith('comparison_branch → ') ||
+          edge.startsWith('self_comparison → ') ||
+          edge.startsWith('bare_comparison → '),
+      ),
+    ).toEqual(['bare_comparison → fallback', 'self_comparison → fallback']);
+  });
+});
+
+describe.skipIf(!kotlinAvailable)('Kotlin callable chosen by `?:` / `if` expression', () => {
+  let result: PipelineResult;
+  beforeAll(async () => {
+    result = await runFixture('kotlin-callable-alternatives');
+  }, 60000);
+
+  it('`override ?: ::fn` reaches fn', () => {
+    expect(callsOf(result)).toContain('elvis → runSweep');
+  });
+
+  it('`::fn ?: fallback` reaches fn through the LEFT operand', () => {
+    expect(callsOf(result)).toContain('callableLeft → runLeft');
+  });
+
+  it('`if (c) ::f else ::g` reaches both branches', () => {
+    expect(callsOf(result)).toEqual(
+      expect.arrayContaining(['ifExpression → runThen', 'ifExpression → runElse']),
+    );
+  });
+
+  // A braced branch nests its value in a `statements` node one level below
+  // the `control_structure_body` wrapper.
+  it('`if (c) { ::f } else { ::g }` reaches both branches', () => {
+    expect(callsOf(result)).toEqual(
+      expect.arrayContaining(['braced → runBracedThen', 'braced → runBracedElse']),
+    );
+  });
+
+  it('a multi-statement branch keeps the whole `if` opaque', () => {
+    expect(callsOf(result).filter((edge) => edge.startsWith('multiStatement →'))).toEqual([]);
+  });
+});
+
+describe.skipIf(!swiftAvailable)('Swift callable chosen by `??` / `?:`', () => {
+  let result: PipelineResult;
+  beforeAll(async () => {
+    result = await runFixture('swift-callable-alternatives');
+  }, 60000);
+
+  it('`override ?? fn` reaches fn', () => {
+    expect(callsOf(result)).toContain('nilCoalescing → runSweep');
+  });
+
+  it('`fn ?? fallback` reaches fn through the LEFT operand', () => {
+    expect(callsOf(result)).toContain('callableLeft → runLeft');
+  });
+
+  it('`c ? f : g` reaches both branches', () => {
+    expect(callsOf(result)).toEqual(
+      expect.arrayContaining(['ternary → runThen', 'ternary → runElse']),
+    );
+  });
+});
+
+describe.skipIf(!dartAvailable)('Dart callable chosen by `??` / `?:`', () => {
+  let result: PipelineResult;
+  beforeAll(async () => {
+    result = await runFixture('dart-callable-alternatives');
+  }, 60000);
+
+  it('`override ?? fn` reaches fn', () => {
+    expect(callsOf(result)).toContain('ifNull → runSweep');
+  });
+
+  it('`fn ?? fallback` reaches fn through the LEFT operand', () => {
+    expect(callsOf(result)).toContain('callableLeft → runLeft');
+  });
+
+  it('`c ? f : g` reaches both branches', () => {
+    expect(callsOf(result)).toEqual(
+      expect.arrayContaining(['conditional → runThen', 'conditional → runElse']),
+    );
+  });
+});
+
+describe('Ruby statement-bodied `if` as a callable source', () => {
+  let result: PipelineResult;
+  beforeAll(async () => {
+    result = await runFixture('ruby-callable-alternatives');
+  }, 60000);
+
+  it('single-statement branches each reach their callable', () => {
+    expect(callsOf(result)).toEqual(
+      expect.arrayContaining(['single_statement_if → run_then', 'single_statement_if → run_else']),
+    );
+  });
+
+  it('an identifier read inside a multi-statement branch does not flow into the binding', () => {
+    expect(callsOf(result)).not.toContain('statement_if → run_other');
+  });
+
+  it('a multi-statement branch is skipped while its sibling branch still flows', () => {
+    expect(callsOf(result)).toContain('statement_if → run_sweep');
+  });
+
+  it('a multi-statement `elsif` does not hide the branches around it', () => {
+    expect(callsOf(result)).toEqual(
+      expect.arrayContaining(['elsif_chain → run_a', 'elsif_chain → run_b']),
+    );
+    expect(callsOf(result)).not.toContain('elsif_chain → run_inner');
+  });
+});

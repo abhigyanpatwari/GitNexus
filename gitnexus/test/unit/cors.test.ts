@@ -11,6 +11,8 @@
  *   - RFC 1918 private network ranges → allowed
  *       10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
  *   - https://gitnexus.vercel.app     → allowed
+ *   - https://gitnexus-web.vercel.app → allowed
+ *   - GITNEXUS_PUBLIC_ORIGIN (when set) → allowed
  *   - Everything else                 → rejected
  */
 import { describe, it, expect, afterAll, afterEach, beforeAll } from 'vitest';
@@ -65,6 +67,17 @@ describe('isAllowedOrigin: localhost', () => {
 describe('isAllowedOrigin: vercel.app', () => {
   it('allows https://gitnexus.vercel.app', () => {
     expect(isAllowedOrigin('https://gitnexus.vercel.app')).toBe(true);
+  });
+
+  it('allows gitnexus-web production host on vercel.app', () => {
+    expect(isAllowedOrigin('https://gitnexus-web.vercel.app')).toBe(true);
+  });
+
+  it('rejects arbitrary gitnexus-web-* vercel preview hosts', () => {
+    // Preview hosts must opt in via GITNEXUS_PUBLIC_ORIGIN — a prefix match
+    // would also allow attacker-controlled projects named gitnexus-web-*.
+    expect(isAllowedOrigin('https://gitnexus-web-mesquitafelipe571-5486.vercel.app')).toBe(false);
+    expect(isAllowedOrigin('https://gitnexus-web-evil.vercel.app')).toBe(false);
   });
 
   it('rejects other vercel.app subdomains', () => {

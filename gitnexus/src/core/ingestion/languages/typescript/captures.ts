@@ -22,20 +22,25 @@
  *   5. **Receiver-binding synthesis** (Unit 3) — `this` type anchors on
  *      instance methods, with arrow-function lexical-this walk-up.
  *
- * Pure given the input source text. No I/O, no globals consulted.
+ * Derives captures from its inputs and records CommonJS classification for
+ * immediate side-channel collection. Performs no I/O.
  */
 
+import { recordCommonJsModuleKind } from './module-kind.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import { synthesizeTsJsClassIdentity } from './class-identity.js';
 import {
   findNodeAtRange,
   nodeToCapture,
   syntheticCapture,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
+import { collectEsmExportEvidence, esmExportVerdict } from '../../ts-js-export-marker.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getTsParser, getTsScopeQuery, tsCachedTreeMatchesGrammar } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { synthesizeTsReceiverBinding } from './receiver-binding.js';
+import { unboundCallableName } from './unbound-callables.js';
 import { computeTsArityMetadata } from './arity-metadata.js';
 import { isArrayMethodCallbackArrow } from './array-callback.js';
 import {
@@ -48,10 +53,12 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeCjsModuleExports } from './cjs-module-exports.js';
+import { synthesizeTsLocalImports } from './local-loaders.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import {
   deriveDefaultExportHocName,
   isBlockedDefaultExportHoc,
+  isBlockedPairCallbackRegistration,
   isDefaultExportHocFunctionNode,
 } from '../../ts-js-hoc-utils.js';
 
@@ -280,7 +287,12 @@ export const TS_CLASS_FIELD_DEFINITION_TYPES: ReadonlySet<string> = new Set([
  * For a class declaring BOTH twins the wrong edge does not disappear, it MOVES:
  * `Host.p` now reads the INSTANCE twin's binding, because that is what is left
  * in the map under that name. Only the no-twin case — the common static shape —
- * is a true missed edge.
+ * is a true missed edge, and its first hop no longer is: the field extractor
+ * records the type the initializer constructs on the static Property NODE
+ * (`initializerType`), and the class-level receiver route in
+ * `receiver-bound-calls.ts` reads it there, so `Host.q.m()` resolves `Wrong.m`
+ * without the binding ever entering the shared map. A longer chain off it
+ * (`Host.q.m().n()`) still goes through the fold and is still missed.
  *
  * The trade is still the right one, since `this.p` is overwhelmingly the more
  * common access and a `Host.p` static chain is the cheaper place to be wrong.
@@ -290,10 +302,11 @@ export const TS_CLASS_FIELD_DEFINITION_TYPES: ReadonlySet<string> = new Set([
  * express today — `foldReceiverChain` in
  * `scope-resolution/passes/compound-receiver.ts` explicitly discards whether a
  * chain's base was a class reference or a value — so it is a separate change
- * with a `SCHEMA_BUMP`, not a tweak here. Both shapes are pinned by rows in
+ * with automatic parser-cache invalidation. Both shapes are pinned by rows in
  * `test/integration/resolvers/inferred-field-receiver-matrix.test.ts`
  * (`static-read-of-a-same-name-twin-picks-up-the-instance-type`,
- * `static-read-without-a-twin-loses-its-type`), so the cost moves visibly.
+ * `static-read-without-a-twin-types-from-its-initializer`), so the cost moves
+ * visibly.
  *
  * Sibling of {@link isStaticMethodThis}, which drops the ASSIGNMENT form
  * (`this.x = new Y()` inside a static method). Together they cover both ways a
@@ -360,7 +373,9 @@ export function emitTsScopeCaptures(
   sourceText: string,
   filePath: string,
   cachedTree?: unknown,
+  sourceMeta?: { scriptLanguage?: string },
 ): readonly CaptureMatch[] {
+  const grammarPath = sourceMeta?.scriptLanguage === 'tsx' ? `${filePath}.tsx` : filePath;
   // Reuse a pre-parsed Tree when the caller passes one via `cachedTree`; a
   // miss re-parses. (The cache is currently always empty — its only producer,
   // the sequential parser, was removed — so this re-parses in practice.) The
@@ -375,11 +390,11 @@ export function emitTsScopeCaptures(
   // fresh parse if they disagree (e.g. a worker-mode parse landed
   // with the wrong grammar pinned).
   let tree = cachedTree as ReturnType<ReturnType<typeof getTsParser>['parse']> | undefined;
-  if (tree !== undefined && !tsCachedTreeMatchesGrammar(tree, filePath)) {
+  if (tree !== undefined && !tsCachedTreeMatchesGrammar(tree, grammarPath)) {
     tree = undefined;
   }
   if (tree === undefined) {
-    tree = parseSourceSafe(getTsParser(filePath), sourceText, undefined, {
+    tree = parseSourceSafe(getTsParser(grammarPath), sourceText, undefined, {
       bufferSize: getTreeSitterBufferSize(sourceText),
     });
     recordCacheMiss();
@@ -387,7 +402,11 @@ export function emitTsScopeCaptures(
     recordCacheHit();
   }
 
-  const rawMatches = getTsScopeQuery(filePath).matches(tree.rootNode);
+  recordCommonJsModuleKind(tree.rootNode, filePath);
+
+  const rawMatches = getTsScopeQuery(grammarPath).matches(tree.rootNode);
+  // Export evidence, read once per file (see `ts-js-export-marker.ts`).
+  const exportEvidence = collectEsmExportEvidence(tree.rootNode, filePath);
   const out: CaptureMatch[] = [];
 
   for (const m of rawMatches) {
@@ -402,6 +421,7 @@ export function emitTsScopeCaptures(
       groupedNodes[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+    synthesizeTsJsClassIdentity(grouped, groupedNodes);
 
     // Decompose each `import_statement` / re-export `export_statement`
     // so `interpretTsImport` sees the kind/source/name/alias markers
@@ -513,16 +533,38 @@ export function emitTsScopeCaptures(
     // untouched, so inner-call attribution falls through to the enclosing
     // scope instead of a phantom Function.
     const fnDeclAnchor = grouped['@declaration.function'];
+    const unbound = groupedNodes['@callable.unbound'];
+    if (unbound !== undefined) {
+      grouped['@declaration.name'] = syntheticCapture(
+        '@declaration.name',
+        unbound,
+        unboundCallableName(unbound)!,
+      );
+      if (unbound.childForFieldName('name') === null) {
+        grouped['@declaration.binding-name'] = syntheticCapture(
+          '@declaration.binding-name',
+          unbound,
+          '',
+        );
+      }
+    }
     if (fnDeclAnchor !== undefined) {
       const arrowNode = findFunctionNode(
         tree.rootNode,
         fnDeclAnchor.range,
         groupedNodes['@declaration.function'],
       );
-      if (arrowNode !== null && isArrayMethodCallbackArrow(arrowNode)) {
+      if (unbound === undefined && arrowNode !== null && isArrayMethodCallbackArrow(arrowNode)) {
         continue;
       }
       if (arrowNode !== null && isBlockedDefaultExportHoc(arrowNode)) {
+        continue;
+      }
+      // Pair-value built-in registrations (`{ timer: setTimeout(() => …) }`,
+      // `{ later: promise.then(() => …) }`) bind handles/values, not
+      // callables. See `isBlockedPairCallbackRegistration` for why this
+      // gate lives emit-side rather than in the query predicates.
+      if (arrowNode !== null && isBlockedPairCallbackRegistration(arrowNode)) {
         continue;
       }
       // #2723: a CJS export assignment must not register a SECOND module-scope
@@ -560,6 +602,13 @@ export function emitTsScopeCaptures(
           '@declaration.name',
           fnNode,
           deriveDefaultExportHocName(filePath),
+        );
+        // This declaration's name is synthetic, so the later query-name
+        // marker cannot see it. The HOC predicate already proves the export.
+        grouped['@declaration.is-exported'] = syntheticCapture(
+          '@declaration.is-exported',
+          fnNode,
+          'true',
         );
       }
     }
@@ -660,6 +709,20 @@ export function emitTsScopeCaptures(
     // instead of re-parsing the receiver's source text. Self-gating: a
     // non-call match, an absent receiver, or a chain with no nameable base
     // all leave `grouped` untouched.
+    // `@declaration.is-exported`: a verdict for every declaration the file's
+    // export surface can decide (see `ts-js-export-marker.ts`); nothing where
+    // it cannot, because absence is the honest answer there.
+    const declNameNode = groupedNodes['@declaration.name'];
+    if (exportEvidence !== undefined && declNameNode !== undefined) {
+      const verdict = esmExportVerdict(declNameNode, exportEvidence);
+      if (verdict !== undefined) {
+        grouped['@declaration.is-exported'] = syntheticCapture(
+          '@declaration.is-exported',
+          declNameNode,
+          verdict ? 'true' : 'false',
+        );
+      }
+    }
     synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
     out.push(grouped);
 
@@ -701,9 +764,27 @@ export function emitTsScopeCaptures(
   // emitter: a `.ts` file in a CommonJS package uses the same forms, and
   // without this the default-export NODE was emitted with nothing declaring it
   // — the "found, zero callers" state this work exists to remove (#2729 F7).
-  synthesizeCjsModuleExports(tree.rootNode, filePath, out);
+  const validRequireCalls = synthesizeTsLocalImports(tree.rootNode, filePath, out);
+  synthesizeCjsModuleExports(tree.rootNode, filePath, out, validRequireCalls);
 
   return out;
+}
+
+/** Select matching nodes in the existing parent-first, right-to-left order. */
+function relevantNodesRightFirst(root: SyntaxNode, types: readonly string[]): SyntaxNode[] {
+  const candidates = root.descendantsOfType([...types]).map((node, ordinal) => ({
+    node,
+    ordinal,
+    start: node.startIndex,
+    end: node.endIndex,
+  }));
+  candidates.sort((a, b) => {
+    if (a.start === b.start && a.end === b.end) return a.ordinal - b.ordinal;
+    if (a.start <= b.start && a.end >= b.end) return -1;
+    if (b.start <= a.start && b.end >= a.end) return 1;
+    return b.start - a.start;
+  });
+  return candidates.map(({ node }) => node);
 }
 
 /**
@@ -742,14 +823,11 @@ export function emitTsScopeCaptures(
  * `models.Base` → `Base`) so `findClassBindingInScope` resolves it.
  */
 function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]): void {
-  const stack: SyntaxNode[] = [root];
-  for (;;) {
-    const node = stack.pop();
-    if (node === undefined) break;
-    for (const child of node.namedChildren) {
-      if (child !== null) stack.push(child);
-    }
-
+  for (const node of relevantNodesRightFirst(root, [
+    'interface_declaration',
+    'class_declaration',
+    'abstract_class_declaration',
+  ])) {
     // `interface B extends A, C` hangs its bases off an `extends_type_clause`
     // DIRECTLY on the interface — there is no `class_heritage` wrapper, so the
     // class path below cannot reach them (#2842 review). The clause's `type`
@@ -759,7 +837,7 @@ function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]
       for (const child of node.namedChildren) {
         if (child === null || child.type !== 'extends_type_clause') continue;
         for (const base of child.namedChildren) {
-          emitTsInheritanceBase(base, out);
+          emitTsInheritanceBase(base, out, 'type');
         }
       }
       continue;
@@ -787,11 +865,11 @@ function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]
         // `extends Foo` / `extends Foo<T>` — the base is the `value:` field
         // (an identifier; generics live in a sibling `type_arguments`).
         const value = clause.childForFieldName('value') ?? clause.firstNamedChild;
-        emitTsInheritanceBase(value, out);
+        emitTsInheritanceBase(value, out, 'value');
       } else if (clause.type === 'implements_clause') {
         // `implements IFoo, IBar<T>` — each base type is a direct named child.
         for (const base of clause.namedChildren) {
-          emitTsInheritanceBase(base, out);
+          emitTsInheritanceBase(base, out, 'type');
         }
       }
     }
@@ -801,13 +879,18 @@ function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]
 /** Emit one `@reference.inherits` match for a TS heritage base, normalizing
  *  the lookup name to its bare simple identifier. No-ops on null / non-type
  *  nodes or when the bare name can't be derived. */
-function emitTsInheritanceBase(base: SyntaxNode | null, out: CaptureMatch[]): void {
+function emitTsInheritanceBase(
+  base: SyntaxNode | null,
+  out: CaptureMatch[],
+  purpose: 'value' | 'type',
+): void {
   if (base === null) return;
   const nameNode = terminalTsTypeNameNode(base);
   if (nameNode === null) return;
   out.push({
     '@reference.inherits': nodeToCapture('@reference.inherits', base),
     '@reference.name': nodeToCapture('@reference.name', nameNode),
+    '@reference.lookup-purpose': syntheticCapture('@reference.lookup-purpose', base, purpose),
   });
 }
 
@@ -857,13 +940,7 @@ function terminalTsTypeNameNode(node: SyntaxNode): SyntaxNode | null {
  * Left as a follow-up optimization.
  */
 function synthesizeDestructuringBindings(root: SyntaxNode, out: CaptureMatch[]): void {
-  const stack: SyntaxNode[] = [root];
-  for (;;) {
-    const node = stack.pop();
-    if (node === undefined) break;
-    for (const child of node.namedChildren) {
-      if (child !== null) stack.push(child);
-    }
+  for (const node of relevantNodesRightFirst(root, ['variable_declarator'])) {
     if (node.type !== 'variable_declarator') continue;
     const nameNode = node.childForFieldName('name');
     const valueNode = node.childForFieldName('value');
@@ -921,13 +998,7 @@ function synthesizeDestructuringBindings(root: SyntaxNode, out: CaptureMatch[]):
  * Uses sentinel `__MAP_TUPLE_i__:rhs` consumed by compound-receiver.
  */
 function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMatch[]): void {
-  const stack: SyntaxNode[] = [root];
-  for (;;) {
-    const node = stack.pop();
-    if (node === undefined) break;
-    for (const child of node.namedChildren) {
-      if (child !== null) stack.push(child);
-    }
+  for (const node of relevantNodesRightFirst(root, ['for_in_statement'])) {
     if (node.type !== 'for_in_statement') continue;
     const left = node.childForFieldName('left');
     const right = node.childForFieldName('right');
@@ -970,13 +1041,7 @@ function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMatch[]):
  * declared types instead.
  */
 function synthesizeInstanceofNarrowings(root: SyntaxNode, out: CaptureMatch[]): void {
-  const stack: SyntaxNode[] = [root];
-  for (;;) {
-    const node = stack.pop();
-    if (node === undefined) break;
-    for (const child of node.namedChildren) {
-      if (child !== null) stack.push(child);
-    }
+  for (const node of relevantNodesRightFirst(root, ['if_statement'])) {
     if (node.type !== 'if_statement') continue;
     const cond = node.childForFieldName('condition');
     if (cond === null) continue;

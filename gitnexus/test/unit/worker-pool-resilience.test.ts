@@ -286,7 +286,7 @@ describe('worker pool resilience', () => {
 
     expect(results).toEqual([{ fileCount: 2 }]);
     // Two bad files quarantined; both pre-crash 'starting-file' targets.
-    expect(pool.getQuarantinedPaths().sort()).toEqual(['src/a.ts', 'src/b.ts']);
+    expect([...pool.getQuarantinedPaths()].sort()).toEqual(['src/a.ts', 'src/b.ts']);
     await pool.terminate();
   });
 
@@ -306,7 +306,7 @@ describe('worker pool resilience', () => {
       ]),
     ).rejects.toBeInstanceOf(WorkerPoolDispatchError);
 
-    expect(pool.getQuarantinedPaths().sort()).toEqual(['src/x.ts', 'src/y.ts']);
+    expect([...pool.getQuarantinedPaths()].sort()).toEqual(['src/x.ts', 'src/y.ts']);
     // Subsequent dispatch on a tripped pool rejects without running anything.
     await expect(
       pool.dispatch<{ path: string; content: string }, unknown>([
@@ -348,7 +348,7 @@ describe('worker pool resilience', () => {
       { path: 'src/ok.ts', content: '' },
     ]);
     expect(r2).toEqual([{ fileCount: 1 }]);
-    expect(pool.getQuarantinedPaths().sort()).toEqual(['src/bad.ts', 'src/bad2.ts']);
+    expect([...pool.getQuarantinedPaths()].sort()).toEqual(['src/bad.ts', 'src/bad2.ts']);
     await pool.terminate();
   });
 

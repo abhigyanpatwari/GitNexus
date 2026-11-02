@@ -56,6 +56,8 @@ import type { NodeLabel, ParameterTypeClass, SymbolDefinition } from 'gitnexus-s
  */
 export const CLASS_TYPES_TUPLE = [
   'Class',
+  'Protocol',
+  'Category',
   'Struct',
   'Interface',
   'Enum',
@@ -114,7 +116,7 @@ export const CALL_TARGET_TYPES: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
 
 // `SymbolDefinition` moved to `gitnexus-shared` as part of RFC #909 Ring 1
 // (see #910). It is imported at the top of this file from `gitnexus-shared`
-// and re-used unchanged throughout. Consumers should import
+// and reused as the canonical symbol contract. Consumers should import
 // `SymbolDefinition` directly from `gitnexus-shared`, not via this file.
 
 /**

@@ -9,6 +9,7 @@ import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
   getRelationships,
+  getResolutionOutcomes,
   getNodesByLabel,
   getNodesByLabelFull,
   edgeSet,
@@ -73,6 +74,111 @@ describe('Python relative import & heritage resolution', () => {
       expect(target).toBeDefined();
       expect(target!.label).not.toBe('Property');
     }
+  });
+});
+
+describe('Python nested declarations stay in their lexical scope (#3499)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-nested-def-scope'), () => {});
+  }, 60000);
+
+  it('does not expose a nested function to sibling callers', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const siblingEdges = calls.filter(
+      (edge) => edge.source === 'caller' && edge.rel.targetId.includes('outer.target'),
+    );
+    expect(siblingEdges).toEqual([]);
+  });
+
+  it('preserves module and function-local imports shadowed only by a nested name', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const importedCalls = calls.filter(
+      (edge) => edge.source === 'caller' && edge.rel.targetId.includes('facade.py:target'),
+    );
+    expect(importedCalls).toHaveLength(2);
+  });
+
+  it('still resolves each call inside the enclosing function to its nested declaration', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const nestedCalls = calls.filter(
+      (edge) => edge.source === 'outer' && edge.rel.targetId.includes('outer.target'),
+    );
+    expect(nestedCalls).toHaveLength(3);
+  });
+
+  it('does not expose ordinary class methods to unqualified module callers', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const callers = new Set([
+      'method_unbound_caller',
+      'method_module_caller',
+      'method_function_caller',
+    ]);
+    const methodEdges = calls.filter(
+      (edge) => callers.has(edge.source) && edge.rel.targetId.includes('Box.target'),
+    );
+    expect(methodEdges).toEqual([]);
+  });
+
+  it('preserves module and function-local imports shadowed only by a class method', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const importedCalls = calls.filter(
+      (edge) =>
+        ['method_module_caller', 'method_function_caller'].includes(edge.source) &&
+        edge.rel.targetId.includes('facade.py:target'),
+    );
+    expect(importedCalls).toHaveLength(2);
+  });
+});
+
+describe('Python global nested declarations bind at module scope (#3502)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-global-nested-def'), () => {});
+  }, 60000);
+
+  it('resolves a sibling caller to the global declaration, not a same-name method', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'caller' && edge.target === 'target',
+    );
+    expect(calls.map((edge) => edge.targetFilePath)).toEqual(['main.py']);
+  });
+
+  it('does not carry an outer global declaration across a class body', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'class_boundary_caller' && edge.target === 'leaked',
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it('resolves global class declarations from a sibling caller', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'global_class_caller' && edge.target === 'published_ping',
+    );
+    expect(calls.map((edge) => [edge.targetLabel, edge.targetFilePath])).toEqual([
+      ['Method', 'main.py'],
+    ]);
+  });
+
+  it('does not let a nested class global publish its enclosing function-local declaration', () => {
+    const calls = getRelationships(result, 'CALLS').filter((edge) => edge.target === 'retained');
+    expect(calls.map((edge) => edge.source)).toEqual(['class_global_boundary']);
+  });
+
+  it('publishes class-owned global functions and classes without creating a method', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'class_global_caller',
+    );
+    expect(
+      calls.map((edge) => `${edge.targetFilePath}:${edge.targetLabel}:${edge.target}`).sort(),
+    ).toEqual(['main.py:Function:class_target', 'main.py:Method:class_ping']);
+    expect(getNodesByLabel(result, 'Method')).not.toContain('class_target');
+    const definition = getNodesByLabelFull(result, 'Function').find(
+      (node) => node.name === 'class_target',
+    );
+    expect(definition?.properties.parameterCount).toBe(1);
   });
 });
 
@@ -907,6 +1013,281 @@ describe('Python re-export chain resolution', () => {
   });
 });
 
+describe('Python aliased package re-export resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-aliased-package-reexport'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves both aliased package member calls and direct re-export calls', () => {
+    const calls = getRelationships(result, 'CALLS')
+      .filter((call) => ['combo_caller', 'reexport_pkg_caller'].includes(call.source))
+      .map((call) => [call.source, call.target, call.targetFilePath])
+      .sort();
+    expect(calls).toEqual([
+      ['combo_caller', 'pf', 'app/services/bp/gp.py'],
+      ['reexport_pkg_caller', 'pf', 'app/services/bp/gp.py'],
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dotted imports: package prefixes must not borrow the leaf module's bindings
+// ---------------------------------------------------------------------------
+
+describe('Python dotted import package ownership', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-package-ownership-'));
+    writeFixtureRepo(repoDir, {
+      'app.py': `import pkg.db
+import hidden_pkg.leaf
+import deep.nested
+
+def construct():
+    return pkg.User().save()
+
+def hidden_on_package():
+    return hidden_pkg.hidden()
+
+def visible_on_leaf():
+    return hidden_pkg.leaf.hidden()
+
+def root_member():
+    return deep.marker()
+
+def nested_member():
+    return deep.nested.marker()
+
+def renamed_member():
+    return pkg.renamed()
+`,
+      'pkg/__init__.py': 'from .db import User\nfrom .bridge import renamed\n__all__ = []\n',
+      'pkg/db.py': 'class User:\n    def save(self):\n        return 1\n',
+      'pkg/bridge.py': 'from .service import original as renamed\n',
+      'pkg/service.py': 'def original():\n    return 2\n',
+      'hidden_pkg/__init__.py': '',
+      'hidden_pkg/leaf.py': 'from other import hidden\n',
+      'other.py': 'def hidden():\n    return 3\n',
+      'deep/__init__.py': 'from .root_service import marker\n',
+      'deep/root_service.py': 'def marker():\n    return 4\n',
+      'deep/nested/__init__.py': 'from .service import marker\n',
+      'deep/nested/service.py': 'def marker():\n    return 5\n',
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('keeps the method call on a class re-exported from the imported leaf', () => {
+    const calls = getRelationships(result, 'CALLS').filter((call) => call.source === 'construct');
+    expect(calls.map((call) => [call.target, call.targetFilePath]).sort()).toEqual([
+      ['User', 'pkg/db.py'],
+      ['save', 'pkg/db.py'],
+    ]);
+  });
+
+  it('does not publish leaf-only imports on the package', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.filter((call) => call.source === 'hidden_on_package')).toEqual([]);
+    expect(
+      calls
+        .filter((call) => call.source === 'visible_on_leaf')
+        .map((call) => [call.target, call.targetFilePath]),
+    ).toEqual([['hidden', 'other.py']]);
+  });
+
+  it('keeps root and nested package re-exports in their own namespaces', () => {
+    const calls = getRelationships(result, 'CALLS')
+      .filter((call) => ['root_member', 'nested_member'].includes(call.source))
+      .map((call) => [call.source, call.target, call.targetFilePath])
+      .sort();
+    expect(calls).toEqual([
+      ['nested_member', 'marker', 'deep/nested/service.py'],
+      ['root_member', 'marker', 'deep/root_service.py'],
+    ]);
+  });
+
+  it('follows renamed re-export chains for explicit access even outside __all__', () => {
+    const calls = getRelationships(result, 'CALLS')
+      .filter((call) => call.source === 'renamed_member')
+      .map((call) => [call.target, call.targetFilePath]);
+    expect(calls).toEqual([['original', 'pkg/service.py']]);
+  });
+});
+
+describe('Python namespace re-export visibility', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-reexport-visibility-'));
+    writeFixtureRepo(repoDir, {
+      'pkg/__init__.py': '',
+      'pkg/impl.py': `def run():
+    return 1
+
+class Service:
+    def work(self):
+        return 2
+
+def _hidden():
+    return 3
+`,
+      'pkg/named.py': `from .impl import run as renamed, Service, _hidden
+__all__ = []
+`,
+      'pkg/chain.py': 'from .named import renamed as again\n',
+      'pkg/star.py': 'from .impl import *\n',
+      'pkg/restricted_impl.py': '__all__ = []\ndef run():\n    return 5\n',
+      'pkg/restricted.py': 'from .restricted_impl import *\n',
+      'pkg/private.py': `def setup():
+    from .impl import run
+    return run()
+
+class Holder:
+    from .impl import Service
+`,
+      'pkg/local.py': `from .impl import run
+
+def run():
+    return 4
+`,
+      'inner.py': `from pkg import impl as api
+
+def inner_alias():
+    from pkg import local as api
+    return api.run()
+
+def sibling():
+    return api.run()
+
+def local_only():
+    from pkg import impl as scoped
+    return scoped.run()
+
+def absent_sibling():
+    return scoped.run()
+
+def outer():
+    from pkg import local as scoped
+    def closure():
+        return scoped.run()
+    return closure()
+`,
+      'consumer.py': `from pkg import named as ns, chain, star, private, local, restricted
+
+def alias():
+    return ns.renamed()
+
+def hidden():
+    return ns._hidden()
+
+def chained():
+    return chain.again()
+
+def wildcard():
+    return star.run()
+
+def wildcard_private():
+    return star._hidden()
+
+def wildcard_restricted():
+    return restricted.run()
+
+def wildcard_nested():
+    return star.work()
+
+def not_exported():
+    return private.run()
+
+def not_exported_class():
+    return private.Service().work()
+
+def receiver_shadow(ns):
+    return ns.renamed()
+
+def local_member():
+    return local.run()
+
+def compound():
+    return ns.Service().work()
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('resolves named, aliased and transitive members regardless of __all__', () => {
+    const edges = getRelationships(result, 'CALLS')
+      .filter((call) => ['alias', 'hidden', 'chained', 'compound'].includes(call.source))
+      .map((call) => `${call.source}->${call.target}@${call.targetFilePath}`)
+      .sort();
+    expect(edges).toEqual([
+      'alias->run@pkg/impl.py',
+      'chained->run@pkg/impl.py',
+      'compound->Service@pkg/impl.py',
+      'compound->work@pkg/impl.py',
+      'hidden->_hidden@pkg/impl.py',
+    ]);
+  });
+
+  it('exposes wildcard-imported names as module members', () => {
+    const edges = getRelationships(result, 'CALLS')
+      .filter((call) => call.source === 'wildcard')
+      .map((call) => `${call.target}@${call.targetFilePath}`);
+    expect(edges).toEqual(['run@pkg/impl.py']);
+    expect(
+      getRelationships(result, 'CALLS').filter((call) =>
+        ['wildcard_private', 'wildcard_restricted', 'wildcard_nested'].includes(call.source),
+      ),
+    ).toEqual([]);
+  });
+
+  it('does not publish function-local or class-body imports as module members', () => {
+    const edges = getRelationships(result, 'CALLS').filter((call) =>
+      ['not_exported', 'not_exported_class'].includes(call.source),
+    );
+    expect(edges).toEqual([]);
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((call) => call.source === 'setup')
+        .map((call) => `${call.target}@${call.targetFilePath}`),
+    ).toEqual(['run@pkg/impl.py']);
+  });
+
+  it('keeps namespace imports local to their function and visible to closures', () => {
+    const edges = getRelationships(result, 'CALLS')
+      .filter((call) => call.sourceFilePath === 'inner.py' && call.target === 'run')
+      .map((call) => `${call.source}->${call.targetFilePath}`)
+      .sort();
+    expect(edges).toEqual([
+      'closure->pkg/local.py',
+      'inner_alias->pkg/local.py',
+      'local_only->pkg/impl.py',
+      'sibling->pkg/impl.py',
+    ]);
+  });
+
+  it('preserves local-member and receiver shadowing', () => {
+    const edges = getRelationships(result, 'CALLS')
+      .filter((call) => ['local_member', 'receiver_shadow'].includes(call.source))
+      .map((call) => `${call.source}->${call.target}@${call.targetFilePath}`);
+    expect(edges).toEqual(['local_member->run@pkg/local.py']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Local shadow: same-file definition takes priority over imported name
 // ---------------------------------------------------------------------------
@@ -1076,6 +1457,849 @@ describe('Python self resolution', () => {
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('models/user.py');
   });
+});
+
+// ---------------------------------------------------------------------------
+// Mixin self-dispatch: a method supplied only by a concrete subtype
+// ---------------------------------------------------------------------------
+
+describe('Python mixin self-dispatch', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-mixin-self-dispatch'), () => {});
+  }, 60000);
+
+  it('resolves each self.helper() through direct and sibling-base implementations', () => {
+    const helperCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.target === 'helper' && ['first', 'second'].includes(call.source),
+    );
+    expect(helperCalls.map((call) => `${call.source} → ${call.targetFilePath}`).sort()).toEqual([
+      'first → conditional.py',
+      'first → helpers.py',
+      'first → worker.py',
+      'second → conditional.py',
+      'second → helpers.py',
+      'second → worker.py',
+    ]);
+  });
+
+  it('keeps the sibling-base @staticmethod reachable through instance self dispatch', () => {
+    const staticCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.target === 'helper' &&
+        call.targetFilePath === 'helpers.py' &&
+        ['first', 'second'].includes(call.source),
+    );
+    expect(staticCalls.map((call) => call.source).sort()).toEqual(['first', 'second']);
+  });
+
+  it('uses self provenance with renamed caller and target receiver parameters', () => {
+    const renamedCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'renamed' && call.target === 'helper',
+    );
+    expect(renamedCalls.map((call) => call.targetFilePath).sort()).toEqual([
+      'conditional.py',
+      'helpers.py',
+      'worker.py',
+    ]);
+  });
+
+  it('does not fan ordinary annotated receivers out through concrete subtypes', () => {
+    const annotatedFanout = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.source === 'call_annotated' &&
+        call.target === 'helper' &&
+        call.rel.reason === 'interface-dispatch',
+    );
+    expect(annotatedFanout).toEqual([]);
+  });
+
+  it('does not treat a renamed classmethod receiver as instance dispatch', () => {
+    const classReceiverFanout = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.source === 'invoke' &&
+        call.target === 'class_only' &&
+        call.rel.reason === 'interface-dispatch',
+    );
+    expect(classReceiverFanout).toEqual([]);
+    expect(
+      getResolutionOutcomes(result).some(
+        (outcome) =>
+          outcome.kind === 'suppressed' &&
+          outcome.filePath === 'mixins.py' &&
+          outcome.name === 'class_only' &&
+          outcome.reason === 'receiver-unresolved',
+      ),
+    ).toBe(false);
+  });
+
+  it('does not use pseudo-receivers or captured classmethod receivers for instance fan-out', () => {
+    const falseFanout = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.rel.reason === 'interface-dispatch' &&
+        ((call.source === 'variadic_dispatch' && call.target === 'variadic_target') ||
+          (call.source === 'inner' && call.target === 'instance_only')),
+    );
+    expect(falseFanout).toEqual([]);
+  });
+
+  it('excludes required fixed arguments that precede a variadic tail', () => {
+    const wrongArityCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        ['first', 'second', 'renamed'].includes(call.source) &&
+        call.target === 'helper' &&
+        call.targetFilePath === 'wrong_arity.py',
+    );
+    expect(wrongArityCalls).toEqual([]);
+  });
+
+  it('fans an ambiguous runtime subtype dispatch out instead of picking one target', () => {
+    const runCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch' && call.target === 'run',
+    );
+    expect(runCalls.map((call) => call.targetFilePath).sort()).toEqual([
+      'ambiguous_a.py',
+      'ambiguous_b.py',
+    ]);
+  });
+
+  it('suppresses a missing self member instead of falling back to a same-named free function', () => {
+    const missingCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'missing' && call.target === 'missing_target',
+    );
+    expect(missingCalls).toEqual([]);
+    expect(
+      getResolutionOutcomes(result).some(
+        (outcome) =>
+          outcome.kind === 'suppressed' &&
+          outcome.filePath === 'mixins.py' &&
+          outcome.name === 'missing_target' &&
+          outcome.reason === 'receiver-unresolved' &&
+          outcome.receiverOrigin === 'in-program',
+      ),
+    ).toBe(true);
+  });
+
+  it('records only the expected mixin dispatch gaps and partial coverage', () => {
+    const unresolvedSites = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
+      .filter(
+        (outcome) => outcome.reason === 'receiver-unresolved' && outcome.filePath === 'mixins.py',
+      )
+      .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
+      .sort();
+    expect(unresolvedSites).toEqual(
+      [
+        '3:helper',
+        '6:helper',
+        '9:helper',
+        '12:missing_target',
+        '52:shadow_hook',
+        '75:keyword_only_target',
+        '78:positional_only_target',
+        '81:required_keyword_target',
+        '94:__private_hook',
+        '99:abstract_hook',
+        '104:duplicate_hook',
+      ].sort(),
+    );
+  });
+
+  it('resolves a diamond mixin call to the C3 method, not the breadth-first base', () => {
+    const orderCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch_order' && call.target === 'order_hook',
+    );
+    expect(orderCalls).toHaveLength(1);
+    // OrderX.order_hook is the CPython target. OrderB.order_hook is the
+    // breadth-first hit and must not be the edge.
+    expect(result.graph.getNode(orderCalls[0]!.rel.targetId)?.properties.startLine).toBe(40);
+  });
+
+  it('honors inherited field shadowing instead of skipping to a later method', () => {
+    const shadowCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch_shadow' && call.target === 'shadow_hook',
+    );
+    expect(shadowCalls).toEqual([]);
+  });
+
+  it('does not treat implicit class/static lifecycle receivers as instance fan-out', () => {
+    const lifecycleCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        ['__init_subclass__', '__new__'].includes(call.source) &&
+        ['lifecycle_hook', 'new_hook'].includes(call.target),
+    );
+    expect(lifecycleCalls).toEqual([]);
+    const allocationCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === '__new__' && call.target === 'allocate',
+    );
+    expect(allocationCalls).toHaveLength(1);
+    expect(allocationCalls[0]!.rel.targetId).toContain('LifecycleReceiverMixin.allocate');
+  });
+
+  it('does not treat an implicit __class_getitem__ receiver as instance fan-out', () => {
+    const genericCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === '__class_getitem__' && call.target === 'class_only',
+    );
+    expect(genericCalls).toEqual([]);
+  });
+
+  it('suppresses positional/keyword binding mismatches during subtype dispatch', () => {
+    const shapedCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        ['positional_to_keyword_only', 'keyword_to_positional_only'].includes(call.source) &&
+        ['keyword_only_target', 'positional_only_target'].includes(call.target),
+    );
+    expect(shapedCalls).toEqual([]);
+  });
+
+  it('does not expose a hidden compatible base behind an incompatible override', () => {
+    const hiddenBaseCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.source === 'positional_to_keyword_only' && call.target === 'keyword_only_target',
+    );
+    expect(hiddenBaseCalls).toEqual([]);
+  });
+
+  it('suppresses a positional call that leaves a required keyword-only parameter unsatisfied', () => {
+    const requiredKeywordCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.source === 'positional_missing_required_keyword' &&
+        call.target === 'required_keyword_target',
+    );
+    expect(requiredKeywordCalls).toEqual([]);
+  });
+
+  it('resolves both simple one-positional-argument mixin callers', () => {
+    const forwardingCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        ['forward_first', 'forward_second'].includes(call.source) &&
+        call.target === 'forward_target',
+    );
+    expect(forwardingCalls.map((call) => `${call.source} → ${call.targetFilePath}`).sort()).toEqual(
+      ['forward_first → worker.py', 'forward_second → worker.py'],
+    );
+  });
+
+  it('does not cross Python private-name mangling boundaries', () => {
+    const privateCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch_private' && call.target === '__private_hook',
+    );
+    expect(privateCalls).toEqual([]);
+  });
+
+  it('keeps an abstract declaration as a name boundary while resolving concrete descendants', () => {
+    const abstractCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch_abstract' && call.target === 'abstract_hook',
+    );
+    expect(abstractCalls).toHaveLength(1);
+    expect(abstractCalls[0]!.rel.targetId).toContain('ConcreteAbstractWorker.abstract_hook');
+  });
+
+  it('keeps duplicate same-owner definitions ambiguous without generic Python call arity', () => {
+    const duplicateCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch_duplicate' && call.target === 'duplicate_hook',
+    );
+    expect(duplicateCalls).toEqual([]);
+    expect(
+      getResolutionOutcomes(result).some(
+        (outcome) =>
+          outcome.kind === 'suppressed' &&
+          outcome.filePath === 'mixins.py' &&
+          outcome.name === 'duplicate_hook' &&
+          outcome.reason === 'member-lookup-ambiguous',
+      ),
+    ).toBe(true);
+  });
+
+  it('never routes mixin self-dispatch to receiver-blind decoy functions', () => {
+    const calls = getRelationships(result, 'CALLS').filter((call) =>
+      [
+        'first',
+        'second',
+        'renamed',
+        'call_annotated',
+        'dispatch',
+        'missing',
+        'variadic_dispatch',
+        'inner',
+      ].includes(call.source),
+    );
+    expect(calls.some((call) => call.targetFilePath === 'decoys.py')).toBe(false);
+  });
+});
+
+describe('Python unproven subtype methods', () => {
+  it('keeps unproven subtype targets unresolved beside a concrete sibling', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-unproven-subtype-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'worker.py': [
+          'from abc import ABC, abstractmethod as am',
+          'class Mixin:',
+          '    def dispatch(self):',
+          '        return self.hook()',
+          'class Concrete(Mixin):',
+          '    def hook(self):',
+          '        return 0',
+          'class AbstractWorker(Mixin, ABC):',
+          '    @am',
+          '    def hook(self):',
+          '        return 1',
+          'class Receiverless(Mixin):',
+          '    def hook():',
+          '        pass',
+        ].join('\n'),
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS').filter(
+        (call) => call.source === 'dispatch' && call.target === 'hook',
+      );
+      expect(calls.map((call) => call.rel.targetId)).toEqual([
+        expect.stringContaining('Concrete.hook'),
+      ]);
+      const unresolved = getResolutionOutcomes(result)
+        .filter((outcome) => outcome.kind === 'suppressed')
+        .filter((outcome) => outcome.name === 'hook' && outcome.reason === 'receiver-unresolved');
+      expect(unresolved.flatMap((outcome) => outcome.candidateIds).sort()).toEqual([
+        // AbstractWorker.hook (line 10) and Receiverless.hook (line 13).
+        'def:worker.py#10:4:Method:hook',
+        'def:worker.py#13:4:Method:hook',
+      ]);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('marks a member-less intermediate subtype partial and keeps the leaf edge', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-intermediate-subtype-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'worker.py': [
+          'class Mixin:',
+          '    def dispatch(self):',
+          '        return self.hook()',
+          // Base() is instantiable, and its dispatch() raises AttributeError.
+          'class Base(Mixin):',
+          '    pass',
+          'class Impl(Base):',
+          '    def hook(self):',
+          '        return 1',
+        ].join('\n'),
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS').filter(
+        (call) => call.source === 'dispatch' && call.target === 'hook',
+      );
+      expect(calls.map((call) => call.rel.targetId)).toEqual([
+        expect.stringContaining('Impl.hook'),
+      ]);
+      expect(
+        getResolutionOutcomes(result)
+          .filter((outcome) => outcome.kind === 'suppressed')
+          .filter((outcome) => outcome.name === 'hook' && outcome.reason === 'receiver-unresolved')
+          .flatMap((outcome) => outcome.candidateIds),
+      ).toEqual([expect.stringMatching(/:Class:Base$/)]);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
+// ---------------------------------------------------------------------------
+// Incomplete Python inheritance must not invent an MRO binding
+// ---------------------------------------------------------------------------
+
+describe('Python incomplete inheritance', () => {
+  it('records a missing subtype alongside a valid sibling target', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-missing-subtype-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `class Mixin:
+    def dispatch(self):
+        return self.hook()
+
+class HasHook(Mixin):
+    def hook(self):
+        pass
+
+class MissingHook(Mixin):
+    pass
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS').filter(
+        (edge) => edge.source === 'dispatch' && edge.target === 'hook',
+      );
+      expect(calls.map((edge) => edge.rel.targetId)).toEqual([
+        expect.stringContaining('HasHook.hook'),
+      ]);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved' &&
+            outcome.candidateIds.some((id) => id.endsWith(':Class:MissingHook')),
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('retains explicit annotated parameters under an outer staticmethod', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-stacked-staticmethod-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `class Service:
+    def work(self):
+        pass
+
+def identity(fn):
+    return fn
+
+class Mixin:
+    @staticmethod
+    @identity
+    def dispatch(obj: Service):
+        return obj.work()
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').some(
+          (edge) => edge.source === 'dispatch' && edge.target === 'work',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('does not trust shadowed decorator spellings or receiver annotations', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-decorator-shadow-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `from builtins import classmethod as override
+from builtins import classmethod as cm
+from builtins import classmethod as abstractmethod
+
+class FakeTyping:
+    override = override
+
+typing = FakeTyping()
+
+class Mixin:
+    @override
+    def bare(owner):
+        return owner.bare_hook()
+
+    @abstractmethod
+    def abstract_alias(owner):
+        return owner.abstract_alias_hook()
+
+    @typing.override
+    def qualified(owner):
+        return owner.qualified_hook()
+
+    @cm
+    def annotated(owner: 'Mixin'):
+        return owner.annotated_hook()
+
+    def bare_hook(self): pass
+    def abstract_alias_hook(self): pass
+    def qualified_hook(self): pass
+    def annotated_hook(self): pass
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS');
+      for (const [source, target] of [
+        ['bare', 'bare_hook'],
+        ['abstract_alias', 'abstract_alias_hook'],
+        ['qualified', 'qualified_hook'],
+        ['annotated', 'annotated_hook'],
+      ]) {
+        expect(calls.filter((edge) => edge.source === source && edge.target === target)).toEqual(
+          [],
+        );
+        expect(
+          getResolutionOutcomes(result).some(
+            (outcome) =>
+              outcome.kind === 'suppressed' &&
+              outcome.name === target &&
+              outcome.reason === 'receiver-unresolved',
+          ),
+        ).toBe(true);
+      }
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('keeps proven property accessors while declining unverified decorator names', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-known-decorators-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `import abc
+import typing
+
+class Standard:
+    @abc.abstractmethod
+    def abstract(self):
+        return self.abstract_helper()
+
+    @typing.override
+    def overridden(self):
+        return self.override_helper()
+
+    def abstract_helper(self): pass
+    def override_helper(self): pass
+
+class Setter:
+    @property
+    def value(self):
+        return 0
+
+    def unrelated(self):
+        pass
+
+    @value.setter
+    def value(self, replacement):
+        self.setter_helper()
+
+    def setter_helper(self): pass
+
+class Deleter:
+    @property
+    def entry(self):
+        return 0
+
+    @entry.deleter
+    def entry(self):
+        self.deleter_helper()
+
+    def deleter_helper(self): pass
+
+class WrappedGetter:
+    @custom
+    @property
+    def field(self):
+        return 0
+
+    @field.setter
+    def field(owner, replacement):
+        owner.wrapped_helper()
+
+    def wrapped_helper(self): pass
+
+class CustomDescriptor:
+    def setter(self, fn):
+        return classmethod(fn)
+
+class ReboundProperty:
+    @property
+    def rebound(self):
+        return 0
+
+    rebound, ignored = CustomDescriptor(), None
+
+    @rebound.setter
+    def rebound(owner, replacement):
+        owner.rebound_helper()
+
+    def rebound_helper(self): pass
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS');
+      for (const [source, target] of [
+        ['value', 'setter_helper'],
+        ['entry', 'deleter_helper'],
+      ]) {
+        expect(calls.some((edge) => edge.source === source && edge.target === target)).toBe(true);
+      }
+      for (const [source, target] of [
+        ['abstract', 'abstract_helper'],
+        ['overridden', 'override_helper'],
+      ]) {
+        expect(calls.filter((edge) => edge.source === source && edge.target === target)).toEqual(
+          [],
+        );
+        expect(
+          getResolutionOutcomes(result).some(
+            (outcome) =>
+              outcome.kind === 'suppressed' &&
+              outcome.name === target &&
+              outcome.reason === 'receiver-unresolved',
+          ),
+        ).toBe(true);
+      }
+      expect(
+        calls.filter((edge) => edge.source === 'field' && edge.target === 'wrapped_helper'),
+      ).toEqual([]);
+      expect(
+        calls.filter((edge) => edge.source === 'rebound' && edge.target === 'rebound_helper'),
+      ).toEqual([]);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.name === 'wrapped_helper' &&
+            outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.name === 'rebound_helper' &&
+            outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('does not infer instance dispatch through an aliased classmethod decorator', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-classmethod-alias-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `from builtins import classmethod as cm
+
+class Child:
+    def nested_hook(self):
+        pass
+
+class Mixin:
+    def __init__(self):
+        self.child = Child()
+
+    @cm
+    def dispatch(owner):
+        return owner.hook()
+
+    @cm
+    def direct_false(owner):
+        return owner.own_hook()
+
+    @cm
+    def unicode_false(é):
+        return é.unicode_helper()
+
+    @cm
+    def compound_false(owner):
+        return owner.child.nested_hook()
+
+    def own_hook(self):
+        pass
+
+    def unicode_helper(self):
+        pass
+
+    @classmethod
+    def direct(cls):
+        return cls.class_hook()
+
+    @classmethod
+    def class_hook(cls):
+        pass
+
+class Worker(Mixin):
+    def hook(self):
+        pass
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'dispatch' && edge.target === 'hook',
+        ),
+      ).toEqual([]);
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'compound_false' && edge.target === 'nested_hook',
+        ),
+      ).toEqual([]);
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'direct_false' && edge.target === 'own_hook',
+        ),
+      ).toEqual([]);
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'unicode_false' && edge.target === 'unicode_helper',
+        ),
+      ).toEqual([]);
+      expect(
+        getRelationships(result, 'CALLS').some(
+          (edge) => edge.source === 'direct' && edge.target === 'class_hook',
+        ),
+      ).toBe(true);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.filePath === 'case.py' &&
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.filePath === 'case.py' &&
+            outcome.name === 'own_hook' &&
+            outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.filePath === 'case.py' &&
+            outcome.name === 'unicode_helper' &&
+            outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.filePath === 'case.py' &&
+            outcome.name === 'nested_hook' &&
+            outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('ignores a self-named external base without losing the class for its children', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-self-parent-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `import unittest
+
+class TestCase(unittest.TestCase):
+    def project_helper(self):
+        return 1
+
+class Child(TestCase):
+    def call(self):
+        return self.project_helper()
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const extendsEdges = getRelationships(result, 'EXTENDS');
+      expect(extendsEdges.some((edge) => edge.rel.sourceId === edge.rel.targetId)).toBe(false);
+      expect(extendsEdges.map((edge) => `${edge.source}->${edge.target}`)).toEqual([
+        'Child->TestCase',
+      ]);
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'call' && edge.target === 'project_helper',
+        ),
+      ).toHaveLength(1);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('keeps an unindexed earlier base unresolved while retaining direct overrides', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-unknown-base-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `import external
+
+class HookMixin:
+    def dispatch(self):
+        return self.hook()
+
+class First:
+    def hook(self):
+        return 1
+
+class Second:
+    def hook(self):
+        return 2
+
+class Worker(HookMixin, external.Parent, First, Second):
+    pass
+
+class DirectWorker(HookMixin, external.Parent, First, Second):
+    def hook(self):
+        return 3
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS').filter(
+        (edge) => edge.source === 'dispatch' && edge.target === 'hook',
+      );
+      expect(calls.map((edge) => edge.rel.targetId)).toEqual([
+        expect.stringContaining('DirectWorker.hook'),
+      ]);
+      // The external parent may supply hook at runtime, so First and Second
+      // are not proven targets. DirectWorker's own method still binds first.
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved' &&
+            outcome.candidateIds.some((id) => id.endsWith(':Class:Worker')),
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('records partial coverage when the final known MRO owner has an unindexed base', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-unknown-tail-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `import external
+
+class HookMixin:
+    def dispatch(self):
+        return self.hook()
+
+class Tail(external.Parent):
+    pass
+
+class Worker(HookMixin, Tail):
+    pass
+
+class DirectWorker(HookMixin):
+    def hook(self):
+        return 1
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS').filter(
+        (edge) => edge.source === 'dispatch' && edge.target === 'hook',
+      );
+      expect(calls.map((edge) => edge.rel.targetId)).toEqual([
+        expect.stringContaining('DirectWorker.hook'),
+      ]);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved' &&
+            outcome.candidateIds.some((id) => id.endsWith(':Class:Worker')),
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
 });
 
 // ---------------------------------------------------------------------------
@@ -1277,6 +2501,245 @@ describe('Python return type inference', () => {
   });
 });
 
+describe('Python nullable assignment result types (#3498)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-conditional-return-type'),
+      () => {},
+    );
+  }, 60000);
+
+  it.each([
+    'direct',
+    'conditional',
+    'reverse_conditional',
+    'or_none',
+    'none_or',
+    'class_constructor',
+  ])('resolves %s to User.save', (source) => {
+    const saveCalls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === source && edge.target === 'save',
+    );
+    expect(saveCalls).toHaveLength(1);
+    expect(saveCalls[0]?.rel.targetId).toContain('User.save');
+  });
+
+  it.each(['two_factories', 'and_none', 'none_and', 'or_other'])(
+    'does not infer a single receiver type for %s',
+    (source) => {
+      const saveCalls = getRelationships(result, 'CALLS').filter(
+        (edge) => edge.source === source && edge.target === 'save',
+      );
+      expect(saveCalls).toHaveLength(0);
+    },
+  );
+});
+
+describe('Python module-qualified factory result types (#3498)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-module-factory-return'),
+      () => {},
+    );
+  }, 60000);
+
+  const methodCalls = (source: string) =>
+    getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === source && edge.target === 'm')
+      .map((edge) => edge.rel.targetId);
+
+  it.each(['alias_call', 'module_call', 'inline_alias', 'class_through_alias'])(
+    'resolves %s to C.m',
+    (source) => {
+      expect(methodCalls(source)).toEqual(['Method:mod.py:C.m#0']);
+    },
+  );
+
+  it.each(['shadowed_namespace', 'untyped_alias', 'untyped_inline', 'untyped_named'])(
+    'does not guess a receiver type for %s',
+    (source) => {
+      expect(methodCalls(source)).toEqual([]);
+    },
+  );
+
+  it('records the untyped receivers as dropped sites instead of an exact miss', () => {
+    const dropped = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
+      .filter(
+        (outcome) => outcome.reason === 'receiver-unresolved' && outcome.filePath === 'callers.py',
+      )
+      .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
+      .sort();
+    expect(dropped).toEqual(['27:make', '33:m', '37:m', '42:m']);
+  });
+});
+
+// #3498: two shapes where the namespace's module is not the module that owns
+// the return annotation. `import pkg.b` binds `pkg` but targets `pkg/b.py`, and
+// `-> models.Order` is spelled against the producer's own `models` import, not
+// the caller's. Both fail closed (no edge, a recorded drop) instead of
+// borrowing the wrong class.
+describe('Python namespace factory results that name another module (#3498)', () => {
+  let result: PipelineResult;
+  let repoDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-namespace-factory-'));
+    writeFixtureRepo(repoDir, {
+      'pkg/__init__.py': `class C1:
+    def m(self):
+        return 1
+
+
+def make() -> C1:
+    return C1()
+`,
+      'pkg/b.py': `class C2:
+    def m(self):
+        return 2
+
+
+def make() -> C2:
+    return C2()
+`,
+      'callers.py': `import pkg.b
+
+
+def submodule_import():
+    x = pkg.make()
+    return x.m()
+
+
+def submodule_import_inline():
+    return pkg.make().m()
+`,
+      'shop/__init__.py': '',
+      'shop/models.py': `class Order:
+    def save(self):
+        return 1
+`,
+      'shop/service.py': `from . import models
+
+
+def get_order() -> models.Order:
+    return models.Order()
+`,
+      'billing/__init__.py': '',
+      'billing/models.py': `class Order:
+    def save(self):
+        return 2
+`,
+      'billing/views.py': `from . import models
+import shop.service as svc
+
+
+def producer_spelled_return():
+    order = svc.get_order()
+    return order.save()
+
+
+def local_order():
+    order = models.Order()
+    return order.save()
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    { source: 'submodule_import', member: 'm', targets: [] },
+    { source: 'submodule_import_inline', member: 'm', targets: [] },
+    { source: 'producer_spelled_return', member: 'save', targets: [] },
+    {
+      source: 'local_order',
+      member: 'save',
+      targets: ['Method:billing/models.py:Order.save#0'],
+    },
+  ])('resolves $member called from $source to $targets', ({ source, member, targets }) => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === source && edge.target === member)
+        .map((edge) => edge.rel.targetId),
+    ).toEqual(targets);
+  });
+
+  it('records the undecided receivers as dropped sites', () => {
+    const dropped = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
+      .filter((outcome) => outcome.reason === 'receiver-unresolved')
+      .map((outcome) => `${outcome.filePath}:${outcome.range.startLine}:${outcome.name}`)
+      .sort();
+    expect(dropped).toEqual(['billing/views.py:7:save', 'callers.py:10:m', 'callers.py:6:m']);
+  });
+});
+
+// #3498: the namespace lookup also runs in Phase 4, after the out-of-core seal
+// has made `scopeTree.byId` throw. A partition whose namespace calls are all
+// inline warms nothing before the seal, so the lookup must never need that walk.
+// The seal is a memory optimization: the edges must match an in-memory run.
+describe('Python inline namespace factory under the out-of-core scope seal (#3498)', () => {
+  let inMemory: PipelineResult;
+  let sealed: PipelineResult;
+  let repoDir: string;
+  let storeDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-sealed-factory-'));
+    storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-sealed-store-'));
+    writeFixtureRepo(repoDir, {
+      'mod.py': `class C:
+    def m(self):
+        return 1
+
+
+def make() -> C:
+    return C()
+`,
+      'callers.py': `import mod as rp
+
+
+def inline_alias():
+    return rp.make().m()
+`,
+    });
+    inMemory = await runPipelineFromRepo(repoDir, () => {});
+    const prev = process.env.GITNEXUS_DISK_SCOPE_INDEX;
+    process.env.GITNEXUS_DISK_SCOPE_INDEX = '1';
+    try {
+      sealed = await runPipelineFromRepo(repoDir, () => {}, { parsedFileStorePath: storeDir });
+    } finally {
+      if (prev === undefined) delete process.env.GITNEXUS_DISK_SCOPE_INDEX;
+      else process.env.GITNEXUS_DISK_SCOPE_INDEX = prev;
+    }
+  }, 120000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+    if (storeDir !== undefined) fs.rmSync(storeDir, { recursive: true, force: true });
+  });
+
+  const callEdges = (result: PipelineResult): string[] =>
+    getRelationships(result, 'CALLS')
+      .map((edge) => `${edge.source} -> ${edge.rel.targetId}`)
+      .sort();
+
+  it('resolves the inline call under the seal', () => {
+    expect(callEdges(sealed)).toContain('inline_alias -> Method:mod.py:C.m#0');
+  });
+
+  it('emits the same CALLS edges as the in-memory run', () => {
+    expect(callEdges(sealed)).toEqual(callEdges(inMemory));
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Issue #289: static/classmethod classes must have HAS_METHOD edges
 // ---------------------------------------------------------------------------
@@ -1419,15 +2882,6 @@ describe('Python assignment chain propagation', () => {
     expect(saveFns.length).toBe(2);
   });
 
-  it('resolves alias.save() to User#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    // Positive: alias.save() must resolve to User#save
-    const userSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('user.py'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
   it('alias.save() does NOT resolve to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
     // Negative: only one save call from process to User#save
@@ -1435,15 +2889,6 @@ describe('Python assignment chain propagation', () => {
       (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('user.py'),
     );
     expect(wrongCall.length).toBe(1);
-  });
-
-  it('resolves r_alias.save() to Repo#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    // Positive: r_alias.save() must resolve to Repo#save
-    const repoSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('repo.py'),
-    );
-    expect(repoSave).toBeDefined();
   });
 
   it('each alias resolves to its own class, not the other', () => {
@@ -2900,12 +4345,8 @@ describe('Python class-body attribute does NOT leak into module export index', (
 
 // ---------------------------------------------------------------------------
 // Function-local import + cross-file return-type propagation
-// Codex round-2 flagged this as potentially broken, but empirically the
-// finalize-algorithm hoists the `from svc import get_user` binding to
-// the app.py module scope (observed via indexes.bindings dump), so
-// `propagateImportedReturnTypes`'s module-scope pass already handles
-// it. These assertions pin that working behavior as a regression
-// guard against any future change to binding-scope routing.
+// The import stays in its function scope; return-type propagation must still
+// connect a call on the imported function's result to its defining method.
 // ---------------------------------------------------------------------------
 
 describe('Python function-local import feeds chained receiver-bound call', () => {
@@ -2936,13 +4377,8 @@ describe('Python function-local import feeds chained receiver-bound call', () =>
 
 // ---------------------------------------------------------------------------
 // Function-local namespace import: `def f(): import svc as s; s.call()`
-// Codex round-3 flagged this pattern as potentially broken because
-// collectNamespaceTargets reads only module-scope imports. Empirically
-// the edge IS emitted (finalize hoists ImportEdges onto the module
-// scope), so these assertions pin the working behavior. If finalize
-// routing ever changes to match pythonImportOwningScope's per-scope
-// contract, this block will flip red and signal the need to make
-// collectNamespaceTargets scope-chain-aware.
+// Namespace targets follow the lexical scope chain, so the local import is
+// visible inside its function without becoming a module export.
 // ---------------------------------------------------------------------------
 
 describe('Python function-local namespace import feeds receiver-bound call', () => {
@@ -2972,13 +4408,10 @@ describe('Python function-local namespace import feeds receiver-bound call', () 
 
 // ---------------------------------------------------------------------------
 // Class-body namespace import: `class A: import mod; def use(): mod.helper()`
-// Same theoretical concern as the function-local case above, same
-// empirical outcome — finalize hoists the ImportEdge to the module
-// scope so the namespace-receiver path finds it from inside A.use.
-// These assertions pin that working behavior.
+// Class namespaces are not enclosing lexical environments for method bodies.
 // ---------------------------------------------------------------------------
 
-describe('Python class-body namespace import feeds method receiver-bound call', () => {
+describe('Python class-body namespace import is invisible to methods', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -2988,11 +4421,10 @@ describe('Python class-body namespace import feeds method receiver-bound call', 
     );
   }, 60000);
 
-  it('emits CALLS edge A.use -> mod.helper via class-body `import mod`', () => {
+  it('does not emit A.use -> mod.helper for a class-body-only import', () => {
     const calls = getRelationships(result, 'CALLS');
     const callEdge = calls.find((c) => c.source === 'use' && c.target === 'helper');
-    expect(callEdge).toBeDefined();
-    expect(callEdge!.rel.targetId).toContain('mod.py:helper');
+    expect(callEdge).toBeUndefined();
   });
 });
 

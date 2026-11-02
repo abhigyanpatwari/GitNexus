@@ -157,6 +157,17 @@ describe('emitJsScopeCaptures — #1876 array-method-callback narrowing', () => 
       ),
     ).toBe(true);
   });
+
+  it('names create: publicProcedure.mutation(withAuth(async () => {}))', () => {
+    const src = 'const r = { create: publicProcedure.mutation(withAuth(async () => {})) };';
+    expect(hasDecl(src, '@declaration.function', 'create')).toBe(true);
+  });
+
+  it('does not name variable-level nested HOC memo(forwardRef(...)) as Function', () => {
+    const src = 'const Wrapped = memo(forwardRef(() => null));';
+    expect(hasDecl(src, '@declaration.function', 'Wrapped')).toBe(false);
+    expect(hasDecl(src, '@declaration.const', 'Wrapped')).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

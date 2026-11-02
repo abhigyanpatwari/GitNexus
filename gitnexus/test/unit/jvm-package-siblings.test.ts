@@ -1,4 +1,5 @@
-import type { ParsedFile, ScopeResolutionIndexes, SymbolDefinition } from 'gitnexus-shared';
+import type { ScopeResolutionIndexes } from '../../src/core/ingestion/model/scope-resolution-indexes.js';
+import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { describe, expect, it } from 'vitest';
 import { createJvmPackageSiblingVisibility } from '../../src/core/ingestion/languages/jvm/package-siblings.js';
 import { collectJavaCaptureSideChannel } from '../../src/core/ingestion/languages/java/capture-side-channel.js';
@@ -158,6 +159,7 @@ function moduleWithClass(
     {
       id: moduleId,
       kind: 'Module',
+      bindings: new Map(),
       typeBindings: new Map(moduleTypeBindings ?? []),
       ownedDefs: [],
     },
@@ -167,6 +169,7 @@ function moduleWithClass(
       id: `class:${index}`,
       kind: 'Class',
       parent: moduleId,
+      bindings: new Map(),
       typeBindings: new Map(),
       ownedDefs: [def],
     });

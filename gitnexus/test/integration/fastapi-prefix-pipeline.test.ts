@@ -46,7 +46,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'node:path';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
-import type { PipelineResult } from '../../types/pipeline.js';
+import type { PipelineResult } from '../../src/types/pipeline.js';
 
 const FIXTURE = path.resolve(__dirname, '..', 'fixtures', 'fastapi-prefix-app');
 
@@ -101,6 +101,28 @@ describe('FastAPI include_router(prefix=…) — ingestion pipeline', () => {
     // expected joined route is `/rel/info`.
     const names = routeNames();
     expect(names).toContain('/rel/info');
+  });
+
+  it('propagates a package-router mount prefix through unprefixed child includes', () => {
+    const names = routeNames();
+    expect(names).toContain('/api/agents');
+    expect(names).toContain('/api/models');
+    expect(names).toContain('/api/v1/models');
+    expect(names).not.toContain('/agents');
+    expect(names).not.toContain('/models');
+    expect(names).toContain('/model-audit');
+    expect(names).not.toContain('/api/model-audit');
+    expect(names).not.toContain('/v1/model-audit');
+    expect(names).not.toContain('/api/v1/model-audit');
+  });
+
+  it('keeps the production prefix when another file mounts the same router bare', () => {
+    // `app_pkg/main.py` mounts billing at /billing through an import the
+    // resolver cannot bind (`from . import billing`); `tests/test_billing.py`
+    // mounts it bare. The bare include must not shadow the real prefix.
+    // Whether the bare test mount also yields `/invoices` is not pinned here.
+    const names = routeNames();
+    expect(names).toContain('/billing/invoices');
   });
 
   it('joins same-file APIRouter(prefix=…) with router decorator paths', () => {

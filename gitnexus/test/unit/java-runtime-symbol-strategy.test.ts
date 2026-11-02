@@ -3,7 +3,7 @@ import type { GraphNode } from 'gitnexus-shared';
 import { javaProvider } from '../../src/core/ingestion/languages/java.js';
 import { javaRuntimeSymbolStrategy } from '../../src/core/ingestion/languages/java/spring-actuator.js';
 
-function method(name: string, properties: GraphNode['properties'] = {}): GraphNode {
+function method(name: string, properties: Partial<GraphNode['properties']> = {}): GraphNode {
   return {
     id: `method:${name}:${JSON.stringify(properties.parameterTypes)}`,
     label: 'Method',

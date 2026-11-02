@@ -2,7 +2,7 @@
  * Unit Tests: MCP Tool Definitions
  *
  * Tests: GITNEXUS_TOOLS from tools.ts
- * - All 17 tools are defined (per-repo + group_list/group_sync)
+ * - All 19 tools are defined (per-repo + group_list/group_sync)
  * - Each tool has valid name, description, inputSchema
  * - Required fields are correct
  * - Optional repo parameter is present on tools that need it
@@ -23,8 +23,27 @@ const MUTATING_TOOLS = new Set(['rename', 'group_sync']);
 const OPEN_WORLD_READ_ONLY_TOOLS = new Set(['query']);
 
 describe('GITNEXUS_TOOLS', () => {
-  it('exports all tools (8 base + 1 explain + 1 pdg_query + 3 route/tool/shape + 1 api_impact + 1 trace + 2 group)', () => {
-    expect(GITNEXUS_TOOLS).toHaveLength(17);
+  it('keeps the complete tool catalog below 70 KB of recurring agent context', () => {
+    // Every exposed tool is sent before the agent chooses one. This is a byte
+    // budget, not a tokenizer estimate or a claim about end-to-end dollar cost.
+    expect(Buffer.byteLength(JSON.stringify(GITNEXUS_TOOLS), 'utf8')).toBeLessThanOrEqual(70_000);
+  });
+
+  it('exports all tools (8 base + 1 explain + 1 pdg_query + 3 route/tool/shape + 1 api_impact + 1 trace + 2 group + read_file + grep)', () => {
+    expect(GITNEXUS_TOOLS).toHaveLength(19);
+  });
+
+  it('exposes one rename tool; there is no separate rename_preview (use dry_run)', () => {
+    const names = GITNEXUS_TOOLS.map((t) => t.name);
+    expect(names.filter((name) => name === 'rename')).toHaveLength(1);
+    expect(names).not.toContain('rename_preview');
+    const rename = GITNEXUS_TOOLS.find((t) => t.name === 'rename')!;
+    expect(rename.inputSchema.properties.dry_run).toMatchObject({ type: 'boolean', default: true });
+    expect(rename.inputSchema.required).toEqual(['new_name']);
+    expect(rename.description).toMatch(/dry_run omitted or true never writes/);
+    expect(rename.description).toMatch(/dry_run:false requires the plan_token/);
+    expect(rename.inputSchema.properties.plan_token).toMatchObject({ type: 'string' });
+    expect(rename.description).not.toContain('rename_preview');
   });
 
   it('contains all expected tool names', () => {
@@ -43,6 +62,8 @@ describe('GITNEXUS_TOOLS', () => {
         'pdg_query',
         'api_impact',
         'trace',
+        'read_file',
+        'grep',
       ]),
     );
   });
@@ -58,6 +79,19 @@ describe('GITNEXUS_TOOLS', () => {
       expect(tool.inputSchema.type).toBe('object');
       expect(tool.inputSchema.properties).toBeDefined();
       expect(Array.isArray(tool.inputSchema.required)).toBe(true);
+      expect(tool.inputSchema.additionalProperties).toBe(false);
+    }
+  });
+
+  it('impact and trace advertise depth as a maxDepth alias (#3261)', () => {
+    for (const name of ['impact', 'trace'] as const) {
+      const tool = GITNEXUS_TOOLS.find((t) => t.name === name)!;
+      expect(tool.inputSchema.properties.depth).toMatchObject({
+        type: 'number',
+        description: expect.stringMatching(/maxDepth/),
+        minimum: 0,
+      });
+      expect(tool.inputSchema.properties.maxDepth).toBeDefined();
     }
   });
 
@@ -101,6 +135,45 @@ describe('GITNEXUS_TOOLS', () => {
         openWorldHint: false,
       });
     }
+  });
+
+  it('query, context, impact, and cypher descriptions mention always-on staleness (#3291)', () => {
+    for (const name of ['query', 'context', 'impact', 'cypher'] as const) {
+      const tool = GITNEXUS_TOOLS.find((t) => t.name === name)!;
+      expect(tool.description).toContain('staleness');
+      expect(tool.description).toMatch(/lastCommit|branch/);
+    }
+  });
+
+  it('query process_symbols description names the (id, process_id) join key (#3351)', () => {
+    const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
+    expect(queryTool.description).toContain('One row per (id, process_id)');
+    expect(queryTool.description).toContain('Join a process to its rows by process_id');
+    expect(queryTool.description).toContain('symbol_count is the number of those rows');
+    expect(queryTool.description).toContain('single-repo envelope');
+    expect(queryTool.description).toContain('does not include process_symbols');
+    expect(queryTool.description).toContain('Join processes[].id to process_symbols[].process_id');
+    expect(queryTool.description).toContain(
+      'when service is set, it counts only attaches under that prefix',
+    );
+    expect(queryTool.description).toContain('query again with repo "@<group>/<memberPath>"');
+    expect(queryTool.description).toContain(
+      'content appears only on the first row for each symbol id across the whole process_symbols array, not per process',
+    );
+    expect(queryTool.description).toContain('even under a different process_id');
+    expect(queryTool.description).toContain('context({uid: "<id>", include_content: true})');
+    expect(queryTool.description).toContain(
+      "With include_content, context() also returns that symbol's source.",
+    );
+  });
+
+  it('query include_content property states the once-per-id rule and the context() fallback', () => {
+    const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
+    const description = queryTool.inputSchema.properties.include_content.description;
+    expect(description).toContain('Include source text retained for matching symbols');
+    expect(description).toContain(
+      'Content is sent once per symbol id, on its first process_symbols row; context({uid: "<id>", include_content: true}) returns it for any row.',
+    );
   });
 
   it('query tool requires "search_query" parameter (renamed from "query" for #2175)', () => {
@@ -302,10 +375,11 @@ describe('GITNEXUS_TOOLS', () => {
     }
   });
 
-  it('per-repo tools have an optional branch scope param (#2106); group/list tools do not', () => {
+  it('per-repo tools have an optional branch scope param (#2106); group/list and checkout file tools do not', () => {
+    const noBranch = new Set(['list_repos', 'read_file', 'grep', 'rename', ...GROUP_TOOLS]);
     for (const tool of GITNEXUS_TOOLS) {
-      if (tool.name === 'list_repos' || GROUP_TOOLS.has(tool.name)) {
-        expect(tool.inputSchema.properties.branch).toBeUndefined();
+      if (noBranch.has(tool.name)) {
+        expect(tool.inputSchema.properties.branch, tool.name).toBeUndefined();
         continue;
       }
       expect(tool.inputSchema.properties.branch, tool.name).toBeDefined();
@@ -313,6 +387,14 @@ describe('GITNEXUS_TOOLS', () => {
       // Optional — omitting it keeps the default/primary-branch behavior.
       expect(tool.inputSchema.required).not.toContain('branch');
     }
+  });
+
+  it('grep advertises the HTTP caseSensitive and literal flags', () => {
+    const grep = GITNEXUS_TOOLS.find((tool) => tool.name === 'grep')!;
+    expect(grep.inputSchema.properties.caseSensitive.type).toBe('boolean');
+    expect(grep.inputSchema.properties.literal.type).toBe('boolean');
+    expect(grep.description).toContain('hit.line - 1');
+    expect(grep.description).toMatch(/working tree/i);
   });
 
   it('group tools without backend repo param omit repo property', () => {
@@ -408,9 +490,19 @@ describe('GITNEXUS_TOOLS', () => {
     expect(d).toContain('--pdg');
     expect(d).toContain('intra-procedural');
     // The named blind-spot classes (plan KTD10) must reach the consumer.
-    expect(d.toLowerCase()).toContain('closure/callback');
+    expect(d.toLowerCase()).toContain('captured closure-variable flows are not modeled');
+    expect(d.toLowerCase()).toContain(
+      'sources read inside inline callbacks and returned handlers can flow through helper functions',
+    );
     expect(d.toLowerCase()).toContain('property/field');
-    expect(d.toLowerCase()).toContain('guard-style');
+    expect(d.toLowerCase()).toContain(
+      'modeled guards can refine unchanged primitive-string values',
+    );
+    expect(d.toLowerCase()).toContain('imported and wrapper validators');
+    expect(d.toLowerCase()).toContain(
+      'unsupported predicates or sink uses remain conservative findings',
+    );
+    expect(d.toLowerCase()).toContain('declared string types are analysis assumptions');
     expect(d.toLowerCase()).toContain('cross-function');
     expect(d.toLowerCase()).toContain('commonjs');
     expect(d.toLowerCase()).toContain('exception');

@@ -127,8 +127,26 @@ export function calculateEntryPointScore(
   // Name pattern scoring
   let nameMultiplier = 1.0;
 
+  // tRPC procedures often use accessor-style names
+  // (`getX`, `setX`, `isX`) that legitimately ARE entry points. Without this
+  // exemption, the 0.3× utility penalty cancels the 3.0× tRPC framework boost
+  // (net 0.9, below baseline), preventing procedures like `setSettings`
+  // from becoming Process entry points and hiding them from `query` results.
+  // Only accessor/predicate names skip the penalty — helpers such as
+  // `formatDate`, `_internal`, or `parseInput` in the same router file still
+  // match UTILITY_PATTERNS. The 3.0× tRPC framework boost stays path-based.
+  // The exemption follows detectFrameworkFromPath so T3 (`/api/routers/`) and
+  // `/app/trpc/routers/` layouts get the same treatment as `/trpc/routers/`.
+  // Optional chaining still guards paths that fail the tRPC predicates
+  // (e.g. generic `/routers/*.js` without `/trpc/` or `/api/routers/`).
+  // JS/JSX routers that match those predicates get `framework: 'trpc'`
+  // the same way TS/TSX routers do.
+  const frameworkHint = filePath ? detectFrameworkFromPath(filePath) : null;
+  const trpcAccessorExemption =
+    frameworkHint?.framework === 'trpc' && /^(get|set|is|has|can|should|will|did)[A-Z]/.test(name);
+
   // Check negative patterns first (utilities get penalized)
-  if (UTILITY_PATTERNS.some((p) => p.test(name))) {
+  if (!trpcAccessorExemption && UTILITY_PATTERNS.some((p) => p.test(name))) {
     nameMultiplier = 0.3; // Significant penalty
     reasons.push('utility-pattern');
   } else {
@@ -141,14 +159,10 @@ export function calculateEntryPointScore(
     }
   }
 
-  // Framework detection bonus (Phase 2)
   let frameworkMultiplier = 1.0;
-  if (filePath) {
-    const frameworkHint = detectFrameworkFromPath(filePath);
-    if (frameworkHint) {
-      frameworkMultiplier = frameworkHint.entryPointMultiplier;
-      reasons.push(`framework:${frameworkHint.reason}`);
-    }
+  if (frameworkHint) {
+    frameworkMultiplier = frameworkHint.entryPointMultiplier;
+    reasons.push(`framework:${frameworkHint.reason}`);
   }
 
   // Calculate final score

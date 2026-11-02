@@ -1,4 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import {
+  buildDefIndex,
+  buildQualifiedNameIndex,
+  buildScopeTree,
+  buildMethodDispatchIndex,
+  buildModuleScopeIndex,
+} from 'gitnexus-shared';
 import type {
   BindingRef,
   Callsite,
@@ -30,10 +37,6 @@ describe('Go arity compatibility', () => {
   it('returns unknown when no param count info', () => {
     const def = makeDef();
     const callsite: Callsite = {
-      name: 'F',
-      inScope: 's',
-      atRange: { startLine: 1, startCol: 1, endLine: 1, endCol: 5 },
-      kind: 'call',
       arity: 1,
     };
     expect(goArityCompatibility(def, callsite)).toBe('unknown');
@@ -42,10 +45,6 @@ describe('Go arity compatibility', () => {
   it('exact match is compatible', () => {
     const def = makeDef({ parameterCount: 2, requiredParameterCount: 2 });
     const callsite: Callsite = {
-      name: 'F',
-      inScope: 's',
-      atRange: { startLine: 1, startCol: 1, endLine: 1, endCol: 5 },
-      kind: 'call',
       arity: 2,
     };
     expect(goArityCompatibility(def, callsite)).toBe('compatible');
@@ -54,10 +53,6 @@ describe('Go arity compatibility', () => {
   it('too few args is incompatible', () => {
     const def = makeDef({ parameterCount: 2, requiredParameterCount: 2 });
     const callsite: Callsite = {
-      name: 'F',
-      inScope: 's',
-      atRange: { startLine: 1, startCol: 1, endLine: 1, endCol: 5 },
-      kind: 'call',
       arity: 1,
     };
     expect(goArityCompatibility(def, callsite)).toBe('incompatible');
@@ -70,10 +65,6 @@ describe('Go arity compatibility', () => {
       parameterTypes: ['string', '...string'],
     });
     const callsite: Callsite = {
-      name: 'F',
-      inScope: 's',
-      atRange: { startLine: 1, startCol: 1, endLine: 1, endCol: 5 },
-      kind: 'call',
       arity: 5,
     };
     expect(goArityCompatibility(def, callsite)).toBe('compatible');
@@ -82,10 +73,6 @@ describe('Go arity compatibility', () => {
   it('non-variadic rejects extra args', () => {
     const def = makeDef({ parameterCount: 2, requiredParameterCount: 2 });
     const callsite: Callsite = {
-      name: 'F',
-      inScope: 's',
-      atRange: { startLine: 1, startCol: 1, endLine: 1, endCol: 5 },
-      kind: 'call',
       arity: 3,
     };
     expect(goArityCompatibility(def, callsite)).toBe('incompatible');
@@ -222,32 +209,40 @@ function scopeIndexes(
     readonly imports?: ReadonlyMap<ScopeId, readonly ImportEdge[]>;
   } = {},
 ): ScopeResolutionIndexes {
-  const defsById = new Map(defs.map((def) => [def.nodeId, def]));
-  const qualifiedNames = new Map<string, string[]>();
-  for (const def of defs) {
-    const ids = qualifiedNames.get(def.qualifiedName) ?? [];
-    ids.push(def.nodeId);
-    qualifiedNames.set(def.qualifiedName, ids);
-  }
-  const scopesById = new Map(scopes.map((s) => [s.id, s]));
   return {
-    defs: { get: (id: string) => defsById.get(id) },
-    qualifiedNames: { get: (name: string) => qualifiedNames.get(name) ?? [] },
-    scopeTree: { getScope: (id: ScopeId) => scopesById.get(id) },
+    defs: buildDefIndex(defs),
+    qualifiedNames: buildQualifiedNameIndex(defs),
+    scopeTree: buildScopeTree([...scopes]),
     bindings: new Map(),
     bindingAugmentations: options.bindingAugmentations ?? new Map(),
     imports: options.imports ?? new Map(),
     workspaceFqnBindings: new Map(),
     namespaceFqnBindings: new Map(),
     accessibleNamespacesByScope: new Map(),
-    methodDispatch: {} as any,
-    moduleScopes: {} as any,
+    methodDispatch: buildMethodDispatchIndex({
+      owners: [],
+      computeMro: () => [],
+      implementsOf: () => [],
+    }),
+    moduleScopes: buildModuleScopeIndex(
+      scopes
+        .filter((scope) => scope.kind === 'Module')
+        .map((scope) => ({ filePath: scope.filePath, moduleScopeId: scope.id })),
+    ),
     workspaceTypeBindings: new Map(),
     namespaceTypeBindings: new Map(),
     referenceSites: [],
     sccs: [],
-    stats: {} as any,
-  } as ScopeResolutionIndexes;
+    stats: {
+      totalFiles: new Set(scopes.map((scope) => scope.filePath)).size,
+      totalEdges: 0,
+      linkedEdges: 0,
+      unresolvedEdges: 0,
+      sccCount: 0,
+      largestSccSize: 0,
+      ambiguousWildcardExports: [],
+    },
+  };
 }
 
 const emptyIndexes = scopeIndexes([]);
@@ -257,13 +252,19 @@ function scope(
   kind: Scope['kind'],
   ownedDefs: readonly SymbolDefinition[],
   parent: ScopeId | null = null,
+  line = 1,
 ): Scope {
   return {
     id,
     parent,
     kind,
     filePath: 'repo.go',
-    range: { startLine: 1, startCol: 0, endLine: 1, endCol: 1 },
+    range: {
+      startLine: kind === 'Module' ? 0 : line,
+      startCol: 0,
+      endLine: kind === 'Module' ? 100 : line,
+      endCol: 1,
+    },
     bindings: new Map(),
     ownedDefs,
     imports: [],
@@ -629,7 +630,11 @@ describe('Go structural interface detection', () => {
       returnType: 'error',
     });
     const defs = [reader, base, file, readerRead, baseRead];
-    const scopes = [scope('scope:Base', 'Class', [base]), scope('scope:File', 'Class', [file])];
+    const scopes = [
+      scope('scope:module', 'Module', []),
+      scope('scope:Base', 'Class', [base], 'scope:module', 1),
+      scope('scope:File', 'Class', [file], 'scope:module', 2),
+    ];
 
     const result = detectGoInterfaceImplementations(
       parsedGoDefs(defs, {
@@ -671,8 +676,9 @@ describe('Go structural interface detection', () => {
     );
     const defs = [reader, base, shadowFile, readerRead, baseRead, shadowRead];
     const scopes = [
-      scope('scope:Base', 'Class', [base]),
-      scope('scope:ShadowFile', 'Class', [shadowFile]),
+      scope('scope:module', 'Module', []),
+      scope('scope:Base', 'Class', [base], 'scope:module', 1),
+      scope('scope:ShadowFile', 'Class', [shadowFile], 'scope:module', 2),
     ];
 
     const result = detectGoInterfaceImplementations(
@@ -709,9 +715,10 @@ describe('Go structural interface detection', () => {
     });
     const defs = [reader, baseA, baseB, file, readerRead, baseARead, baseBRead];
     const scopes = [
-      scope('scope:BaseA', 'Class', [baseA]),
-      scope('scope:BaseB', 'Class', [baseB]),
-      scope('scope:File', 'Class', [file]),
+      scope('scope:module', 'Module', []),
+      scope('scope:BaseA', 'Class', [baseA], 'scope:module', 1),
+      scope('scope:BaseB', 'Class', [baseB], 'scope:module', 2),
+      scope('scope:File', 'Class', [file], 'scope:module', 3),
     ];
 
     const result = detectGoInterfaceImplementations(
@@ -749,10 +756,11 @@ describe('Go structural interface detection', () => {
     });
     const defs = [reader, shallow, deepBase, deepWrapper, file, readerRead, shallowRead, deepRead];
     const scopes = [
-      scope('scope:Shallow', 'Class', [shallow]),
-      scope('scope:DeepBase', 'Class', [deepBase]),
-      scope('scope:DeepWrapper', 'Class', [deepWrapper]),
-      scope('scope:File', 'Class', [file]),
+      scope('scope:module', 'Module', []),
+      scope('scope:Shallow', 'Class', [shallow], 'scope:module', 1),
+      scope('scope:DeepBase', 'Class', [deepBase], 'scope:module', 2),
+      scope('scope:DeepWrapper', 'Class', [deepWrapper], 'scope:module', 3),
+      scope('scope:File', 'Class', [file], 'scope:module', 4),
     ];
 
     const result = detectGoInterfaceImplementations(
@@ -846,9 +854,9 @@ describe('Go structural interface detection', () => {
     ];
     const scopes = [
       scope('scope:module', 'Module', []),
-      scope('scope:ReaderA', 'Class', [readerA], 'scope:module'),
-      scope('scope:ReaderB', 'Class', [readerB], 'scope:module'),
-      scope('scope:ReadCloser', 'Class', [readCloser], 'scope:module'),
+      scope('scope:ReaderA', 'Class', [readerA], 'scope:module', 1),
+      scope('scope:ReaderB', 'Class', [readerB], 'scope:module', 2),
+      scope('scope:ReadCloser', 'Class', [readCloser], 'scope:module', 3),
     ];
 
     const result = detectGoInterfaceImplementations(

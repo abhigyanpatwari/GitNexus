@@ -14,6 +14,7 @@
  *    0-based line space (#2377, #2915).
  */
 import { it, expect, beforeAll, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
@@ -58,8 +59,10 @@ function makeWorkingCopy(): string {
 /** The fields these tests read off one `detect_changes` run. */
 type DetectChangesResult = {
   error?: unknown;
-  summary: { changed_count: number };
+  summary: { changed_count: number; risk_level: string };
   changed_symbols: { name: string; filePath: string }[];
+  partial?: boolean;
+  unmapped_files?: string[];
 };
 
 withTestLbugDB(
@@ -115,6 +118,54 @@ withTestLbugDB(
       const backend = new LocalBackend();
       await backend.init();
       (handle as typeof handle & { _backend?: LocalBackend })._backend = backend;
+    },
+  },
+);
+
+withTestLbugDB(
+  'detect-changes-unindexed-sibling',
+  (handle) => {
+    it('does not certify a new root index.ts from an indexed pkg/index.ts suffix match', async () => {
+      const backend = (handle as typeof handle & { _backend: LocalBackend })._backend;
+      const result = (await backend.callTool('detect_changes', {
+        scope: 'staged',
+      })) as DetectChangesResult;
+      expect(result.error).toBeUndefined();
+      // The fallback remains visible, but cannot certify the identity of the new file.
+      expect(result.changed_symbols).toEqual([
+        expect.objectContaining({ name: 'helper', filePath: 'pkg/index.ts' }),
+      ]);
+      expect(result.summary.risk_level).toBe('unknown');
+      expect(result.partial).toBe(true);
+      expect(result.unmapped_files).toEqual(['index.ts']);
+    });
+  },
+  {
+    seed: [
+      "CREATE (fn:Function {id: 'Function:pkg/index.ts:helper', name: 'helper', filePath: 'pkg/index.ts', startLine: 0, endLine: 1, isExported: true})",
+    ],
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      const repoDir = tempDirs.dir();
+      mkdirSync(path.join(repoDir, 'pkg'), { recursive: true });
+      writeFileSync(path.join(repoDir, 'pkg/index.ts'), 'export function helper() {\n}\n');
+      initGitRepo(repoDir);
+      commitAll(repoDir, 'indexed sibling');
+      writeFileSync(path.join(repoDir, 'index.ts'), 'export function added() {\n}\n');
+      execFileSync('git', ['add', 'index.ts'], { cwd: repoDir });
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'sibling-repo',
+          path: repoDir,
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc1234',
+          stats: { files: 1, nodes: 1, edges: 0, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as typeof handle & { _backend: LocalBackend })._backend = backend;
     },
   },
 );

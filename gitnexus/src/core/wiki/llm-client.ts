@@ -173,7 +173,11 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
       (localProvider ? undefined : process.env.GITNEXUS_MODEL) ||
       savedLocalModel ||
       (localProvider ? '' : (reuseSavedHttpConfig ? savedConfig.model : undefined) || defaultModel),
-    maxTokens: overrides?.maxTokens ?? 16_384,
+    maxTokens:
+      readOverrideMaxCompletionTokens(overrides?.maxTokens) ??
+      readEnvMaxCompletionTokens(process.env[LLM_MAX_COMPLETION_TOKENS_ENV]) ??
+      readConfiguredMaxCompletionTokens(savedConfig.maxCompletionTokens) ??
+      DEFAULT_MAX_COMPLETION_TOKENS,
     temperature: overrides?.temperature ?? 0,
     provider: savedProvider,
     apiVersion:
@@ -210,6 +214,37 @@ function isTimeoutLikeError(err: unknown): boolean {
 }
 
 export const LLM_ALLOW_INSECURE_CONNECTION_ENV = 'GITNEXUS_ALLOW_INSECURE_CONNECTION';
+export const LLM_MAX_COMPLETION_TOKENS_ENV = 'GITNEXUS_MAX_COMPLETION_TOKENS';
+export const DEFAULT_MAX_COMPLETION_TOKENS = 16_384;
+
+function readOverrideMaxCompletionTokens(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error('--max-completion-tokens must be a positive integer');
+  }
+  return value;
+}
+
+function readEnvMaxCompletionTokens(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const trimmed = value.trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) {
+    throw new Error(`${LLM_MAX_COMPLETION_TOKENS_ENV} must be a positive integer`);
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || String(parsed) !== trimmed) {
+    throw new Error(`${LLM_MAX_COMPLETION_TOKENS_ENV} is too large`);
+  }
+  return parsed;
+}
+
+function readConfiguredMaxCompletionTokens(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error('maxCompletionTokens in ~/.gitnexus/config.json must be a positive integer');
+  }
+  return value;
+}
 
 function normalizeAllowedInsecureHttpHost(host: string): string {
   const trimmed = host.trim().toLowerCase();
@@ -475,12 +510,15 @@ export async function callLLM(
 
   // Streaming path
   if (useStream && response.body) {
-    return await readSSEStream(response.body, options!.onChunk!);
+    return await readSSEStream(response.body, options!.onChunk!, config.maxTokens);
   }
 
   // Non-streaming path
   const json = (await response.json()) as any;
   const choice = json.choices?.[0];
+  if (choice?.finish_reason === 'length') {
+    throw truncatedResponseError(config.maxTokens);
+  }
   if (!choice?.message?.content) {
     throw new Error('LLM returned empty response');
   }
@@ -492,18 +530,28 @@ export async function callLLM(
   };
 }
 
+// A response cut off by the completion limit reads like a finished one, and a
+// reasoning model can spend the whole limit before the answer starts.
+function truncatedResponseError(maxTokens: number): Error {
+  return new Error(
+    `LLM response stopped at the completion token limit (${maxTokens}, finish_reason "length") and is incomplete.`,
+  );
+}
+
 /**
  * Read an SSE stream from an OpenAI-compatible streaming response.
  */
 async function readSSEStream(
   body: ReadableStream<Uint8Array>,
   onChunk: (charsReceived: number) => void,
+  maxTokens: number,
 ): Promise<LLMResponse> {
   const decoder = new TextDecoder();
   const reader = body.getReader();
   let content = '';
   let buffer = '';
   let contentFilterTriggered = false;
+  let lengthLimitReached = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -528,6 +576,9 @@ async function readSSEStream(
           contentFilterTriggered = true;
           continue;
         }
+        if (choice?.finish_reason === 'length') {
+          lengthLimitReached = true;
+        }
 
         const delta = choice?.delta?.content;
         if (delta) {
@@ -544,6 +595,10 @@ async function readSSEStream(
     throw new Error(
       'content filter triggered mid-stream. The generated content was blocked by content policy. Adjust your prompt and retry.',
     );
+  }
+
+  if (lengthLimitReached) {
+    throw truncatedResponseError(maxTokens);
   }
 
   if (!content) {

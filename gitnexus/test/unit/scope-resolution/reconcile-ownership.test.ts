@@ -47,7 +47,7 @@ const mkProperty = (opts: {
   filePath: string;
   name: string;
   ownerId: string;
-  type?: 'Property' | 'Variable';
+  type?: 'Property' | 'Variable' | 'Const' | 'Static';
 }): SymbolDefinition => ({
   nodeId: opts.nodeId,
   filePath: opts.filePath,

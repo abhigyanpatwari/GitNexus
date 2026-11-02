@@ -1,3 +1,4 @@
+import { SupportedLanguages } from 'gitnexus-shared';
 import type { NodeLabel } from 'gitnexus-shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -14,6 +15,36 @@ import type { ParseWorkerResult } from '../../../src/core/ingestion/workers/pars
 
 const FILE = 'src/service.ts';
 
+describe('graph identifier disambiguator parsing', () => {
+  it('admits explicitly selected declaration labels without widening default edge lookup', () => {
+    const graph = createKnowledgeGraph();
+    const id = `Namespace:${FILE}:Program.Section`;
+    graph.addNode({
+      id,
+      label: 'Namespace',
+      properties: { name: 'Section', filePath: FILE, startLine: 3 },
+    });
+    const key = qualifiedKey(FILE, 'Namespace', 'Program.Section');
+    expect(buildGraphNodeLookup(graph).has(key)).toBe(false);
+    const selected = buildGraphNodeLookup(graph, new Set(['Namespace']));
+    expect(selected.get(key)).toBe(id);
+    expect(
+      resolveDefGraphId(FILE, { type: 'Namespace', qualifiedName: 'Program.Section' }, selected),
+    ).toBe(id);
+  });
+
+  it.each([
+    ['model.rs', 'Function', 'r#target', 'r#target'],
+    ['model.ts', 'Method', 'Owner.#target#0', 'Owner.#target'],
+    ['model.ts', 'Method', 'Owner.target#2', 'Owner.target'],
+  ] as const)('preserves written name hashes in %s %s %s', (filePath, label, suffix, qualified) => {
+    const graph = createKnowledgeGraph();
+    const id = `${label}:${filePath}:${suffix}`;
+    graph.addNode({ id, label, properties: { name: qualified, filePath, startLine: 0 } });
+    expect(buildGraphNodeLookup(graph).get(qualifiedKey(filePath, label, qualified))).toBe(id);
+  });
+});
+
 interface Candidate {
   id: string;
   label?: NodeLabel;
@@ -25,20 +56,28 @@ interface Candidate {
 
 function buildLookup(candidates: readonly Candidate[]) {
   const graph = createKnowledgeGraph();
-  const nodes = candidates.map(
-    (candidate) =>
-      ({
-        id: candidate.id,
-        label: candidate.label ?? ('Method' as NodeLabel),
-        properties: {
-          name: candidate.name ?? 'save',
-          qualifiedName: candidate.qualifiedName ?? 'Service.save',
-          filePath: FILE,
-          ...(candidate.startLine !== undefined ? { startLine: candidate.startLine } : {}),
-          ...(candidate.startColumn !== undefined ? { startColumn: candidate.startColumn } : {}),
-        },
-      }) satisfies ParseWorkerResult['nodes'][number],
-  );
+  const nodes = candidates.map((candidate) => {
+    const node = {
+      id: candidate.id,
+      label: candidate.label ?? ('Method' as NodeLabel),
+      properties: {
+        name: candidate.name ?? 'save',
+        qualifiedName: candidate.qualifiedName ?? 'Service.save',
+        filePath: FILE,
+        startLine: candidate.startLine,
+        endLine: candidate.startLine,
+        language: SupportedLanguages.TypeScript,
+        isExported: false,
+        ...(candidate.startColumn !== undefined ? { startColumn: candidate.startColumn } : {}),
+      },
+    } satisfies ParseWorkerResult['nodes'][number];
+    // Missing positions deliberately exercise legacy worker-result tolerance.
+    if (candidate.startLine === undefined) {
+      Reflect.deleteProperty(node.properties, 'startLine');
+      Reflect.deleteProperty(node.properties, 'endLine');
+    }
+    return node;
+  });
   const result: ParseWorkerResult = {
     nodes,
     relationships: [],

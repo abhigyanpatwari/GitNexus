@@ -10,6 +10,7 @@ import type {
 import { hasKeyword } from '../../field-extractors/configs/helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { memoizeDeclarationFact } from '../declaration-facts.js';
 
 // ---------------------------------------------------------------------------
 // TS/JS helpers
@@ -280,6 +281,7 @@ function extractDecoratorName(decorator: SyntaxNode): string | undefined {
 // nested type discovery. Methods have no such requirement.
 const shared: Omit<MethodExtractionConfig, 'language'> = {
   typeDeclarationNodes: [
+    'class',
     'class_declaration',
     'abstract_class_declaration',
     'interface_declaration',
@@ -289,8 +291,6 @@ const shared: Omit<MethodExtractionConfig, 'language'> = {
   // Known gaps:
   //   - call_signature and construct_signature (e.g., interface Fn { (x: string): void; })
   //     are not extracted — they have no name field and are uncommon in practice.
-  //   - class_expression (const Foo = class { ... }) — methods inside class expressions
-  //     are not discovered because class_expression is not in typeDeclarationNodes.
   //   - declare module / declare global augmentations — methods inside ambient_module_declaration
   //     wrappers are not surfaced because the top-level walker doesn't descend into them.
   methodNodeTypes: [
@@ -309,7 +309,7 @@ const shared: Omit<MethodExtractionConfig, 'language'> = {
   },
 
   extractReturnType: extractTsJsReturnType,
-  extractParameters: extractTsJsParameters,
+  extractParameters: memoizeDeclarationFact(extractTsJsParameters),
   extractVisibility: extractTsJsVisibility,
 
   isStatic(node) {

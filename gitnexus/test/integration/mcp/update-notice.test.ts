@@ -18,7 +18,7 @@ interface FakeChecker {
 }
 
 interface FakeLogger {
-  info: ReturnType<typeof vi.fn>;
+  info: ReturnType<typeof vi.fn<(bindings: Record<string, unknown>, message: string) => unknown>>;
 }
 
 function checker(initial: UpdateState | null): {
@@ -51,6 +51,7 @@ function mockBackend() {
           : { ok: true },
       ),
     listRepos: vi.fn().mockResolvedValue([]),
+    countRepos: vi.fn().mockResolvedValue(0),
     resolveRepo: vi
       .fn()
       .mockResolvedValue({ name: 'test', repoPath: '/tmp/test', lastCommit: 'abc' }),

@@ -1,0 +1,62 @@
+{
+  "language": "objective-c",
+  "description": "Rename an Objective-C file-local C helper at the leaf of a three-edge call graph without changing a shadowing parameter, comment or string.",
+  "categories": ["call-graph", "call-chain", "shadowing"],
+  "target": {
+    "name": "calculate",
+    "kind": "Function",
+    "file": "Helpers.m"
+  },
+  "newName": "compute",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "leaf",
+        "kind": "Function",
+        "file": "Helpers.m",
+        "startLine": 1
+      },
+      "to": {
+        "name": "calculate",
+        "kind": "Function",
+        "file": "Helpers.m",
+        "startLine": 0
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "Helpers.m",
+        "startLine": 2
+      },
+      "to": {
+        "name": "leaf",
+        "kind": "Function",
+        "file": "Helpers.m",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "entry",
+        "kind": "Function",
+        "file": "Helpers.m",
+        "startLine": 3
+      },
+      "to": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "Helpers.m",
+        "startLine": 2
+      }
+    }
+  ]
+}

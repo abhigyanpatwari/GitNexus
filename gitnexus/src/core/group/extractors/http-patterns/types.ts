@@ -59,6 +59,14 @@ export interface HttpDetection {
   /** Resolve only from the registration file or exact import target; never guess repo-wide. */
   strictHandlerResolution?: boolean;
   /**
+   * The handler was designated through a qualifier the plugin cannot tie to a
+   * declaration (`recv.name`, `pkg.name`): `name` alone does not prove the
+   * handler lives in the registration file. Skip the file-scoped name lookup
+   * — a same-named but unrelated local symbol would win it — and accept only
+   * a repo-wide unique match, else keep the file-level fallback.
+   */
+  qualifiedHandler?: boolean;
+  /**
    * The plugin saw a provider handler designator but could not prove its owner.
    * Prevents the orchestrator from treating it as an anonymous inline handler
    * and attributing it to the containing registrar function.
@@ -85,9 +93,7 @@ export interface HttpFileDetections {
  * compiled pattern bundles internally (see the shared scanner's
  * `runCompiledPatterns` helper).
  *
- * `language` is typed as `unknown` for the same reason as
- * `LanguagePatterns.language` in `tree-sitter-scanner.ts` — the
- * grammar modules export different shapes.
+ * `language` is the concrete grammar selected from its package exports.
  */
 /**
  * Per-repo state a plugin can build during a `prepareRepo` pass before
@@ -105,7 +111,7 @@ export interface HttpLanguagePlugin {
   /** Human-readable plugin name for diagnostics. */
   name: string;
   /** tree-sitter grammar object (passed to the shared parser). */
-  language: unknown;
+  language: Parser.Language;
   /**
    * Whether ingestion is known to emit a `Route` graph node for EVERY
    * provider route in this language (Spring/FastAPI/Laravel annotations are
@@ -175,5 +181,5 @@ export interface HttpLanguagePlugin {
    * multiple files, such as Java controllers inheriting Spring mappings
    * from annotated interfaces.
    */
-  scanProject?(files: readonly HttpScanInput[]): HttpFileDetections[];
+  scanProject?(files: readonly HttpScanInput[], repoContext?: RepoContext): HttpFileDetections[];
 }

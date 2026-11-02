@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 /**
  * U20 — Integration regression test for chunk-cache corruption on
  * worker quarantine.
@@ -78,7 +79,10 @@ import {
   fileContentHash,
   packParseCacheChunks,
 } from '../../src/storage/parse-cache.js';
+import type { ParseCache } from '../../src/storage/parse-cache.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 /**
  * Inline READY preamble + IPC decode wrapper (mirrors
@@ -210,6 +214,7 @@ const hashPacks = (
         filePath: p,
         contentHash: fileContentHash(FIXTURE_FILES[p as keyof typeof FIXTURE_FILES]),
       })),
+      parseIdentity,
     );
   const poisonPack = packs.find((paths) => paths.includes(POISON_PATH));
   if (!poisonPack) throw new Error('poison.ts was not packed');
@@ -257,8 +262,8 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
 
     const expectedChunkHash = hashPacks(scanned).poison;
 
-    const parseCache = {
-      version: 'test',
+    const parseCache: ParseCache = {
+      identity: parseIdentity,
       entries: new Map<string, ParseWorkerResult[]>(),
       usedKeys: new Set<string>(),
     };
@@ -323,6 +328,9 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
     // against a fresh-quarantine pool.
     expect(parseCache.entries.has(expectedChunkHash)).toBe(false);
     expect(parseCache.usedKeys.has(expectedChunkHash)).toBe(true);
+    // #3204: `usedKeys` alone would let `saveParseCache` copy a pre-existing
+    // shard forward, so the skipped chunk is also retired from the save.
+    expect(parseCache.staleKeys?.has(expectedChunkHash)).toBe(true);
     for (const hash of hashPacks(scanned).others) {
       expect(parseCache.entries.has(hash)).toBe(true);
     }
@@ -338,8 +346,8 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
     }));
     const expectedChunkHash = hashPacks(scanned).poison;
 
-    const parseCache = {
-      version: 'test',
+    const parseCache: ParseCache = {
+      identity: parseIdentity,
       entries: new Map<string, ParseWorkerResult[]>(),
       usedKeys: new Set<string>(),
     };

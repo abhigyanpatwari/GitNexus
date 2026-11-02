@@ -15,6 +15,7 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+import { collectRustNameClaims } from './lexical-bindings.js';
 
 const RUST_CALLABLE_CAPTURE_OPTIONS = {
   functionNodeTypes: new Set(['function_item', 'closure_expression']),
@@ -45,6 +46,7 @@ export function emitRustScopeCaptures(
 
   const rawMatches = getRustScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
+  const nameClaims = collectRustNameClaims(tree.rootNode);
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
@@ -61,6 +63,19 @@ export function emitRustScopeCaptures(
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    const scopeTag = Object.keys(nodeMap).find((tag) => tag.startsWith('@scope.'));
+    if (scopeTag !== undefined) {
+      const scopeNode = nodeMap[scopeTag];
+      const claims = nameClaims.get(scopeNode.id);
+      if (claims !== undefined) {
+        grouped['@scope.name-claims'] = syntheticCapture(
+          '@scope.name-claims',
+          scopeNode,
+          JSON.stringify(claims),
+        );
+      }
+    }
 
     // Decompose use declarations into individual import captures
     if (grouped['@import.statement'] !== undefined) {

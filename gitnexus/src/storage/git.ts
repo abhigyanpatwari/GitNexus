@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from 'child_process';
+import { execFileSync, execSync, spawnSync } from 'child_process';
 import { statSync, existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -118,6 +118,35 @@ export const listWorkingTreeDirtyPaths = (repoPath: string): string[] | null => 
     ];
   } catch {
     return null;
+  }
+};
+
+/**
+ * True when the working tree shows exactly the committed tree: nothing dirty
+ * or untracked, no path hidden by skip-worktree or assume-unchanged (which is
+ * how a sparse checkout leaves files out), and every gitlink checked out as a
+ * submodule. `git status` stays clean in all three hidden cases. False on any
+ * git failure.
+ */
+export const isWorkingTreePristine = (repoPath: string): boolean => {
+  // Includes every skip-worktree and assume-unchanged path (listHiddenIndexPaths,
+  // `git ls-files -v`), so the `--stage` pass below only has to find gitlinks.
+  if (listWorkingTreeDirtyPaths(repoPath)?.length !== 0) return false;
+  try {
+    const out = execFileSync('git', ['ls-files', '--stage', '-z', '--'], {
+      cwd: repoPath,
+      windowsHide: true,
+      ...gitPathListExec,
+    });
+    for (const record of out.split('\0')) {
+      // `<mode> <object> <stage>\t<path>`; mode 160000 is a gitlink.
+      if (!record.startsWith('160000 ')) continue;
+      const rel = record.slice(record.indexOf('\t') + 1);
+      if (!existsSync(path.join(repoPath, rel, '.git'))) return false;
+    }
+    return true;
+  } catch {
+    return false;
   }
 };
 
@@ -248,6 +277,31 @@ export const isGitRepo = (repoPath: string): boolean => {
     return true;
   } catch {
     return false;
+  }
+};
+
+/**
+ * Number of commits from `ancestor` to HEAD, or null when `ancestor` is not
+ * an ancestor of HEAD (or git fails). 0 means `ancestor` is HEAD.
+ */
+export const commitDistanceToHead = (repoPath: string, ancestor: string): number | null => {
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', ancestor, 'HEAD'], {
+      cwd: repoPath,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    });
+    const count = Number(
+      execFileSync('git', ['rev-list', '--count', `${ancestor}..HEAD`], {
+        cwd: repoPath,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+        encoding: 'utf8',
+      }).trim(),
+    );
+    return Number.isInteger(count) ? count : null;
+  } catch {
+    return null;
   }
 };
 
@@ -666,6 +720,32 @@ export const getCurrentBranch = (repoPath: string): string | null => {
 };
 
 /**
+ * Local `refs/heads` names, or `null` when the directory is not a git
+ * worktree or git cannot run. An empty array means the listing succeeded
+ * and there are no local heads — that is not a listing failure (#3331).
+ */
+export const listLocalHeads = (repoPath: string): string[] | null => {
+  try {
+    const result = spawnSync('git', ['for-each-ref', '--format=%(refname)', 'refs/heads'], {
+      cwd: repoPath,
+      windowsHide: true,
+      ...gitPathListExec,
+    });
+    if (result.error || result.status !== 0) return null;
+    const output = (result.stdout ?? '').toString().trim();
+    if (!output) return [];
+    return output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('refs/heads/'))
+      .map((line) => line.slice('refs/heads/'.length))
+      .filter((line) => line.length > 0);
+  } catch {
+    return null;
+  }
+};
+
+/**
  * Sanitize a repository name to prevent argument injection and ensure
  * cross-platform filesystem compatibility.
  *
@@ -747,12 +827,193 @@ export interface DiffHunk {
 
 export interface FileDiff {
   filePath: string;
+  /** Decoded pre-rename path; either side can identify a source-file change. */
+  oldFilePath?: string;
   hunks: DiffHunk[];
+}
+
+/** `parseDiffHunks` plus how many `diff --git` headers could not be decoded. */
+export interface DiffHunkParseResult {
+  files: FileDiff[];
+  unparsedGitHeaders: number;
+}
+
+const DIFF_GIT_PREFIX = 'diff --git ';
+
+/**
+ * Decode one Git C-quoted token (`"a/\\344\\270\\255.png"`). Returns
+ * `undefined` when the quotes are unbalanced or a trailing escape is bare.
+ */
+function unquoteCStyleGitToken(quoted: string): string | undefined {
+  if (quoted.length < 2 || quoted[0] !== '"' || quoted[quoted.length - 1] !== '"') {
+    return undefined;
+  }
+  // Git C-quotes are byte-oriented: non-ASCII is `\nnn` octal of the UTF-8
+  // code units, not JS UTF-16 characters.
+  const bytes: number[] = [];
+  const pushChar = (ch: string): void => {
+    const code = ch.charCodeAt(0);
+    if (code < 0x80) bytes.push(code);
+    else bytes.push(...new TextEncoder().encode(ch));
+  };
+  for (let i = 1; i < quoted.length - 1; i++) {
+    const ch = quoted[i];
+    if (ch !== '\\') {
+      pushChar(ch);
+      continue;
+    }
+    const next = quoted[++i];
+    if (next === undefined) return undefined;
+    switch (next) {
+      case '\\':
+      case '"':
+        pushChar(next);
+        break;
+      case 'n':
+        bytes.push(0x0a);
+        break;
+      case 't':
+        bytes.push(0x09);
+        break;
+      case 'r':
+        bytes.push(0x0d);
+        break;
+      case 'a':
+        bytes.push(0x07);
+        break;
+      case 'b':
+        bytes.push(0x08);
+        break;
+      case 'v':
+        bytes.push(0x0b);
+        break;
+      case 'f':
+        bytes.push(0x0c);
+        break;
+      default: {
+        if (next < '0' || next > '7') {
+          pushChar(next);
+          break;
+        }
+        let oct = next;
+        while (oct.length < 3 && i + 1 < quoted.length - 1) {
+          const digit = quoted[i + 1];
+          if (digit < '0' || digit > '7') break;
+          oct += digit;
+          i++;
+        }
+        bytes.push(parseInt(oct, 8));
+      }
+    }
+  }
+  return new TextDecoder('utf-8').decode(Uint8Array.from(bytes));
+}
+
+function takeCQuotedToken(
+  source: string,
+  start: number,
+): { token: string; end: number } | undefined {
+  if (source[start] !== '"') return undefined;
+  for (let i = start + 1; i < source.length; i++) {
+    if (source[i] === '\\') {
+      i++;
+      continue;
+    }
+    if (source[i] === '"') return { token: source.slice(start, i + 1), end: i + 1 };
+  }
+  return undefined;
+}
+
+function stripGitDstPrefix(raw: string): string | undefined {
+  return raw.startsWith('b/') ? raw.slice(2) : undefined;
+}
+
+/** Unified-diff paths end at the first TAB (timestamp / empty terminator). */
+function stripUnifiedDiffTab(pathWithOptionalTab: string): string {
+  const tab = pathWithOptionalTab.indexOf('\t');
+  return tab === -1 ? pathWithOptionalTab : pathWithOptionalTab.slice(0, tab);
+}
+
+function decodeGitPathToken(raw: string): string | undefined {
+  const trimmed = stripUnifiedDiffTab(raw);
+  if (trimmed.startsWith('"')) return unquoteCStyleGitToken(trimmed);
+  return trimmed;
+}
+
+/**
+ * Destination path from `diff --git a/<src> b/<dst>`.
+ *
+ * Same-path headers recover `name` from `a/${name} b/${name}` so a dest that
+ * itself contains ` b/` is not split at the last occurrence. C-quoted tokens
+ * (default `core.quotePath`) are decoded. Renames that the greedy split would
+ * mis-parse stay a best-effort dest; `rename to` / `+++` correct them.
+ */
+function takeGitHeaderPathToken(
+  source: string,
+  start: number,
+): { path: string; end: number } | undefined {
+  if (start >= source.length) return undefined;
+  if (source[start] === '"') {
+    const tok = takeCQuotedToken(source, start);
+    if (!tok) return undefined;
+    const path = unquoteCStyleGitToken(tok.token);
+    if (path === undefined) return undefined;
+    return { path, end: tok.end };
+  }
+  if (source.startsWith('b/', start)) {
+    return { path: stripUnifiedDiffTab(source.slice(start)), end: source.length };
+  }
+  if (source.startsWith('a/', start)) {
+    for (let i = start + 2; i < source.length; i++) {
+      if (source.startsWith(' b/', i) || source.startsWith(' "', i)) {
+        return { path: source.slice(start, i), end: i };
+      }
+    }
+  }
+  return undefined;
+}
+
+function filePathFromGitHeader(line: string): string | undefined {
+  if (!line.startsWith(DIFF_GIT_PREFIX)) return undefined;
+  const rest = line.slice(DIFF_GIT_PREFIX.length);
+
+  if (rest.startsWith('a/')) {
+    for (let i = 2; i < rest.length; i++) {
+      if (!rest.startsWith(' b/', i)) continue;
+      const nameA = rest.slice(2, i);
+      const nameB = rest.slice(i + 3);
+      if (nameA.length > 0 && nameA === nameB) return nameA;
+    }
+  }
+
+  const src = takeGitHeaderPathToken(rest, 0);
+  if (!src) return undefined;
+  let i = src.end;
+  while (rest[i] === ' ') i++;
+  const dest = takeGitHeaderPathToken(rest, i);
+  return dest ? stripGitDstPrefix(dest.path) : undefined;
+}
+
+function pathFromPlusPlusPlus(line: string): string | undefined {
+  if (!line.startsWith('+++ ')) return undefined;
+  const raw = decodeGitPathToken(line.slice(4));
+  if (!raw || raw === '/dev/null') return undefined;
+  return stripGitDstPrefix(raw);
+}
+
+function pathFromRenameTo(line: string): string | undefined {
+  if (!line.startsWith('rename to ')) return undefined;
+  return decodeGitPathToken(line.slice('rename to '.length));
 }
 
 /**
  * Parse unified diff output (with -U0) into per-file hunk ranges.
  * Extracts the new-file line ranges from @@ hunk headers.
+ *
+ * The `diff --git` header is also retained as a file entry. This matters for
+ * binary, rename-only, and mode-only changes, which have no `+++ b/` header.
+ * Such entries intentionally have no hunks: callers can count the changed
+ * path without pretending that a symbol line range was touched.
  *
  * A pure deletion adds no new lines, and unified diff spells that empty range
  * as the line BEFORE it: `@@ -4,2 +3,0 @@` removed old lines 4–5 from between
@@ -769,17 +1030,67 @@ export interface FileDiff {
  * gap — the widening {@link coalesceHunks} is careful never to do.
  */
 export function parseDiffHunks(diffOutput: string): FileDiff[] {
+  return parseDiffHunksResult(diffOutput).files;
+}
+
+/**
+ * Same as {@link parseDiffHunks}, plus a count of `diff --git` lines that
+ * could not be decoded. `detect_changes` uses the count to fail closed
+ * (`partial` + `risk_level:'unknown'`) instead of attaching later hunks to a
+ * previous file.
+ */
+export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
   const files: FileDiff[] = [];
   let current: FileDiff | null = null;
+  let unparsedGitHeaders = 0;
+  // `+++` after the first `@@` of a file is hunk body (`+` plus source text
+  // that itself starts `++ …`), not another file header.
+  let inHunk = false;
+  // A deleted file has no new-side coordinates. Its indexed symbols still use
+  // the pre-delete file, so map those hunks with the old-side range instead.
+  let currentFileDeleted = false;
   for (const line of diffOutput.split('\n')) {
-    if (line.startsWith('+++ b/')) {
-      current = { filePath: line.slice(6), hunks: [] };
-      files.push(current);
+    if (line.startsWith(DIFF_GIT_PREFIX)) {
+      // Drop the previous file first: an unparsed header must not leave
+      // `current` live for a later `@@` / quoted `+++` to steal.
+      current = null;
+      inHunk = false;
+      currentFileDeleted = false;
+      const filePath = filePathFromGitHeader(line);
+      if (filePath) {
+        current = { filePath, hunks: [] };
+        files.push(current);
+      } else {
+        unparsedGitHeaders++;
+      }
+    } else if (!inHunk && line.startsWith('rename from ')) {
+      const oldFilePath = decodeGitPathToken(line.slice('rename from '.length));
+      if (current && oldFilePath) current.oldFilePath = oldFilePath;
+    } else if (!inHunk && line.startsWith('rename to ')) {
+      const filePath = pathFromRenameTo(line);
+      if (!filePath) continue;
+      if (current) current.filePath = filePath;
+      else {
+        current = { filePath, hunks: [] };
+        files.push(current);
+      }
+    } else if (!inHunk && line === '+++ /dev/null') {
+      currentFileDeleted = true;
+    } else if (!inHunk && line.startsWith('+++ ')) {
+      const filePath = pathFromPlusPlusPlus(line);
+      if (!filePath) continue;
+      if (!current || current.filePath !== filePath) {
+        current = { filePath, hunks: [] };
+        files.push(current);
+      }
     } else if (line.startsWith('@@') && current) {
-      const match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+      inHunk = true;
+      const match = line.match(/@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
       if (match) {
-        const start = parseInt(match[1], 10);
-        const count = match[2] !== undefined ? parseInt(match[2], 10) : 1;
+        const sideOffset = currentFileDeleted ? 1 : 3;
+        const start = parseInt(match[sideOffset], 10);
+        const rawCount = match[sideOffset + 1];
+        const count = rawCount !== undefined ? parseInt(rawCount, 10) : 1;
         if (count > 0) {
           current.hunks.push({ startLine: start, endLine: start + count - 1 });
         } else {
@@ -791,7 +1102,7 @@ export function parseDiffHunks(diffOutput: string): FileDiff[] {
       }
     }
   }
-  return files;
+  return { files, unparsedGitHeaders };
 }
 
 /**

@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../../helpers/runtime-parse-identity.js';
 /**
  * End-to-end proof of streaming/chunked PDG graph emit (issue #2202).
  *
@@ -22,6 +23,8 @@ import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import { loadParseCache } from '../../../src/storage/parse-cache.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import { createTempDirPool } from '../../helpers/temp-dir-pool.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'pdg-repo');
 // A `.vue` SFC importing a `.ts` module: the TS module is PDG-emitted in BOTH
@@ -59,7 +62,7 @@ describe('#2202 — streaming PDG emit end-to-end', () => {
     const baseStorage = freshStorage();
     const baseline = await runPipelineFromRepo(freshRepo(), () => {}, {
       pdg: true,
-      parseCache: await loadParseCache(baseStorage),
+      parseCache: await loadParseCache(baseStorage, parseIdentity, baseStorage),
     });
     const base = pdgCounts(baseline);
     // R3 / sanity: the default path still materializes the PDG layer in-graph.
@@ -72,7 +75,7 @@ describe('#2202 — streaming PDG emit end-to-end', () => {
     const streamed = await runPipelineFromRepo(freshRepo(), () => {}, {
       pdg: true,
       streamPdgEmit: true,
-      parseCache: await loadParseCache(streamStorage),
+      parseCache: await loadParseCache(streamStorage, parseIdentity, streamStorage),
     });
     const streamedCounts = pdgCounts(streamed);
 
@@ -108,7 +111,7 @@ describe('#2202 — streaming PDG emit end-to-end', () => {
     const baseStorage = freshStorage();
     const baseline = await runPipelineFromRepo(freshRepo(VUE_TS_FIXTURE), () => {}, {
       pdg: true,
-      parseCache: await loadParseCache(baseStorage),
+      parseCache: await loadParseCache(baseStorage, parseIdentity, baseStorage),
     });
     const base = pdgCounts(baseline);
     // Both files contribute blocks — the cross-pass case is actually present.
@@ -119,7 +122,7 @@ describe('#2202 — streaming PDG emit end-to-end', () => {
     const streamed = await runPipelineFromRepo(freshRepo(VUE_TS_FIXTURE), () => {}, {
       pdg: true,
       streamPdgEmit: true,
-      parseCache: await loadParseCache(streamStorage),
+      parseCache: await loadParseCache(streamStorage, parseIdentity, streamStorage),
     });
     // Streamed graph holds none of the PDG layer.
     const streamedCounts = pdgCounts(streamed);

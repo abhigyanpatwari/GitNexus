@@ -75,9 +75,18 @@ export const resolveEmbeddingConfig = (
   overrides: Partial<EmbeddingConfig> = {},
 ): EmbeddingConfig => {
   const env = process.env;
+  const maxInputChars = parsePositiveInt(
+    'GITNEXUS_EMBEDDING_MAX_INPUT_CHARS',
+    env.GITNEXUS_EMBEDDING_MAX_INPUT_CHARS,
+    overrides.maxInputChars ?? DEFAULT_EMBEDDING_CONFIG.maxInputChars,
+  );
+  if (!Number.isSafeInteger(maxInputChars) || maxInputChars < 2) {
+    throw new Error('GITNEXUS_EMBEDDING_MAX_INPUT_CHARS must be a safe integer of at least 2');
+  }
   return {
     ...DEFAULT_EMBEDDING_CONFIG,
     ...overrides,
+    maxInputChars,
     batchSize: parsePositiveInt(
       'GITNEXUS_EMBEDDING_BATCH_SIZE',
       env.GITNEXUS_EMBEDDING_BATCH_SIZE,

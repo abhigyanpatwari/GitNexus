@@ -43,7 +43,6 @@ describe('resolveContainedDest', () => {
   });
 
   it('rejects non-string input', () => {
-    // @ts-expect-error testing runtime guard
     expect(() => resolveContainedDest(ROOT, ['a', 'b'])).toThrow();
   });
 

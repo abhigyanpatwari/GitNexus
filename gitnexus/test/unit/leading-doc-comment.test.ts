@@ -19,7 +19,7 @@ import {
 // Vendored grammar — loaded from vendor/ by absolute path, never node_modules (#2111).
 const Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 
-function firstNode(language: unknown, src: string, type: string): SyntaxNode {
+function firstNode(language: Parser.Language, src: string, type: string): SyntaxNode {
   const parser = new Parser();
   parser.setLanguage(language);
   const node = parser.parse(src).rootNode.descendantsOfType(type)[0];

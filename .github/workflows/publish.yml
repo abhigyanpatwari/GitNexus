@@ -162,7 +162,7 @@ jobs:
       should_run: ${{ steps.decide.outputs.should_run }}
       head_sha: ${{ steps.decide.outputs.head_sha }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -287,6 +287,7 @@ jobs:
       # id-token: write — npm provenance attestation.
       contents: write
       id-token: write
+      actions: read # Fetch exact-revision agent evidence from the trusted main workflow.
     outputs:
       # Two distinct step IDs feed this output; exactly one fires per run.
       vtag: ${{ steps.rc-tags.outputs.vtag || steps.stable-vtag.outputs.vtag }}
@@ -314,7 +315,7 @@ jobs:
       - name: Mint GitHub App token (RC)
         if: needs.route.outputs.mode == 'rc'
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           # `client-id` is the renamed input that supersedes the deprecated
           # `app-id` in v3.x. The action accepts the App's numeric ID or
@@ -332,7 +333,7 @@ jobs:
       # on the RC path.
       - name: Checkout (RC)
         if: needs.route.outputs.mode == 'rc'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -349,7 +350,7 @@ jobs:
 
       - name: Checkout (stable)
         if: needs.route.outputs.mode == 'stable'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # No `token:` — actions/checkout uses GITHUB_TOKEN by default. Stable
         # path performs no git pushes; the default scope is sufficient.
         with:
@@ -369,7 +370,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # Node 24 ships with npm >= 11.5.x, which is the minimum that
           # supports npm Trusted Publishing OIDC. Node 22 ships with npm
@@ -540,20 +541,29 @@ jobs:
             fi
           fi
 
-          # 4. Counter: 1 + max existing N for `${BASE}-rc.*`, else 1.
+          # 4. Counter: reserve versions present in either npm or Git.
+          # npm can accept a publish while its metadata still omits that
+          # version ("Your package is being processed"). Checkout fetched
+          # all tags, including detached release commits, so those tags
+          # keep the next run from allocating an already-used version.
+          GIT_RC_TAGS="$(git tag --list "v${BASE}-rc.*")"
           cat > /tmp/next_rc.mjs <<'NODESCRIPT'
           const base = process.env.BASE;
           const prefix = base + "-rc.";
           let v;
           try { v = JSON.parse(process.env.VERSIONS_JSON); } catch { v = []; }
           if (!Array.isArray(v)) v = [v];
-          const ns = v
+          const tagged = process.env.GIT_RC_TAGS.split("\n")
+            .filter(Boolean).map(tag => tag.slice(1));
+          const ns = [...v, ...tagged]
             .filter(s => typeof s === "string" && s.startsWith(prefix))
-            .map(s => parseInt(s.slice(prefix.length), 10))
+            .map(s => s.slice(prefix.length))
+            .filter(s => /^\d+$/.test(s))
+            .map(Number)
             .filter(n => Number.isInteger(n) && n >= 0);
           process.stdout.write(String(ns.length ? Math.max(...ns) + 1 : 1));
           NODESCRIPT
-          NEXT_N="$(BASE="$BASE" VERSIONS_JSON="$VERSIONS_JSON" node /tmp/next_rc.mjs)"
+          NEXT_N="$(BASE="$BASE" VERSIONS_JSON="$VERSIONS_JSON" GIT_RC_TAGS="$GIT_RC_TAGS" node /tmp/next_rc.mjs)"
           RC_VERSION="${BASE}-rc.${NEXT_N}"
           echo "Computed rc: $RC_VERSION"
 
@@ -613,6 +623,17 @@ jobs:
         env:
           NPM_TAG: ${{ needs.route.outputs.mode == 'rc' && 'rc' || 'latest' }}
         run: npm publish --dry-run --tag "$NPM_TAG"
+
+      # Every release carries this run's fixed-answer accuracy. Paid paired
+      # agent runs gate only stable releases; RCs are measured on a schedule.
+      - name: Download this release's tool accuracy
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-tool-accuracy
+          path: ${{ runner.temp }}/release-evidence
+      - name: Require paired agent evidence for this stable commit
+        if: needs.route.outputs.mode == 'stable'
+        uses: ./.github/actions/require-agent-release-evidence
 
       # ── Acquire the "rc lock" BEFORE publishing (idempotency anchor) ─────
       # We create two refs and push atomically:
@@ -692,7 +713,20 @@ jobs:
           git add ../gitnexus-claude-plugin/.claude-plugin/plugin.json \
             ../.claude-plugin/marketplace.json \
             ../gitnexus-claude-plugin/.codex-plugin/plugin.json \
-            ../.agents/plugins/marketplace.json
+            ../.agents/plugins/marketplace.json \
+            ../gitnexus-factory-plugin/.factory-plugin/plugin.json \
+            ../gitnexus-factory-plugin/mcp.json \
+            ../.factory-plugin/marketplace.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-plan/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-work/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-review/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-lfg/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-guide/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-cli/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-debugging/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-exploring/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-impact-analysis/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-refactoring/mcp.json
           git commit -m "release: ${VTAG}" --allow-empty
           RELEASE_SHA="$(git rev-parse HEAD)"
           echo "Detached release commit: $RELEASE_SHA"
@@ -829,9 +863,15 @@ jobs:
             echo "$NOTES" > /tmp/release-notes.md
             echo "fallback=false" >> "$GITHUB_OUTPUT"
           fi
+          {
+            printf '\n'
+            cat "$RUNNER_TEMP/release-evidence/accuracy.md"
+            printf '\n'
+            cat "$RUNNER_TEMP/release-evidence/agent-evaluation.md"
+          } >> /tmp/release-notes.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v2
         with:
           tag_name: ${{ steps.vtag-gate.outputs.vtag }}
           name: >-
@@ -840,11 +880,11 @@ jobs:
                 || steps.vtag-gate.outputs.vtag }}
           prerelease: ${{ needs.route.outputs.mode == 'rc' }}
           make_latest: ${{ needs.route.outputs.mode == 'stable' && 'true' || 'false' }}
-          # Stable: prefer CHANGELOG body, fall back to auto-generated.
-          # RC: always auto-generated + the prerelease body block below.
-          body_path: >-
-            ${{ needs.route.outputs.mode == 'stable' && steps.changelog.outputs.fallback == 'false'
-                && '/tmp/release-notes.md' || '' }}
+          # Stable: CHANGELOG body (or auto-generated notes) plus measured
+          # evidence. RC: auto-generated + the prerelease body block below.
+          body_path: ${{ needs.route.outputs.mode == 'stable' && '/tmp/release-notes.md' || '' }}
+          files: ${{ runner.temp }}/release-evidence/*
+          fail_on_unmatched_files: true
           generate_release_notes: >-
             ${{ needs.route.outputs.mode == 'rc'
                 || steps.changelog.outputs.fallback == 'true' }}
@@ -915,6 +955,7 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     permissions:
       contents: read
+      actions: read
       packages: write
       id-token: write
       attestations: write

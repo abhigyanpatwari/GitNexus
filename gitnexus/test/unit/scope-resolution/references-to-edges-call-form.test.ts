@@ -97,6 +97,7 @@ function makeIndexes(scope: Scope, allDefs: readonly SymbolDefinition[]): ScopeR
       unresolvedEdges: 0,
       sccCount: 0,
       largestSccSize: 0,
+      ambiguousWildcardExports: [],
     },
   };
 }

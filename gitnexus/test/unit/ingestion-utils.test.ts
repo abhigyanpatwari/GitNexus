@@ -3,6 +3,7 @@ import {
   getLanguageFromFilename,
   getSyntaxLanguageFromFilename,
   isBladeTemplateFilename,
+  isNotebookFilename,
   SupportedLanguages,
 } from 'gitnexus-shared';
 import { getProvider, getProviderForFile } from '../../src/core/ingestion/languages/index.js';
@@ -49,6 +50,13 @@ describe('getLanguageFromFilename', () => {
   describe('Python', () => {
     it('detects .py files', () => {
       expect(getLanguageFromFilename('main.py')).toBe(SupportedLanguages.Python);
+    });
+
+    it('detects .ipynb files as Python', () => {
+      expect(getLanguageFromFilename('analysis.ipynb')).toBe(SupportedLanguages.Python);
+      expect(getProviderForFile('notebooks/analysis.ipynb')?.id).toBe(SupportedLanguages.Python);
+      expect(isNotebookFilename('notebooks/analysis.ipynb')).toBe(true);
+      expect(getSyntaxLanguageFromFilename('analysis.ipynb')).toBe('json');
     });
   });
 

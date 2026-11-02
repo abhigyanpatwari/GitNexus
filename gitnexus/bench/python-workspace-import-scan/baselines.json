@@ -1,0 +1,37 @@
+{
+  "_what": "Baselines for bench/python-workspace-import-scan/measure.mjs --check. Guards Python workspace from-import scanning after #3254: function-local discovery, lookalike rejection, and parse-volume. Same approach as bench/parse-dispatch-rounds/baselines.json — exact floors and a fingerprint first; the only timing arms are ratios.",
+
+  "_triage": "READ THIS BEFORE RE-RUNNING. from_links, lookalike_links, no_from_links, from_files, no_from_files, lookalike_files and layout_fingerprint are DETERMINISTIC: a re-run never changes them, and none may be re-baselined to make CI green. scan_scaling_ratio is an UPPER timing arm; prefilter_advantage is a FLOOR timing arm. Runner contention dominates both, so re-run on an idle machine before investigating and read the reported `reps` first. If exactly one arm fails and it is a timing arm, suspect the machine.",
+
+  "from_files": 40,
+  "no_from_files": 40,
+  "lookalike_files": 8,
+  "_shape_note": "THE FLOOR. Without these three, every arm below is a ceiling over nothing. from_links only asserts something while the corpus still walks many files. Shrink it to one happy-path module and from_links still reads 1 and still passes, asserting a property the corpus no longer has.",
+
+  "from_links": 1,
+  "lookalike_links": 0,
+  "no_from_links": 0,
+  "_links_note": "Exact contract counts. from_links=1 is the deduped function-local Record import. lookalike_links=0 pins closed AND unclosed indented docstring examples. no_from_links=0 pins files that have no from-token.",
+
+  "layout_fingerprint": "02e51be915083909cf231688c935cfe11bb52c7c781a70532859ad4a0bb9b42e",
+  "_layout_fingerprint_note": "sha256 over sorted from|to|contract rows on the from-corpus. A change here is a BEHAVIOUR change — the extractor returned a different contract set. Explain it, never re-baseline it alone.",
+
+  "scan_scaling_budget": 1.6,
+  "_scan_scaling_note": "(t_4n / t_n) / 4 for extractPythonWorkspaceLinks over the mixed corpus; ~1.0 is linear. A RATIO rather than a millisecond ceiling, deliberately: wall-clock is runner-speed-dependent, and this repo has already been bitten by a fixed ms budget. Budget is 1.6, matching parse-dispatch-rounds' pack_scaling_budget. min-of-15 estimator.",
+
+  "prefilter_advantage_floor": 3,
+  "_prefilter_note": "t_from / t_nofrom at the same file count and body size. The no-from corpus is large Python with no `from` token. A working prefilter keeps that arm cheap (~5x here). Removing the prefilter collapses the ratio toward 1 because both sides tree-sitter parse. Floor is 3 — about 1.6x below the measured minimum, same headroom philosophy as the 1.6 upper budget.",
+
+  "_measured": {
+    "scan_scaling_ratio": 0.994,
+    "scan_scaling_ratio_samples": [0.994, 0.963, 0.977, 0.986, 0.889],
+    "prefilter_advantage": 5.411,
+    "prefilter_advantage_samples": [5.197, 4.955, 5.057, 5.124, 5.411],
+    "from_ms": 86.43,
+    "no_from_ms": 16.35,
+    "mixed_ms": 112.1,
+    "large_ms_4x": 398.76,
+    "reps": 15
+  },
+  "_measured_note": "Maxima (and sample lists) over 5 consecutive local runs using the min-of-15 estimator from parse-dispatch-rounds. Milliseconds are diagnostic context only — nothing gates on them."
+}

@@ -1,0 +1,23 @@
+{
+  "language": "csharp",
+  "description": "Refuse an explicit override of an unindexed implicit base member.",
+  "categories": [
+    "polymorphism",
+    "external-base",
+    "implicit-base",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "ToString",
+    "kind": "Method",
+    "file": "Worker.cs",
+    "startLine": 1
+  },
+  "newName": "description",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_symbol_family",
+    "planningStatus": "unsupported"
+  }
+}

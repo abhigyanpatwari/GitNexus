@@ -1,0 +1,926 @@
+{
+  "_note": "Measured baseline. --check gates same-run normalized growth at 1.5 and exact call targets/cache counts. Absolute timings and memory are references, not portable budgets.",
+  "schemaVersion": 1,
+  "recordedAt": "2026-10-31T19:46:00.972Z",
+  "runtimeSha256": "4b3e97e7ebb9f21e6aa4048f584fe10fd5ac049d5a4b60488947f45b01fc2057",
+  "workload": {
+    "sizes": [128, 512, 2048],
+    "shapes": ["spread", "concentrated"],
+    "scenarios": ["cold", "warm", "changed"],
+    "overloadsPerFamily": 2,
+    "callsPerUnit": 4,
+    "workers": 1
+  },
+  "environment": {
+    "node": "v22.23.3",
+    "platform": "linux",
+    "arch": "x64",
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K"
+  },
+  "correctness": [
+    {
+      "shape": "spread",
+      "size": 128,
+      "scenario": "cold",
+      "corpus": "ba00fdce998f6c93ded7b9e48249deb2195f435cd9f498d2585c028a4745b18c",
+      "correctness": {
+        "files": 129,
+        "methods": 898,
+        "calls": 512,
+        "fingerprint": "9c7584e6908a263beed06089876413d7d73a0d787d1eff7681dde0dd26f7b672",
+        "reparsed": 129,
+        "hits": 0
+      }
+    },
+    {
+      "shape": "spread",
+      "size": 128,
+      "scenario": "warm",
+      "corpus": "ba00fdce998f6c93ded7b9e48249deb2195f435cd9f498d2585c028a4745b18c",
+      "correctness": {
+        "files": 129,
+        "methods": 898,
+        "calls": 512,
+        "fingerprint": "9c7584e6908a263beed06089876413d7d73a0d787d1eff7681dde0dd26f7b672",
+        "reparsed": 0,
+        "hits": 129
+      }
+    },
+    {
+      "shape": "spread",
+      "size": 128,
+      "scenario": "changed",
+      "corpus": "ba00fdce998f6c93ded7b9e48249deb2195f435cd9f498d2585c028a4745b18c",
+      "correctness": {
+        "files": 129,
+        "methods": 898,
+        "calls": 512,
+        "fingerprint": "def7d18a8b462dcf231bd2192afebe764911163d3ffc65e75fe5fefeb7e3a54c",
+        "reparsed": 2,
+        "hits": 127
+      }
+    },
+    {
+      "shape": "spread",
+      "size": 512,
+      "scenario": "cold",
+      "corpus": "dd070e75fcba816f5775dff5efbfdd3fdda28e4b01d0c1603fd9e294587896c7",
+      "correctness": {
+        "files": 513,
+        "methods": 3586,
+        "calls": 2048,
+        "fingerprint": "f126c9b94d15f6c85f55e802db43430abbb378a6e82a78492b3d6e8fcc18a69b",
+        "reparsed": 513,
+        "hits": 0
+      }
+    },
+    {
+      "shape": "spread",
+      "size": 512,
+      "scenario": "warm",
+      "corpus": "dd070e75fcba816f5775dff5efbfdd3fdda28e4b01d0c1603fd9e294587896c7",
+      "correctness": {
+        "files": 513,
+        "methods": 3586,
+        "calls": 2048,
+        "fingerprint": "f126c9b94d15f6c85f55e802db43430abbb378a6e82a78492b3d6e8fcc18a69b",
+        "reparsed": 0,
+        "hits": 513
+      }
+    },
+    {
+      "shape": "spread",
+      "size": 512,
+      "scenario": "changed",
+      "corpus": "dd070e75fcba816f5775dff5efbfdd3fdda28e4b01d0c1603fd9e294587896c7",
+      "correctness": {
+        "files": 513,
+        "methods": 3586,
+        "calls": 2048,
+        "fingerprint": "360cdbc01738746de63cca79adba7410797749c171d3e324579a7a53deee56d0",
+        "reparsed": 5,
+        "hits": 508
+      }
+    },
+    {
+      "shape": "spread",
+      "size": 2048,
+      "scenario": "cold",
+      "corpus": "5566903502880e054a6e2779f37d4c71da7333cfef65fb51e60d7ce3d03f8c77",
+      "correctness": {
+        "files": 2049,
+        "methods": 14338,
+        "calls": 8192,
+        "fingerprint": "9c07a075de05a15a73b0649a9fb45b730e6a6bf68d5152a315e5fae4fd1365a7",
+        "reparsed": 2049,
+        "hits": 0
+      }
+    },
+    {
+      "shape": "spread",
+      "size": 2048,
+      "scenario": "warm",
+      "corpus": "5566903502880e054a6e2779f37d4c71da7333cfef65fb51e60d7ce3d03f8c77",
+      "correctness": {
+        "files": 2049,
+        "methods": 14338,
+        "calls": 8192,
+        "fingerprint": "9c07a075de05a15a73b0649a9fb45b730e6a6bf68d5152a315e5fae4fd1365a7",
+        "reparsed": 0,
+        "hits": 2049
+      }
+    },
+    {
+      "shape": "spread",
+      "size": 2048,
+      "scenario": "changed",
+      "corpus": "5566903502880e054a6e2779f37d4c71da7333cfef65fb51e60d7ce3d03f8c77",
+      "correctness": {
+        "files": 2049,
+        "methods": 14338,
+        "calls": 8192,
+        "fingerprint": "8b2269dfa3d017f04e05f86afd8f6cac6364c1228acab0507de5287feb249969",
+        "reparsed": 15,
+        "hits": 2034
+      }
+    },
+    {
+      "shape": "concentrated",
+      "size": 128,
+      "scenario": "cold",
+      "corpus": "4043c0f69f54bcb6409bfeb70b974c2aa82b373d28f92f294a60c8199a8272fb",
+      "correctness": {
+        "files": 2,
+        "methods": 898,
+        "calls": 512,
+        "fingerprint": "f2f037938ed3b85bfac7ea91c8460bcef0bea3b73c38b84630e2ac36d8185b5d",
+        "reparsed": 2,
+        "hits": 0
+      }
+    },
+    {
+      "shape": "concentrated",
+      "size": 128,
+      "scenario": "warm",
+      "corpus": "4043c0f69f54bcb6409bfeb70b974c2aa82b373d28f92f294a60c8199a8272fb",
+      "correctness": {
+        "files": 2,
+        "methods": 898,
+        "calls": 512,
+        "fingerprint": "f2f037938ed3b85bfac7ea91c8460bcef0bea3b73c38b84630e2ac36d8185b5d",
+        "reparsed": 0,
+        "hits": 2
+      }
+    },
+    {
+      "shape": "concentrated",
+      "size": 128,
+      "scenario": "changed",
+      "corpus": "4043c0f69f54bcb6409bfeb70b974c2aa82b373d28f92f294a60c8199a8272fb",
+      "correctness": {
+        "files": 2,
+        "methods": 898,
+        "calls": 512,
+        "fingerprint": "5e4d7c334a4a1f6de8b594ae62d0792bd5895b828893103af8bbc4789f1f11fb",
+        "reparsed": 1,
+        "hits": 1
+      }
+    },
+    {
+      "shape": "concentrated",
+      "size": 512,
+      "scenario": "cold",
+      "corpus": "d6c830c77f6515d7e9157bc48d96a2bfa3ec3b7c81e315c61738ae5a5079a579",
+      "correctness": {
+        "files": 2,
+        "methods": 3586,
+        "calls": 2048,
+        "fingerprint": "e1e74e9da813db36ccea611bf2374dbcc079b4dc29466d5da127879d08cdaf00",
+        "reparsed": 2,
+        "hits": 0
+      }
+    },
+    {
+      "shape": "concentrated",
+      "size": 512,
+      "scenario": "warm",
+      "corpus": "d6c830c77f6515d7e9157bc48d96a2bfa3ec3b7c81e315c61738ae5a5079a579",
+      "correctness": {
+        "files": 2,
+        "methods": 3586,
+        "calls": 2048,
+        "fingerprint": "e1e74e9da813db36ccea611bf2374dbcc079b4dc29466d5da127879d08cdaf00",
+        "reparsed": 0,
+        "hits": 2
+      }
+    },
+    {
+      "shape": "concentrated",
+      "size": 512,
+      "scenario": "changed",
+      "corpus": "d6c830c77f6515d7e9157bc48d96a2bfa3ec3b7c81e315c61738ae5a5079a579",
+      "correctness": {
+        "files": 2,
+        "methods": 3586,
+        "calls": 2048,
+        "fingerprint": "c9beb4f12867432b2e53a6e52d337b39dfc0b05e1a18939575579157b425d29f",
+        "reparsed": 1,
+        "hits": 1
+      }
+    },
+    {
+      "shape": "concentrated",
+      "size": 2048,
+      "scenario": "cold",
+      "corpus": "b0698581ac113f8b46b4cc13cc1a8744b37aa41945e40245423eef383ca296b3",
+      "correctness": {
+        "files": 2,
+        "methods": 14338,
+        "calls": 8192,
+        "fingerprint": "7f349aefb5d96c2d46cda31484a7d696e26c4e55253336625d001462799b0de6",
+        "reparsed": 2,
+        "hits": 0
+      }
+    },
+    {
+      "shape": "concentrated",
+      "size": 2048,
+      "scenario": "warm",
+      "corpus": "b0698581ac113f8b46b4cc13cc1a8744b37aa41945e40245423eef383ca296b3",
+      "correctness": {
+        "files": 2,
+        "methods": 14338,
+        "calls": 8192,
+        "fingerprint": "7f349aefb5d96c2d46cda31484a7d696e26c4e55253336625d001462799b0de6",
+        "reparsed": 0,
+        "hits": 2
+      }
+    },
+    {
+      "shape": "concentrated",
+      "size": 2048,
+      "scenario": "changed",
+      "corpus": "b0698581ac113f8b46b4cc13cc1a8744b37aa41945e40245423eef383ca296b3",
+      "correctness": {
+        "files": 2,
+        "methods": 14338,
+        "calls": 8192,
+        "fingerprint": "1786baf149b46e933b59c54f2db3f6b3e1cb4d6e356497029546cd1afbe738fb",
+        "reparsed": 1,
+        "hits": 1
+      }
+    }
+  ],
+  "measured": [
+    {
+      "shape": "spread",
+      "size": 128,
+      "scenario": "cold",
+      "corpus": "ba00fdce998f6c93ded7b9e48249deb2195f435cd9f498d2585c028a4745b18c",
+      "correctness": {
+        "files": 129,
+        "methods": 898,
+        "calls": 512,
+        "fingerprint": "9c7584e6908a263beed06089876413d7d73a0d787d1eff7681dde0dd26f7b672",
+        "reparsed": 129,
+        "hits": 0
+      },
+      "wallMs": 6382.313993999999,
+      "cpuMs": 6573.025,
+      "scopeWallMs": 265.60164499999973,
+      "scopeCpuMs": 422.705,
+      "heapBytes": 72082216,
+      "peakRssBytes": 563265536
+    },
+    {
+      "shape": "spread",
+      "size": 128,
+      "scenario": "warm",
+      "corpus": "ba00fdce998f6c93ded7b9e48249deb2195f435cd9f498d2585c028a4745b18c",
+      "correctness": {
+        "files": 129,
+        "methods": 898,
+        "calls": 512,
+        "fingerprint": "9c7584e6908a263beed06089876413d7d73a0d787d1eff7681dde0dd26f7b672",
+        "reparsed": 0,
+        "hits": 129
+      },
+      "wallMs": 2412.3159590000005,
+      "cpuMs": 2055.392,
+      "scopeWallMs": 236.99802499999987,
+      "scopeCpuMs": 423.928,
+      "heapBytes": 106224584,
+      "peakRssBytes": 693342208
+    },
+    {
+      "shape": "spread",
+      "size": 128,
+      "scenario": "changed",
+      "corpus": "ba00fdce998f6c93ded7b9e48249deb2195f435cd9f498d2585c028a4745b18c",
+      "correctness": {
+        "files": 129,
+        "methods": 898,
+        "calls": 512,
+        "fingerprint": "def7d18a8b462dcf231bd2192afebe764911163d3ffc65e75fe5fefeb7e3a54c",
+        "reparsed": 2,
+        "hits": 127
+      },
+      "wallMs": 3324.9829769999997,
+      "cpuMs": 2986.027,
+      "scopeWallMs": 279.4751209999995,
+      "scopeCpuMs": 570.481,
+      "heapBytes": 74642032,
+      "peakRssBytes": 747954176
+    },
+    {
+      "shape": "spread",
+      "size": 512,
+      "scenario": "cold",
+      "corpus": "dd070e75fcba816f5775dff5efbfdd3fdda28e4b01d0c1603fd9e294587896c7",
+      "correctness": {
+        "files": 513,
+        "methods": 3586,
+        "calls": 2048,
+        "fingerprint": "f126c9b94d15f6c85f55e802db43430abbb378a6e82a78492b3d6e8fcc18a69b",
+        "reparsed": 513,
+        "hits": 0
+      },
+      "wallMs": 9657.072656,
+      "cpuMs": 11590.296,
+      "scopeWallMs": 787.7755969999998,
+      "scopeCpuMs": 1342.358,
+      "heapBytes": 83321312,
+      "peakRssBytes": 641908736
+    },
+    {
+      "shape": "spread",
+      "size": 512,
+      "scenario": "warm",
+      "corpus": "dd070e75fcba816f5775dff5efbfdd3fdda28e4b01d0c1603fd9e294587896c7",
+      "correctness": {
+        "files": 513,
+        "methods": 3586,
+        "calls": 2048,
+        "fingerprint": "f126c9b94d15f6c85f55e802db43430abbb378a6e82a78492b3d6e8fcc18a69b",
+        "reparsed": 0,
+        "hits": 513
+      },
+      "wallMs": 4034.202557999999,
+      "cpuMs": 4545.678,
+      "scopeWallMs": 876.6461720000007,
+      "scopeCpuMs": 1818.994,
+      "heapBytes": 140587192,
+      "peakRssBytes": 788180992
+    },
+    {
+      "shape": "spread",
+      "size": 512,
+      "scenario": "changed",
+      "corpus": "dd070e75fcba816f5775dff5efbfdd3fdda28e4b01d0c1603fd9e294587896c7",
+      "correctness": {
+        "files": 513,
+        "methods": 3586,
+        "calls": 2048,
+        "fingerprint": "360cdbc01738746de63cca79adba7410797749c171d3e324579a7a53deee56d0",
+        "reparsed": 5,
+        "hits": 508
+      },
+      "wallMs": 4542.365702000001,
+      "cpuMs": 4986.714,
+      "scopeWallMs": 745.671574,
+      "scopeCpuMs": 1462.018,
+      "heapBytes": 141094984,
+      "peakRssBytes": 897118208
+    },
+    {
+      "shape": "spread",
+      "size": 2048,
+      "scenario": "cold",
+      "corpus": "5566903502880e054a6e2779f37d4c71da7333cfef65fb51e60d7ce3d03f8c77",
+      "correctness": {
+        "files": 2049,
+        "methods": 14338,
+        "calls": 8192,
+        "fingerprint": "9c07a075de05a15a73b0649a9fb45b730e6a6bf68d5152a315e5fae4fd1365a7",
+        "reparsed": 2049,
+        "hits": 0
+      },
+      "wallMs": 22421.167622,
+      "cpuMs": 28309.111,
+      "scopeWallMs": 2729.000151,
+      "scopeCpuMs": 4387.326,
+      "heapBytes": 110154224,
+      "peakRssBytes": 760012800
+    },
+    {
+      "shape": "spread",
+      "size": 2048,
+      "scenario": "warm",
+      "corpus": "5566903502880e054a6e2779f37d4c71da7333cfef65fb51e60d7ce3d03f8c77",
+      "correctness": {
+        "files": 2049,
+        "methods": 14338,
+        "calls": 8192,
+        "fingerprint": "9c07a075de05a15a73b0649a9fb45b730e6a6bf68d5152a315e5fae4fd1365a7",
+        "reparsed": 0,
+        "hits": 2049
+      },
+      "wallMs": 7275.022228999998,
+      "cpuMs": 9205.167,
+      "scopeWallMs": 2452.0143179999977,
+      "scopeCpuMs": 4076.376,
+      "heapBytes": 216411400,
+      "peakRssBytes": 931454976
+    },
+    {
+      "shape": "spread",
+      "size": 2048,
+      "scenario": "changed",
+      "corpus": "5566903502880e054a6e2779f37d4c71da7333cfef65fb51e60d7ce3d03f8c77",
+      "correctness": {
+        "files": 2049,
+        "methods": 14338,
+        "calls": 8192,
+        "fingerprint": "8b2269dfa3d017f04e05f86afd8f6cac6364c1228acab0507de5287feb249969",
+        "reparsed": 15,
+        "hits": 2034
+      },
+      "wallMs": 8042.547480000001,
+      "cpuMs": 10680.432,
+      "scopeWallMs": 2782.9499240000005,
+      "scopeCpuMs": 4797.166,
+      "heapBytes": 221611264,
+      "peakRssBytes": 1018769408
+    },
+    {
+      "shape": "concentrated",
+      "size": 128,
+      "scenario": "cold",
+      "corpus": "4043c0f69f54bcb6409bfeb70b974c2aa82b373d28f92f294a60c8199a8272fb",
+      "correctness": {
+        "files": 2,
+        "methods": 898,
+        "calls": 512,
+        "fingerprint": "f2f037938ed3b85bfac7ea91c8460bcef0bea3b73c38b84630e2ac36d8185b5d",
+        "reparsed": 2,
+        "hits": 0
+      },
+      "wallMs": 5724.462823000001,
+      "cpuMs": 5990.56,
+      "scopeWallMs": 216.9987230000006,
+      "scopeCpuMs": 359.581,
+      "heapBytes": 66736864,
+      "peakRssBytes": 549969920
+    },
+    {
+      "shape": "concentrated",
+      "size": 128,
+      "scenario": "warm",
+      "corpus": "4043c0f69f54bcb6409bfeb70b974c2aa82b373d28f92f294a60c8199a8272fb",
+      "correctness": {
+        "files": 2,
+        "methods": 898,
+        "calls": 512,
+        "fingerprint": "f2f037938ed3b85bfac7ea91c8460bcef0bea3b73c38b84630e2ac36d8185b5d",
+        "reparsed": 0,
+        "hits": 2
+      },
+      "wallMs": 2307.437070000001,
+      "cpuMs": 1697.642,
+      "scopeWallMs": 165.59543699999995,
+      "scopeCpuMs": 366.701,
+      "heapBytes": 89981272,
+      "peakRssBytes": 673837056
+    },
+    {
+      "shape": "concentrated",
+      "size": 128,
+      "scenario": "changed",
+      "corpus": "4043c0f69f54bcb6409bfeb70b974c2aa82b373d28f92f294a60c8199a8272fb",
+      "correctness": {
+        "files": 2,
+        "methods": 898,
+        "calls": 512,
+        "fingerprint": "5e4d7c334a4a1f6de8b594ae62d0792bd5895b828893103af8bbc4789f1f11fb",
+        "reparsed": 1,
+        "hits": 1
+      },
+      "wallMs": 3410.6907119999996,
+      "cpuMs": 3338.962,
+      "scopeWallMs": 166.35203,
+      "scopeCpuMs": 366.192,
+      "heapBytes": 69753416,
+      "peakRssBytes": 766402560
+    },
+    {
+      "shape": "concentrated",
+      "size": 512,
+      "scenario": "cold",
+      "corpus": "d6c830c77f6515d7e9157bc48d96a2bfa3ec3b7c81e315c61738ae5a5079a579",
+      "correctness": {
+        "files": 2,
+        "methods": 3586,
+        "calls": 2048,
+        "fingerprint": "e1e74e9da813db36ccea611bf2374dbcc079b4dc29466d5da127879d08cdaf00",
+        "reparsed": 2,
+        "hits": 0
+      },
+      "wallMs": 9268.474702000001,
+      "cpuMs": 10475.483,
+      "scopeWallMs": 625.0715480000008,
+      "scopeCpuMs": 1136.577,
+      "heapBytes": 116100256,
+      "peakRssBytes": 584364032
+    },
+    {
+      "shape": "concentrated",
+      "size": 512,
+      "scenario": "warm",
+      "corpus": "d6c830c77f6515d7e9157bc48d96a2bfa3ec3b7c81e315c61738ae5a5079a579",
+      "correctness": {
+        "files": 2,
+        "methods": 3586,
+        "calls": 2048,
+        "fingerprint": "e1e74e9da813db36ccea611bf2374dbcc079b4dc29466d5da127879d08cdaf00",
+        "reparsed": 0,
+        "hits": 2
+      },
+      "wallMs": 2986.604102000001,
+      "cpuMs": 3221.225,
+      "scopeWallMs": 582.4847769999997,
+      "scopeCpuMs": 1302.585,
+      "heapBytes": 115896680,
+      "peakRssBytes": 776753152
+    },
+    {
+      "shape": "concentrated",
+      "size": 512,
+      "scenario": "changed",
+      "corpus": "d6c830c77f6515d7e9157bc48d96a2bfa3ec3b7c81e315c61738ae5a5079a579",
+      "correctness": {
+        "files": 2,
+        "methods": 3586,
+        "calls": 2048,
+        "fingerprint": "c9beb4f12867432b2e53a6e52d337b39dfc0b05e1a18939575579157b425d29f",
+        "reparsed": 1,
+        "hits": 1
+      },
+      "wallMs": 6360.436007999999,
+      "cpuMs": 7743.869,
+      "scopeWallMs": 510.34782500000074,
+      "scopeCpuMs": 1284.846,
+      "heapBytes": 123689144,
+      "peakRssBytes": 958959616
+    },
+    {
+      "shape": "concentrated",
+      "size": 2048,
+      "scenario": "cold",
+      "corpus": "b0698581ac113f8b46b4cc13cc1a8744b37aa41945e40245423eef383ca296b3",
+      "correctness": {
+        "files": 2,
+        "methods": 14338,
+        "calls": 8192,
+        "fingerprint": "7f349aefb5d96c2d46cda31484a7d696e26c4e55253336625d001462799b0de6",
+        "reparsed": 2,
+        "hits": 0
+      },
+      "wallMs": 21677.11593,
+      "cpuMs": 25262.452,
+      "scopeWallMs": 2939.4483809999983,
+      "scopeCpuMs": 4160.173,
+      "heapBytes": 97430168,
+      "peakRssBytes": 883941376
+    },
+    {
+      "shape": "concentrated",
+      "size": 2048,
+      "scenario": "warm",
+      "corpus": "b0698581ac113f8b46b4cc13cc1a8744b37aa41945e40245423eef383ca296b3",
+      "correctness": {
+        "files": 2,
+        "methods": 14338,
+        "calls": 8192,
+        "fingerprint": "7f349aefb5d96c2d46cda31484a7d696e26c4e55253336625d001462799b0de6",
+        "reparsed": 0,
+        "hits": 2
+      },
+      "wallMs": 4958.608856999999,
+      "cpuMs": 6291.745,
+      "scopeWallMs": 2304.6741980000006,
+      "scopeCpuMs": 3572.083,
+      "heapBytes": 123585896,
+      "peakRssBytes": 1016422400
+    },
+    {
+      "shape": "concentrated",
+      "size": 2048,
+      "scenario": "changed",
+      "corpus": "b0698581ac113f8b46b4cc13cc1a8744b37aa41945e40245423eef383ca296b3",
+      "correctness": {
+        "files": 2,
+        "methods": 14338,
+        "calls": 8192,
+        "fingerprint": "1786baf149b46e933b59c54f2db3f6b3e1cb4d6e356497029546cd1afbe738fb",
+        "reparsed": 1,
+        "hits": 1
+      },
+      "wallMs": 18368.502542000002,
+      "cpuMs": 22049.709,
+      "scopeWallMs": 2615.8797609999965,
+      "scopeCpuMs": 4184.537,
+      "heapBytes": 126797336,
+      "peakRssBytes": 1626734592
+    }
+  ],
+  "scaling": {
+    "spread/cold": {
+      "budget": 1.5,
+      "comparisons": [
+        {
+          "from": 128,
+          "to": 512,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.37827473958029156,
+            "cpuMs": 0.44082808143891133,
+            "scopeWallMs": 0.7415010522619322,
+            "scopeCpuMs": 0.7939094640470304,
+            "heapBytes": 0.2889801279139365,
+            "peakRssBytes": 0.28490502923296196
+          },
+          "passed": true
+        },
+        {
+          "from": 512,
+          "to": 2048,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.5804338545612368,
+            "cpuMs": 0.6106209668847111,
+            "scopeWallMs": 0.8660461689193454,
+            "scopeCpuMs": 0.8170931301485893,
+            "heapBytes": 0.33051035010106417,
+            "peakRssBytes": 0.29599721789734296
+          },
+          "passed": true
+        },
+        {
+          "from": 128,
+          "to": 2048,
+          "inputRatio": 16,
+          "ratios": {
+            "wallMs": 0.21956346517773664,
+            "cpuMs": 0.2691788693181602,
+            "scopeWallMs": 0.6421741455611097,
+            "scopeCpuMs": 0.648697969032777,
+            "heapBytes": 0.09551092324908546,
+            "peakRssBytes": 0.08433109601791791
+          },
+          "passed": true
+        }
+      ],
+      "passed": true
+    },
+    "spread/warm": {
+      "budget": 1.5,
+      "comparisons": [
+        {
+          "from": 128,
+          "to": 512,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.41808397268079406,
+            "cpuMs": 0.5528967223770453,
+            "scopeWallMs": 0.9247399551114415,
+            "scopeCpuMs": 1.0727022041478742,
+            "heapBytes": 0.33087254076702244,
+            "peakRssBytes": 0.284196239211215
+          },
+          "passed": true
+        },
+        {
+          "from": 512,
+          "to": 2048,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.45083397055592267,
+            "cpuMs": 0.506259297292945,
+            "scopeWallMs": 0.6992599740685332,
+            "scopeCpuMs": 0.5602514356836802,
+            "heapBytes": 0.38483484327647716,
+            "peakRssBytes": 0.29544450622833596
+          },
+          "passed": true
+        },
+        {
+          "from": 128,
+          "to": 2048,
+          "inputRatio": 16,
+          "ratios": {
+            "wallMs": 0.1884864574294763,
+            "cpuMs": 0.27990910614617553,
+            "scopeWallMs": 0.6466336370313632,
+            "scopeCpuMs": 0.6009829499348947,
+            "heapBytes": 0.12733128237056687,
+            "peakRssBytes": 0.08396421756570746
+          },
+          "passed": true
+        }
+      ],
+      "passed": true
+    },
+    "spread/changed": {
+      "budget": 1.5,
+      "comparisons": [
+        {
+          "from": 128,
+          "to": 512,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.3415330043357393,
+            "cpuMs": 0.4175040949060407,
+            "scopeWallMs": 0.6670285814099364,
+            "scopeCpuMs": 0.6406953079944818,
+            "heapBytes": 0.47257215612779674,
+            "peakRssBytes": 0.29985734313220813
+          },
+          "passed": true
+        },
+        {
+          "from": 512,
+          "to": 2048,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.44264090606238904,
+            "cpuMs": 0.5354443828140134,
+            "scopeWallMs": 0.9330347370865449,
+            "scopeCpuMs": 0.8202987240923163,
+            "heapBytes": 0.3926632572565443,
+            "peakRssBytes": 0.28390054925738395
+          },
+          "passed": true
+        },
+        {
+          "from": 128,
+          "to": 2048,
+          "inputRatio": 16,
+          "ratios": {
+            "wallMs": 0.15117647848938148,
+            "cpuMs": 0.22355022241928824,
+            "scopeWallMs": 0.6223608370850311,
+            "scopeCpuMs": 0.525561543679807,
+            "heapBytes": 0.18556172211388886,
+            "peakRssBytes": 0.08512966441409373
+          },
+          "passed": true
+        }
+      ],
+      "passed": true
+    },
+    "concentrated/cold": {
+      "budget": 1.5,
+      "comparisons": [
+        {
+          "from": 128,
+          "to": 512,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.4047748665936266,
+            "cpuMs": 0.43716626659277263,
+            "scopeWallMs": 0.7201327493526298,
+            "scopeCpuMs": 0.7902092991565183,
+            "heapBytes": 0.43491800873352393,
+            "peakRssBytes": 0.26563454234006106
+          },
+          "passed": true
+        },
+        {
+          "from": 512,
+          "to": 2048,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.5847001968220941,
+            "cpuMs": 0.6028946827559168,
+            "scopeWallMs": 1.1756447683489806,
+            "scopeCpuMs": 0.9150662471614329,
+            "heapBytes": 0.20979748744051005,
+            "peakRssBytes": 0.37816383606580356
+          },
+          "passed": true
+        },
+        {
+          "from": 128,
+          "to": 2048,
+          "inputRatio": 16,
+          "ratios": {
+            "wallMs": 0.23667194416593032,
+            "cpuMs": 0.2635652176090382,
+            "scopeWallMs": 0.8466202992931869,
+            "scopeCpuMs": 0.7230938578512212,
+            "heapBytes": 0.09124470547492312,
+            "peakRssBytes": 0.10045337752290162
+          },
+          "passed": true
+        }
+      ],
+      "passed": true
+    },
+    "concentrated/warm": {
+      "budget": 1.5,
+      "comparisons": [
+        {
+          "from": 128,
+          "to": 512,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.3235845671405461,
+            "cpuMs": 0.4743675344978505,
+            "scopeWallMs": 0.87937926846378,
+            "scopeCpuMs": 0.8880429832479322,
+            "heapBytes": 0.3220022273079225,
+            "peakRssBytes": 0.2881828570733872
+          },
+          "passed": true
+        },
+        {
+          "from": 512,
+          "to": 2048,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.4150708202067551,
+            "cpuMs": 0.4883037509022189,
+            "scopeWallMs": 0.9891564076017054,
+            "scopeCpuMs": 0.6855757973567944,
+            "heapBytes": 0.2665863595057253,
+            "peakRssBytes": 0.32713816396589274
+          },
+          "passed": true
+        },
+        {
+          "from": 128,
+          "to": 2048,
+          "inputRatio": 16,
+          "ratios": {
+            "wallMs": 0.1343105116892743,
+            "cpuMs": 0.23163544640153813,
+            "scopeWallMs": 0.8698436381130483,
+            "scopeCpuMs": 0.6088207763273075,
+            "heapBytes": 0.08584140153075409,
+            "peakRssBytes": 0.09427561074943316
+          },
+          "passed": true
+        }
+      ],
+      "passed": true
+    },
+    "concentrated/changed": {
+      "budget": 1.5,
+      "comparisons": [
+        {
+          "from": 128,
+          "to": 512,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.4662131914821363,
+            "cpuMs": 0.579811105966465,
+            "scopeWallMs": 0.766969638122241,
+            "scopeCpuMs": 0.8771668960545288,
+            "heapBytes": 0.4433085542362542,
+            "peakRssBytes": 0.3128119822564267
+          },
+          "passed": true
+        },
+        {
+          "from": 512,
+          "to": 2048,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.7219828372967103,
+            "cpuMs": 0.7118440730337767,
+            "scopeWallMs": 1.281420059446708,
+            "scopeCpuMs": 0.8142098352643041,
+            "heapBytes": 0.25628226515982677,
+            "peakRssBytes": 0.42408839873398796
+          },
+          "passed": true
+        },
+        {
+          "from": 128,
+          "to": 2048,
+          "inputRatio": 16,
+          "ratios": {
+            "wallMs": 0.33659792277142725,
+            "cpuMs": 0.4127350992613872,
+            "scopeWallMs": 0.9828102792764222,
+            "scopeCpuMs": 0.7141979139358589,
+            "heapBytes": 0.11361212044439516,
+            "peakRssBytes": 0.13265993265993267
+          },
+          "passed": true
+        }
+      ],
+      "passed": true
+    }
+  }
+}

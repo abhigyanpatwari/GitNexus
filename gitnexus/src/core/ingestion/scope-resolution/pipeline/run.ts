@@ -23,16 +23,30 @@
  * Plan: `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.
  */
 
-import type { ParsedFile, RegistryProviders } from 'gitnexus-shared';
+import type {
+  CallResultAssignmentSite,
+  ParsedFile,
+  ReferenceSite,
+  RegistryProviders,
+  Scope,
+  SymbolDefinition,
+} from 'gitnexus-shared';
+import type { TypeRef } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 import { lookupOwnedMembersByOwner } from '../../model/owned-members-lookup.js';
 import type { MutableSemanticModel, SemanticModel } from '../../model/semantic-model.js';
+import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { reconcileOwnership, validateOwnershipParity } from './reconcile-ownership.js';
 import { validateBindingsImmutability } from './validate-bindings-immutability.js';
 import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { finalizeScopeModel } from '../../finalize-orchestrator.js';
 import { resolveReferenceSites, type ResolveStats } from '../../resolve-references.js';
+import {
+  sourceBindingForDefinition,
+  type SourceBindingRecorder,
+  type SourceBindingResolution,
+} from '../source-binding-resolution.js';
 import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import {
   emitFileCfgs,
@@ -46,6 +60,7 @@ import {
   REACHING_DEF_FACTS_PER_EDGE_CAP,
 } from '../../cfg/emit.js';
 import { createMemoizedReachingDefs } from '../../cfg/reaching-defs.js';
+import { DEFAULT_PDG_MAX_FUNCTION_LINES } from '../../cfg/collect.js';
 import {
   emitFileTaint,
   DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
@@ -53,6 +68,7 @@ import {
   type TaintEmitLimits,
 } from '../../taint/emit.js';
 import { registerBuiltinTaintModels } from '../../taint/typescript-model.js';
+import { createMemoizedRefinement } from '../../taint/guard-refinement.js';
 import { getSourceSinkConfig } from '../../taint/source-sink-registry.js';
 import {
   buildFunctionNodeIndex,
@@ -84,6 +100,7 @@ import {
 import { emitReturnShapeMemberAccesses } from '../passes/return-shape-members.js';
 import { emitImportedValueReferences } from '../passes/imported-value-refs.js';
 import {
+  calleeIdPosKey,
   createCalleeIdAccumulator,
   type CalleeIdAccumulator,
 } from '../graph-bridge/callee-id-sink.js';
@@ -94,15 +111,193 @@ import {
   emitCallableValueFlow,
 } from '../passes/callable-value-flow.js';
 import type { ScopeResolver, UndecidedSatisfaction } from '../contract/scope-resolver.js';
-import { findEnclosingClassDef, resolveInheritanceBaseInScope } from '../scope/walkers.js';
+import {
+  findEnclosingClassDef,
+  hasExplicitNameClaim,
+  lookupNameClaim,
+  resolveInheritanceBaseInScope,
+} from '../scope/walkers.js';
+import { normalizeQualifiedName, stripTrailingTypeArguments } from '../../utils/qualified-name.js';
 import {
   heritageTypeArgumentsKey,
   type HeritageTypeArgumentSink,
 } from '../utils/generic-instantiation.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
+import { narrowOverloadCandidates } from '../passes/overload-narrowing.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
-import { logHeapProbe } from '../../utils/heap-probe.js';
+import { answeredSiteKey, withdrawAnsweredReceiverDrops } from '../resolution-outcome.js';
+import { isDebugHeapEnabled, logHeapProbe } from '../../utils/heap-probe.js';
 import { parseTruthyEnv } from '../../utils/env.js';
+import { callResultBindingKey, selectedCallKey } from '../passes/provider-call-outcome.js';
+
+function setCallResultBinding(scope: Scope, name: string, returned: TypeRef | undefined): boolean {
+  const bindings = scope.typeBindings as Map<string, TypeRef>;
+  if (returned === undefined) return bindings.delete(name);
+  const binding: TypeRef = {
+    rawName: returned.rawName,
+    ...(returned.declaredSpelling !== undefined
+      ? { declaredSpelling: returned.declaredSpelling }
+      : {}),
+    declaredAtScope: returned.declaredAtScope,
+    ...(returned.lookupPosition !== undefined ? { lookupPosition: returned.lookupPosition } : {}),
+    source: 'assignment-inferred',
+  };
+  const previous = bindings.get(name);
+  if (
+    previous?.rawName === binding.rawName &&
+    previous.declaredSpelling === binding.declaredSpelling &&
+    previous.declaredAtScope === binding.declaredAtScope &&
+    previous.source === binding.source &&
+    previous.lookupPosition?.startLine === binding.lookupPosition?.startLine &&
+    previous.lookupPosition?.startCol === binding.lookupPosition?.startCol
+  )
+    return false;
+  bindings.set(name, binding);
+  return true;
+}
+
+function applySelectedCallResultBinding(
+  assignment: CallResultAssignmentSite,
+  indexes: ScopeResolutionIndexes,
+  workspaceIndex: ReturnType<typeof buildWorkspaceResolutionIndex>,
+  selected: SymbolDefinition | null | undefined,
+): boolean {
+  const scope = indexes.scopeTree.getScope(assignment.inScope);
+  if (scope === undefined) return false;
+  const returned =
+    selected == null
+      ? undefined
+      : workspaceIndex.declaredReturnTypeByCallableId.get(selected.nodeId);
+  return setCallResultBinding(scope, assignment.lhs, returned);
+}
+
+/**
+ * Join extraction-time assignment identity to Phase-4's exact resolved callee.
+ * Ambiguous dispatch and missing return annotations deliberately produce no
+ * binding. Extraction emits these facts only for untyped declarations, so an
+ * existing entry here is necessarily inference/mirroring and may be corrected;
+ * explicit annotations never enter this join.
+ */
+export function applyPreciseCallResultBindings(
+  parsedFiles: readonly ParsedFile[],
+  indexes: ReturnType<typeof finalizeScopeModel>,
+  workspaceIndex: ReturnType<typeof buildWorkspaceResolutionIndex>,
+  calleeIds: CalleeIdAccumulator,
+  nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
+  model: SemanticModel,
+  requireOwnedHoistedReturn = false,
+  selectedCalls?: ReadonlyMap<string, SymbolDefinition | null>,
+): number {
+  let updated = 0;
+  if (selectedCalls !== undefined) {
+    for (const parsed of parsedFiles) {
+      for (const assignment of parsed.callResultAssignmentSites ?? []) {
+        if (
+          applySelectedCallResultBinding(
+            assignment,
+            indexes,
+            workspaceIndex,
+            selectedCalls.get(selectedCallKey(parsed.filePath, assignment.callSite)),
+          )
+        )
+          updated++;
+      }
+    }
+    return updated;
+  }
+  const returnTypeByGraphId = new Map<string, { type: TypeRef; def: SymbolDefinition }>();
+  for (const parsed of parsedFiles) {
+    for (const def of parsed.localDefs) {
+      const returnType = workspaceIndex.declaredReturnTypeByCallableId.get(def.nodeId);
+      if (returnType === undefined) continue;
+      const graphId = resolveDefGraphId(def.filePath, def, nodeLookup);
+      if (graphId !== undefined) returnTypeByGraphId.set(graphId, { type: returnType, def });
+    }
+  }
+  for (const parsed of parsedFiles) {
+    const resolvedByPosition = calleeIds.get(parsed.filePath);
+    if (resolvedByPosition === undefined) continue;
+    let callsByPosition: Map<string, ReferenceSite | null> | undefined;
+    if (requireOwnedHoistedReturn) {
+      callsByPosition = new Map();
+      for (const site of parsed.referenceSites) {
+        if (site.kind !== 'call') continue;
+        const key = calleeIdPosKey(site.atRange.startLine, site.atRange.startCol);
+        callsByPosition.set(key, callsByPosition.has(key) ? null : site);
+      }
+    }
+    for (const assignment of parsed.callResultAssignmentSites ?? []) {
+      const scope = indexes.scopeTree.getScope(assignment.inScope);
+      if (scope === undefined) continue;
+      const targets = resolvedByPosition.get(
+        calleeIdPosKey(assignment.callSite.startLine, assignment.callSite.startCol),
+      );
+      const targetId =
+        targets?.size === 1 ? (targets.values().next().value as string | undefined) : undefined;
+      const returned = targetId === undefined ? undefined : returnTypeByGraphId.get(targetId);
+      if (returned === undefined) continue;
+      if (requireOwnedHoistedReturn) {
+        const site = callsByPosition?.get(
+          calleeIdPosKey(assignment.callSite.startLine, assignment.callSite.startCol),
+        );
+        if (site == null || site.arity === undefined) continue;
+        const def = returned.def;
+        const candidates =
+          def.ownerId === undefined
+            ? [def]
+            : [def.ownerId, ...indexes.methodDispatch.mroFor(def.ownerId)].flatMap((owner) =>
+                model.methods.lookupAllByOwner(owner, site.name),
+              );
+        const narrowed = [
+          ...new Map(
+            narrowOverloadCandidates(candidates, site.arity, site.argumentTypes).map(
+              (candidate) => [candidate.nodeId, candidate],
+            ),
+          ).values(),
+        ];
+        // The exact selected declaration may shadow distinct ancestors only
+        // with equivalent, fully known parameter metadata. Numeric counts may
+        // both be absent (variadics); an empty type slot is still unknown.
+        const ancestors = new Set(
+          def.ownerId === undefined ? [] : indexes.methodDispatch.mroFor(def.ownerId),
+        );
+        const owners = new Set(narrowed.map((candidate) => candidate.ownerId));
+        const parameters = def.parameterTypes;
+        if (
+          narrowed[0]?.nodeId !== def.nodeId ||
+          owners.size !== narrowed.length ||
+          narrowed
+            .slice(1)
+            .some(
+              (candidate) =>
+                candidate.ownerId === undefined ||
+                !ancestors.has(candidate.ownerId) ||
+                candidate.parameterCount !== def.parameterCount ||
+                (def.parameterCount !== 0 &&
+                  (parameters === undefined ||
+                    parameters.length === 0 ||
+                    (def.parameterCount !== undefined &&
+                      parameters.length !== def.parameterCount) ||
+                    candidate.parameterTypes?.length !== parameters.length ||
+                    parameters.some(
+                      (type, index) => type === '' || type !== candidate.parameterTypes?.[index],
+                    ))),
+            )
+        )
+          continue;
+      }
+      if (
+        setCallResultBinding(scope, assignment.lhs, {
+          ...returned.type,
+          declaredAtScope: assignment.inScope,
+          lookupPosition: undefined,
+        })
+      )
+        updated++;
+    }
+  }
+  return updated;
+}
 import { isValueDefinitionLabel } from '../../utils/ast-helpers.js';
 import { TransitionalScopeTree } from '../../../../storage/scope-index-store.js';
 import { forceGc } from '../../../../storage/parsedfile-store.js';
@@ -147,6 +342,57 @@ function emitInheritanceEdgeDirect(
 }
 
 /**
+ * Whether an `inherits` site's base was written as a bare name, with no
+ * qualifier (`a.b.Base`, `Ns::Base`). Captures that keep only the simple tail
+ * carry no `rawQualifiedName`, so the name capture must also start where the
+ * base expression does: `Base<T>` and `Base(args)` lead with the name,
+ * `pkg.Base` does not. A site whose anchor is not the base expression at all
+ * fails the same test, which only costs it the implicit-namespace fallback.
+ */
+function isBareInheritanceBase(site: ReferenceSite): boolean {
+  if (
+    site.rawQualifiedName !== undefined &&
+    stripTrailingTypeArguments(normalizeQualifiedName(site.rawQualifiedName)).includes('.')
+  ) {
+    return false;
+  }
+  const name = site.nameRange;
+  return (
+    name !== undefined &&
+    name.startLine === site.atRange.startLine &&
+    name.startCol === site.atRange.startCol
+  );
+}
+
+/**
+ * The provider's implicit same-namespace base for an `inherits` site the shared
+ * chain left unbound. That visibility (`populateNamespaceSiblings`) is only
+ * populated after the inheritance pre-pass, so without this a base it alone
+ * makes visible reaches nothing but the workspace-unique name fallback. Bare,
+ * unclaimed bases only: for a written qualifier or a shadowing import the
+ * chain has already decided, and its miss stands.
+ */
+function resolveImplicitInheritanceBaseAtSite(
+  site: ReferenceSite,
+  derivingClass: SymbolDefinition,
+  scopes: ScopeResolutionIndexes,
+  resolveImplicitBase: ScopeResolver['resolveImplicitInheritanceBase'],
+): SymbolDefinition | undefined {
+  if (
+    resolveImplicitBase === undefined ||
+    derivingClass.isSynthetic === true ||
+    !isBareInheritanceBase(site)
+  )
+    return undefined;
+  const claim = lookupNameClaim(site.lookupScope ?? site.inScope, site.name, scopes, {
+    position: site.atRange,
+    purpose: site.lookupPurpose ?? 'type',
+  });
+  if (hasExplicitNameClaim(claim, site.name)) return undefined;
+  return resolveImplicitBase(site.name, derivingClass, scopes, site);
+}
+
+/**
  * Resolve inheritance reference sites early and pre-emit their EXTENDS edges
  * before MRO construction. This lets template-base captures contribute to the
  * graph in time for `buildMro`, while `handledSites` prevents the generic
@@ -169,6 +415,9 @@ function preEmitInheritanceEdges(
   scopes: ReturnType<typeof finalizeScopeModel>,
   nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
   recordTypeArguments: HeritageTypeArgumentSink,
+  unresolvedInheritanceByClass: Set<string>,
+  resolveImplicitBase: ScopeResolver['resolveImplicitInheritanceBase'],
+  recordSourceBinding?: SourceBindingRecorder,
 ): Set<string> {
   const handledSites = new Set<string>();
   const seen = new Set<string>();
@@ -202,17 +451,33 @@ function preEmitInheritanceEdges(
     const callerClass = findEnclosingClassDef(site.inScope, scopes);
     if (callerClass === undefined) continue;
 
-    const targetDef = resolveInheritanceBaseInScope(
-      site.inScope,
-      site.name,
-      scopes,
-      site.rawQualifiedName,
-      callerClass,
-    );
-    if (targetDef === undefined) continue;
+    const targetDef =
+      resolveInheritanceBaseInScope(
+        site.lookupScope ?? site.inScope,
+        site.name,
+        scopes,
+        site.rawQualifiedName,
+        callerClass,
+        { position: site.atRange, purpose: site.lookupPurpose ?? 'type' },
+      ) ?? resolveImplicitInheritanceBaseAtSite(site, callerClass, scopes, resolveImplicitBase);
+    if (targetDef === undefined || targetDef.nodeId === callerClass.nodeId) {
+      // Static lookup can mistake the current declaration for an earlier
+      // same-named base. A self-edge is not inheritance evidence and would
+      // poison MRO construction; retain the uncertainty for dispatch.
+      unresolvedInheritanceByClass.add(callerClass.nodeId);
+      continue;
+    }
+    recordSourceBinding?.(site, sourceBindingForDefinition(targetDef, 'inheritance'));
     const callerGraphId = resolveDefGraphId(callerClass.filePath, callerClass, nodeLookup);
     const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
-    if (callerGraphId === undefined || targetGraphId === undefined) continue;
+    if (
+      callerGraphId === undefined ||
+      targetGraphId === undefined ||
+      callerGraphId === targetGraphId
+    ) {
+      unresolvedInheritanceByClass.add(callerClass.nodeId);
+      continue;
+    }
     // Discriminate EXTENDS vs IMPLEMENTS by the resolved target's symbol kind:
     // conforming to an interface OR mixing in a trait/protocol is IMPLEMENTS,
     // deriving from a class-like is EXTENDS. The discriminator is purely
@@ -313,6 +578,14 @@ export type ScopeResolutionSubPhase =
   | 'linking symbols';
 
 interface RunScopeResolutionInput {
+  /** Source-backed providers use the same executable-region cap as workers. */
+  readonly pdgMaxFunctionLines?: number;
+  /** Observe the completed semantic pass without changing its graph output. */
+  readonly onResolved?: (result: {
+    readonly parsedFiles: readonly ParsedFile[];
+    readonly indexes: ScopeResolutionIndexes;
+    readonly referenceBindings: ReadonlyMap<ReferenceSite, SourceBindingResolution>;
+  }) => void;
   readonly graph: KnowledgeGraph;
   /**
    * Semantic model populated by the legacy `parse` phase. Scope-
@@ -324,7 +597,10 @@ interface RunScopeResolutionInput {
    * `ParsedFile[]` to mirror the pipeline shape.
    */
   readonly model: MutableSemanticModel;
-  readonly files: readonly { readonly path: string; readonly content: string }[];
+  readonly files: readonly {
+    readonly path: string;
+    readonly content: string;
+  }[];
   readonly onWarn?: (message: string) => void;
   /**
    * Optional pre-parsed-Tree lookup keyed by file path: a cache hit lets the
@@ -548,10 +824,17 @@ export function runScopeResolution(
   const callableFlowOnly = provider.scopeResolutionEdgeMode === 'callable-flow-only';
   const onWarn = input.onWarn ?? (() => {});
   const resolutionOutcomes: ResolutionOutcome[] = [];
+  const referenceBindings =
+    input.onResolved === undefined ? undefined : new Map<ReferenceSite, SourceBindingResolution>();
+  const recordSourceBinding: SourceBindingRecorder | undefined =
+    referenceBindings === undefined
+      ? undefined
+      : (site, binding) => {
+          referenceBindings.set(site, binding);
+        };
   const undecidedSatisfaction: UndecidedSatisfaction[] = [];
   const recordResolutionOutcome: ResolutionOutcomeRecorder = (outcome) => {
     resolutionOutcomes.push(outcome);
-    input.recordResolutionOutcome?.(outcome);
   };
   const PROF = process.env.PROF_SCOPE_RESOLUTION === '1';
   const tStart = PROF ? process.hrtime.bigint() : 0n;
@@ -606,6 +889,30 @@ export function runScopeResolution(
         if (extractionWarned) scopeExtractionFailedPaths.push(file.path);
         continue;
       }
+      const captureSideChannel = provider.languageProvider.collectCaptureSideChannel?.(file.path);
+      if (captureSideChannel !== undefined) parsed = { ...parsed, captureSideChannel };
+      if (input.pdg === true && provider.languageProvider.collectSourceCfgs) {
+        const warnCfg = (message: string): void => {
+          logger.warn(message);
+          input.onWarn?.(message);
+        };
+        try {
+          const { cfgs, skipped } = provider.languageProvider.collectSourceCfgs(
+            file.content,
+            file.path,
+            input.pdgMaxFunctionLines ?? DEFAULT_PDG_MAX_FUNCTION_LINES,
+          );
+          if (cfgs.length) parsed = { ...parsed, cfgSideChannel: cfgs };
+          if (skipped.tooManyLines || skipped.tooDeeplyNested || skipped.buildError) {
+            warnCfg(
+              `[cfg] ${file.path}: skipped source regions (tooManyLines=${skipped.tooManyLines}, ` +
+                `tooDeeplyNested=${skipped.tooDeeplyNested}, buildError=${skipped.buildError})`,
+            );
+          }
+        } catch (error) {
+          warnCfg(`[cfg] ${file.path}: source CFG extraction failed: ${String(error)}`);
+        }
+      }
     }
     // Worker-boundary restore: a pre-extracted ParsedFile was produced by
     // `extractParsedFile` running INSIDE a worker, so any capture-time
@@ -638,7 +945,10 @@ export function runScopeResolution(
     'sr-extract-end',
     `lang=${provider.language} parsedFiles=${parsedFiles.length} preExtractedHits=${preExtractedHits} skipped=${filesSkipped}`,
   );
-  provider.populateWorkspaceOwners?.(parsedFiles, { fileContents: getFileContents() });
+  provider.populateWorkspaceOwners?.(parsedFiles, {
+    fileContents: getFileContents(),
+    resolutionConfig: input.resolutionConfig,
+  });
   provider.populateWorkspaceReferences?.(parsedFiles, {
     fileContents: getFileContents(),
     treeCache,
@@ -651,6 +961,8 @@ export function runScopeResolution(
   // for repositories that use the provider but no first-class callables.
   if (
     callableFlowOnly &&
+    input.pdg !== true &&
+    input.onResolved === undefined &&
     !parsedFiles.some((parsed) => (parsed.callableFlowSites?.length ?? 0) > 0)
   ) {
     return {
@@ -724,8 +1036,37 @@ export function runScopeResolution(
   logHeapProbe('sr-post-nodeLookup', `lang=${provider.language}`);
 
   const resolutionConfig = input.resolutionConfig;
+  const resolveImportBinding = provider.resolveImportBinding;
+  if (resolveImportBinding) {
+    for (let i = 0; i < parsedFiles.length; i++) {
+      const parsed = parsedFiles[i];
+      parsedFiles[i] = {
+        ...parsed,
+        parsedImports: parsed.parsedImports.map((parsedImport) => {
+          return resolveImportBinding(
+            parsedImport,
+            () => {
+              const targets = provider.resolveImportTarget(
+                parsedImport.targetRaw ?? '',
+                parsed.filePath,
+                allFilePaths,
+                resolutionConfig,
+                { parsedFiles, parsedImport },
+              );
+              return typeof targets === 'string' ? [targets] : (targets ?? []);
+            },
+            (filePath) => getFileContents().get(filePath),
+          );
+        }),
+      };
+    }
+  }
+  const filterWildcardNames = provider.filterWildcardNames;
   const finalized = finalizeScopeModel(parsedFiles, {
+    moduleExports: provider.moduleExports,
     hooks: {
+      ownedMembersBindAtModuleScope: provider.ownedMembersBindAtModuleScope,
+      importsBindAtLexicalScope: provider.importsBindAtLexicalScope === true,
       resolveImportTarget: (targetRaw, fromFile, _workspaceIndex, parsedImport) =>
         provider.resolveImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig, {
           parsedFiles,
@@ -735,11 +1076,38 @@ export function runScopeResolution(
         provider.isNamespaceImport?.(parsedImport, targetFile, fromFile) ?? false,
       expandsWildcardTo: (targetModuleScope) =>
         provider.expandsWildcardTo?.(targetModuleScope, parsedFiles) ?? [],
+      filterWildcardNames:
+        filterWildcardNames === undefined
+          ? undefined
+          : (targetModuleScope, names) =>
+              filterWildcardNames(targetModuleScope, names, parsedFiles),
       mergeBindings: (existing, incoming, scopeId) =>
         provider.mergeBindings(existing, incoming, scopeId),
+      wildcardCollisionIsAmbiguous: provider.exclusiveWildcardReexports === true,
+      namedImportsBindTopLevelOnly: provider.namedImportsBindTopLevelOnly === true,
     },
   });
+  if (referenceBindings !== undefined) {
+    for (const site of finalized.referenceSites)
+      referenceBindings.set(site, {
+        status: 'unresolved',
+        targetDefIds: [],
+        basis: 'unresolved',
+      });
+  }
   logHeapProbe('sr-post-finalize', `lang=${provider.language}`);
+  // `export *` collisions the shared finalize refused to bind (WS1 C2). Recorded
+  // as outcomes so the refusal is auditable next to the name-fallback census —
+  // a silently unresolved importer is indistinguishable from a resolver gap.
+  for (const refused of finalized.stats.ambiguousWildcardExports) {
+    recordResolutionOutcome({
+      kind: 'reexport-ambiguous',
+      candidateIds: refused.candidateDefIds,
+      phase: 'finalize',
+      filePath: refused.filePath,
+      name: refused.name,
+    });
+  }
   // One store and ONE writer rule for heritage instantiations (#2912), shared by
   // the pre-pass below and by the language hook further down — a heritage shape
   // the pre-pass cannot express (Rust `impl T for S`, Dart `implements`) records
@@ -756,9 +1124,18 @@ export function runScopeResolution(
     const key = heritageTypeArgumentsKey(subtypeGraphId, supertypeGraphId);
     if (!heritageTypeArguments.has(key)) heritageTypeArguments.set(key, typeArguments);
   };
+  const unresolvedInheritanceByClass = new Set<string>();
   const preEmittedInheritanceSites = callableFlowOnly
     ? new Set<string>()
-    : preEmitInheritanceEdges(graph, finalized, nodeLookup, recordHeritageTypeArguments);
+    : preEmitInheritanceEdges(
+        graph,
+        finalized,
+        nodeLookup,
+        recordHeritageTypeArguments,
+        unresolvedInheritanceByClass,
+        provider.resolveImplicitInheritanceBase,
+        recordSourceBinding,
+      );
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
   // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
   // the heritage declarations are syntactic method calls, not grammar-level
@@ -829,14 +1206,14 @@ export function runScopeResolution(
   // views that delegate to it (out-of-core scope index) — the index pins no Scope objects, so the
   // disk seal can reclaim them. Byte-identical: the view returns the same Scope
   // the resident tree holds (or a value-identical revived one in disk mode).
-  const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles, indexes.scopeTree);
+  const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles, indexes.scopeTree, {
+    stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
+  });
   logHeapProbe('sr-post-workspaceIndex', `lang=${provider.language}`);
 
-  // Cross-file implicit-namespace visibility (C#). Must run before
-  // propagateImportedReturnTypes so the latter pass sees siblings'
-  // class bindings when chasing return-type chains across files.
-  // The hook writes to `bindingAugmentations` only; finalized
-  // `indexes.bindings` remains immutable post-finalize (I8).
+  // Complete implicit namespace visibility and refine provider-owned type facts
+  // before return propagation. New bindings use bindingAugmentations; existing
+  // scope typeBindings may be refined. indexes.bindings stays immutable (I8).
   if (provider.populateNamespaceSiblings !== undefined) {
     provider.populateNamespaceSiblings(parsedFiles, indexes, {
       fileContents: getFileContents(),
@@ -860,7 +1237,13 @@ export function runScopeResolution(
   // with chain-follow per importer; quadratic regressions show up
   // here, not in finalize).
   if (provider.propagatesReturnTypesAcrossImports !== false) {
-    propagateImportedReturnTypes(parsedFiles, indexes, workspaceIndex);
+    propagateImportedReturnTypes(
+      parsedFiles,
+      indexes,
+      workspaceIndex,
+      provider.resolveQualifiedCallee,
+      allFilePaths,
+    );
   }
 
   const tRangeBindStart = PROF ? process.hrtime.bigint() : 0n;
@@ -880,19 +1263,93 @@ export function runScopeResolution(
   // VALIDATE_SEMANTIC_MODEL=1.
   validateBindingsImmutability(indexes, onWarn);
 
+  const selectedCalls =
+    provider.receiverCallSite === undefined
+      ? undefined
+      : new Map<string, SymbolDefinition | null>();
+  const pendingCallReceivers = selectedCalls === undefined ? undefined : new Map<string, string>();
+  const callResultProducers =
+    selectedCalls === undefined ? undefined : new Map<string, CallResultAssignmentSite>();
+  const assignmentsByProducer = new Map<string, CallResultAssignmentSite[]>();
+  if (callResultProducers !== undefined) {
+    for (const parsed of parsedFiles) {
+      for (const assignment of parsed.callResultAssignmentSites ?? []) {
+        callResultProducers.set(
+          callResultBindingKey(assignment.inScope, assignment.lhs),
+          assignment,
+        );
+        const key = selectedCallKey(parsed.filePath, assignment.callSite);
+        let assignments = assignmentsByProducer.get(key);
+        if (assignments === undefined) assignmentsByProducer.set(key, (assignments = []));
+        assignments.push(assignment);
+      }
+    }
+  }
+  const onSelectedCall =
+    selectedCalls === undefined
+      ? undefined
+      : (key: string, definition: SymbolDefinition | null): void => {
+          for (const assignment of assignmentsByProducer.get(key) ?? []) {
+            applySelectedCallResultBinding(assignment, indexes, workspaceIndex, definition);
+          }
+        };
+  if (!callableFlowOnly && selectedCalls !== undefined) {
+    // Clear guessed assignment returns before Registry.lookup can cache a
+    // wrong downstream member. Exact primaries restore them after emission.
+    applyPreciseCallResultBindings(
+      parsedFiles,
+      indexes,
+      workspaceIndex,
+      createCalleeIdAccumulator(),
+      postHeritageNodeLookup,
+      readonlyModel,
+      provider.hoistedTypeBindingsRequireOwner === true,
+      selectedCalls,
+    );
+  }
+
   // ── Phase 3: resolve references via Registry.lookup ────────────────────
   input.onProgress?.('resolving references', files.length, files.length);
   const registryProviders: RegistryProviders = {
     arityCompatibility: provider.arityCompatibility,
   };
+  const memberVisibleToQualifier = provider.isNamespaceMemberVisible;
   const { referenceIndex, stats: resolveStats } = resolveReferenceSites({
     scopes: indexes,
     providers: registryProviders,
+    isNamespaceMemberVisible:
+      memberVisibleToQualifier === undefined
+        ? undefined
+        : (member) => memberVisibleToQualifier({ member }),
+    recordSourceBinding:
+      recordSourceBinding === undefined
+        ? undefined
+        : (site, binding) => {
+            // Inheritance already passed through its qualified/provider-aware seam.
+            if (site.kind !== 'inherits') recordSourceBinding(site, binding);
+          },
     ownedMembersByOwner: (ownerDefId, memberName) =>
       lookupOwnedMembersByOwner(readonlyModel, ownerDefId, memberName),
   });
   const tResolve = PROF ? process.hrtime.bigint() : 0n;
   logHeapProbe('sr-post-resolve', `lang=${provider.language}`);
+
+  const emitStarted = Date.now();
+  const probeEmit = (stage: string, detail = ''): void => {
+    if (!isDebugHeapEnabled()) return;
+    logHeapProbe(
+      `sr-emit-${stage}`,
+      `lang=${provider.language} elapsed_ms=${Date.now() - emitStarted}` +
+        ` nodes=${graph.nodeCount} edges=${graph.relationshipCount} ${detail}`,
+    );
+  };
+  if (isDebugHeapEnabled()) {
+    probeEmit(
+      'start',
+      `references=${indexes.referenceSites.length}` +
+        ` callableFacts=${parsedFiles.reduce((total, parsed) => total + (parsed.callableFlowSites?.length ?? 0), 0)}`,
+    );
+  }
 
   // Value defs bound at MODULE LEVEL. A read of a block-local `const` must not
   // mint an edge — that would retain the inert locals `pruneLocalSymbols` drops.
@@ -964,6 +1421,7 @@ export function runScopeResolution(
     }
   }
 
+  probeEmit('locals-end', `localValues=${functionLocalValueDefIds.size}`);
   // ── Out-of-core scope seal boundary ─────────────────────────────────────
   // Pass-A (finalize + propagate + resolve) is done; all whole-language reads
   // of `Scope.bindings` are behind us. Emit reaches scopes ONLY via
@@ -995,7 +1453,17 @@ export function runScopeResolution(
   const handledSites = new Set<string>(preEmittedInheritanceSites);
   const deferredIndirectCollection = collectDeferredIndirectCollection(emitParsedFiles, indexes);
   const deferredIndirectSites = deferredIndirectCollection.sites;
+  probeEmit(
+    'indirect-collection-end',
+    `deferred=${deferredIndirectSites.size} signatures=${deferredIndirectCollection.callSignaturesBySite.size}`,
+  );
   const callableArgumentSites = new Set<string>();
+  const callResultAssignmentSites = new Set<string>();
+  for (const parsed of emitParsedFiles) {
+    for (const site of parsed.callResultAssignmentSites ?? []) {
+      callResultAssignmentSites.add(callableFlowSiteKey(parsed.filePath, site.callSite));
+    }
+  }
   if (input.pdg !== true && deferredIndirectSites.size > 0) {
     for (const parsed of emitParsedFiles) {
       for (const site of parsed.callableFlowSites ?? []) {
@@ -1010,11 +1478,17 @@ export function runScopeResolution(
   // propagation. Populated below at every CALLS emit path before dedup; the CFG
   // join still consumes it only inside the `input.pdg` block.
   const calleeIdAccumulator: CalleeIdAccumulator | undefined =
-    input.pdg === true || deferredIndirectSites.size > 0
+    input.pdg === true ||
+    deferredIndirectSites.size > 0 ||
+    callResultAssignmentSites.size > 0 ||
+    provider.receiverCallSite !== undefined
       ? createCalleeIdAccumulator(
           input.pdg === true
             ? undefined
-            : (filePath, line, col) => callableArgumentSites.has(`${filePath}:${line}:${col}`),
+            : (filePath, line, col) => {
+                const key = `${filePath}:${line}:${col}`;
+                return callableArgumentSites.has(key) || callResultAssignmentSites.has(key);
+              },
         )
       : undefined;
   const receiverBound = callableFlowOnly
@@ -1034,18 +1508,29 @@ export function runScopeResolution(
         readonlyModel,
         {
           recordResolutionOutcome,
+          recordSourceBinding,
+          selectedCalls,
+          onSelectedCall,
+          pendingCallReceivers,
+          callResultProducers,
+          allFilePaths,
           calleeIdSink: calleeIdAccumulator,
-          // The pass's only source of positive EXTERNAL evidence for a dropped
-          // receiver (`console.log`, `fetch(...)`). Same hook, same spelling as
-          // the `emitFreeCallFallback` wiring below.
+          // The pass's sources of positive EXTERNAL evidence for a dropped
+          // receiver (`console.log`, `document.body`, `import os`). The first is
+          // the same hook, same spelling as the `emitFreeCallFallback` wiring
+          // below; the other two are read by nothing but the origin label.
           isBuiltInName: provider.languageProvider.isBuiltInName,
+          externalReceiverNames: provider.languageProvider.externalReceiverNames,
+          isExternalModuleSpecifier: provider.languageProvider.isExternalModuleSpecifier,
           // What each heritage clause instantiated its base with, so the
           // interface-dispatch fan-out can refuse an incompatible instantiation
           // (#2912). Empty under `callableFlowOnly`, which emits no dispatch.
           heritageTypeArguments,
+          unresolvedInheritanceByClass,
         },
       );
-  const receiverExtras = receiverBound.emitted;
+  probeEmit('receiver-end', `handled=${handledSites.size} emitted=${receiverBound.emitted}`);
+  let receiverExtras = receiverBound.emitted;
   if (receiverBound.dispatchFanoutSkipped > 0) {
     // Never drop dispatch coverage silently (#2829) — same contract as the
     // property-dispatch cap below. An interface member over the cap loses real
@@ -1085,23 +1570,137 @@ export function runScopeResolution(
         workspaceIndex,
         {
           allowGlobalFallback: provider.allowGlobalFreeCallFallback === true,
+          language: provider.language,
+          isGlobalNameFallbackPlausible: provider.isGlobalNameFallbackPlausible,
+          resolutionConfig,
+          sourceTextOf:
+            provider.isGlobalNameFallbackPlausible !== undefined
+              ? (filePath: string) => getFileContents().get(filePath)
+              : undefined,
           constructorCallTargetsClass: provider.constructorCallTargetsClass === true,
           markConstructionSites: provider.markConstructionSites === true,
           isFileLocalDef: provider.isFileLocalDef,
           isBuiltInName: provider.languageProvider.isBuiltInName,
           freeCallsRequireInstanceOwnership: provider.freeCallsRequireInstanceOwnership === true,
+          implicitThisWalksMro: provider.implicitThisWalksMro === true,
           isCallableVisibleFromCaller: provider.isCallableVisibleFromCaller,
+          isNamespaceMemberVisible: provider.isNamespaceMemberVisible,
           resolveAdlCandidates: provider.resolveAdlCandidates,
+          resolveOrdinaryCallables: provider.resolveOrdinaryCallables,
           resolveQualifiedFreeCall: provider.resolveQualifiedFreeCall,
+          resolveUnqualifiedCall: provider.resolveUnqualifiedCall,
+          selectedCalls,
+          onSelectedCall,
           conversionRankFn: provider.conversionRankFn,
           conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
           constraintCompatibility: provider.constraintCompatibility,
           recordResolutionOutcome,
+          recordSourceBinding,
           calleeIdSink: calleeIdAccumulator,
           skipSites: deferredIndirectSites,
         },
       );
-  const referenceSkipSites = new Set(handledSites);
+  probeEmit('free-calls-end', `handled=${handledSites.size} emitted=${freeCallExtras}`);
+  const replayedCallResultBindings =
+    callableFlowOnly || calleeIdAccumulator === undefined || selectedCalls !== undefined
+      ? 0
+      : applyPreciseCallResultBindings(
+          emitParsedFiles,
+          indexes,
+          workspaceIndex,
+          calleeIdAccumulator,
+          postHeritageNodeLookup,
+          readonlyModel,
+          provider.hoistedTypeBindingsRequireOwner === true,
+          selectedCalls,
+        );
+  if (replayedCallResultBindings > 0 || selectedCalls !== undefined) {
+    const handledBeforeReplay = new Set(handledSites);
+    const replayedReceiverBound = emitReceiverBoundCalls(
+      graph,
+      indexes,
+      emitParsedFiles,
+      postHeritageNodeLookup,
+      handledSites,
+      provider,
+      workspaceIndex,
+      readonlyModel,
+      {
+        calleeIdSink: calleeIdAccumulator,
+        recordSourceBinding,
+        recordResolutionOutcome: selectedCalls === undefined ? undefined : recordResolutionOutcome,
+        selectedCalls,
+        onSelectedCall,
+        pendingCallReceivers,
+        callResultProducers,
+        isBuiltInName: provider.languageProvider.isBuiltInName,
+        externalReceiverNames: provider.languageProvider.externalReceiverNames,
+        isExternalModuleSpecifier: provider.languageProvider.isExternalModuleSpecifier,
+        allFilePaths,
+        heritageTypeArguments,
+        unresolvedInheritanceByClass,
+      },
+    );
+    receiverExtras += replayedReceiverBound.emitted;
+    if (replayedReceiverBound.dispatchFanoutSkipped > 0) {
+      logger.warn(
+        {
+          lang: provider.language,
+          dispatchFanoutSkipped: replayedReceiverBound.dispatchFanoutSkipped,
+          dispatchFanoutSkippedNames: replayedReceiverBound.dispatchFanoutSkippedNames,
+          fanoutCap: MAX_INTERFACE_DISPATCH_FANOUT,
+          replay: true,
+        },
+        'interface-dispatch: members over the fan-out cap dropped implementors (their CALLS edges were not emitted)',
+      );
+    }
+    const resolvedOnReplay = new Set<string>();
+    for (const key of handledSites) {
+      if (!handledBeforeReplay.has(key)) resolvedOnReplay.add(key);
+    }
+    if (resolvedOnReplay.size > 0 || selectedCalls !== undefined) {
+      // Replay can retry an unresolved site. Keep its latest diagnostic once,
+      // and compact in one pass so withdrawing many drops stays linear.
+      const receiverDropPositions = new Map<string, number>();
+      let kept = 0;
+      for (const outcome of resolutionOutcomes) {
+        if (outcome.kind === 'suppressed' && outcome.reason === 'receiver-unresolved') {
+          const resolved =
+            selectedCalls === undefined
+              ? resolvedOnReplay.has(callableFlowSiteKey(outcome.filePath, outcome.range))
+              : selectedCalls.get(selectedCallKey(outcome.filePath, outcome.range)) != null;
+          if (resolved) continue;
+          if (outcome.siteKind !== undefined) {
+            const key = answeredSiteKey(
+              outcome.filePath,
+              outcome.range,
+              outcome.siteKind,
+              outcome.name,
+            );
+            const previous = receiverDropPositions.get(key);
+            if (previous !== undefined) {
+              resolutionOutcomes[previous] = outcome;
+              continue;
+            }
+            receiverDropPositions.set(key, kept);
+          }
+        }
+        resolutionOutcomes[kept++] = outcome;
+      }
+      resolutionOutcomes.length = kept;
+    }
+  }
+  for (const [key, handledKey] of pendingCallReceivers ?? []) {
+    selectedCalls?.set(key, null);
+    handledSites.add(handledKey);
+  }
+  // Receiver/free-call passes have finished reading this set. Extend it for
+  // the remaining passes instead of retaining three whole-program copies.
+  const referenceSkipSites = handledSites;
+  probeEmit(
+    'replay-end',
+    `handled=${handledSites.size} replayedBindings=${replayedCallResultBindings}`,
+  );
   for (const key of deferredIndirectSites) referenceSkipSites.add(key);
   const { emitted, skipped } = callableFlowOnly
     ? { emitted: 0, skipped: 0 }
@@ -1126,7 +1725,8 @@ export function runScopeResolution(
   // first-write-wins per edge id, which stops a DUPLICATE but not a second
   // edge to a DIFFERENT target, and second-guessing a resolved receiver is
   // exactly the wrong-edge-in-the-safety-gate case this must not create.
-  const uniqueNameSkipSites = new Set(referenceSkipSites);
+  const uniqueNameSkipSites = referenceSkipSites;
+  probeEmit('references-end', `emitted=${emitted} skipped=${skipped}`);
   for (const [fromScope, refs] of referenceIndex.bySourceScope) {
     const fromFilePath = indexes.scopeTree.getScope(fromScope)?.filePath;
     if (fromFilePath === undefined) continue;
@@ -1150,6 +1750,7 @@ export function runScopeResolution(
         emitParsedFiles,
         postHeritageNodeLookup,
         uniqueNameSkipSites,
+        recordSourceBinding,
       );
 
   // A language that opts out of name fallback still gets DETECTION. Skipping
@@ -1163,6 +1764,8 @@ export function runScopeResolution(
   // several functions returning the same field name. Sites it resolves are
   // added to the skip set, so the fallback below never second-guesses them.
   const sharedPropertyIndex = input.prebuiltPropertyNameIndex ?? buildPropertyNameIndex(graph);
+  probeEmit('imported-values-end', `skipSites=${uniqueNameSkipSites.size}`);
+  const answeredAfterReceiverPass = new Set<string>();
   const returnShapeMembers = callableFlowOnly
     ? { emitted: 0, memberNotOnShape: 0 }
     : emitReturnShapeMemberAccesses(
@@ -1173,6 +1776,7 @@ export function runScopeResolution(
         uniqueNameSkipSites,
         sharedPropertyIndex,
         uniqueNameSkipSites,
+        answeredAfterReceiverPass,
       );
 
   const nameFallbackDisabled = provider.fieldFallbackOnMethodLookup === false;
@@ -1194,7 +1798,10 @@ export function runScopeResolution(
         finalized,
         sharedPropertyIndex,
         nameFallbackDisabled,
+        answeredAfterReceiverPass,
       );
+  withdrawAnsweredReceiverDrops(resolutionOutcomes, answeredAfterReceiverPass);
+  probeEmit('properties-end', `outcomes=${resolutionOutcomes.length}`);
 
   // value-ref registrations (#2437): USES edges at the registration sites
   // plus field-based dispatch — synthesized CALLS from member-call sites to
@@ -1204,13 +1811,30 @@ export function runScopeResolution(
   // propagation. `graph.addRelationship` remains first-write-wins, so precise
   // edges already emitted for a site retain ownership.
   const propertyDispatch = callableFlowOnly
-    ? { usesEmitted: 0, callsEmitted: 0, skippedKeys: 0, skippedKeyNames: [] as readonly string[] }
+    ? {
+        usesEmitted: 0,
+        callsEmitted: 0,
+        skippedKeys: 0,
+        skippedKeyNames: [] as readonly string[],
+      }
     : emitPropertyDispatchCalls(
         graph,
         indexes,
         emitParsedFiles,
         postHeritageNodeLookup,
+        readonlyModel,
         calleeIdAccumulator,
+        // Same provider hook the receiver-bound pass consults for a namespace
+        // member (Case 1). Without it a hub module's re-exported callable
+        // resolves when CALLED and declines when REGISTERED.
+        provider.namespaceExportsIncludeImportedNames === true,
+        {
+          receiverPaths: provider.namespaceReceiverPaths,
+          bindingIdentity: provider.namespaceBindingIdentity,
+          skipEnclosingClasses: provider.namespaceSkipsEnclosingClasses,
+          moduleFileExists: (filePath) => indexes.moduleScopes.get(filePath) !== undefined,
+        },
+        recordSourceBinding,
       );
   if (propertyDispatch.skippedKeys > 0) {
     // Never drop dispatch coverage silently: a hook table larger than the
@@ -1226,6 +1850,7 @@ export function runScopeResolution(
       'property-dispatch: keys over the fan-out cap were dropped (no CALLS synthesized for them)',
     );
   }
+  probeEmit('property-dispatch-end');
   const callableValueFlow =
     calleeIdAccumulator === undefined
       ? {
@@ -1245,6 +1870,8 @@ export function runScopeResolution(
           collapseByCallerTarget: provider.collapseMemberCallsByCallerTarget === true,
           isCallableValueTarget: provider.isCallableValueTarget,
           hasFileLocalCallableLinkage: provider.hasFileLocalCallableLinkage,
+          qualifiedTypeLookupSpelling: provider.qualifiedTypeLookupSpelling,
+          isNamespaceMemberVisible: provider.isNamespaceMemberVisible,
           deferredIndirectSites,
           callSignaturesBySite: deferredIndirectCollection.callSignaturesBySite,
           onWarn: (warning) =>
@@ -1253,19 +1880,26 @@ export function runScopeResolution(
               'callable-value-flow: candidate set exceeded the cap; no partial CALLS emitted',
             ),
         });
+  probeEmit('callable-flow-end', `iterations=${callableValueFlow.iterations}`);
   const importsEmitted = callableFlowOnly
     ? 0
     : emitImportEdges(graph, indexes.imports, indexes.scopeTree, provider.importEdgeReason);
+  probeEmit('imports-end', `emitted=${importsEmitted}`);
 
   // Language-specific supplementary edges (e.g. Vue template-derived
   // BINDS_EVENT_HANDLER / EMITS_EVENT / CALLS / ACCESSES edges).
   // Runs last so the full graph — including import edges — is visible.
-  if (!callableFlowOnly && provider.emitPostResolutionEdges !== undefined) {
+  if (
+    (!callableFlowOnly || recordSourceBinding !== undefined) &&
+    provider.emitPostResolutionEdges !== undefined
+  ) {
     provider.emitPostResolutionEdges(graph, emitParsedFiles, postHeritageNodeLookup, indexes, {
       fileContents: getFileContents(),
       resolutionConfig,
+      recordSourceBinding,
     });
   }
+  probeEmit('provider-end');
 
   // ── CFG/PDG emission (#2081 M1, opt-in via `--pdg`) ──────────────────────
   // Emit BasicBlock nodes + CFG edges from each ParsedFile's worker-built
@@ -1349,6 +1983,9 @@ export function runScopeResolution(
       kills: 0,
       dropped: 0,
       hopsTruncated: 0,
+      guardFunctions: 0,
+      guardFallbacks: 0,
+      guardVisits: 0,
       gapExamples: [] as string[],
       dropExamples: [] as string[],
     };
@@ -1431,6 +2068,11 @@ export function runScopeResolution(
         // per (limits) bucket instead of 3–4× (#2227 tri-review). File-scoped: it
         // is re-created each iteration, so its per-function facts drop with the file.
         const rdSolve = createMemoizedReachingDefs();
+        const refine = createMemoizedRefinement((result) => {
+          if (result.guards.status === 'computed') taintTotals.guardFunctions++;
+          if (result.guards.status === 'fallback') taintTotals.guardFallbacks++;
+          taintTotals.guardVisits += result.guards.visits;
+        });
         const t0 = PROF ? performance.now() : 0;
         const rd = emitFileReachingDefs(
           pdgTarget,
@@ -1484,6 +2126,22 @@ export function runScopeResolution(
         // entirely when the language has no registered model.
         if (taintSpec !== undefined) {
           const t1 = PROF ? performance.now() : 0;
+          // The disk seal strips ParsedFile.scopes. Restore only this file's
+          // lexical context for both taint consumers, then release it with this
+          // iteration. Passing the stripped file silently blocks every sink;
+          // an imports-only fallback would instead lose local shadow barriers.
+          let taintParsed = pf;
+          if (pf.scopes.length === 0) {
+            const scopes: Scope[] = [];
+            const pending = [pf.moduleScope];
+            for (let i = 0; i < pending.length; i++) {
+              const scope = indexes.scopeTree.getScope(pending[i]);
+              if (scope === undefined) continue;
+              scopes.push(scope);
+              for (const child of indexes.scopeTree.getChildren(scope.id)) pending.push(child);
+            }
+            taintParsed = { ...pf, scopes };
+          }
           const taint = emitFileTaint(
             pdgTarget,
             wellFormed,
@@ -1492,6 +2150,8 @@ export function runScopeResolution(
             taintLimits,
             (message) => logger.warn(message), // unconditional — R4/R6
             rdSolve,
+            taintParsed,
+            refine,
           );
           if (PROF) taintMs += performance.now() - t1;
           taintTotals.analyzed += taint.functionsAnalyzed;
@@ -1526,6 +2186,8 @@ export function runScopeResolution(
                 ? taintLimits.maxFacts
                 : DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
               rdSolve,
+              taintParsed,
+              refine,
             );
             harvestedSummaries.push(...harvest.summaries);
             summaryUnresolved += harvest.unresolved;
@@ -1563,6 +2225,7 @@ export function runScopeResolution(
             ? `; taint: ${taintTotals.findings} TAINTED, ${taintTotals.kills} SANITIZES ` +
               `(${taintTotals.analyzed} function(s) analyzed, ` +
               `${taintTotals.noMatch} skipped: no source/sink match` +
+              `; guards: ${taintTotals.guardFunctions} analyzed, ${taintTotals.guardFallbacks} fallback, ${taintTotals.guardVisits} visits` +
               (taintTotals.hopsTruncated > 0
                 ? `, ${taintTotals.hopsTruncated} finding(s) with truncated hop paths`
                 : '') +
@@ -1660,6 +2323,13 @@ export function runScopeResolution(
   }
 
   logHeapProbe('sr-end', `lang=${provider.language} parsedFiles=${parsedFiles.length}`);
+
+  for (const outcome of resolutionOutcomes) input.recordResolutionOutcome?.(outcome);
+  input.onResolved?.({
+    parsedFiles,
+    indexes,
+    referenceBindings: referenceBindings!,
+  });
 
   return {
     filesProcessed: parsedFiles.length,

@@ -11,7 +11,7 @@ import io
 import json
 import time
 
-from workflow_bench.runner_sessions import SessionProgress
+from workflow_bench.runner_sessions import SessionProgress, neutralize_ci_log_text
 
 
 def _drain_lines(stream: io.StringIO) -> list[str]:
@@ -325,3 +325,48 @@ def test_cell_failure_detail_line_bounds_a_huge_detail() -> None:
     assert line is not None
     assert "truncated" in line
     assert len(line) < MAX_CELL_DETAIL_CHARS + 200
+
+
+def test_progress_neutralizes_github_actions_annotation_forms() -> None:
+    rewritten = neutralize_ci_log_text(
+        "gitnexus/src/cli/optional-grammars.ts(18,36): error TS2307: Cannot find module "
+        "'gitnexus-shared'\n::error::Composite projects may not disable incremental compilation.\n"
+        "##[error]tsc failed"
+    )
+    assert "): error TS2307" not in rewritten
+    assert "): compiler-error TS2307" in rewritten
+    assert "::error::" not in rewritten
+    assert "[:]error::" in rewritten
+    assert "##[error]" not in rewritten
+    assert "# [error]tsc failed" in rewritten
+
+    stream = io.StringIO()
+    progress = SessionProgress("review-pr-2718-defect-ce_review-run0", stream=stream, heartbeat_s=3600)
+    events = [
+        {
+            "type": "assistant",
+            "message": {
+                "content": [{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "npx tsc --noEmit"}}]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "b1",
+                        "is_error": True,
+                        "content": "gitnexus/src/cli/optional-grammars.ts(18,36): error TS2307: Cannot find module 'gitnexus-shared'",
+                    }
+                ]
+            },
+        },
+    ]
+    for event in events:
+        _observe(progress, (json.dumps(event) + "\n").encode())
+
+    output = stream.getvalue()
+    assert "): error TS2307" not in output
+    assert "): compiler-error TS2307" in output
+    assert "result=error" in output

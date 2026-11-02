@@ -11,8 +11,8 @@
  * reports a blast radius into code that cannot be affected. The reporter
  * measured 44 of 74 cross-package edges landing on two such files.
  *
- * The mechanism is shared, which is why this file is: `import-resolvers/
- * utils.ts:suffixResolve` asks "does any file in this repo have a path ending
+ * The shared `utils/suffix-index.ts:suffixResolve` helper asks
+ * "does any file in this repo have a path ending
  * in this specifier?", retrying with each leading segment dropped, and most
  * languages still end their resolution chain there.
  *
@@ -48,11 +48,28 @@ import {
   clearKotlinPackageFacts,
   setKotlinPackageFact,
 } from '../../../src/core/ingestion/languages/kotlin/package-facts.js';
+import type { GoWorkspaceConfig } from '../../../src/core/ingestion/languages/go/workspace-config.js';
 
 /** The `composer.json` PSR-4 map `loadPhpComposerConfig` would have produced. */
 const PHP_COMPOSER: ComposerConfig = { psr4: new Map([['App', 'app']]) };
-/** The value `loadGoModulePath` produces for a repo with a `go.mod`. */
-const GO_MODULE = { modulePath: 'example.com/mod' };
+/** The value `captureGoWorkspaceConfig` produces for a repo whose only
+ *  `go.mod` is at its root. */
+const GO_MODULE: GoWorkspaceConfig = {
+  modules: [{ modulePath: 'example.com/mod', dir: '' }],
+  workFiles: [],
+};
+/** The root dependency scope `loadRubyResolutionConfig` would have produced. */
+const RUBY_GEMS = {
+  scopesByDirectory: new Map([
+    [
+      '',
+      {
+        externalRequirePrefixes: new Set(['rails']),
+        localLoadRootsByPrefix: new Map(),
+      },
+    ],
+  ]),
+};
 /** What `scanCSharpProject` would report for the C# workspace below — the
  *  in-repo namespace evidence the #1881 suffix-fallback gate reads. */
 const CSHARP_NAMESPACES = {
@@ -272,7 +289,7 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
     {
       files: ['lib/app/models/user.rb', 'lib/generators.rb', 'lib/main.rb'],
       fromFile: 'lib/main.rb',
-      resolutionConfig: undefined,
+      resolutionConfig: RUBY_GEMS,
       external: 'rails/generators',
       decoy: 'lib/generators.rb',
       reachesDecoy: 'generators',
@@ -306,7 +323,7 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
     {
       files: ['lib/http.dart', 'lib/models.dart', 'lib/main.dart'],
       fromFile: 'lib/main.dart',
-      resolutionConfig: undefined,
+      resolutionConfig: { packages: new Map([['app', 'lib']]) },
       external: 'package:http/http.dart',
       decoy: 'lib/http.dart',
       reachesDecoy: 'package:app/http.dart',
@@ -324,31 +341,49 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
       resolutionConfig: undefined,
       external: 'Foundation',
       decoy: 'Sources/Foundation/Thing.swift',
-      reachesDecoy: 'Models',
+      reachesDecoy: 'Sources',
     },
   ],
   [
     SupportedLanguages.C,
     {
+      // Workspace has a local `src/stdio.h` that shadows the system header.
+      // `#include <stdio.h>` (angle-bracket, isSystem:true) must NOT resolve to
+      // it. `#include "./stdio.h"` (quoted relative form, isSystem:false) from
+      // `src/main.c` DOES reach it via sibling lookup — the decoy-reachability
+      // proof. Using './stdio.h' for reachesDecoy vs 'stdio.h' for external lets
+      // the parsedImport factory distinguish the two arms.
       files: ['src/stdio.h', 'include/util.h', 'src/main.c'],
       fromFile: 'src/main.c',
       resolutionConfig: undefined,
       external: 'stdio.h',
       decoy: 'src/stdio.h',
-      reachesDecoy: 'util.h',
+      reachesDecoy: './stdio.h',
+      parsedImport: (targetRaw) => ({
+        kind: 'wildcard',
+        targetRaw,
+        // Bare name → angle-bracket system include; relative path → quoted local.
+        isSystem: !targetRaw.startsWith('.'),
+      }),
     },
   ],
   [
     SupportedLanguages.CPlusPlus,
     {
+      // Same shape as C: a local `src/cstdio.h` that shadows the C++ system
+      // header. `#include <cstdio.h>` (isSystem:true) must NOT resolve to it;
+      // `#include "./cstdio.h"` (isSystem:false) from `src/main.cpp` DOES.
       files: ['src/cstdio.h', 'include/util.hpp', 'src/main.cpp'],
       fromFile: 'src/main.cpp',
       resolutionConfig: undefined,
-      // `cstdio` with no extension would miss the decoy on spelling alone and
-      // post a pass that measures nothing; the header spelling is the real test.
       external: 'cstdio.h',
       decoy: 'src/cstdio.h',
-      reachesDecoy: 'util.hpp',
+      reachesDecoy: './cstdio.h',
+      parsedImport: (targetRaw) => ({
+        kind: 'wildcard',
+        targetRaw,
+        isSystem: !targetRaw.startsWith('.'),
+      }),
     },
   ],
   [
@@ -358,7 +393,11 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
       fromFile: 'src/PROG.cbl',
       resolutionConfig: undefined,
       external: 'EXTERNAL',
-      decoy: 'vendor/EXTERNAL.cpy',
+      // After the copybook-dir preference, vendor/EXTERNAL.cpy is intentionally
+      // unreachable (that is the #2967 fix). The reachable decoy is the in-repo
+      // copybook; vendor/EXTERNAL.cpy stays in `files` so EXTERNAL→[] is not a
+      // vacuous miss of an empty workspace.
+      decoy: 'copybooks/CUSTREC.cpy',
       reachesDecoy: 'CUSTREC',
     },
   ],
@@ -378,6 +417,17 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
       reachesDecoy: 'std.zig',
     },
   ],
+  [
+    SupportedLanguages.ObjectiveC,
+    {
+      files: ['Headers/Foundation.h', 'Headers/Widget.h', 'Sources/main.m'],
+      fromFile: 'Sources/main.m',
+      resolutionConfig: undefined,
+      external: 'Foundation',
+      decoy: 'Headers/Foundation.h',
+      reachesDecoy: 'Foundation.h',
+    },
+  ],
 ]);
 
 /**
@@ -388,14 +438,7 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
  * Fixing one means giving that language its real algorithm the way #2953 gave
  * TypeScript one, then deleting its line here.
  */
-const KNOWN_GAPS: ReadonlyMap<SupportedLanguages, string> = new Map<SupportedLanguages, string>([
-  [SupportedLanguages.Ruby, '`rails/generators` -> `lib/generators.rb`'],
-  [SupportedLanguages.Dart, '`package:http/http.dart` -> `lib/http.dart`'],
-  [SupportedLanguages.Swift, '`Foundation` -> `Sources/Foundation/Thing.swift`'],
-  [SupportedLanguages.C, '`stdio.h` -> `src/stdio.h`'],
-  [SupportedLanguages.CPlusPlus, '`cstdio.h` -> `src/cstdio.h`'],
-  [SupportedLanguages.Cobol, '`EXTERNAL` -> `vendor/EXTERNAL.cpy`'],
-]);
+const KNOWN_GAPS: ReadonlyMap<SupportedLanguages, string> = new Map<SupportedLanguages, string>([]);
 
 /**
  * The six that hold it, and what earns each one.

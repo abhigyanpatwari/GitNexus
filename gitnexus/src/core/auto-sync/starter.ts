@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { acquireFileLock, FileLockBusyError } from '../../storage/file-lock.js';
 import { getGlobalDir } from '../../storage/repo-manager.js';
-import { isProcessAlive, readProcessStartTime } from '../../utils/process-identity.js';
+import { isProcessAlive, readProcessStartTimeCached } from '../../utils/process-identity.js';
 import { loadAutoSyncConfig } from './config.js';
 import { runAutoSyncOnce } from './runner.js';
 import { getAutoSyncMutexPath, getAutoSyncWatchDir } from './state.js';
@@ -131,6 +131,7 @@ export async function startAutoSyncWatch(
     let activeRun: Promise<void> | undefined;
     let activeAbortController: AbortController | undefined;
     let stopping = false;
+    let rerunRequested = false;
     let statusWrite = Promise.resolve();
     const updateStatus = (state: WatchStatusState, message?: string) => {
       const write = statusWrite.then(() =>
@@ -152,10 +153,12 @@ export async function startAutoSyncWatch(
     const runSafely = () => {
       if (stopping) return;
       if (activeRun) {
-        stderr.write('[auto-sync] Previous run is still active; skipping overlapping run.\n');
+        rerunRequested = true;
+        stderr.write('[auto-sync] Previous run is still active; queued one immediate follow-up.\n');
         return;
       }
       const startedAt = new Date();
+      let deferFollowUp = false;
       stderr.write(`[auto-sync] Watch loop started at ${startedAt.toISOString()}.\n`);
       const abortController = new AbortController();
       const run = runOnce(loaded.config, {
@@ -170,6 +173,7 @@ export async function startAutoSyncWatch(
         },
       })
         .then((result) => {
+          deferFollowUp = result.abandonedAnalysisWorker === true;
           stderr.write(
             `[auto-sync] Watch loop finished: synced=${result.synced} analyzed=${result.analyzed} skipped=${result.skippedAnalysis} failed=${result.failed}.\n`,
           );
@@ -179,12 +183,23 @@ export async function startAutoSyncWatch(
           stderr.write('[auto-sync] Watch loop finished: failed.\n');
         })
         .finally(async () => {
+          const runAgain = rerunRequested;
+          rerunRequested = false;
           if (activeRun === run) {
             activeRun = undefined;
             activeAbortController = undefined;
           }
           if (!stopping) {
             await updateStatus('running').catch(reportStatusWriteFailure);
+          }
+          if (runAgain && !stopping && !activeRun) {
+            if (deferFollowUp) {
+              stderr.write(
+                '[auto-sync] Previous run left an analyze worker running; deferring the coalesced follow-up to the next interval.\n',
+              );
+            } else {
+              runSafely();
+            }
           }
         });
       activeRun = run;
@@ -195,6 +210,7 @@ export async function startAutoSyncWatch(
     const stop = () =>
       (stopPromise ??= (async () => {
         stopping = true;
+        rerunRequested = false;
         clearIntervalFn(timer);
         clearIntervalFn(controlTimer);
         activeAbortController?.abort();
@@ -632,7 +648,7 @@ function resolveWatchDeps(deps: Partial<AutoSyncWatchControlDeps> = {}): AutoSyn
           return undefined;
         }
       }),
-    readProcessStartTime: deps.readProcessStartTime ?? readProcessStartTime,
+    readProcessStartTime: deps.readProcessStartTime ?? readProcessStartTimeCached,
     sleep:
       deps.sleep ??
       ((ms) =>

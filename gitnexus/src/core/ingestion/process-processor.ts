@@ -10,30 +10,35 @@
  * Processes help agents understand how features work through the codebase.
  */
 
-import type { GraphNode, NodeLabel } from 'gitnexus-shared';
+import type { GraphNode, NodeLabel, RelationshipType } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
+import { isHeuristicEdgeReason } from '../graph/edge-reasons.js';
 import { CommunityMembership } from './community-processor.js';
 import { calculateEntryPointScore, isTestFile } from './entry-point-scoring.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { isDev } from './utils/env.js';
+import { PROCESS_DETECTION_BUDGET_DEFAULTS } from './process-detection-budget.js';
 
 import { logger } from '../logger.js';
+import { EnclosingCallableIndex } from './enclosing-callable.js';
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
 
 export interface ProcessDetectionConfig {
   maxTraceDepth: number; // Maximum steps to trace (default: 10)
-  maxBranching: number; // Max branches to follow per node (default: 3)
-  maxProcesses: number; // Maximum processes to detect (default: 50)
-  minSteps: number; // Minimum steps for a valid process (default: 2)
+  maxBranching: number; // Max branches to follow per node (default: 4)
+  maxProcesses: number; // Maximum processes to detect (default: 75)
+  minSteps: number; // Minimum steps for a valid process (default: 3)
+  maxEntryPointCandidates: number; // Ranked entry-point pool (default: 200)
 }
 
-const DEFAULT_CONFIG: ProcessDetectionConfig = {
-  maxTraceDepth: 10,
-  maxBranching: 4,
+export const DEFAULT_CONFIG: ProcessDetectionConfig = {
+  maxTraceDepth: PROCESS_DETECTION_BUDGET_DEFAULTS.maxProcessTraceDepth,
+  maxBranching: PROCESS_DETECTION_BUDGET_DEFAULTS.maxProcessBranching,
   maxProcesses: 75,
-  minSteps: 3, // 3+ steps = genuine multi-hop flow (2-step is just "A calls B")
+  minSteps: PROCESS_DETECTION_BUDGET_DEFAULTS.minSteps, // 3+ steps = genuine multi-hop flow (2-step is just "A calls B")
+  maxEntryPointCandidates: PROCESS_DETECTION_BUDGET_DEFAULTS.maxEntryPointCandidates,
 };
 
 // ============================================================================
@@ -88,7 +93,7 @@ export interface ProcessTruncationStats {
   truncated: boolean;
   /**
    * Scoring candidates that never reached the trace loop because
-   * `findEntryPoints` keeps only the top `ENTRY_POINT_CANDIDATE_LIMIT`.
+   * `findEntryPoints` keeps only the top `maxEntryPointCandidates`.
    * Counted BEFORE the slice, so it sees what `entryPointsFound` cannot.
    */
   entryPointCandidatesDropped: number;
@@ -165,11 +170,17 @@ export const processProcesses = async (
   for (const n of knowledgeGraph.iterNodes()) nodeMap.set(n.id, n);
 
   // Declared before Step 1 because `findEntryPoints` has a ceiling of its own
-  // (see `ENTRY_POINT_CANDIDATE_LIMIT`) and reports it through the same record.
+  // (`cfg.maxEntryPointCandidates`, default 200) and reports it through the same record.
   const truncation = emptyTruncation();
 
   // Step 1: Find entry points (functions that call others but have few callers)
-  const entryPoints = findEntryPoints(knowledgeGraph, reverseCallsEdges, callsEdges, truncation);
+  const entryPoints = findEntryPoints(
+    knowledgeGraph,
+    reverseCallsEdges,
+    callsEdges,
+    truncation,
+    cfg.maxEntryPointCandidates,
+  );
 
   onProgress?.(`Found ${entryPoints.length} entry points, tracing flows...`, 20);
 
@@ -198,7 +209,7 @@ export const processProcesses = async (
   // the remainder are not "no flows found" — they were never looked at.
   //
   // Counted over the list `findEntryPoints` RETURNS, which is already capped at
-  // `ENTRY_POINT_CANDIDATE_LIMIT`; candidates beyond that cap are invisible here
+  // `maxEntryPointCandidates`; candidates beyond that cap are invisible here
   // by construction and are reported separately as
   // `entryPointCandidatesDropped`.
   truncation.entryPointsUnexplored = entryPoints.length - tracedEntryPoints;
@@ -436,12 +447,28 @@ type AdjacencyList = Map<string, string[]>;
  */
 const MIN_TRACE_CONFIDENCE = 0.5;
 
+/**
+ * True when an edge may seed or extend a traced flow.
+ *
+ * The confidence floor alone is not sufficient: the global-name fallback emits
+ * at exactly `MIN_TRACE_CONFIDENCE`, so a `<` comparison admits every one of
+ * its guesses. A flow assembled from name guesses reads as a real execution
+ * path through code that may never call each other, so the reason is checked
+ * too — see `graph/edge-reasons.ts`.
+ */
+const isTraceableCallsEdge = (
+  type: RelationshipType,
+  confidence: number,
+  reason: string,
+): boolean =>
+  type === 'CALLS' && confidence >= MIN_TRACE_CONFIDENCE && !isHeuristicEdgeReason(reason);
+
 const buildCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
   const adj = new Map<string, string[]>();
 
-  // Field-wise scan (#2680) — whole-graph walk, four fields, no object needed.
-  graph.forEachRelationshipFields((sourceId, targetId, type, confidence) => {
-    if (type !== 'CALLS' || confidence < MIN_TRACE_CONFIDENCE) return;
+  // Field-wise scan (#2680) — whole-graph walk, five fields, no object needed.
+  graph.forEachRelationshipFields((sourceId, targetId, type, confidence, reason) => {
+    if (!isTraceableCallsEdge(type, confidence, reason)) return;
     const existing = adj.get(sourceId);
     if (existing === undefined) adj.set(sourceId, [targetId]);
     else existing.push(targetId);
@@ -453,8 +480,8 @@ const buildCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
 const buildReverseCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
   const adj = new Map<string, string[]>();
 
-  graph.forEachRelationshipFields((sourceId, targetId, type, confidence) => {
-    if (type !== 'CALLS' || confidence < MIN_TRACE_CONFIDENCE) return;
+  graph.forEachRelationshipFields((sourceId, targetId, type, confidence, reason) => {
+    if (!isTraceableCallsEdge(type, confidence, reason)) return;
     const existing = adj.get(targetId);
     if (existing === undefined) adj.set(targetId, [sourceId]);
     else existing.push(sourceId);
@@ -464,13 +491,6 @@ const buildReverseCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
 };
 
 /**
- * How many ranked candidates survive to be traced. Everything below this line
- * is discarded — see `ProcessTruncationStats.entryPointCandidatesDropped`, the
- * counter that exists because this cap spent a release being invisible.
- */
-const ENTRY_POINT_CANDIDATE_LIMIT = 200;
-
-/**
  * Find functions/methods that are good entry points for tracing.
  *
  * Entry points are scored based on:
@@ -478,7 +498,9 @@ const ENTRY_POINT_CANDIDATE_LIMIT = 200;
  * 2. Export status (exported/public functions rank higher)
  * 3. Name patterns (handle*, on*, *Controller, etc.)
  *
- * Test files are excluded entirely.
+ * Test files are excluded entirely. How many ranked candidates survive to be
+ * traced is `maxEntryPointCandidates` (default 200) — see
+ * `ProcessTruncationStats.entryPointCandidatesDropped`.
  */
 const findEntryPoints = (
   graph: KnowledgeGraph,
@@ -492,6 +514,7 @@ const findEntryPoints = (
    * to unwrap a counter to ask for entry points.
    */
   truncation?: ProcessTruncationStats,
+  maxEntryPointCandidates: number = DEFAULT_CONFIG.maxEntryPointCandidates,
 ): string[] => {
   const symbolTypes = new Set<NodeLabel>(['Function', 'Method']);
   const entryPointCandidates: {
@@ -559,15 +582,15 @@ const findEntryPoints = (
 
   // Limit to prevent explosion — and SAY SO. This is the ceiling that decides
   // how much of a repository process detection ever looks at: on anything with
-  // more than 200 scoring candidates the reported flows are a sample of the
-  // top-ranked ones, and every downstream count (`entryPointsFound`,
-  // `entryPointsUnexplored`) is computed over the survivors, so none of them can
-  // see what was cut here.
-  if (truncation !== undefined && sorted.length > ENTRY_POINT_CANDIDATE_LIMIT) {
-    truncation.entryPointCandidatesDropped = sorted.length - ENTRY_POINT_CANDIDATE_LIMIT;
+  // more scoring candidates than `maxEntryPointCandidates` the reported flows
+  // are a sample of the top-ranked ones, and every downstream count
+  // (`entryPointsFound`, `entryPointsUnexplored`) is computed over the
+  // survivors, so none of them can see what was cut here.
+  if (truncation !== undefined && sorted.length > maxEntryPointCandidates) {
+    truncation.entryPointCandidatesDropped = sorted.length - maxEntryPointCandidates;
   }
 
-  return sorted.slice(0, ENTRY_POINT_CANDIDATE_LIMIT).map((c) => c.id);
+  return sorted.slice(0, maxEntryPointCandidates).map((c) => c.id);
 };
 
 // ============================================================================
@@ -708,13 +731,9 @@ export const traceFromEntryPoint = (
 export interface OutwardActionSite {
   readonly filePath: string;
   readonly lineNumber: number;
+  /** The parser's enclosing callable, null for module scope, or absent without AST attribution. */
+  readonly enclosingId?: string | null;
 }
-
-const CALLABLE_SINK_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
-  'Function',
-  'Method',
-  'Constructor',
-]);
 
 /**
  * Functions that DO something outward — issue a request, run a query (R3-6).
@@ -732,10 +751,9 @@ const CALLABLE_SINK_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
  * is too coarse to end a trace on — every function in a file containing one
  * would qualify. Attributing each site to the function whose range CONTAINS it
  * turns the same facts into the function-level signal the walk needs, with no
- * new extraction, no new relation pair, and no schema change.
- *
- * Innermost wins: a nested closure that performs the call is the sink, not the
- * outer function that merely spans it.
+ * new extraction, no new relation pair, and no schema change. The containment
+ * rule lives in {@link EnclosingCallableIndex}, shared with the FETCHES consumer
+ * attribution.
  */
 export function buildSinkFunctionSet(
   graph: KnowledgeGraph,
@@ -744,27 +762,10 @@ export function buildSinkFunctionSet(
   const sinks = new Set<string>();
   if (sites.length === 0) return sinks;
 
-  const byFile = new Map<string, { id: string; start: number; end: number }[]>();
-  for (const node of graph.iterNodes()) {
-    if (!CALLABLE_SINK_LABELS.has(node.label)) continue;
-    const props = node.properties as { filePath?: string; startLine?: number; endLine?: number };
-    if (typeof props.filePath !== 'string') continue;
-    if (typeof props.startLine !== 'number' || typeof props.endLine !== 'number') continue;
-    const entry = { id: node.id, start: props.startLine, end: props.endLine };
-    const list = byFile.get(props.filePath);
-    if (list === undefined) byFile.set(props.filePath, [entry]);
-    else list.push(entry);
-  }
-
+  const callables = new EnclosingCallableIndex(graph);
   for (const site of sites) {
-    const candidates = byFile.get(site.filePath);
-    if (candidates === undefined) continue;
-    let best: { id: string; start: number; end: number } | undefined;
-    for (const c of candidates) {
-      if (site.lineNumber < c.start || site.lineNumber > c.end) continue;
-      if (best === undefined || c.end - c.start < best.end - best.start) best = c;
-    }
-    if (best !== undefined) sinks.add(best.id);
+    const id = callables.of(site);
+    if (id !== undefined) sinks.add(id);
   }
   return sinks;
 }
@@ -805,7 +806,7 @@ const compareOrderKeys = (a: string, b: string): number => (a < b ? -1 : a > b ?
  * joined strings, so an O(n log n) sort performs O(n log n) joins of
  * O(depth x id-length) characters each.
  *
- * `n` is bounded here (`ENTRY_POINT_CANDIDATE_LIMIT` entry points x the
+ * `n` is bounded here (`maxEntryPointCandidates` entry points x the
  * per-entry trace budget), so the cost is small and once-per-analyze: measured
  * at the ceiling, 23,851 comparisons performed 70,524 joins, and end-to-end
  * `processProcesses` at 80,000 functions / 640k CALLS went 456 -> 555 ms. It is

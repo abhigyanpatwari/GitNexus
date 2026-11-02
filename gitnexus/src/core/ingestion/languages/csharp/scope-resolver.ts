@@ -6,12 +6,21 @@
  * canonical shape.
  */
 
-import type { ParsedFile } from 'gitnexus-shared';
-import { SupportedLanguages } from 'gitnexus-shared';
+import type { ParsedFile, ScopeId } from 'gitnexus-shared';
+import { CLASS_KINDS, SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
-import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
+import {
+  populateClassOwnedMembers,
+  resolveSameNamespaceInheritanceBase,
+  lookupNameClaim,
+} from '../../scope-resolution/scope/walkers.js';
 import { populateCsharpNamespacePrefixes } from './qualified-type-names.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import {
+  canonicalizeWorkspaceBindings,
+  canonicalModuleExports,
+} from '../../scope-resolution/scope/canonicalize-bindings.js';
+import { canonicalName } from './identifiers.js';
 import { csharpProvider } from '../csharp.js';
 import {
   csharpArityCompatibility,
@@ -24,7 +33,15 @@ import { loadCsharpResolutionConfig, type CsharpResolutionConfig } from './resol
 import { unwrapCsharpElementType } from './accessor-unwrap.js';
 import { emitRazorViewComponentEdges } from './razor-view-components.js';
 
+const declarationImports = new WeakMap<
+  readonly ParsedFile[],
+  ReadonlyMap<string, readonly string[]>
+>();
+
 const csharpScopeResolver: ScopeResolver = {
+  moduleExports: (parsed) => canonicalModuleExports(parsed, canonicalName),
+  populateWorkspaceReferences: (parsedFiles) =>
+    canonicalizeWorkspaceBindings(parsedFiles, canonicalName),
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.CSharp,
@@ -33,7 +50,33 @@ const csharpScopeResolver: ScopeResolver = {
 
   loadResolutionConfig: (repoPath) => loadCsharpResolutionConfig(repoPath),
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) => {
+    // A using names a declaration, independently of its containing filename.
+    // Prefer the already-extracted namespace identity; file suffixes are only
+    // the fallback for imports with no source declaration in this workspace.
+    const target = targetRaw.replace(/^global::/, '').replace(/@/g, '');
+    let declarations = context && declarationImports.get(context.parsedFiles);
+    if (context && !declarations) {
+      const filesByName = new Map<string, Set<string>>();
+      for (const parsed of context.parsedFiles) {
+        for (const def of parsed.localDefs) {
+          if (!CLASS_KINDS.includes(def.type) && def.type !== 'Namespace') continue;
+          const qualified =
+            def.namespacePrefix && !def.qualifiedName?.startsWith(def.namespacePrefix + '.')
+              ? def.namespacePrefix + '.' + def.qualifiedName
+              : def.qualifiedName;
+          if (!qualified) continue;
+          const key = qualified.replace(/@/g, '');
+          const paths = filesByName.get(key) ?? new Set<string>();
+          paths.add(parsed.filePath);
+          filesByName.set(key, paths);
+        }
+      }
+      declarations = new Map([...filesByName].map(([name, paths]) => [name, [...paths].sort()]));
+      declarationImports.set(context.parsedFiles, declarations);
+    }
+    const exactFiles = declarations?.get(target);
+    if (exactFiles?.length) return exactFiles;
     const config = resolutionConfig as CsharpResolutionConfig | undefined;
     const ws: CsharpResolveContext = {
       fromFile,
@@ -79,6 +122,41 @@ const csharpScopeResolver: ScopeResolver = {
   // same namespace, without any `using` directive. See
   // `namespace-siblings.ts` for the implementation.
   populateNamespaceSiblings: populateCsharpNamespaceSiblings,
+
+  // The inheritance pre-pass runs before those siblings exist, so a base
+  // declared in another file of the SAME named namespace binds here. Exact
+  // namespace only (the `namespacePrefix` sidecar from `populateOwners`):
+  // enclosing-namespace and global visibility stay with the shared chain.
+  resolveImplicitInheritanceBase: (baseName, derivingClass, scopes, site) =>
+    resolveSameNamespaceInheritanceBase(
+      baseName,
+      derivingClass,
+      scopes,
+      (def) => def.namespacePrefix,
+      // This provider captures type parameters for every class-like declaration.
+      (def) =>
+        site !== undefined &&
+        (def.typeParameters?.length ?? 0) === (site.typeArguments?.length ?? 0),
+    ),
+  isBareClassReceiverCandidate: ({ candidate, spelling, inScope, scopes }) => {
+    if (candidate.typeParameters === undefined || candidate.typeParameters.length === 0)
+      return true;
+    if (spelling.includes('.') || spelling.includes('<') || spelling.includes('::')) return true;
+    if (candidate.qualifiedName?.split('.').at(-1) !== spelling) return true;
+    const claim = lookupNameClaim(inScope, spelling, scopes, { purpose: 'value' });
+    if (claim.imports.some((edge) => edge.kind === 'alias')) return true;
+    const visited = new Set<ScopeId>();
+    let current: ScopeId | null = inScope;
+    while (current !== null && !visited.has(current)) {
+      visited.add(current);
+      const scope = scopes.scopeTree.getScope(current);
+      if (scope === undefined) break;
+      if (scope.kind === 'Class' && scope.ownedDefs.some((def) => def.nodeId === candidate.nodeId))
+        return true;
+      current = scope.parent;
+    }
+    return false;
+  },
 
   // C# is statically typed — type information is reliable. Field-
   // fallback heuristic stays off (the type-binding layer already

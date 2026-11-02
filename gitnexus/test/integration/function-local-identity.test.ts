@@ -168,7 +168,7 @@ describeIfWorkerBuilt('a function-local callable does not collide with a file-le
     // gives it an environment record, so its `save` is a genuinely different
     // binding from the file-level one. The anonymous link becomes `fn@1:9` —
     // unique by construction, since two functions cannot start at one offset.
-    const { calls } = await analyze(
+    const { calls, nodes } = await analyze(
       'anon.ts',
       [
         'export function outer() {',
@@ -181,7 +181,12 @@ describeIfWorkerBuilt('a function-local callable does not collide with a file-le
       ].join('\n'),
     );
 
-    expect(calls).toEqual(['Function:anon.ts:outer -> Function:anon.ts:outer.fn@1:9.save@2:4']);
+    expect(nodes).toEqual(['Function:anon.ts:outer.fn@1:9.save@2:4', 'Function:anon.ts:save']);
+    // The returned callable owns its call; it must not borrow `outer`'s ID.
+    // The existing nested and file-level `save` IDs remain unchanged.
+    expect(calls).toEqual([
+      'Function:anon.ts:outer.fn@1:9 -> Function:anon.ts:outer.fn@1:9.save@2:4',
+    ]);
   });
 
   it('sibling BLOCKS hold different bindings, and each call reaches its own', async () => {
@@ -337,9 +342,9 @@ describeIfWorkerBuilt('function-local VALUES carry their own identity (#2699 A1)
     //
     // The churn this was deferred for is real and was accepted deliberately:
     // it re-keys ~14,700 build-time nodes to change ~800 persisted ones,
-    // because `pruneLocalSymbols` deletes most locals. Hence the paired
-    // schema-fingerprint changes / parse-cache SCHEMA_BUMP bumps — without them
-    // a warm cache or an incremental top-up replays the old un-suffixed ids.
+    // because `pruneLocalSymbols` deletes most locals. Automatic parser
+    // identity invalidates the warm cache and triggers a rebuild when these
+    // parser artifacts change, preventing reuse of the old un-suffixed ids.
     //
     // Only LOCALS move. The prefix comes from `enclosingCallablePrefix`, which
     // returns undefined when nothing encloses the declaration, so the
@@ -393,7 +398,7 @@ describe('function-local value identity resolves through to emitted edges (#2736
       range: { startLine: 1, startCol: 0, endLine: 100, endCol: 0 },
       filePath,
       bindings: new Map(),
-      ownedDefs: [caller, topLevel],
+      ownedDefs: [topLevel],
       imports: [],
       typeBindings: new Map(),
     };
@@ -404,7 +409,7 @@ describe('function-local value identity resolves through to emitted edges (#2736
       range: { startLine: 3, startCol: 0, endLine: 6, endCol: 1 },
       filePath,
       bindings: new Map(),
-      ownedDefs: [local],
+      ownedDefs: [caller, local],
       imports: [],
       typeBindings: new Map(),
     };

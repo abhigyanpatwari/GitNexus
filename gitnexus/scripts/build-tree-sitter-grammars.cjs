@@ -4,7 +4,7 @@
  * One registry-driven script replaces the former per-grammar
  * build-tree-sitter-<name>.cjs files (they were ~95% identical).
  *
- * The grammars (tree-sitter-c/dart/proto/swift/kotlin/zig) are loaded from
+ * The grammars (tree-sitter-c/objc/dart/proto/swift/kotlin/zig) are loaded from
  * `vendor/<name>/` by absolute path at runtime (see
  * src/core/tree-sitter/vendored-grammars.ts) and are NEVER copied into
  * node_modules — an undeclared package under node_modules is "extraneous" to
@@ -25,8 +25,8 @@
  * or exit non-zero — a failure for any single grammar must not break the install.
  *
  * Opt-out: GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (strict '1') skips the OPTIONAL
- * grammars only. tree-sitter-c is REQUIRED (it backstops upstream's 4/6 ARM
- * prebuild gap, #2116) and is always built.
+ * grammars only. tree-sitter-c and tree-sitter-objc are REQUIRED (C backstops upstream's 4/6 ARM
+ * prebuild gap, #2116) and are always built.
  *
  * Usage:
  *   node build-tree-sitter-grammars.cjs            # all grammars (postinstall)
@@ -40,6 +40,7 @@ const { execSync } = require('child_process');
 // grammars ignore the opt-out gate. Insertion order == build order (c first).
 const GRAMMARS = {
   c: { required: true, display: 'C', ext: '.c' },
+  objc: { required: true, display: 'Objective-C', ext: '.m/.mm/.h' },
   dart: { required: false, display: 'Dart', ext: '.dart' },
   proto: { required: false, display: 'Proto', ext: '.proto' },
   swift: { required: false, display: 'Swift', ext: '.swift' },

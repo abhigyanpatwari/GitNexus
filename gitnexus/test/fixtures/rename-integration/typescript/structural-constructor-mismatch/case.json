@@ -1,0 +1,23 @@
+{
+  "language": "typescript",
+  "description": "Refuse an unrelated constructor assigned to a structural interface even when explicit implementors exist.",
+  "categories": [
+    "polymorphism",
+    "structural-typing",
+    "unrelated-owner",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "render",
+    "kind": "Method",
+    "file": "model.ts",
+    "startLine": 1
+  },
+  "newName": "paint",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "unsupported"
+  }
+}

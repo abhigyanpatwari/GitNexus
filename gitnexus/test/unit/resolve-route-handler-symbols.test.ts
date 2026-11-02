@@ -237,7 +237,7 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
     const owner = model.symbols.add('src/handlers.js', 'auth', 'object:auth', 'Variable');
     model.methods.register(owner.nodeId, 'getCurrentUser', {
       filePath: 'src/handlers.js',
-      name: 'getCurrentUser',
+      qualifiedName: 'getCurrentUser',
       nodeId: 'method:auth.getCurrentUser',
       type: 'Method',
       ownerId: owner.nodeId,
@@ -281,7 +281,7 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
     model.symbols.add('src/routes.js', 'auth', 'object:auth', 'Variable');
     model.methods.register('object:auth', 'getCurrentUser', {
       filePath: 'src/routes.js',
-      name: 'getCurrentUser',
+      qualifiedName: 'getCurrentUser',
       nodeId: 'method:auth.getCurrentUser',
       type: 'Method',
       ownerId: 'object:auth',
@@ -326,7 +326,7 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
     model.symbols.add('src/routes.js', 'services', 'object:services', 'Variable');
     model.methods.register('object:services', 'getCurrentUser', {
       filePath: 'src/routes.js',
-      name: 'getCurrentUser',
+      qualifiedName: 'getCurrentUser',
       nodeId: 'method:decoy',
       type: 'Method',
       ownerId: 'object:services',
@@ -579,5 +579,96 @@ describe('resolveRouteHandlerSymbols — Laravel framework routes', () => {
     const out = resolveRouteHandlerSymbols(model, [laravelRoute()], []);
 
     expect(out.has(routeNodeKey('GET', '/orders'))).toBe(false);
+  });
+});
+
+describe('resolveRouteHandlerSymbols — provider-owned handler resolution', () => {
+  const GET_X = routeNodeKey('GET', '/x');
+  const ROUTE_FILE = 'app/router/router.go';
+
+  const baseContext = {
+    files: [
+      {
+        filePath: ROUTE_FILE,
+        localDefs: [],
+        parsedImports: [
+          {
+            kind: 'namespace' as const,
+            localName: 'handlers',
+            importedName: 'handlers',
+            targetRaw: 'example.com/app/handlers',
+          },
+        ],
+      },
+    ],
+    resolveImportTarget: () => null,
+    isExportedSymbol: () => false,
+  };
+
+  it('asks the route language hook instead of the same-file lookup', () => {
+    const model = createSemanticModel();
+    // A same-file def the default path would pick — the hook must win.
+    model.symbols.add(ROUTE_FILE, 'Login', 'function:same-file', 'Function');
+
+    const out = resolveRouteHandlerSymbols(
+      model,
+      [],
+      [decoratorRoute({ filePath: ROUTE_FILE, routePath: '/x', handlerName: 'Login' })],
+      { ...baseContext, providerRouteHandler: () => () => 'method:from-hook' },
+    );
+
+    expect(out.get(GET_X)).toBe('method:from-hook');
+  });
+
+  it('hands the hook every file a unique import binding resolves to', () => {
+    const seen: (readonly string[])[] = [];
+    resolveRouteHandlerSymbols(
+      createSemanticModel(),
+      [],
+      [decoratorRoute({ filePath: ROUTE_FILE, routePath: '/x', handlerName: 'handlers.H' })],
+      {
+        ...baseContext,
+        resolveImportTargets: () => ['app/handlers/a.go', 'app/handlers/b.go'],
+        providerRouteHandler: () => (route, ctx) => {
+          seen.push(ctx.importTargetsFor(route.filePath, 'handlers'));
+          seen.push(ctx.importTargetsFor(route.filePath, 'missing'));
+          return undefined;
+        },
+      },
+    );
+
+    expect(seen).toEqual([['app/handlers/a.go', 'app/handlers/b.go'], []]);
+  });
+
+  it('a declined hook still reserves the identity (first-writer-wins)', () => {
+    const model = createSemanticModel();
+    model.symbols.add(FILE, 'list', 'method:later', 'Method');
+
+    const out = resolveRouteHandlerSymbols(
+      model,
+      [],
+      [
+        decoratorRoute({ filePath: ROUTE_FILE, routePath: '/x', handlerName: 'h.List' }),
+        decoratorRoute({ routePath: '/x', handlerName: 'list' }),
+      ],
+      {
+        ...baseContext,
+        providerRouteHandler: (filePath) => (filePath === ROUTE_FILE ? () => undefined : undefined),
+      },
+    );
+
+    expect(out.has(GET_X)).toBe(false);
+  });
+
+  it('keeps the same-file lookup for a language without the hook', () => {
+    const model = createSemanticModel();
+    model.symbols.add(FILE, 'list', 'method:OrderController.list', 'Method');
+
+    const out = resolveRouteHandlerSymbols(model, [], [decoratorRoute()], {
+      ...baseContext,
+      providerRouteHandler: () => undefined,
+    });
+
+    expect(out.get(routeNodeKey('GET', '/orders'))).toBe('method:OrderController.list');
   });
 });

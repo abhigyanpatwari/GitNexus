@@ -543,6 +543,42 @@ int main(){return 0;}`,
   // ---- PR #1156 Codex follow-up: discovery aligned with ingestion ----
 
   describe('follow-up: file discovery honors createIgnoreFilter and getMaxFileSizeBytes', () => {
+    it('uses the same credential and symlink exclusions as ingestion for dot directories', async () => {
+      const previous = process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      const external = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-include-external-'));
+      try {
+        writeFile('.gitnexusignore', '!**\n');
+        writeFile('.config/tool/allowed.h', '#pragma once');
+        writeFile('.config/gcloud/private.h', '#pragma once');
+        writeFile('.source/local.h', '#pragma once');
+        writeFile('.source/.env', 'SYNTHETIC_TEST_ONLY');
+        fs.writeFileSync(path.join(external, 'private.h'), '#pragma once');
+        fs.symlinkSync(
+          external,
+          path.join(tmpDir, '.linked'),
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
+        if (process.platform !== 'win32') {
+          fs.symlinkSync(
+            path.join(tmpDir, '.source', '.env'),
+            path.join(tmpDir, '.source', 'alias.h'),
+          );
+        }
+        process.env.GITNEXUS_INCLUDE_DOT_DIRS = '.config,.source,.linked';
+        const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+        expect(
+          contracts
+            .filter((c) => c.role === 'provider')
+            .map((c) => c.contractId)
+            .sort(),
+        ).toEqual(['include::.config/tool/allowed.h', 'include::.source/local.h']);
+      } finally {
+        if (previous === undefined) delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+        else process.env.GITNEXUS_INCLUDE_DOT_DIRS = previous;
+        fs.rmSync(external, { recursive: true, force: true });
+      }
+    });
+
     it('does not emit a provider contract for a header excluded by .gitignore', async () => {
       writeFile('.gitignore', 'vendor-headers/\n');
       writeFile('vendor-headers/blocked.h', '#pragma once');
@@ -621,6 +657,33 @@ int auto_main() { return 0; }`,
       } finally {
         if (previous === undefined) delete process.env.GITNEXUS_MAX_FILE_SIZE;
         else process.env.GITNEXUS_MAX_FILE_SIZE = previous;
+      }
+    });
+
+    it('registers headers in a dot directory only when GITNEXUS_INCLUDE_DOT_DIRS lists it', async () => {
+      const previous = process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      writeFile('.config/listed.h', '#pragma once');
+      writeFile('.unlisted-source/unlisted.h', '#pragma once');
+      try {
+        delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+        const before = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+        expect(before.map((c) => c.contractId)).not.toContain('include::.config/listed.h');
+
+        process.env.GITNEXUS_INCLUDE_DOT_DIRS = '.config';
+        const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+        const providerIds = contracts.filter((c) => c.role === 'provider').map((p) => p.contractId);
+
+        expect(providerIds).toContain('include::.config/listed.h');
+        expect(providerIds).not.toContain('include::.unlisted-source/unlisted.h');
+
+        process.env.GITNEXUS_INCLUDE_DOT_DIRS = '.config,.unlisted-source';
+        const both = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+        expect(both.filter((c) => c.role === 'provider').map((p) => p.contractId)).toContain(
+          'include::.unlisted-source/unlisted.h',
+        );
+      } finally {
+        if (previous === undefined) delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+        else process.env.GITNEXUS_INCLUDE_DOT_DIRS = previous;
       }
     });
   });

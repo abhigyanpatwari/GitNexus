@@ -1,5 +1,10 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import {
+  assertSymbolIdentity,
+  assertIdentityFields,
+  rethrowSymbolIdentityError,
+} from './query-result-integrity.js';
+import {
   decodeSpringAopReason,
   type SpringAopReason,
 } from '../../core/ingestion/frameworks/spring/aop.js';
@@ -151,6 +156,7 @@ const DETERMINISTIC_RELATIONSHIP_ORDER = 'ORDER BY sourceId, targetId, reason, s
  * shared decoder. Other DECLARES edges (for example Spring Bean factories)
  * and malformed/forward-version evidence are ignored. Query failures are
  * fail-soft because older or partially upgraded indexes must remain readable.
+ * Corrupt identities propagate to the context/impact integrity error boundary.
  */
 export async function querySpringAopMetadata(
   lbugPath: string,
@@ -203,6 +209,24 @@ export async function querySpringAopMetadata(
           { symbolId },
         ),
       ]);
+
+    for (const rows of [
+      outgoingAdviceRows,
+      incomingAdviceRows,
+      outgoingPointcutRows,
+      incomingPointcutRows,
+    ]) {
+      for (const row of rows) {
+        assertSymbolIdentity(readRowValue(row, 'sourceId', 0));
+        assertSymbolIdentity(readRowValue(row, 'targetId', 3));
+        assertIdentityFields(
+          readRowValue(row, 'sourceName', 1),
+          readRowValue(row, 'sourceFilePath', 2),
+          readRowValue(row, 'targetName', 4),
+          readRowValue(row, 'targetFilePath', 5),
+        );
+      }
+    }
 
     const behaviors: SpringAopBehaviorMetadata[] = [];
     const advices: SpringAopAdviceMetadata[] = [];
@@ -346,7 +370,8 @@ export async function querySpringAopMetadata(
       resolvedPointcuts: dedupedResolvedPointcuts,
       unresolvedPointcuts: dedupedPointcuts,
     };
-  } catch {
+  } catch (error) {
+    rethrowSymbolIdentityError(error);
     return undefined;
   }
 }

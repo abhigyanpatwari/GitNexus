@@ -368,19 +368,14 @@ class Outer {
     expect(result.symbols.map((s) => s.name).sort()).toEqual(['getName']);
   });
 
-  it('uses unique scope ranges for getter and setter of the same property', () => {
+  it('emits bodyless declarations for getter and setter of the same property', () => {
     const tree = parse(`
 class Pair(var first: Int, var second: Int)
 `);
     const result = synthesizeLombokAccessors(tree, FILE_PATH, ownerMap(tree, FILE_PATH));
     expect(result.symbols).toHaveLength(4);
     const captures = synthesizeLombokAccessorCaptures(tree.rootNode);
-    const scopes = captures
-      .map((m) => m['@scope.function'])
-      .filter((c): c is NonNullable<typeof c> => c !== undefined)
-      .map((c) => `${c.range.startLine}:${c.range.startCol}-${c.range.endLine}:${c.range.endCol}`);
-    expect(scopes).toHaveLength(4);
-    expect(new Set(scopes).size).toBe(4);
+    expect(captures.some((match) => match['@scope.function'] !== undefined)).toBe(false);
     expect(
       captures
         .map((m) => m['@declaration.qualified_name']?.text)

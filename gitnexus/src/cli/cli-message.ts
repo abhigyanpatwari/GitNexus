@@ -61,6 +61,7 @@ export type RecoveryHint =
   | 'gitnexusrc-invalid'
   | 'default-branch-invalid'
   | 'index-lock-timeout'
+  | 'index-lock-guard-recovery'
   | 'undeclared-relation-pair';
 
 /**

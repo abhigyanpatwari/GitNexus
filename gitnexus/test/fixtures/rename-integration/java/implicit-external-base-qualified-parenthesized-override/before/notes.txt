@@ -1,0 +1,1 @@
+An explicit override still requires its external base member.

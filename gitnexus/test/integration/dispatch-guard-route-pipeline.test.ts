@@ -20,7 +20,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'node:path';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
-import type { PipelineResult } from '../../types/pipeline.js';
+import type { PipelineResult } from '../../src/types/pipeline.js';
 import { DISPATCH_GUARD_SOURCE } from '../../src/core/ingestion/route-extractors/dispatch-guard.js';
 
 const FIXTURE = path.resolve(__dirname, '..', 'fixtures', 'dispatch-guard-app');

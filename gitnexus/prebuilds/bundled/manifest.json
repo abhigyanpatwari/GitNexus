@@ -1,0 +1,255 @@
+{
+  "schemaVersion": 1,
+  "tuple": "linux-arm64",
+  "build": {
+    "compiler": "aarch64-linux-gnu-gcc/g++ 13.3.0 (Ubuntu 13.3.0-6ubuntu2~24.04.1)",
+    "linker": "GNU ld 2.42 (Ubuntu 2.42-4ubuntu2.10)",
+    "sysroot": "Ubuntu arm64 cross glibc 2.39-0ubuntu8cross1",
+    "hostArchitecture": "x64",
+    "hostNode": "24.19.0",
+    "nodeHeaders": {
+      "version": "22.23.1",
+      "url": "https://nodejs.org/dist/v22.23.1/node-v22.23.1-headers.tar.gz",
+      "sha256": "caf38d839815df92000b41b756056f575140f38f1d8c0cbef97448c33eb7d7b2"
+    },
+    "dependencies": {
+      "node-addon-api": {
+        "version": "8.9.2",
+        "integrity": "sha512-VijLXbi3UACN69I0JVXJsX4tjACjNoQDgv2gTF6sx2wWEi8tkSg2eX8p5gSIFi8z2+DL3oHmY6OyKce38SDolg=="
+      },
+      "node-gyp": {
+        "version": "11.5.0",
+        "integrity": "sha512-ra7Kvlhxn5V9Slyus0ygMa2h+UqExPqUIkfk7Pc8QTLT956JLSy51uWFwHtIYy0vI8cB4BDhc/S03+880My/LQ=="
+      },
+      "node-gyp-build": {
+        "version": "4.8.4",
+        "integrity": "sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ=="
+      }
+    },
+    "runtime": "0.25.1",
+    "command": "node node_modules/node-gyp/bin/node-gyp.js rebuild --arch=arm64 --nodedir=<Node 22.23.1 headers> --jobs=2",
+    "compilerFlags": ["--sysroot=<ARM64 glibc sysroot>"],
+    "validation": {
+      "execution": "qemu-aarch64 8.2.2 user emulation",
+      "nodeVersions": ["22.18.0", "22.23.1", "24.19.0"],
+      "grammarExports": ["cpp", "java", "ruby", "javascript", "typescript", "tsx"],
+      "parseFailures": 0
+    }
+  },
+  "packages": [
+    {
+      "name": "tree-sitter-cpp",
+      "version": "0.23.4",
+      "file": "tree-sitter-cpp@0.23.4/linux-arm64/tree-sitter-cpp.node",
+      "sha256": "57c248be4c90f8e9af63613bf49a2724a5de4482d4d3c30a99374ede9978d729",
+      "source": {
+        "url": "https://registry.npmjs.org/tree-sitter-cpp/-/tree-sitter-cpp-0.23.4.tgz",
+        "integrity": "sha512-qR5qUDyhZ5jJ6V8/umiBxokRbe89bCGmcq/dk94wI4kN86qfdV8k0GHIUEKaqWgcu42wKal5E97LKpLeVW8sKw==",
+        "gitHead": "f41e1a044c8a84ea9fa8577fdd2eab92ec96de02",
+        "sha256": "615d152f70e7a6bed8f15a93c3c0c264c40dc71c1b6a1445646fff9439e776bc",
+        "files": {
+          "binding.gyp": "e8c7ca4208ca882655c21a99b6ef0d153634eabb1cd901a45914a121b023555c",
+          "bindings/node/binding.cc": "9c50c8f087231e837648bd8660f84d2d9ea745ed6b886d05e94aa84cea584fd1",
+          "package.json": "bfde98d506b0847f2093336e5b4d7394dd311e78da69e22e5ecd73fba6db6066",
+          "src/grammar.json": "c0a93751d708440bb2c1929d738a5b03c4b835f61e5aeb580d0af269faf68f8d",
+          "src/node-types.json": "fdfd4b1f3dca1516616a1eb615bb6c1ad3082b8937ad21070d0def5dcfe7e535",
+          "src/parser.c": "2a35a43b4af6c9f7b69624ac00c2c50808912591450dc79c05dea03ac1bae814",
+          "src/scanner.c": "cf60387d290271f4d2fb558d0569b2b9ef879cb72206a9df5cc73b0b1a4b20ff",
+          "src/tree_sitter/alloc.h": "b29c1c9fb7cc82f58c84b376df1297d6e2737a1d655fd356db0859e3c29c2fea",
+          "src/tree_sitter/array.h": "4ff743903dc46f5db6aa54f31c6b4d160a8a9779e5b2ab1ee59ae7ebcd850ea1",
+          "src/tree_sitter/parser.h": "a1f6ef161fbaf48a0e10fca90ef5290a062462b307b3898aa562993853b9f80a"
+        },
+        "generatedSourcesUnchanged": true
+      },
+      "elf": {
+        "architecture": "AArch64",
+        "gnuStack": "RW",
+        "needed": ["libstdc++.so.6", "libgcc_s.so.1", "libc.so.6", "ld-linux-aarch64.so.1"],
+        "requiredSymbolVersions": [
+          "CXXABI_1.3",
+          "CXXABI_1.3.9",
+          "GCC_3.0",
+          "GLIBCXX_3.4",
+          "GLIBCXX_3.4.21",
+          "GLIBC_2.17"
+        ],
+        "maxGLIBC": "2.17",
+        "maxGLIBCXX": "3.4.21",
+        "maxCXXABI": "1.3.9"
+      }
+    },
+    {
+      "name": "tree-sitter-java",
+      "version": "0.23.5",
+      "file": "tree-sitter-java@0.23.5/linux-arm64/tree-sitter-java.node",
+      "sha256": "e91fa1c2dd4b7e13bebbd8c07c51d549d0b6da8b00d426a366ef1b515b159db8",
+      "source": {
+        "url": "https://registry.npmjs.org/tree-sitter-java/-/tree-sitter-java-0.23.5.tgz",
+        "integrity": "sha512-Yju7oQ0Xx7GcUT01mUglPP+bYfvqjNCGdxqigTnew9nLGoII42PNVP3bHrYeMxswiCRM0yubWmN5qk+zsg0zMA==",
+        "gitHead": "94703d5a6bed02b98e438d7cad1136c01a60ba2c",
+        "sha256": "6b6c1b62605f9d8bb80efd2ebe5951a87b182faafa3eeb67c460a667818551b6",
+        "files": {
+          "binding.gyp": "42305f7d7305fc3a6d2cee4ee5e0e73e0db708e967f351bfad04872f46c8a3ac",
+          "bindings/node/binding.cc": "861ff9ef49c3e080dd00eebfd4d75b83f0ac64551a859caed23d4b416de88bf0",
+          "package.json": "c0c99e633aa28b2c1c58e61f91211391a9363d7d532aa5795bf4003f2dc14dba",
+          "src/grammar.json": "47ca521cd7a888d671d9f26301e8697fa686e04912032e959d242b5f25877eb6",
+          "src/node-types.json": "19c46facc653381c337ff6cad75dd8b052524179a366c80825d6d0010520eef2",
+          "src/parser.c": "4add5150cf4531eb5dd97f3343dcf65cd11704c84711348b328582b83424a0e4",
+          "src/tree_sitter/alloc.h": "b29c1c9fb7cc82f58c84b376df1297d6e2737a1d655fd356db0859e3c29c2fea",
+          "src/tree_sitter/array.h": "5bdf6ed1a78e3409fd443e085ca967a64c188a5d082aaf7f819bccd53a471c94",
+          "src/tree_sitter/parser.h": "a1f6ef161fbaf48a0e10fca90ef5290a062462b307b3898aa562993853b9f80a"
+        },
+        "generatedSourcesUnchanged": true
+      },
+      "elf": {
+        "architecture": "AArch64",
+        "gnuStack": "RW",
+        "needed": ["libstdc++.so.6", "libgcc_s.so.1", "libc.so.6", "ld-linux-aarch64.so.1"],
+        "requiredSymbolVersions": [
+          "CXXABI_1.3",
+          "CXXABI_1.3.9",
+          "GCC_3.0",
+          "GLIBCXX_3.4",
+          "GLIBCXX_3.4.21",
+          "GLIBC_2.17"
+        ],
+        "maxGLIBC": "2.17",
+        "maxGLIBCXX": "3.4.21",
+        "maxCXXABI": "1.3.9"
+      }
+    },
+    {
+      "name": "tree-sitter-ruby",
+      "version": "0.23.1",
+      "file": "tree-sitter-ruby@0.23.1/linux-arm64/tree-sitter-ruby.node",
+      "sha256": "e13ac3cbfcf40a5a2f350784d547d75b069174ca2955282d602f643a066a2c23",
+      "source": {
+        "url": "https://registry.npmjs.org/tree-sitter-ruby/-/tree-sitter-ruby-0.23.1.tgz",
+        "integrity": "sha512-d9/RXgWjR6HanN7wTYhS5bpBQLz1VkH048Vm3CodPGyJVnamXMGb8oEhDypVCBq4QnHui9sTXuJBBP3WtCw5RA==",
+        "gitHead": "71bd32fb7607035768799732addba884a37a6210",
+        "sha256": "1f0f0c100e31ddf650962ebb1f1fb8420bdbabccd49582f6e731ea7478db639d",
+        "files": {
+          "binding.gyp": "5890a49ccc6a81bf1da23c2b740725562acdbbb7c9813dfd87fc3fb228ea80c2",
+          "bindings/node/binding.cc": "b24ba437af1a31668a2765925f2f994a8516229fae81852451b21c35c32b67d2",
+          "package.json": "07fb6a02a020df5fcedd8cc968b266de69eb6e5a1f1e43bd7c5817306339019c",
+          "src/grammar.json": "ff0a0ab48788daea51cb418d9cfc14086dfcad50ac10e4981776be8b4d9296ab",
+          "src/node-types.json": "9683f80e7be3dd93f1d6f575800de3f3445cda8af1f313f1f80003229c328e8b",
+          "src/parser.c": "4ce468358b6f4e25a35c8cf6bc0eaf60665bc22d602f8c939323c2347255cd15",
+          "src/scanner.c": "e7a6196d6e78bf4c6728502e924c867dee5d851c6253e43fcdb8ba169009bc58",
+          "src/tree_sitter/alloc.h": "b29c1c9fb7cc82f58c84b376df1297d6e2737a1d655fd356db0859e3c29c2fea",
+          "src/tree_sitter/array.h": "4ff743903dc46f5db6aa54f31c6b4d160a8a9779e5b2ab1ee59ae7ebcd850ea1",
+          "src/tree_sitter/parser.h": "a1f6ef161fbaf48a0e10fca90ef5290a062462b307b3898aa562993853b9f80a"
+        },
+        "generatedSourcesUnchanged": true
+      },
+      "elf": {
+        "architecture": "AArch64",
+        "gnuStack": "RW",
+        "needed": ["libstdc++.so.6", "libgcc_s.so.1", "libc.so.6", "ld-linux-aarch64.so.1"],
+        "requiredSymbolVersions": [
+          "CXXABI_1.3",
+          "CXXABI_1.3.9",
+          "GCC_3.0",
+          "GLIBCXX_3.4",
+          "GLIBCXX_3.4.21",
+          "GLIBC_2.17"
+        ],
+        "maxGLIBC": "2.17",
+        "maxGLIBCXX": "3.4.21",
+        "maxCXXABI": "1.3.9"
+      }
+    },
+    {
+      "name": "tree-sitter-javascript",
+      "version": "0.23.1",
+      "file": "tree-sitter-javascript@0.23.1/linux-arm64/tree-sitter-javascript.node",
+      "sha256": "3e280c974f199cdd35a621b0bd556e238eb46ab0666e45c568d3bf477eee32b6",
+      "source": {
+        "url": "https://registry.npmjs.org/tree-sitter-javascript/-/tree-sitter-javascript-0.23.1.tgz",
+        "integrity": "sha512-/bnhbrTD9frUYHQTiYnPcxyHORIw157ERBa6dqzaKxvR/x3PC4Yzd+D1pZIMS6zNg2v3a8BZ0oK7jHqsQo9fWA==",
+        "gitHead": "3a837b6f3658ca3618f2022f8707e29739c91364",
+        "sha256": "90e80b25a67517a4daf6ad751557bee21efbda7b7a5a554897933245d1734398",
+        "files": {
+          "binding.gyp": "e17df62e15b6b6a1590a77c61d0f614ba89c6fb77b807909050851d50008a2cb",
+          "bindings/node/binding.cc": "bd509e0a410b33707bf738d3b18ed9e250188155d10d3a13b778344c28b1b94a",
+          "package.json": "2d677a45985e03e329f78e2f8b0f7b401ae68698eec2743059fc34e56f1f6644",
+          "src/grammar.json": "f952064b8f29a084b6d879e8018a5c86b06efddc0e9f7c8951ae752832d41b05",
+          "src/node-types.json": "0d80ab597fcf1310efb9694d4276c407655d060b8bbab8f4ffda0223c43e94bf",
+          "src/parser.c": "1150721590eca3c7b6623c7dc3498184f3e22c5d895a08b4806ebf5804f817c3",
+          "src/scanner.c": "b3d3f64284d97bf80749c026862427782cf7ecc0b7dc094e6698ab311c9a42c7",
+          "src/tree_sitter/alloc.h": "b29c1c9fb7cc82f58c84b376df1297d6e2737a1d655fd356db0859e3c29c2fea",
+          "src/tree_sitter/array.h": "4ff743903dc46f5db6aa54f31c6b4d160a8a9779e5b2ab1ee59ae7ebcd850ea1",
+          "src/tree_sitter/parser.h": "a1f6ef161fbaf48a0e10fca90ef5290a062462b307b3898aa562993853b9f80a"
+        },
+        "generatedSourcesUnchanged": true
+      },
+      "elf": {
+        "architecture": "AArch64",
+        "gnuStack": "RW",
+        "needed": ["libstdc++.so.6", "libgcc_s.so.1", "libc.so.6", "ld-linux-aarch64.so.1"],
+        "requiredSymbolVersions": [
+          "CXXABI_1.3",
+          "CXXABI_1.3.9",
+          "GCC_3.0",
+          "GLIBCXX_3.4",
+          "GLIBCXX_3.4.21",
+          "GLIBC_2.17"
+        ],
+        "maxGLIBC": "2.17",
+        "maxGLIBCXX": "3.4.21",
+        "maxCXXABI": "1.3.9"
+      }
+    },
+    {
+      "name": "tree-sitter-typescript",
+      "version": "0.23.2",
+      "file": "tree-sitter-typescript@0.23.2/linux-arm64/tree-sitter-typescript.node",
+      "sha256": "d1a7c91ce8346de4aa4828649762625a0e8d51625472b33949932483d70e872e",
+      "source": {
+        "url": "https://registry.npmjs.org/tree-sitter-typescript/-/tree-sitter-typescript-0.23.2.tgz",
+        "integrity": "sha512-e04JUUKxTT53/x3Uq1zIL45DoYKVfHH4CZqwgZhPg5qYROl5nQjV+85ruFzFGZxu+QeFVbRTPDRnqL9UbU4VeA==",
+        "gitHead": "f975a621f4e7f532fe322e13c4f79495e0a7b2e7",
+        "sha256": "0fdf63c35930a75885145d75ee63cb879da2d49db9bfe454bd8e60b08ba778a1",
+        "files": {
+          "binding.gyp": "5451214724030d5150581c5af614d2d37c10379d9801c1170035f9777058b9e1",
+          "bindings/node/binding.cc": "4cd4aa17fc240701572efe79b016aae0f2fa067f28a551de3cdba0e98537bc00",
+          "common/scanner.h": "da66ef2bd14a3f7ea743e25ba068c6c9aae2c3509db200ff80c4a0e6116e564c",
+          "package.json": "26892ef49837678a747f81e344ed26938ec5804e29e003ad34fd5a3c87c68baf",
+          "tsx/package.json": "d91e8e983679ba8bb4736e0680dc895513f2f10a7e7ff833bcc5f9e92ef0dfeb",
+          "tsx/src/grammar.json": "f98a7830b67be266c9e9effb673a5fc154ad6aa26f87f7c6d4a9191e09d8b357",
+          "tsx/src/node-types.json": "78b5789145286799a27a0a7ecc36cc1bcb151f94ec7fa631b248459867010c8c",
+          "tsx/src/parser.c": "1902cb53fa7ff5179df89b2eea863165e84c8cc866226419dc26921d8c055885",
+          "tsx/src/scanner.c": "d563cd30b2f39718c9ae4292795c5ce03a2ad01954ba3a86ef84c2781a736673",
+          "tsx/src/tree_sitter/alloc.h": "b29c1c9fb7cc82f58c84b376df1297d6e2737a1d655fd356db0859e3c29c2fea",
+          "tsx/src/tree_sitter/array.h": "4ff743903dc46f5db6aa54f31c6b4d160a8a9779e5b2ab1ee59ae7ebcd850ea1",
+          "tsx/src/tree_sitter/parser.h": "a1f6ef161fbaf48a0e10fca90ef5290a062462b307b3898aa562993853b9f80a",
+          "typescript/package.json": "fcbd2e0fb7e7eed1af20cfd562cd3c3b22c839cb95b9d18df5793b850bd601dd",
+          "typescript/src/grammar.json": "99dc4b95424dff47c89acb50d5d3f25b081b07eaff43994b7881dccd4186b214",
+          "typescript/src/node-types.json": "c790a733fc756b54d4e54dceeb7d2d51e40d8b57136e70277753a75804cce3e3",
+          "typescript/src/parser.c": "74fe453edd70f4eae9af0a1050cbd7943d8971d59165b6aaebbaa0a0b716d1aa",
+          "typescript/src/scanner.c": "9125013b42cb888379d9be909f1d73dfb75a37626c2cdbf4122718a2b431a6d3",
+          "typescript/src/tree_sitter/alloc.h": "b29c1c9fb7cc82f58c84b376df1297d6e2737a1d655fd356db0859e3c29c2fea",
+          "typescript/src/tree_sitter/array.h": "4ff743903dc46f5db6aa54f31c6b4d160a8a9779e5b2ab1ee59ae7ebcd850ea1",
+          "typescript/src/tree_sitter/parser.h": "a1f6ef161fbaf48a0e10fca90ef5290a062462b307b3898aa562993853b9f80a"
+        },
+        "generatedSourcesUnchanged": true
+      },
+      "elf": {
+        "architecture": "AArch64",
+        "gnuStack": "RW",
+        "needed": ["libstdc++.so.6", "libgcc_s.so.1", "libc.so.6", "ld-linux-aarch64.so.1"],
+        "requiredSymbolVersions": [
+          "CXXABI_1.3",
+          "CXXABI_1.3.9",
+          "GCC_3.0",
+          "GLIBCXX_3.4",
+          "GLIBCXX_3.4.21",
+          "GLIBC_2.17"
+        ],
+        "maxGLIBC": "2.17",
+        "maxGLIBCXX": "3.4.21",
+        "maxCXXABI": "1.3.9"
+      }
+    }
+  ]
+}

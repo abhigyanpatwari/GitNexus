@@ -40,6 +40,9 @@ export interface ParsedGrepQuery {
 }
 
 const isFlagTrue = (value: unknown, name: string): boolean => {
+  // MCP passes booleans. HTTP query strings stay '1' / 'true'. Null and
+  // undefined stay an empty string so an omitted flag is still false.
+  if (typeof value === 'boolean') return value;
   const s = assertString(value ?? '', name).toLowerCase();
   return s === '1' || s === 'true';
 };

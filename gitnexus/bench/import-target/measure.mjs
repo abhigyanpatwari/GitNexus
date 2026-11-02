@@ -105,12 +105,14 @@
  *         path components, so the `deep` arm's uniform prefix reaches the
  *         config (see `tsBaseUrlFor`) and its cost is the same keyed lookup the
  *         other arms pay.
- *   - c, cpp: `resolveCppImportTarget` delegates to `resolveCImportTarget`, so
- *     the two share a resolver and differ in extension set and in which adapter
- *     builds the augmented set. Cost is a basename bucket walk with a
- *     depth-then-lexicographic tie-break, so the collide arm (a `mod{n}` header
- *     in every service's `include/`) is where it grows: 2.54 / 2.64 against
- *     1.06 on file count.
+ *   - c, cpp: quoted includes walk a basename bucket (depth, then lexicographic).
+ *     The collide arm — a `mod{n}` header in every service's `include/` — is
+ *     where that walk grows: 2.54 / 2.64 against 1.06 on file count. Each
+ *     language keeps its own bucket memo. Angle includes join the target onto
+ *     header search paths and never take that walk. The timing corpus passes
+ *     a raw header set and no `isSystem` flag, so it stays on the quoted path.
+ *     `--check` also resolves a quoted hit, an angle hit on a declared include
+ *     root, and an angle miss against a same-named `src/` decoy.
  *   - zig: `resolveZigImportInternal` is rust's shape — an `@import("…zig")`
  *     path is walked component by component from the importer's directory and
  *     probed with two `allFiles.has(...)` calls (as written, then `+ '.zig'`),
@@ -208,12 +210,14 @@
  * workload — identical file, import and resolved counts — laid out the way
  * these languages are actually written: `svcN/internal/`, `SrcN/Models/`, a
  * `mod0.dart`/`mod0.rb` in every package. Measured on that shape the per-import
- * cost is NOT corpus-size-independent for the four resolvers that scan a
+ * cost is NOT corpus-size-independent for the three resolvers that scan a
  * bucket:
  *
  *   - go, csharp and java walk `PackageDirIndex.dirsByLastSegment[seg]`, which
  *     now holds every directory;
- *   - dart walks its basename bucket, which now holds every same-named file;
+ *   - dart formerly walked its basename bucket. Since #2963 its package-URI
+ *     arms use exact declared-package paths; the separate heap probe and
+ *     scan-count regressions still exercise its relative-path suffix index;
  *   - ruby, kotlin, php and cobol answer from keyed maps and are collision-
  *     IMMUNE, so their collide budgets are the linear ones — that immunity is
  *     the assertion, and for cobol the arm is also the only one that reaches
@@ -361,7 +365,7 @@
  * toward the noise floor would only buy flaky CI; see `_blind_spot` in
  * baselines.json. PR #2911 is the proof that this blind spot is real rather
  * than theoretical: JavaScript's missing index was a scan of
- * `ImportPassCache.normalizedFileList` on EVERY import, which the Set counter
+ * a cached normalized file array on EVERY import, which the Set counter
  * could not see, and it took a differential parity test over 211 200 pairs plus
  * this bench's arrival to pin it.
  *
@@ -475,14 +479,13 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { resolveGoImportTarget } from '../../src/core/ingestion/languages/go/import-target.ts';
 import { resolveDartImportTarget } from '../../src/core/ingestion/languages/dart/import-target.ts';
 import { resolveRubyImportTarget } from '../../src/core/ingestion/languages/ruby/import-target.ts';
-import { resolveCsharpImportTarget } from '../../src/core/ingestion/languages/csharp/import-target.ts';
 import { kotlinScopeResolver } from '../../src/core/ingestion/languages/kotlin/scope-resolver.ts';
 import { resolvePhpImportTargetInternal } from '../../src/core/ingestion/languages/php/import-target.ts';
 import { javaScopeResolver } from '../../src/core/ingestion/languages/java/scope-resolver.ts';
 import { cobolScopeResolver } from '../../src/core/ingestion/languages/cobol/scope-resolver.ts';
 import { resolveSwiftImportTarget } from '../../src/core/ingestion/languages/swift/import-target.ts';
 import { resolveRustImportTarget } from '../../src/core/ingestion/languages/rust/import-target.ts';
-import { resolveZigImportInternal } from '../../src/core/ingestion/import-resolvers/zig.ts';
+import { resolveZigImportInternal } from '../../src/core/ingestion/languages/zig/import-helpers.ts';
 import { resolvePythonImportTarget } from '../../src/core/ingestion/languages/python/import-target.ts';
 import { makeJsResolveImportTarget } from '../../src/core/ingestion/languages/javascript/import-target.ts';
 import { makeVueResolveImportTarget } from '../../src/core/ingestion/languages/vue/import-target.ts';
@@ -490,6 +493,8 @@ import { makeVueResolveImportTarget } from '../../src/core/ingestion/languages/v
 import { typescriptScopeResolver } from '../../src/core/ingestion/languages/typescript/scope-resolver.ts';
 import { cScopeResolver } from '../../src/core/ingestion/languages/c/scope-resolver.ts';
 import { cppScopeResolver } from '../../src/core/ingestion/languages/cpp/scope-resolver.ts';
+import { objectiveCScopeResolver } from '../../src/core/ingestion/languages/objective-c/scope-resolver.ts';
+import { csharpScopeResolver } from '../../src/core/ingestion/languages/csharp/scope-resolver.ts';
 // `SCOPE_RESOLVERS` is NOT imported here — see the inventory arm at the bottom,
 // which loads it dynamically. Statically it costs 6-10 s of module load
 // depending on the box (measured both ways there), because reaching the
@@ -598,6 +603,9 @@ const HEAP_BUDGETED = [
   'dart',
   'go',
   'cpp',
+  'objc',
+  // Lexical module lookup retains a workspace index over parsed Rust files.
+  'rust',
 ];
 // javascript, typescript and vue were budgeted here until #2953 and are now
 // BOUNDED, which is a demotion in gate strength and a promotion in what the
@@ -614,18 +622,30 @@ const HEAP_BUDGETED = [
 // were about.
 
 /**
- * The arms handed the fifth `context` argument — `{ parsedFiles, parsedImport }`
- * — because their registered hook DECLARES it. Four of seventeen arms, and the
- * inventory arm at the foot of this file reconciles that claim against
- * `SCOPE_RESOLVERS` in both directions rather than trusting this line.
+ * Arms whose registered hook declares the fifth `context` argument
+ * (`{ parsedFiles, parsedImport }`). The inventory at the foot of this file
+ * reconciles this list against `SCOPE_RESOLVERS` in both directions, so
+ * membership is that check rather than a count written here.
  *
- * These are also the only arms for which `newPass` builds a `ParsedFile[]` at
- * all. Building one for the other thirteen would cost their timed loop an
- * O(files) allocation per pass that no resolver of theirs can even observe —
- * their hooks declare three or four parameters — so their numbers stay exactly
- * where they were.
+ * `newPass` builds a `ParsedFile[]` only for the members that are not header
+ * languages. C and C++ are listed because they read `parsedImport.isSystem`,
+ * but `newPass` returns on `HEADER_EXTENSION` before this list, so a timed
+ * pass does not allocate that array for them. Arms whose hooks declare fewer
+ * parameters cannot observe a context and are not listed, so their timed
+ * numbers stay on the three-argument shape.
  */
-const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python'];
+const CONTEXT_LANGS = [
+  'php',
+  'java',
+  'kotlin',
+  'python',
+  'swift',
+  'rust',
+  'c',
+  'cpp',
+  'csharp',
+  'csharp_csproj',
+];
 
 /**
  * Needs `node --expose-gc` to force collection for a clean delta; without it
@@ -655,7 +675,17 @@ function mix(n) {
   return (x ^ (x >>> 16)) >>> 0;
 }
 
-const GO_MODULE = { modulePath: 'example.com/mod' };
+/**
+ * The prefix the go arm's import paths share. Deliberately NOT a go.mod: the arm
+ * hands the resolver no module config, so every import takes the GOPATH suffix
+ * match. Under a go.mod a module-relative import names ONE directory below the
+ * module root, an exact map read; the suffix match is the leg that walks
+ * `PackageDirIndex` buckets once per path segment and merges same-tail
+ * directories — the costs and the #2881 nested-repeat rule the layouts below
+ * are built to reach. The answers are the ones the module leg gave while it
+ * still matched by suffix, so the fingerprints did not move with it.
+ */
+const GO_IMPORT_PREFIX = 'example.com/mod';
 /**
  * The `csharp_csproj` arm's project configs — the whole reason that arm exists.
  *
@@ -756,6 +786,7 @@ const EXTENSION = {
   vue: '.vue',
   c: '.c',
   cpp: '.cpp',
+  objc: '.m',
   zig: '.zig',
 };
 /** C and C++ resolve `#include` against HEADERS, which reach the resolver
@@ -846,7 +877,8 @@ function uniqueDir(lang, d, i) {
   // and breaks its same-workload invariant. C# therefore exercises the removed
   // rule through progressive stripping rather than through its primary query.
   if (lang === 'csharp') return d % 7 === 0 ? `src/Ns${d}/Sub/Ns${d}` : `src/Ns${d}`;
-  if (lang === 'dart') return d % 3 === 0 ? `lib/feature${d}` : `pkg/feature${d}`;
+  // Keep every synthetic local import valid under app's pubspec lib root.
+  if (lang === 'dart') return `lib/feature${d}`;
   if (lang === 'kotlin') {
     return d % 7 === 0
       ? `mod${d}/src/main/kotlin/com/example/pkg${d}/inner/pkg${d}`
@@ -879,6 +911,7 @@ function uniqueDir(lang, d, i) {
   // C and C++ split headers from sources — the shape that makes
   // `resolutionConfig` load-bearing. Odd `i` is the header.
   if (lang === 'c' || lang === 'cpp') return i % 2 === 1 ? `include/comp${d}` : `src/comp${d}`;
+  if (lang === 'objc') return `src/comp${d}`;
   if (lang === 'ruby') return `lib/mod${d}`;
   // One flat `src/mod{d}/` per index and NO nested slice, on purpose: a Zig
   // import is spelled RELATIVE TO THE IMPORTER, and `uniqueTarget` does not
@@ -974,6 +1007,7 @@ function collideDir(lang, d, i) {
   if (lang === 'javascript' || lang === 'typescript') return `pkg${d}/src`;
   if (lang === 'vue') return `src/pkg${d}/components`;
   if (lang === 'c' || lang === 'cpp') return i % 2 === 1 ? `svc${d}/include` : `svc${d}/src`;
+  if (lang === 'objc') return `svc${d}/src`;
   if (lang === 'ruby') return `svc${d}/lib/models`;
   // Rust's reasoning, verbatim: the resolver walks path components and probes
   // `.has()`, never searches, so file count is not an axis its cost has and a
@@ -1173,7 +1207,7 @@ function kotlinBenchmarkPackage(filePath) {
 }
 
 /**
- * The `ParsedFile[]` the orchestrator threads beside the path set, for the three
+ * The `ParsedFile[]` the orchestrator threads beside the path set, for the
  * languages whose hook declares a `context` — see `CONTEXT_LANGS`.
  *
  * Two defs per file, and both are real shapes rather than padding. PHP keeps
@@ -1232,7 +1266,7 @@ function buildParsedFiles(lang, files) {
 function uniqueTarget(lang, { local, r, d, j, dirs }) {
   if (lang === 'go') {
     return local
-      ? `${GO_MODULE.modulePath}/src/pkg${d}`
+      ? `${GO_IMPORT_PREFIX}/src/pkg${d}`
       : (r >>> 3) % 2 === 0
         ? ['fmt', 'os', 'net/http', 'encoding/json'][(r >>> 4) % 4]
         : `github.com/org/repo${(r >>> 4) % 97}/pkg/util`;
@@ -1400,6 +1434,9 @@ function uniqueTarget(lang, { local, r, d, j, dirs }) {
         ? ['stdio.h', 'stdlib.h', 'string.h'][(r >>> 4) % 3]
         : `vendor${(r >>> 4) % 97}/missing${h}`;
   }
+  if (lang === 'objc') {
+    return local ? `comp${j % dirs}/file${j}.m` : `vendor${(r >>> 4) % 97}/missing.m`;
+  }
   if (lang === 'ruby') {
     return local
       ? `mod${d}/file${j}`
@@ -1442,10 +1479,10 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
   if (lang === 'go') {
     return local
       ? // The replicated package is addressed by the path it shares, so the
-        // module leg matches every service at once (`dirCount > 1`).
+        // suffix match takes every service at once (`dirCount > 1`).
         d % 5 === 1 && d % 7 !== 0
-        ? `${GO_MODULE.modulePath}/internal/shared`
-        : `${GO_MODULE.modulePath}/svc${d}/internal`
+        ? `${GO_IMPORT_PREFIX}/internal/shared`
+        : `${GO_IMPORT_PREFIX}/svc${d}/internal`
       : (r >>> 3) % 2 === 0
         ? ['fmt', 'os', 'net/http', 'encoding/json'][(r >>> 4) % 4]
         : // Ends in the shared segment, so the GOPATH fallback walks the whole
@@ -1492,11 +1529,10 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
   }
   if (lang === 'dart') {
     return local
-      ? `package:app/pkg${j % dirs}/lib/src/mod${Math.floor(j / dirs)}.dart`
+      ? `package:pkg${j % dirs}/src/mod${Math.floor(j / dirs)}.dart`
       : (r >>> 3) % 3 === 0
         ? ['dart:core', 'dart:async', 'dart:io'][(r >>> 4) % 3]
-        : // A repeated basename under a directory nothing carries: both
-          // candidates walk the whole basename bucket and miss.
+        : // Foreign package names must miss despite repeated local basenames.
           `package:ext${(r >>> 4) % 97}/other/mod${(r >>> 4) % 8}.dart`;
   }
   if (lang === 'kotlin') {
@@ -1630,6 +1666,9 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
         ? ['stdio.h', 'stdlib.h', 'string.h'][(r >>> 4) % 3]
         : `vendor${(r >>> 4) % 97}/mod0${h}`;
   }
+  if (lang === 'objc') {
+    return local ? `src/file${j}.m` : `vendor${(r >>> 4) % 97}/missing.m`;
+  }
   if (lang === 'ruby') {
     // `models/mod{n}.rb` in every package. Ruby answers `require` from a keyed
     // suffix map, so the repeated basename cannot grow a bucket: this arm
@@ -1697,7 +1736,7 @@ function buildRepo(lang, fileCount, pad = 0, shape = 'unique') {
  * `resolutionConfig` the orchestrator threads beside it.
  *
  * `allFilePaths` is a FRESH Set per pass on purpose — every per-file-set memo
- * in `import-resolvers/per-file-set.ts` is keyed on that object's identity, so
+ * in `utils/per-file-set.ts` is keyed on that object's identity, so
  * reusing one Set across passes would hide the index build after the first and
  * let a rebuilt-per-import index look free from rep 2 onward.
  *
@@ -1719,8 +1758,11 @@ function buildRepo(lang, fileCount, pad = 0, shape = 'unique') {
  * `csharp_csproj` is the precedent and stays where it is: a per-language
  * CONTEXT over a corpus aliased to another language's, rather than a new axis.
  *
- * `parsedFiles` is the third pass-stable object, present for `CONTEXT_LANGS`
- * and undefined for everyone else. It is built BEFORE the path set and the path
+ * `parsedFiles` is the third pass-stable object. `newPass` builds it for the
+ * `CONTEXT_LANGS` members that are not header languages, and leaves it
+ * undefined otherwise — C and C++ are in that list but return on
+ * `HEADER_EXTENSION` first, so a timed pass does not allocate the array.
+ * Where it is built, it is built BEFORE the path set and the path
  * set is derived FROM it, which is not a stylistic choice: `run.ts` does
  * `new Set(parsedFiles.map((f) => f.filePath))`, so two independently built
  * lists would be a shape the pipeline cannot produce. Fresh per pass for
@@ -1729,6 +1771,16 @@ function buildRepo(lang, fileCount, pad = 0, shape = 'unique') {
  * hide their build from rep 2 onward and `fastest()` reports the minimum.
  */
 function newPass(lang, files, pad = 0) {
+  if (lang === 'dart') {
+    // Synthetic pubspec declarations: app at the root, one package per
+    // collision directory. Package imports no longer suffix-match (#2963).
+    const packages = new Map([['app', joinBase(tsBaseUrlFor(pad), 'lib')]]);
+    for (const file of files) {
+      const match = /(?:^|\/)(pkg\d+)\/lib\//.exec(file);
+      if (match) packages.set(match[1], joinBase(tsBaseUrlFor(pad), `${match[1]}/lib`));
+    }
+    return { allFilePaths: new Set(files), config: { packages } };
+  }
   if (HEADER_EXTENSION[lang] !== undefined) {
     const sources = [];
     const headers = [];
@@ -1749,7 +1801,12 @@ function newPass(lang, files, pad = 0) {
     restoreBenchmarkSideChannels(lang, parsedFiles);
     return {
       allFilePaths: new Set(parsedFiles.map((f) => f.filePath)),
-      config: lang === 'php' ? phpComposerConfigFor(pad) : undefined,
+      config:
+        lang === 'php'
+          ? phpComposerConfigFor(pad)
+          : lang === 'csharp_csproj'
+            ? { csharpConfigs: CSPROJ_CONFIGS }
+            : undefined,
       parsedFiles,
     };
   }
@@ -1791,8 +1848,8 @@ function resolveAll(lang, files, imports, pad = 0) {
 
 function resolveOne(lang, from, target, pass) {
   const allFilePaths = pass.allFilePaths;
-  if (lang === 'go') return resolveGoImportTarget(target, from, allFilePaths, GO_MODULE);
-  if (lang === 'dart') return resolveDartImportTarget(target, from, allFilePaths);
+  if (lang === 'go') return resolveGoImportTarget(target, from, allFilePaths);
+  if (lang === 'dart') return resolveDartImportTarget(target, from, allFilePaths, pass.config);
   if (lang === 'ruby') return resolveRubyImportTarget(target, from, allFilePaths);
   if (lang === 'kotlin') {
     const parsedImport = {
@@ -1858,12 +1915,20 @@ function resolveOne(lang, from, target, pass) {
   if (lang === 'swift') {
     return resolveSwiftImportTarget(
       { kind: 'namespace', localName: 'X', importedName: 'X', targetRaw: target },
-      { fromFile: from, allFilePaths },
+      { fromFile: from, allFilePaths, parsedFiles: pass.parsedFiles },
     );
   }
-  if (lang === 'rust') return resolveRustImportTarget(target, from, allFilePaths, undefined);
-  // Quotes already stripped — `configs/zig.ts` strips them before this call in
-  // production too. `null` build config: this arm pins the path walk alone
+  if (lang === 'rust') {
+    return resolveRustImportTarget(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      contextFor(pass, { kind: 'named', localName: 'X', importedName: 'X', targetRaw: target }),
+    );
+  }
+  // Quotes are already stripped from the parsed import target.
+  // `null` build config: this arm pins the path walk alone
   // (see the header); the config legs are gated by their own unit tests.
   if (lang === 'zig') return resolveZigImportInternal(from, target, allFilePaths, null);
   if (lang === 'python') {
@@ -1907,21 +1972,33 @@ function resolveOne(lang, from, target, pass) {
     return typescriptScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
   }
   if (lang === 'c') {
-    return cScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
+    return cScopeResolver.resolveImportTarget(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      pass.includeContext,
+    );
   }
   if (lang === 'cpp') {
-    return cppScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
+    return cppScopeResolver.resolveImportTarget(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      pass.includeContext,
+    );
+  }
+  if (lang === 'objc') {
+    return objectiveCScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
   }
   if (lang === 'csharp' || lang === 'csharp_csproj') {
-    return resolveCsharpImportTarget(
-      { kind: 'namespace', localName: '_', importedName: '_', targetRaw: target },
-      {
-        fromFile: from,
-        allFilePaths,
-        // The ONLY difference between the two C# arms. Present, the adapter
-        // takes the csproj branch and never falls through to the no-csproj legs.
-        ...(lang === 'csharp_csproj' ? { csharpConfigs: CSPROJ_CONFIGS } : {}),
-      },
+    return csharpScopeResolver.resolveImportTarget(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      contextFor(pass, { kind: 'namespace', localName: '_', importedName: '_', targetRaw: target }),
     );
   }
   throw unwiredLanguage('resolveOne', lang);
@@ -2117,6 +2194,10 @@ const HEAP_RETAINED = [];
  *     #2903 made lazy. It is the witness that the read pattern IS the
  *     footprint: same corpus and same `getWorkspaceFileIndex` as `csharp`,
  *     three times the retained bytes.
+ *
+ * `dart` is the exception (`./src/thing.dart` below). `uniqueTarget` never
+ * emits a relative path, and no timing arm exercises the relative suffix
+ * fallback, so that probe does.
  */
 const HEAP_PROBE_TARGET = {
   csharp: 'Ghost0.Deep.Missing',
@@ -2132,15 +2213,18 @@ const HEAP_PROBE_TARGET = {
   javascript: 'vendor0/lib/missing',
   python: 'vendor0.deep.missing',
   c: 'vendor0/missing.h',
+  objc: 'vendor0/missing.m',
   // The entries below cover the BOUNDED tier — see `HEAP_BOUNDED`, which
   // derives to cobol, swift and rust; the rest were promoted. Same rule as the
-  // budgeted ones above: a spelling `uniqueTarget` already mints for that language, and
+  // budgeted ones above, except `dart`: a spelling `uniqueTarget` already mints, and
   // one that MISSES, so the reading is the index and the cascade runs to the
   // end. Chosen from the miss family that reaches furthest into each cascade:
-  //   - `go` names a missing package inside GO_MODULE, which reaches the
+  //   - `go` names a missing package under GO_IMPORT_PREFIX, which reaches the
   //     package-directory lookup and forces `PackageDirIndex`;
-  //   - `dart` is an external package, so BOTH candidate paths miss and both
-  //     walk the basename bucket to completion;
+  //   - `dart` is a relative miss (`./src/thing.dart`), not a `uniqueTarget`
+  //     spelling. No timing arm exercises the relative suffix fallback; this
+  //     probe does, so the basename index stays in the heap reading. Package
+  //     imports use exact membership and allocate no file index;
   //   - `kotlin` misses after building its declared-package/module-binding index;
   //   - `cobol` misses in both tier maps, `swift` in `byModule`, and `rust`
   //     probes candidate paths and builds nothing — that last is the reading
@@ -2150,7 +2234,7 @@ const HEAP_PROBE_TARGET = {
   //     bound compares like with like. `vue`'s is bare rather than `@/…`
   //     because the alias branch rewrites to `src/` and would resolve.
   go: 'example.com/mod/repo0/pkg/util',
-  dart: 'package:ext0/src/thing.dart',
+  dart: './src/thing.dart',
   kotlin: 'com.ghost0.deep.Missing',
   cobol: 'VENDOR0',
   swift: 'ExternalPkg0',
@@ -2249,6 +2333,55 @@ function measureHeap(lang) {
  * argument at all.
  */
 const CONTEXT_PROBE = {
+  // Declaration identity wins even when no filename matches the using target.
+  // Both C# arms pass through the registered five-argument provider hook.
+  csharp: {
+    from: 'app/Main.cs',
+    target: 'App.Service',
+    parsedFiles: [
+      probeFile('app/Main.cs', []),
+      probeFile('src/odd/Bundle.cs', [['Class', 'App.Service']]),
+    ],
+  },
+  csharp_csproj: {
+    from: 'app/Main.cs',
+    target: 'App.Service',
+    parsedFiles: [
+      probeFile('app/Main.cs', []),
+      probeFile('src/odd/Bundle.cs', [['Class', 'App.Service']]),
+    ],
+  },
+  // A declared sibling module outranks a crate-root file with the same name.
+  // Empty module tables on the scaling corpora keep their existing target set;
+  // this probe witnesses the lexical branch that reads the workspace index.
+  rust: {
+    from: 'src/parent/mod.rs',
+    target: 'local::X',
+    parsedFiles: (() => {
+      const from = probeFile('src/parent/mod.rs', [['Namespace', 'local']]);
+      const def = from.localDefs[0];
+      return [
+        {
+          ...from,
+          scopes: [
+            {
+              id: from.moduleScope,
+              parent: null,
+              kind: 'Module',
+              filePath: from.filePath,
+              range: { startLine: 1, startCol: 0, endLine: 2, endCol: 0 },
+              bindings: new Map([['local', [{ def, origin: 'local' }]]]),
+              ownedDefs: [def],
+              imports: [],
+              typeBindings: new Map(),
+            },
+          ],
+        },
+        probeFile('src/parent/local.rs', [['Struct', 'X']]),
+        probeFile('src/local.rs', [['Struct', 'X']]),
+      ];
+    })(),
+  },
   /**
    * `use function App\Ns0\Dup;` where the CLASS `Dup` lives in `Dup.php` and
    * the FUNCTION `Dup` lives in `Helpers.php`. PHP keeps the two in separate
@@ -2311,6 +2444,50 @@ const CONTEXT_PROBE = {
       probeFile('app/main.py', [['Function', 'app.main.run']]),
     ],
   },
+  /**
+   * `import App` where App `@_exported import`s Models. With parsedFiles the
+   * re-export closure unions Models' files; without it the adapter returns
+   * only App's own file. Two distinct non-null answers, so a dropped
+   * `parsedFiles` cannot look like a miss.
+   */
+  swift: {
+    from: 'Sources/Client/Main.swift',
+    target: 'App',
+    parsedFiles: [
+      {
+        ...probeFile('Sources/App/Lib.swift', [['Class', 'App.Lib']]),
+        parsedImports: [
+          { kind: 'reexport', localName: 'Models', importedName: 'Models', targetRaw: 'Models' },
+        ],
+      },
+      probeFile('Sources/Models/User.swift', [['Class', 'Models.User']]),
+      probeFile('Sources/Client/Main.swift', [['Class', 'Client.Main']]),
+    ],
+  },
+  /**
+   * `#include <stdio.h>` with a repo file `src/stdio.h`. With the fifth
+   * argument the include is an angle include and the decoy is not on a
+   * search path, so the answer is null. Without it the call is the quoted
+   * basename walk and the decoy wins. Same shape for C++ `cstdio.h`.
+   */
+  c: {
+    from: 'src/main.c',
+    target: 'stdio.h',
+    parsedFiles: [
+      probeFile('src/main.c', []),
+      probeFile('src/stdio.h', []),
+      probeFile('include/util.h', []),
+    ],
+  },
+  cpp: {
+    from: 'src/main.cpp',
+    target: 'cstdio.h',
+    parsedFiles: [
+      probeFile('src/main.cpp', []),
+      probeFile('src/cstdio.h', []),
+      probeFile('include/util.hpp', []),
+    ],
+  },
 };
 
 /** Resolve the probe twice through `resolveOne` — once with the pass's parsed
@@ -2319,18 +2496,107 @@ const CONTEXT_PROBE = {
 function measureContext(lang) {
   const { from, target, parsedFiles } = CONTEXT_PROBE[lang];
   const allFilePaths = new Set(parsedFiles.map((f) => f.filePath));
-  const config = lang === 'php' ? phpComposerConfigFor(0) : undefined;
+  const config =
+    lang === 'php'
+      ? phpComposerConfigFor(0)
+      : lang === 'csharp_csproj'
+        ? { csharpConfigs: CSPROJ_CONFIGS }
+        : undefined;
   const answer = (files) => {
     restoreBenchmarkSideChannels(lang, files ?? []);
-    return renderResolved(
-      resolveOne(lang, from, target, { allFilePaths, config, parsedFiles: files }),
-    );
+    const pass = { allFilePaths, config, parsedFiles: files };
+    if ((lang === 'c' || lang === 'cpp') && files !== undefined) {
+      pass.includeContext = {
+        parsedFiles: files,
+        parsedImport: { kind: 'wildcard', targetRaw: target, isSystem: true },
+      };
+    }
+    return renderResolved(resolveOne(lang, from, target, pass));
   };
   return {
     target,
     with_context: answer(parsedFiles),
     without_context: answer(undefined),
   };
+}
+
+/**
+ * Quote vs angle for C and C++, on top of the scaling arms. The timing corpus
+ * stays quoted (no `isSystem`) so its fingerprints do not move. This is the
+ * arm that fails if angle includes go back to a repo-wide name hunt, or if a
+ * raw header set stops resolving a quoted include.
+ */
+function checkCIncludeForms(failures) {
+  const arms = [
+    {
+      lang: 'c',
+      resolver: cScopeResolver,
+      from: 'src/main.c',
+      files: ['src/main.c', 'src/stdio.h', 'include/util.h'],
+      quoted: 'util.h',
+      quotedHit: 'include/util.h',
+      angleHit: 'util.h',
+      angleHitFile: 'include/util.h',
+      angleMiss: 'stdio.h',
+    },
+    {
+      lang: 'cpp',
+      resolver: cppScopeResolver,
+      from: 'src/main.cpp',
+      files: ['src/main.cpp', 'src/cstdio.h', 'include/util.hpp'],
+      quoted: 'util.hpp',
+      quotedHit: 'include/util.hpp',
+      angleHit: 'util.hpp',
+      angleHitFile: 'include/util.hpp',
+      angleMiss: 'cstdio.h',
+    },
+  ];
+  for (const arm of arms) {
+    const allFilePaths = new Set(arm.files);
+    const config = {
+      headers: new Set(arm.files.filter((file) => file !== arm.from)),
+      headerSearchPaths: ['include'],
+      userHeaderSearchPaths: [],
+    };
+    const resolve = (target, isSystem) =>
+      arm.resolver.resolveImportTarget(target, arm.from, allFilePaths, config, {
+        parsedFiles: [],
+        parsedImport: { kind: 'wildcard', targetRaw: target, isSystem },
+      });
+    const quotedResult = resolve(arm.quoted, false);
+    const angledResult = resolve(arm.angleHit, true);
+    const missedResult = resolve(arm.angleMiss, true);
+    if (quotedResult !== arm.quotedHit) {
+      failures.push(
+        `${arm.lang}: quoted "${arm.quoted}" resolved to ${JSON.stringify(quotedResult)}, ` +
+          `expected ${arm.quotedHit}`,
+      );
+    }
+    if (angledResult !== arm.angleHitFile) {
+      failures.push(
+        `${arm.lang}: angle <${arm.angleHit}> resolved to ${JSON.stringify(angledResult)}, ` +
+          `expected ${arm.angleHitFile} on the declared include root`,
+      );
+    }
+    if (missedResult !== null) {
+      failures.push(
+        `${arm.lang}: angle <${arm.angleMiss}> resolved to ${JSON.stringify(missedResult)}; ` +
+          `a same-named file outside the include root must miss`,
+      );
+    }
+    const raw = arm.resolver.resolveImportTarget(
+      arm.quoted,
+      arm.from,
+      new Set([arm.from]),
+      new Set(arm.files.filter((file) => file !== arm.from)),
+    );
+    if (raw !== arm.quotedHit) {
+      failures.push(
+        `${arm.lang}: a raw header set resolved quoted "${arm.quoted}" to ${JSON.stringify(raw)}, ` +
+          `expected ${arm.quotedHit}`,
+      );
+    }
+  }
 }
 
 function fingerprint(outcomes) {
@@ -2394,6 +2660,7 @@ const LANG_REGISTRY = {
   vue: SupportedLanguages.Vue,
   c: SupportedLanguages.C,
   cpp: SupportedLanguages.CPlusPlus,
+  objc: SupportedLanguages.ObjectiveC,
   zig: SupportedLanguages.Zig,
 };
 const LANGS = Object.keys(LANG_REGISTRY);
@@ -2502,6 +2769,7 @@ if (!CHECK) {
 
 const baseline = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf-8'));
 const failures = [];
+checkCIncludeForms(failures);
 
 /**
  * PRESENCE, for one budget, in the one place that spells the reason.
@@ -2701,6 +2969,9 @@ for (const lang of LANGS) {
   }
   for (const arm of ['deep', 'collide']) {
     if (got[arm].resolved !== got.small.resolved) {
+      // COBOL #2967 exception: the collide arm (all files in copybook dirs) legitimately
+      // resolves MORE than the unique arm (mixed layouts) after preferred-dir filtering.
+      if (lang === 'cobol' && arm === 'collide') continue;
       failures.push(
         `${lang}: ${arm} arm resolved ${got[arm].resolved} vs small ${got.small.resolved} — the ` +
           `${arm} arm was supposed to change ${arm === 'deep' ? 'path depth' : 'directory and file NAMING'} ` +
@@ -3045,10 +3316,12 @@ expectNoOrphanKeys(
 // The SAME reconciliation for `CONTEXT_LANGS`, against the registry rather than
 // against a claim in a comment. `run.ts` passes the fifth argument to every
 // provider; which ones can OBSERVE it is decided by how many parameters each
-// hook declares, and that is a number the registry can be asked for. Today
-// exactly four answer 5 (php, java, kotlin, python) and the other thirteen answer 3 or 4 —
-// which is why thirteen arms can ignore this whole question and their numbers
-// did not move when it was fixed.
+// hook declares, and that is a number the registry can be asked for. php,
+// java, kotlin, python, and swift read the parsed workspace; c and cpp read
+// `parsedImport.isSystem` and nothing else on that object. Their timed passes
+// still return before any parsed-file build (see `newPass`), so the fifth
+// argument shows up here as the include-form probe, not as a cost on the
+// scaling arms.
 //
 // `Function.length` stops at the first defaulted or rest parameter, so a hook
 // written as `(a, b, c, d, context = {})` would read 4 and slip past this arm.

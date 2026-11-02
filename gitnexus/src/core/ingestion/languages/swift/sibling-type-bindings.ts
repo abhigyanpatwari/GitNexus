@@ -12,28 +12,28 @@
  * to resolve `user.save()` cross-file, App.swift's scope chain must be
  * able to follow `getUser → User`. The function return-type binding
  * (`getUser → User`) lives on Models.swift's module scope, so we mirror
- * sibling module-scope typeBindings into the importer's module scope —
- * the same trick Go uses (`mirrorGoNamespaceTypeBindings`), but Swift has
- * no namespace-import edges, so module membership is the SPM target
- * subtree (`Sources/<Target>/…`): threaded in via the SPM target map
- * (`resolutionConfig` → `coerceSwiftTargets`) and grouped by
- * `groupSwiftFilesBySpmTarget` (replicating legacy `groupSwiftFilesByTarget`;
- * no-source-dir → all files form one `__default__` module).
+ * sibling module-scope typeBindings where the importer can see them.
+ *
+ * Representation: one shared table per module in the language-neutral
+ * `namespaceTypeBindings` channel (`swift-module:<key>`), made visible to each
+ * member's module scope through `accessibleNamespacesByScope`. The chain
+ * walkers (`findReceiverTypeBinding`, `followChainPostFinalize`) consult it
+ * after the file's own scope chain, so a local annotation still wins. The
+ * earlier form copied every sibling's bindings into every file's scope,
+ * O(files² × names) (#3355); C# made the same move in #1871.
  *
  * Runs after `populateNamespaceSiblings` and before
- * `propagateImportedReturnTypes`, so the SCC-ordered propagation pass
- * sees the mirrored bindings and chains `user → getUser → User` to the
- * terminal class. Each mirrored binding is chain-followed inside its
- * source module first so we mirror the terminal type, not an intermediate
- * intra-module reference. `Scope.typeBindings` is mutated via the
- * sanctioned non-frozen Map cast (Contract Invariant I6).
+ * `propagateImportedReturnTypes`. Each binding is chain-followed inside its
+ * source module first so the table holds the terminal type, not an
+ * intermediate intra-module reference. First declaration wins a name.
  */
 
 import type { ParsedFile, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../../scope-resolution/workspace-index.js';
 import { followChainPostFinalize } from '../../scope-resolution/passes/imported-return-types.js';
-import { coerceSwiftTargets, groupSwiftFilesBySpmTarget } from './target-grouping.js';
+import { groupSwiftFilesByModule } from './target-grouping.js';
+import { grantSwiftModuleAccess, swiftModuleNamespace } from './target-siblings.js';
 
 export function mirrorSwiftSiblingTypeBindings(
   parsedFiles: readonly ParsedFile[],
@@ -42,37 +42,30 @@ export function mirrorSwiftSiblingTypeBindings(
   resolutionConfig?: unknown,
 ): void {
   const moduleScopeByFile = workspaceIndex.moduleScopeByFile;
-
-  // Group files by SPM target subtree (the module). No-source-dir → all
-  // files in one `__default__` bucket.
-  const targets = coerceSwiftTargets(resolutionConfig);
-  const filesByTarget = groupSwiftFilesBySpmTarget(
+  const namespaceTypes = indexes.namespaceTypeBindings as Map<string, Map<string, TypeRef>>;
+  const modules = groupSwiftFilesByModule(
     parsedFiles,
     (parsed) => parsed.filePath,
-    targets,
+    resolutionConfig,
+    { allMemberships: true },
   );
 
-  for (const [, group] of filesByTarget) {
-    if (group.length < 2) continue; // no siblings to mirror from
-    const files = group.map((parsed) => parsed.filePath);
-    for (const importerFile of files) {
-      const importerModule = moduleScopeByFile.get(importerFile);
-      if (importerModule === undefined) continue;
-
-      for (const sourceFile of files) {
-        if (sourceFile === importerFile) continue;
-        const sourceModule = moduleScopeByFile.get(sourceFile);
-        if (sourceModule === undefined) continue;
-
-        for (const [name, ref] of sourceModule.typeBindings) {
-          if (name.length === 0) continue;
-          // A local annotation on the importer must win over a sibling's.
-          if (importerModule.typeBindings.has(name)) continue;
-
-          const terminal = followChainPostFinalize(ref, sourceModule.id, indexes);
-          (importerModule.typeBindings as Map<string, TypeRef>).set(name, terminal);
-        }
+  for (const [moduleKey, members] of modules) {
+    if (members.length < 2) continue; // no siblings to mirror from
+    const namespace = swiftModuleNamespace(moduleKey);
+    let table = namespaceTypes.get(namespace);
+    if (table === undefined) {
+      table = new Map();
+      namespaceTypes.set(namespace, table);
+    }
+    for (const parsed of members) {
+      const sourceModule = moduleScopeByFile.get(parsed.filePath);
+      if (sourceModule === undefined) continue;
+      for (const [name, ref] of sourceModule.typeBindings) {
+        if (name.length === 0 || table.has(name)) continue;
+        table.set(name, followChainPostFinalize(ref, sourceModule.id, indexes));
       }
     }
+    grantSwiftModuleAccess(members, namespace, indexes);
   }
 }

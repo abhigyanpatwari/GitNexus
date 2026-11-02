@@ -29,10 +29,7 @@ const { resolveImportTarget } = dartScopeResolver;
 const FROM_FILE = 'lib/main.dart';
 
 /**
- * A synthetic Dart package: many library files under `lib/src/`, plus the two
- * targets the `package:` leg addresses — one reachable as `lib/<rel>` and one
- * only as bare `<rel>`, which is the second candidate and therefore the leg
- * that used to run a second full scan for every external import.
+ * A synthetic Dart package with library and non-library targets.
  */
 function buildWorkspace(fileCount: number): CountingSet {
   const files: string[] = [];
@@ -52,13 +49,10 @@ describe('Dart import resolution — index reuse across imports (#2879)', () => 
     const resolved: (string | readonly string[] | null)[] = [];
 
     for (let i = 0; i < 200; i++) {
-      // Three shapes: an in-package hit through `lib/<rel>`, a bare-`<rel>` hit
-      // that only the SECOND candidate answers, and an external package whose
-      // two candidates both miss — the case that used to cost two full
-      // workspace scans per import.
-      resolved.push(resolveImportTarget('package:app/models.dart', FROM_FILE, files));
-      resolved.push(resolveImportTarget('package:app/tool/generate.dart', FROM_FILE, files));
-      resolved.push(resolveImportTarget(`package:vendor${i}/ghost${i}.dart`, FROM_FILE, files));
+      // Exact relative hits plus misses that must reuse the suffix index.
+      resolved.push(resolveImportTarget('./models.dart', FROM_FILE, files));
+      resolved.push(resolveImportTarget('../tool/generate.dart', FROM_FILE, files));
+      resolved.push(resolveImportTarget(`vendor${i}/ghost${i}.dart`, FROM_FILE, files));
     }
 
     expect(files.scans).toBe(1);
@@ -74,8 +68,8 @@ describe('Dart import resolution — index reuse across imports (#2879)', () => 
     expectDistinctFileSetsGetOwnIndex({
       resolveImportTarget,
       buildWorkspace: () => buildWorkspace(20),
-      targetRaw: 'package:app/models.dart',
-      fromFile: FROM_FILE,
+      targetRaw: 'models.dart',
+      fromFile: 'main.dart',
       resolutionConfig: undefined,
       expected: 'lib/models.dart',
       expectedScans: 1,
@@ -85,15 +79,14 @@ describe('Dart import resolution — index reuse across imports (#2879)', () => 
   it('still resolves real imports correctly (the perf test is not vacuous)', () => {
     const files = buildWorkspace(5);
 
-    // `package:` leg, first candidate: `lib/<rel>`.
-    expect(resolveImportTarget('package:app/models.dart', FROM_FILE, files)).toBe(
+    const config = { packages: new Map([['app', 'lib']]) };
+    expect(resolveImportTarget('package:app/models.dart', FROM_FILE, files, config)).toBe(
       'lib/models.dart',
     );
-    // `package:` leg, second candidate: bare `<rel>`, reached only after
-    // `lib/<rel>` misses entirely.
-    expect(resolveImportTarget('package:app/tool/generate.dart', FROM_FILE, files)).toBe(
-      'tool/generate.dart',
-    );
+    // Package imports cannot reach files outside their declared lib directory.
+    expect(
+      resolveImportTarget('package:app/tool/generate.dart', FROM_FILE, files, config),
+    ).toBeNull();
     // Relative import against the importer's directory.
     expect(resolveImportTarget('src/util.dart', FROM_FILE, files)).toBe('lib/src/util.dart');
     expect(resolveImportTarget('./src/util.dart', FROM_FILE, files)).toBe('lib/src/util.dart');

@@ -709,6 +709,34 @@ describe('emitTsScopeCaptures — #1876 array-method-callback narrowing', () => 
   });
 });
 
+describe('emitTsScopeCaptures — curried pair HOC wrappers (tRPC withAuth)', () => {
+  const declWithName = (src: string, tag: string, name: string): boolean =>
+    emitTsScopeCaptures(src, 'test.ts').some(
+      (m) => m[tag] !== undefined && m['@declaration.name']?.text === name,
+    );
+
+  it('names create: publicProcedure.mutation(withAuth(async () => {}))', () => {
+    const src = 'const r = { create: publicProcedure.mutation(withAuth(async () => {})) };';
+    expect(declWithName(src, '@declaration.function', 'create')).toBe(true);
+  });
+
+  it('names identifier-callee create: mutation(withAuth(function () {}))', () => {
+    const src = 'const r = { create: mutation(withAuth(function () { return null; })) };';
+    expect(declWithName(src, '@declaration.function', 'create')).toBe(true);
+  });
+
+  it('names quoted-key create: publicProcedure.query(withAuth(async () => {}))', () => {
+    const src = "const r = { 'create': publicProcedure.query(withAuth(async () => {})) };";
+    expect(declWithName(src, '@declaration.function', 'create')).toBe(true);
+  });
+
+  it('does not name variable-level nested HOC memo(forwardRef(...)) as Function', () => {
+    const src = 'const Wrapped = memo(forwardRef(() => null));';
+    expect(declWithName(src, '@declaration.function', 'Wrapped')).toBe(false);
+    expect(declWithName(src, '@declaration.variable', 'Wrapped')).toBe(true);
+  });
+});
+
 describe('emitTsScopeCaptures — value-position references (#2437)', () => {
   it('captures a longhand pair value identifier as @reference.value-ref with its key', () => {
     const match = findMatch(

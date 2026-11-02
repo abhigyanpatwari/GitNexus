@@ -56,7 +56,18 @@ function canonicalizeMatch(match: CaptureMatch): string {
     // Scope-only lexical shadow metadata has dedicated extraction/resolution
     // tests. Exclude it from the historical capture fingerprint so adding
     // untyped parameter barriers does not rebaseline every Python fixture.
-    if (tag === '@scope.lexical-names') continue;
+    if (
+      [
+        '@scope.lexical-names',
+        '@scope.name-claims',
+        '@scope.lookup-policy',
+        '@binding.scope',
+        '@reference.lookup-scope',
+        '@reference.caller-scope',
+        '@type.lookup-scope',
+      ].includes(tag)
+    )
+      continue;
     const cap = match[tag]!;
     const r = cap.range;
     parts.push(`${tag}|${cap.text}|${r.startLine}:${r.startCol}-${r.endLine}:${r.endCol}`);
@@ -74,6 +85,27 @@ function digestCaptures(matches: readonly CaptureMatch[]): string {
 function snapshotOf(src: string, filePath: string): FixtureSnapshot {
   const matches = emitPythonScopeCaptures(src, filePath);
   return { captureGroups: matches.length, digest: digestCaptures(matches) };
+}
+
+function callArity(src: string, name: string): string | undefined {
+  const match = emitPythonScopeCaptures(src, 'arity.py').find(
+    (candidate) =>
+      candidate['@reference.name']?.text === name &&
+      (candidate['@reference.call.free'] !== undefined ||
+        candidate['@reference.call.member'] !== undefined),
+  );
+  if (!match) throw new Error(`Missing call capture for ${name}`);
+  return match['@reference.arity']?.text;
+}
+
+function receiverBindingNames(src: string): string[] {
+  return emitPythonScopeCaptures(src, 'receiver.py')
+    .filter(
+      (match) =>
+        match['@type-binding.self'] !== undefined || match['@type-binding.cls'] !== undefined,
+    )
+    .map((match) => match['@type-binding.name']!.text)
+    .sort();
 }
 
 /** All `.py` files under `lang-resolution/python-*`, as sorted repo-relative-ish keys. */
@@ -149,6 +181,65 @@ function formatGolden(snap: Snapshot): string {
 }
 
 describe('Python scope captures — golden parity', () => {
+  it('captures an empty package module without inventing declarations or references', () => {
+    // Tree-sitter 0.25 matches the zero-width module root. The 15 empty
+    // __init__.py fixtures therefore gain this scope (with its lexical
+    // decorations) and no other captures.
+    const range = { startLine: 1, startCol: 0, endLine: 1, endCol: 0 };
+    expect(emitPythonScopeCaptures('', '__init__.py')).toEqual([
+      {
+        '@scope.module': { name: '@scope.module', text: '', range },
+        '@scope.name-claims': { name: '@scope.name-claims', text: '[]', range },
+        '@scope.lookup-policy': {
+          name: '@scope.lookup-policy',
+          text: '{"callerScopeIsAuthoritative":true}',
+          range,
+        },
+      },
+    ]);
+  });
+
+  it('keeps ordinary Python call arity out of the generic reference schema', () => {
+    const src = [
+      'zero()',
+      'one(value)',
+      'keyword(value=1)',
+      'mixed(1, named=2)',
+      'obj.member(',
+      '    # comments are not arguments',
+      '    value,',
+      ')',
+    ].join('\n');
+
+    expect(callArity(src, 'zero')).toBeUndefined();
+    expect(callArity(src, 'one')).toBeUndefined();
+    expect(callArity(src, 'keyword')).toBeUndefined();
+    expect(callArity(src, 'mixed')).toBeUndefined();
+    expect(callArity(src, 'member')).toBeUndefined();
+  });
+
+  it('keeps call arity unknown when an argument splat is present', () => {
+    const src = ['from_list(*values)', 'from_dict(**values)', 'mixed(*values, named=1)'].join('\n');
+
+    expect(callArity(src, 'from_list')).toBeUndefined();
+    expect(callArity(src, 'from_dict')).toBeUndefined();
+    expect(callArity(src, 'mixed')).toBeUndefined();
+  });
+
+  it('synthesizes receiver bindings only for real positional parameters', () => {
+    const src = [
+      'class Example:',
+      '    def ordinary(instance): pass',
+      '    @classmethod',
+      '    def factory(owner): pass',
+      '    def variadic(*args): pass',
+      '    def keyword_variadic(**kwargs): pass',
+      '    def keyword_only(*, option): pass',
+    ].join('\n');
+
+    expect(receiverBindingNames(src)).toEqual(['instance', 'owner']);
+  });
+
   it('matches the committed golden snapshot across all python-* fixtures + DAO shape', () => {
     const snapshot = buildSnapshot();
 

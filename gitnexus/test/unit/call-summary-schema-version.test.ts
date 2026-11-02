@@ -24,9 +24,10 @@
  * of those bumps changed NO DDL — they were semantic. A DDL digest cannot fire
  * on any of them. The runner-identity receipt is their only remaining cover, so
  * this file names that split instead of leaving it implicit: it owns the
- * DDL-blind half (the fingerprint below) plus a source anchor proving
- * run-analyze.ts still consults the receipt. The receipt predicate's own
- * behaviour is asserted against the real function in analyzer-identity.test.ts.
+ * DDL-blind half (the fingerprint below). That run-analyze.ts still consults
+ * the receipt is pinned behaviourally in incremental-orchestration.test.ts (a
+ * moved receipt returns the `runner-identity` rebuild reason), and the receipt
+ * predicate's own behaviour in analyzer-identity.test.ts.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -48,8 +49,6 @@ import {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
-
-const runAnalyzeSource = readFileSync(path.join(repoRoot, 'src', 'core', 'run-analyze.ts'), 'utf8');
 
 describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
   it('is NOT in VALID_RELATION_TYPES (never enters impact symbol-space traversal)', () => {
@@ -124,24 +123,6 @@ describe('incremental reuse gate — schema fingerprint (U-C5, #2798)', () => {
         .update([...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES].join('\n'))
         .digest('hex')
         .slice(0, 12),
-    );
-  });
-});
-
-describe('semantic and id-shape changes ride the runner-identity receipt (#2798/#3041)', () => {
-  it('run-analyze.ts still forces a full rebuild when the stamped runner identity differs', () => {
-    // The invariant the INCREMENTAL_SCHEMA_VERSION ladder used to backstop. It
-    // is implicit nowhere else: no other gate observes analyzer code that emits
-    // no DDL. Deleting this block silently re-opens same-commit top-ups across
-    // an analyzer that changed how the graph is shaped.
-    //
-    // Source-anchored on purpose: the wiring has no extracted predicate to call,
-    // so the only way to assert the gate still exists is to read run-analyze.ts.
-    // The predicate's OWN behaviour — a moved build digest with unmoved DDL, an
-    // absent/null/legacy/malformed receipt, an alternate diagnostic entrypoint —
-    // is asserted against the real function in analyzer-identity.test.ts.
-    expect(runAnalyzeSource).toMatch(
-      /!analyzerRunnerIdentitiesEqual\(\s*existingMeta\.runnerIdentity,\s*runnerIdentity,?\s*\)[\s\S]{0,900}?options = \{ \.\.\.options, force: true \};/,
     );
   });
 });

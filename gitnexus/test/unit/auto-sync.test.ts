@@ -19,10 +19,12 @@ import {
   resetAutoSyncState,
   saveAutoSyncState,
   shouldAnalyzeCommit,
+  getAutoSyncRepoIdentity,
   validateAutoSyncRemoteUrl,
   validateAutoSyncBranchName,
   writeProjectCommitInfo,
 } from '../../src/core/auto-sync/index.js';
+import { absoluteAutoSyncRemoteUrl } from '../../src/core/auto-sync/config.js';
 import { acquireFileLock } from '../../src/storage/file-lock.js';
 
 describe('auto-sync', () => {
@@ -104,6 +106,7 @@ describe('auto-sync', () => {
         'projects:',
         '  - local_path: /tmp/repos',
         '    group_name: back_end',
+        '    pdg: true',
         '    overwrite_local_changes: true',
         '    branches: [test, master, test]',
         '    remote_urls:',
@@ -124,6 +127,7 @@ describe('auto-sync', () => {
     expect(loaded.config.projects[0]).toMatchObject({
       localPath: '/tmp/repos',
       groupName: 'back_end',
+      pdg: true,
       overwriteLocalChanges: true,
       branches: ['test', 'master'],
       remoteUrls: ['git@gitee.com:qts_server/qts_account.git'],
@@ -152,7 +156,9 @@ describe('auto-sync', () => {
     expect(loaded.config.analyzeTimeoutMs).toBe(300_000);
     expect(loaded.config.maxConcurrency).toBe(1);
     expect(loaded.config.analyzeFailureThreshold).toBe(3);
+    expect(loaded.config.allowedHosts).toEqual([]);
     expect(loaded.config.projects[0].groupName).toBeUndefined();
+    expect(loaded.config.projects[0].pdg).toBeUndefined();
     expect(loaded.config.projects[0].overwriteLocalChanges).toBe(false);
   });
 
@@ -209,12 +215,12 @@ describe('auto-sync', () => {
     expect(() => parseAutoSyncConfig(config('600000ms'), '/tmp/watch_config.yml')).not.toThrow();
   });
 
-  it('rejects analyze_timeout values above half the sync interval', async () => {
+  it('allows a 30 minute analysis timeout with 5 minute polling', async () => {
     await fs.writeFile(
       path.join(gitnexusHome, 'watch_config.yml'),
       [
-        'sync_interval_minutes: 10',
-        'analyze_timeout: 6m',
+        'sync_interval_minutes: 5',
+        'analyze_timeout: 30m',
         'projects:',
         '  - local_path: /tmp/repos',
         '    branch: master',
@@ -225,11 +231,43 @@ describe('auto-sync', () => {
 
     const loaded = await loadAutoSyncConfig();
 
-    expect(loaded.ok).toBe(false);
-    if (loaded.ok) throw new Error('expected invalid config');
-    expect(loaded.message).toContain(
-      'analyze_timeout must not exceed half of sync_interval_minutes (5m)',
-    );
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) throw new Error('expected valid config');
+    expect(loaded.config.analyzeTimeoutMs).toBe(1_800_000);
+  });
+
+  it('rejects analyze_timeout values above the Node timer limit', () => {
+    expect(() =>
+      parseAutoSyncConfig(
+        [
+          'sync_interval_minutes: 5',
+          'analyze_timeout: 2147483648ms',
+          'projects:',
+          '  - local_path: /tmp/repos',
+          '    branch: master',
+          '    remote_urls:',
+          '      - git@github.com:owner/repo.git',
+        ].join('\n'),
+        '/tmp/watch_config.yml',
+      ),
+    ).toThrow('analyze_timeout must not exceed 2147483647ms');
+  });
+
+  it('rejects non-boolean per-project pdg configuration', () => {
+    expect(() =>
+      parseAutoSyncConfig(
+        [
+          'sync_interval_minutes: 5',
+          'projects:',
+          '  - local_path: /tmp/repos',
+          '    branch: master',
+          '    pdg: yes',
+          '    remote_urls:',
+          '      - git@github.com:owner/repo.git',
+        ].join('\n'),
+        '/tmp/watch_config.yml',
+      ),
+    ).toThrow('projects[0].pdg must be a boolean');
   });
 
   it('rejects invalid analyze_failure_threshold values', async () => {
@@ -249,7 +287,7 @@ describe('auto-sync', () => {
     const loaded = await loadAutoSyncConfig();
 
     expect(loaded.ok).toBe(false);
-    if (loaded.ok) throw new Error('expected invalid config');
+    if (loaded.ok !== false) throw new Error('expected invalid config');
     expect(loaded.message).toContain('analyze_failure_threshold must be an integer >= 2');
   });
 
@@ -269,7 +307,7 @@ describe('auto-sync', () => {
     const loaded = await loadAutoSyncConfig();
 
     expect(loaded.ok).toBe(false);
-    if (loaded.ok) throw new Error('expected invalid config');
+    if (loaded.ok !== false) throw new Error('expected invalid config');
     expect(loaded.reason).toBe('invalid');
     expect(loaded.message).toContain('[auto-sync] Invalid watch_config.yml:');
     expect(loaded.message).toContain('sync_interval_minutes must be a positive integer');
@@ -292,7 +330,7 @@ describe('auto-sync', () => {
     const loaded = await loadAutoSyncConfig();
 
     expect(loaded.ok).toBe(false);
-    if (loaded.ok) throw new Error('expected invalid config');
+    if (loaded.ok !== false) throw new Error('expected invalid config');
     expect(loaded.message).toContain('local_path must be an absolute path');
   });
 
@@ -514,23 +552,33 @@ describe('auto-sync', () => {
     expect(() => extractRepoNameFromRemoteUrl('git@github.com:team/..')).toThrow('traversal');
   });
 
-  it('allows only github, gitlab, and gitee SSH SCP remote URLs', () => {
+  it('allows github, gitlab, and gitee SSH SCP and HTTPS remote URLs', () => {
     expect(() => validateAutoSyncRemoteUrl('git@github.com:owner/repo')).not.toThrow();
     expect(() => validateAutoSyncRemoteUrl('git@github.com:im-fan/multica.git')).not.toThrow();
     expect(() => validateAutoSyncRemoteUrl('git@gitlab.com:group/subgroup/repo.git')).not.toThrow();
     expect(() =>
       validateAutoSyncRemoteUrl('git@gitee.com:qts-ops/qts-code-engineering.git'),
     ).not.toThrow();
-    expect(() => validateAutoSyncRemoteUrl('https://github.com/owner/repo.git')).toThrow(
-      'must use',
+    expect(() => validateAutoSyncRemoteUrl('https://github.com/owner/repo.git')).not.toThrow();
+    expect(() => validateAutoSyncRemoteUrl('https://gitlab.com/group/repo.git')).not.toThrow();
+    expect(() => validateAutoSyncRemoteUrl('http://github.com/owner/repo.git')).toThrow(
+      'must use an SSH or HTTPS',
+    );
+    expect(() => validateAutoSyncRemoteUrl('https://user:token@github.com/owner/repo.git')).toThrow(
+      'userinfo',
     );
     expect(() => validateAutoSyncRemoteUrl('ssh://git@github.com/owner/repo.git')).toThrow(
-      'must use',
+      'must use an SSH or HTTPS',
     );
     expect(() => validateAutoSyncRemoteUrl('user@github.com:owner/repo.git')).toThrow('must use');
     expect(() => validateAutoSyncRemoteUrl('git@example.com:owner/repo.git')).toThrow(
       'host must be',
     );
+    expect(() => validateAutoSyncRemoteUrl('git@localhost:owner/repo.git')).toThrow('host must be');
+    expect(() => validateAutoSyncRemoteUrl('git@github.com.evil.com:owner/repo.git')).toThrow(
+      'host must be',
+    );
+    expect(() => validateAutoSyncRemoteUrl('git@..:owner/repo.git')).toThrow('DNS hostname');
     // Traversal is a whole segment; consecutive dots inside a name are not.
     expect(() => validateAutoSyncRemoteUrl('git@github.com:owner/foo..bar.git')).not.toThrow();
     expect(() => validateAutoSyncRemoteUrl('git@github.com:owner/../escape.git')).toThrow(
@@ -554,6 +602,117 @@ describe('auto-sync', () => {
     expect(() => validateAutoSyncRemoteUrl('git@github.com:owner//repo')).toThrow(
       'path must include',
     );
+  });
+
+  it('accepts a self-hosted remote only when its host is listed in allowed_hosts', () => {
+    const ssh = 'git@gitlab.mycompany.com:group/repo.git';
+    const https = 'https://gitlab.mycompany.com/group/subgroup/repo.git';
+    const allowed = ['GitLab.MyCompany.com'];
+
+    expect(() => validateAutoSyncRemoteUrl(ssh)).toThrow('allowed_hosts');
+    expect(() => validateAutoSyncRemoteUrl(ssh, allowed)).not.toThrow();
+    expect(() => validateAutoSyncRemoteUrl(https, allowed)).not.toThrow();
+    expect(() =>
+      validateAutoSyncRemoteUrl('git@git.gitlab.mycompany.com:group/repo.git', allowed),
+    ).toThrow('host must be');
+    expect(() =>
+      validateAutoSyncRemoteUrl('git@mycompany.com:group/repo.git', ['gitlab.mycompany.com']),
+    ).toThrow('host must be');
+    expect(() =>
+      validateAutoSyncRemoteUrl('https://user:token@gitlab.mycompany.com/group/repo.git', allowed),
+    ).toThrow('userinfo');
+
+    const parsed = parseAutoSyncConfig(
+      [
+        'sync_interval_minutes: 10',
+        'allowed_hosts: [GitLab.MyCompany.com, GitLab.MyCompany.com]',
+        'projects:',
+        '  - local_path: /tmp/repos',
+        '    branches: [main]',
+        '    remote_urls:',
+        `      - ${ssh}`,
+        `      - ${https}`,
+      ].join('\n'),
+      '/tmp/watch_config.yml',
+    );
+    expect(parsed.allowedHosts).toEqual(['gitlab.mycompany.com']);
+
+    expect(() =>
+      parseAutoSyncConfig(
+        [
+          'sync_interval_minutes: 10',
+          'allowed_hosts: ["*.mycompany.com"]',
+          'projects:',
+          '  - local_path: /tmp/repos',
+          '    branches: [main]',
+          '    remote_urls:',
+          '      - git@github.com:owner/repo.git',
+        ].join('\n'),
+        '/tmp/watch_config.yml',
+      ),
+    ).toThrow('allowed_hosts[0] must be a DNS hostname');
+
+    expect(() =>
+      parseAutoSyncConfig(
+        [
+          'sync_interval_minutes: 10',
+          'allowed_hosts: gitlab.mycompany.com',
+          'projects:',
+          '  - local_path: /tmp/repos',
+          '    branches: [main]',
+          '    remote_urls:',
+          '      - git@github.com:owner/repo.git',
+        ].join('\n'),
+        '/tmp/watch_config.yml',
+      ),
+    ).toThrow('allowed_hosts must be a list of DNS hostnames');
+  });
+
+  it('rejects ambiguous numeric hosts and treats one trailing dot as the same name', () => {
+    const config = (allowed: string, remote: string) =>
+      [
+        'sync_interval_minutes: 10',
+        `allowed_hosts: ["${allowed}"]`,
+        'projects:',
+        '  - local_path: /tmp/repos',
+        '    branches: [main]',
+        '    remote_urls:',
+        `      - ${remote}`,
+      ].join('\n');
+
+    for (const host of ['192.168.1', '127.1', '0x7f.0.0.1', '0177.0.0.1', '2130706433']) {
+      expect(() =>
+        parseAutoSyncConfig(config(host, 'git@github.com:owner/repo.git'), '/tmp/watch_config.yml'),
+      ).toThrow('ambiguous numeric spelling');
+      expect(() => validateAutoSyncRemoteUrl(`git@${host}:group/repo.git`, [host])).toThrow(
+        'ambiguous numeric spelling',
+      );
+    }
+
+    expect(() =>
+      validateAutoSyncRemoteUrl('git@10.0.0.1:group/repo.git', ['10.0.0.1']),
+    ).not.toThrow();
+    expect(absoluteAutoSyncRemoteUrl('git@10.0.0.1:group/repo.git')).toBe(
+      'git@10.0.0.1:group/repo.git',
+    );
+
+    const allowed = ['git', 'gitlab.mycompany.com'];
+    expect(() => validateAutoSyncRemoteUrl('git@git.:group/repo.git', allowed)).not.toThrow();
+    expect(getAutoSyncRepoIdentity('git@git.:group/repo.git', allowed)).toBe('git/group/repo');
+    expect(getAutoSyncRepoIdentity('git@gitlab.mycompany.com.:group/repo.git', allowed)).toBe(
+      'gitlab.mycompany.com/group/repo',
+    );
+    expect(absoluteAutoSyncRemoteUrl('git@git:group/repo.git')).toBe('git@git.:group/repo.git');
+    expect(absoluteAutoSyncRemoteUrl('git@git.:group/repo.git')).toBe('git@git.:group/repo.git');
+    expect(absoluteAutoSyncRemoteUrl('https://gitlab.mycompany.com/group/repo.git')).toBe(
+      'https://gitlab.mycompany.com./group/repo.git',
+    );
+
+    const parsed = parseAutoSyncConfig(
+      config('git.', 'git@git:group/repo.git'),
+      '/tmp/watch_config.yml',
+    );
+    expect(parsed.allowedHosts).toEqual(['git']);
   });
 
   it('parses repo git timeout durations', () => {
@@ -581,7 +740,7 @@ describe('auto-sync', () => {
     const loaded = await loadAutoSyncConfig();
 
     expect(loaded.ok).toBe(false);
-    if (loaded.ok) throw new Error('expected invalid config');
+    if (loaded.ok !== false) throw new Error('expected invalid config');
     expect(loaded.message).toContain('must not set both branch and branches');
   });
 
@@ -608,6 +767,7 @@ describe('auto-sync', () => {
           codeCommitId: 'abc',
           analyzedCommitId: 'abc',
           lastAnalyzeStatus: 'success',
+          requestedPdg: true,
           analyzeConsecutiveFailures: 2,
           lastAnalyzeError: 'old error',
           lastSyncTime: '2026-06-30T00:00:00.000Z',
@@ -624,6 +784,7 @@ describe('auto-sync', () => {
         codeCommitId: 'abc',
         analyzedCommitId: 'abc',
         lastAnalyzeStatus: 'success',
+        requestedPdg: true,
         analyzeConsecutiveFailures: 2,
         lastAnalyzeError: 'old error',
         lastSyncTime: '2026-06-30T00:00:00.000Z',
@@ -669,6 +830,11 @@ describe('auto-sync', () => {
           codeCommitId: 123,
           analyzeConsecutiveFailures: -1,
           lastSyncTime: null,
+        },
+        '/tmp/repos/invalid-pdg|main': {
+          codeCommitId: 'abc',
+          requestedPdg: 'true',
+          lastSyncTime: '2026-06-30T00:00:00.000Z',
         },
       }),
     );

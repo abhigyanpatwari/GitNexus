@@ -9,7 +9,6 @@
 // `measure.mjs`, never in `npm test`.
 
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — .mjs pure-JS module, no types; intentional (build-free harness).
 import * as M from '../../bench/impact-pdg/metrics.mjs';
 
 const k = (sym: string, file = 'src/a.ts') => M.symbolKey(sym, file);

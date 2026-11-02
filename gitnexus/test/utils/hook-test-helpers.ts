@@ -84,6 +84,19 @@ function writeExecutable(filePath: string, content: string) {
   fs.writeFileSync(filePath, content, { mode: 0o755 });
 }
 
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function writeImmediateShellExecutable(filePath: string, stdout: string, markerPath?: string) {
+  writeExecutable(
+    filePath,
+    `#!/bin/sh\n` +
+      (markerPath ? `: > ${shellQuote(markerPath)}\n` : '') +
+      `printf %s ${shellQuote(stdout)}\n`,
+  );
+}
+
 export function createHookToolDir(options: {
   gitnexusStderr?: string;
   gitnexusMarkerPath?: string;
@@ -129,6 +142,12 @@ export function createHookToolDir(options: {
     options.lsofOutputLines != null
       ? options.lsofOutputLines.join('\n') + (options.lsofOutputLines.length ? '\n' : '')
       : (options.lsofOutput ?? '');
+  // The owner probe gives lsof one second. Use a shell fixture for immediate
+  // responses so a Node cold start cannot be misclassified as a timed-out
+  // (therefore fail-closed) owner under a heavily parallel test run. The
+  // delay, signal, and PID fixtures below still need a Node process.
+  const immediateLsof =
+    options.lsofSleepMs == null && options.lsofPidFile == null && !options.lsofIgnoreSigterm;
   // Composable prologue: pidFile write MUST stay the first statement (see the
   // option docs above); SIGTERM trap MUST be installed before any sleep.
   const lsofPrologue =
@@ -144,7 +163,11 @@ export function createHookToolDir(options: {
     options.lsofSleepMs != null
       ? `${lsofPrologue}setTimeout(() => {}, ${Number(options.lsofSleepMs)});\n`
       : `${lsofPrologue}process.stdout.write(${JSON.stringify(lsofOutput)});\nprocess.exit(0);\n`;
-  writeExecutable(path.join(binDir, 'lsof'), lsofBody);
+  if (immediateLsof) {
+    writeImmediateShellExecutable(path.join(binDir, 'lsof'), lsofOutput, options.lsofMarkerPath);
+  } else {
+    writeExecutable(path.join(binDir, 'lsof'), lsofBody);
+  }
 
   const psBody =
     options.psOutputByPid != null
@@ -156,7 +179,11 @@ process.stdout.write(byPid[p] ?? '');
 process.exit(0);
 `
       : `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(options.psOutput ?? '')});\nprocess.exit(0);\n`;
-  writeExecutable(path.join(binDir, 'ps'), psBody);
+  if (options.psOutputByPid == null) {
+    writeImmediateShellExecutable(path.join(binDir, 'ps'), options.psOutput ?? '');
+  } else {
+    writeExecutable(path.join(binDir, 'ps'), psBody);
+  }
 
   return binDir;
 }

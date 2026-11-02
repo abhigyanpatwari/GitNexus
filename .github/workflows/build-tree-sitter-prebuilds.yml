@@ -7,16 +7,17 @@ name: Build tree-sitter prebuilds
 #
 # Grammars covered here (the at-risk set — everything else already ships 6
 # upstream prebuilds AND stays dependency-review-tracked, so it is left alone).
-# All five are vendored under gitnexus/vendor/; `kind` (below) only picks where
+# All seven are vendored under gitnexus/vendor/; `kind` (below) only picks where
 # the build job fetches the C source to compile:
-#   - tree-sitter-c      (vendored prebuild-only; built from the published npm
-#                         package — closes upstream's 4/6 ARM gap #2116 for a
-#                         REQUIRED grammar)
+#   - tree-sitter-c      (vendored source from upstream Git, including releases
+#                         newer than npm; REQUIRED grammar)
 #   - tree-sitter-dart   (vendored source; built from gitnexus/vendor/)
 #   - tree-sitter-proto  (vendored source; built from gitnexus/vendor/)
 #   - tree-sitter-kotlin (vendored source; built from gitnexus/vendor/ — pinned to
 #                         an unreleased main commit for `fun interface` support
 #                         (#169) that no npm release carries yet)
+#   - tree-sitter-objc   (vendored source; built from gitnexus/vendor/ — pinned
+#                         for the Objective-C provider MVP)
 #   - tree-sitter-swift  (vendored source; built from gitnexus/vendor/ — its
 #                         prebuilds were originally upstream-shipped, now
 #                         GitNexus-cross-built like the rest for uniformity)
@@ -24,13 +25,13 @@ name: Build tree-sitter prebuilds
 #                         off npm optionalDependency so `npm i -g gitnexus`
 #                         no longer warns on peerOptional tree-sitter@^0.22.1.
 #                         Upstream linux-arm64 prebuild is a mispackaged
-#                         x86-64 binary; this workflow rebuilds all six.)
+#                         x86-64 binary; this workflow rebuilds all seven.)
 #
 # Output: gitnexus/vendor/<grammar>/prebuilds/<platform-arch>/<grammar>.node for
 # all 6 targets ({linux,darwin,win32}-{x64,arm64}). tree-sitter grammars are
 # N-API, so one ABI-stable .node per platform-arch works across all Node majors.
 #
-# COST DISCIPLINE — this is a HEAVY native matrix (up to 3 grammars x 6 runners,
+# COST DISCIPLINE — this is a HEAVY native matrix (up to 7 grammars x 6 runners,
 # incl. macOS + arm64). It is DELIBERATELY NOT wired into normal PR/push CI. It
 # runs only:
 #   1. on manual dispatch (workflow_dispatch); or
@@ -61,7 +62,7 @@ on:
   workflow_dispatch:
     inputs:
       grammars:
-        description: 'Comma-separated grammar shortnames to build (c,dart,proto,kotlin,swift,zig), or "all".'
+        description: 'Comma-separated grammar shortnames to build (c,dart,proto,kotlin,objc,swift,zig), or "all".'
         required: false
         type: string
         default: 'all'
@@ -93,7 +94,7 @@ on:
       - '!gitnexus/vendor/tree-sitter-*/prebuilds/**'
       # Self-test: re-run the guard if a future grammar pin is reintroduced in
       # the main package.json (optionalDependencies fallback). No-op otherwise —
-      # all six grammars are now fully vendored (kotlin and zig included).
+      # all seven grammars are now fully vendored (including kotlin, objc, and zig).
       - 'gitnexus/package.json'
       # Self-test: re-run the guard (normally a no-op) when the recipe changes.
       - '.github/workflows/build-tree-sitter-prebuilds.yml'
@@ -121,7 +122,7 @@ jobs:
       matrix: ${{ steps.decide.outputs.matrix }}
       release_app: ${{ steps.relapp.outputs.configured }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # need base history to diff recorded versions
           persist-credentials: false
@@ -150,11 +151,11 @@ jobs:
           // 'vendored' builds from gitnexus/vendor/<name> (which carries the C
           // source + binding.gyp). Extend this list to cover a new grammar.
           const REGISTRY = {
-            // c is vendored prebuild-only but BUILT from the published npm
-            // package (kind 'npm'), held at 0.21.4 — it closes upstream's 4/6
+            // c builds the exact upstream source snapshot in vendor/ so the
+            // prebuild matches its metadata — this also closes upstream's 4/6
             // ARM gap (#2116) for a REQUIRED grammar that otherwise hard-fails
             // install on toolchain-less ARM.
-            c:      { name: 'tree-sitter-c',      kind: 'npm' },
+            c:      { name: 'tree-sitter-c',      kind: 'vendored' },
             dart:   { name: 'tree-sitter-dart',   kind: 'vendored' },
             proto:  { name: 'tree-sitter-proto',  kind: 'vendored' },
             // kotlin is vendored WITH its source (parser.c/scanner.c/binding.gyp),
@@ -163,6 +164,9 @@ jobs:
             // unreleased main commit for `fun interface` support (#169) that no
             // npm release carries yet — so it must build from the vendored source.
             kotlin: { name: 'tree-sitter-kotlin', kind: 'vendored' },
+            // Objective-C is vendored WITH its source and its native bindings
+            // must be recut together with the pinned grammar snapshot.
+            objc:   { name: 'tree-sitter-objc',   kind: 'vendored' },
             // swift is vendored WITH its source (parser.c/scanner.c/binding.gyp),
             // so it builds from gitnexus/vendor/ like dart/proto. Its prebuilds
             // were originally upstream-shipped; rebuilding them here unifies it.
@@ -365,7 +369,7 @@ jobs:
 
       - name: Upload fork PR meta
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true && steps.decide.outputs.any == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pr-meta
           path: ${{ runner.temp }}/pr-meta/metadata.json
@@ -387,17 +391,17 @@ jobs:
     # and compiling them under emulation on the arm runners is slow.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false # this job uploads artifacts (artipacked)
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
       - name: Ensure Python (arm64 Windows only)
         if: matrix.platform_arch == 'win32-arm64'
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
 
@@ -419,19 +423,20 @@ jobs:
           # node-addon-api must match what the grammar's binding.cc expects.
           # GitNexus hoists ^8 for the vendored grammars; npm grammars declare
           # their own (do NOT pin it for npm grammars — let the dep resolve it).
+          # node-gyp >=12.1 recognizes Visual Studio 2026 on Windows ARM runners.
           if [ "$KIND" = "vendored" ]; then
             # Build from the vendored C source (carries parser.c + binding.gyp).
             srcdir="$work/$NAME"
             cp -R "$GITHUB_WORKSPACE/gitnexus/vendor/$NAME" "$srcdir"
             rm -rf "$srcdir/prebuilds" "$srcdir/build" "$srcdir/node_modules"
             npm install --no-audit --no-fund --ignore-scripts \
-              prebuildify@^6 node-gyp@^11 node-addon-api@^8
+              prebuildify@^6 node-gyp@12.4.0 node-addon-api@^8
             pkgdir="$srcdir"
             export npm_config_node_gyp="$work/node_modules/node-gyp/bin/node-gyp.js"
           else
             # Pull the published source-only package.
             npm install --no-audit --no-fund --ignore-scripts \
-              "$NAME@${REF}" prebuildify@^6 node-gyp@^11
+              "$NAME@${REF}" prebuildify@^6 node-gyp@12.4.0
             pkgdir="$work/node_modules/$NAME"
           fi
 
@@ -484,15 +489,11 @@ jobs:
           cd "$probe"
           # Pin tree-sitter to the repo's exact runtime peer so an ABI mismatch
           # fails HERE, not in a user's install (mirrors the #1922 ABI gate).
-          # NOT --ignore-scripts: tree-sitter@0.21.1's tarball ships prebuilds for
-          # the common tuples but NOT linux-arm64 / win32-arm64, so on the arm64
-          # runners node-gyp-build must source-build the runtime — give it node-gyp
-          # + node-addon-api to do so. Where tree-sitter ships a prebuild (x64,
-          # darwin-arm64) node-gyp-build uses it and nothing compiles. The grammar
-          # .node we built is still loaded as a prebuild; only the runtime peer may
-          # compile. The grammar-vs-runtime ABI check still fires at setLanguage.
+          # Allow install scripts so node-gyp-build can compile the runtime if
+          # no matching runtime prebuild is available. The grammar built above
+          # is still loaded as a prebuild; setLanguage checks its runtime ABI.
           npm install --no-audit --no-fund \
-            node-gyp-build@^4 node-gyp@^11 node-addon-api@^8 tree-sitter@0.21.1
+            node-gyp-build@^4 node-gyp@12.4.0 node-addon-api@^8 tree-sitter@0.25.1
           # The node script is single-quoted on purpose — its ${...} are JS
           # template literals read from the environment, not shell expansions.
           # shellcheck disable=SC2016
@@ -505,6 +506,7 @@ jobs:
               dart:   "void main() { print(\"hi\"); }",
               proto:  "syntax = \"proto3\";\nmessage M { int32 id = 1; }",
               kotlin: "fun main() { println(\"hi\") }",
+              objc:   "@interface GNValidationProbe : NSObject\n@end",
               swift:  "func greet() { print(\"hi\") }",
               zig:    "pub fn main() void {}",
             };
@@ -521,7 +523,7 @@ jobs:
           '
 
       - name: Upload prebuild artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ts-prebuild-${{ matrix.grammar }}-${{ matrix.platform_arch }}
           path: ${{ steps.build.outputs.stage }}/${{ matrix.name }}.node
@@ -554,12 +556,12 @@ jobs:
     steps:
       - name: Mint GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.app-token.outputs.token }}
           # On a (non-fork) PR, check out the PR's HEAD branch — not the merge ref —
@@ -569,7 +571,7 @@ jobs:
           persist-credentials: false
 
       - name: Download all prebuild artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: ${{ runner.temp }}/dl
           pattern: ts-prebuild-*

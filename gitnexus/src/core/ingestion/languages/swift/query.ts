@@ -188,6 +188,40 @@ const SWIFT_SCOPE_QUERY = `
 (call_expression
   (simple_identifier) @reference.name) @reference.call.free
 
+;; The grammar attaches the final call suffix of \`left() + right(args)\`
+;; to the additive expression. Swift applies that suffix to the RHS name.
+;; Parenthesized callable expressions have a separate node and do not match.
+(call_expression
+  (additive_expression
+    rhs: (simple_identifier) @reference.name)
+  (call_suffix)) @reference.additive-call
+
+;; Exact identity for \`let lhs = callee()\`. The call-expression anchor is
+;; byte-identical to @reference.call.free / member for downstream position join.
+(property_declaration
+  name: (pattern
+    bound_identifier: (simple_identifier) @call-result-assignment.lhs)
+  value: (call_expression) @call-result-assignment.call)
+
+(property_declaration
+  name: (pattern
+    bound_identifier: (simple_identifier) @call-result-assignment.lhs)
+  value: (await_expression
+    (call_expression) @call-result-assignment.call))
+
+(property_declaration
+  name: (pattern
+    bound_identifier: (simple_identifier) @call-result-assignment.lhs)
+  value: (try_expression
+    (call_expression) @call-result-assignment.call))
+
+(property_declaration
+  name: (pattern
+    bound_identifier: (simple_identifier) @call-result-assignment.lhs)
+  value: (try_expression
+    (await_expression
+      (call_expression) @call-result-assignment.call)))
+
 ;; ── References — member / method calls: \`obj.method(...)\` ───────────
 ;; navigation_expression carries the receiver (target:) and the member
 ;; (suffix > navigation_suffix > simple_identifier). \`self\` is a

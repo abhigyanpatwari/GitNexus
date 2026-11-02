@@ -16,6 +16,9 @@
  */
 
 import { createKnowledgeGraph } from '../graph/graph.js';
+import type { KnowledgeGraph } from '../graph/types.js';
+import type { RouteHookConfig } from './language-provider.js';
+import { GLOBAL_NAME_FALLBACK_REASON } from '../graph/edge-reasons.js';
 import { GraphEmitSink, type GraphEmitManifest } from '../lbug/graph-emit-sink.js';
 import { type PipelineProgress } from 'gitnexus-shared';
 import { PipelineResult } from '../../types/pipeline.js';
@@ -222,6 +225,10 @@ export interface PipelineOptions {
    * call sites.
    */
   workerUrlForTest?: URL;
+  /** Worker entry selected while capturing parser identity, reused by the pool. */
+  parseWorkerUrl?: URL;
+  /** Run-owned transient ParsedFiles, also used when persistent caches are disabled. */
+  parsedFileStorePath?: string;
   /**
    * Incremental-indexing parse cache. When provided:
    *   - The parse phase looks up each chunk's content hash in
@@ -248,6 +255,15 @@ export interface PipelineOptions {
    * analyze invocations.
    */
   workerPoolSize?: number;
+  /**
+   * Process-detection budget (#3313). Explicit `maxProcesses` replaces the
+   * dynamic `symbols / 10` formula; the other three replace compiled defaults.
+   * Unset fields keep shipped behavior. `0` is rejected upstream — not unlimited.
+   */
+  maxProcesses?: number;
+  maxProcessBranching?: number;
+  maxProcessTraceDepth?: number;
+  maxEntryPointCandidates?: number;
   /**
    * Number of chunks whose file contents may be read into memory in
    * parallel while the worker pool is busy dispatching the current
@@ -292,6 +308,13 @@ export interface PipelineOptions {
    * traced. Empty/undefined leaves behavior unchanged.
    */
   fetchWrappers?: readonly string[];
+  /**
+   * Declared router-framework aliases and handler-wrapper callees, threaded
+   * from `.gitnexusrc` / `GITNEXUS_RC`. Applied on the main thread by the
+   * provider route hooks — never sent to parse workers, so they never enter a
+   * parse-cache key. Empty/undefined leaves route extraction unchanged.
+   */
+  routeHookConfig?: RouteHookConfig;
 }
 
 // ── Phase registry ─────────────────────────────────────────────────────────
@@ -410,6 +433,11 @@ export const runPipelineFromRepo = async (
     graphEmitSink?.close();
   }
 
+  // Resolved-call index for the name-fallback census: read through the SINK,
+  // whose field-wise scan includes every streamed edge, not through `graph`,
+  // which under streaming holds none of them.
+  const resolvedCalleeNamesByCaller = collectResolvedCalleeNames(graphEmitSink ?? graph, graph);
+
   // Extract final results for the PipelineResult contract
   const {
     totalFiles,
@@ -436,8 +464,8 @@ export const runPipelineFromRepo = async (
   const propertyInference = scopeResolutionOutput.propertyInference;
 
   // Presence check, not `!skipGraphPhases`: phases can now be filtered out by
-  // any `enabledWhen` predicate (streamGraphEmit disables communities/processes
-  // too), and `getPhaseOutput` THROWS on a phase that was never resolved. Keying
+  // any `enabledWhen` predicate (`skipGraphPhases` drops communities/processes),
+  // and `getPhaseOutput` THROWS on a phase that was never resolved. Keying
   // off the options flag alone made every filtered-out combination crash here
   // rather than return undefined results.
   if (results.has('communities') && results.has('processes')) {
@@ -473,6 +501,7 @@ export const runPipelineFromRepo = async (
     communityResult,
     processResult,
     resolutionOutcomes,
+    resolvedCalleeNamesByCaller,
     undecidedSatisfaction,
     usedWorkerPool,
     reparsedFileCount,
@@ -518,3 +547,29 @@ export const runPipelineFromRepo = async (
 
   return result;
 };
+
+/**
+ * Caller node id → the simple names of every callee it has a CALLS edge to.
+ *
+ * `edges` may be the streaming sink or the raw graph; `nodes` is always the raw
+ * graph, which holds every node in both modes (only relationships stream). One
+ * O(E) field-wise pass, allocation-free per edge except for the per-caller set.
+ */
+export function collectResolvedCalleeNames(
+  edges: Pick<KnowledgeGraph, 'forEachRelationshipFields'>,
+  nodes: Pick<KnowledgeGraph, 'getNode'>,
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const out = new Map<string, Set<string>>();
+  edges.forEachRelationshipFields((sourceId, targetId, type, _confidence, reason) => {
+    if (type !== 'CALLS' || reason === GLOBAL_NAME_FALLBACK_REASON) return;
+    const name = nodes.getNode(targetId)?.properties.name;
+    if (typeof name !== 'string' || name === '') return;
+    let names = out.get(sourceId);
+    if (names === undefined) {
+      names = new Set<string>();
+      out.set(sourceId, names);
+    }
+    names.add(name);
+  });
+  return out;
+}

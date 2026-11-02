@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   extensionManager,
@@ -126,18 +129,25 @@ describe('ftsDegradedWarning (#2374)', () => {
   });
 
   it('keeps the reinstall guidance for a never-installed extension', async () => {
-    await extensionManager.ensure(
-      vi
-        .fn()
-        .mockRejectedValue(
-          new Error('Extension "fts" is an official extension and has not been installed.'),
-        ),
-      'fts',
-      'FTS',
-      { policy: 'load-only' },
-    );
+    // Empty vendor root so named "not installed" is not reclassified against
+    // a packaged, structurally valid artifact (that path is missing_dependency).
+    const vendorRoot = mkdtempSync(path.join(tmpdir(), 'gn-fts-empty-vendor-'));
+    try {
+      await extensionManager.ensure(
+        vi
+          .fn()
+          .mockRejectedValue(
+            new Error('Extension "fts" is an official extension and has not been installed.'),
+          ),
+        'fts',
+        'FTS',
+        { policy: 'load-only', vendorRoot },
+      );
 
-    expect(ftsDegradedWarning()).toContain('--repair-fts');
+      expect(ftsDegradedWarning()).toContain('--repair-fts');
+    } finally {
+      rmSync(vendorRoot, { recursive: true, force: true });
+    }
   });
 
   it('caches the load diagnosis on the capability so the warning does no per-request I/O (#2383 F3)', async () => {

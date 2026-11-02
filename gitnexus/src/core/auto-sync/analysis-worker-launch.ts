@@ -15,7 +15,9 @@ export type AutoSyncAnalysisRunner = (
   signal?: AbortSignal,
   onCancellationRequested?: () => void,
   concurrency?: number,
-) => Promise<Pick<AnalyzeResult, 'stats'>>;
+  /** Worker progress until the run settles or cancellation begins. */
+  onProgress?: (percent: number, message: string) => void,
+) => Promise<Pick<AnalyzeResult, 'stats' | 'graphWriteCollapsed'>>;
 
 interface AnalysisWorker extends Pick<ChildProcess, 'send' | 'on'> {
   stdout?: Pick<NodeJS.ReadableStream, 'resume'> | null;
@@ -31,6 +33,31 @@ interface AnalysisWorker extends Pick<ChildProcess, 'send' | 'on'> {
  * past its safe point still turns `watch stop` into a timeout.
  */
 const AUTO_SYNC_CANCEL_GRACE_MS = 5_000;
+
+export class AutoSyncAnalysisError extends Error {
+  readonly code?: 'index-lock-timeout';
+  readonly retryable?: boolean;
+  readonly abandonedWorker: boolean;
+  /** Resolves on actual process exit when the request stopped waiting first. */
+  readonly workerExited?: Promise<void>;
+
+  constructor(
+    message: string,
+    options: {
+      code?: 'index-lock-timeout';
+      retryable?: boolean;
+      abandonedWorker?: boolean;
+      workerExited?: Promise<void>;
+    } = {},
+  ) {
+    super(message);
+    this.name = 'AutoSyncAnalysisError';
+    this.code = options.code;
+    this.retryable = options.retryable;
+    this.abandonedWorker = options.abandonedWorker === true;
+    this.workerExited = options.workerExited;
+  }
+}
 
 export interface AutoSyncAnalysisLaunchDeps {
   forkWorker: (workerPath: string, execArgv: string[]) => AnalysisWorker;
@@ -68,8 +95,8 @@ export function createAutoSyncAnalysisRunner(
   overrides: Partial<AutoSyncAnalysisLaunchDeps> = {},
 ): AutoSyncAnalysisRunner {
   const deps = { ...DEFAULT_DEPS, ...overrides };
-  return (repoPath, options, timeoutMs, signal, onCancellationRequested, concurrency) =>
-    new Promise<Pick<AnalyzeResult, 'stats'>>((resolve, reject) => {
+  return (repoPath, options, timeoutMs, signal, onCancellationRequested, concurrency, onProgress) =>
+    new Promise<Pick<AnalyzeResult, 'stats' | 'graphWriteCollapsed'>>((resolve, reject) => {
       if (signal?.aborted) {
         reject(new Error('Analysis cancelled.'));
         return;
@@ -114,7 +141,10 @@ export function createAutoSyncAnalysisRunner(
         child.channel?.unref?.();
         child.unref?.();
       };
-      const settle = (error?: Error, result?: Pick<AnalyzeResult, 'stats'>) => {
+      const settle = (
+        error?: Error,
+        result?: Pick<AnalyzeResult, 'stats' | 'graphWriteCollapsed'>,
+      ) => {
         if (settled) return;
         settled = true;
         cleanup();
@@ -142,11 +172,15 @@ export function createAutoSyncAnalysisRunner(
         // child is deliberately left running rather than killed mid-write.
         graceTimer = deps.setTimeoutFn(() => {
           if (settled) return;
+          const workerExited = new Promise<void>((resolveExited) => {
+            child.on('exit', () => resolveExited());
+          });
           releaseChild();
           settle(
-            new Error(
+            new AutoSyncAnalysisError(
               `${error.message} The analyze worker did not exit within ${deps.cancelGraceMs}ms; ` +
                 'it was left running so its native work is not interrupted.',
+              { abandonedWorker: true, retryable: true, workerExited },
             ),
           );
         }, deps.cancelGraceMs);
@@ -161,7 +195,19 @@ export function createAutoSyncAnalysisRunner(
       child.on('message', (message: WorkerMessage) => {
         // Once timeout/cancellation requested shutdown, its reason owns the
         // result. A terminal IPC can already be queued behind cancellation.
-        if (message.type === 'progress' || terminalOutcome || terminationError) return;
+        if (terminalOutcome || terminationError) return;
+        if (message.type === 'progress') {
+          // The worker also sends its log lines as progress with percent -1;
+          // those are not progress. A listener's failure must not decide the
+          // run's outcome.
+          if (message.percent < 0) return;
+          try {
+            onProgress?.(message.percent, message.message);
+          } catch {
+            // ignored
+          }
+          return;
+        }
         terminalOutcome = message;
         deps.clearTimeoutFn(timeout);
       });
@@ -182,11 +228,18 @@ export function createAutoSyncAnalysisRunner(
           return;
         }
         if (terminalOutcome?.type === 'complete') {
-          settle(undefined, { stats: terminalOutcome.result.stats });
+          const { stats, graphWriteCollapsed } = terminalOutcome.result;
+          // Only present on a collapsed write, so a healthy result keeps its shape.
+          settle(undefined, graphWriteCollapsed ? { stats, graphWriteCollapsed } : { stats });
           return;
         }
         if (terminalOutcome?.type === 'error') {
-          settle(new Error(terminalOutcome.message));
+          settle(
+            new AutoSyncAnalysisError(terminalOutcome.message, {
+              code: terminalOutcome.code,
+              retryable: terminalOutcome.retryable,
+            }),
+          );
           return;
         }
         settle(

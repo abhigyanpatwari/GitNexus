@@ -20,8 +20,9 @@
  *     `from ..siblings.calls import …`) are captured.
  *   • `as`-aliased imports route the prefix to the alias, not to
  *     `router`.
- *   • Nothing is emitted when `include_router` is absent or has no
- *     `prefix=` keyword.
+ *   • Unprefixed includes from any host are captured as `prefix: ''`
+ *     propagation edges; calls whose `prefix=` is not a string literal
+ *     are not captured.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -34,6 +35,7 @@ import {
   type ExtractedRouterImport,
   type ExtractedRouterModuleAlias,
 } from '../../src/core/ingestion/route-extractors/fastapi-router-bindings.js';
+import { resolveFastAPIRouterPrefixes } from '../../src/core/ingestion/route-extractors/fastapi-router-prefixes.js';
 
 function run(filePath: string, content: string) {
   const includes: ExtractedRouterInclude[] = [];
@@ -213,6 +215,153 @@ describe('extractFastAPIRouterBindings — Shape B (bare local name)', () => {
   });
 });
 
+describe('nested FastAPI router prefix resolution', () => {
+  it('follows relative package and child imports without basename bleed', () => {
+    const root = runFull(
+      'src/one/app.py',
+      "from .api import router as api_router\napp.include_router(api_router, prefix='/api')",
+    );
+    const pkg = runFull(
+      'src/one/api/__init__.py',
+      'from .models import router as models_router\nrouter.include_router(models_router)',
+    );
+    const resolved = resolveFastAPIRouterPrefixes(
+      [
+        'src/one/app.py',
+        'src/one/api/__init__.py',
+        'src/one/api/models.py',
+        'src/two/api/models.py',
+      ],
+      [...root.includes, ...pkg.includes],
+      [...root.imports, ...pkg.imports],
+      [...root.moduleAliases, ...pkg.moduleAliases],
+    );
+
+    expect(resolved.prefixesByFile.get('src/one/api/models.py')).toEqual(new Set(['/api']));
+    expect(resolved.prefixesByFile.has('src/two/api/models.py')).toBe(false);
+    expect(pkg.includes[0]).toMatchObject({
+      host: 'router',
+      routerExpr: 'models_router',
+      prefix: '',
+    });
+  });
+
+  it('declines an absolute import shared by multiple source roots', () => {
+    const root = runFull(
+      'main.py',
+      "from api.models import router as models_router\napp.include_router(models_router, prefix='/api')",
+    );
+    const resolved = resolveFastAPIRouterPrefixes(
+      ['main.py', 'one/api/models.py', 'two/api/models.py'],
+      root.includes,
+      root.imports,
+      root.moduleAliases,
+    );
+
+    expect(resolved.prefixesByFile.size).toBe(0);
+    expect(resolved.resolvedIncludes.size).toBe(0);
+  });
+});
+
+describe('nested FastAPI router prefix resolution — edge cases', () => {
+  function resolveSources(sources: Record<string, string>) {
+    const parts = Object.entries(sources).map(([file, src]) => runFull(file, src));
+    return resolveFastAPIRouterPrefixes(
+      Object.keys(sources),
+      parts.flatMap((p) => p.includes),
+      parts.flatMap((p) => p.imports),
+      parts.flatMap((p) => p.moduleAliases),
+      parts.flatMap((p) => p.constructorPrefixes),
+    );
+  }
+
+  it('joins the parent APIRouter(prefix=...) between the mount and the child', () => {
+    const resolved = resolveSources({
+      'main.py':
+        "from api import router as api_router\napp.include_router(api_router, prefix='/api')",
+      'api/__init__.py': [
+        'from .agents import router as agents_router',
+        "router = APIRouter(prefix='/v1')",
+        'router.include_router(agents_router)',
+      ].join('\n'),
+      'api/agents.py': 'router = APIRouter()',
+    });
+
+    expect(resolved.prefixesByFile.get('api/agents.py')).toEqual(new Set(['/api/v1']));
+  });
+
+  it('carries the parent APIRouter(prefix=...) when the parent is mounted bare', () => {
+    const resolved = resolveSources({
+      'main.py': 'from api import router as api_router\napp.include_router(api_router)',
+      'api/__init__.py': [
+        'from .agents import router as agents_router',
+        'from .models import router as models_router',
+        "router = APIRouter(prefix='/v1')",
+        'router.include_router(agents_router)',
+        'router.include_router(models_router)',
+      ].join('\n'),
+      'api/agents.py': 'router = APIRouter()',
+      'api/models.py': 'router = APIRouter()',
+    });
+
+    expect(resolved.prefixesByFile.get('api/agents.py')).toEqual(new Set(['/v1']));
+    expect(resolved.prefixesByFile.has('api/__init__.py')).toBe(false);
+  });
+
+  it('records nothing for an all-empty bare chain', () => {
+    const resolved = resolveSources({
+      'main.py': 'from api import router as api_router\napp.include_router(api_router)',
+      'api/__init__.py':
+        'from .agents import router as agents_router\nrouter.include_router(agents_router)',
+      'api/agents.py': 'router = APIRouter()',
+    });
+
+    expect(resolved.prefixesByFile.size).toBe(0);
+    expect(resolved.resolvedIncludes.size).toBe(0);
+  });
+
+  it('expands a deep diamond-shaped include graph once per (file, prefix)', () => {
+    // 40 layers of two routers that each include both routers of the next
+    // layer: 2^39 root-to-leaf paths, 80 distinct files.
+    const layers = 40;
+    const sources: Record<string, string> = {
+      'main.py': "from pkg.l0_0 import router as root\napp.include_router(root, prefix='/api')",
+    };
+    for (let i = 0; i < layers; i++) {
+      for (const j of [0, 1]) {
+        sources[`pkg/l${i}_${j}.py`] =
+          i === layers - 1
+            ? 'router = APIRouter()'
+            : [
+                `from .l${i + 1}_0 import router as a`,
+                `from .l${i + 1}_1 import router as b`,
+                'router.include_router(a)',
+                'router.include_router(b)',
+              ].join('\n');
+      }
+    }
+
+    const resolved = resolveSources(sources);
+
+    expect(resolved.prefixesByFile.get(`pkg/l${layers - 1}_1.py`)).toEqual(new Set(['/api']));
+  });
+
+  it('passes a prefix through only a host literally named `router`', () => {
+    const resolved = resolveSources({
+      'main.py': "from api import api_router\napp.include_router(api_router.router, prefix='/api')",
+      'api/api_router.py': [
+        'from .items import router as items_router',
+        'api_router = APIRouter()',
+        'api_router.include_router(items_router)',
+      ].join('\n'),
+      'api/items.py': 'router = APIRouter()',
+    });
+
+    expect(resolved.prefixesByFile.get('api/api_router.py')).toEqual(new Set(['/api']));
+    expect(resolved.prefixesByFile.has('api/items.py')).toBe(false);
+  });
+});
+
 describe('extractFastAPIRouterBindings — relative imports', () => {
   it('captures single-dot relative imports (`from .calls import router as …`)', () => {
     // FINDING 2: the previous regex `[A-Za-z_][\w.]*` rejected
@@ -269,12 +418,40 @@ describe('extractFastAPIRouterBindings — negative cases', () => {
     expect(imports).toEqual([]);
   });
 
-  it('does not capture include_router calls without a prefix= keyword', () => {
+  it('captures unprefixed include_router calls with other keywords as propagation edges', () => {
     const { includes } = run(
       'main.py',
-      ['app.include_router(users.router, tags=["users"])', ''].join('\n'),
+      [
+        'app.include_router(users.router, tags=["users"])',
+        'router.include_router(',
+        '    items_router,',
+        ')',
+        '',
+      ].join('\n'),
     );
-    expect(includes).toEqual([]);
+    expect(includes.map(({ host, routerExpr, prefix }) => ({ host, routerExpr, prefix }))).toEqual([
+      { host: 'app', routerExpr: 'users.router', prefix: '' },
+      { host: 'router', routerExpr: 'items_router', prefix: '' },
+    ]);
+  });
+
+  it('captures prefix= after nested-call arguments without an extra unprefixed edge', () => {
+    const { includes } = run(
+      'main.py',
+      [
+        'app.include_router(users.router, tags=["users"], prefix="/users")',
+        'app.include_router(items.router, dependencies=[Depends(auth)], prefix="/items")',
+        'app.include_router(orders_router, dependencies=[Depends(auth)], prefix="/orders")',
+        'router.include_router(audit_router, dependencies=[Depends(auth)])',
+        '',
+      ].join('\n'),
+    );
+    expect(includes.map(({ routerExpr, prefix }) => ({ routerExpr, prefix }))).toEqual([
+      { routerExpr: 'users.router', prefix: '/users' },
+      { routerExpr: 'items.router', prefix: '/items' },
+      { routerExpr: 'orders_router', prefix: '/orders' },
+      { routerExpr: 'audit_router', prefix: '' },
+    ]);
   });
 
   it('does not capture include_router calls with a non-string prefix', () => {

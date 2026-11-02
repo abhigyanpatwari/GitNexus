@@ -25,6 +25,7 @@ export const RightPanel = () => {
     graph,
     graphMode,
     addCodeReference,
+    resolveFilePath,
     // LLM / chat state
     chatMessages,
     isChatLoading,
@@ -45,10 +46,6 @@ export const RightPanel = () => {
     chatMessages,
     isChatLoading,
   );
-
-  const resolveFilePathForUI = useCallback((_requestedPath: string): string | null => {
-    return null;
-  }, []);
 
   const findFileNodeIdForUI = useCallback(
     (filePath: string): string | undefined => {
@@ -81,7 +78,11 @@ export const RightPanel = () => {
         endLine1 = parseInt(lineMatch[3] || lineMatch[2], 10);
       }
 
-      const resolvedPath = resolveFilePathForUI(rawPath);
+      // Malformed citations like "[[ :10]]" leave an empty path; refuse rather
+      // than letting the suffix matcher return the first indexed file.
+      if (!rawPath) return;
+
+      const resolvedPath = resolveFilePath(rawPath);
       if (!resolvedPath) return;
 
       const nodeId = findFileNodeIdForUI(resolvedPath);
@@ -100,7 +101,7 @@ export const RightPanel = () => {
         source: 'ai',
       });
     },
-    [addCodeReference, findFileNodeIdForUI, resolveFilePathForUI],
+    [addCodeReference, findFileNodeIdForUI, resolveFilePath],
   );
 
   // Handler for node grounding: [[Class:View]], [[Function:trigger]], etc.
@@ -134,12 +135,14 @@ export const RightPanel = () => {
 
       // 2. Add to Code Panel (if node has file/line info)
       if (node.properties.filePath) {
-        const resolvedPath = resolveFilePathForUI(node.properties.filePath);
+        const resolvedPath = resolveFilePath(node.properties.filePath);
         if (resolvedPath) {
           addCodeReference({
             filePath: resolvedPath,
-            startLine: node.properties.startLine ? node.properties.startLine - 1 : undefined,
-            endLine: node.properties.endLine ? node.properties.endLine - 1 : undefined,
+            startLine:
+              typeof node.properties.startLine === 'number' ? node.properties.startLine : undefined,
+            endLine:
+              typeof node.properties.endLine === 'number' ? node.properties.endLine : undefined,
             nodeId: node.id,
             label: node.label,
             name: node.properties.name,
@@ -148,7 +151,7 @@ export const RightPanel = () => {
         }
       }
     },
-    [graph, resolveFilePathForUI, addCodeReference],
+    [graph, resolveFilePath, addCodeReference],
   );
 
   const handleLinkClick = useCallback(

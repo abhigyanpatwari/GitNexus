@@ -1,0 +1,102 @@
+{
+  "language": "csharp",
+  "description": "Rename C# escaped overloads, method groups and calls while preserving named-argument labels and shadow parameters.",
+  "categories": [
+    "escaped-identifier",
+    "overloads",
+    "call-graph",
+    "named-arguments",
+    "shadowing",
+    "unrelated-owner"
+  ],
+  "target": {
+    "name": "@Encode",
+    "kind": "Method",
+    "file": "Encoder.cs",
+    "startLine": 1
+  },
+  "newName": "Serialize",
+  "expect": {
+    "status": "success",
+    "edits": 5
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "Entry",
+        "kind": "Method",
+        "file": "Encoder.cs",
+        "startLine": 7
+      },
+      "to": {
+        "name": "Middle",
+        "kind": "Method",
+        "file": "Encoder.cs",
+        "startLine": 3
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "Middle",
+        "kind": "Method",
+        "file": "Encoder.cs",
+        "startLine": 3
+      },
+      "to": {
+        "name": "@Encode",
+        "kind": "Method",
+        "file": "Encoder.cs",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "Middle",
+        "kind": "Method",
+        "file": "Encoder.cs",
+        "startLine": 3
+      },
+      "to": {
+        "name": "Encode",
+        "kind": "Method",
+        "file": "Encoder.cs",
+        "startLine": 2
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "Use",
+        "kind": "Method",
+        "file": "Encoder.cs",
+        "startLine": 15
+      },
+      "to": {
+        "name": "Encode",
+        "kind": "Method",
+        "file": "Encoder.cs",
+        "startLine": 14
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "Label",
+        "kind": "Method",
+        "file": "Encoder.cs",
+        "startLine": 10
+      },
+      "to": {
+        "name": "Named",
+        "kind": "Method",
+        "file": "Encoder.cs",
+        "startLine": 9
+      }
+    }
+  ],
+  "expectedTargetName": "@Serialize",
+  "exactOutgoing": true
+}

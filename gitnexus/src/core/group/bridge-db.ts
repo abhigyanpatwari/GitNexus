@@ -13,6 +13,7 @@ import type {
 } from './types.js';
 import { BRIDGE_SCHEMA_QUERIES, BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
 import { recordedMatchStages, recordedRepoList } from './completeness.js';
+import { closeQueryResults } from '../lbug/query-result-utils.js';
 import {
   closeLbugConnection,
   openLbugConnection,
@@ -226,7 +227,7 @@ async function evictBridgeEntry(key: string, entry: CachedBridgeEntry): Promise<
 async function closeBridgeHandle(handle: BridgeHandle): Promise<void> {
   if (!handle._readOnly) {
     try {
-      await (handle._conn as lbug.Connection).query('CHECKPOINT');
+      await closeQueryResults(await (handle._conn as lbug.Connection).query('CHECKPOINT'));
     } catch {
       /* ignore — older LadybugDB or schemaless DB may not accept it */
     }
@@ -546,7 +547,7 @@ export async function ensureBridgeSchema(handle: BridgeHandle): Promise<void> {
   const conn = handle._conn as lbug.Connection;
   for (const q of BRIDGE_SCHEMA_QUERIES) {
     try {
-      await conn.query(q);
+      await closeQueryResults(await conn.query(q));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes(LBUG_ALREADY_EXISTS_MSG)) throw err;
@@ -561,19 +562,25 @@ export async function queryBridge<T>(
 ): Promise<T[]> {
   const run = async (): Promise<T[]> => {
     const conn = handle._conn as lbug.Connection;
+    let queryResult: lbug.QueryResult | lbug.QueryResult[];
     if (params && Object.keys(params).length > 0) {
       const stmt = await conn.prepare(cypher);
       if (!stmt.isSuccess()) {
         const errMsg = await stmt.getErrorMessage();
         throw new Error(`Bridge query prepare failed: ${errMsg}`);
       }
-      const queryResult = await conn.execute(stmt, params);
+      queryResult = await conn.execute(stmt, params);
+    } else {
+      queryResult = await conn.query(cypher);
+    }
+    try {
       const result = unwrapQueryResult(queryResult);
       return (await result.getAll()) as T[];
+    } finally {
+      // Native results retain the database even after conn/db.close(). Release
+      // them before the bridge is swapped and its file stamp is recorded.
+      await closeQueryResults(queryResult);
     }
-    const queryResult = await conn.query(cypher);
-    const result = unwrapQueryResult(queryResult);
-    return (await result.getAll()) as T[];
   };
   // Cached RO handles are shared across concurrent @group callers, so serialize
   // conn ops per handle (a LadybugDB Connection is not safe for concurrent
@@ -667,6 +674,15 @@ export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promi
   await writeFileAtomic(path.join(groupDir, 'meta.json'), JSON.stringify(persisted, null, 2));
 }
 
+const stampMatchesStat = (
+  stat: { size: number; mtimeMs: number },
+  meta: Pick<BridgeMeta, 'bridgeSize' | 'bridgeMtimeMs'>,
+): boolean =>
+  stat.size === meta.bridgeSize &&
+  // Do not `Math.round`: two same-size databases written in the same
+  // millisecond must still fail if their filesystem mtimes differ.
+  stat.mtimeMs === meta.bridgeMtimeMs;
+
 /**
  * Does `meta` still describe the `bridge.lbug` sitting next to it?
  *
@@ -712,7 +728,7 @@ export async function bridgeMetaMatchesFile(groupDir: string, meta: BridgeMeta):
   if (!stampedSize || !stampedMtime) return false;
   try {
     const stat = await fsp.stat(path.join(groupDir, 'bridge.lbug'));
-    return stat.size === meta.bridgeSize && stat.mtimeMs === meta.bridgeMtimeMs;
+    return stampMatchesStat(stat, meta);
   } catch {
     return false;
   }

@@ -22,7 +22,7 @@
  * mapping or a package manifest, and otherwise not at all.
  */
 
-import type { NodeWorkspacePackages } from '../../import-resolvers/node-workspace-packages.js';
+import type { NodeWorkspacePackages } from '../typescript/workspace-packages.js';
 import { resolveTsTarget } from '../typescript/import-target.js';
 import type { TsconfigIndex } from '../typescript/tsconfig.js';
 

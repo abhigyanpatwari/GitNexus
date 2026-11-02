@@ -3,7 +3,7 @@
  *
  * Loaded once per analyze pass via `csharpScopeResolver.loadResolutionConfig`
  * and threaded into `resolveCsharpImportTarget`. The pure gate predicates live
- * in `../../csharp-namespace-gate.ts` (shared with the legacy DAG resolver).
+ * in `./namespace-gate.ts`.
  */
 
 import {

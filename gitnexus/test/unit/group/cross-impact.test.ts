@@ -60,7 +60,7 @@ describe('cross-impact', () => {
       direction: 'sideways',
     });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toContain('direction');
+    if (r.ok === false) expect(r.error).toContain('direction');
   });
 
   it('test_validateGroupImpactParams_clamps_crossDepth_and_warns', () => {
@@ -110,7 +110,7 @@ describe('cross-impact', () => {
       direction: 'upstream',
     });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBe('target or target_uid is required');
+    if (r.ok === false) expect(r.error).toBe('target or target_uid is required');
   });
 
   it('test_collectImpactSymbolUids_respects_service_prefix', () => {

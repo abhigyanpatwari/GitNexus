@@ -27,7 +27,11 @@ const workflowDocument = load(workflow) as {
   jobs?: Record<
     string,
     {
+      name?: string;
       environment?: unknown;
+      needs?: string | string[];
+      permissions?: Record<string, string>;
+      'runs-on'?: string | string[];
       env?: Record<string, string>;
       if?: unknown;
       'timeout-minutes'?: unknown;
@@ -39,6 +43,7 @@ const workflowDocument = load(workflow) as {
         'timeout-minutes'?: unknown;
         with?: Record<string, unknown>;
         env?: Record<string, string>;
+        'working-directory'?: string;
       }>;
     }
   >;
@@ -56,6 +61,112 @@ function stepRun(stepName: string): string {
   const step = findStep(stepName);
   return typeof step?.run === 'string' ? step.run : '';
 }
+
+describe('dedicated runner readiness', () => {
+  it('bounds offline runner pickup from trusted hosted main before paid work', () => {
+    const check = workflowDocument.jobs?.['check-runner'];
+    expect(check?.['runs-on']).toBe('ubuntu-latest');
+    expect(check?.environment).toBe('gitnexus-evolution');
+    expect(check?.permissions).toEqual({ contents: 'read', actions: 'write' });
+    expect(check?.['timeout-minutes']).toBe(10);
+    expect(String(check?.if)).toContain("github.ref == 'refs/heads/main'");
+    expect(String(check?.if)).toContain("github.repository == 'abhigyanpatwari/GitNexus'");
+    expect(evolveJob?.needs).toEqual(['start-runner', 'check-runner', 'runner-ready']);
+    const pickup = check?.steps?.find(
+      (step) => step.name === "Verify the current run's native pickup probe",
+    );
+    expect(pickup?.run).toBe('python3 .github/scripts/evolution-runner-ready.py');
+    expect(pickup?.env).toEqual({ GH_TOKEN: '${{ github.token }}' });
+    const cancel = check?.steps?.at(-1);
+    expect(cancel?.if).toBe('failure()');
+    expect(cancel?.run).toBe(
+      'gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"',
+    );
+    const ready = workflowDocument.jobs?.['runner-ready'];
+    expect(ready?.needs).toEqual(['start-runner']);
+    expect(ready?.if).toBe(check?.if);
+    expect(ready?.permissions).toEqual({});
+    expect(ready?.steps?.some((step) => String(step.run).includes('git --version'))).toBe(true);
+    expect(String(evolveJob?.if)).toContain('inputs.runner_only != true');
+  });
+
+  it('reuses the existing credentials and schedule variables with only the historical AWS configuration', () => {
+    const release = readFileSync(
+      path.join(REPO_ROOT, '.github/workflows/release-evaluation.yml'),
+      'utf8',
+    );
+    const existingSecrets = new Set([
+      'GITNEXUS_BENCH_ANTHROPIC_API_KEY',
+      'GITNEXUS_BENCH_AUTH_TOKEN',
+      'GITNEXUS_BENCH_OPENAI_API_KEY',
+      'GITNEXUS_EVOLUTION_AWS_ROLE_ARN',
+      'GITNEXUS_EVOLUTION_EC2_INSTANCE_ID',
+      'RELEASE_APP_ID',
+      'RELEASE_APP_PRIVATE_KEY',
+    ]);
+    const existingVariables = new Set([
+      'GITNEXUS_EVOLUTION_ENABLED',
+      'GITNEXUS_EVOLUTION_WORKERS',
+      'GITNEXUS_EVOLUTION_AWS_REGION',
+      'GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC',
+    ]);
+    for (const text of [workflow, release]) {
+      for (const match of text.matchAll(/secrets\.([A-Z_][A-Z_0-9]*)/g)) {
+        expect(existingSecrets.has(match[1]), match[1]).toBe(true);
+      }
+      for (const match of text.matchAll(/vars\.([A-Z_][A-Z_0-9]*)/g)) {
+        expect(existingVariables.has(match[1]), match[1]).toBe(true);
+      }
+      expect(text).not.toContain('configure-aws-credentials');
+    }
+    for (const job of ['check-runner', 'runner-ready', 'watch-evolve-pickup']) {
+      expect(workflowDocument.jobs?.[job]?.env).toBeUndefined();
+      for (const step of workflowDocument.jobs?.[job]?.steps ?? []) {
+        expect(Object.keys(step.env ?? {}).every((key) => key === 'GH_TOKEN')).toBe(true);
+      }
+    }
+    const releaseDocument = load(release) as typeof workflowDocument;
+    expect(Object.keys(releaseDocument.jobs?.evaluate?.env ?? {}).sort()).toEqual([
+      'CLI_ARM',
+      'COMPARISON_RUN_ID',
+      'EFFORT',
+      'INPUT_PR',
+      'INPUT_PR_SHA',
+      'INPUT_REF',
+      'MODEL',
+    ]);
+    expect(String(releaseDocument.jobs?.evaluate?.if)).toContain(
+      "vars.GITNEXUS_EVOLUTION_ENABLED == 'true'",
+    );
+    expect(String(releaseDocument.jobs?.evaluate?.if)).toContain(
+      "vars.GITNEXUS_EVOLUTION_WORKERS == '3'",
+    );
+  });
+
+  it('watches actual paid pickup concurrently after the readiness gate', () => {
+    const watch = workflowDocument.jobs?.['watch-evolve-pickup'];
+    expect(watch?.needs).toEqual(evolveJob?.needs);
+    expect(watch?.['runs-on']).toBe('ubuntu-latest');
+    expect(watch?.environment).toBeUndefined();
+    expect(watch?.['timeout-minutes']).toBe(10);
+    expect(watch?.permissions).toEqual({ contents: 'read', actions: 'write' });
+    expect(watch?.if).toBe('inputs.runner_only != true');
+    expect(evolveJob?.needs).not.toContain('watch-evolve-pickup');
+    // The watchdog matches by job name, so a rename must update both together.
+    expect(evolveJob?.name).toBe('Propose, benchmark, and gate skill candidates');
+    expect(
+      watch?.steps?.some(
+        (step) =>
+          step.run ===
+          `python3 .github/scripts/evolution-runner-ready.py --job-name "${evolveJob?.name}"`,
+      ),
+    ).toBe(true);
+    expect(watch?.steps?.at(-1)?.if).toBe('failure()');
+    expect(watch?.steps?.at(-1)?.run).toBe(
+      'gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"',
+    );
+  });
+});
 
 // The seed step's usability check is the proposer's OWN preflight
 // (select_evidence + proposer_evidence_entries), invoked through uv. Stubbing
@@ -270,12 +381,13 @@ describe('gitnexus skill-evolution workflow contract', () => {
   });
 
   it('passes the cell concurrency through to the benchmark', () => {
-    // The lane is serial unless told otherwise: concurrency only pays off when
-    // the runner has the vCPUs for it, and a cell starved of CPU drifts toward
-    // its session timeout, which the gate counts as an excluded run.
+    // Dispatch defaults to 3. Scheduled runs still fall back to serial unless
+    // GITNEXUS_EVOLUTION_WORKERS is set — a cell starved of CPU that hits the
+    // session ceiling is an excluded run the gate refuses.
     expect(evolveJob?.env?.WORKERS).toBe(
       "${{ inputs.workers || vars.GITNEXUS_EVOLUTION_WORKERS || '1' }}",
     );
+    expect(workflow).toMatch(/workers:\n(?:[^\n]*\n){0,4}        default: '3'/);
   });
 
   it('seeds from the newest usable completed main run, including failed runs', () => {
@@ -475,16 +587,26 @@ exit 1`);
     expect(containment).toContain('gitnexus-cursor-integration/skills/gitnexus-review/*');
   });
 
-  it('installs node_modules for the monorepo root, gitnexus-shared, and gitnexus', () => {
-    // The benchmark sandbox-copies node_modules from all three (tasks.scenarios.yaml).
-    // The root tree was absent on the first real run because only the two subpackage
-    // steps ran, so capture_task_dependency_binding aborted at task binding.
+  it('installs node_modules for the monorepo root and gitnexus, and compiles shared from the parent', () => {
+    // The benchmark sandbox-copies node_modules from root and gitnexus
+    // (tasks.scenarios.yaml). Shared is compiled by gitnexus `npm run build`
+    // (scripts/build.js); a dedicated npm ci in gitnexus-shared stalls CI.
     const rootStep = findStep('Install monorepo root dependencies');
     expect(rootStep).toBeDefined();
     expect(rootStep).not.toHaveProperty('working-directory'); // installs at the repo root
     expect(String(rootStep?.run)).toContain('npm ci');
-    expect(stepRun('Build pinned shared runtime')).toContain('npm ci');
-    expect(stepRun('Install and build pinned GitNexus runtime')).toContain('npm ci');
+    expect(findStep('Build pinned shared runtime')).toBeUndefined();
+    const gitnexusRun = stepRun('Install and build pinned GitNexus runtime');
+    expect(gitnexusRun).toContain('npm ci');
+    expect(gitnexusRun).toContain('npm run build');
+    expect(gitnexusRun).toContain('mkdir -p ../gitnexus-shared/node_modules');
+    expect(
+      evolveJob?.steps?.some(
+        (step) =>
+          step['working-directory'] === 'gitnexus-shared' &&
+          String(step.run ?? '').includes('npm ci'),
+      ),
+    ).toBe(false);
   });
 
   it('waits for the runner boot-time package lock before installing containment tools', () => {
@@ -540,7 +662,7 @@ exit 1`);
 
   it('labels the upload-artifact pin with its real version', () => {
     expect(workflow).toContain(
-      'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1',
+      'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2',
     );
     expect(workflow).not.toContain('# v6.0.0');
   });
@@ -572,6 +694,27 @@ exit 1`);
     // uploads. The job must finish inside that window even when the schedule
     // fires late (the 2026-08-01 run was queued 65 minutes after the cron).
     expect(jobBudget as number).toBeLessThanOrEqual(21 * 60);
+    // A Friday dispatch inherits leftover uptime. The shared entrypoint — not
+    // the workflow YAML — must cap the sweep so it fails in-process and the
+    // always() upload still runs (run 33962002890).
+    const script = readFileSync(
+      path.join(REPO_ROOT, 'eval/workflow_bench/run-evolution.sh'),
+      'utf8',
+    );
+    // The flag, not a precomputed number: the CLI reads /proc/uptime in the
+    // same breath as it starts the clock the cap is measured against, so
+    // nothing between the two can be charged to the sweep.
+    expect(script).toContain('--max-runtime-from-instance-window');
+    expect(script).not.toContain('instance_window_budget_from_proc');
+    expect(script).toContain('export RUNTIME_DIGEST');
+    // The workflow's half of that contract is calling the entrypoint, not
+    // naming the flag. The YAML never mentions --max-runtime-from-instance-window
+    // at all — only the prose at gitnexus-skill-evolution.yml:179-184 describing
+    // the cap — so an assertion on flag text there would test a comment, and a
+    // loop step that had stopped invoking the script would still pass it.
+    expect(stepRun('Run the propose → benchmark → gate loop')).toContain(
+      './workflow_bench/run-evolution.sh --apply',
+    );
   });
 
   it('uploads benchmark evidence unconditionally, on a path it addresses itself', () => {

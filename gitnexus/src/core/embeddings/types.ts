@@ -8,6 +8,8 @@ export const LABEL_FUNCTION = 'Function' as const;
 export const LABEL_METHOD = 'Method' as const;
 export const LABEL_CONSTRUCTOR = 'Constructor' as const;
 export const LABEL_CLASS = 'Class' as const;
+export const LABEL_PROTOCOL = 'Protocol' as const;
+export const LABEL_CATEGORY = 'Category' as const;
 export const LABEL_INTERFACE = 'Interface' as const;
 export const LABEL_STRUCT = 'Struct' as const;
 export const LABEL_ENUM = 'Enum' as const;
@@ -53,6 +55,8 @@ export const CHUNKABLE_LABELS = [
   LABEL_METHOD,
   LABEL_CONSTRUCTOR,
   LABEL_CLASS,
+  LABEL_PROTOCOL,
+  LABEL_CATEGORY,
   LABEL_INTERFACE,
   LABEL_STRUCT,
   LABEL_ENUM,
@@ -165,6 +169,20 @@ export const CHUNKING_RULES: Readonly<Partial<Record<ChunkableLabel, ChunkingRul
     groupFields: false,
     structuralTextMode: STRUCTURAL_TEXT_MODE_DECLARATION,
   },
+  [LABEL_PROTOCOL]: {
+    mode: CHUNK_MODE_AST_DECLARATION,
+    includePrefix: true,
+    includeSuffix: false,
+    groupFields: false,
+    structuralTextMode: STRUCTURAL_TEXT_MODE_NONE,
+  },
+  [LABEL_CATEGORY]: {
+    mode: CHUNK_MODE_AST_DECLARATION,
+    includePrefix: true,
+    includeSuffix: false,
+    groupFields: true,
+    structuralTextMode: STRUCTURAL_TEXT_MODE_NONE,
+  },
   [LABEL_STRUCT]: {
     mode: CHUNK_MODE_AST_DECLARATION,
     includePrefix: true,
@@ -209,6 +227,8 @@ export interface EmbeddingConfig {
   batchSize: number;
   /** Number of chunks passed to one local/HTTP embedding call */
   subBatchSize: number;
+  /** Maximum UTF-16 characters in each fully generated embedding input. */
+  maxInputChars: number;
   /** Maximum ONNX Runtime CPU threads for local inference */
   threads: number;
   /** Embedding vector dimensions */
@@ -234,6 +254,7 @@ export const DEFAULT_EMBEDDING_CONFIG: EmbeddingConfig = {
   modelId: 'Snowflake/snowflake-arctic-embed-xs',
   batchSize: 16,
   subBatchSize: 8,
+  maxInputChars: 4096,
   threads: 2,
   dimensions: 384,
   device: 'auto',
@@ -299,6 +320,8 @@ export interface ModelProgress {
   loaded?: number;
   total?: number;
 }
+
+export type ModelProgressCallback = (progress: ModelProgress) => void;
 
 export interface ChunkSearchRow {
   nodeId: string;

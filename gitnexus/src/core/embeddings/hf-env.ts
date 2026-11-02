@@ -22,6 +22,22 @@ export const HF_MAX_TIMEOUT_MS = 30 * 60 * 1_000;
 /** Upper bound clamped on the env-override attempt count. */
 export const HF_MAX_ATTEMPTS_CAP = 10;
 
+/** Per-attempt timeout from `HF_DOWNLOAD_TIMEOUT_MS`, else the built-in default. */
+export const resolveHfEnvTimeoutMs = (): number => {
+  const envTimeout = Number(process.env.HF_DOWNLOAD_TIMEOUT_MS);
+  return Number.isFinite(envTimeout) && envTimeout > 0
+    ? Math.min(envTimeout, HF_MAX_TIMEOUT_MS)
+    : HF_DOWNLOAD_TIMEOUT_MS;
+};
+
+/** Attempt count from `HF_MAX_ATTEMPTS` (finite values that floor to ≥1), else the default. */
+export const resolveHfEnvMaxAttempts = (): number => {
+  const envMaxAttempts = Number(process.env.HF_MAX_ATTEMPTS);
+  if (!Number.isFinite(envMaxAttempts)) return HF_MAX_ATTEMPTS;
+  const attempts = Math.floor(envMaxAttempts);
+  return attempts >= 1 ? Math.min(attempts, HF_MAX_ATTEMPTS_CAP) : HF_MAX_ATTEMPTS;
+};
+
 /**
  * @internal Exported only for unit tests and the two embedder entry points
  * (`core/embeddings/embedder.ts` + `mcp/core/embedder.ts`). Not part of the
@@ -222,22 +238,12 @@ export async function withHfDownloadRetry<T>(
   // Upper bounds are clamped to prevent accidental runaway configuration:
   //   - timeoutMs is capped at HF_MAX_TIMEOUT_MS (30 min)
   //   - maxAttempts is floored (fractional values → integer) and capped at
-  //     HF_MAX_ATTEMPTS_CAP (10).  Values ≤ 0, NaN, or Infinity fall back to
-  //     the built-in defaults.
-  const envTimeout = Number(process.env.HF_DOWNLOAD_TIMEOUT_MS);
-  const envMaxAttempts = Number(process.env.HF_MAX_ATTEMPTS);
-  const resolvedTimeout =
-    Number.isFinite(envTimeout) && envTimeout > 0
-      ? Math.min(envTimeout, HF_MAX_TIMEOUT_MS)
-      : HF_DOWNLOAD_TIMEOUT_MS;
-  const resolvedMaxAttempts =
-    Number.isFinite(envMaxAttempts) && envMaxAttempts > 0
-      ? Math.min(Math.floor(envMaxAttempts), HF_MAX_ATTEMPTS_CAP)
-      : HF_MAX_ATTEMPTS;
+  //     HF_MAX_ATTEMPTS_CAP (10).  Values that floor below 1, NaN, or Infinity
+  //     fall back to the built-in defaults.
   const {
-    maxAttempts = resolvedMaxAttempts,
+    maxAttempts = resolveHfEnvMaxAttempts(),
     baseDelayMs = HF_BASE_DELAY_MS,
-    timeoutMs = resolvedTimeout,
+    timeoutMs = resolveHfEnvTimeoutMs(),
     circuit = hfDownloadCircuit,
     onRetry,
   } = options;

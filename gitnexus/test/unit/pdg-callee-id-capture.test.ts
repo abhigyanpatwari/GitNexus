@@ -140,6 +140,7 @@ function makeIndexes(
       unresolvedEdges: 0,
       sccCount: 0,
       largestSccSize: 0,
+      ambiguousWildcardExports: [],
     },
   };
 }

@@ -2,81 +2,24 @@
  * COBOL `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed
  * by the generic `runScopeResolution` orchestrator.
  *
- * The provider is a thin wiring object — COBOL's simple scope model
- * (Module + Function only, no inheritance, no type system) plugs into
- * `runScopeResolution` with minimal configuration.
+ * Program, section, paragraph and qualified data declarations use the shared
+ * resolution pipeline without introducing a compiler or inheritance model.
  *
  * Reference: `languages/python/scope-resolver.ts`.
  */
 
-import path from 'node:path';
 import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { cobolProvider } from '../cobol.js';
-
-// Copybook file extensions for COPY name resolution
-const COPYBOOK_EXTENSIONS = new Set(['.cpy', '.copybook']);
-// COBOL source files, searched only after every copybook has missed.
-const COBOL_SOURCE_EXTENSIONS = new Set(['.cbl', '.cob', '.cobol']);
-
-/**
- * Uppercased-basename → first file carrying it, one map PER TIER, memoized on
- * the `allFilePaths` Set identity (#2908).
- *
- * `resolveImportTarget` used to run two full workspace scans per `COPY` — one
- * for the copybook tier, one for the source tier — each calling `path.extname`
- * + `path.basename` + `toUpperCase` on every entry. A `COPY` of a member that
- * lives outside the repo (the common case: vendor and system copybooks) missed
- * in both, so both scans always ran to completion, making resolution
- * O(copies × files). The orchestrator passes the SAME Set to every import in a
- * pass (`pipeline/run.ts` builds it once), so a `WeakMap` keyed on that Set
- * turns the scans into one build per run.
- *
- * Two tiers rather than one map is the tie-break, not a stylistic choice: a
- * `.cpy`/`.copybook` hit beats a `.cbl`/`.cob`/`.cobol` hit even when the source
- * file comes FIRST in Set-iteration order, which is exactly what collapsing the
- * tiers into a single first-wins map would silently discard. Within a tier the
- * first file in Set-iteration order wins, mirroring the `return` on first match
- * in the scans this replaces.
- *
- * The per-file key is derived with the same `path.extname(fp).toLowerCase()` →
- * `path.basename(fp, ext)` → `toUpperCase()` sequence the scans used, including
- * its quirk: `path.basename` strips the suffix only on an exact, case-sensitive
- * match, so `Foo.CPY` indexes under `FOO.CPY` rather than `FOO`. Node's `path`
- * stays in the loop for the same reason — on POSIX it does not treat `\` as a
- * separator, and hand-rolled slicing on `/` would start resolving backslash
- * paths the scans never resolved.
- */
-interface CobolCopyIndex {
-  /** `.cpy` / `.copybook` files — tier 1. */
-  readonly copybooks: ReadonlyMap<string, string>;
-  /** `.cbl` / `.cob` / `.cobol` files — tier 2. */
-  readonly sources: ReadonlyMap<string, string>;
-}
-
-const getCobolCopyIndex = perFileSet((allFilePaths: ReadonlySet<string>): CobolCopyIndex => {
-  const copybooks = new Map<string, string>();
-  const sources = new Map<string, string>();
-  // One pass builds both tiers: the two scans walked the same files and
-  // classified each by the same extension test.
-  for (const fp of allFilePaths) {
-    const ext = path.extname(fp).toLowerCase();
-    const tier = COPYBOOK_EXTENSIONS.has(ext)
-      ? copybooks
-      : COBOL_SOURCE_EXTENSIONS.has(ext)
-        ? sources
-        : undefined;
-    if (tier === undefined) continue;
-    const basename = path.basename(fp, ext).toUpperCase();
-    // First in Set-iteration order wins, as the scans' first-match `return` did.
-    if (!tier.has(basename)) tier.set(basename, fp);
-  }
-
-  return { copybooks, sources };
-});
+import { resolveCobolCopyTarget } from './copy-target.js';
+import {
+  cobolRangeKey,
+  cobolTokenRange,
+  readCobolSemanticSource,
+  resolveCobolReference,
+} from './semantic.js';
 
 const cobolScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Cobol,
@@ -84,11 +27,9 @@ const cobolScopeResolver: ScopeResolver = {
   importEdgeReason: 'cobol-scope: copy',
 
   // ── Resolve COPY bookname to file path ─────────────────────────────
-  resolveImportTarget: (targetRaw, _fromFile, allFilePaths) => {
-    const upper = targetRaw.toUpperCase();
-    const index = getCobolCopyIndex(allFilePaths);
-    // Copybooks first, then COBOL sources — the tier order IS the tie-break.
-    return index.copybooks.get(upper) ?? index.sources.get(upper) ?? null;
+  // Shared with the regex processor's resolveCopy (#2967 lockstep).
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
+    return resolveCobolCopyTarget(targetRaw, fromFile, allFilePaths);
   },
 
   // COBOL has no binding-merge rules beyond the default (local-first-then-imports).
@@ -117,7 +58,63 @@ const cobolScopeResolver: ScopeResolver = {
   buildMro: () => new Map(),
 
   // Everything lives under the PROGRAM-ID Module scope.
-  populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
+  populateOwners: (parsed: ParsedFile) => {
+    const qualifiedNames = new Map(parsed.localDefs.map((def) => [def.nodeId, def.qualifiedName]));
+    populateClassOwnedMembers(parsed);
+    for (const def of parsed.localDefs) def.qualifiedName = qualifiedNames.get(def.nodeId);
+  },
+
+  // Observe the provider's exact declaration/qualification model. Structural
+  // edges remain owned by cobol-processor; storage-flow expansion is unrelated
+  // to the single source declaration named by an operand.
+  emitPostResolutionEdges(_graph, parsedFiles, _nodeLookup, _indexes, context) {
+    if (!context?.recordSourceBinding) return;
+    const sources = parsedFiles.map((parsed) => ({
+      parsed,
+      facts: readCobolSemanticSource(
+        context.fileContents.get(parsed.filePath) ?? '',
+        parsed.filePath,
+      ),
+    }));
+    const definitions = new Map(
+      sources.flatMap(({ parsed, facts }) => {
+        const byRange = new Map(
+          parsed.localDefs
+            .filter((def) => def.nameRange)
+            .map((def) => [cobolRangeKey(def.nameRange!), def]),
+        );
+        return facts.declarations.flatMap((declaration) => {
+          const def = byRange.get(cobolRangeKey(cobolTokenRange(declaration.token)));
+          return def ? [[declaration, def] as const] : [];
+        });
+      }),
+    );
+    const workspace = sources.map((source) => source.facts);
+    for (const { parsed, facts } of sources) {
+      const references = new Map(
+        facts.references.map((ref) => [cobolRangeKey(cobolTokenRange(ref.token)), ref]),
+      );
+      for (const site of parsed.referenceSites) {
+        const reference = site.nameRange && references.get(cobolRangeKey(site.nameRange));
+        if (!reference) continue;
+        const targets = resolveCobolReference(reference, facts, workspace);
+        const targetDefIds = targets.flatMap((target) => {
+          const def = definitions.get(target);
+          return def ? [def.nodeId] : [];
+        });
+        context.recordSourceBinding(site, {
+          status:
+            targetDefIds.length === 1
+              ? 'resolved'
+              : targetDefIds.length > 1
+                ? 'ambiguous'
+                : 'unresolved',
+          targetDefIds,
+          basis: `cobol-${reference.kind}-binding`,
+        });
+      }
+    }
+  },
 
   // COBOL has no super calls.
   isSuperReceiver: () => false,

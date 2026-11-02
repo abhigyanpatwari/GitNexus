@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shlex
 import shutil
 import stat
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -98,6 +100,7 @@ IMPLEMENTATION_ARMS = frozenset(
         "ce_workflow",
         "ce_workflow_direct",
         "baseline",
+        "baseline_cli",
         "baseline_nomcp",
     }
 )
@@ -217,11 +220,25 @@ def enforce_phase_workspace(
     worktree: Path,
     before: dict[str, str],
     *,
-    allowed_artifact: Path,
+    allowed_artifact: Path | None,
 ) -> None:
-    """Require a phase to change only its one explicit workspace artifact."""
+    """Require a phase to change only its one explicit workspace artifact.
+
+    ``allowed_artifact=None`` is the stricter contract: the phase must leave
+    the workspace byte-identical. That is what a review phase whose artifact
+    lives outside the workspace has to satisfy — there is nothing in there it
+    is entitled to touch.
+    """
 
     root = worktree.expanduser().absolute()
+    if allowed_artifact is None:
+        after = workspace_snapshot(root)
+        changed = sorted(
+            path for path in before.keys() | after.keys() if before.get(path) != after.get(path)
+        )
+        if changed:
+            raise ValueError(f"phase changed the read-only workspace: {', '.join(changed[:5])}")
+        return
     artifact = allowed_artifact.expanduser().absolute()
     try:
         relative = PurePosixPath(artifact.relative_to(root).as_posix())
@@ -325,6 +342,65 @@ def new_plan_doc(worktree: Path, before: dict[Path, str]) -> Path:
     return changed[0]
 
 
+def _assert_self_contained_git_objects(clone: Path) -> None:
+    """Refuse clones that share pack/object bytes with another repository."""
+
+    alternates = clone / ".git" / "objects" / "info" / "alternates"
+    if alternates.exists():
+        raise RuntimeError(f"clone unexpectedly has an external object alternate: {alternates}")
+    objects = clone / ".git" / "objects"
+    if not objects.is_dir():
+        raise RuntimeError(f"clone is missing a git object store: {clone}")
+    for obj in objects.rglob("*"):
+        if obj.is_file() and obj.stat().st_nlink > 1:
+            raise RuntimeError(f"clone object is hardlinked to host storage: {obj}")
+
+
+def copy_isolated_tree(source: Path, parent: Path) -> Path:
+    """Copy a sanitized clone without sharing git objects or a ref namespace.
+
+    ``git clone --no-local`` of GitNexus plus ``sanitize_clone_for_hidden_oracles``
+    (repack/prune/fsck) is minutes per cell. After sanitization the snapshot is
+    one parentless commit; copying that tree is the isolation boundary the
+    contamination bug actually required (a private ``.git``), not a second
+    fetch of full history. Prefer ``cp --reflink=auto`` so XFS/btrfs pay COW;
+    fall back to a full copy on filesystems that cannot reflink.
+    """
+
+    try:
+        source_meta = source.expanduser().lstat()
+    except OSError as exc:
+        raise RuntimeError(f"clone template is unavailable: {source}: {exc}") from exc
+    if stat.S_ISLNK(source_meta.st_mode) or not stat.S_ISDIR(source_meta.st_mode):
+        raise RuntimeError(f"clone template must be a real directory: {source}")
+    source = source.expanduser().resolve()
+    target = Path(tempfile.mkdtemp(prefix="wfbench-", dir=parent))
+    target.rmdir()
+    try:
+        copied = run_managed(
+            ["cp", "-a", "--reflink=auto", str(source), str(target)],
+            timeout=600,
+        )
+        if not copied.ok:
+            # The fallback is for a filesystem that cannot reflink, which shows
+            # up as a normal nonzero exit. A cancellation or timeout is reported
+            # the same way (run_managed returns it rather than raising), and
+            # copytree cannot be cancelled — so falling back there makes the
+            # outage breaker wait out the full copy it set the event to avoid.
+            if copied.state != "exited":
+                raise ManagedProcessError(["cp", "-a", "--reflink=auto", str(source), str(target)], copied)
+            shutil.copytree(source, target, symlinks=True, copy_function=shutil.copy2)
+        _assert_self_contained_git_objects(target)
+        return target
+    except BaseException as primary:
+        if target.exists():
+            try:
+                shutil.rmtree(target)
+            except OSError as cleanup:
+                primary.add_note(f"clone copy cleanup also failed: {type(cleanup).__name__}: {cleanup}")
+        raise
+
+
 def make_worktree(repo: Path, ref: str, parent: Path) -> Path:
     """Create a self-contained clone per benchmark arm."""
 
@@ -344,12 +420,7 @@ def make_worktree(repo: Path, ref: str, parent: Path) -> Path:
             ],
             timeout=600,
         )
-        alternates = target / ".git" / "objects" / "info" / "alternates"
-        if alternates.exists():
-            raise RuntimeError(f"clone unexpectedly has an external object alternate: {alternates}")
-        for obj in (target / ".git" / "objects").rglob("*"):
-            if obj.is_file() and obj.stat().st_nlink > 1:
-                raise RuntimeError(f"clone object is hardlinked to host storage: {obj}")
+        _assert_self_contained_git_objects(target)
         for candidate in (ref, f"origin/{ref}"):
             proc = run_managed(
                 ["git", "-C", str(target), "checkout", "--detach", "--quiet", candidate],
@@ -399,6 +470,10 @@ def _prepare_untracked_for_diff(sandbox: SandboxSession) -> None:
     _sandbox_git(sandbox, ["add", "--intent-to-add", "-A"])
 
 
+def _synthetic_guidance_exclusions(sandbox: SandboxSession) -> list[str]:
+    return [f":(exclude,literal){path}" for path in sandbox.synthetic_guidance_paths]
+
+
 def implementation_diff_digest(
     sandbox: SandboxSession,
     orig_sha: str,
@@ -411,10 +486,11 @@ def implementation_diff_digest(
         raise ValueError(f"unsafe git object id: {orig_sha!r}")
     if prepare_untracked:
         _prepare_untracked_for_diff(sandbox)
+    exclusions = " ".join(shlex.quote(path) for path in _synthetic_guidance_exclusions(sandbox))
     command = (
         "/usr/bin/git -c core.fsmonitor=false diff --no-ext-diff --no-textconv --binary "
         f"{orig_sha} -- . ':(exclude)docs/plans' ':(exclude).claude/skills' "
-        "| /usr/bin/sha256sum"
+        f"{exclusions} | /usr/bin/sha256sum"
     )
     result = sandbox.run(
         ["/bin/sh", "-c", command],
@@ -451,6 +527,7 @@ def diff_churn(
             ".",
             ":(exclude)docs/plans",
             ":(exclude).claude/skills",
+            *_synthetic_guidance_exclusions(sandbox),
         ],
     )
     return parse_shortstat(output)
@@ -527,11 +604,32 @@ if returncode:
         "--",
         ".",
         ":(exclude).wfbench-artifact-*",
+        *_synthetic_guidance_exclusions(sandbox),
     ]
-    result = sandbox.run(command, timeout=60, env=build_sandbox_environment())
-    if not result.ok:
-        raise ManagedProcessError(command, result)
-    return _bounded_regular_bytes(patch, limit=MAX_PATCH_BYTES)
+    primary: BaseException | None = None
+    try:
+        result = sandbox.run(command, timeout=60, env=build_sandbox_environment())
+        if not result.ok:
+            raise ManagedProcessError(command, result)
+        return _bounded_regular_bytes(patch, limit=MAX_PATCH_BYTES)
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        # The returned bytes are the evidence; this temporary sink must not
+        # become an agent edit in later Git diffs or repeated captures.
+        try:
+            shutil.rmtree(artifact_dir)
+        except OSError as cleanup:
+            # A failed removal must neither discard the patch already read nor
+            # replace the real failure. The leftover directory is excluded from
+            # the patch pathspec above and dies with the disposable clone, so
+            # it cannot corrupt the evidence; still report it rather than hide it.
+            detail = f"patch artifact cleanup failed: {artifact_dir}: {type(cleanup).__name__}: {cleanup}"
+            if primary is not None:
+                primary.add_note(detail)
+            else:
+                print(f"warning: {detail}", file=sys.stderr, flush=True)
 
 
 def enforce_work_evidence(

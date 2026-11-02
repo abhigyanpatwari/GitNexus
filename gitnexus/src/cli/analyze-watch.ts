@@ -1,6 +1,7 @@
 /** Local incremental watch (`gitnexus analyze --watch`). Remote auto-sync lives in `auto-sync.ts`. */
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { watchFile, unwatchFile } from 'node:fs';
 import { watch, type FSWatcher } from 'chokidar';
 import { createWatchIgnorePredicate } from '../config/ignore-service.js';
 import {
@@ -9,17 +10,26 @@ import {
   type AnalyzeOptions as CoreAnalyzeOptions,
   type AnalyzeResult,
 } from '../core/run-analyze.js';
+import { isIndexLockGuardTimeout } from '../storage/index-lock.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
+import { ANALYZE_STORAGE_REQUIREMENTS, requireStoragePath } from '../storage/storage-resolver.js';
 import { GITNEXUS_DIR } from '../storage/repo-meta.js';
 import {
+  GITNEXUS_RC_ENV,
   loadAnalyzeConfigStrict,
   mergeAnalyzeOptions,
   validateBranchName,
 } from './analyze-config.js';
+import { logger } from '../core/logger.js';
 import type { AnalyzeOptions } from './analyze-options.js';
 import { ensureHeap } from './analyze.js';
 import { cliError, cliInfo, cliWarn } from './cli-message.js';
+import { parseIntegerOption } from './int-option.js';
+import {
+  formatInvalidProcessDetectionOverride,
+  parseProcessDetectionBudgetStrings,
+} from '../core/ingestion/process-detection-budget.js';
 import {
   WATCH_FULL_REFRESH_PATH,
   WatchRefreshQueue,
@@ -53,8 +63,15 @@ function isIgnoreControlPath(filePath: string): boolean {
   return normalized === '.gitignore' || normalized === '.gitnexusignore';
 }
 
+/**
+ * Queue entry for a change to the `GITNEXUS_RC` file. It lives outside the
+ * repository, so it has no repo-relative path; the leading NUL keeps it apart
+ * from every real path.
+ */
+export const EXTERNAL_CONFIG_WATCH_PATH = '\u0000GITNEXUS_RC';
+
 function isConfigControlPath(filePath: string): boolean {
-  return posixWatchPath(filePath) === '.gitnexusrc';
+  return filePath === EXTERNAL_CONFIG_WATCH_PATH || posixWatchPath(filePath) === '.gitnexusrc';
 }
 
 function isAnalyzerOwnedWatchPath(filePath: string): boolean {
@@ -85,9 +102,7 @@ function positiveInteger(
   maximum?: number,
 ): number | undefined {
   if (value === undefined) return undefined;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1)
-    throw new Error(`${flag} must be a positive integer`);
+  const parsed = parseIntegerOption(value, flag, { minimum: 1 });
   if (maximum !== undefined && parsed > maximum) {
     throw new Error(`${flag} must not exceed ${maximum}`);
   }
@@ -162,6 +177,17 @@ export async function resolveWatchOptions(
   const workerPoolSize = positiveInteger(merged.workers, '--workers');
   const workerTimeoutSeconds = positiveInteger(merged.workerTimeout, 'workerTimeout');
   const maxFileSize = positiveInteger(merged.maxFileSize, 'maxFileSize', MAX_FILE_SIZE_KB);
+  const processDetection = parseProcessDetectionBudgetStrings(
+    {
+      maxProcesses: merged.maxProcesses,
+      maxProcessBranching: merged.maxProcessBranching,
+      maxProcessTraceDepth: merged.maxProcessTraceDepth,
+      maxEntryPointCandidates: merged.maxEntryPointCandidates,
+    },
+    (flag, raw) => {
+      cliWarn(formatInvalidProcessDetectionOverride(flag, raw));
+    },
+  );
 
   setEnvironment(
     'GITNEXUS_MAX_FILE_SIZE',
@@ -176,11 +202,20 @@ export async function resolveWatchOptions(
 
   return {
     pdg: merged.pdg,
+    skipFts: merged.skipFts,
     branch,
     registryName: merged.name,
     allowDuplicateName: merged.allowDuplicateName,
     workerPoolSize,
+    maxProcesses: processDetection.maxProcesses,
+    maxProcessBranching: processDetection.maxProcessBranching,
+    maxProcessTraceDepth: processDetection.maxProcessTraceDepth,
+    maxEntryPointCandidates: processDetection.maxEntryPointCandidates,
     fetchWrappers: merged.fetchWrappers,
+    routeHookConfig: {
+      routeFrameworkAliases: merged.routeFrameworkAliases,
+      routeHandlerWrappers: merged.routeHandlerWrappers,
+    },
     skipAgentsMd: true,
     skipSkills: true,
     noStats: true,
@@ -241,6 +276,9 @@ export function shouldStopAfterWatchRefreshFailure(
   error: unknown,
   paths: readonly string[],
 ): boolean {
+  if (isIndexLockGuardTimeout(error)) {
+    return true;
+  }
   return (
     paths.length > 0 &&
     !(error instanceof WatchControlReloadError) &&
@@ -255,6 +293,8 @@ export async function startWatchFileLoop(
   refresh: (paths: readonly string[]) => Promise<void>,
   onError: WatchRefreshError,
   onWatcherError: (error: unknown) => void = (error) => onError(error, []),
+  /** Absolute `GITNEXUS_RC` path; its edits, replacements and removal reload config. */
+  externalConfigPath?: string,
 ): Promise<WatchFileLoop> {
   let ignorePath = await createWatchIgnorePredicate(repoPath);
   let ignoreControlValid = true;
@@ -342,6 +382,16 @@ export async function startWatchFileLoop(
 
   let watcher: FSWatcher = createWatcher();
 
+  // Poll this one explicit path: stat follows symlinks, and continues observing
+  // the path after atomic saves, target deletion/restoration or link retargeting.
+  // Watching only the link's directory misses writes in the target directory.
+  const configPath =
+    externalConfigPath === undefined ? undefined : path.resolve(externalConfigPath);
+  const configChanged = () => {
+    logger.debug({ file: configPath }, 'watch: GITNEXUS_RC changed; reloading config');
+    queue.enqueue(EXTERNAL_CONFIG_WATCH_PATH);
+  };
+
   // Chokidar emits `ready` once per instance and `add()` returns before the
   // rescan it starts has finished, with no signal for that completion. A file
   // an ignore-rule reload has just unignored is therefore still unregistered
@@ -376,11 +426,13 @@ export async function startWatchFileLoop(
   };
 
   try {
+    if (configPath) watchFile(configPath, { interval: 100 }, configChanged);
     await waitUntilReady(watcher);
     await queue.runInitial();
   } catch (error) {
     closed = true;
     await watcher.close();
+    if (configPath) unwatchFile(configPath, configChanged);
     await queue.close();
     throw error;
   }
@@ -390,6 +442,7 @@ export async function startWatchFileLoop(
     close: async () => {
       closed = true;
       await watcher.close();
+      if (configPath) unwatchFile(configPath, configChanged);
       await queue.close();
     },
   };
@@ -400,7 +453,11 @@ export async function watchCommandWithRunnerIdentity(
   inputPath?: string,
   cliOptions: WatchCliOptions = {},
 ): Promise<void> {
-  if (await ensureHeap({ cleanForwardedTermination: true })) return;
+  if (
+    await ensureHeap({ cleanForwardedTermination: true, memoryBudget: cliOptions.memoryBudget })
+  ) {
+    return;
+  }
 
   const requestedRepoPath = inputPath ? path.resolve(inputPath) : getGitRoot(process.cwd());
   if (requestedRepoPath === null || !hasGitDir(requestedRepoPath)) {
@@ -409,6 +466,13 @@ export async function watchCommandWithRunnerIdentity(
     return;
   }
   const repoPath = await fs.realpath(requestedRepoPath);
+  try {
+    await requireStoragePath(repoPath, ANALYZE_STORAGE_REQUIREMENTS);
+  } catch (error) {
+    cliError(`  ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+    return;
+  }
   const baselineEnvironment: WatchEnvironmentBaseline = {
     maxFileSize: process.env.GITNEXUS_MAX_FILE_SIZE,
     workerTimeout: process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS,
@@ -462,7 +526,9 @@ export async function watchCommandWithRunnerIdentity(
           repoPath,
           debounceMs,
           async (paths) => {
-            if (paths.some(isConfigControlPath) || !configControlValid) {
+            // Initial validation precedes watcher setup. Read again after it is
+            // armed so a change during startup cannot leave stale options live.
+            if (paths.length === 0 || paths.some(isConfigControlPath) || !configControlValid) {
               const retryingInvalidConfig = !configControlValid;
               try {
                 analyzeOptions = await resolveWatchOptions(
@@ -516,9 +582,15 @@ export async function watchCommandWithRunnerIdentity(
             const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
             if (shouldStopAfterWatchRefreshFailure(error, paths)) {
               fatalRefreshError = error;
+              const guardTimeout = isIndexLockGuardTimeout(error);
               cliError(
                 `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +
-                  'Watch mode is stopping because the live index may have been updated in place.',
+                  (guardTimeout
+                    ? 'Watch mode is stopping because the acquisition guard needs quiesced recovery; see RUNBOOK.md.'
+                    : 'Watch mode is stopping because the live index may have been updated in place.'),
+                guardTimeout
+                  ? { recoveryHint: 'index-lock-guard-recovery', guardPath: error.guardPath }
+                  : undefined,
               );
               stopWatching();
               return;
@@ -537,6 +609,7 @@ export async function watchCommandWithRunnerIdentity(
             );
             stopWatching();
           },
+          process.env[GITNEXUS_RC_ENV]?.trim() || undefined,
         );
       } catch (error) {
         cliError(

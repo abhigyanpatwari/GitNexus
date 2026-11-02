@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { runFullAnalysisMock, generateAIContextFilesMock, generateSkillFilesMock, cliErrorMock } =
   vi.hoisted(() => {
     const runFullAnalysisMock = vi.fn();
-    const generateAIContextFilesMock = vi.fn(async () => ({ files: [] as string[] }));
+    const generateAIContextFilesMock = vi.fn<
+      typeof import('../../src/cli/ai-context.js').generateAIContextFiles
+    >(async () => ({ files: [] as string[] }));
     const generateSkillFilesMock = vi.fn(async () => ({
       skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
       outputPath: '/repo/.claude/skills',
@@ -144,7 +146,19 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
 
     const opts = runFullAnalysisMock.mock.calls[0][1];
     expect(opts.useParseCache).toBe(false);
-    expect(opts.force).toBe(true);
+    // Not folded into --force: runFullAnalysis names the bypass as its own
+    // rebuild reason (#3137), so no run announces a --force nobody passed.
+    expect(opts.force).toBeFalsy();
+  });
+
+  it('passes --skills through without folding it into --force', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { skills: true });
+
+    const opts = runFullAnalysisMock.mock.calls[0][1];
+    expect(opts.skills).toBe(true);
+    expect(opts.force).toBeFalsy();
   });
 
   it('reuses parser output by default', async () => {

@@ -69,6 +69,30 @@ CREATE NODE TABLE Class (
   PRIMARY KEY (id)
 )`;
 
+export const PROTOCOL_SCHEMA = `
+CREATE NODE TABLE Protocol (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  PRIMARY KEY (id)
+)`;
+
+export const CATEGORY_SCHEMA = `
+CREATE NODE TABLE Category (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  PRIMARY KEY (id)
+)`;
+
 export const INTERFACE_SCHEMA = `
 CREATE NODE TABLE Interface (
   id STRING,
@@ -236,6 +260,7 @@ CREATE NODE TABLE Route (
   runtimeConfirmed BOOLEAN,
   runtimeSource STRING,
   runtimeStatus STRING,
+  unverifiedConsumers INT64,
   PRIMARY KEY (id)
 )`;
 
@@ -315,6 +340,7 @@ CREATE NODE TABLE BasicBlock (
   text STRING,
   callees STRING,
   calleeIds STRING,
+  ownerId STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -494,7 +520,7 @@ const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
 ];
 
 /**
- * The 66 pairs NEITHER rule above generates — everything left after the two
+ * The pairs NEITHER rule above generates — everything left after the two
  * cross products are subtracted. Carried by CONTAINMENT, inheritance, imports
  * and DI: a container label crossed with a contained label. No predicate
  * describes that surface (any container can hold any definition).
@@ -507,6 +533,8 @@ const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
  * templates), the two `Route|Process` / `Tool|Process` entry points whose
  * emitter names both labels as literals, and `BasicBlock|BasicBlock`, the PDG
  * substrate.
+ * Spring dynamic lookup in a constructor also emits INJECTS to a synthetic
+ * @Bean CodeElement (#3238), so Constructor|CodeElement belongs here.
  *
  * NOTHING A RULE ALREADY COVERS BELONGS HERE. `generatedRelationPairs` skips
  * any pair present in this block, so a redundant line does not merely duplicate
@@ -581,6 +609,9 @@ export const STRUCTURAL_PAIR_DDL = `  FROM File TO Folder,
   FROM \`Module\` TO \`Namespace\`,
   FROM \`Namespace\` TO Function,
   FROM CodeElement TO CodeElement,
+  FROM CodeElement TO Class,
+  FROM CodeElement TO Category,
+  FROM CodeElement TO Method,
   FROM CodeElement TO \`Module\`,
   FROM CodeElement TO \`Property\`,
   FROM Section TO Section,
@@ -597,6 +628,7 @@ export const STRUCTURAL_PAIR_DDL = `  FROM File TO Folder,
   FROM \`Constructor\` TO \`Impl\`,
   FROM \`Constructor\` TO \`Namespace\`,
   FROM \`Constructor\` TO \`Typedef\`,
+  FROM \`Constructor\` TO CodeElement,
   FROM Route TO Process,
   FROM Tool TO Process,
   FROM Destination TO \`Property\`,
@@ -714,6 +746,8 @@ export const NODE_SCHEMA_QUERIES = [
   FOLDER_SCHEMA,
   FUNCTION_SCHEMA,
   CLASS_SCHEMA,
+  PROTOCOL_SCHEMA,
+  CATEGORY_SCHEMA,
   INTERFACE_SCHEMA,
   METHOD_SCHEMA,
   CODE_ELEMENT_SCHEMA,

@@ -17,19 +17,24 @@
 
 import { KnowledgeGraph } from '../graph/types.js';
 import type { SemanticModel, SymbolTableReader } from './model/index.js';
-import { generateId } from '../../lib/utils.js';
+import { compareCodeUnits, generateId } from '../../lib/utils.js';
 import type { ParsedImport, SymbolDefinition } from 'gitnexus-shared';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import type { ExtractedRoute, ExtractedFetchCall } from './workers/parse-worker.js';
 import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
+import type { LanguageProvider, RouteHookConfig } from './language-provider.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import {
+  isTestRouteFile,
   normalizeExtractedRoutePath,
   normalizeRouteMethod,
   routeNodeKey,
 } from './route-extractors/route-path.js';
 import { extractReturnTypeName } from './type-extractors/shared.js';
 import { DATA_ROUTE_TABLE_SOURCE } from './route-extractors/data-route-table.js';
+import { reconcileDispatchGuardRoutes } from './route-extractors/dispatch-guard.js';
+import { toZeroBasedLine } from './utils/line-base.js';
+import { EnclosingCallableIndex } from './enclosing-callable.js';
 
 const MAX_EXPORTS_PER_FILE = 500;
 const MAX_TYPE_NAME_LENGTH = 256;
@@ -47,7 +52,58 @@ interface RouteResolutionFile {
 interface RouteHandlerResolutionContext {
   readonly files: readonly RouteResolutionFile[];
   readonly resolveImportTarget: (parsedImport: ParsedImport, fromFile: string) => string | null;
+  /** Every file an import resolves to (an import may name a whole directory of files). */
+  readonly resolveImportTargets?: (
+    parsedImport: ParsedImport,
+    fromFile: string,
+  ) => readonly string[];
+  /** The route file's `LanguageProvider.resolveRouteHandler`, when it defines one. */
+  readonly providerRouteHandler?: (filePath: string) => LanguageProvider['resolveRouteHandler'];
+  /** User route configuration forwarded to provider handler hooks. */
+  readonly routeHookConfig?: RouteHookConfig;
   readonly isExportedSymbol: (nodeId: string) => boolean;
+  /** 0-based graph-node startLine for same-name tRPC handler disambiguation. */
+  readonly nodeStartLine?: (nodeId: string) => number | undefined;
+}
+
+/** Same Function/Method gate as data-route resolution (`routeCallables`). */
+function routeCallableDefs(defs: readonly SymbolDefinition[]): readonly SymbolDefinition[] {
+  return defs.filter((def) => def.type === 'Function' || def.type === 'Method');
+}
+
+/**
+ * Pick a same-file route handler from `lookupExactAll` hits.
+ *
+ * Graph nodes store 0-based `startLine`; `ExtractedRoute.lineNumber` is 1-based
+ * (`i + 1` in the tRPC scanner). File-index lookup is not callable-only, so
+ * drop Property/Variable/Const (and other non-callables) first. When several
+ * callables share a name, prefer the unique def whose node startLine equals
+ * `toZeroBasedLine(route.lineNumber)`. If that exact match is missing (common
+ * when the arrow starts on the line after `.mutation(`), take the unique def
+ * whose startLine is the nearest `>=` target. Zero or 2+ winners (or no line
+ * reader) → `undefined` (fail-open).
+ */
+function pickSameFileHandler(
+  defs: readonly SymbolDefinition[],
+  route: { lineNumber: number },
+  getStartLine?: (nodeId: string) => number | undefined,
+): SymbolDefinition | undefined {
+  defs = routeCallableDefs(defs);
+  if (defs.length === 1) return defs[0];
+  if (defs.length > 1 && getStartLine !== undefined) {
+    const targetLine = toZeroBasedLine(route.lineNumber);
+    const withLines = defs
+      .map((def) => ({ def, startLine: Number(getStartLine(def.nodeId)) }))
+      .filter((entry) => Number.isFinite(entry.startLine));
+    const exact = withLines.filter((entry) => entry.startLine === targetLine);
+    if (exact.length === 1) return exact[0].def;
+    const atOrAfter = withLines.filter((entry) => entry.startLine >= targetLine);
+    if (atOrAfter.length === 0) return undefined;
+    const nearestLine = Math.min(...atOrAfter.map((entry) => entry.startLine));
+    const nearest = atOrAfter.filter((entry) => entry.startLine === nearestLine);
+    return nearest.length === 1 ? nearest[0].def : undefined;
+  }
+  return undefined;
 }
 
 /** Record one exported graph node into the incremental ExportedTypeMap. */
@@ -207,7 +263,35 @@ export const processRoutesFromExtracted = async (
       await yieldToEventLoop();
     }
 
-    if (!route.controllerName || !route.methodName) continue;
+    if (!route.methodName) continue;
+
+    // tRPC routes carry NO controller: a router is an object binding, not a
+    // class, so the extractor leaves controllerName unset and names the
+    // handler from the callback identifier when present, otherwise from its
+    // object-literal key. Bind the same-file symbol directly.
+    // No unique match → skip, fail-open. Laravel routes always set
+    // controllerName and Django routes leave methodName null, so this
+    // branch is tRPC-only by construction — the laravel guessed-method
+    // fallback below never sees a controller-less route.
+    if (!route.controllerName) {
+      const handler = pickSameFileHandler(
+        model.symbols.lookupExactAll(route.filePath, route.methodName),
+        route,
+        (id) => graph.getNode(id)?.properties.startLine as number | undefined,
+      );
+      if (!handler) continue;
+      const sourceId = generateId('File', route.filePath);
+      const relId = generateId('CALLS', sourceId + ':route->' + handler.nodeId);
+      graph.addRelationship({
+        id: relId,
+        sourceId,
+        targetId: handler.nodeId,
+        type: 'CALLS',
+        confidence: ROUTE_EDGE_CONFIDENCE,
+        reason: 'trpc-route',
+      });
+      continue;
+    }
 
     // Resolve the controller class. Qualified-first: when the routes file
     // disambiguated the controller (a `use` import or inline `::class` FQN, both
@@ -277,12 +361,12 @@ export const processRoutesFromExtracted = async (
  *     `handlerName` (the decorated method, captured at extraction); resolve it
  *     directly in the route's own file.
  *
- * First-writer-wins per route identity, matching the routes phase's dedup (it
- * keeps the first route registered for a `(method, url)` key and counts the rest
- * as duplicates). The first route to claim a key reserves it **even when its
- * handler is unresolvable**, so a later same-key route can never stamp its
- * handler onto the first route's Route node (the routes phase made that first
- * route the node-winner). Keying is `routeNodeKey(method, url)` (#2289): a
+ * Production declarations take precedence over test declarations; equal-priority
+ * candidates remain first-writer-wins. The selected declaration reserves its key **even when its
+ * handler is unresolvable**, so a losing route can never donate its handler.
+ * When supplied, `selectedRoutes` receives the admitted winners for the routes
+ * phase, keeping node provenance and handler provenance identical.
+ * Keying is `routeNodeKey(method, url)` (#2289): a
  * same-URL multi-verb pair (`GET /x` + `POST /x`) resolves two handlers, one per
  * node; method-less / wildcard routes key by URL alone, byte-identical to the
  * pre-#2289 behavior. Routes whose handler cannot be *uniquely* resolved (no
@@ -295,15 +379,15 @@ export function resolveRouteHandlerSymbols(
   extractedRoutes: readonly ExtractedRoute[],
   decoratorRoutes: readonly ExtractedDecoratorRoute[],
   routeContext?: RouteHandlerResolutionContext,
+  selectedRoutes?: Set<ExtractedRoute | ExtractedDecoratorRoute>,
 ): Map<string, string> {
   const out = new Map<string, string>();
-  // Route identities already claimed by an earlier route (resolved or not).
-  // Mirrors the routes phase `addRoute` first-writer-wins so the handler we
-  // stamp always belongs to the route that actually won the Route node.
-  const claimed = new Set<string>();
+  const claimed = new Map<string, ExtractedRoute | ExtractedDecoratorRoute>();
+  const admittedDecoratorRoutes = reconcileDispatchGuardRoutes(decoratorRoutes);
 
-  // Resolve a single same-file symbol by name, refusing to guess on ambiguity:
-  // exactly one match → its nodeId; zero or many → undefined (fail-open).
+  // Resolve a single same-file symbol by name. Exactly one match → its nodeId.
+  // Zero or many matches → undefined (fail-open). tRPC same-name handlers
+  // use pickSameFileHandler at the controller-less call site instead.
   const uniqueSymbolId = (filePath: string, name: string): string | undefined => {
     const defs = model.symbols.lookupExactAll(filePath, name);
     return defs.length === 1 ? defs[0]?.nodeId : undefined;
@@ -315,7 +399,7 @@ export function resolveRouteHandlerSymbols(
   };
 
   const routeCallables = (defs: readonly SymbolDefinition[]): readonly SymbolDefinition[] =>
-    defs.filter((def) => def.type === 'Function' || def.type === 'Method');
+    routeCallableDefs(defs);
 
   const exportedRouteCallables = (
     defs: readonly SymbolDefinition[],
@@ -400,24 +484,26 @@ export function resolveRouteHandlerSymbols(
       : uniqueById(model.methods.lookupAllByOwner(owner.nodeId, member))?.nodeId;
   };
 
-  const claim = (
-    routePath: string | null,
-    prefix: string | null,
-    httpMethod: string | null | undefined,
-    symbolId: string | undefined,
-  ) => {
+  const claim = (route: ExtractedRoute | ExtractedDecoratorRoute, symbolId: string | undefined) => {
     // An empty path is a valid, pathless mapping and normalizes to either `/`
     // or its class/router prefix. Only null means the extractor had no route.
-    if (routePath === null) return;
-    const url = normalizeExtractedRoutePath(routePath, prefix);
-    const key = routeNodeKey(normalizeRouteMethod(httpMethod), url);
-    if (claimed.has(key)) return; // first-writer-wins: later same-key routes can't override
-    claimed.add(key);
+    if (route.routePath === null) return;
+    const url = normalizeExtractedRoutePath(route.routePath, route.prefix ?? null);
+    const key = routeNodeKey(normalizeRouteMethod(route.httpMethod), url);
+    const previous = claimed.get(key);
+    if (previous && (!isTestRouteFile(previous.filePath) || isTestRouteFile(route.filePath)))
+      return;
+    if (previous) selectedRoutes?.delete(previous);
+    claimed.set(key, route);
+    selectedRoutes?.add(route);
+    out.delete(key);
     if (symbolId) out.set(key, symbolId);
   };
 
   // Laravel framework routes — controller class + method name.
   for (const route of extractedRoutes) {
+    // Match the routes phase's admission rule for extracted declarations.
+    if (!route.routePath) continue;
     let methodId: string | undefined;
     if (route.controllerName && route.methodName) {
       let controllerDef: SymbolDefinition | undefined;
@@ -429,8 +515,14 @@ export function resolveRouteHandlerSymbols(
         if (controllerDefs.length === 1) controllerDef = controllerDefs[0];
       }
       if (controllerDef) methodId = uniqueSymbolId(controllerDef.filePath, route.methodName);
+    } else if (!route.controllerName && route.methodName) {
+      methodId = pickSameFileHandler(
+        model.symbols.lookupExactAll(route.filePath, route.methodName),
+        route,
+        routeContext?.nodeStartLine,
+      )?.nodeId;
     }
-    claim(route.routePath, route.prefix ?? null, route.httpMethod, methodId);
+    claim(route, methodId);
   }
 
   const dataHandlerByRoute = new Map<ExtractedDecoratorRoute, string>();
@@ -438,11 +530,16 @@ export function resolveRouteHandlerSymbols(
     string,
     { handlers: Set<string>; hasUnresolved: boolean }
   >();
-  for (const dr of decoratorRoutes) {
+  const dataIdentity = (dr: ExtractedDecoratorRoute): string => {
+    const url = normalizeExtractedRoutePath(dr.routePath, dr.prefix ?? null);
+    return `${Number(isTestRouteFile(dr.filePath))}:${routeNodeKey(normalizeRouteMethod(dr.httpMethod), url)}`;
+  };
+  for (const dr of admittedDecoratorRoutes) {
     if (dr.source !== DATA_ROUTE_TABLE_SOURCE || !dr.handlerName || !dr.routePath) continue;
     const handlerId = resolveDataRouteHandler(dr.filePath, dr.handlerName);
-    const url = normalizeExtractedRoutePath(dr.routePath, dr.prefix ?? null);
-    const key = routeNodeKey(normalizeRouteMethod(dr.httpMethod), url);
+    // Conflicting test handlers must not invalidate a production table.
+    // Ambiguity is still rejected within each priority tier.
+    const key = dataIdentity(dr);
     const state = dataHandlersByIdentity.get(key) ?? {
       handlers: new Set<string>(),
       hasUnresolved: false,
@@ -456,27 +553,41 @@ export function resolveRouteHandlerSymbols(
     dataHandlersByIdentity.set(key, state);
   }
 
+  // A language that resolves its own handlers sees only this seam: the
+  // model, and the workspace files an import local name resolves to.
+  const importTargetsFor = (fromFile: string, localName: string): readonly string[] => {
+    const parsedImport = uniqueImport(fromFile, localName);
+    if (parsedImport === undefined || routeContext?.resolveImportTargets === undefined) return [];
+    return routeContext.resolveImportTargets(parsedImport, fromFile);
+  };
+
+  const providerContext = {
+    model,
+    importTargetsFor,
+    routeHookConfig: routeContext?.routeHookConfig,
+  };
+  const decoratorHandlerId = (dr: ExtractedDecoratorRoute): string | undefined => {
+    if (dr.source === DATA_ROUTE_TABLE_SOURCE) return dataHandlerByRoute.get(dr);
+    const providerHandler = routeContext?.providerRouteHandler?.(dr.filePath);
+    if (providerHandler) return providerHandler(dr, providerContext);
+    return dr.handlerName ? uniqueSymbolId(dr.filePath, dr.handlerName) : undefined;
+  };
+
   // Decorator routes (Spring / FastAPI / generic) — the decorated handler in
-  // the route's own file. Data tables additionally suppress an identity when
-  // duplicate entries resolve to different handlers: recording either one
-  // would invent a single-winner dispatch that the loop does not prove.
-  for (const dr of decoratorRoutes) {
-    const handlerId =
-      dr.source === DATA_ROUTE_TABLE_SOURCE
-        ? dataHandlerByRoute.get(dr)
-        : dr.handlerName
-          ? uniqueSymbolId(dr.filePath, dr.handlerName)
-          : undefined;
+  // the route's own file, unless the route's language resolves its own
+  // handlers. Data tables additionally suppress an identity when duplicate
+  // entries resolve to different handlers: recording either one would invent a
+  // single-winner dispatch that the loop does not prove.
+  for (const dr of admittedDecoratorRoutes) {
+    const handlerId = decoratorHandlerId(dr);
     // An unproven data-table entry never becomes a Route node, so it must not
     // reserve the identity and suppress a later, valid framework declaration.
     if (dr.source === DATA_ROUTE_TABLE_SOURCE && handlerId === undefined) continue;
     if (dr.source === DATA_ROUTE_TABLE_SOURCE && dr.routePath) {
-      const url = normalizeExtractedRoutePath(dr.routePath, dr.prefix ?? null);
-      const key = routeNodeKey(normalizeRouteMethod(dr.httpMethod), url);
-      const state = dataHandlersByIdentity.get(key);
+      const state = dataHandlersByIdentity.get(dataIdentity(dr));
       if (state === undefined || state.hasUnresolved || state.handlers.size !== 1) continue;
     }
-    claim(dr.routePath, dr.prefix ?? null, dr.httpMethod, handlerId);
+    claim(dr, handlerId);
   }
 
   return out;
@@ -621,6 +732,41 @@ export const extractConsumerAccessedKeys = (content: string): string[] => {
   return [...keys];
 };
 
+/** Segments of a matching route that match the fetch URL by kind: static to static, dynamic to param. */
+const matchSpecificity = (fetchURL: string, routeURL: string): number => {
+  const fetchParts = fetchURL.split('/').filter(Boolean);
+  return routeURL
+    .split('/')
+    .filter(Boolean)
+    .filter(
+      (part, i) =>
+        part === fetchParts[i] || (/^[[:{]/.test(part) && fetchParts[i]?.startsWith('[')),
+    ).length;
+};
+
+/**
+ * The route node keys a normalized fetch URL links to. `[param]` matches any
+ * route segment, so `/api/analyze/[param]` matches both `/api/analyze/upload`
+ * and `/api/analyze/:jobId`: take the route whose segments match by kind most
+ * often. A tie (`/api/[param]` against `/api/foo` and `/api/bar`) has no
+ * evidence for either, so it links none.
+ */
+export const matchFetchRouteKeys = (
+  normalized: string,
+  routeUrlToKeys: Map<string, string[]>,
+): string[] | undefined => {
+  let best: string[] | undefined;
+  let bestScore = -1;
+  let tied = false;
+  for (const [routeURL, routeKeys] of routeUrlToKeys) {
+    if (!routeMatches(normalized, routeURL)) continue;
+    const score = matchSpecificity(normalized, routeURL);
+    tied = score === bestScore || (tied && score < bestScore);
+    if (score > bestScore) [best, bestScore] = [routeKeys, score];
+  }
+  return tied ? undefined : best;
+};
+
 /**
  * Create FETCHES edges from extracted fetch() calls to matching Route nodes.
  * When consumerContents is provided, extracts property access patterns from
@@ -633,6 +779,14 @@ export const extractConsumerAccessedKeys = (content: string): string[] => {
  * route URL to the list of `routeNodeKey` identities at that URL; a single-verb
  * (or method-less) URL has a one-element list, keeping edges byte-identical to
  * the pre-#2289 behavior.
+ *
+ * The edge is file-level. Its reason also names the callables that hold the
+ * request sites, one `|via:<id>` field each, under the same attribution as the
+ * R3-6 sink set (the parser's enclosing callable, else the innermost span):
+ * `api_impact` follows their CALLS edges one level up to list the callers of
+ * the requesting function (#3644). A site outside any callable adds no field,
+ * so a reason without attribution reads as before. An id that itself contains
+ * the field separator cannot be carried and is left out rather than split.
  */
 export const processNextjsFetchRoutes = (
   graph: KnowledgeGraph,
@@ -655,46 +809,65 @@ export const processNextjsFetchRoutes = (
     }
   }
 
+  const callables = new EnclosingCallableIndex(graph, new Set(fetchCalls.map((c) => c.filePath)));
+
+  // One edge per (consumer file, route node), in first-seen order. Several
+  // sites in one file for the same route share the edge, each contributing the
+  // callable that contains it.
+  const edges = new Map<
+    string,
+    { sourceId: string; targetId: string; filePath: string; via: Set<string> }
+  >();
   for (const call of fetchCalls) {
     const normalized = normalizeFetchURL(call.fetchURL);
     if (!normalized) continue;
 
-    for (const [routeURL, routeKeys] of routeUrlToKeys) {
-      if (routeMatches(normalized, routeURL)) {
-        const sourceId = generateId('File', call.filePath);
+    const routeKeys = matchFetchRouteKeys(normalized, routeUrlToKeys);
+    if (!routeKeys) continue;
+    const sourceId = generateId('File', call.filePath);
+    const callable = callables.of(call);
 
-        // Extract consumer accessed keys if file content is available
-        let reason = 'fetch-url-match';
-        if (consumerContents) {
-          const content = consumerContents.get(call.filePath);
-          if (content) {
-            const accessedKeys = extractConsumerAccessedKeys(content);
-            if (accessedKeys.length > 0) {
-              reason = `fetch-url-match|keys:${accessedKeys.join(',')}`;
-            }
-          }
-        }
+    // Connect to every Route node at this URL (one per verb).
+    for (const routeKey of routeKeys) {
+      const targetId = generateId('Route', routeKey);
+      const id = generateId('FETCHES', `${sourceId}->${targetId}`);
+      let edge = edges.get(id);
+      if (edge === undefined) {
+        edge = { sourceId, targetId, filePath: call.filePath, via: new Set<string>() };
+        edges.set(id, edge);
+      }
+      if (callable !== undefined && !callable.includes('|')) edge.via.add(callable);
+    }
+  }
 
-        // Encode multi-fetch count so downstream can set confidence
-        const fetchCount = routeCountByFile.get(call.filePath) ?? 1;
-        if (fetchCount > 1) {
-          reason = `${reason}|fetches:${fetchCount}`;
-        }
-
-        // Connect to every Route node at this URL (one per verb).
-        for (const routeKey of routeKeys) {
-          const routeNodeId = generateId('Route', routeKey);
-          graph.addRelationship({
-            id: generateId('FETCHES', `${sourceId}->${routeNodeId}`),
-            sourceId,
-            targetId: routeNodeId,
-            type: 'FETCHES',
-            confidence: 0.9,
-            reason,
-          });
-        }
-        break;
+  for (const [id, edge] of edges) {
+    // Extract consumer accessed keys if file content is available
+    let reason = 'fetch-url-match';
+    const content = consumerContents?.get(edge.filePath);
+    if (content) {
+      const accessedKeys = extractConsumerAccessedKeys(content);
+      if (accessedKeys.length > 0) {
+        reason = `${reason}|keys:${accessedKeys.join(',')}`;
       }
     }
+
+    // Encode multi-fetch count so downstream can set confidence
+    const fetchCount = routeCountByFile.get(edge.filePath) ?? 1;
+    if (fetchCount > 1) {
+      reason = `${reason}|fetches:${fetchCount}`;
+    }
+
+    for (const via of [...edge.via].sort(compareCodeUnits)) {
+      reason = `${reason}|via:${via}`;
+    }
+
+    graph.addRelationship({
+      id,
+      sourceId: edge.sourceId,
+      targetId: edge.targetId,
+      type: 'FETCHES',
+      confidence: 0.9,
+      reason,
+    });
   }
 };

@@ -28,6 +28,15 @@ export const en = {
   'list.clusters': 'Clusters',
   'list.processes': 'Processes',
   'list.unknown': 'unknown',
+  'status.sharedStoreShared': 'Shared index: store {{key}}, shared graph for commit {{commit}}',
+  'status.sharedStorePrivate':
+    'Shared index: store {{key}}, private graph (local changes or a pinned branch index)',
+  'status.sharedStoreCloneCow':
+    '  Copied copy-on-write: unchanged pages are shared with the commit graph on disk',
+  'status.sharedStoreCloneCopy':
+    '  Full copy: this filesystem cannot clone copy-on-write (APFS, btrfs and XFS can)',
+  'status.legacyLocalIndex':
+    'Leftover local index: {{path}} ({{size}}); remove it with `gitnexus clean --local-index --force`',
   'status.notGitRepo': 'Not a git repository.',
   'status.staleKuzu': 'Repository has a stale KuzuDB index from a previous version.',
   'status.rebuildLadybug': 'Run: gitnexus analyze   (rebuilds the index with LadybugDB)',
@@ -59,8 +68,47 @@ export const en = {
   'clean.deleteAll': 'This will delete GitNexus indexes for {{count}} repo(s):',
   'clean.deletedRepo': 'Deleted: {{name}} ({{storagePath}})',
   'clean.notFoundHere': 'No indexed repository found in this directory.',
+  'clean.shared.reclaimed':
+    'Shared store: removed {{count}} commit graph(s) no checkout references.',
+  'clean.shared.kept':
+    'Shared store: kept {{count}} unreferenced commit graph(s) that could not be removed (in use or not writable); run `gitnexus clean --gc` later.',
+  'clean.shared.storeRemoved': 'Shared store: removed {{path}} (no checkouts remain).',
+  'clean.gc.none': 'No shared stores to collect.',
+  'clean.gc.keptMembers':
+    'Shared store: kept {{count}} checkout(s) it could not delete; run `gitnexus clean --gc --force` later.',
+  'clean.gc.store':
+    'Shared store {{path}}: dropped {{members}} checkout(s), removed {{graphs}} commit graph(s).',
+  'clean.gc.preview':
+    'Shared store {{path}}: would drop {{members}} checkout(s) and remove {{graphs}} commit graph(s).',
+  'clean.localIndex.none': 'No leftover local index in this checkout.',
+  'clean.localIndex.preview':
+    'This will delete the leftover local index at {{path}} ({{size}}). The shared index is not affected.',
+  'clean.localIndex.deleted': 'Deleted the leftover local index at {{path}} ({{size}}).',
   'clean.deleteCurrent': 'This will delete the GitNexus index for: {{repoName}}',
-  'clean.branchNotIndexed': 'No indexed branch named "{{branch}}" for this repository.',
+  'clean.branchNotIndexed':
+    'No indexed branch named "{{branch}}" for this repository. Use `gitnexus clean --stale` to reclaim leftover branch indexes, or `gitnexus list` to see recorded names.',
+  'clean.stale.none': 'No leftover branch indexes to reclaim.',
+  'clean.stale.preview': 'This will delete {{count}} leftover branch index(es):',
+  'clean.stale.item': '{{branch}}  {{reason}}  {{path}}  {{size}}',
+  'clean.stale.registryOnlyPath': '(registry only)',
+  'clean.stale.headsUnavailable':
+    'Could not list local heads; leftover branch indexes were not deleted. Re-run `gitnexus clean --stale` when git is available.',
+  'clean.stale.remainingSkipped':
+    'Could not list local heads; remaining leftover branch indexes were skipped. Re-run `gitnexus clean --stale` when git is available.',
+  'clean.stale.listingFailed':
+    'Could not read leftover branch index directories; leftover indexes were not deleted. Check permissions on the branches/ directory and re-run `gitnexus clean --stale`.',
+  'clean.stale.probeFailed':
+    'Could not inspect leftover branch index path(s); those slots were not deleted.',
+  'clean.stale.deleted': 'Deleted leftover branch index: {{branch}}',
+  'clean.stale.failed': 'Could not delete leftover branch index "{{branch}}".',
+  'clean.stale.skippedLive':
+    'Skipped leftover branch index "{{branch}}" — it is a local head again.',
+  'clean.stale.reason.refMissing': 'not a local head',
+  'clean.stale.reason.diskOnly': 'leftover directory (no registry row)',
+  'clean.stale.reason.registryOnly': 'registry row (directory gone)',
+  'clean.stale.reason.headsUnavailable': 'could not list local heads',
+  'clean.stale.reason.probeFailed': 'could not inspect slot path',
+  'clean.stale.reason.listingFailed': 'could not list leftover directories',
   'clean.deleteBranch': 'This will delete the branch index "{{branch}}" at: {{path}}',
   'clean.deletedBranch': 'Deleted branch index: {{branch}}',
   'clean.lbugSidecars.state': 'LadybugDB sidecar state: {{state}}',
@@ -89,7 +137,9 @@ export const en = {
   'tool.detectChanges.noOverlappingSymbols':
     'Diff touched {{files}} file(s) but no indexed symbols overlap those hunks — not a clean tree.',
   'tool.detectChanges.partial':
-    'PARTIAL RESULT: a graph query failed, so changed symbols may be missing. Do not read this as a clean pre-commit check.',
+    'PARTIAL RESULT: changed-symbol or process mapping is incomplete. Do not read this as a clean pre-commit check.',
+  'tool.detectChanges.unmappedSource':
+    'No symbols mapped for changed source files: {{files}}. Rebuild the index and inspect the diff; retry alone may not resolve missing or out-of-range symbols.',
   'tool.detectChanges.truncated':
     'LISTING CAPPED: the changed-symbol list was capped, so it does not name every changed symbol. The counts and risk level still cover all of them.',
   // The reassurance above is only true on its own. When the run also degraded,
@@ -116,6 +166,9 @@ export const en = {
   'doctor.runtime': 'Runtime',
   'doctor.capabilities': 'Capabilities',
   'doctor.embeddings': 'Embeddings',
+  'doctor.orphanedBranches': 'Orphaned branch indexes',
+  'doctor.orphanedBranches.total': 'Total: {{size}}',
+  'doctor.orphanedBranches.reclaim': 'Reclaim with: gitnexus clean --stale',
   'doctor.labels.os': 'OS:',
   'doctor.labels.node': 'Node:',
   'doctor.labels.gitnexus': 'GitNexus:',
@@ -123,8 +176,10 @@ export const en = {
   'doctor.labels.onnx': 'ONNX:',
   'doctor.labels.graphStore': 'Graph store:',
   'doctor.labels.fullTextSearch': 'Full-text search:',
-  'doctor.labels.vectorIndex': 'VECTOR index:',
-  'doctor.labels.semanticMode': 'Semantic mode:',
+  'doctor.labels.vectorIndex': 'VECTOR extension:',
+  'doctor.labels.semanticMode': 'Semantic support:',
+  'doctor.vectorCapability.indexUnverified': 'vector-index capable (repository index not checked)',
+  'doctor.vectorCapability.exactScanOnly': 'exact-scan only (VECTOR extension unavailable)',
   'doctor.labels.exactScanLimit': 'Exact scan limit:',
   'doctor.labels.note': 'Note:',
   'doctor.labels.backend': 'Backend:',
@@ -152,13 +207,13 @@ export const en = {
   'help.option.help': 'display help for command',
   'help.option.version': 'output the version number',
   'help.command.setup.description':
-    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex',
+    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex, Factory Droid',
   'help.command.uninstall.description':
     'Reverse `setup`: remove GitNexus MCP entries, skills, and hooks from all detected editors',
   'help.command.autoSync.description':
     'Control scheduled repository clone/pull and analysis from GITNEXUS_HOME/watch_config.yml',
   'help.autoSync.details':
-    '\nActions: init, start (default), restart, stop, status, reset\nConfiguration: GITNEXUS_HOME/watch_config.yml\nRuntime files: GITNEXUS_HOME/watch/watch.pid, watch.mutex, watch.owner.json, watch.status.json, auto-sync-state.json\nRecovery: mutexes with verified dead owners are reclaimed automatically; invalid or legacy mutexes fail closed and require manual removal after confirming no watch process is running.\nWrites: GITNEXUS_HOME/watch/project_commit_info.txt\nRemote URLs: only SSH URLs on github.com, gitlab.com, and gitee.com are allowed.\nRuns once immediately, then repeats on sync_interval_minutes.',
+    '\nActions: init, start (default), restart, stop, status, reset\nConfiguration: GITNEXUS_HOME/watch_config.yml\nRuntime files: GITNEXUS_HOME/watch/watch.pid, watch.mutex, watch.owner.json, watch.status.json, auto-sync-state.json\nRecovery: mutexes with verified dead owners are reclaimed automatically; invalid or legacy mutexes fail closed and require manual removal after confirming no watch process is running.\nWrites: GITNEXUS_HOME/watch/project_commit_info.txt\nRemote URLs: SSH or HTTPS URLs on github.com, gitlab.com, and gitee.com are allowed. Other hosts need a top-level allowed_hosts list of exact DNS names. Invalid watch_config.yml skips auto-sync immediately.\nRuns once immediately, then repeats on sync_interval_minutes.',
   'help.command.watch.description':
     'Ambiguous: use `analyze --watch` for local files, or `auto-sync` for scheduled remotes',
   'help.watch.details':
@@ -166,6 +221,8 @@ export const en = {
   'error.watch.ambiguous':
     '`gitnexus watch` is ambiguous.\n  Local working-tree incremental index:  gitnexus analyze --watch\n  Scheduled remote clone/pull + analyze: gitnexus auto-sync start\n',
   'help.command.analyze.description': 'Index a repository (full analysis)',
+  'help.command.embeddings.sync.description':
+    'Add missing embeddings to an existing index, checkpointing periodically for safe resume',
   'help.command.index.description':
     'Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)',
   'help.command.serve.description': 'Start local HTTP server for web UI connection',
@@ -179,7 +236,7 @@ export const en = {
     'Install the latest published GitNexus globally (`npm i -g gitnexus@<x.y.z>`).',
   'help.command.embeddings.description': 'Manage the on-demand local embedding runtime',
   'help.command.embeddings.install.description':
-    'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. Heals installs where npm skipped the optional packages (e.g. behind an HTTP proxy, #2370). Downloads only from your configured npm registry — mirrors and proxies apply.',
+    'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. The stack is not part of a default npm install. CPU installs download only from your configured npm registry — mirrors and proxies apply. `--cuda` additionally runs onnxruntime-node postinstall, which fetches CUDA binaries from NuGet (set GLOBAL_AGENT_HTTPS_PROXY behind a proxy).',
   'help.command.clean.description': 'Delete GitNexus index for current repo',
   'help.command.remove.description':
     'Delete the GitNexus index for a registered repo (by alias, name, or absolute path). Unlike `clean`, does not require being inside the repo. Idempotent on unknown targets.',
@@ -241,6 +298,10 @@ export const en = {
     'Register this repo under a custom name in ~/.gitnexus/registry.json (disambiguates repos whose paths share a basename, e.g. two different .../app folders)',
   'help.option.analyze.allowDuplicateName':
     'Register this repo even if another path already uses the same --name alias. Leaves `-r <name>` ambiguous for the two paths; use -r <path> to disambiguate.',
+  'help.option.analyze.shareWith':
+    'Join the shared index store of a registered checkout of the same repository (name or path); the remote URL must match. Clones join a sibling clone’s store automatically; this names one explicitly and clears a --no-share opt-out.',
+  'help.option.analyze.noShare':
+    'Clones only: leave the shared index store, index into <repo>/.gitnexus again, and stop joining sibling clones automatically until --share-with (linked worktrees always share; set GITNEXUS_SHARED_STORE=off instead)',
   'help.option.verbose': 'Enable verbose output',
   'help.option.analyze.maxFileSize':
     'Skip files larger than this (KB). Default: 512. Hard cap: 32768 (tree-sitter limit).',
@@ -248,8 +309,18 @@ export const en = {
     'Worker sub-batch idle timeout before retry/fallback. Default: 30.',
   'help.option.analyze.walCheckpointThreshold':
     'LadybugDB WAL auto-checkpoint threshold in bytes during analyze (integer >= -1; default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).',
+  'help.option.analyze.memoryBudget':
+    'Main-thread V8 heap size in MB for analyze (integer >= 200). Re-runs analyze with exactly this heap, overriding the RAM/cgroup auto-sizer and any --max-old-space-size pin; parse workers keep their own heap caps.',
   'help.option.analyze.workers':
     'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
+  'help.option.analyze.maxProcesses':
+    'Process-detection process cap (positive integer). Replaces the dynamic max(20, round(symbols/10)) formula. Default: dynamic.',
+  'help.option.analyze.maxProcessBranching':
+    'Process-detection per-node branching cap (positive integer). Default: 4.',
+  'help.option.analyze.maxProcessTraceDepth':
+    'Process-detection DFS depth cap (positive integer). Default: 10.',
+  'help.option.analyze.maxEntryPointCandidates':
+    'Ranked entry-point candidate pool (positive integer). Default: 200. Raise when the warning names this knob; doubling is the usual first raise.',
   'help.option.analyze.embeddingThreads': 'Limit local ONNX embedding CPU threads',
   'help.option.analyze.embeddingBatchSize': 'Number of nodes per embedding batch',
   'help.option.analyze.embeddingSubBatchSize': 'Number of chunks per embedding model call',
@@ -271,6 +342,11 @@ export const en = {
   'help.option.clean.branch': 'Delete only the named branch index (not the workspace index)',
   'help.option.clean.lbugSidecars':
     'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
+  'help.option.clean.stale': 'Reclaim leftover branch indexes that are not a live local head',
+  'help.option.clean.gc':
+    'Drop shared-store checkouts no registry entry uses and delete commit graphs nothing references',
+  'help.option.clean.localIndex':
+    'Delete the index left in <repo>/.gitnexus after this checkout moved into a shared store',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':
     'LLM provider: minimax, openai, openrouter, atlascloud, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax)',
@@ -285,6 +361,8 @@ export const en = {
   'help.option.wiki.concurrency': 'Parallel LLM calls (default: 3)',
   'help.option.wiki.timeout': 'LLM request timeout in seconds (default: disabled)',
   'help.option.wiki.retries': 'Max LLM retry attempts per request (default: 3)',
+  'help.option.wiki.maxCompletionTokens':
+    'Max completion tokens for each LLM request (default: 16384)',
   'help.option.wiki.allowInsecureConnection':
     'Allow exact host(s) for http:// LLM base URLs (comma-separated; HTTPS is preferred)',
   'help.option.wiki.gist': 'Publish wiki as a public GitHub Gist after generation',
@@ -310,9 +388,11 @@ export const en = {
   'help.option.impact.depth': 'Max relationship depth (default: 3)',
   'help.option.impact.includeTests': 'Include test files in results',
   'help.option.impact.limit':
-    'Max symbols per depth level and affected processes/modules to return (default: 100)',
+    'Max symbols per depth level in callgraph mode (default: 30, GITNEXUS_IMPACT_DEFAULT_LIMIT=0 for all); explicit --limit also caps affected processes/modules/routes',
   'help.option.impact.offset': 'Skip N symbols per depth level for pagination',
   'help.option.impact.summaryOnly': 'Return counts and risk only, omit symbol list',
+  'help.option.impact.maxTokens':
+    'Fit compact JSON into about N tokens; trim deepest callgraph symbols or fail if required content cannot fit. PDG/group results must fit intact',
   'help.option.trace.fromUid': 'Source symbol UID (zero-ambiguity lookup)',
   'help.option.trace.fromFile': 'Source file path to disambiguate common names',
   'help.option.trace.toUid': 'Target symbol UID (zero-ambiguity lookup)',
@@ -354,5 +434,5 @@ export const en = {
   'help.identityCache.environment':
     '\nAnalyzer identity cache:\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir\n    Operator-trusted persistent cache for warm cross-process status. The directory must pre-exist, be outside the GitNexus package/build roots, and contain no symlink or junction components. Defaults remain fail-closed on platforms without POSIX ownership APIs.',
   'help.analyze.environment':
-    '\nEnvironment variables:\n  GITNEXUS_NO_GITIGNORE=1   Skip .gitignore parsing (still reads .gitnexusignore)\n  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir  Operator-trusted persistent analyzer identity cache; must pre-exist, be outside package/build roots, and contain no symlink/junction components.\n  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker idle timeout in milliseconds. Default 30000.\n  GITNEXUS_WAL_CHECKPOINT_THRESHOLD=N  LadybugDB WAL auto-checkpoint threshold in bytes (default 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).\n  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker job byte budget. Default 8388608.\n  GITNEXUS_WORKER_POOL_SIZE=N  Parse worker count override. Default cores-1 capped at 16.\n  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  Concurrent in-flight parse chunks. Default 2.\n  GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT=N  Max replacement spawns per slot before drop. Default 3.\n  GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS=N  Total retry wall-time per job. Default 5x sub-batch timeout.\n  GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD=N  Per-slot deaths to trip circuit breaker. Default max(3, poolSize).\n  GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS=N  Max wait at pool shutdown for a retired worker still inside native code (terminated at its next safe point instead of aborting the process). Default 30000.\n  GITNEXUS_CPP_CAPTURE_BUDGET_MS=N  Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning. Default 20000.\n  GITNEXUS_EMBEDDING_THREADS=N  Limit local ONNX CPU threads for --embeddings.\n  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  Max embedding chunks for exact-scan fallback. Default 10000.\n  GITNEXUS_VECTOR_MAX_DISTANCE=N  Max accepted semantic/vector cosine distance (0 < N <= 2; higher values clamp to 2). Default 0.6 for MCP, 0.5 elsewhere.\n\nFlags override the corresponding env vars when both are provided.\n\nTip: `.gitnexusignore` supports `.gitignore`-style negation. Add e.g.\n     `!__tests__/` to index a directory that is auto-filtered by default (#771).',
+    '\nEnvironment variables:\n  GITNEXUS_NO_GITIGNORE=1   Skip .gitignore parsing (still reads .gitnexusignore)\n  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.\n  GITNEXUS_STORAGE_PATH=/absolute/index  Complete external index directory. Preserves the existing configuration semantics and overrides GITNEXUS_STORAGE_ROOT when both are set.\n  GITNEXUS_STORAGE_ROOT=/absolute/root  External index root; each repository uses an isolated <repo-basename>-<canonical-path-hash>/ slot.\n  GITNEXUS_CONTENT_RETENTION=full  Source-text retention profile: full, symbol, or none. Default full.\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir  Operator-trusted persistent analyzer identity cache; must pre-exist, be outside package/build roots, and contain no symlink/junction components.\n  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker idle timeout in milliseconds. Default 30000.\n  GITNEXUS_WAL_CHECKPOINT_THRESHOLD=N  LadybugDB WAL auto-checkpoint threshold in bytes (default 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).\n  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker job byte budget. Default 8388608.\n  GITNEXUS_WORKER_POOL_SIZE=N  Parse worker count override. Default cores-1 capped at 16.\n  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  Concurrent in-flight parse chunks. Default 2.\n  GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT=N  Max replacement spawns per slot before drop. Default 3.\n  GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS=N  Total retry wall-time per job. Default 5x sub-batch timeout.\n  GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD=N  Per-slot deaths to trip circuit breaker. Default max(3, poolSize).\n  GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS=N  Max wait at pool shutdown for a retired worker still inside native code (terminated at its next safe point instead of aborting the process). Default 30000.\n  GITNEXUS_CPP_CAPTURE_BUDGET_MS=N  Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning. Default 20000.\n  GITNEXUS_EMBEDDING_THREADS=N  Limit local ONNX CPU threads for --embeddings.\n  GITNEXUS_EMBEDDING_RETRY_TIMEOUTS=1  Retry per-attempt HTTP embedding timeouts through GITNEXUS_EMBEDDING_MAX_ATTEMPTS (default off; timeouts stay terminal).\n  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  Max embedding chunks for exact-scan fallback. Default 10000.\n  GITNEXUS_VECTOR_MAX_DISTANCE=N  Max accepted semantic/vector cosine distance (0 < N <= 2; higher values clamp to 2). Default 0.6 for CLI/MCP query, 0.5 for standalone semantic search. Tune for your embedding model: higher values can improve recall but may reduce relevance. Set in the query/server environment; no reindex needed.\n  GITNEXUS_MAX_PROCESSES=N  Process-detection process cap (positive integer). Replaces the dynamic max(20, round(symbols/10)) formula. Distinct from query-time IMPACT_MAX_CHUNKS.\n  GITNEXUS_MAX_PROCESS_BRANCHING=N  Process-detection per-node branching cap. Default 4.\n  GITNEXUS_MAX_PROCESS_TRACE_DEPTH=N  Process-detection DFS depth cap. Default 10.\n  GITNEXUS_MAX_ENTRY_POINT_CANDIDATES=N  Ranked entry-point candidate pool. Default 200. Raise when the warning names this knob; doubling is the usual first raise.\n\nCLI flags take precedence over `.gitnexusrc`, which takes precedence over env vars, which take precedence over built-in defaults.\n\nTip: `.gitnexusignore` supports `.gitignore`-style negation. Add e.g.\n     `!__tests__/` to index a directory that is auto-filtered by default (#771).',
 } as const;

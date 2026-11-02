@@ -1,0 +1,21 @@
+{
+  "language": "swift",
+  "description": "Refuse a Swift method that an indexed Objective-C header exposes to Swift under the same name through a swift_name attribute string, until the Swift-facing binding is proven.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "retrieve",
+    "kind": "Function",
+    "file": "Impl.swift"
+  },
+  "newName": "obtain",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_boundary",
+    "planningStatus": "unsupported"
+  }
+}

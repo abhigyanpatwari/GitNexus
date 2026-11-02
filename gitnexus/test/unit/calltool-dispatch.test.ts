@@ -30,13 +30,13 @@ const { lbugMocks } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>();
   return { ...actual, ...lbugMocks };
 });
 
 // Re-export shim must resolve to the same mocks
 vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/mcp/core/lbug-adapter.js')>();
   return { ...actual, ...lbugMocks };
 });
 
@@ -93,6 +93,7 @@ vi.mock('../../src/core/group/resolve-at-member.js', () => ({
 }));
 
 import {
+  IMPACT_FRONTIER_ROW_CAP,
   LocalBackend,
   REPO_ID_HASH_LENGTH,
   parseListReposPagination,
@@ -123,6 +124,7 @@ import {
   DEFERRED_IMPORT_REASON_SUFFIX,
   TYPE_ONLY_IMPORT_REASON_SUFFIX,
 } from '../../src/core/ingestion/scope-resolution/graph-bridge/imports-to-edges.js';
+import { DART_PACKAGE_IDENTITY_REASON } from '../../src/core/ingestion/languages/dart/package-dependencies.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -182,7 +184,25 @@ function setupNoRepos() {
   (listRegisteredRepos as any).mockResolvedValue([]);
 }
 
+/** Seed resolver rows without inventing relationship/process rows for other projections. */
+function mockSymbolRows(rows: Record<string, unknown>[]) {
+  (executeParameterized as any).mockImplementation(
+    async (_repo: string, query: string, params: Record<string, unknown>) => {
+      if (query.includes('COUNT(*) AS total')) return [{ total: rows.length }];
+      return params?.symName || params?.uid ? rows : [];
+    },
+  );
+}
+
 const duplicateFixtureDirs: string[] = [];
+
+/** LocalBackend.rename is private; the dispatch tests spy on it through this narrow view. */
+interface RenameEntryPoint {
+  rename(repo: { repoPath: string }, params: Record<string, unknown>): Promise<unknown>;
+}
+function spyOnRename(target: LocalBackend) {
+  return vi.spyOn(target as unknown as RenameEntryPoint, 'rename');
+}
 
 function makeDuplicateNameFixture() {
   const mainDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-shared-main-'));
@@ -292,6 +312,86 @@ describe('LocalBackend.init', () => {
     await backend.init();
     expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
   });
+
+  it('does not delete legacy Kuzu files while initializing a read backend', async () => {
+    setupSingleRepo();
+
+    await backend.init();
+
+    expect(cleanupOldKuzuFiles).not.toHaveBeenCalled();
+  });
+});
+
+describe('LocalBackend.countRepos', () => {
+  let backend: LocalBackend;
+
+  beforeEach(() => {
+    backend = new LocalBackend();
+    vi.clearAllMocks();
+  });
+
+  it('counts the validated registry, ignoring raw ENOENT ghost entries', async () => {
+    (listRegisteredRepos as any).mockImplementation(async (opts?: { validate?: boolean }) =>
+      opts?.validate
+        ? [MOCK_REPO_ENTRY]
+        : [
+            MOCK_REPO_ENTRY,
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-project',
+              path: '/tmp/ghost-project',
+              storagePath: '/tmp/.gitnexus/ghost-project',
+            },
+          ],
+    );
+
+    await expect(backend.countRepos()).resolves.toBe(1);
+    expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
+  });
+
+  it('returns 0 when every registry row is a ghost', async () => {
+    (listRegisteredRepos as any).mockImplementation(async (opts?: { validate?: boolean }) =>
+      opts?.validate
+        ? []
+        : [
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-a',
+              path: '/tmp/ghost-a',
+              storagePath: '/tmp/.gitnexus/ghost-a',
+            },
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-b',
+              path: '/tmp/ghost-b',
+              storagePath: '/tmp/.gitnexus/ghost-b',
+            },
+          ],
+    );
+
+    await expect(backend.countRepos()).resolves.toBe(0);
+    expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
+  });
+
+  it('reports the in-memory size after refresh, not the raw registry file', async () => {
+    (listRegisteredRepos as any).mockImplementation(async (opts?: { validate?: boolean }) =>
+      opts?.validate
+        ? [MOCK_REPO_ENTRY]
+        : [
+            MOCK_REPO_ENTRY,
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-project',
+              path: '/tmp/ghost-project',
+              storagePath: '/tmp/.gitnexus/ghost-project',
+            },
+          ],
+    );
+
+    expect(backend.cachedRepoCount()).toBe(0);
+    await backend.init();
+    expect(backend.cachedRepoCount()).toBe(1);
+  });
 });
 
 describe('LocalBackend.disconnect', () => {
@@ -361,7 +461,10 @@ describe('LocalBackend.callTool', () => {
         direction: 'upstream',
       });
 
-      expect(result).toEqual({ status: 'normalized' });
+      // toMatchObject, not toEqual: since #3291 every hot-read-tool response
+      // also carries the `staleness` ref field. This test is about parameter
+      // normalization, so it pins the payload it cares about and ignores it.
+      expect(result).toMatchObject({ status: 'normalized' });
       const dispatched = impactSpy.mock.calls[0][1] as Record<string, unknown>;
       expect(dispatched.target).toBe('validate');
       expect(dispatched).not.toHaveProperty('name');
@@ -379,7 +482,8 @@ describe('LocalBackend.callTool', () => {
       file: ' src/auth.ts ',
     });
 
-    expect(result).toEqual({ status: 'normalized' });
+    // toMatchObject: responses carry the #3291 `staleness` ref field too.
+    expect(result).toMatchObject({ status: 'normalized' });
     const dispatched = contextSpy.mock.calls[0][1] as Record<string, unknown>;
     expect(dispatched.file_path).toBe('src/auth.ts');
     expect(dispatched).not.toHaveProperty('file');
@@ -396,7 +500,8 @@ describe('LocalBackend.callTool', () => {
       file: undefined,
     });
 
-    expect(result).toEqual({ status: 'normalized' });
+    // toMatchObject: responses carry the #3291 `staleness` ref field too.
+    expect(result).toMatchObject({ status: 'normalized' });
     expect(contextSpy.mock.calls[0][1]).toMatchObject({ name: 'validate' });
   });
 
@@ -443,18 +548,53 @@ describe('LocalBackend.callTool', () => {
     expect(impactSpy.mock.calls[0][1]).toMatchObject({ target: 'validate' });
   });
 
+  it('folds CLI-style depth onto maxDepth before impact (#3261)', async () => {
+    const impactSpy = vi
+      .spyOn(backend as any, 'impact')
+      .mockResolvedValue({ status: 'normalized' });
+
+    await backend.callTool('impact', {
+      target: 'validate',
+      direction: 'upstream',
+      depth: 2,
+    });
+
+    expect(impactSpy.mock.calls[0][1]).toMatchObject({ target: 'validate', maxDepth: 2 });
+    expect(impactSpy.mock.calls[0][1]).not.toHaveProperty('depth');
+  });
+
+  it('treats depth 0 as omitted when maxDepth is present (#2279)', async () => {
+    const impactSpy = vi
+      .spyOn(backend as any, 'impact')
+      .mockResolvedValue({ status: 'normalized' });
+
+    await backend.callTool('impact', {
+      target: 'validate',
+      direction: 'upstream',
+      maxDepth: 2,
+      depth: 0,
+    });
+
+    expect(impactSpy.mock.calls[0][1]).toMatchObject({ target: 'validate', maxDepth: 2 });
+    expect(impactSpy.mock.calls[0][1]).not.toHaveProperty('depth');
+  });
+
   it.each([
     ['impact', { target: 'validate', name: 'login', direction: 'upstream' }],
     ['impact', { name: 'validate', symbol: 'login', direction: 'upstream' }],
+    ['impact', { target: 'validate', direction: 'upstream', maxDepth: 3, depth: 1 }],
     ['context', { name: 'validate', file_path: 'src/auth.ts', file: 'src/login.ts' }],
-  ])('rejects conflicting %s aliases before repository resolution', async (method, params) => {
-    const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
+  ])(
+    'rejects conflicting %s aliases before repository resolution (case %#)',
+    async (method, params) => {
+      const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
 
-    const result = await backend.callTool(method, params);
+      const result = await backend.callTool(method, params);
 
-    expect(result.error).toMatch(/conflicting mcp parameters/i);
-    expect(resolveSpy).not.toHaveBeenCalled();
-  });
+      expect(result.error).toMatch(/conflicting mcp parameters/i);
+      expect(resolveSpy).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ['impact', { name: 42, direction: 'upstream' }],
@@ -502,6 +642,112 @@ describe('LocalBackend.callTool', () => {
 
     expect(impactSpy.mock.calls[0][1]).toMatchObject({
       target_uid: 'Function:src/auth.ts:validate',
+    });
+  });
+
+  it('reports UNKNOWN instead of a blast radius when the target resolves without a node id (#3354)', async () => {
+    // Every query returns the same id-less row: resolution must reject it
+    // before a frontier query could answer for no symbol at all.
+    (executeParameterized as any).mockResolvedValue([{ name: 'runSweep', type: 'Function' }]);
+
+    const result = await backend.callTool('impact', { target: 'runSweep', direction: 'upstream' });
+
+    expect(result).toMatchObject({
+      target: { name: 'runSweep' },
+      impactedCount: null,
+      risk: 'UNKNOWN',
+    });
+    expect(result.error).toMatch(/invalid symbol identity/);
+    expect(result.recoverySuggestion).toContain('gitnexus analyze --force');
+    expect(result).not.toHaveProperty('byDepthCounts');
+  });
+
+  it.each([[' '], ['']])(
+    'treats a blank target_uid %j as omitted and resolves the name (#3354)',
+    async (targetUid) => {
+      (executeParameterized as any).mockResolvedValue([]);
+
+      const result = await backend.callTool('impact', {
+        target: 'validate',
+        target_uid: targetUid,
+        direction: 'upstream',
+      });
+
+      // Name resolution ran (no rows → not found by NAME), not a lookup of the blank uid.
+      expect(result.error).toBe("Target 'validate' not found");
+      const boundParams = (executeParameterized as any).mock.calls.map((c: unknown[]) => c[2]);
+      expect(boundParams).not.toContainEqual(expect.objectContaining({ uid: expect.anything() }));
+      expect(boundParams).toContainEqual(expect.objectContaining({ symName: 'validate' }));
+    },
+  );
+
+  it('treats a non-string impact target_uid as omitted instead of throwing (#3354)', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('impact', {
+      target: 'validate',
+      target_uid: 42,
+      direction: 'upstream',
+    });
+
+    expect(result.error).toBe("Target 'validate' not found");
+    const boundParams = (executeParameterized as any).mock.calls.map((c: unknown[]) => c[2]);
+    expect(boundParams).not.toContainEqual(expect.objectContaining({ uid: expect.anything() }));
+  });
+
+  it.each([[42], [true], [{ id: 'Function:src/auth.ts:validate' }], [['x']]])(
+    'treats a non-string context uid %j as omitted instead of throwing (#3354)',
+    async (uid) => {
+      (executeParameterized as any).mockResolvedValue([]);
+
+      const result = await backend.callTool('context', { name: 'validate', uid });
+
+      expect(result).toEqual({ error: "Symbol 'validate' not found" });
+      const boundParams = (executeParameterized as any).mock.calls.map((c: unknown[]) => c[2]);
+      expect(boundParams).not.toContainEqual(expect.objectContaining({ uid: expect.anything() }));
+    },
+  );
+
+  it('names the unresolved trace source, not a blank from_uid (#3354)', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('trace', {
+      from: 'missingSource',
+      from_uid: ' ',
+      to: 'validate',
+    });
+
+    expect(result).toMatchObject({
+      status: 'not_found',
+      error: "Source symbol 'missingSource' not found.",
+    });
+  });
+
+  it('names the unresolved trace target, not a blank to_uid (#3354)', async () => {
+    const sourceRow = {
+      id: 'Function:src/a.ts:start',
+      name: 'start',
+      type: 'Function',
+      filePath: 'src/a.ts',
+      startLine: 1,
+      endLine: 2,
+    };
+    (executeParameterized as any).mockImplementation(
+      async (_path: string, _query: string, bound: Record<string, unknown> | undefined) =>
+        bound?.uid === sourceRow.id ? [sourceRow] : [],
+    );
+
+    const result = await backend.callTool('trace', {
+      from_uid: sourceRow.id,
+      to: 'missingTarget',
+      to_uid: ' ',
+    });
+    (executeParameterized as any).mockReset();
+    (executeParameterized as any).mockResolvedValue([]);
+
+    expect(result).toMatchObject({
+      status: 'not_found',
+      error: "Target symbol 'missingTarget' not found.",
     });
   });
 
@@ -565,6 +811,12 @@ describe('LocalBackend.callTool', () => {
       `NOT r.reason ENDS WITH '${TYPE_ONLY_IMPORT_REASON_SUFFIX}'`,
     );
     expect(reasonNullAlternativeOf(query)).toContain("r.reason <> 'markdown-link'");
+    // Package-identity edges are IMPORTS metadata for incremental
+    // invalidation. They must be excluded inside this same group, before
+    // LIMIT, or they fill the 100000-row cap on a cycle-free graph.
+    expect(reasonNullAlternativeOf(query)).toContain(
+      `r.reason <> '${DART_PACKAGE_IDENTITY_REASON}'`,
+    );
     expect(query).toContain('LIMIT 100001');
   });
 
@@ -687,6 +939,34 @@ describe('LocalBackend.callTool', () => {
 
     expect(result).toHaveProperty('warning');
     expect((result as any).warning).toMatch(/gitnexus analyze --repair-fts/);
+  });
+
+  it('redacts a space-containing vendor path from the MCP query warning', async () => {
+    const { extensionManager, resetExtensionState } =
+      await import('../../src/core/lbug/extension-loader.js');
+    const spaced = '/tmp/fts vendor/lbug-fts/prebuilds/linux-x64/libfts.lbug_extension';
+    await extensionManager.ensure(
+      vi
+        .fn()
+        .mockRejectedValue(new Error(`Failed to load library '${spaced}': invalid ELF header`)),
+      'fts',
+      'FTS',
+      { policy: 'load-only', vendorRoot: '/tmp/empty-vendor-root' },
+    );
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    vi.mocked(searchFTSFromLbug).mockResolvedValueOnce({ results: [], ftsAvailable: false });
+    (executeParameterized as any).mockResolvedValue([]);
+
+    try {
+      const result = await backend.callTool('query', { query: 'ProcessActivity' });
+      expect(result).toHaveProperty('warning');
+      expect(String((result as { warning?: string }).warning)).toContain('invalid ELF header');
+      expect(String((result as { warning?: string }).warning)).not.toMatch(
+        /fts vendor|\/tmp\/|C:\\Users\\/,
+      );
+    } finally {
+      resetExtensionState();
+    }
   });
 
   it('does not include warning when ftsAvailable is true with zero results', async () => {
@@ -1063,7 +1343,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('dispatches context tool', async () => {
-    (executeParameterized as any).mockResolvedValue([
+    mockSymbolRows([
       {
         id: 'func:main',
         name: 'main',
@@ -1083,13 +1363,22 @@ describe('LocalBackend.callTool', () => {
     expect(result.error).toContain('Either "name" or "uid"');
   });
 
-  it('context tool returns not-found for missing symbol', async () => {
+  it('context tool returns content availability with a missing symbol', async () => {
     (executeParameterized as any).mockResolvedValue([]);
-    const result = await backend.callTool('context', { name: 'doesNotExist' });
+    const result = await backend.callTool('context', {
+      name: 'doesNotExist',
+      include_content: true,
+    });
     expect(result.error).toContain('not found');
+    expect(result.contentAvailability).toEqual({
+      requested: true,
+      profile: 'full',
+      available: true,
+      scope: 'full',
+    });
   });
 
-  it('context tool returns disambiguation for multiple matches', async () => {
+  it('context tool returns content availability with ambiguous matches', async () => {
     (executeParameterized as any).mockResolvedValue([
       {
         id: 'func:main:1',
@@ -1108,9 +1397,15 @@ describe('LocalBackend.callTool', () => {
         endLine: 5,
       },
     ]);
-    const result = await backend.callTool('context', { name: 'main' });
+    const result = await backend.callTool('context', { name: 'main', include_content: true });
     expect(result.status).toBe('ambiguous');
     expect(result.candidates).toHaveLength(2);
+    expect(result.contentAvailability).toEqual({
+      requested: true,
+      profile: 'full',
+      available: true,
+      scope: 'full',
+    });
 
     // #470: every candidate carries a relevance score in [0, 1] and the list
     // is sorted descending by score (with deterministic tiebreakers).
@@ -1390,27 +1685,22 @@ describe('LocalBackend.callTool', () => {
     });
 
     it('exact File path wins over suffixed matches during qualified resolution (#3084 review P2)', async () => {
-      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) => {
-        if (query.startsWith('MATCH (n)')) {
-          return [
-            {
-              id: 'File:src/lib/a.ts',
-              name: 'a.ts',
-              filePath: 'src/lib/a.ts',
-              kind: 'File',
-              total_hits: 1,
-            },
-            {
-              id: 'File:lib/a.ts',
-              name: 'a.ts',
-              filePath: 'lib/a.ts',
-              kind: 'File',
-              total_hits: 1,
-            },
-          ];
-        }
-        return [{ total: 2 }];
-      });
+      mockSymbolRows([
+        {
+          id: 'File:src/lib/a.ts',
+          name: 'a.ts',
+          filePath: 'src/lib/a.ts',
+          kind: 'File',
+          total_hits: 1,
+        },
+        {
+          id: 'File:lib/a.ts',
+          name: 'a.ts',
+          filePath: 'lib/a.ts',
+          kind: 'File',
+          total_hits: 1,
+        },
+      ]);
 
       const result = await backend.callTool('context', { name: 'lib/a.ts' });
       expect(result).toMatchObject({
@@ -1646,9 +1936,10 @@ describe('LocalBackend.callTool', () => {
         .filter((q: string) => q.includes('$frontierIds'));
       expect(frontierQueries.length).toBeGreaterThan(0);
       expect(frontierQueries.filter((q: string) => /ORDER BY/.test(q))).toEqual([]);
-      // …and equally: no LIMIT was added in its place. The traversal must see
-      // every neighbour edge; only the ORDERING moved.
-      expect(frontierQueries.filter((q: string) => /LIMIT/.test(q))).toEqual([]);
+      for (const query of frontierQueries) {
+        expect(query.match(/\bLIMIT\b/gi)).toHaveLength(1);
+        expect(query.endsWith(` LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`)).toBe(true);
+      }
     });
 
     // (a) Diamond: `delta` and `epsilon` are each reached at depth 2 from BOTH
@@ -1732,7 +2023,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('context tool ranks file_path match higher than non-match (#470)', async () => {
-    (executeParameterized as any).mockResolvedValue([
+    mockSymbolRows([
       {
         id: 'func:handleConnect:1',
         name: 'handleConnect',
@@ -1771,7 +2062,7 @@ describe('LocalBackend.callTool', () => {
     // review): both candidates satisfy the file_path hint (so DB
     // pre-filter would return both in production), and promotion is
     // determined purely by the combined file_path + kind score.
-    (executeParameterized as any).mockResolvedValue([
+    mockSymbolRows([
       {
         id: 'fn:App:1',
         name: 'render',
@@ -1862,7 +2153,7 @@ describe('LocalBackend.callTool', () => {
   it('impact tool returns ambiguous shape with ranked candidates when target has multiple matches (#470)', async () => {
     // resolveSymbolCandidates issues a single name query; mock it to return
     // two Function rows in different files with no hints.
-    (executeParameterized as any).mockResolvedValue([
+    mockSymbolRows([
       {
         id: 'func:login:1',
         name: 'login',
@@ -1949,7 +2240,7 @@ describe('LocalBackend.callTool', () => {
     // Resolver returns target; BFS returns one frontier caller; no STEP_IN_PROCESS rows.
     (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
       // BFS frontier query is now parameterized (#1907 U3).
-      if (cypher.includes('r.type IN') && !cypher.includes('STEP_IN_PROCESS')) {
+      if (cypher.includes('$frontierIds')) {
         return Promise.resolve([
           {
             id: 'func:caller',
@@ -1961,10 +2252,12 @@ describe('LocalBackend.callTool', () => {
           },
         ]);
       }
-      // Symbol resolution.
-      return Promise.resolve([
-        { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
-      ]);
+      // Symbol resolution; unseeded enrichment queries return no rows.
+      return Promise.resolve(
+        cypher.includes('$symName')
+          ? [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }]
+          : [],
+      );
     });
     (executeQuery as any).mockResolvedValue([]);
 
@@ -2194,7 +2487,7 @@ describe('LocalBackend.callTool', () => {
       },
     ]);
 
-    const result = await backend.impactByUid('test-project', 'uid:main', 'upstream', {
+    const result = await backend.impactByUid('test-project', 'func:main', 'upstream', {
       maxDepth: 5,
       relationTypes: ['CALLS'],
       minConfidence: 0,
@@ -2251,55 +2544,97 @@ describe('LocalBackend.callTool', () => {
     expect(result.error).toContain('Either symbol_name or symbol_uid');
   });
 
-  it('rename: a swallowed apply-edit write failure degrades to status:partial + failed_files (#2283)', async () => {
-    // Resolve the definition, no graph refs. readFile succeeds (so a def edit is
-    // recorded), but writeFile fails on apply — the failure is swallowed via
-    // logQueryError. The result must NOT report a clean success: it degrades to
-    // 'partial' and lists the unwritten file, instead of status:'success'.
-    (executeParameterized as any)
-      .mockResolvedValueOnce([
+  it.each([
+    ['omitted', {}],
+    ['true', { dry_run: true }],
+    ['false', { dry_run: false }],
+  ])('forwards rename arguments untouched when dry_run is %s', async (_label, extra) => {
+    const rename = spyOnRename(backend).mockResolvedValue({ applied: false });
+    await backend.callTool('rename', { new_name: 'newName', ...extra });
+    expect(rename).toHaveBeenCalledWith(expect.anything(), { new_name: 'newName', ...extra });
+  });
+
+  it('no longer dispatches a separate rename_preview tool', async () => {
+    const rename = spyOnRename(backend);
+    await expect(backend.callTool('rename_preview', { new_name: 'newName' })).rejects.toThrow(
+      'Unknown tool: rename_preview',
+    );
+    expect(rename).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, { dry_run: true }, { dry_run: false }])(
+    'rename rejects branch-pinned checkout edits (%j)',
+    async (extra) => {
+      const rename = spyOnRename(backend);
+      const result = await backend.callTool('rename', {
+        new_name: 'newName',
+        branch: 'main',
+        ...extra,
+      });
+      expect(result.error).toMatch(/branch/);
+      expect(rename).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rename: a first apply-edit write failure reports status:error + failed_files (#2283)', async () => {
+    // Real graph/semantic resolution produces an edit; staging its replacement fails.
+    mockSymbolRows([
+      {
+        id: 'Function:src/target.ts:oldName',
+        name: 'oldName',
+        type: 'Function',
+        filePath: 'src/target.ts',
+        startLine: 1,
+        endLine: 1,
+      },
+    ]);
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-rename-'));
+    try {
+      (listRegisteredRepos as any).mockResolvedValue([
+        { ...MOCK_REPO_ENTRY, path: repoDir, storagePath: path.join(repoDir, '.gitnexus') },
+      ]);
+      backend = new LocalBackend();
+      await backend.init();
+
+      // Graph lines are zero-based; context presents this declaration on line 2.
+      mkdirSync(path.join(repoDir, 'src'));
+      writeFileSync(path.join(repoDir, 'src/target.ts'), '\nfunction oldName() {}\n');
+      lbugMocks.executeQuery.mockResolvedValue([
+        { id: 'File:src/target.ts', name: 'target.ts', filePath: 'src/target.ts' },
         {
-          id: 'func:oldName',
+          id: 'Function:src/target.ts:oldName',
           name: 'oldName',
-          type: 'Function',
           filePath: 'src/target.ts',
           startLine: 1,
-          endLine: 5,
+          endLine: 1,
         },
-      ])
-      .mockResolvedValue([]);
-    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-rename-'));
-    (listRegisteredRepos as any).mockResolvedValue([
-      { ...MOCK_REPO_ENTRY, path: repoDir, storagePath: path.join(repoDir, '.gitnexus') },
-    ]);
-    backend = new LocalBackend();
-    await backend.init();
-
-    // The symbol is stored at 0-based startLine 1; context() presents it 1-based
-    // (line 2) and rename subtracts 1 to recover the 0-based file index (1), so
-    // `oldName` must sit on the file's 0-based line 1 for the definition edit to
-    // fire. (#2380: the mock previously put it on line 0, which stopped matching
-    // once context() went 1-based.)
-    const readSpy = vi
-      .spyOn(fsPromises, 'readFile')
-      .mockResolvedValue('\nfunction oldName() {}\n' as unknown as Buffer);
-    const writeSpy = vi
-      .spyOn(fsPromises, 'writeFile')
-      .mockRejectedValue(new Error('EACCES: permission denied'));
-    try {
-      const result = await backend.callTool('rename', {
+      ]);
+      const preview = await backend.callTool('rename', {
         symbol_name: 'oldName',
         new_name: 'newName',
-        dry_run: false,
+        dry_run: true,
       });
-      expect(result.status).toBe('partial');
-      expect(result.failed_files).toContain('src/target.ts');
-      // It DID attempt to apply (not a dry run) — `applied` stays true; the
-      // honest signal is the 'partial' status + failed_files, not `applied`.
-      expect(result.applied).toBe(true);
+      expect(preview.status).toBe('success');
+      expect(preview.plan_token).toEqual(expect.any(String));
+      const writeSpy = vi
+        .spyOn(fsPromises, 'writeFile')
+        .mockRejectedValue(new Error('EACCES: permission denied'));
+      try {
+        const result = await backend.callTool('rename', {
+          symbol_name: 'oldName',
+          new_name: 'newName',
+          dry_run: false,
+          plan_token: preview.plan_token,
+        });
+        expect(result.status).toBe('error');
+        expect(result.failed_files).toContain('src/target.ts');
+        expect(result.applied).toBe(false);
+        expect(result.total_edits).toBe(0);
+        expect(result.application_status).toBe('failed');
+      } finally {
+        writeSpy.mockRestore();
+      }
     } finally {
-      readSpy.mockRestore();
-      writeSpy.mockRestore();
       rmSync(repoDir, { recursive: true, force: true });
     }
   });
@@ -2350,6 +2685,55 @@ describe('LocalBackend.callTool', () => {
     (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('api_impact', { route: '/api/nonexistent' });
     expect(result.error).toContain('No routes found');
+  });
+
+  it('api_impact lists the callers of the requesting function as indirect consumers (#3644)', async () => {
+    const routeRow = (consumerName: string, consumerFile: string, fetchReason: string) => ({
+      routeId: 'Route:/api/grants',
+      routeName: '/api/grants',
+      handlerFile: 'app/api/grants/route.ts',
+      responseKeys: ['data'],
+      errorKeys: [],
+      middleware: [],
+      runtimeConfirmed: false,
+      runtimeSource: null,
+      runtimeStatus: null,
+      consumerName,
+      consumerFile,
+      fetchReason,
+    });
+    const via = 'Function:src/services/client.ts:fetchGrants';
+    const caller = (callerName: string, callerFile: string) => ({
+      viaId: via,
+      viaName: 'fetchGrants',
+      callerName,
+      callerFile,
+    });
+    (executeParameterized as any).mockImplementation(async (_repo: string, cypher: string) => {
+      if (cypher.includes("r.type = 'CALLS'")) {
+        return [
+          caller('Header', 'src/Header.tsx'),
+          caller('App', 'src/App.tsx'),
+          // Already a direct consumer file, and the handler file: neither is indirect.
+          caller('GrantsList', 'src/GrantsList.tsx'),
+          caller('GET', 'app/api/grants/route.ts'),
+        ];
+      }
+      return [
+        routeRow('client.ts', 'src/services/client.ts', `fetch-url-match|via:${via}`),
+        routeRow('GrantsList', 'src/GrantsList.tsx', 'fetch-url-match|keys:data'),
+      ];
+    });
+
+    const result = await backend.callTool('api_impact', { route: '/api/grants' });
+
+    expect(result.indirectConsumers).toEqual([
+      { name: 'App', file: 'src/App.tsx', via: 'fetchGrants' },
+      { name: 'Header', file: 'src/Header.tsx', via: 'fetchGrants' },
+    ]);
+    expect(result.impactSummary.directConsumers).toBe(2);
+    expect(result.impactSummary.indirectConsumers).toBe(2);
+    expect(result.impactSummary.riskLevel).toBe('LOW');
   });
 
   it('api_impact detects mismatches and bumps risk level', async () => {
@@ -2523,17 +2907,23 @@ describe('LocalBackend.callTool', () => {
     expect(result.routes[0].method).toBeNull();
   });
 
-  it('route_map falls back for legacy Route schemas and reports unconfirmed evidence', async () => {
-    vi.mocked(executeParameterized)
-      .mockRejectedValueOnce(
-        new Error('Binder exception: Cannot find property runtimeConfirmed for n.'),
-      )
-      .mockResolvedValueOnce([verbRow('GET', '/legacy', 'LegacyController.java')]);
+  it.each([
+    { missing: ['unverifiedConsumers'], calls: 3 },
+    { missing: ['unverifiedConsumers', 'runtimeConfirmed'], calls: 4 },
+  ])('route_map falls back for Route schemas without $missing', async ({ missing, calls }) => {
+    for (const property of missing) {
+      vi.mocked(executeParameterized).mockRejectedValueOnce(
+        new Error(`Binder exception: Cannot find property ${property} for n.`),
+      );
+    }
+    vi.mocked(executeParameterized).mockResolvedValueOnce([
+      verbRow('GET', '/legacy', 'LegacyController.java'),
+    ]);
 
     const result = await backend.callTool('route_map', { route: '/legacy' });
 
-    // Modern Route query, legacy retry, then the linked-flow batch.
-    expect(executeParameterized).toHaveBeenCalledTimes(3);
+    // One Route query per older schema, then the linked-flow batch.
+    expect(executeParameterized).toHaveBeenCalledTimes(calls);
     expect(result.routes[0].runtimeEvidence).toEqual({ confirmed: false });
   });
 
@@ -2695,13 +3085,14 @@ describe('LocalBackend.callTool', () => {
 
   // Legacy tool aliases
   it('dispatches "search" as alias for query', async () => {
+    (executeQuery as any).mockResolvedValue([]);
     (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('search', { query: 'auth' });
     expect(result).toHaveProperty('processes');
   });
 
   it('dispatches "explore" as alias for context', async () => {
-    (executeParameterized as any).mockResolvedValue([
+    mockSymbolRows([
       {
         id: 'func:main',
         name: 'main',
@@ -2734,9 +3125,7 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
   // dispatch (callgraph BFS or the PDG traversal). The callgraph BFS then issues
   // executeQuery for its frontier; the PDG path delegates to runImpactPDG.
   function resolveSingleTarget() {
-    (executeParameterized as any).mockResolvedValue([
-      { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
-    ]);
+    mockSymbolRows([{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }]);
     (executeQuery as any).mockResolvedValue([]);
   }
 
@@ -2756,7 +3145,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   it('mode absent → callgraph result (target populated, no mode-error, BFS runs)', async () => {
     resolveSingleTarget();
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const result = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
     // A clean callgraph result carries no mode error and runs the BFS.
     expect(result.error ?? '').not.toMatch(/Invalid "mode"/);
@@ -2784,7 +3176,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   it("mode:'pdg' routes to the PDG traversal and attaches interprocedural symbol reach", async () => {
     resolveSingleTarget();
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const result = await backend.callTool('impact', {
       target: 'main',
       direction: 'upstream',
@@ -2801,7 +3196,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   it("mode:'pdg' labels interprocedural symbols as a callgraph bridge", async () => {
     resolveSingleTarget();
-    vi.spyOn(backend as any, '_runImpactBFS').mockResolvedValueOnce({
+    vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    ).mockResolvedValueOnce({
       target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
       direction: 'downstream',
       impactedCount: 1,
@@ -2840,7 +3238,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   it("mode:'pdg' preserves unproven bridge evidence when call-site proof is unavailable", async () => {
     resolveSingleTarget();
-    vi.spyOn(backend as any, '_runImpactBFS').mockResolvedValueOnce({
+    vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    ).mockResolvedValueOnce({
       target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
       direction: 'downstream',
       impactedCount: 1,
@@ -2881,7 +3282,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     'invalid mode %j → structured {error}, never a callgraph result (KTD5 anti-silent-fallback)',
     async (bad) => {
       resolveSingleTarget();
-      const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+      const bfsSpy = vi.spyOn(
+        backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+        '_runImpactBFS',
+      );
       const result = await backend.callTool('impact', {
         target: 'main',
         direction: 'upstream',
@@ -2898,7 +3302,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     'line param with mode:%j → structured {error} (line is PDG-only), never a callgraph result',
     async (mode) => {
       resolveSingleTarget();
-      const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+      const bfsSpy = vi.spyOn(
+        backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+        '_runImpactBFS',
+      );
       const result = await backend.callTool('impact', {
         target: 'main',
         direction: 'upstream',
@@ -2921,7 +3328,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     'mode:%j + adapter-materialized line:0 is treated as omitted and runs the BFS (#2279)',
     async (mode) => {
       resolveSingleTarget();
-      const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+      const bfsSpy = vi.spyOn(
+        backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+        '_runImpactBFS',
+      );
       const result = await backend.callTool('impact', {
         target: 'main',
         direction: 'upstream',
@@ -2993,18 +3403,13 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   it("mode:'pdg' + downstream line:8 routes to the PDG traversal and seeds bridge evidence", async () => {
     resolveSingleTarget();
-    // The target-resolution row doubles as the calleesOfBlocks row: `callees`
-    // ('callee') is the leaf name persisted on the slice's BasicBlock, the
-    // statement-precise substrate the bridge keys on.
-    (executeParameterized as any).mockResolvedValue([
-      {
-        id: 'func:main',
-        name: 'main',
-        type: 'Function',
-        filePath: 'src/index.ts',
-        callees: 'callee',
-      },
-    ]);
+    // BasicBlock callees and symbol lookup use distinct native projections.
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
+      if (query.includes('RETURN b.callees')) return [{ callees: 'callee' }];
+      return query.includes('$symName')
+        ? [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }]
+        : [];
+    });
     // A line-seeded downstream slice with one reachable block → the dispatch
     // queries that block's callees and seeds the bridge with them.
     const pdgSpy = vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
@@ -3023,7 +3428,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       affectedStatementCount: 1,
       criterionLine: 8,
     });
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const result = await backend.callTool('impact', {
       target: 'main',
       direction: 'downstream',
@@ -3076,7 +3484,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       affectedStatementCount: 0,
       criterionLine: 8,
     });
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     await backend.callTool('impact', {
       target: 'main',
       direction: 'downstream',
@@ -3129,11 +3540,13 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     // is not built and the inter-procedural reach falls back to callgraph-equal —
     // never surfacing the error or producing a partial proven/unproven labeling.
     resolveSingleTarget();
-    // The slice-callees query (RETURN b.callees) throws; every other query (target
-    // resolution) returns the resolved symbol row.
+    // The slice-callees query throws; lookup returns the target and unseeded
+    // relationship/process projections return no rows.
     vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
       if (query.includes('RETURN b.callees')) throw new Error('slice-callees query failed');
-      return [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }];
+      return query.includes('$symName')
+        ? [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }]
+        : [];
     });
     // A line-seeded downstream slice so calleesOfBlocks is attempted.
     vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
@@ -3151,7 +3564,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       affectedStatementCount: 1,
       criterionLine: 8,
     });
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const cap = _captureLogger();
     try {
       const result = await backend.callTool('impact', {
@@ -3188,7 +3604,9 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     resolveSingleTarget();
     vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
       if (query.includes('RETURN b.callees')) throw new Error('Table BasicBlock does not exist');
-      return [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }];
+      return query.includes('$symName')
+        ? [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }]
+        : [];
     });
     vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
       mode: 'pdg',
@@ -3205,7 +3623,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       affectedStatementCount: 1,
       criterionLine: 8,
     });
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const cap = _captureLogger('debug');
     try {
       const result = await backend.callTool('impact', {
@@ -3252,7 +3673,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       affectedStatementCount: 1,
       criterionLine: 8,
     });
-    vi.spyOn(backend as any, '_runImpactBFS');
+    vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const cap = _captureLogger();
     try {
       await backend.callTool('impact', {
@@ -3271,7 +3695,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   it("mode:'pdg' + crossDepth → hard {error} (single-repo PDG impact)", async () => {
     resolveSingleTarget();
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const result = await backend.callTool('impact', {
       target: 'main',
       direction: 'upstream',
@@ -3288,17 +3715,22 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     ['minConfidence', { minConfidence: 0.5 }, (opts: any) => opts.minConfidence],
   ])("mode:'pdg' + %s feeds the interprocedural symbol reach", async (_label, extra, readOpt) => {
     resolveSingleTarget();
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS').mockResolvedValueOnce({
-      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
-      direction: 'upstream',
-      impactedCount: 0,
-      risk: 'LOW',
-      summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
-      byDepthCounts: {},
-      affected_processes: [],
-      affected_modules: [],
-      byDepth: {},
-    });
+    const bfsSpy = vi
+      .spyOn(
+        backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+        '_runImpactBFS',
+      )
+      .mockResolvedValueOnce({
+        target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+        direction: 'upstream',
+        impactedCount: 0,
+        risk: 'LOW',
+        summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+        byDepthCounts: {},
+        affected_processes: [],
+        affected_modules: [],
+        byDepth: {},
+      });
     const result = await backend.callTool('impact', {
       target: 'main',
       direction: 'upstream',
@@ -3329,7 +3761,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
         startLine: 8,
       },
     ]);
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const result = await backend.callTool('impact', {
       target: 'login',
       direction: 'upstream',
@@ -3632,6 +4067,82 @@ describe('LocalBackend.resolveRepo', () => {
     }
   });
 
+  describe('rename repo omission with several indexed repos (cwd inside one)', () => {
+    let outerDir: string;
+    let otherDir: string;
+    let renameSpy: ReturnType<typeof spyOnRename>;
+    let cwdSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(async () => {
+      outerDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-rename-omit-outer-'));
+      otherDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-rename-omit-other-'));
+      const cwdDir = path.join(outerDir, 'src');
+      mkdirSync(cwdDir, { recursive: true });
+      duplicateFixtureDirs.push(outerDir, otherDir);
+      (listRegisteredRepos as any).mockResolvedValue([
+        {
+          ...MOCK_REPO_ENTRY,
+          name: 'outer',
+          path: outerDir,
+          storagePath: path.join(outerDir, '.gitnexus'),
+        },
+        {
+          ...MOCK_REPO_ENTRY,
+          name: 'other',
+          path: otherDir,
+          storagePath: path.join(otherDir, '.gitnexus'),
+        },
+      ]);
+      (getGitRoot as any).mockReturnValue(outerDir);
+      cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(cwdDir);
+      renameSpy = spyOnRename(backend).mockResolvedValue({ applied: false });
+      await backend.init();
+    });
+
+    afterEach(() => {
+      cwdSpy.mockRestore();
+    });
+
+    // A call that provably cannot write follows the read-tool omission rule.
+    it.each([
+      ['omitted', {}],
+      ['true', { dry_run: true }],
+    ])('previews with dry_run %s against the cwd-derived repo', async (_label, extra) => {
+      await backend.callTool('rename', { symbol_name: 'oldName', new_name: 'newName', ...extra });
+      expect(renameSpy).toHaveBeenCalledTimes(1);
+      expect(renameSpy.mock.calls[0][0].repoPath).toBe(outerDir);
+    });
+
+    // Anything that could write - and any malformed value - keeps the stricter rule.
+    it.each([
+      ['false', false],
+      ['a string', 'false'],
+      ['a number', 0],
+      ['null', null],
+    ])('requires an explicit repo when dry_run is %s', async (_label, dryRun) => {
+      await expect(
+        backend.callTool('rename', {
+          symbol_name: 'oldName',
+          new_name: 'newName',
+          dry_run: dryRun,
+        }),
+      ).rejects.toThrow('Multiple repositories indexed');
+      expect(renameSpy).not.toHaveBeenCalled();
+    });
+
+    it('routes an explicit repo to that repository for both modes', async () => {
+      for (const dryRun of [true, false]) {
+        await backend.callTool('rename', {
+          repo: 'other',
+          symbol_name: 'oldName',
+          new_name: 'newName',
+          dry_run: dryRun,
+        });
+      }
+      expect(renameSpy.mock.calls.map(([repo]) => repo.repoPath)).toEqual([otherDir, otherDir]);
+    });
+  });
+
   it('keeps explicit duplicate aliases on exact git-root disambiguation (#3073)', async () => {
     const outerDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-cwd-alias-outer-'));
     const nestedDir = path.join(outerDir, 'packages', 'nested');
@@ -3776,7 +4287,7 @@ describe('LocalBackend.resolveRepo', () => {
     }
   });
 
-  it('keeps mutating rename explicit with multiple repos (#3073)', async () => {
+  it('keeps applying rename (dry_run:false) explicit with multiple repos (#3073)', async () => {
     const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/tmp/test-project/src');
 
     try {
@@ -3786,9 +4297,24 @@ describe('LocalBackend.resolveRepo', () => {
         backend.callTool('rename', {
           symbol_name: 'oldName',
           new_name: 'newName',
-          dry_run: true,
+          dry_run: false,
         }),
       ).rejects.toThrow('Multiple repositories indexed');
+    } finally {
+      cwdSpy.mockRestore();
+    }
+  });
+
+  it('lets a rename preview resolve the cwd repo among multiple repos (#3073)', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/tmp/test-project/src');
+    const rename = spyOnRename(backend).mockResolvedValue({ applied: false });
+
+    try {
+      setupMultipleRepos();
+      await backend.init();
+      await backend.callTool('rename', { symbol_name: 'oldName', new_name: 'newName' });
+      expect(rename).toHaveBeenCalledTimes(1);
+      expect(rename.mock.calls[0][0].repoPath).toBe('/tmp/test-project');
     } finally {
       cwdSpy.mockRestore();
     }
@@ -4437,6 +4963,37 @@ describe('LocalBackend.listRepos', () => {
     // listRegisteredRepos called: once in init, once per listRepos
     expect(listRegisteredRepos).toHaveBeenCalledTimes(3);
   });
+
+  // #3256: `unknown` is listing-only (the hot read tools drop it; see
+  // tool-staleness.test.ts), so list_repos is where it must appear. `diverged`
+  // carries its hint and no invented count; `current` carries nothing.
+  it('reports unknown and diverged staleness on the listing (#3256)', async () => {
+    setupSingleRepo();
+    await backend.init();
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    const check = checkStalenessAsync as unknown as ReturnType<typeof vi.fn>;
+    try {
+      check.mockResolvedValue({ isStale: false, commitsBehind: 0, status: 'unknown' });
+      expect((await backend.listRepos())[0].staleness).toEqual({ status: 'unknown' });
+
+      check.mockResolvedValue({
+        isStale: false,
+        commitsBehind: 0,
+        status: 'diverged',
+        hint: 'HEAD moved on',
+      });
+      expect((await backend.listRepos())[0].staleness).toEqual({
+        status: 'diverged',
+        hint: 'HEAD moved on',
+      });
+
+      check.mockResolvedValue({ isStale: false, commitsBehind: 0, status: 'current' });
+      expect((await backend.listRepos())[0].staleness).toBeUndefined();
+    } finally {
+      // The module-level mock is shared; put back the factory's default.
+      check.mockResolvedValue({ isStale: false, commitsBehind: 0 });
+    }
+  });
 });
 
 // ─── list_repos pagination (#2119) ─────────────────────────────────────
@@ -4854,6 +5411,28 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
     expect(path.basename(handle.lbugPath)).toBe('lbug');
     // The branch handle reports the branch's own commit, not the primary's.
     expect(handle.lastCommit).toBe('featsha');
+    // #3291: the pin's label, not the flat/primary slot — withToolStaleness
+    // copies handle.branch onto the hot-tool payload.
+    expect(handle.branch).toBe('feature/x');
+  });
+
+  it('a pinned-branch tool result names the pin in staleness.branch (#3291)', async () => {
+    // beforeEach clearAllMocks() drops the module-level git-staleness factory
+    // impl; restore a resolving current so withToolStaleness attaches the ref.
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    (checkStalenessAsync as any).mockResolvedValue({
+      isStale: false,
+      commitsBehind: 0,
+      status: 'current',
+    });
+    vi.spyOn(backend as any, 'impact').mockResolvedValue({ ok: true });
+    const result = (await backend.callTool('impact', {
+      target: 'doWork',
+      repo: 'multi',
+      branch: 'feature/x',
+    })) as { staleness: { branch?: string; lastCommit?: string } };
+    expect(result.staleness.branch).toBe('feature/x');
+    expect(result.staleness.lastCommit).toBe('featsha');
   });
 
   it('an un-indexed branch throws a clear error', async () => {
@@ -5109,11 +5688,20 @@ describe('LocalBackend tool-staleness cache keying (#2655 review)', () => {
       branch: 'x',
     });
 
-    // Flat index (lastCommit=FLATSHA) is 5 behind -> field present.
-    expect(flatRes).toMatchObject({ staleness: { commitsBehind: 5 } });
-    // Branch index (different lbugPath + lastCommit) is current; it must NOT
-    // inherit the flat handle's cached staleness (the pre-fix repoPath-keyed bug).
-    expect(branchRes).not.toHaveProperty('staleness');
+    // Flat index (lastCommit=FLATSHA) is 5 behind -> counted gap reported.
+    expect(flatRes).toMatchObject({
+      staleness: { status: 'behind', commitsBehind: 5, lastCommit: 'FLATSHA' },
+    });
+    // Branch index (different lbugPath + lastCommit) is current. Since #3291 the
+    // field rides on every response, so absence can no longer be the proof; what
+    // shows the flat handle's cached entry was NOT reused (the pre-fix
+    // repoPath-keyed bug) is that this one reports its OWN commit and its own
+    // status, with no trace of the flat handle's counted gap.
+    expect(branchRes).toMatchObject({
+      staleness: { status: 'current', lastCommit: 'BRANCHSHA' },
+    });
+    const branchStaleness = (branchRes as { staleness: { commitsBehind?: number } }).staleness;
+    expect(branchStaleness.commitsBehind).toBeUndefined();
   });
 });
 
@@ -5320,34 +5908,47 @@ describe('LocalBackend tool-staleness signal (#2655 review)', () => {
 
   // The evict-on-reject is guarded by object identity (=== entry), so a LATE
   // rejection from a superseded entry must not drop the newer entry that
-  // replaced it after the TTL rolled over.
-  it('a late rejection does not evict the newer cache entry', async () => {
-    stubResolve();
-    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
-    const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(1000);
-    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
-    let rejectFirst: (e: unknown) => void = () => {};
-    const first = new Promise<StalenessInfo>((_res, rej) => {
-      rejectFirst = rej;
-    });
-    (checkStalenessAsync as any)
-      .mockReturnValueOnce(first) // entry 1 — held open, will reject late
-      .mockResolvedValue({ isStale: true, commitsBehind: 7, hint: '7 behind' }); // entry 2+
+  // replaced it after TTL expiry or an index generation change.
+  it.each(['TTL expiry', 'new commit', 'same-commit rebuild'])(
+    'a late rejection does not evict the newer cache entry after %s',
+    async (change) => {
+      const resolve = stubResolve();
+      vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+      const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(1000);
+      const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+      let rejectFirst: (e: unknown) => void = () => {};
+      const first = new Promise<StalenessInfo>((_res, rej) => {
+        rejectFirst = rej;
+      });
+      (checkStalenessAsync as any)
+        .mockReturnValueOnce(first) // entry 1 — held open, will reject late
+        .mockResolvedValue({ isStale: true, commitsBehind: 7, hint: '7 behind' }); // entry 2+
 
-    const p1 = backend.callTool('query', { search_query: 'x', repo: 'r' }); // installs entry1 @1000
-    await new Promise((r) => setTimeout(r, 0)); // entry1 installed, awaiting `first`
+      const p1 = backend.callTool('query', { search_query: 'x', repo: 'r' }); // installs entry1 @1000
+      await new Promise((r) => setTimeout(r, 0)); // entry1 installed, awaiting `first`
 
-    dateSpy.mockReturnValue(1000 + 5000 + 1); // past TTL → next call installs entry2
-    const r2 = await backend.callTool('query', { search_query: 'x', repo: 'r' });
-    expect(r2).toMatchObject({ staleness: { commitsBehind: 7 } });
+      if (change === 'TTL expiry') {
+        dateSpy.mockReturnValue(1000 + 5000 + 1);
+      } else {
+        // Same path, still inside the TTL: the new generation must get its own
+        // promise while the old generation's git computation remains in flight.
+        resolve.mockResolvedValue({
+          ...handle,
+          indexedAt: 'new-generation',
+          lastCommit: change === 'new commit' ? 'NEWSHA' : handle.lastCommit,
+        } as any);
+      }
+      const r2 = await backend.callTool('query', { search_query: 'x', repo: 'r' });
+      expect(r2).toMatchObject({ staleness: { commitsBehind: 7 } });
 
-    rejectFirst(new Error('late git failure')); // entry1's guarded catch must NOT evict entry2
-    await p1.catch(() => {}); // p1 degrades to no-staleness
+      rejectFirst(new Error('late git failure')); // entry1's guarded catch must NOT evict entry2
+      await p1.catch(() => {}); // p1 degrades to no-staleness
 
-    const callsBefore = (checkStalenessAsync as any).mock.calls.length;
-    const r3 = await backend.callTool('query', { search_query: 'x', repo: 'r' }); // still within entry2 TTL
-    expect((checkStalenessAsync as any).mock.calls.length).toBe(callsBefore); // cache hit → entry2 survived
-    expect(r3).toMatchObject({ staleness: { commitsBehind: 7 } });
-    dateSpy.mockRestore();
-  });
+      const callsBefore = (checkStalenessAsync as any).mock.calls.length;
+      const r3 = await backend.callTool('query', { search_query: 'x', repo: 'r' }); // still within entry2 TTL
+      expect((checkStalenessAsync as any).mock.calls.length).toBe(callsBefore); // cache hit → entry2 survived
+      expect(r3).toMatchObject({ staleness: { commitsBehind: 7 } });
+      dateSpy.mockRestore();
+    },
+  );
 });

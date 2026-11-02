@@ -5,10 +5,10 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
  *
  * The package tier uses runtime-install's module-scope require (anchored at its
  * own `import.meta.url`); the prefix tier uses a require anchored at
- * `<prefix>/noop.js`. In dev/CI both optional deps ARE really installed, so the
- * package tier can never miss with the real require — we mock `createRequire` to
- * route each anchor to a fake whose `.resolve()` is driven by a fixture map,
- * exercising the partial / full / missing permutations.
+ * `<prefix>/noop.js`. After U4 a clean tree has no embedding packages, but a
+ * leftover 1.6.12 package-first install still can. We mock `createRequire` so
+ * the package tier is driven by a fixture map, exercising the partial / full /
+ * missing permutations without depending on this workspace's node_modules.
  *
  * This file has ZERO static import of runtime-install.js (the dual-instance
  * rule): every load goes through the dynamic-import harness, so no real

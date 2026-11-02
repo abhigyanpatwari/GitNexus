@@ -14,12 +14,13 @@
 
 import type { NodeLabel } from '../../graph/types.js';
 import type { ParameterTypeClass, SymbolDefinition } from '../symbol-definition.js';
-import type { Callsite, DefId } from '../types.js';
+import type { Callsite, DefId, NameLookupOptions, ScopeId } from '../types.js';
 import type { DefIndex } from '../def-index.js';
 import type { QualifiedNameIndex } from '../qualified-name-index.js';
 import type { ModuleScopeIndex } from '../module-scope-index.js';
 import type { ScopeTree } from '../scope-tree.js';
 import type { MethodDispatchIndex } from '../method-dispatch-index.js';
+import type { NameClaimResult } from '../name-claims.js';
 
 // ─── Provider hooks consumed by the registries ─────────────────────────────
 
@@ -116,6 +117,15 @@ export type OwnedMembersByOwnerLookup = (
 // ─── Top-level context threaded through every lookup ───────────────────────
 
 export interface RegistryContext {
+  /** Finalized lexical bindings, when they live outside the immutable scope tree. */
+  readonly lexicalLookup?: (
+    scope: ScopeId,
+    name: string,
+    options: NameLookupOptions,
+  ) => NameClaimResult;
+  /** Opt-in observation of the lexical decision before kind filtering. This
+   * carries source-name ownership even when no graph target can be emitted. */
+  readonly onLexicalClaim?: (name: string, claim: NameClaimResult) => void;
   readonly scopes: ScopeTree;
   readonly defs: DefIndex;
   readonly qualifiedNames: QualifiedNameIndex;
@@ -136,6 +146,8 @@ export interface RegistryContext {
 
 export const CLASS_KINDS: readonly NodeLabel[] = Object.freeze([
   'Class',
+  'Protocol',
+  'Category',
   'Interface',
   'Enum',
   'Struct',

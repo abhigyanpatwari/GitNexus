@@ -4,18 +4,17 @@
  * Those sets are module-private, and exporting them purely to be testable would
  * widen a production surface to satisfy a test — the call
  * `receiver-twin-list-drift.test.ts` documents. So the guards read the source
- * instead, through the TypeScript parser the repo already vendors and already
- * uses this way (`literal-collectors.ts`, `query-determinism-guard.test.ts`,
- * `cli-index-help.test.ts`).
+ * instead, through `@babel/parser` (`parse-typescript-source.ts`).
  *
- * Using the real parser is what makes the guards trustworthy. A text scanner has
- * to decide whether a delimiter opens a comment or sits inside a string, and it
- * gets that wrong in both directions here: the ignore-list comments quote paths
- * and carry an apostrophe (`Next.js's`), while a glob string such as `'** / *'`
- * contains a comment-open sequence. It also has to guess which bracket belongs
- * to the declaration rather than to a type annotation. Each of those is a way to
- * silently read fewer members — and a guard that quietly stops seeing members is
- * the exact defect these guards exist to catch.
+ * Using an AST parser for TypeScript syntax is what makes the guards
+ * trustworthy. A text scanner has to decide whether a delimiter opens a comment
+ * or sits inside a string, and it gets that wrong in both directions here: the
+ * ignore-list comments quote paths and carry an apostrophe (`Next.js's`), while
+ * a glob string such as `'** / *'` contains a comment-open sequence. It also
+ * has to guess which bracket belongs to the declaration rather than to a type
+ * annotation. Each of those is a way to silently read fewer members — and a
+ * guard that quietly stops seeing members is the exact defect these guards
+ * exist to catch.
  *
  * `setEntries` therefore refuses anything that is not a plain list of string
  * literals, rather than skipping the members it cannot resolve.
@@ -23,7 +22,8 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
+import * as t from '@babel/types';
+import { forEachChild, nodeText, parseTypeScript } from './parse-typescript-source.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -55,46 +55,44 @@ export const readSource = (file: string): string => readFileSync(file, 'utf8');
  * concatenation, a computed value).
  */
 export const setEntries = (source: string, setName: string): string[] => {
-  const sourceFile = ts.createSourceFile(
-    'ignore-set-source.ts',
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-  );
+  const { ast } = parseTypeScript('ignore-set-source.ts', source);
 
-  let elements: ts.NodeArray<ts.Expression> | undefined;
-  const visit = (node: ts.Node): void => {
+  let elements: t.ArrayExpression['elements'] | undefined;
+  const visit = (node: t.Node): void => {
     if (
       elements === undefined &&
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.name.text === setName &&
-      node.initializer !== undefined &&
-      ts.isNewExpression(node.initializer) &&
-      node.initializer.arguments?.length === 1 &&
-      ts.isArrayLiteralExpression(node.initializer.arguments[0])
+      t.isVariableDeclarator(node) &&
+      t.isIdentifier(node.id) &&
+      node.id.name === setName &&
+      node.init !== undefined &&
+      node.init !== null &&
+      t.isNewExpression(node.init) &&
+      node.init.arguments.length === 1 &&
+      t.isArrayExpression(node.init.arguments[0])
     ) {
-      elements = node.initializer.arguments[0].elements;
+      elements = node.init.arguments[0].elements;
       return;
     }
-    ts.forEachChild(node, visit);
+    forEachChild(node, visit);
   };
-  visit(sourceFile);
+  visit(ast);
 
   if (elements === undefined) {
     throw new Error(`${setName} is not declared as \`new Set([...])\` — update this test`);
   }
 
-  const unresolvable = elements.filter((element) => !ts.isStringLiteral(element));
+  const unresolvable = elements.filter((element) => !t.isStringLiteral(element));
   if (unresolvable.length > 0) {
+    const first = unresolvable[0];
+    const excerpt = first && typeof first === 'object' ? nodeText(source, first) : String(first);
     throw new Error(
       `${setName} holds ${unresolvable.length} member(s) that are not plain string literals ` +
-        `(first: \`${unresolvable[0].getText(sourceFile)}\`). A source-reading guard cannot resolve ` +
+        `(first: \`${excerpt}\`). A source-reading guard cannot resolve ` +
         `those, so switch this set to a runtime assertion rather than letting the guard see fewer members.`,
     );
   }
 
-  return elements.map((element) => (element as ts.StringLiteral).text);
+  return elements.map((element) => (element as t.StringLiteral).value);
 };
 
 /**

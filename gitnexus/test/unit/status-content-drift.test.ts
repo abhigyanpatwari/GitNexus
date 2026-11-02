@@ -42,7 +42,6 @@ const { runnerIdentity } = vi.hoisted(() => ({
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn(),
-  findRepo: vi.fn(),
   getStoragePaths: vi.fn((repoPath: string) => ({
     storagePath: `${repoPath}/.gitnexus`,
     lbugPath: `${repoPath}/.gitnexus/lbug`,
@@ -61,7 +60,7 @@ vi.mock('../../src/storage/git.js', () => ({
   isGitRepo: vi.fn().mockReturnValue(true),
   getCurrentCommit: vi.fn().mockReturnValue('headsha0'),
   getCurrentBranch: vi.fn().mockReturnValue('main'),
-  getGitRoot: vi.fn((p: string) => p),
+  getGitRoot: vi.fn().mockReturnValue('/repo'),
   isWorkingTreeDirty: vi.fn().mockReturnValue(false),
   listWorkingTreeDirtyPaths: vi.fn().mockReturnValue([]),
 }));
@@ -70,9 +69,16 @@ vi.mock('../../src/core/index-content-drift.js', () => ({
   detectIndexContentDrift: vi.fn(),
 }));
 
+vi.mock('../../src/storage/storage-resolver.js', () => ({
+  requireStoragePath: vi.fn().mockResolvedValue('/repo/.gitnexus'),
+  requireRegisteredStoragePath: vi.fn().mockResolvedValue('/repo/.gitnexus'),
+  STATUS_STORAGE_REQUIREMENTS: { allowedStates: ['owned'], requireCodeIndexDB: true },
+  StorageRequirementError: class StorageRequirementError extends Error {},
+}));
+
 import { statusCommand } from '../../src/cli/status.js';
 import { setCliLanguage } from '../../src/cli/i18n/index.js';
-import { findRepo } from '../../src/storage/repo-manager.js';
+import { loadMeta } from '../../src/storage/repo-manager.js';
 import { getCurrentCommit, isWorkingTreeDirty } from '../../src/storage/git.js';
 import { detectIndexContentDrift } from '../../src/core/index-content-drift.js';
 
@@ -98,7 +104,7 @@ const repoWithCoverage = {
 beforeEach(() => {
   vi.clearAllMocks();
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-  (findRepo as any).mockResolvedValue(repoWithCoverage);
+  (loadMeta as any).mockResolvedValue(repoWithCoverage.meta);
   (getCurrentCommit as any).mockReturnValue('headsha0');
   (isWorkingTreeDirty as any).mockReturnValue(false);
 });
@@ -266,10 +272,7 @@ describe('status freshness from per-file drift (#3077)', () => {
 
   it('replays persisted indexCoverage into the drift check', async () => {
     const coverage = { maxFileSizeBytes: 1024 * 1024, dirtyPaths: ['a.js'] };
-    (findRepo as any).mockResolvedValue({
-      ...repoWithCoverage,
-      meta: { ...repoWithCoverage.meta, indexCoverage: coverage },
-    });
+    (loadMeta as any).mockResolvedValue({ ...repoWithCoverage.meta, indexCoverage: coverage });
     (detectIndexContentDrift as any).mockResolvedValue({ kind: 'current', coveredFileCount: 1 });
 
     await statusCommand({ json: true });

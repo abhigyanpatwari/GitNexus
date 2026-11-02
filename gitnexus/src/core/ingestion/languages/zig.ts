@@ -1,3 +1,4 @@
+import { zigRenameProvider } from './zig/rename.js';
 /**
  * Zig Language Provider.
  *
@@ -7,7 +8,7 @@
  *     `@heritage.*` captures).
  *   - exportChecker: walks to the enclosing variable_declaration /
  *     function_declaration and looks for a `pub` or `export` keyword child.
- *   - importResolver: resolves local `@import("./foo.zig")` paths and
+ *   - ScopeResolver.resolveImportTarget: resolves local `@import("./foo.zig")` paths and
  *     build.zig.zon `.path` deps (root the dep's build.zig declares, then
  *     src/root.zig, src/<name>.zig, src/main.zig); `@import("std")` and
  *     `.url` packages are deliberately external.
@@ -34,8 +35,6 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import { ZIG_QUERIES } from '../tree-sitter-queries.js';
 import { zigExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { zigImportConfig } from '../import-resolvers/configs/zig.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { zigCallConfig } from '../call-extractors/configs/zig.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
@@ -47,6 +46,7 @@ import { zigMethodConfig } from '../method-extractors/configs/zig.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { zigVariableConfig } from '../variable-extractors/configs/zig.js';
 import { zigTypeConfig } from '../type-extractors/zig.js';
+import { createZigCfgVisitor } from '../cfg/visitors/zig.js';
 import {
   emitZigScopeCaptures,
   interpretZigImport,
@@ -64,7 +64,19 @@ import {
   ZIG_CONTAINER_TYPES,
 } from './zig/index.js';
 
+/**
+ * The module names Zig reserves, for `LanguageProvider.isExternalModuleSpecifier`:
+ * `@import("std")` is the standard library and `@import("builtin")` is
+ * compiler-generated, so a name bound by either — `const std = @import("std")`
+ * or any other spelling — is rooted outside the program and `std.sort.pdq(...)`
+ * lost no in-program edge. Exact names only: `@import("std.zig")` is a FILE
+ * path, and `root` is the program's own root module. Modules named by
+ * `build.zig` (`addImport`) may be in-program or packages, so none is listed.
+ */
+const ZIG_RESERVED_MODULES: ReadonlySet<string> = new Set(['std', 'builtin']);
+
 export const zigProvider = defineLanguage({
+  rename: zigRenameProvider,
   id: SupportedLanguages.Zig,
   extensions: ['.zig'],
   entryPointPatterns: [
@@ -74,8 +86,12 @@ export const zigProvider = defineLanguage({
   astFrameworkPatterns: [],
   treeSitterQueries: ZIG_QUERIES,
   typeConfig: zigTypeConfig,
+  cfgVisitor: createZigCfgVisitor(),
   exportChecker: zigExportChecker,
-  importResolver: createImportResolver(zigImportConfig),
+  // No `pub` → unreachable through `@import` from another file. `export fn`
+  // without `pub` is recorded true (C linkage), so false never hides FFI.
+  notExportedIsFilePrivate: true,
+  isExternalModuleSpecifier: (specifier) => ZIG_RESERVED_MODULES.has(specifier),
   callExtractor: createCallExtractor(zigCallConfig),
   classExtractor: createClassExtractor(zigClassConfig),
   fieldExtractor: createFieldExtractor(zigFieldConfig),

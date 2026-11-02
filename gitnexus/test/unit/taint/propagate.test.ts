@@ -36,7 +36,14 @@ import {
   computeTaintFlows,
   type FunctionTaintResult,
   type TaintLimits,
+  type TaintSourceOccurrence,
 } from '../../../src/core/ingestion/taint/propagate.js';
+
+function sourceProperty(source: TaintSourceOccurrence): string {
+  expect(source.type).toBe('member-read');
+  if (source.type !== 'member-read') throw new Error('Expected a member-read source');
+  return source.property;
+}
 
 /** The single binding index for `name` (throws when shadowed/ambiguous). */
 function bindingIdx(cfg: FunctionCfg, name: string): number {
@@ -153,7 +160,7 @@ describe('rule (b) — statement-local findings', () => {
     expect(r.findings).toHaveLength(1);
     const f = r.findings[0];
     expect(f.sinkKind).toBe('command-injection');
-    expect(f.source.property).toBe('body');
+    expect(sourceProperty(f.source)).toBe('body');
     expect(f.source.point.line).toBe(2);
     expect(f.sink.point.line).toBe(2);
     expect(f.sink.argIndex).toBe(0);
@@ -168,14 +175,14 @@ describe('rule (b) — statement-local findings', () => {
     };
     const r = analyze(`function f(req) { exec(req.body, req.query); }`, { spec });
     expect(r.findings).toHaveLength(2);
-    const ids = r.findings.map((f) => `${f.source.property}@arg${f.sink.argIndex}`);
+    const ids = r.findings.map((f) => `${sourceProperty(f.source)}@arg${f.sink.argIndex}`);
     expect(ids).toEqual(['body@arg0', 'query@arg1']);
   });
 
   it('exec(req.body.toString()) → finding via the statement-local rule', () => {
     const r = analyze(`function f(req) { exec(req.body.toString()); }`);
     expect(r.findings).toHaveLength(1);
-    expect(r.findings[0].source.property).toBe('body');
+    expect(sourceProperty(r.findings[0].source)).toBe('body');
   });
 
   it('a source read at an UNREGISTERED sink position produces no finding', () => {
@@ -194,7 +201,7 @@ describe('rule (a) — worklist over def→use facts', () => {
     }`);
     expect(r.findings).toHaveLength(1);
     expect(hopSummary(r)).toEqual(['b@2', 'b@3']);
-    expect(r.findings[0].source.property).toBe('body');
+    expect(sourceProperty(r.findings[0].source)).toBe('body');
     expect(r.findings[0].sink.point.line).toBe(3);
   });
 
@@ -491,7 +498,7 @@ describe('multi-source identity — distinct sources do not merge at one def', (
       spec: MULTI,
     });
     expect(r.findings).toHaveLength(2);
-    const props = r.findings.map((f) => f.source.property).sort();
+    const props = r.findings.map((f) => sourceProperty(f.source)).sort();
     expect(props).toEqual(['body', 'query']);
   });
 
@@ -539,6 +546,36 @@ describe('multi-source identity — distinct sources do not merge at one def', (
 // ── kind-set exclusion model (real built-in model) ──────────────────────────
 
 describe('kind-set exclusions — sanitizers neutralize their kinds only', () => {
+  it.each([
+    ['direct alias', 'const command = "git show " + ref;', 'command', 0],
+    [
+      'transitive alias',
+      'const args = "show " + ref; const command = "git " + args;',
+      'command',
+      0,
+    ],
+    ['template alias', 'const command = `git show ${ref}`;', 'command', 0],
+    ['unsafe template', 'const command = `git show ;${ref}`;', 'command', 1],
+    ['bypassed guard', 'const command = "git show " + ref;', 'command', 1],
+    ['mutated subject', 'ref = req.query.other; const command = "git show " + ref;', 'command', 1],
+    ['mutated alias', 'let command = "git show " + ref; command = req.query.other;', 'command', 1],
+  ])('keeps certificate semantics across blocks: %s', (name, definition, argument, findings) => {
+    const guard = 'if (!/^[0-9a-f]{7,40}$/.test(ref)) return;';
+    const r = analyze(
+      `import {execSync} from 'node:child_process';
+function f(req: any, log: boolean) {
+  ${name === 'mutated subject' ? 'let' : 'const'} ref: string = req.query.ref;
+  ${name === 'bypassed guard' ? `if (log) { ${guard} }` : guard}
+  ${definition}
+  if (log) console.log('validated');
+  execSync(${argument});
+}`,
+      { spec: TS_JS_TAINT_MODEL },
+    );
+    expect(r.status).toBe('computed');
+    expect(r.findings).toHaveLength(findings);
+  });
+
   it('built-in model catches argv-form child_process command sinks', () => {
     const r = analyze(
       `import { execFileSync } from 'node:child_process';
@@ -691,7 +728,7 @@ describe('caps — deterministic truncation (R6 substrate)', () => {
     expect(r.findings).toHaveLength(2);
     expect(r.droppedFindings).toBe(2);
     // deterministic prefix of the sorted order: statement order
-    expect(r.findings.map((f) => f.source.property)).toEqual(['body', 'query']);
+    expect(r.findings.map((f) => sourceProperty(f.source))).toEqual(['body', 'query']);
   });
 
   it('without a cap all findings emit and droppedFindings is 0', () => {

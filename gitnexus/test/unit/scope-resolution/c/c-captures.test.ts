@@ -303,7 +303,11 @@ describe('emitCScopeCaptures — arity metadata', () => {
     );
     expect(m).toBeDefined();
     const types = JSON.parse(m!['@declaration.parameter-types'].text);
-    expect(types).toEqual(['int', 'float']);
+    expect(types).toEqual(['int', 'double']);
+    expect(JSON.parse(m!['@declaration.parameter-type-classes'].text)).toEqual([
+      { base: 'int', cv: 'none', indirection: 'value', pointerDepth: 0 },
+      { base: 'double', cv: 'none', indirection: 'value', pointerDepth: 0 },
+    ]);
   });
 
   it('(void) parameter list yields zero parameters', () => {

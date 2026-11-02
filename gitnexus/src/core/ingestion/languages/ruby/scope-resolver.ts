@@ -3,6 +3,12 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { rubyProvider } from '../ruby.js';
+import {
+  applyRubyMemberDispatch,
+  clearRubyMemberDispatch,
+  configureRubySingletonAncestors,
+  resolveRubyReceiverMember,
+} from './member-dispatch.js';
 import { rubyArityCompatibility, rubyMergeBindings, resolveRubyImportTarget } from './index.js';
 import { populateClassOwnedMembers, isClassLike } from '../../scope-resolution/scope/walkers.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
@@ -10,6 +16,8 @@ import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-l
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 import { decodeMarker } from '../../utils/heritage-marker.js';
+import { rubyIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
+import { loadRubyResolutionConfig } from './resolution-config.js';
 
 /**
  * #1991: resolve a BARE mixin reference (`include Loggable`) to a nested module by
@@ -163,6 +171,7 @@ function buildRubyMro(
 ): Map<string, string[]> {
   // Step 1: EXTENDS chain via the generic MRO builder (direct class inheritance).
   const baseMro = buildMro(graph, parsedFiles, nodeLookup, defaultLinearize);
+  const classAncestors = new Map(baseMro);
 
   // Step 2: Build defId ↔ graphId bridge for class-like defs.
   const defIdByGraphId = new Map<string, string>();
@@ -177,6 +186,7 @@ function buildRubyMro(
   // Step 3: Collect IMPLEMENTS edges, partitioned by reason.
   const prependByChild = new Map<string, string[]>();
   const includeByChild = new Map<string, string[]>();
+  const extendByChild = new Map<string, string[]>();
 
   for (const rel of graph.iterRelationshipsByType('IMPLEMENTS')) {
     const childDefId = defIdByGraphId.get(rel.sourceId);
@@ -191,6 +201,8 @@ function buildRubyMro(
         prependByChild.set(childDefId, list);
       }
       list.push(parentDefId);
+    } else if (reason === 'extend') {
+      extendByChild.set(childDefId, [...(extendByChild.get(childDefId) ?? []), parentDefId]);
     } else if (reason === 'include') {
       let list = includeByChild.get(childDefId);
       if (list === undefined) {
@@ -225,6 +237,7 @@ function buildRubyMro(
     baseMro.set(defId, reordered);
   }
 
+  configureRubySingletonAncestors(classAncestors, extendByChild, baseMro);
   return baseMro;
 }
 
@@ -259,6 +272,8 @@ function expandRubyWildcardNames(
 }
 
 export const rubyScopeResolver: ScopeResolver = {
+  applyCaptureSideChannel: applyRubyMemberDispatch,
+  resolveReceiverMember: resolveRubyReceiverMember,
   // Construction is a selector on the class: `Service.new.do_work` (#2708).
   constructionSyntax: { selector: 'new' },
   language: SupportedLanguages.Ruby,
@@ -267,6 +282,11 @@ export const rubyScopeResolver: ScopeResolver = {
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
     resolveRubyImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig),
+
+  loadResolutionConfig: (repoPath) => {
+    clearRubyMemberDispatch();
+    return loadRubyResolutionConfig(repoPath);
+  },
 
   expandsWildcardTo: (targetModuleScope, parsedFiles) =>
     expandRubyWildcardNames(targetModuleScope, parsedFiles),
@@ -287,4 +307,5 @@ export const rubyScopeResolver: ScopeResolver = {
   fieldFallbackOnMethodLookup: true,
   propagatesReturnTypesAcrossImports: true,
   allowGlobalFreeCallFallback: true,
+  isGlobalNameFallbackPlausible: rubyIsGlobalNameFallbackPlausible,
 };

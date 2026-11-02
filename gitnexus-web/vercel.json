@@ -1,3 +1,20 @@
 {
-  "installCommand": "cd ../gitnexus-shared && npm install && npm run build && cd ../gitnexus-web && npm ci --include=dev"
+  "installCommand": "npm ci --include=dev && cd ../gitnexus-shared && node ../gitnexus-web/node_modules/typescript/lib/tsc.js",
+  "rewrites": [
+    {
+      "source": "/((?!assets/|api/).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    }
+  ]
 }

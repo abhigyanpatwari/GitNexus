@@ -4,7 +4,7 @@
  * End-to-end flow with real git and real registry/meta I/O.
  */
 import { execFileSync } from 'child_process';
-import { writeFileSync } from 'fs';
+import { mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createTempDir } from '../helpers/test-db.js';
@@ -41,6 +41,10 @@ async function seedIndexedRepo(
   meta: RepoMeta,
   repoName: string = 'test-repo',
 ): Promise<void> {
+  // Registry validation accepts only an owned storage directory that contains
+  // the index path. The context resource itself reads metadata only, so a
+  // minimal placeholder directory is sufficient for this fixture.
+  mkdirSync(path.join(storagePath, 'lbug'), { recursive: true });
   await saveMeta(storagePath, meta);
   await registerRepo(repoPath, meta, { name: repoName });
 }
@@ -202,5 +206,27 @@ describe('context resource freshness — out-of-process analyze (#2438)', () => 
     expect(result).toContain('files: 77');
     expect(result).toContain('symbols: 333');
     expect(result).toContain('processes: 4');
+  });
+
+  it('does not claim divergence when disk metadata and the cached handle have no indexed commit', async function missingIndexedCommitDoesNotClaimDivergence() {
+    writeFileSync(path.join(repoPath, 'a.ts'), 'export const a = 1;\n');
+    runGit(repoPath, 'add', 'a.ts');
+    runGit(repoPath, 'commit', '-m', 'c1');
+
+    // A legacy metadata/registry entry can omit lastCommit despite RepoMeta's
+    // required field; seed that persisted shape rather than a symbolic ref.
+    await seedIndexedRepo(repoPath, storagePath, {
+      repoPath,
+      indexedAt: '2024-01-01T00:00:00Z',
+      stats: { files: 1, nodes: 1, processes: 0 },
+    } as RepoMeta);
+
+    const backend = new LocalBackend();
+    await backend.init();
+    expect((await backend.resolveRepo('test-repo')).lastCommit).toBeUndefined();
+
+    const result = await readResource('gitnexus://repo/test-repo/context', backend);
+    expect(result).not.toContain('staleness:');
+    expect(result).toContain('  commit: ""');
   });
 });

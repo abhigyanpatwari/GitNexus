@@ -1,18 +1,37 @@
 import { execSync } from 'child_process';
 import fs from 'fs/promises';
-import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { basename } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import {
   getStoragePaths,
   loadMeta,
   saveMeta,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
-import { EMBEDDING_DIMS } from '../../src/core/lbug/schema.js';
+import {
+  EMBEDDING_DIMS,
+  STALE_HASH_SENTINEL,
+  SCHEMA_FINGERPRINT,
+} from '../../src/core/lbug/schema.js';
 import { getIndexIncompleteReasons } from '../../src/core/index-freshness.js';
 import type {
   EmbeddingPipelineOptions,
   EmbeddingPipelineResult,
 } from '../../src/core/embeddings/embedding-pipeline.js';
+import {
+  isLbugCheckpointBusyError,
+  isLbugCheckpointIoError,
+  isLbugPageSizeFrameError,
+  isStorageVersionMismatchError,
+  isWalCorruptionError,
+} from '../../src/core/lbug/lbug-config.js';
+import { isHfDownloadFailure } from '../../src/core/embeddings/hf-env.js';
+import { isHttpEmbeddingDimsError } from '../../src/core/embeddings/http-client.js';
+import {
+  isLocalEmbeddingRuntimeBlockerMessage,
+  isMissingLocalEmbeddingStackMessage,
+} from '../../src/core/embeddings/runtime-support.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 const SIMULATED_MISSING_FTS_INDEX_NAME = 'File.file_fts';
@@ -222,6 +241,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -278,6 +298,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     executeWithReusedStatement: vi.fn(async () => []),
     closeLbug: vi.fn(async () => undefined),
     wipeLbugDbFiles: vi.fn(async () => undefined),
+    tryFlushWAL: vi.fn(async () => true),
     loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
     deleteNodesForFile: vi.fn(async () => undefined),
     deleteNodesForFiles: vi.fn(async () => undefined),
@@ -286,6 +307,123 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     queryImportersBatch: vi.fn(async () => []),
     loadFTSExtension: vi.fn(async () => true),
     ...overrides,
+  });
+
+  it.each([
+    { label: 'old catalog entry survives a failed DROP', buildError: true, catalog: 'complete' },
+    { label: 'CREATE succeeds without a catalog entry', buildError: false, catalog: 'missing' },
+    { label: 'build and catalog verification both fail', buildError: true, catalog: 'missing' },
+    { label: 'catalog read throws after a build failure', buildError: true, catalog: 'throws' },
+    { label: 'catalog read alone throws', buildError: false, catalog: 'throws' },
+  ])('keeps repair incomplete when $label', async ({ buildError, catalog }) => {
+    const closeLbug = vi.fn(async () => undefined);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () =>
+      mockRepairSuccessLbugAdapter({ closeLbug }),
+    );
+    vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/search/fts-indexes.js')>()),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes: vi.fn(async () =>
+        buildError
+          ? [
+              {
+                table: 'Property',
+                indexName: 'property_fts',
+                error: 'DROP failed: native I/O error',
+              },
+            ]
+          : [],
+      ),
+      verifySearchFTSIndexes: vi.fn(async (_query, _indexes, onMismatch) => {
+        if (catalog === 'throws') throw new Error('catalog read unavailable');
+        if (catalog === 'missing') {
+          onMismatch?.({
+            table: 'Property',
+            indexName: 'property_fts',
+            message: 'Property.property_fts: no catalog row returned',
+          });
+          return ['Property.property_fts'];
+        }
+        return [];
+      }),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-repair-incomplete-');
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      const seeded: RepoMeta = {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: 'healthy-commit',
+        indexedAt: '2026-01-01T00:00:00.000Z',
+        stats: { files: 7, nodes: 42, edges: 10, embeddings: 3 },
+        runnerIdentity: {
+          schemaVersion: 4,
+          runtime: {
+            executablePath: '/usr/bin/node',
+            version: 'v24.11.0',
+            platform: 'linux',
+            architecture: 'x64',
+            modulesAbi: '137',
+            libc: 'glibc',
+          },
+          cliVersion: '1.0.0',
+          invokedArtifact: { path: '/x/cli/index.ts', digest: 'src-digest' },
+          build: {
+            kind: 'source' as const,
+            rootPath: '/x',
+            canonicalization: 'gitnexus-analyzer-build-v2',
+            digest: 'build-digest',
+          },
+          dependencyRuntime: {
+            manifestPath: '/x/package.json',
+            lockfilePath: null,
+            canonicalization: 'gitnexus-analyzer-dependency-runtime-v4',
+            packageCount: 1,
+            artifactCount: 1,
+            digest: 'dep-digest',
+          },
+        },
+        capabilities: {
+          graph: { provider: 'ladybugdb', status: 'available' },
+          fts: { provider: 'ladybugdb-fts', status: 'degraded' },
+          vectorSearch: { provider: 'exact-scan', status: 'unavailable', exactScanLimit: 500 },
+        },
+      };
+      await saveMeta(storagePath, seeded);
+      await createPlaceholderGraphStore(lbugPath);
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const error = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { repairFts: true },
+        { onProgress: () => {} },
+      ).then(
+        () => null,
+        (cause: unknown) => cause,
+      );
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message).toContain('FTS repair failed');
+      if (buildError) expect(message).toContain('DROP failed: native I/O error');
+      if (catalog === 'missing') {
+        expect(message).toContain('Property.property_fts: no catalog row returned');
+        if (!buildError) expect(message).toContain('no build error was returned');
+      }
+      if (catalog === 'throws') {
+        expect(message).toContain('catalog read unavailable');
+        expect(message).not.toContain('missing indexes');
+      }
+      const after = await loadMeta(storagePath);
+      expect(after?.incrementalInProgress).toMatchObject({ phase: 'fts' });
+      expect(after?.capabilities).toEqual(seeded.capabilities);
+      expect(after?.indexedAt).toBe(seeded.indexedAt);
+      expect(after?.lastCommit).toBe(seeded.lastCommit);
+      expect(after?.stats).toEqual(seeded.stats);
+      expect(after?.runnerIdentity).toEqual(seeded.runnerIdentity);
+      expect(closeLbug).toHaveBeenCalled();
+    } finally {
+      await tmpRepo.cleanup();
+    }
   });
 
   it('--repair-fts stamps capabilities.fts.status while leaving indexedAt/lastCommit/runnerIdentity/stats byte-identical (#2767)', async () => {
@@ -310,8 +448,22 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
         lastCommit: 'abc123',
         indexedAt: seededIndexedAt,
         stats: { files: 7, nodes: 42, edges: 10 },
+        parseCacheIdentity: {
+          base: 'sha256:previous-parser-build',
+          pdg: { identity: 'sha256:previous-pdg-build', maxFunctionLines: 2000 },
+        },
         runnerIdentity: {
-          source: { kind: 'source' as const, digest: 'src-digest' },
+          schemaVersion: 4,
+          runtime: {
+            executablePath: '/usr/bin/node',
+            version: 'v24.11.0',
+            platform: 'linux',
+            architecture: 'x64',
+            modulesAbi: '137',
+            libc: 'glibc',
+          },
+          cliVersion: '1.0.0',
+          invokedArtifact: { path: '/x/cli/index.ts', digest: 'src-digest' },
           build: {
             kind: 'source' as const,
             rootPath: '/x',
@@ -350,6 +502,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       expect(meta.indexedAt).toBe(seededIndexedAt);
       expect(meta.lastCommit).toBe('abc123');
       expect(meta.runnerIdentity).toEqual(seeded.runnerIdentity);
+      expect(meta.parseCacheIdentity).toEqual(seeded.parseCacheIdentity);
       expect(meta.stats).toEqual(seeded.stats);
       // graph/vectorSearch, which repair-fts also never touches, pass through.
       expect(meta.capabilities.graph).toEqual(seeded.capabilities!.graph);
@@ -568,6 +721,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -633,6 +787,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -701,6 +856,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -772,6 +928,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -827,6 +984,8 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
   });
 
   it('ABORTS (throws before publish, leaves the previous index intact) on an FTS integrity failure on the atomic-swap path (#2658 review M1)', async () => {
+    // Select the atomic path on Windows too; the native adapter is mocked below.
+    vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '1');
     // The single-writer lock rules out a concurrent-writer race, so an
     // integrity-class FTS failure on the atomic-swap (--force) path is a real
     // broken build: run-analyze must throw BEFORE swapping the staging DB in,
@@ -841,6 +1000,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       executeWithReusedStatement: vi.fn(async () => []),
       closeLbug: vi.fn(async () => undefined),
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       deleteNodesForFiles: vi.fn(async () => undefined),
@@ -878,6 +1038,13 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       await fs.mkdir(storagePath, { recursive: true });
       // A pre-existing "previous index" that must survive the aborted rebuild.
       await createPlaceholderGraphStore(lbugPath);
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        storagePath,
+        lastCommit: 'previous-index',
+        indexedAt: new Date().toISOString(),
+        stats: {},
+      });
       const before = await fs.readFile(lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -913,6 +1080,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -986,6 +1154,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -1085,7 +1254,9 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
       properties: { filePath: 'src/app.ts' },
     };
     const buildVectorIndex = vi.fn(async () => false);
-    const executeWithReusedStatement = vi.fn(async () => []);
+    const executeWithReusedStatement = vi.fn<
+      typeof import('../../src/core/lbug/lbug-adapter.js').executeWithReusedStatement
+    >(async () => {});
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
       loadGraphToLbug: vi.fn(async () => undefined),
@@ -1104,6 +1275,7 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       // ≥1 cached row with a real-dims embedding: the harness default (empty
       // cache) would leave restoredEmbeddingCount at 0 and the recreation
       // gate shut — this test would then assert nothing.
@@ -1206,6 +1378,315 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
       await tmpRepo.cleanup();
     }
   });
+
+  it('warns and continues without restore when loadCachedEmbeddings rejects (R11)', async () => {
+    const RESTORED_NODE_ID = 'Function:src/app.ts:handler:1';
+    const stubNode = {
+      id: RESTORED_NODE_ID,
+      label: 'Function',
+      name: 'handler',
+      properties: { filePath: 'src/app.ts' },
+    };
+    const executeWithReusedStatement = vi.fn<
+      typeof import('../../src/core/lbug/lbug-adapter.js').executeWithReusedStatement
+    >(async () => {});
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({ nodes: 2, edges: 0, communities: 0, processes: 0 })),
+      executeQuery: vi.fn(async () => []),
+      executeWithReusedStatement,
+      closeLbug: vi.fn(async () => undefined),
+      wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
+      loadCachedEmbeddings: vi.fn(async () => {
+        throw new Error('spill write failed');
+      }),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteNodesForFiles: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes: vi.fn(async () => []),
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        totalFileCount: 1,
+        graph: {
+          forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
+          getNode: (id: string) => (id === RESTORED_NODE_ID ? stubNode : undefined),
+        },
+      })),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      registerRepo: vi.fn(async () => 'cache-load-reject-repo'),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+    vi.doMock('../../src/core/embeddings/embedding-pipeline.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/embeddings/embedding-pipeline.js')>()),
+      batchInsertEmbeddings: vi.fn(async () => {
+        throw new Error('restore must not run after a cache-load failure');
+      }),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-cache-reject-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+        stats: { embeddings: 1 },
+      });
+
+      const logs: string[] = [];
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true, embeddingsNodeLimit: 1 },
+        { onProgress: () => {}, onLog: (m) => logs.push(m) },
+      );
+
+      expect(logs.some((m) => m.includes('Warning: could not load cached embeddings'))).toBe(true);
+      expect(logs.some((m) => m.includes('spill write failed'))).toBe(true);
+      expect(
+        executeWithReusedStatement.mock.calls.some((call) =>
+          String(call[0]).includes('CREATE (e:CodeEmbedding'),
+        ),
+      ).toBe(false);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('omits failed restore rows from the Phase 4 skip-set so they can be re-embedded', async () => {
+    const RESTORED_NODE_ID = 'Function:src/app.ts:handler:1';
+    const CACHED_HASH = 'cached-stable-hash';
+    const stubNode = {
+      id: RESTORED_NODE_ID,
+      label: 'Function',
+      name: 'handler',
+      properties: { filePath: 'src/app.ts' },
+    };
+    let existingEmbeddings: Map<string, string> | undefined;
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({ nodes: 2, edges: 0, communities: 0, processes: 0 })),
+      executeQuery: vi.fn(async () => []),
+      executeWithReusedStatement: vi.fn(async () => []),
+      closeLbug: vi.fn(async () => undefined),
+      wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
+      loadCachedEmbeddings: vi.fn(async () => ({
+        embeddingNodeIds: new Set([RESTORED_NODE_ID]),
+        embeddings: [
+          {
+            nodeId: RESTORED_NODE_ID,
+            chunkIndex: 0,
+            startLine: 0,
+            endLine: 3,
+            embedding: new Array(EMBEDDING_DIMS).fill(0),
+            contentHash: CACHED_HASH,
+          },
+        ],
+      })),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteNodesForFiles: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes: vi.fn(async () => []),
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        totalFileCount: 1,
+        graph: {
+          forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
+          getNode: (id: string) => (id === RESTORED_NODE_ID ? stubNode : undefined),
+        },
+      })),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      registerRepo: vi.fn(async () => 'ktd7-skip-set-repo'),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+    const runEmbeddingPipeline = vi.fn(
+      async (
+        _executeQuery: unknown,
+        _executeWithReusedStatement: unknown,
+        _onProgress: unknown,
+        _config: unknown,
+        _cachedNodeIds: unknown,
+        embeddings: Map<string, string> | undefined,
+      ) => {
+        existingEmbeddings = embeddings;
+        return {
+          nodesProcessed: 0,
+          chunksProcessed: 0,
+          vectorIndexReady: false,
+          semanticMode: 'exact-scan' as const,
+          failedNodeIds: [],
+        };
+      },
+    );
+    vi.doMock('../../src/core/embeddings/embedding-pipeline.js', () => ({
+      runEmbeddingPipeline,
+      buildVectorIndex: vi.fn(async () => false),
+      batchInsertEmbeddings: vi.fn(async () => {
+        throw new Error('nth batch insert failed');
+      }),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-ktd7-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+        stats: { embeddings: 1 },
+      });
+
+      const logs: string[] = [];
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true },
+        { onProgress: () => {}, onLog: (m) => logs.push(m) },
+      );
+
+      expect(runEmbeddingPipeline).toHaveBeenCalled();
+      expect(existingEmbeddings?.get(RESTORED_NODE_ID)).toBe(STALE_HASH_SENTINEL);
+      expect(logs.some((m) => m.includes('Warning: could not restore'))).toBe(true);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('marks a node stale when only some of its restore batches succeed', async () => {
+    const RESTORED_NODE_ID = 'Function:src/app.ts:handler:1';
+    const CACHED_HASH = 'cached-stable-hash';
+    const stubNode = {
+      id: RESTORED_NODE_ID,
+      label: 'Function',
+      name: 'handler',
+      properties: { filePath: 'src/app.ts' },
+    };
+    const embeddings = Array.from({ length: 201 }, (_, chunkIndex) => ({
+      nodeId: RESTORED_NODE_ID,
+      chunkIndex,
+      startLine: chunkIndex,
+      endLine: chunkIndex + 1,
+      embedding: new Array(EMBEDDING_DIMS).fill(0),
+      contentHash: CACHED_HASH,
+    }));
+    let existingEmbeddings: Map<string, string> | undefined;
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({ nodes: 2, edges: 0, communities: 0, processes: 0 })),
+      executeQuery: vi.fn(async () => []),
+      executeWithReusedStatement: vi.fn(async () => []),
+      closeLbug: vi.fn(async () => undefined),
+      wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
+      loadCachedEmbeddings: vi.fn(async () => ({
+        embeddingNodeIds: new Set([RESTORED_NODE_ID]),
+        embeddings,
+      })),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteNodesForFiles: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes: vi.fn(async () => []),
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        totalFileCount: 1,
+        graph: {
+          forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
+          getNode: (id: string) => (id === RESTORED_NODE_ID ? stubNode : undefined),
+        },
+      })),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      registerRepo: vi.fn(async () => 'partial-restore-skip-set-repo'),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+    const runEmbeddingPipeline = vi.fn(
+      async (
+        _executeQuery: unknown,
+        _executeWithReusedStatement: unknown,
+        _onProgress: unknown,
+        _config: unknown,
+        _cachedNodeIds: unknown,
+        embeddings: Map<string, string> | undefined,
+      ) => {
+        existingEmbeddings = embeddings;
+        return {
+          nodesProcessed: 0,
+          chunksProcessed: 0,
+          vectorIndexReady: false,
+          semanticMode: 'exact-scan' as const,
+          failedNodeIds: [],
+        };
+      },
+    );
+    let inserts = 0;
+    vi.doMock('../../src/core/embeddings/embedding-pipeline.js', () => ({
+      runEmbeddingPipeline,
+      buildVectorIndex: vi.fn(async () => false),
+      batchInsertEmbeddings: vi.fn(async () => {
+        inserts += 1;
+        if (inserts > 1) throw new Error('second batch insert failed');
+      }),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-partial-restore-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+        stats: { embeddings: 201 },
+      });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(tmpRepo.dbPath, { force: true }, { onProgress: () => {} });
+
+      expect(inserts).toBe(2);
+      expect(existingEmbeddings?.get(RESTORED_NODE_ID)).toBe(STALE_HASH_SENTINEL);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
 });
 
 /**
@@ -1257,6 +1738,7 @@ describe('runFullAnalysis dirty-recovery parking failure fails fast (this shippi
       executeWithReusedStatement: vi.fn(async () => []),
       closeLbug: vi.fn(async () => undefined),
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings,
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -1542,6 +2024,7 @@ describe('runFullAnalysis Phase 5 embedding gate (#2790)', () => {
       executeWithReusedStatement: vi.fn(async () => []),
       closeLbug: vi.fn(async () => undefined),
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({
         embeddingNodeIds: new Set<string>(),
         embeddings: [],
@@ -1665,8 +2148,10 @@ describe('runFullAnalysis Phase 5 embedding gate (#2790)', () => {
     expect(error).toMatchObject({
       message: expect.stringMatching(/--drop-embeddings/),
     });
-    // The index really was not registered: no finalize meta was written.
-    expect(meta).toBeNull();
+    // A pre-pipeline ownership marker is expected, but no finalized receipt
+    // may claim that the failed index is usable.
+    expect(meta).toMatchObject({ lastCommit: '' });
+    expect(meta?.stats).toBeUndefined();
   });
 
   // State 3 — "cannot ask" is not "wrote nothing".
@@ -1885,10 +2370,11 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('preserves lastCommit / fileHashes / the dirty flag, and never restates a stale count', async () => {
+  it('keeps staging counts out of published metadata until the index is swapped', async () => {
     const STALE_COMMIT = '1111111111111111111111111111111111111111';
     const STALE_HASHES = { 'src/app.ts': 'stale-hash' };
     const LIVE_EMBEDDING_COUNT = 42;
+    vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '1');
 
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
@@ -1985,15 +2471,14 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
             nodeIds: ['node-1', 'node-2'],
           });
           snapshots.windowStart = await loadMeta(storagePath);
-          // Post-window checkpoint — this one MEASURED the live count.
+          // Post-window checkpoint measures staging, not the published DB.
           await pipelineOptions.onCheckpoint?.({
             nodesProcessed: 2,
             totalNodes: 4,
             chunksProcessed: 4,
           });
           snapshots.postWindow = await loadMeta(storagePath);
-          // Window 2 — the old code restated the PREVIOUS run's count here and
-          // clobbered the live figure the post-window save had just written.
+          // Window 2 must retain the published count too.
           await pipelineOptions.onCheckpointWindowStart?.({
             nodesProcessed: 2,
             totalNodes: 4,
@@ -2045,19 +2530,27 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
       });
       expect(snapshots.windowStart?.lastCommit).not.toBe(currentCommit);
 
-      // ── Post-window: the one save that legitimately measured the count ──
+      // ── Post-window: the staged count is not published yet ─────────────
       expect(snapshots.postWindow).toMatchObject({
         lastCommit: STALE_COMMIT,
         fileHashes: STALE_HASHES,
         incrementalInProgress: { phase: 'full-rebuild' },
-        stats: { embeddings: LIVE_EMBEDDING_COUNT },
+        stats: { embeddings: 7 },
+      });
+      expect(snapshots.postWindow?.embeddingCheckpoint?.recovery).toMatchObject({
+        stagingFile: expect.stringMatching(/^lbug\.staging\.[a-f0-9-]+$/),
+        schemaFingerprint: SCHEMA_FINGERPRINT,
+        unsafeNodeIds: [],
       });
 
-      // ── Window 2: no stale restatement over the measured figure ────────
+      // ── Window 2: the published count remains unchanged ────────────────
       expect(snapshots.secondWindow).toMatchObject({
         lastCommit: STALE_COMMIT,
-        stats: { embeddings: LIVE_EMBEDDING_COUNT },
-        embeddingCheckpoint: { pendingNodeIds: ['node-3', 'node-4'] },
+        stats: { embeddings: 7 },
+        embeddingCheckpoint: {
+          pendingNodeIds: ['node-3', 'node-4'],
+          recovery: { unsafeNodeIds: ['node-3', 'node-4'] },
+        },
       });
 
       // Only the finalize write — after the index is published — advances
@@ -2065,7 +2558,7 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
       const finalMeta = JSON.parse(
         await fs.readFile(`${storagePath}/meta.json`, 'utf-8'),
       ) as RepoMeta;
-      expect(finalMeta).toMatchObject({ lastCommit: currentCommit });
+      expect(finalMeta).toMatchObject({ lastCommit: currentCommit, stats: { embeddings: 42 } });
       expect(finalMeta.embeddingCheckpoint).toBeUndefined();
       expect(finalMeta.incrementalInProgress).toBeUndefined();
     } finally {
@@ -2097,6 +2590,14 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
  * NEXT run does with it).
  */
 describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () => {
+  const actualPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+
+  beforeEach(() => {
+    // These mocked checkpoint tests exercise the atomic rebuild used on POSIX.
+    // Select that same path on Windows; the in-place case below opts out.
+    vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '1');
+  });
+
   const RESILIENCE_NODE_ID = 'Function:src/app.ts:handler:1';
   const stubNode = {
     id: RESILIENCE_NODE_ID,
@@ -2131,12 +2632,13 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
 
   const mockResilienceHarness = (
     controls: ResilienceControls,
-  ): { runEmbeddingPipeline: Mock; loadCachedEmbeddings: Mock } => {
+  ): { runEmbeddingPipeline: Mock; loadCachedEmbeddings: Mock; batchInsertEmbeddings: Mock } => {
     const loadCachedEmbeddings = vi.fn(async () => ({
       embeddingNodeIds: new Set<string>(),
       embeddings: [],
     }));
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      acquireInitLock: vi.fn(async () => async () => {}),
       initLbug: vi.fn(async () => undefined),
       loadGraphToLbug: vi.fn(async () => undefined),
       getLbugStats: vi.fn(async () => ({ nodes: 2, edges: 0, communities: 0, processes: 0 })),
@@ -2200,11 +2702,13 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
         pipelineOptions: EmbeddingPipelineOptions,
       ): Promise<EmbeddingPipelineResult> => controls.pipeline(pipelineOptions),
     );
+    const batchInsertEmbeddings = vi.fn(async () => undefined);
     vi.doMock('../../src/core/embeddings/embedding-pipeline.js', () => ({
       runEmbeddingPipeline,
+      batchInsertEmbeddings,
       buildVectorIndex: vi.fn(async () => false),
     }));
-    return { runEmbeddingPipeline, loadCachedEmbeddings };
+    return { runEmbeddingPipeline, loadCachedEmbeddings, batchInsertEmbeddings };
   };
 
   /** A checkpoint shaped exactly as `RepoMeta` declares it. */
@@ -2241,11 +2745,15 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
     repoPath: string,
     options: Record<string, unknown>,
     logs: string[],
+    extraSink?: (message: string) => void,
   ): Promise<unknown> => {
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
     return await runFullAnalysis(repoPath, options, {
       onProgress: () => {},
-      onLog: (m: string) => logs.push(m),
+      onLog: (m: string) => {
+        logs.push(m);
+        extraSink?.(m);
+      },
     }).then(
       () => null,
       (e: unknown) => e,
@@ -2253,12 +2761,20 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
   };
 
   afterEach(() => {
+    if (actualPlatformDescriptor) {
+      Object.defineProperty(process, 'platform', actualPlatformDescriptor);
+    }
     vi.doUnmock('../../src/core/lbug/lbug-adapter.js');
     vi.doUnmock('../../src/core/search/fts-indexes.js');
     vi.doUnmock('../../src/core/ingestion/pipeline.js');
     vi.doUnmock('../../src/storage/repo-manager.js');
     vi.doUnmock('../../src/core/embeddings/embedding-identity.js');
     vi.doUnmock('../../src/core/embeddings/embedding-pipeline.js');
+    vi.doUnmock('../../src/core/embeddings/staged-embedding-recovery.js');
+    vi.doUnmock('../../src/core/analyzer-identity.js');
+    vi.doUnmock('../../src/core/lbug/failure-evidence.js');
+    vi.doUnmock('../../src/core/lbug/wal-checkpoint-driver.js');
+    vi.restoreAllMocks();
     vi.resetModules();
     vi.clearAllMocks();
     vi.unstubAllEnvs();
@@ -2369,6 +2885,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
    */
   it('carries the mid-run count forward, not the run-start snapshot, so --force still loads the cache', async () => {
     const MID_RUN_COUNT = 12;
+    vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '1');
     const tmpRepo = await createTempDir('gitnexus-2790r-latest-meta-');
     try {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
@@ -2705,6 +3222,965 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
         embeddingCheckpoint: { kind: 'partial', pendingNodeIds: ['node-z'] },
       });
       expect(meta?.embeddingCheckpoint?.attempts).toBeUndefined();
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  const mockStagedFiles = async (): Promise<void> => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    vi.mocked(adapter.initLbug).mockImplementation(async (dbPath) => {
+      if (dbPath.includes('.staging.')) await fs.writeFile(dbPath, 'staged fixture');
+      return { db: null, conn: null };
+    });
+    vi.mocked(adapter.wipeLbugDbFiles).mockImplementation(async (dbPath) => {
+      await fs.rm(dbPath, { force: true });
+    });
+  };
+
+  it.each([
+    { mode: 'staged', atomicSwap: '1', checkpointCount: 7 },
+    { mode: 'in-place', atomicSwap: '0', checkpointCount: 42 },
+  ])(
+    'keeps Windows $mode checkpoint counts consistent with the live index',
+    async ({ mode, atomicSwap, checkpointCount }) => {
+      const tmpRepo = await createTempDir('gitnexus-2790-checkpoint-meta-');
+      try {
+        const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+        await seedMeta(storagePath, tmpRepo.dbPath, { stats: { nodes: 2, embeddings: 7 } });
+        await fs.writeFile(lbugPath, 'published fixture');
+        const snapshots: Array<RepoMeta | null> = [];
+        mockResilienceHarness({
+          count: [{ cnt: 42 }],
+          pipeline: async (options) => {
+            await options.onCheckpointWindowStart?.({
+              nodesProcessed: 0,
+              totalNodes: 3,
+              chunksProcessed: 0,
+              nodeIds: [RESILIENCE_NODE_ID],
+            });
+            snapshots.push(await loadMeta(storagePath));
+            await options.onCheckpoint?.({ nodesProcessed: 3, totalNodes: 3, chunksProcessed: 3 });
+            snapshots.push(await loadMeta(storagePath));
+            return cleanResult();
+          },
+        });
+        await mockStagedFiles();
+        // Load modules on the actual host before changing only the platform
+        // branch exercised by runFullAnalysis; all native DB work is mocked.
+        const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+        vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', atomicSwap);
+        Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+        await runFullAnalysis(
+          tmpRepo.dbPath,
+          { force: true, embeddings: true, skipAgentsMd: true, skipSkills: true },
+          { onProgress: () => {}, onLog: () => {} },
+        );
+
+        expect(snapshots[0]?.stats?.embeddings).toBe(7);
+        expect(snapshots[1]?.stats?.embeddings).toBe(checkpointCount);
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+        const buildPath = vi.mocked(adapter.initLbug).mock.calls.at(-1)?.[0];
+        if (mode === 'staged') {
+          expect(buildPath).toMatch(/\.staging\.[a-f0-9-]+$/);
+          expect(snapshots[1]?.embeddingCheckpoint?.recovery).toMatchObject({
+            stagingFile: expect.stringMatching(/^lbug\.staging\.[a-f0-9-]+$/),
+            unsafeNodeIds: [],
+          });
+          expect(await fs.readFile(lbugPath, 'utf8')).toBe('staged fixture');
+        } else {
+          expect(buildPath).toBe(lbugPath);
+          expect(snapshots[0]?.embeddingCheckpoint?.recovery).toBeUndefined();
+          expect(snapshots[1]?.embeddingCheckpoint?.recovery).toBeUndefined();
+        }
+        const finalMeta = await loadMeta(storagePath);
+        expect(finalMeta?.stats?.embeddings).toBe(42);
+        expect(finalMeta?.embeddingCheckpoint).toBeUndefined();
+      } finally {
+        if (actualPlatformDescriptor) {
+          Object.defineProperty(process, 'platform', actualPlatformDescriptor);
+        }
+        await tmpRepo.cleanup();
+      }
+    },
+  );
+
+  it.each(['close', 'rename'] as const)(
+    'keeps the published count and database when %s fails before the staged publish',
+    async (failure) => {
+      const tmpRepo = await createTempDir('gitnexus-2790-checkpoint-meta-');
+      try {
+        const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+        await seedMeta(storagePath, tmpRepo.dbPath, { stats: { nodes: 2, embeddings: 7 } });
+        await fs.writeFile(lbugPath, 'published fixture');
+        const rename = fs.rename.bind(fs);
+        let checkpointMeta: RepoMeta | null = null;
+        let failedPublishRename: Mock | undefined;
+        mockResilienceHarness({
+          count: [{ cnt: 42 }],
+          pipeline: async (options) => {
+            await options.onCheckpointWindowStart?.({
+              nodesProcessed: 0,
+              totalNodes: 3,
+              chunksProcessed: 0,
+              nodeIds: [RESILIENCE_NODE_ID],
+            });
+            await options.onCheckpoint?.({ nodesProcessed: 3, totalNodes: 3, chunksProcessed: 3 });
+            checkpointMeta = await loadMeta(storagePath);
+            if (failure === 'close') {
+              const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+              vi.mocked(adapter.closeLbug).mockRejectedValueOnce(
+                new Error('pre-publish close failed'),
+              );
+            } else {
+              failedPublishRename = vi.fn(async () => {
+                throw Object.assign(new Error('staged publish rename failed'), { code: 'EIO' });
+              });
+              vi.spyOn(fs, 'rename').mockImplementation(async (source, destination) => {
+                if (
+                  String(source).startsWith(`${lbugPath}.staging.`) &&
+                  String(destination) === lbugPath
+                ) {
+                  return failedPublishRename?.();
+                }
+                return rename(source, destination);
+              });
+            }
+            return cleanResult();
+          },
+        });
+        await mockStagedFiles();
+        expect(
+          await runAnalyze(
+            tmpRepo.dbPath,
+            { force: true, embeddings: true, skipAgentsMd: true, skipSkills: true },
+            [],
+          ),
+        ).toMatchObject({
+          message:
+            failure === 'close' ? 'pre-publish close failed' : 'staged publish rename failed',
+        });
+        expect(checkpointMeta?.stats?.embeddings).toBe(7);
+        expect((await loadMeta(storagePath))?.stats?.embeddings).toBe(7);
+        expect(await fs.readFile(lbugPath, 'utf8')).toBe('published fixture');
+        const recovery = (await loadMeta(storagePath))?.embeddingCheckpoint?.recovery;
+        if (!recovery) throw new Error('expected durable stage after failed publish');
+        expect(await fs.readFile(`${storagePath}/${recovery.stagingFile}`, 'utf8')).toBe(
+          'staged fixture',
+        );
+        if (failure === 'rename') expect(failedPublishRename).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.restoreAllMocks();
+        await tmpRepo.cleanup();
+      }
+    },
+  );
+
+  const seedRecovery = async (storagePath: string, repoPath: string) => {
+    const stagingFile = 'lbug.staging.11111111-1111-4111-8111-111111111111';
+    const checkpoint = checkpointFixture({
+      kind: 'interrupted',
+      pendingNodeIds: [],
+      recovery: { stagingFile, schemaFingerprint: SCHEMA_FINGERPRINT, unsafeNodeIds: [] },
+    });
+    await seedMeta(storagePath, repoPath, {
+      stats: { nodes: 2, embeddings: 7 },
+      embeddingCheckpoint: checkpoint,
+    });
+    await fs.writeFile(`${storagePath}/${stagingFile}`, 'previous durable source');
+    vi.doMock('../../src/core/embeddings/staged-embedding-recovery.js', () => ({
+      recoverStagedEmbeddings: vi.fn(async () => ({ rows: [], embeddingNodeIds: new Set() })),
+    }));
+    return { checkpoint, stagingFile };
+  };
+
+  it.each(
+    ['1', '0'].flatMap((manualCheckpoint) =>
+      (
+        ['window-start crash', 'post-window crash', 'final-metadata failure', 'success'] as const
+      ).map((outcome) => ({ manualCheckpoint, outcome })),
+    ),
+  )(
+    'preserves the in-place recovery receipt with manual checkpoints=$manualCheckpoint through $outcome',
+    async ({ manualCheckpoint, outcome }) => {
+      vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', manualCheckpoint);
+      vi.stubEnv('GITNEXUS_INDEX_LOCK_BACKEND', 'file');
+      const tmpRepo = await createTempDir('gitnexus-3456-opt-out-source-');
+      try {
+        const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+        const { checkpoint, stagingFile } = await seedRecovery(storagePath, tmpRepo.dbPath);
+        const original = {
+          ...checkpoint,
+          pendingNodeIds: ['original-pending'],
+          recovery: {
+            stagingFile,
+            schemaFingerprint: SCHEMA_FINGERPRINT,
+            unsafeNodeIds: ['original-pending', 'original-unsafe'],
+          },
+        } satisfies NonNullable<RepoMeta['embeddingCheckpoint']>;
+        await seedMeta(storagePath, tmpRepo.dbPath, {
+          stats: { nodes: 2, embeddings: 7 },
+          embeddingCheckpoint: original,
+        });
+        const sourceFiles = [
+          { filename: stagingFile, contents: 'previous durable source' },
+          { filename: `${stagingFile}.wal`, contents: 'previous durable WAL' },
+          { filename: `${stagingFile}.shadow`, contents: 'previous durable shadow' },
+        ];
+        for (const source of sourceFiles) {
+          await fs.writeFile(`${storagePath}/${source.filename}`, source.contents);
+        }
+        await fs.writeFile(lbugPath, 'previous published index');
+        // This unit fixture switches process.platform to exercise Windows
+        // recovery. Hash an immutable, test-owned analyzer runtime instead of
+        // the shared checkout under concurrent CI activity. Keep the real
+        // identity validation and finalization.
+        const identity = await import('../../src/core/analyzer-identity.js');
+        const runtimeRoot = `${tmpRepo.dbPath}/analyzer-runtime`;
+        await fs.mkdir(`${runtimeRoot}/src`, { recursive: true });
+        await fs.writeFile(
+          `${runtimeRoot}/package.json`,
+          '{"name":"recovery-fixture","version":"1.0.0"}',
+        );
+        await fs.writeFile(`${runtimeRoot}/package-lock.json`, '{"lockfileVersion":3}');
+        await fs.writeFile(`${runtimeRoot}/src/analyzer.ts`, 'export const analyzer = 1;');
+        const runtimeUrl = pathToFileURL(`${runtimeRoot}/src/analyzer.ts`).href;
+        const identityOptions = { cacheDirectory: `${tmpRepo.dbPath}/identity-cache` };
+        const resolveRunnerIdentity = vi.fn(() =>
+          identity.resolveAnalyzerRunnerIdentity(runtimeUrl, identityOptions),
+        );
+        vi.doMock('../../src/core/analyzer-identity.js', () => ({
+          ...identity,
+          resolveAnalyzerRunnerIdentity: resolveRunnerIdentity,
+          finalizeAnalyzerRunnerIdentity: (
+            _url: string,
+            startedWith: NonNullable<RepoMeta['runnerIdentity']>,
+          ) => identity.finalizeAnalyzerRunnerIdentity(runtimeUrl, startedWith, identityOptions),
+        }));
+        const { normalizeCachedEmbeddings } =
+          await import('../../src/core/embeddings/embedding-restore-spill.js');
+        // Resolve the real merge implementation on the host, before selecting
+        // the Windows branch. A lazy importActual factory otherwise loads and
+        // transforms real modules while process.platform is temporarily win32.
+        const recovery = await vi.importActual<
+          typeof import('../../src/core/embeddings/staged-embedding-recovery.js')
+        >('../../src/core/embeddings/staged-embedding-recovery.js');
+        const recoverStagedEmbeddings = vi.fn(async () =>
+          normalizeCachedEmbeddings({
+            embeddings: [
+              {
+                nodeId: RESILIENCE_NODE_ID,
+                chunkIndex: 0,
+                startLine: 1,
+                endLine: 2,
+                contentHash: 'current-hash',
+                embedding: new Array(EMBEDDING_DIMS).fill(0),
+              },
+            ],
+          }),
+        );
+        vi.doMock('../../src/core/embeddings/staged-embedding-recovery.js', () => ({
+          ...recovery,
+          recoverStagedEmbeddings,
+        }));
+        const snapshots: Array<RepoMeta | null> = [];
+        const rename = fs.rename.bind(fs);
+        const { batchInsertEmbeddings } = mockResilienceHarness({
+          count: [{ cnt: 9 }],
+          pipeline: async (options) => {
+            await options.onCheckpointWindowStart?.({
+              nodesProcessed: 0,
+              totalNodes: 3,
+              chunksProcessed: 0,
+              nodeIds: ['current-window'],
+            });
+            snapshots.push(await loadMeta(storagePath));
+            if (outcome === 'window-start crash') throw new Error(outcome);
+            await options.onCheckpoint?.({ nodesProcessed: 3, totalNodes: 3, chunksProcessed: 9 });
+            snapshots.push(await loadMeta(storagePath));
+            if (outcome === 'post-window crash') throw new Error(outcome);
+            if (outcome === 'final-metadata failure') {
+              vi.spyOn(fs, 'rename').mockImplementation(async (source, destination) => {
+                if (basename(String(destination)) === 'gitnexus.json') throw new Error(outcome);
+                return rename(source, destination);
+              });
+            }
+            return cleanResult();
+          },
+        });
+        await mockStagedFiles();
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+        vi.mocked(adapter.loadGraphToLbug).mockImplementation(async () => {
+          await fs.writeFile(lbugPath, 'in-place replacement');
+          return { success: true, insertedRels: 0, skippedRels: 0, warnings: [] };
+        });
+        // Import on the host first, then choose the Windows default in-place
+        // branch. The native adapter is mocked; source files and lock cleanup are real.
+        await import('../../src/core/run-analyze.js');
+        vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '0');
+        const logs: string[] = [];
+        Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+        const error = await runAnalyze(
+          tmpRepo.dbPath,
+          { force: true, embeddings: true, skipAgentsMd: true, skipSkills: true },
+          logs,
+        );
+        if (actualPlatformDescriptor) {
+          Object.defineProperty(process, 'platform', actualPlatformDescriptor);
+        }
+        expect(error, logs.join('\n')).toEqual(
+          outcome === 'success' ? null : expect.objectContaining({ message: outcome }),
+        );
+        expect(resolveRunnerIdentity, logs.join('\n')).toHaveBeenCalledOnce();
+        expect(recoverStagedEmbeddings, logs.join('\n')).toHaveBeenCalledOnce();
+        expect(logs).toContain(
+          'Recovered 1 complete staged embedding chunk(s) for 1 node(s); unchanged content can reuse them.',
+        );
+        expect(batchInsertEmbeddings, logs.join('\n')).toHaveBeenCalled();
+        expect(vi.mocked(adapter.initLbug).mock.calls.at(-1)?.[0]).toBe(lbugPath);
+        const finalMeta = await loadMeta(storagePath);
+        // Reacquiring the real lock performs the next retry's orphan sweep.
+        // A lost receipt would delete every byte of the proven old generation here.
+        const { acquireIndexLock } = await import('../../src/storage/index-lock.js');
+        const lock = await acquireIndexLock(storagePath, { timeoutMs: 1000 });
+        try {
+          if (outcome === 'success') {
+            expect(finalMeta?.embeddingCheckpoint).toBeUndefined();
+            expect(finalMeta?.stats?.embeddings).toBe(9);
+            expect(await fs.readFile(lbugPath, 'utf8')).toBe('in-place replacement');
+            for (const source of sourceFiles) {
+              await expect(fs.stat(`${storagePath}/${source.filename}`)).rejects.toMatchObject({
+                code: 'ENOENT',
+              });
+            }
+          } else {
+            for (const source of sourceFiles) {
+              expect(await fs.readFile(`${storagePath}/${source.filename}`, 'utf8')).toBe(
+                source.contents,
+              );
+            }
+            expect(finalMeta?.embeddingCheckpoint).toEqual(original);
+            expect(finalMeta?.stats?.embeddings).toBe(outcome === 'window-start crash' ? 7 : 9);
+          }
+          expect(snapshots[0]?.embeddingCheckpoint).toEqual(original);
+          expect(snapshots[0]?.stats?.embeddings).toBe(7);
+          if (outcome !== 'window-start crash') {
+            expect(snapshots[1]?.embeddingCheckpoint).toEqual(original);
+            expect(snapshots[1]?.stats?.embeddings).toBe(9);
+          }
+        } finally {
+          lock.release();
+        }
+      } finally {
+        if (actualPlatformDescriptor) {
+          Object.defineProperty(process, 'platform', actualPlatformDescriptor);
+        }
+        vi.restoreAllMocks();
+        await tmpRepo.cleanup();
+      }
+    },
+  );
+
+  it('finishes a staged embedding run with manual checkpoints disabled', async () => {
+    vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', '0');
+    const tmpRepo = await createTempDir('gitnexus-3456-checkpoint-opt-out-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await seedMeta(storagePath, tmpRepo.dbPath, { stats: { embeddings: 7 } });
+      mockResilienceHarness({
+        count: [{ cnt: 9 }],
+        pipeline: async (options) => {
+          await options.onCheckpointWindowStart?.({
+            nodesProcessed: 0,
+            totalNodes: 3,
+            chunksProcessed: 0,
+            nodeIds: ['active-node'],
+          });
+          expect((await loadMeta(storagePath))?.embeddingCheckpoint?.recovery).toBeUndefined();
+          await options.onCheckpoint?.({ nodesProcessed: 3, totalNodes: 3, chunksProcessed: 9 });
+          const midRun = await loadMeta(storagePath);
+          expect(midRun?.embeddingCheckpoint?.recovery).toBeUndefined();
+          expect(midRun?.stats?.embeddings).toBe(7);
+          return cleanResult();
+        },
+      });
+      await mockStagedFiles();
+      expect(await runAnalyze(tmpRepo.dbPath, { force: true, embeddings: true }, [])).toBeNull();
+      expect((await loadMeta(storagePath))?.embeddingCheckpoint).toBeUndefined();
+      expect((await loadMeta(storagePath))?.stats?.embeddings).toBe(9);
+      expect(await fs.readFile(getStoragePaths(tmpRepo.dbPath).lbugPath, 'utf8')).toBe(
+        'staged fixture',
+      );
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('keeps the previous durable source when manual checkpoints are disabled', async () => {
+    vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', '0');
+    const tmpRepo = await createTempDir('gitnexus-3456-opt-out-source-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const { checkpoint: original, stagingFile } = await seedRecovery(storagePath, tmpRepo.dbPath);
+      mockResilienceHarness({
+        count: [{ cnt: 9 }],
+        pipeline: async (options) => {
+          await options.onCheckpointWindowStart?.({
+            nodesProcessed: 0,
+            totalNodes: 3,
+            chunksProcessed: 0,
+            nodeIds: ['active-node'],
+          });
+          await options.onCheckpoint?.({ nodesProcessed: 3, totalNodes: 3, chunksProcessed: 9 });
+          expect((await loadMeta(storagePath))?.embeddingCheckpoint).toEqual(original);
+          throw new Error('endpoint failure with manual checkpoints disabled');
+        },
+      });
+      await mockStagedFiles();
+      expect(await runAnalyze(tmpRepo.dbPath, { force: true, embeddings: true }, [])).toMatchObject(
+        { message: 'endpoint failure with manual checkpoints disabled' },
+      );
+      expect((await loadMeta(storagePath))?.embeddingCheckpoint).toEqual(original);
+      expect(await fs.readFile(`${storagePath}/${stagingFile}`, 'utf8')).toBe(
+        'previous durable source',
+      );
+      expect(
+        (await fs.readdir(storagePath)).filter((name) => name.startsWith('lbug.staging.')),
+      ).toEqual([stagingFile]);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'retains the referenced stage through a symlinked storage directory',
+    async () => {
+      const tmpRepo = await createTempDir('gitnexus-3456-storage-alias-');
+      try {
+        const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+        const actualStorage = `${tmpRepo.dbPath}/actual-index`;
+        await fs.mkdir(actualStorage);
+        await fs.symlink(actualStorage, storagePath, 'dir');
+        await seedMeta(storagePath, tmpRepo.dbPath, { stats: { embeddings: 7 } });
+        mockResilienceHarness({
+          count: [{ cnt: 9 }],
+          pipeline: async (options) => {
+            await options.onCheckpointWindowStart?.({
+              nodesProcessed: 0,
+              totalNodes: 3,
+              chunksProcessed: 0,
+              nodeIds: ['active-node'],
+            });
+            await options.onCheckpoint?.({ nodesProcessed: 1, totalNodes: 3, chunksProcessed: 9 });
+            throw new Error('endpoint failed after durable window');
+          },
+        });
+        await mockStagedFiles();
+        expect(
+          await runAnalyze(tmpRepo.dbPath, { force: true, embeddings: true }, []),
+        ).toMatchObject({ message: 'endpoint failed after durable window' });
+        const recovery = (await loadMeta(storagePath))?.embeddingCheckpoint?.recovery;
+        if (!recovery) throw new Error('expected retained recovery generation');
+        expect(await fs.readFile(`${actualStorage}/${recovery.stagingFile}`, 'utf8')).toBe(
+          'staged fixture',
+        );
+        expect((await loadMeta(storagePath))?.stats?.embeddings).toBe(7);
+      } finally {
+        await tmpRepo.cleanup();
+      }
+    },
+  );
+
+  it.each(['checkpoint', 'metadata'] as const)(
+    'keeps the previous source when %s fails before recovery handoff',
+    async (failure) => {
+      const tmpRepo = await createTempDir('gitnexus-3456-handoff-failure-');
+      try {
+        const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+        const { checkpoint: original, stagingFile } = await seedRecovery(
+          storagePath,
+          tmpRepo.dbPath,
+        );
+        const rename = fs.rename.bind(fs);
+        mockResilienceHarness({
+          count: [{ cnt: 9 }],
+          pipeline: async (options) => {
+            if (failure === 'metadata') {
+              vi.spyOn(fs, 'rename').mockImplementation(async (source, destination) => {
+                if (basename(String(destination)) === 'gitnexus.json')
+                  throw new Error('metadata write failed');
+                return rename(source, destination);
+              });
+            } else {
+              const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+              vi.mocked(adapter.tryFlushWAL).mockResolvedValue(false);
+            }
+            await options.onCheckpointWindowStart?.({
+              nodesProcessed: 0,
+              totalNodes: 3,
+              chunksProcessed: 0,
+              nodeIds: ['active-node'],
+            });
+            return cleanResult();
+          },
+        });
+        await mockStagedFiles();
+        const error = await runAnalyze(tmpRepo.dbPath, { force: true, embeddings: true }, []);
+        expect(error).toMatchObject({
+          message:
+            failure === 'metadata'
+              ? 'metadata write failed'
+              : 'Could not checkpoint restored embeddings before recovery handoff.',
+        });
+        expect((await loadMeta(storagePath))?.embeddingCheckpoint).toEqual(original);
+        expect((await loadMeta(storagePath))?.stats?.embeddings).toBe(7);
+        expect(await fs.readFile(`${storagePath}/${stagingFile}`, 'utf8')).toBe(
+          'previous durable source',
+        );
+        expect(
+          (await fs.readdir(storagePath)).filter((name) => name.startsWith('lbug.staging.')),
+        ).toEqual([stagingFile]);
+      } finally {
+        vi.restoreAllMocks();
+        await tmpRepo.cleanup();
+      }
+    },
+  );
+
+  it('keeps an active window unsafe when its completion checkpoint fails', async () => {
+    const tmpRepo = await createTempDir('gitnexus-3456-completion-failure-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await seedMeta(storagePath, tmpRepo.dbPath, { stats: { embeddings: 7 } });
+      mockResilienceHarness({
+        count: [{ cnt: 9 }],
+        pipeline: async (options) => {
+          await options.onCheckpointWindowStart?.({
+            nodesProcessed: 0,
+            totalNodes: 3,
+            chunksProcessed: 0,
+            nodeIds: ['active-node'],
+          });
+          const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+          vi.mocked(adapter.tryFlushWAL).mockResolvedValue(false);
+          await options.onCheckpoint?.({ nodesProcessed: 1, totalNodes: 3, chunksProcessed: 9 });
+          return cleanResult();
+        },
+      });
+      await mockStagedFiles();
+      expect(await runAnalyze(tmpRepo.dbPath, { force: true, embeddings: true }, [])).toMatchObject(
+        { message: 'Could not checkpoint the completed embedding window for recovery.' },
+      );
+      const meta = await loadMeta(storagePath);
+      expect(meta?.stats?.embeddings).toBe(7);
+      expect(meta?.embeddingCheckpoint?.pendingNodeIds).toEqual(['active-node']);
+      expect(meta?.embeddingCheckpoint?.recovery?.unsafeNodeIds).toEqual(['active-node']);
+      if (!meta?.embeddingCheckpoint?.recovery) throw new Error('expected retained active window');
+      expect(
+        await fs.readFile(
+          `${storagePath}/${meta.embeddingCheckpoint.recovery.stagingFile}`,
+          'utf8',
+        ),
+      ).toBe('staged fixture');
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('retains a failed stage and keeps future incomplete restore groups unsafe', async () => {
+    const tmpRepo = await createTempDir('gitnexus-3456-unsafe-restore-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await seedMeta(storagePath, tmpRepo.dbPath, { stats: { nodes: 2, embeddings: 1 } });
+      let completedWindow: RepoMeta | null = null;
+      const { loadCachedEmbeddings, batchInsertEmbeddings } = mockResilienceHarness({
+        count: [{ cnt: 5 }],
+        pipeline: async (options) => {
+          await options.onCheckpointWindowStart?.({
+            nodesProcessed: 0,
+            totalNodes: 2,
+            chunksProcessed: 0,
+            nodeIds: ['earlier-window-node'],
+          });
+          await options.onCheckpoint?.({ nodesProcessed: 1, totalNodes: 2, chunksProcessed: 1 });
+          completedWindow = await loadMeta(storagePath);
+          throw new Error('Maximum database size exceeded');
+        },
+      });
+      loadCachedEmbeddings.mockResolvedValue({
+        embeddingNodeIds: new Set([RESILIENCE_NODE_ID]),
+        embeddings: [
+          {
+            nodeId: RESILIENCE_NODE_ID,
+            chunkIndex: 0,
+            startLine: 1,
+            endLine: 2,
+            contentHash: 'current-hash',
+            embedding: new Array(EMBEDDING_DIMS).fill(0),
+          },
+        ],
+      });
+      batchInsertEmbeddings.mockRejectedValue(new Error('restore batch partially inserted'));
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(adapter.initLbug).mockImplementation(async (dbPath) => {
+        if (dbPath.includes('.staging.')) await fs.writeFile(dbPath, 'staged fixture');
+        return { db: null, conn: null };
+      });
+      vi.mocked(adapter.wipeLbugDbFiles).mockImplementation(async (dbPath) => {
+        await fs.rm(dbPath, { force: true });
+      });
+      const logs: string[] = [];
+      expect(
+        await runAnalyze(
+          tmpRepo.dbPath,
+          { embeddings: true, force: true, skipAgentsMd: true, skipSkills: true },
+          logs,
+        ),
+      ).toMatchObject({ message: 'Maximum database size exceeded' });
+      expect(completedWindow?.embeddingCheckpoint?.recovery?.unsafeNodeIds).toEqual([
+        RESILIENCE_NODE_ID,
+      ]);
+      expect(completedWindow?.stats?.embeddings).toBe(1);
+      const recovery = (await loadMeta(storagePath))?.embeddingCheckpoint?.recovery;
+      if (!recovery) throw new Error('expected retained recovery generation');
+      expect(await fs.readFile(`${storagePath}/${recovery.stagingFile}`, 'utf8')).toBe(
+        'staged fixture',
+      );
+      expect(logs).toContainEqual(expect.stringContaining('GITNEXUS_LBUG_MAX_DB_SIZE'));
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  describe('staged full-rebuild failure classification (#3529, #3530)', () => {
+    const REACHED =
+      'Buffer manager exception: Maximum database size of 274877906944 bytes has been reached.';
+    const PAST_EOF =
+      'Failed to delete stale embedding rows: IO exception: Cannot read from file: ' +
+      '/repo/.gitnexus/lbug.staging.abc fileDescriptor: 19 numBytesRead: 0 ' +
+      'numBytesToRead: 4096 position: 8011825152';
+    // A power of two, so the configured value is reported verbatim (rounding is
+    // covered where the value is resolved).
+    const CONFIGURED_MAX_DB_SIZE = 2 ** 41;
+
+    // `mockStagedFiles` writes the 14-byte fixture 'staged fixture' to the staging path.
+    const runStagedFailure = async (
+      thrown: unknown,
+      hooks: {
+        onLog?: (message: string) => void;
+        onClose?: () => void;
+        /** Runs after the staged-file mocks, so it can override them. */
+        beforeRun?: (adapter: typeof import('../../src/core/lbug/lbug-adapter.js')) => void;
+      } = {},
+    ): Promise<{ result: unknown; logs: string[] }> => {
+      vi.stubEnv('GITNEXUS_LBUG_MAX_DB_SIZE', String(CONFIGURED_MAX_DB_SIZE));
+      // The limit is read when lbug-config loads, and the file's static imports may
+      // already have loaded it (the first test to run); reload under the stub.
+      vi.resetModules();
+      const tmpRepo = await createTempDir('gitnexus-3530-classify-');
+      try {
+        const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+        await seedMeta(storagePath, tmpRepo.dbPath, {});
+        mockResilienceHarness({
+          count: [{ cnt: 0 }],
+          pipeline: async () => {
+            throw thrown;
+          },
+        });
+        await mockStagedFiles();
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+        vi.mocked(adapter.closeLbug).mockImplementation(async () => hooks.onClose?.());
+        hooks.beforeRun?.(adapter);
+        const logs: string[] = [];
+        const result = await runAnalyze(
+          tmpRepo.dbPath,
+          { embeddings: true, force: true, skipAgentsMd: true, skipSkills: true },
+          logs,
+          hooks.onLog,
+        );
+        return { result, logs };
+      } finally {
+        await tmpRepo.cleanup();
+      }
+    };
+
+    it.each([
+      [
+        'size ceiling',
+        REACHED,
+        [
+          'the engine reported a limit of 274877906944 bytes',
+          'The live index is untouched',
+          'Failure evidence — staging copy: apparent 14 B',
+          `Failure evidence — configured max DB size ${CONFIGURED_MAX_DB_SIZE} B, buffer pool `,
+        ],
+      ],
+      [
+        'past-EOF read',
+        PAST_EOF,
+        [
+          'A read reached end-of-file at position 8011825152 in the staged copy',
+          'The live index is untouched',
+          'Failure evidence — staging copy: apparent 14 B',
+          `Failure evidence — configured max DB size ${CONFIGURED_MAX_DB_SIZE} B, buffer pool `,
+        ],
+      ],
+    ])(
+      'classifies the %s, appends the remedy and staging evidence to the rethrown error once, and does not name the off-switch',
+      async (_label, message, expectedLineFragments) => {
+        const failure = new Error(message);
+        const { result, logs } = await runStagedFailure(failure);
+        expect(result).toBe(failure);
+        // The native text stays first, so classifiers anchored on it still match.
+        expect(failure.message.startsWith(`${message}\n`)).toBe(true);
+        expect(failure.message.split('\n')).toEqual(
+          expect.arrayContaining(expectedLineFragments.map((f) => expect.stringContaining(f))),
+        );
+        expect(failure.message.match(/Failure evidence — configured/g)).toHaveLength(1);
+        // The message is the single channel; a log copy would print everything twice.
+        expect(logs.join('\n')).not.toContain('Failure evidence');
+        expect(logs.join('\n')).not.toContain(expectedLineFragments[0]);
+        // A full rebuild stages regardless of GITNEXUS_ATOMIC_INCREMENTAL, so the
+        // off-switch would point at a knob with no effect on this run.
+        expect(failure.message).not.toContain('GITNEXUS_ATOMIC_INCREMENTAL');
+      },
+    );
+
+    it.each([REACHED, PAST_EOF])(
+      'adds nothing the downstream message classifiers or OOM heuristics could react to (%#)',
+      async (message) => {
+        const failure = new Error(message);
+        await runStagedFailure(failure);
+        const appended = failure.message.slice(message.length);
+        expect(appended).not.toBe('');
+
+        // Every consumer of the rethrown message classifies the whole string, so
+        // each verdict must be the one the native text alone gets.
+        const classifiers = [
+          isWalCorruptionError,
+          isLbugCheckpointIoError,
+          isLbugCheckpointBusyError,
+          isLbugPageSizeFrameError,
+          isStorageVersionMismatchError,
+        ];
+        expect(classifiers.map((classify) => classify(failure))).toEqual(
+          classifiers.map((classify) => classify(new Error(message))),
+        );
+        const messageClassifiers = [
+          isHfDownloadFailure,
+          isLocalEmbeddingRuntimeBlockerMessage,
+          isMissingLocalEmbeddingStackMessage,
+          isHttpEmbeddingDimsError,
+        ];
+        expect(messageClassifiers.map((classify) => classify(failure.message))).toEqual(
+          messageClassifiers.map((classify) => classify(message)),
+        );
+
+        // cli/analyze.ts scans printed text and the respawned child's stderr for
+        // these literals (heap-OOM, native-abort, large-repo and install hints).
+        const scannedPhrases = [
+          'maximum call stack size exceeded',
+          'call stack',
+          'map maximum size',
+          'invalid array length',
+          'invalid string length',
+          'allocation failed',
+          'heap out of memory',
+          'javascript heap',
+          'reached heap limit',
+          'fatalprocessoutofmemory',
+          'napi::error',
+          'libc++abi: terminating',
+          'abort trap',
+          'native stack',
+          'native worker',
+          'native binding',
+          'ladybugdb wal corruption',
+          'eresolve',
+          'could not resolve dependency',
+          'module_not_found',
+          'cannot find module',
+          'it was left running so its native work is not interrupted',
+        ];
+        expect(scannedPhrases.filter((phrase) => appended.toLowerCase().includes(phrase))).toEqual(
+          [],
+        );
+      },
+    );
+
+    it.each([
+      ['0', "buffer pool LadybugDB's native 80%-of-RAM default"],
+      ['1073741824', 'buffer pool 1073741824 B'],
+    ])(
+      'labels GITNEXUS_LBUG_BUFFER_POOL_SIZE=%s in the configuration evidence line',
+      async (poolSize, expectedFragment) => {
+        vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', poolSize);
+        const failure = new Error(REACHED);
+        await runStagedFailure(failure);
+        const configured = failure.message
+          .split('\n')
+          .find((line) => line.startsWith('Failure evidence — configured'));
+        expect(configured).toContain(expectedFragment);
+        expect(configured).not.toContain('buffer pool 0 B');
+      },
+    );
+
+    it('appends no remedy and no evidence for an unrelated failure', async () => {
+      const failure = new Error('Binder exception: Table CodeEmbedding does not exist.');
+      const { result, logs } = await runStagedFailure(failure);
+      expect(result).toBe(failure);
+      expect(failure.message).toBe('Binder exception: Table CodeEmbedding does not exist.');
+      expect(logs.join('\n')).not.toContain('Failure evidence');
+    });
+
+    it('wraps a thrown non-Error so the rethrown value carries the diagnosis', async () => {
+      const { result, logs } = await runStagedFailure(REACHED);
+      expect(result).toBeInstanceOf(Error);
+      expect(result).toMatchObject({
+        cause: REACHED,
+        message: expect.stringMatching(
+          /^Buffer manager exception: Maximum database size[\s\S]*address-space ceiling[\s\S]*\nFailure evidence — staging copy: apparent 14 B[\s\S]*\nFailure evidence — configured max DB size /,
+        ),
+      });
+      // The message is the one channel, so nothing is also logged.
+      expect(logs.join('\n')).not.toContain('Failure evidence');
+    });
+
+    // A classified failure carries its diagnosis in the rethrown message and never
+    // logs it, so the generic hint is the only diagnostic a log sink can break.
+    it('rethrows the native failure when the log sink throws on an unclassified max-size message', async () => {
+      const thrown = new Error('Maximum database size exceeded');
+      const onLog = vi.fn<(message: string) => void>((message) => {
+        if (/database size limit was reached/.test(message)) throw new Error('log sink exploded');
+      });
+      const { result } = await runStagedFailure(thrown, { onLog });
+      expect(result).toBe(thrown);
+      expect(onLog).toHaveBeenCalledWith(expect.stringMatching(/database size limit was reached/));
+    });
+
+    // `String(err)` throws for these; the failure handler must still clean up and
+    // rethrow the very value that was thrown.
+    it.each([
+      [
+        'a throwing toString',
+        {
+          toString: () => {
+            throw new Error('toString exploded');
+          },
+        },
+      ],
+      ['a null-prototype object', Object.create(null)],
+    ])('cleans up and rethrows the thrown value when it is %s', async (_label, thrown) => {
+      const runCountingCloses = async (value: unknown) => {
+        let closes = 0;
+        const { result } = await runStagedFailure(value, {
+          onClose: () => {
+            closes += 1;
+          },
+        });
+        return { result, closes };
+      };
+      const baseline = await runCountingCloses(new Error('unclassified failure'));
+      const hostile = await runCountingCloses(thrown);
+      expect(hostile.result).toBe(thrown);
+      expect(hostile.closes).toBe(baseline.closes);
+      expect(baseline.closes).toBeGreaterThan(0);
+    });
+
+    it('rethrows the native error when its message cannot be written', async () => {
+      const failure = new Error(REACHED);
+      Object.defineProperty(failure, 'message', { value: REACHED, writable: false });
+      const { result } = await runStagedFailure(failure);
+      expect(result).toBe(failure);
+      expect(failure.message).toBe(REACHED);
+    });
+
+    it('halts checkpoint ticks before collecting the failure evidence, and closes the database after both', async () => {
+      const order: string[] = [];
+      vi.doMock('../../src/core/lbug/failure-evidence.js', () => ({
+        collectFailureEvidence: vi.fn(async () => {
+          order.push('evidence');
+          return [];
+        }),
+      }));
+      vi.doMock('../../src/core/lbug/wal-checkpoint-driver.js', async (importActual) => ({
+        ...(await importActual<typeof import('../../src/core/lbug/wal-checkpoint-driver.js')>()),
+        startWalCheckpointDriver: () => ({
+          // The real stop() clears its tick timer before its first await; the
+          // in-flight drain it then awaits settles later.
+          stop: () => {
+            order.push('driver-halt');
+            return new Promise<void>((resolve) =>
+              setImmediate(() => {
+                order.push('driver-drained');
+                resolve();
+              }),
+            );
+          },
+        }),
+      }));
+      const failure = new Error(REACHED);
+      const { result } = await runStagedFailure(failure, { onClose: () => order.push('close') });
+      expect(result).toBe(failure);
+      // A tick during the stats would checkpoint the staging files mid-measurement, and
+      // closing can checkpoint them too, so a later stat would misread growth as a short file.
+      const failurePath = order.slice(order.indexOf('driver-halt'));
+      expect(failurePath.slice(0, 2)).toEqual(['driver-halt', 'evidence']);
+      expect(failurePath.at(-1)).toBe('close');
+      expect(failurePath.indexOf('driver-drained')).toBeLessThan(failurePath.indexOf('close'));
+    });
+
+    it.each([REACHED, PAST_EOF])(
+      'diagnoses a classified failure thrown while opening the staging copy (%#)',
+      async (message) => {
+        const failure = new Error(message);
+        const { result } = await runStagedFailure(failure, {
+          beforeRun: (adapter) => {
+            vi.mocked(adapter.initLbug).mockImplementation(async (dbPath) => {
+              if (dbPath.includes('.staging.')) throw failure;
+              return { db: null, conn: null };
+            });
+          },
+        });
+        expect(result).toBe(failure);
+        expect(failure.message.startsWith(`${message}\n`)).toBe(true);
+        expect(failure.message).toContain('The live index is untouched');
+        expect(failure.message.match(/Failure evidence — configured/g)).toHaveLength(1);
+        expect(failure.message).toContain('Failure evidence — checkpoints: none completed');
+      },
+    );
+  });
+
+  it('reclaims a failed current stage before any recovery checkpoint exists', async () => {
+    const tmpRepo = await createTempDir('gitnexus-3456-no-checkpoint-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await seedMeta(storagePath, tmpRepo.dbPath, {});
+      mockResilienceHarness({
+        count: [{ cnt: 0 }],
+        pipeline: async () => {
+          throw new Error('failed before first window');
+        },
+      });
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(adapter.initLbug).mockImplementation(async (dbPath) => {
+        if (dbPath.includes('.staging.')) await fs.writeFile(dbPath, 'staged fixture');
+        return { db: null, conn: null };
+      });
+      vi.mocked(adapter.wipeLbugDbFiles).mockImplementation(async (dbPath) => {
+        await fs.rm(dbPath, { force: true });
+      });
+      expect(
+        await runAnalyze(
+          tmpRepo.dbPath,
+          { embeddings: true, force: true, skipAgentsMd: true, skipSkills: true },
+          [],
+        ),
+      ).toMatchObject({ message: 'failed before first window' });
+      expect(
+        (await fs.readdir(storagePath)).filter((name) => name.startsWith('lbug.staging.')),
+      ).toEqual([]);
+      expect((await loadMeta(storagePath))?.embeddingCheckpoint).toBeUndefined();
     } finally {
       await tmpRepo.cleanup();
     }

@@ -1,0 +1,36 @@
+{
+  "language": "python",
+  "description": "Unrelated modules, local and class shadows, and ordinary strings remain unchanged.",
+  "categories": [
+    "module-exports",
+    "export-list",
+    "call-graph",
+    "scope-ownership"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Function",
+    "file": "model.py"
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "exactOutgoing": true,
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "model.py"
+      },
+      "to": {
+        "name": "target",
+        "kind": "Function",
+        "file": "model.py"
+      }
+    }
+  ]
+}

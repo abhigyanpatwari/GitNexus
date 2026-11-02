@@ -16,11 +16,19 @@ import type { JavaSpringDiClassFact } from './spring-di.js';
 import type { SpringDynamicLookupFact } from '../../frameworks/spring/dynamic-lookups.js';
 import type { SpringMessageProducerFact } from '../../frameworks/spring/message-producers.js';
 import type { JavaSpringNonHttpHandlerFact } from './spring-non-http-handlers.js';
+import {
+  clearJavaOverloadFacts,
+  getJavaOverloadFacts,
+  isJavaOverloadFileFacts,
+  setJavaOverloadFacts,
+  type JavaOverloadFileFacts,
+} from './overload-argument-facts.js';
 
 export type JavaClassAnnotationFact = ClassAnnotationFact;
 
 export interface JavaCaptureSideChannel {
   readonly kind: 'java';
+  readonly overloadFacts?: JavaOverloadFileFacts;
   readonly packageFact: JvmPackageFact;
   readonly classAnnotations: readonly JavaClassAnnotationFact[];
   readonly springAopFacts?: readonly JavaSpringAopFact[];
@@ -43,6 +51,7 @@ const springMessageProducerFacts = new Map<string, readonly SpringMessageProduce
 
 /** Clear facts retained by a prior workspace pass in a long-lived process. */
 export function clearJavaClassAnnotationFacts(): void {
+  clearJavaOverloadFacts();
   classAnnotations.clear();
   springAopFacts.clear();
   springConfigConsumers.clear();
@@ -157,6 +166,7 @@ export function collectJavaCaptureSideChannel(
   filePath: string,
 ): JavaCaptureSideChannel | undefined {
   const facts = classAnnotations.get(filePath);
+  const overloadFacts = getJavaOverloadFacts(filePath);
   const aopFacts = springAopFacts.get(filePath) ?? [];
   const configConsumers = springConfigConsumers.get(filePath) ?? [];
   const conditionFacts = springConditionalFacts.get(filePath) ?? [];
@@ -166,6 +176,7 @@ export function collectJavaCaptureSideChannel(
   const messageProducerFacts = springMessageProducerFacts.get(filePath) ?? [];
   const packageFact = getJavaPackageFact(filePath);
   if (
+    overloadFacts === undefined &&
     facts.length === 0 &&
     aopFacts.length === 0 &&
     configConsumers.length === 0 &&
@@ -180,6 +191,7 @@ export function collectJavaCaptureSideChannel(
   }
   return {
     kind: 'java',
+    ...(overloadFacts === undefined ? {} : { overloadFacts }),
     packageFact: packageFact ?? UNKNOWN_JVM_PACKAGE_FACT,
     classAnnotations: facts,
     ...(aopFacts.length > 0 ? { springAopFacts: aopFacts } : {}),
@@ -208,6 +220,7 @@ export function applyJavaCaptureSideChannel(parsed: ParsedFile): void {
     data.kind !== 'java' ||
     !Array.isArray(data.classAnnotations)
   ) {
+    setJavaOverloadFacts(parsed.filePath, undefined);
     setJavaClassAnnotationFacts(parsed.filePath, []);
     setJavaSpringAopFacts(parsed.filePath, []);
     setJavaSpringConfigConsumerFacts(parsed.filePath, []);
@@ -219,6 +232,10 @@ export function applyJavaCaptureSideChannel(parsed: ParsedFile): void {
     setJavaPackageFact(parsed.filePath, UNKNOWN_JVM_PACKAGE_FACT);
     return;
   }
+  setJavaOverloadFacts(
+    parsed.filePath,
+    isJavaOverloadFileFacts(data.overloadFacts) ? data.overloadFacts : undefined,
+  );
   setJavaClassAnnotationFacts(parsed.filePath, data.classAnnotations);
   setJavaSpringAopFacts(
     parsed.filePath,

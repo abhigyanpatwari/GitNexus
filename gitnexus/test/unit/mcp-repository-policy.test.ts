@@ -37,6 +37,8 @@ const REPOS: RepoListing[] = [
 function createBackend(repos = REPOS) {
   return {
     listRepos: vi.fn().mockResolvedValue(repos.map((repo) => ({ ...repo }))),
+    countRepos: vi.fn().mockResolvedValue(repos.length),
+    cachedRepoCount: vi.fn().mockReturnValue(repos.length),
     callTool: vi.fn().mockImplementation(async (name: string, args: Record<string, unknown>) => ({
       name,
       args,
@@ -143,6 +145,21 @@ describe('MCP repository policy', () => {
     expect(backend.callTool).not.toHaveBeenCalled();
   });
 
+  it('aligns unrestricted schema with the refreshed snapshot when count and cache diverge', async () => {
+    const backend = createBackend();
+    vi.mocked(backend.countRepos).mockResolvedValue(2);
+    vi.mocked(backend.cachedRepoCount).mockReturnValue(1);
+    const policy = await createMcpRepositoryPolicy(backend, {});
+    await expect(policy.toolSchemaRepoRequirements(backend)).resolves.toEqual({
+      readOnlyRequiresRepo: false,
+      mutatingRequiresRepo: false,
+    });
+    expect(backend.selectToolRepository).toHaveBeenCalledWith(undefined, undefined, {
+      allowCwdDefault: true,
+      refreshRegistry: true,
+    });
+  });
+
   it('keeps restricted schemas explicit when a multi-repo allowlist listing shrinks', async () => {
     const backend = createBackend();
     const policy = await createMcpRepositoryPolicy(backend, {
@@ -175,7 +192,7 @@ describe('MCP repository policy', () => {
     [{ GITNEXUS_MCP_ALLOWED_REPOS: 'Missing' }, 'invalid'],
     [{ GITNEXUS_MCP_ALLOWED_REPOS: 'Duplicate' }, 'ambiguous'],
     [{ GITNEXUS_MCP_DEFAULT_REPO: 'Duplicate' }, 'ambiguous'],
-  ])('fails startup with a sanitized %s configuration error', async (env, reason) => {
+  ])('fails startup with a sanitized %s configuration error (case %#)', async (env, reason) => {
     const backend = createBackend();
     let message = '';
     try {
@@ -266,7 +283,7 @@ describe('MCP repository policy', () => {
   );
 
   it.each([{ GITNEXUS_MCP_ALLOWED_REPOS: '   ' }, { GITNEXUS_MCP_DEFAULT_REPO: '   ' }])(
-    'fails closed for explicitly blank repository configuration',
+    'fails closed for explicitly blank repository configuration (case %#)',
     async (env) => {
       await expect(createMcpRepositoryPolicy(createBackend(), env)).rejects.toThrow(
         /must not be blank/i,

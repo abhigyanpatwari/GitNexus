@@ -51,6 +51,7 @@
  */
 
 import Parser from 'tree-sitter';
+import { unboundCallableQuery } from './unbound-callables.js';
 import TS from 'tree-sitter-typescript';
 import {
   ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
@@ -79,6 +80,7 @@ function isTsxFile(filePath: string): boolean {
 }
 
 export const TYPESCRIPT_SCOPE_QUERY = `
+${unboundCallableQuery('declaration.function')}
 ;; Scopes — module / namespace / class-likes / function-likes
 (program) @scope.module
 
@@ -159,6 +161,10 @@ export const TYPESCRIPT_SCOPE_QUERY = `
   name: (type_identifier) @declaration.name
   type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class
 
+(class
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class @class.expression
+
 (abstract_class_declaration
   name: (type_identifier) @declaration.name
   type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class
@@ -220,6 +226,12 @@ export const TYPESCRIPT_SCOPE_QUERY = `
     name: (identifier) @declaration.name
     value: (function_expression) @declaration.function))
 
+;; Generator expressions have the same callable binding and scope anchor.
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (generator_function) @declaration.function))
+
 (variable_declaration
   (variable_declarator
     name: (identifier) @declaration.name
@@ -229,6 +241,11 @@ export const TYPESCRIPT_SCOPE_QUERY = `
   (variable_declarator
     name: (identifier) @declaration.name
     value: (function_expression) @declaration.function))
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (generator_function) @declaration.function))
 
 ;; CJS property-assignment exports (#2723) — see the matching block in
 ;; \`languages/javascript/query.ts\` for the rationale. Mirrored here because
@@ -320,6 +337,211 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 (pair
   key: (string (string_fragment) @declaration.name)
   value: (function_expression) @declaration.function)
+
+;; HOC-wrapped pair values: create: procedure.mutation(async ({ input }) => { ... }).
+;; tRPC, Express route definitions, and similar frameworks use this pattern where
+;; an object property's value is a call_expression (like .mutation()/.query()) that
+;; wraps an arrow_function or function_expression as a callback argument.
+;; Without these patterns, tRPC procedures are invisible — the arrow registers as
+;; anonymous and all calls inside fall back to file-level attribution.
+;;
+;; AST shape:
+;;   pair
+;;     key: property_identifier "create"
+;;     value: call_expression
+;;       function: identifier | member_expression
+;;       arguments: arguments
+;;         arrow_function | function_expression
+;;
+;; Anchor discipline: same as direct pairs — on the inner arrow/function, not
+;; the outer call_expression. The arrow's range matches its @scope.function range,
+;; so pass2AttachDeclarations auto-hoists the binding to the parent scope.
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+; Member-expression variants exclude callback-taking array methods —
+; '{ visible: items.filter(item => item.active) }' is a value holding an
+; array, not a Function — same exclusion as the HOC variable rules below.
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+;; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
+;; Quoted object keys are identical shapes to the identifier-key pairs above —
+;; a tRPC router that quotes its keys (lint-enforced or JSON-ish style) would
+;; otherwise leave its procedures anonymous and file-level attributed.
+;; Quoted-key identifier callees ({ 'handler': wrap(() => {}) }) match these
+;; string-key rules, not the identifier-key block above; member-expression
+;; callees keep the array-method exclusion.
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+;; Curried pair HOC: create: publicProcedure.mutation(withAuth(async () => {})).
+;; Existing pair-HOC rules require the arrow to be a DIRECT argument of the
+;; pair's call_expression. They miss mutation's argument being another
+;; call_expression (withAuth(...)). Object-pair only — do NOT add a
+;; variable-level nested-HOC rule (\`const X = memo(forwardRef(...))\` must
+;; stay a Variable; see typescript-hoc-wrapped.test.ts).
+;;
+;; AST shape:
+;;   pair
+;;     key: property_identifier | string
+;;     value: call_expression
+;;       function: identifier | member_expression
+;;       arguments: arguments
+;;         call_expression
+;;           function: identifier
+;;           arguments: arguments
+;;             arrow_function | function_expression
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
 ;;
@@ -891,12 +1113,11 @@ export const TYPESCRIPT_SCOPE_QUERY = `
     function: (member_expression) @type-binding.type)) @type-binding.alias
 
 ;; Type bindings — for-of member-access iterable: \`for (const u of this.users)\`.
-;; Bind u to \`users\` (the attribute name); chain-follow resolves users
-;; via the enclosing class's field binding.
+;; Preserve the explicit receiver so class fields are resolved as members,
+;; without treating them as lexical names visible in method bodies.
 (for_in_statement
   left: (identifier) @type-binding.name
-  right: (member_expression
-    property: (property_identifier) @type-binding.type)) @type-binding.alias
+  right: (member_expression) @type-binding.type) @type-binding.alias
 
 ;; Type bindings — class field annotation: \`private city: City\`.
 (public_field_definition
@@ -1195,6 +1416,12 @@ export const TYPESCRIPT_SCOPE_QUERY = `
   function: (await_expression
     (identifier) @reference.name)) @reference.call.free
 
+;; NOTE: Curried applications f(x)(y) are deliberately NOT anchored here. The
+;; inner f(x) call is captured by the plain free-call pattern above; anchoring
+;; the outer application would record f as called with (y) — wrong arity and
+;; argument types for overload resolution (see free-call-fallback's
+;; site.arity / site.argumentTypes filtering).
+
 ;; References — member calls: \`obj.method()\` (includes optional chain).
 ;; The (_) wildcard matches any named receiver including \`this\` /
 ;; \`super\` (both are named nodes in tree-sitter-typescript, unlike C#'s
@@ -1346,7 +1573,13 @@ export const TYPESCRIPT_SCOPE_QUERY = `
  * (\`<Foo>...</Foo>\`) emit; the closing tag is intentionally NOT captured —
  * each JSX element should emit exactly one CALLS edge per use site.
  */
-const TSX_JSX_QUERY_SUFFIX = `
+/**
+ * Exported alongside `TYPESCRIPT_SCOPE_QUERY` so
+ * `value-ref-dispatchability.test.ts` checks the whole query a `.tsx` file is
+ * analyzed with. Checking the base alone would miss a `value-ref` rule added
+ * here. Not part of the provider surface — use `getTsScopeQuery`.
+ */
+export const TSX_JSX_QUERY_SUFFIX = `
 ;; <Foo />
 ((jsx_self_closing_element
   name: (identifier) @reference.name) @reference.call.free
@@ -1422,17 +1655,17 @@ export function getTsScopeQuery(filePath?: string): Parser.Query {
 
 /**
  * Validate that a cached `Tree` was produced by the grammar matching
- * `filePath` (TSX vs TypeScript). The runtime tree-sitter `Tree` exposes
- * `getLanguage()` (returning the grammar object the parser was bound
- * to); the .d.ts is incomplete, so we reach via a cast. Identity
+ * `filePath` (TSX vs TypeScript). Native tree-sitter exposes `language`;
+ * other Tree implementations expose `getLanguage()`. The .d.ts is
+ * incomplete, so we reach via a cast. Identity
  * comparison against `TSX_GRAMMAR` / `TS_GRAMMAR` is exact: the same
- * module instance produces both. If `getLanguage` is unavailable for
+ * module instance produces both. If neither grammar accessor is available for
  * any reason, return true to keep behavior backwards-compatible (the
  * original code never validated grammar at all).
  */
 export function tsCachedTreeMatchesGrammar(tree: unknown, filePath: string): boolean {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const lang = (tree as any)?.getLanguage?.();
+  const lang = (tree as any)?.getLanguage?.() ?? (tree as any)?.language;
   if (lang === undefined || lang === null) return true;
   return isTsxFile(filePath) ? lang === TSX_GRAMMAR : lang === TS_GRAMMAR;
 }

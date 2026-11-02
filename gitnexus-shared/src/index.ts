@@ -22,6 +22,7 @@ export {
   getLanguageFromFilename,
   getSyntaxLanguageFromFilename,
   isBladeTemplateFilename,
+  isNotebookFilename,
 } from './language-detection.js';
 export type { MroStrategy } from './mro-strategy.js';
 
@@ -98,6 +99,7 @@ export type { ResolveTypeRefContext } from './scope-resolution/resolve-type-ref.
 
 // ScopeExtractor output contracts (RFC §3.2 Phase 1; Ring 2 PKG #919)
 export type { ParsedFile } from './scope-resolution/parsed-file.js';
+export type { CallResultAssignmentSite } from './scope-resolution/call-result-assignment-site.js';
 export type {
   ReferenceSite,
   ReferenceKind,
@@ -129,7 +131,11 @@ export type {
 } from './scope-resolution/method-dispatch-index.js';
 
 // SCC-aware cross-file finalize (RFC §3.2 Phase 2; Ring 2 SHARED #915)
-export { finalize } from './scope-resolution/finalize-algorithm.js';
+export {
+  finalize,
+  indexExportsByName,
+  indexTopLevelExportsByName,
+} from './scope-resolution/finalize-algorithm.js';
 export type {
   FinalizeInput,
   FinalizeFile,
@@ -137,6 +143,7 @@ export type {
   FinalizeOutput,
   FinalizedScc,
   FinalizeStats,
+  AmbiguousWildcardExport,
 } from './scope-resolution/finalize-algorithm.js';
 
 // Scope-aware registries + 7-step lookup (RFC §4; Ring 2 SHARED #917)
@@ -220,3 +227,28 @@ export {
   stripGitSuffix,
 } from './integrations/understand-quickly.js';
 export type { UqDispatchPayload } from './integrations/understand-quickly.js';
+
+export type {
+  SourcePosition,
+  LookupPurpose,
+  NameClaim,
+  ScopeLookupPolicy,
+  NameLookupOptions,
+} from './scope-resolution/types.js';
+export {
+  lookupLexicalName,
+  nameClaimsFor,
+  selectClaimsAtScope,
+  rangesOverlap,
+} from './scope-resolution/name-claims.js';
+export type {
+  NameClaimResult,
+  NameClaimSources,
+  ScopeClaimSelection,
+} from './scope-resolution/name-claims.js';
+
+export * from './rename/types.js';
+export * from './rename/results.js';
+export * from './rename/edits.js';
+export * from './rename/positions.js';
+export * from './rename/family.js';

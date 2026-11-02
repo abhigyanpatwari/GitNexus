@@ -119,7 +119,7 @@ describe('createRouteLimiter — integration with a real route', () => {
     const res = await fetch(`${baseUrl}/test/file`);
     expect(res.status).toBe(429);
     const body = await res.json();
-    expect(body.error).toContain('Too many');
+    expect(body).toHaveProperty('error', expect.stringContaining('Too many'));
   });
 
   it('emits draft-7 RateLimit response header (combined form), not legacy X-RateLimit-*', async () => {
@@ -246,8 +246,25 @@ describe('production routes — rate-limit middleware wiring', () => {
     expect(apiSource).toMatch(/app\.delete\('\/api\/repo',\s*createRouteLimiter\(/);
   });
 
+  it('DELETE /api/repo resolves the registry row without pruning unusable storage', () => {
+    expect(apiSource).toMatch(
+      /resolveRepo\(repoName,\s*false,\s*undefined,\s*\{\s*validateStorage:\s*false\s*\}\)/,
+    );
+    expect(apiSource).toMatch(
+      /listRegisteredRepos\(\{\s*validate:\s*options\.validateStorage !== false,\s*\}\)/,
+    );
+  });
+
   it('GET /api/repo is wired with createRouteLimiter', () => {
     expect(apiSource).toMatch(/app\.get\('\/api\/repo',\s*createRouteLimiter\(/);
+  });
+
+  it('GET /api/repos is wired with createRouteLimiter', () => {
+    // Carries a limiter because it spawns a `git rev-list` per registered repo
+    // to answer freshness — an unauthenticated GET whose cost scales with the
+    // number of indexed repos. Pinned here so dropping the limiter fails a test
+    // before it has to be caught by CodeQL (#3232).
+    expect(apiSource).toMatch(/app\.get\('\/api\/repos',\s*createRouteLimiter\(/);
   });
 
   it('POST /api/analyze is wired with createRouteLimiter', () => {

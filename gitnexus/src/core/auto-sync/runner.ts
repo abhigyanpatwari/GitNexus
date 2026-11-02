@@ -4,7 +4,15 @@ import { createRequire } from 'node:module';
 import { loadGroupConfig } from '../group/config-parser.js';
 import { getDefaultGitnexusDir, getGroupDir } from '../group/storage.js';
 import { syncGroup } from '../group/sync.js';
-import { registerRepo, resolveBranchPlacement, type RepoMeta } from '../../storage/repo-manager.js';
+import {
+  getStoragePaths,
+  loadMeta,
+  registerRepo,
+  resolveBranchPlacement,
+  type RepoMeta,
+} from '../../storage/repo-manager.js';
+import { embeddingsFromGitnexusRc } from '../gitnexus-rc-embeddings.js';
+import { getAutoSyncRepoIdentity } from './config.js';
 import { extractRepoNameFromRemoteUrl } from './repo.js';
 import { cloneOrPull, runGit } from '../../server/git-clone.js';
 import { resolveConfiguredCloneRoot } from './path-security.js';
@@ -19,8 +27,11 @@ import {
   type ProjectCommitInfoEntry,
 } from './state.js';
 import type { AutoSyncConfig, AutoSyncProjectConfig } from './config.js';
-import { validateAutoSyncRemoteUrl } from './config.js';
-import { runAutoSyncAnalysis, type AutoSyncAnalysisRunner } from './analysis-worker-launch.js';
+import {
+  AutoSyncAnalysisError,
+  runAutoSyncAnalysis,
+  type AutoSyncAnalysisRunner,
+} from './analysis-worker-launch.js';
 
 export interface AutoSyncLogger {
   info(message: string): void;
@@ -32,6 +43,7 @@ export interface AutoSyncRunDeps {
   cloneOrPull: typeof cloneOrPull;
   getCurrentBranch: (repoPath: string, timeoutMs: number) => Promise<string | undefined>;
   getCurrentCommit: (repoPath: string, timeoutMs: number) => Promise<string>;
+  getExistingPdgMode: (repoPath: string, branch: string) => Promise<boolean>;
   runAnalysis: AutoSyncAnalysisRunner;
   registerRepo: typeof registerRepo;
   resolveBranchPlacement: typeof resolveBranchPlacement;
@@ -49,6 +61,8 @@ export interface AutoSyncRunResult {
   analyzed: number;
   skippedAnalysis: number;
   failed: number;
+  /** True when a timed-out analyze worker was left running and may still hold the index lock. */
+  abandonedAnalysisWorker?: boolean;
 }
 
 const _require = createRequire(import.meta.url);
@@ -68,6 +82,23 @@ const DEFAULT_DEPS: AutoSyncRunDeps = {
   },
   getCurrentCommit: async (repoPath, timeoutMs) =>
     (await runGit(['rev-parse', 'HEAD'], repoPath, { timeoutMs })).trim(),
+  getExistingPdgMode: async (repoPath, branch) => {
+    const placement = await resolveBranchPlacement(repoPath, branch);
+    const paths = getStoragePaths(repoPath, placement.branch);
+    const meta = await loadMeta(path.dirname(paths.metaPath));
+    if (meta) return meta.pdg !== undefined;
+
+    try {
+      await fs.stat(paths.lbugPath);
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+      throw error;
+    }
+    throw new Error(
+      `Cannot determine whether the existing index at ${paths.lbugPath} contains PDG data because its metadata is missing or unreadable.`,
+    );
+  },
   runAnalysis: runAutoSyncAnalysis,
   registerRepo,
   resolveBranchPlacement,
@@ -99,6 +130,7 @@ export async function runAutoSyncOnce(
   const groupsToSync = new Set<string>();
   const groupStateKeys = new Map<string, string[]>();
   const result: AutoSyncRunResult = { synced: 0, analyzed: 0, skippedAnalysis: 0, failed: 0 };
+  let abandonedAnalysisWorker = false;
   const commitInfoEntries: ProjectCommitInfoEntry[] = [];
   const actualConcurrency = resolveActualConcurrency(
     config.maxConcurrency,
@@ -130,6 +162,7 @@ export async function runAutoSyncOnce(
           repoName,
           targetDir,
           timeoutMs: config.repoGitTimeoutMs,
+          allowedHosts: config.allowedHosts,
           deps,
           logger,
         });
@@ -155,6 +188,23 @@ export async function runAutoSyncOnce(
         const currentCommit = await deps.getCurrentCommit(targetDir, config.repoGitTimeoutMs);
         const stateKey = buildStateKey(targetDir, currentBranch);
         const previous = state[stateKey];
+        let existingPdg: boolean | undefined;
+        try {
+          existingPdg = await deps.getExistingPdgMode(targetDir, currentBranch);
+        } catch (error: unknown) {
+          if (item.project.pdg === undefined) {
+            throw new Error(
+              `${error instanceof Error ? error.message : String(error)} ` +
+                'Refusing to analyze so the live graph is preserved.',
+            );
+          }
+          logger.warn(
+            `[auto-sync] Existing PDG mode could not be determined for ${targetDir}; ` +
+              `applying explicit pdg=${item.project.pdg}.`,
+          );
+        }
+        const requestedPdg = item.project.pdg ?? existingPdg!;
+        const pdgModeChanged = existingPdg === undefined || requestedPdg !== existingPdg;
         let analyzeStatus: AutoSyncAnalyzeStatus = 'skipped';
         let analyzedCommitId = previous?.analyzedCommitId;
         let analyzeConsecutiveFailures = previous?.analyzeConsecutiveFailures ?? 0;
@@ -162,9 +212,23 @@ export async function runAutoSyncOnce(
         const groupSyncPending = previous?.groupSyncPending === true;
         let stats: RepoMeta['stats'] | undefined;
 
-        if (previous && previous.codeCommitId !== currentCommit) {
+        const previousRequestedPdg = previous?.requestedPdg ?? existingPdg;
+        if (
+          previous &&
+          (previous.codeCommitId !== currentCommit || previousRequestedPdg !== requestedPdg)
+        ) {
           analyzeConsecutiveFailures = 0;
           lastAnalyzeError = undefined;
+        }
+
+        if (item.project.pdg === undefined && existingPdg) {
+          logger.info(
+            `[auto-sync] Preserving existing PDG mode for ${targetDir}; project configuration does not set pdg.`,
+          );
+        } else if (item.project.pdg === false && existingPdg) {
+          logger.warn(
+            `[auto-sync] PDG is explicitly disabled for ${targetDir}; the next successful rebuild will remove existing PDG data.`,
+          );
         }
 
         if (analyzeConsecutiveFailures >= config.analyzeFailureThreshold) {
@@ -173,6 +237,7 @@ export async function runAutoSyncOnce(
             `[auto-sync] Skip analysis for ${targetDir}; analyze consecutive failures ${analyzeConsecutiveFailures}/${config.analyzeFailureThreshold} reached threshold. Fix the repository or clear auto-sync state before retrying.`,
           );
         } else if (
+          pdgModeChanged ||
           shouldAnalyzeCommit({
             currentCommit,
             previousAnalyzedCommit: previous?.analyzedCommitId,
@@ -180,9 +245,19 @@ export async function runAutoSyncOnce(
           })
         ) {
           try {
+            const rcEmbeddings = await embeddingsFromGitnexusRc(targetDir);
             const analysis = await deps.runAnalysis(
               targetDir,
-              { branch: currentBranch, skipAgentsMd: true, skipSkills: true },
+              {
+                branch: currentBranch,
+                skipAgentsMd: true,
+                skipSkills: true,
+                ...(item.project.pdg === undefined
+                  ? { preserveExistingPdg: true }
+                  : { pdg: requestedPdg }),
+                atomicIncremental: true,
+                ...rcEmbeddings,
+              },
               config.analyzeTimeoutMs,
               options.signal,
               options.onAnalysisCancellationRequested,
@@ -197,14 +272,25 @@ export async function runAutoSyncOnce(
           } catch (err: unknown) {
             if (options.signal?.aborted) throw err;
             analyzeStatus = 'failed';
-            analyzeConsecutiveFailures += 1;
             lastAnalyzeError = shortErrorMessage(err);
-            logger.error(
-              `[auto-sync] Analysis failed for ${targetDir}; consecutive failures ${analyzeConsecutiveFailures}/${config.analyzeFailureThreshold}: ${lastAnalyzeError}`,
-            );
+            // The persisted summary stays short, but the log is the only place the
+            // failure diagnosis appended to the message (#3530) reaches an operator.
+            // That diagnosis is the message tail, so an oversized message keeps its tail.
+            const loggedError = loggedErrorMessage(err);
+            if (isAbandonedAnalyzeWorkerError(err)) abandonedAnalysisWorker = true;
+            if (isRetryableAnalyzeContention(err)) {
+              logger.error(
+                `[auto-sync] Analysis failed for ${targetDir}; retryable leftover-worker or index-lock wait (not counted toward threshold): ${loggedError}`,
+              );
+            } else {
+              analyzeConsecutiveFailures += 1;
+              logger.error(
+                `[auto-sync] Analysis failed for ${targetDir}; consecutive failures ${analyzeConsecutiveFailures}/${config.analyzeFailureThreshold}: ${loggedError}`,
+              );
+            }
           }
         } else {
-          logger.info(`[auto-sync] Skip analysis for ${targetDir}; commit unchanged.`);
+          logger.info(`[auto-sync] Skip analysis for ${targetDir}; commit and PDG mode unchanged.`);
         }
         throwIfAborted(options.signal);
 
@@ -220,6 +306,7 @@ export async function runAutoSyncOnce(
           analyzeStatus,
           analyzeConsecutiveFailures,
           lastAnalyzeError,
+          requestedPdg,
           groupSyncPending,
           stats,
           stateKey,
@@ -279,7 +366,7 @@ export async function runAutoSyncOnce(
           repoResult.branch,
         );
         await deps.registerRepo(repoResult.targetDir, meta, {
-          name: getAutoSyncRepoIdentity(repoResult.remoteUrl),
+          name: getAutoSyncRepoIdentity(repoResult.remoteUrl, config.allowedHosts),
           // Omitted rather than passed as undefined, so a primary index is
           // registered with the same option shape it had before this branch.
           ...(placement.branch ? { branch: placement.branch } : {}),
@@ -303,6 +390,7 @@ export async function runAutoSyncOnce(
       codeCommitId: repoResult.currentCommit,
       analyzedCommitId,
       lastAnalyzeStatus: analyzeStatus,
+      requestedPdg: repoResult.requestedPdg,
       analyzeConsecutiveFailures,
       lastAnalyzeError,
       groupSyncPending: repoResult.groupSyncPending,
@@ -329,8 +417,8 @@ export async function runAutoSyncOnce(
       try {
         membershipAdded = await deps.addRepoToGroup(
           repoResult.project,
-          getAutoSyncRepoIdentity(repoResult.remoteUrl),
-          getAutoSyncRepoIdentity(repoResult.remoteUrl),
+          getAutoSyncRepoIdentity(repoResult.remoteUrl, config.allowedHosts),
+          getAutoSyncRepoIdentity(repoResult.remoteUrl, config.allowedHosts),
         );
         groupMembershipOk = true;
       } catch (err: unknown) {
@@ -378,21 +466,78 @@ export async function runAutoSyncOnce(
     }
   }
   if (groupStateChanged) await deps.saveState(state);
+  if (abandonedAnalysisWorker) result.abandonedAnalysisWorker = true;
   return result;
 }
 
-function shortErrorMessage(err: unknown): string {
+const ANALYZE_FAILURE_LOG_LIMIT = 2000;
+const LOG_ELLIPSIS = ' … ';
+
+function flattenErrorMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
-  return message.replace(/\s+/g, ' ').slice(0, 240);
+  return message.replace(/\s+/g, ' ');
+}
+
+function shortErrorMessage(err: unknown): string {
+  return flattenErrorMessage(err).slice(0, 240);
+}
+
+// run-analyze appends the failure diagnosis (#3530) as a remedy line followed by
+// lines carrying this prefix.
+const FAILURE_EVIDENCE_LINE_PREFIX = 'Failure evidence — ';
+// The native head an oversized message keeps at least: the persisted summary's length.
+const MIN_LOGGED_NATIVE_HEAD = 240;
+
+/**
+ * Log variant: the failure diagnosis (#3530) is appended after the native error, so
+ * an oversized message keeps its head AND its tail rather than the head alone. The
+ * tail covers the whole diagnosis — remedy line included — whenever it fits beside
+ * a {@link MIN_LOGGED_NATIVE_HEAD}-character head; the native head gets the rest.
+ */
+function loggedErrorMessage(err: unknown): string {
+  const message = flattenErrorMessage(err);
+  if (message.length <= ANALYZE_FAILURE_LOG_LIMIT) return message;
+  const lines = (err instanceof Error ? err.message : String(err)).split('\n');
+  const firstEvidence = lines.findIndex((line) => line.startsWith(FAILURE_EVIDENCE_LINE_PREFIX));
+  const diagnosisLength =
+    firstEvidence > 0
+      ? lines
+          .slice(firstEvidence - 1)
+          .join(' ')
+          .replace(/\s+/g, ' ').length
+      : 0;
+  const budget = ANALYZE_FAILURE_LOG_LIMIT - LOG_ELLIPSIS.length;
+  const tail = Math.min(
+    budget - MIN_LOGGED_NATIVE_HEAD,
+    Math.max(Math.floor(budget / 2), diagnosisLength),
+  );
+  return `${message.slice(0, budget - tail)}${LOG_ELLIPSIS}${message.slice(-tail)}`;
+}
+
+const ABANDONED_WORKER_MARKER = 'it was left running so its native work is not interrupted';
+
+function isAbandonedAnalyzeWorkerError(err: unknown): boolean {
+  if (err instanceof AutoSyncAnalysisError && err.abandonedWorker) return true;
+  return err instanceof Error && err.message.includes(ABANDONED_WORKER_MARKER);
+}
+
+function isRetryableAnalyzeContention(err: unknown): boolean {
+  if (isAbandonedAnalyzeWorkerError(err)) return true;
+  return (
+    err instanceof AutoSyncAnalysisError &&
+    err.code === 'index-lock-timeout' &&
+    err.retryable === true
+  );
 }
 
 export function getConfiguredRepoPath(
   project: Pick<AutoSyncProjectConfig, 'localPath'>,
   repoName: string,
   remoteUrl?: string,
+  allowedHosts?: readonly string[],
 ): string {
   if (!remoteUrl) return path.resolve(project.localPath, repoName);
-  const identity = getAutoSyncRepoIdentity(remoteUrl);
+  const identity = getAutoSyncRepoIdentity(remoteUrl, allowedHosts);
   return path.resolve(project.localPath, ...identity.split('/').slice(0, -1), repoName);
 }
 
@@ -413,11 +558,7 @@ export async function addRepoToGroup(
   return true;
 }
 
-export function getAutoSyncRepoIdentity(remoteUrl: string): string {
-  validateAutoSyncRemoteUrl(remoteUrl);
-  const [, host, remotePath] = /^git@([^:\s/]+):([^\s]+)$/.exec(remoteUrl.trim())!;
-  return `${host.toLowerCase()}/${remotePath.replace(/\.git$/i, '')}`;
-}
+export { getAutoSyncRepoIdentity } from './config.js';
 
 export async function syncGroupByName(groupName: string): Promise<void> {
   const groupDir = getGroupDir(getDefaultGitnexusDir(), groupName);
@@ -454,8 +595,13 @@ async function buildWorkItems(
     }
     for (const remoteUrl of project.remoteUrls) {
       try {
-        const repoName = extractRepoNameFromRemoteUrl(remoteUrl);
-        const targetDir = getConfiguredRepoPath({ localPath: cloneRoot.root }, repoName, remoteUrl);
+        const repoName = extractRepoNameFromRemoteUrl(remoteUrl, config.allowedHosts);
+        const targetDir = getConfiguredRepoPath(
+          { localPath: cloneRoot.root },
+          repoName,
+          remoteUrl,
+          config.allowedHosts,
+        );
         const previous = targetOwners.get(targetDir);
         if (previous !== undefined) {
           throw new Error(
@@ -519,6 +665,7 @@ async function syncFirstAvailableBranch(input: {
   repoName: string;
   targetDir: string;
   timeoutMs: number;
+  allowedHosts?: readonly string[];
   deps: AutoSyncRunDeps;
   logger: AutoSyncLogger;
 }): Promise<
@@ -534,6 +681,9 @@ async function syncFirstAvailableBranch(input: {
         expectedRepoName: input.repoName,
         quarantineRoot: input.item.cloneRoot!.quarantineRoot,
         allowAutoSyncSsh: true,
+        ...(input.allowedHosts && input.allowedHosts.length > 0
+          ? { autoSyncAllowedHosts: input.allowedHosts }
+          : {}),
         timeoutMs: input.timeoutMs,
         branch,
         overwriteLocalChanges: input.item.project.overwriteLocalChanges,

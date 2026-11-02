@@ -1,14 +1,11 @@
 /**
- * Install the LadybugDB FTS and VECTOR extensions into the shared home (~/.lbdb)
- * up front, so every test in a sharded CI run finds them regardless of shard.
+ * Make FTS and VECTOR resolvable for every shard before vitest starts.
  *
- * FTS-dependent tests split two ways: the LOAD-path gate (skipUnlessFtsAvailable)
- * self-installs on miss, but the FILE-path gate (requireFtsResourceOrSkip, e.g.
- * extension-binary-real.test.ts) resolves the extension path at module load and
- * cannot self-install. Sharding (and the balancing sequencer) can drop such a
- * test into a shard with no installer sibling — this step removes that ordering
- * dependency by installing FTS once before vitest starts. `auto` is LOAD-first,
- * so a cache-warmed extension costs no network.
+ * After vendoring, FTS is ready when the packaged artifact exists — LOAD
+ * no longer writes `~/.lbdb`, and the FILE-path gates resolve that artifact
+ * (or a leftover home install). When no artifact is present yet, fall back
+ * to one bounded `auto` INSTALL so shards without an installer sibling still
+ * find a file.
  *
  * Best-effort: exits 0 on failure (offline etc.) — the per-test gates still
  * hard-fail under GITNEXUS_REQUIRE_FTS=1 if FTS is genuinely unavailable, which
@@ -23,12 +20,17 @@ import {
   loadVectorExtension,
   closeLbug,
 } from '../src/core/lbug/lbug-adapter.js';
+import { resolveVendoredFtsPath } from '../src/core/lbug/vendored-extension-path.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'gn-ensure-fts-'));
 try {
   await initLbug(join(dir, 'ensure-fts.lbug'));
-  const ok = await loadFTSExtension(undefined, { policy: 'auto' });
-  console.log(ok ? 'FTS extension ready.' : 'FTS extension unavailable (continuing).');
+  if (resolveVendoredFtsPath()) {
+    console.log('FTS extension ready (vendored artifact).');
+  } else {
+    const ok = await loadFTSExtension(undefined, { policy: 'auto' });
+    console.log(ok ? 'FTS extension ready.' : 'FTS extension unavailable (continuing).');
+  }
   // VECTOR rides the same pre-install (#2623): the win32 gate is gone, so the
   // vector suites genuinely run on Windows/macOS — installing once here means
   // every sharded test process LOADs from ~/.lbdb instead of racing its own

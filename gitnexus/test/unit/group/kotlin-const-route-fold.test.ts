@@ -49,7 +49,7 @@ import { KOTLIN_HTTP_PLUGIN } from '../../../src/core/group/extractors/http-patt
 import type { HttpLanguagePlugin } from '../../../src/core/group/extractors/http-patterns/types.js';
 
 // Vendored grammar — loaded from vendor/ by absolute path, never node_modules (#2111).
-let Kotlin: unknown;
+let Kotlin: Parser.Language | null = null;
 try {
   Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 } catch {
@@ -61,7 +61,7 @@ const describeKotlin = Kotlin && KOTLIN_HTTP_PLUGIN ? describe : describe.skip;
 const plugin = KOTLIN_HTTP_PLUGIN as HttpLanguagePlugin;
 
 const parseSource = (p: Parser, src: string): Parser.Tree => {
-  p.setLanguage(Kotlin as Parser.Language);
+  p.setLanguage(Kotlin);
   return p.parse(src);
 };
 

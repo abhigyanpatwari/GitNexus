@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 /**
  * Integration tests for PR #1718 production-readiness review (U4).
  *
@@ -38,7 +39,6 @@ import {
 import { generateId } from '../../src/lib/utils.js';
 import {
   loadParseCache,
-  PARSE_CACHE_VERSION,
   pruneCache,
   saveParseCache,
   type ParseCache,
@@ -47,6 +47,8 @@ import {
   getDurableParsedFileDir,
   pruneAndSaveDurableParsedFileStore,
 } from '../../src/storage/parsedfile-store.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 const DIST_WORKER = path.resolve(
   __dirname,
@@ -531,10 +533,11 @@ export const second = query({ handler: (ctx: unknown) => helperB(ctx) });
     const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gnx-objlit-cache-'));
     try {
       const coldCache: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: parseIdentity,
         entries: new Map(),
         usedKeys: new Set(),
         storagePath: storage,
+        writeStoragePath: storage,
         onDiskKeys: new Set(),
       };
       const cold = await runPipelineFromRepo(repoRoot, () => undefined, {
@@ -546,10 +549,10 @@ export const second = query({ handler: (ctx: unknown) => helperB(ctx) });
       const savedKeys = await saveParseCache(storage, coldCache);
       await pruneAndSaveDurableParsedFileStore(
         getDurableParsedFileDir(storage),
-        PARSE_CACHE_VERSION,
+        parseIdentity.base,
         new Set(savedKeys),
       );
-      const warmCache = await loadParseCache(storage);
+      const warmCache = await loadParseCache(storage, parseIdentity, storage);
       const warm = await runPipelineFromRepo(repoRoot, () => undefined, {
         skipGraphPhases: true,
         parseCache: warmCache ?? undefined,

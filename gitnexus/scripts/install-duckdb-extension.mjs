@@ -80,26 +80,35 @@ async function defaultConnect(lbugMaxDbSize) {
  * @param {string} extensionName
  * @param {object} [options]
  * @param {boolean} [options.verifyOnly] LOAD-only Docker build gate — no install.
+ * @param {boolean} [options.verifyBundled] LOAD the packaged FTS artifact without a download.
  * @param {string} [options.loadError] The parent's LOAD failure; selects the verb.
  * @param {(size: number) => Promise<{conn: {query: (sql: string) => Promise<unknown>}, dispose: () => Promise<void>}>} [options.connect]
  *        Connection factory; injectable for offline unit tests.
  */
 export async function installDuckDbExtension(extensionName, options = {}) {
-  const { verifyOnly = false, loadError, connect } = options;
+  const { verifyOnly = false, verifyBundled = false, loadError, connect } = options;
   if (!extensionName || !EXTENSION_NAME_PATTERN.test(extensionName)) {
     throw new Error(`Invalid DuckDB extension name: ${extensionName ?? '<missing>'}`);
+  }
+
+  let loadTarget = extensionName;
+  if (verifyBundled) {
+    if (extensionName !== 'fts') throw new Error('Bundled verification only supports fts');
+    const { resolveVendoredFtsPath } = await import('../dist/core/lbug/vendored-extension-path.js');
+    const bundled = resolveVendoredFtsPath();
+    if (!bundled)
+      throw new Error(`No packaged FTS artifact for ${process.platform}-${process.arch}`);
+    loadTarget = `'${bundled.replace(/\\/g, '/').replace(/'/g, "''")}'`;
   }
 
   const makeConnection = connect ?? (() => defaultConnect(resolveMaxDbSize()));
   const { conn, dispose } = await makeConnection();
 
   try {
-    if (verifyOnly) {
-      // Prove a previously-baked extension is resolvable by a FRESH process
-      // under the current HOME (the runtime `LOAD EXTENSION` path) — no INSTALL,
-      // no network. Used as a Docker build-time gate so a HOME/extension-dir
-      // mismatch fails the build instead of silently degrading search at runtime.
-      await conn.query(`LOAD EXTENSION ${extensionName}`);
+    if (verifyOnly || verifyBundled) {
+      // LOAD must succeed without INSTALL or a network fallback, whether the
+      // caller verifies the packaged path or a named extension under HOME.
+      await conn.query(`LOAD EXTENSION ${loadTarget}`);
       console.log(
         `[install-ext] LOAD-only verify OK for '${extensionName}' (HOME=${process.env.HOME})`,
       );
@@ -117,6 +126,7 @@ export async function installDuckDbExtension(extensionName, options = {}) {
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   installDuckDbExtension(process.argv[2] ?? process.env.GITNEXUS_LBUG_EXTENSION_NAME, {
     verifyOnly: process.argv.includes('--verify-only'),
+    verifyBundled: process.argv.includes('--verify-bundled'),
     loadError: process.env.GITNEXUS_LBUG_EXTENSION_LOAD_ERROR,
   }).catch((err) => {
     console.error(err instanceof Error ? (err.stack ?? err.message) : String(err));

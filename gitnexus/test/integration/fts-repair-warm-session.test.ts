@@ -24,14 +24,16 @@ import {
   saveMeta,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
-import { closeLbug as poolClose } from '../../src/core/lbug/pool-adapter.js';
+import { closeLbug as poolClose, statDbIdentity } from '../../src/core/lbug/pool-adapter.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 
 const REQUIRE_FTS = process.env.GITNEXUS_REQUIRE_FTS === '1';
 
 type QueryResult = {
   error?: unknown;
+  staleness?: { lastCommit?: string; indexedAt?: string };
   warning?: string;
+  partial?: boolean;
   definitions?: Array<{ id: string }>;
   process_symbols?: Array<{ id: string }>;
 };
@@ -40,21 +42,18 @@ const matchedIds = (r: QueryResult): string[] =>
   [...(r.process_symbols ?? []), ...(r.definitions ?? [])].map((s) => s.id);
 
 const ftsMissing = (r: QueryResult): boolean =>
-  typeof r.warning === 'string' && /FTS indexes missing/i.test(r.warning);
+  typeof r.warning === 'string' &&
+  /FTS indexes missing|missing configured indexes/i.test(r.warning);
 
 /**
  * Poll the SAME warm `LocalBackend` until it stops reporting FTS-missing, or
- * the deadline passes. Exercises the real 5s staleness-check throttle
- * (`ensureInitialized`) rather than sleeping-and-hoping or reaching into
- * backend internals to bypass it — proves the fix holds within the actual
- * production timing window.
+ * the deadline passes. Calls the public tool without bypassing freshness
+ * checks or mutating backend state.
  */
 async function waitForFtsRecognized(
   backend: LocalBackend,
   query: string,
-  // Production throttle is 5s (`lastStalenessCheck`); this deadline leaves a
-  // generous margin beyond it for a loaded CI runner, per review feedback
-  // that the original 7s deadline left only ~2s of slack (#2767).
+  // Leave headroom for native extension work on loaded CI runners.
   timeoutMs = 15000,
   intervalMs = 300,
 ): Promise<QueryResult> {
@@ -90,14 +89,14 @@ describe('warm MCP session observes an in-place --repair-fts rebuild (#2767)', (
     await tmpHandle.cleanup();
   });
 
-  it(
-    'a warm session transitions from FTS-unavailable to FTS-available without restarting, after an out-of-band --repair-fts',
+  it.for(['all', 'Function'] as const)(
+    'a warm session repairs missing %s indexes without restarting',
     { timeout: 60_000 },
-    async (ctx) => {
+    async (missing, ctx) => {
       const adapter = await import('../../src/core/lbug/lbug-adapter.js');
       const { createSearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
 
-      // ── Step 1: build the index WITHOUT FTS (analyzed before repair) ────
+      // ── Step 1: build an index with all or just one FTS index missing ──
       await adapter.initLbug(lbugPath);
 
       const ftsAvailable = await adapter.loadFTSExtension(undefined, {
@@ -118,6 +117,10 @@ describe('warm MCP session observes an in-place --repair-fts rebuild (#2767)', (
       await adapter.executeQuery(
         `CREATE (n:Function {id: 'func:login', name: 'login', filePath: 'src/auth.ts', startLine: 1, endLine: 3, content: 'function login() { return true; }'})`,
       );
+      if (missing === 'Function') {
+        await createSearchFTSIndexes();
+        await adapter.dropFTSIndex('Function', 'function_fts');
+      }
       await adapter.flushWAL();
       await adapter.closeLbug();
 
@@ -129,7 +132,10 @@ describe('warm MCP session observes an in-place --repair-fts rebuild (#2767)', (
         stats: { files: 1, nodes: 1 },
         capabilities: {
           graph: { provider: 'ladybugdb', status: 'available' },
-          fts: { provider: 'ladybugdb-fts', status: 'unavailable' },
+          fts: {
+            provider: 'ladybugdb-fts',
+            status: missing === 'all' ? 'unavailable' : 'available',
+          },
           vectorSearch: { provider: 'exact-scan', status: 'unavailable', exactScanLimit: 0 },
         },
       };
@@ -142,11 +148,22 @@ describe('warm MCP session observes an in-place --repair-fts rebuild (#2767)', (
       const before = await backend.callTool('query', { query: 'login' });
       expect(before.error).toBeUndefined();
       expect(ftsMissing(before)).toBe(true);
+      if (missing === 'Function') {
+        expect(before.partial).toBe(true);
+        expect(before.warning).toContain('Function.function_fts');
+      }
 
       // ── Step 3: out-of-band --repair-fts (separate writable session) ────
       // Same production functions the repair-fts branch of runFullAnalysis
       // calls — real FTS build, then the #2767 capability-only meta stamp
       // (indexedAt/lastCommit deliberately unchanged, R4).
+      const beforeIdentity = await statDbIdentity(lbugPath);
+      // Windows requires releasing the native file lock before an in-place
+      // writer opens, so poolClose removes the pool entry there. Keep the same
+      // backend and its observed generation: on Windows this step checks the
+      // backend's cached capability state, not a live pool connection. The
+      // live connection is covered where the pool stays open across the repair.
+      if (process.platform === 'win32') await poolClose(lbugPath);
       await adapter.initLbug(lbugPath);
       await createSearchFTSIndexes();
       await adapter.flushWAL();
@@ -163,7 +180,16 @@ describe('warm MCP session observes an in-place --repair-fts rebuild (#2767)', (
       const after = await waitForFtsRecognized(backend, 'login');
       expect(after.error).toBeUndefined();
       expect(ftsMissing(after)).toBe(false);
+      expect(after.partial).toBeUndefined();
       expect(matchedIds(after)).toContain('func:login');
+      const afterIdentity = await statDbIdentity(lbugPath);
+      expect(afterIdentity?.ino).toBe(beforeIdentity?.ino);
+      expect(afterIdentity).not.toEqual(beforeIdentity);
+      // The Function-only repair starts and ends with FTS status available.
+      // Its in-place auxiliary changes must not erase the graph's known ref.
+      expect(after.staleness).toMatchObject({ lastCommit: baseMeta.lastCommit, indexedAt });
+      const again = await backend.callTool('query', { query: 'login' });
+      expect(again.staleness).toMatchObject({ lastCommit: baseMeta.lastCommit, indexedAt });
     },
   );
 });

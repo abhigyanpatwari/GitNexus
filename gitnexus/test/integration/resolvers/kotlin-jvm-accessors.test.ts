@@ -13,6 +13,40 @@ import {
 } from './helpers.js';
 
 describe('Kotlin JVM accessor synthesis (pipeline)', () => {
+  it.each(['same-file', 'cross-file'] as const)(
+    'resolves mutable-property getters and setters to their owner in a %s fixture',
+    async (layout) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-kt-jvm-mutable-'));
+      try {
+        const models = `class Pair(var first: Int, var second: Int)
+class Decoy(var first: Int, var second: Int)
+`;
+        const caller = `fun update(pair: Pair) {
+  pair.setFirst(pair.getSecond())
+  pair.setSecond(pair.getFirst())
+}
+`;
+        writeFixtureRepo(
+          root,
+          layout === 'same-file'
+            ? { 'Models.kt': models + caller }
+            : { 'Models.kt': models, 'Consumer.kt': caller },
+        );
+        const linked = await runPipelineFromRepo(root, () => {});
+        const calls = getRelationships(linked, 'CALLS').filter((edge) => edge.source === 'update');
+        expect(calls.map((edge) => edge.rel.targetId).sort()).toEqual([
+          'Method:Models.kt:Pair.getFirst#0',
+          'Method:Models.kt:Pair.getSecond#0',
+          'Method:Models.kt:Pair.setFirst#1',
+          'Method:Models.kt:Pair.setSecond#1',
+        ]);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+    60000,
+  );
+
   it('emits generated and custom getters and resolves same-language calls', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-kt-jvm-acc-'));
     try {

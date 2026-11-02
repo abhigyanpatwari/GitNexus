@@ -176,9 +176,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<ScopeResolutionOutput> {
     logHeapProbe('scopeResolution-enter');
-    const { scannedFiles } = getPhaseOutput<StructureOutput>(deps, 'structure');
+    const { scannedFiles, resolutionConfigs } = getPhaseOutput<StructureOutput>(deps, 'structure');
     const parseOutput = getPhaseOutput<ParseOutput>(deps, 'parse');
-    const { model, parsedFiles: workerParsedFiles } = parseOutput;
+    const { model, parsedFiles: workerParsedFiles, contentLanguageByPath } = parseOutput;
     const scopeExtractionFailures = new Set(parseOutput.scopeExtractionFailures);
     // SemanticModel populated during `parse`: scope-resolution consumes
     // TypeRegistry / MethodRegistry / SymbolTable lookups instead of
@@ -205,7 +205,8 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     // analyses. `undefined` when no storage path (tests / direct calls) — those
     // runs use the in-heap `workerParsedFiles` above or fall back to a fresh
     // extract per file inside runScopeResolution.
-    const parsedFileStorePath = ctx.options?.parseCache?.storagePath;
+    const parsedFileStorePath =
+      ctx.options?.parsedFileStorePath ?? ctx.options?.parseCache?.writeStoragePath;
 
     // Standalone providers are re-extracted from source on the main thread;
     // workers intentionally do not serialize ParsedFile artifacts for them.
@@ -258,7 +259,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       (typeof scannedFiles)[number][]
     >();
     for (const f of scannedFiles) {
-      const fileLang = getLanguageFromFilename(f.path);
+      const fileLang = contentLanguageByPath.has(f.path)
+        ? (contentLanguageByPath.get(f.path) ?? null)
+        : getLanguageFromFilename(f.path);
       if (fileLang === null) continue;
       // Tree-sitter providers require an available grammar. Standalone regex
       // providers deliberately have none and re-extract on the main thread.
@@ -380,8 +383,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         // composer.json autoload, go.mod, ...). One I/O round trip per
         // workspace pass — cached implicitly by the result handed to
         // every `resolveImportTarget` call below.
-        const resolutionConfig =
-          provider.loadResolutionConfig !== undefined
+        const resolutionConfig = resolutionConfigs?.has(lang)
+          ? resolutionConfigs.get(lang)
+          : provider.loadResolutionConfig !== undefined
             ? await provider.loadResolutionConfig(ctx.repoPath)
             : undefined;
 
@@ -402,7 +406,8 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         // evicts these again before the next language, so only one language's
         // ParsedFiles are resident at a time.
         const loadStoreFor = async (paths: ReadonlySet<string>): Promise<void> => {
-          if (!parsedFileStorePath) return;
+          if (!parsedFileStorePath || provider.languageProvider.parseStrategy === 'standalone')
+            return;
           const fromDisk = await loadParsedFilesForPaths(parsedFileStorePath, paths);
           for (const [fp, pf] of fromDisk) preExtractedByPath.set(fp, pf);
         };
@@ -410,6 +415,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         let scopeFilePaths: Set<string>;
         let contents: Map<string, string>;
         if (provider.collectScopeContextPaths !== undefined) {
+          // Context hooks consume worker facts too. Load primary records before
+          // the hook, or a disk-backed run needlessly re-extracts those files.
+          await loadStoreFor(new Set(primaryFilePaths));
           // Context-expanding providers (e.g. Vue) need every primary file's
           // source up front for the closure hook, so load it all.
           const entryFileContents = await readFileContents(ctx.repoPath, primaryFilePaths);
@@ -424,7 +432,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           const extraPaths = [...scopeFilePaths].filter((p) => !entryFileContents.has(p));
           const extraContents = await readFileContents(ctx.repoPath, extraPaths);
           contents = new Map([...entryFileContents, ...extraContents]);
-          await loadStoreFor(scopeFilePaths);
+          await loadStoreFor(new Set(extraPaths));
         } else {
           scopeFilePaths = new Set(primaryFilePaths);
           await loadStoreFor(scopeFilePaths);
@@ -485,6 +493,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
             scopeIndexStorePath: parsedFileStorePath,
             // CFG/PDG emission (#2081 M1) — opt-in; off ⇒ byte-identical graph.
             pdg: ctx.options?.pdg === true,
+            pdgMaxFunctionLines: ctx.options?.pdgMaxFunctionLines,
             pdgMaxEdgesPerFunction: ctx.options?.pdgMaxEdgesPerFunction,
             pdgMaxReachingDefEdgesPerFunction: ctx.options?.pdgMaxReachingDefEdgesPerFunction,
             pdgMaxCdgEdgesPerFunction: ctx.options?.pdgMaxCdgEdgesPerFunction,

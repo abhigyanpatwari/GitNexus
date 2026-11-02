@@ -8,7 +8,7 @@ const _require = createRequire(import.meta.url);
 const gitnexusPkg = _require('../gitnexus/package.json');
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react({ jsxRuntime: 'automatic' }), tailwindcss()],
   define: {
     __REQUIRED_NODE_VERSION__: JSON.stringify(gitnexusPkg.engines.node.replace(/[>=^~\s]/g, '')),
   },
@@ -22,8 +22,6 @@ export default defineConfig({
         __dirname,
         'node_modules/@anthropic-ai/sdk/lib/transform-json-schema.mjs',
       ),
-      // Fix for mermaid d3-color prototype crash on Vercel (known issue with mermaid 10.9.0+ and Vite)
-      mermaid: path.resolve(__dirname, 'node_modules/mermaid/dist/mermaid.esm.min.mjs'),
     },
   },
   server: {

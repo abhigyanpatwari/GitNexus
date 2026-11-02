@@ -6,7 +6,9 @@
  * NOTE: Swift is installed as an optional dependency. These tests skip gracefully
  * if a consumer installs without optional dependencies.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'path';
 import {
   FIXTURES,
@@ -15,12 +17,26 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
+  writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
 import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
+import { MODULE_MEMBERSHIP_REASON } from '../../../src/core/graph/edge-reasons.js';
 
 const swiftAvailable = isLanguageAvailable(SupportedLanguages.Swift);
+
+/**
+ * Module nodes a file is a member of. Same-module visibility is one
+ * File -> Module membership edge per file (#3355), so two files see each
+ * other exactly when they share a hub.
+ */
+function moduleHubsOf(result: PipelineResult, filePath: string): string[] {
+  return getRelationships(result, 'IMPORTS')
+    .filter((c) => c.rel.reason === MODULE_MEMBERSHIP_REASON && c.sourceFilePath === filePath)
+    .map((c) => c.rel.targetId)
+    .sort();
+}
 
 describe.skipIf(!swiftAvailable)('Swift constructor-inferred type resolution', () => {
   let result: PipelineResult;
@@ -262,14 +278,9 @@ describe.skipIf(!swiftAvailable)('Swift implicit imports (cross-file visibility)
     expect(memberCall).toBeDefined();
   });
 
-  it('creates IMPORTS edges between files in the same module', () => {
-    const imports = getRelationships(result, 'IMPORTS');
-    const crossFileImport = imports.find(
-      (c) =>
-        (c.sourceFilePath === 'App.swift' && c.targetFilePath === 'Models.swift') ||
-        (c.sourceFilePath === 'Models.swift' && c.targetFilePath === 'App.swift'),
-    );
-    expect(crossFileImport).toBeDefined();
+  it('makes files in the same module members of one Module hub', () => {
+    expect(moduleHubsOf(result, 'App.swift')).toHaveLength(1);
+    expect(moduleHubsOf(result, 'App.swift')).toEqual(moduleHubsOf(result, 'Models.swift'));
   });
 });
 
@@ -302,6 +313,141 @@ describe.skipIf(!swiftAvailable)('Swift extension deduplication', () => {
       (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath === 'Product.swift',
     );
     expect(saveCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Protocol-extension implicit self (issue #3273): a conforming type may call
+// default implementation methods without an explicit receiver. Resolution
+// must traverse the protocol's extension surface instead of falling back to
+// unrelated same-named private methods elsewhere in the module.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift protocol-extension implicit self (#3273)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-protocol-extension-implicit-self'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves unqualified helper calls to the protocol extension', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'run');
+    for (const target of ['makeStore', 'makeValue', 'insertItem']) {
+      const call = calls.find((c) => c.target === target);
+      expect(call?.targetFilePath).toBe('Support.swift');
+    }
+  });
+
+  it('keeps unrelated private same-name methods unreachable', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'run');
+    expect(calls.some((c) => c.targetFilePath === 'AUnrelated.swift')).toBe(false);
+  });
+
+  it('preserves the downstream call through the extension helper return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const execute = calls.find((c) => c.source === 'run' && c.target === 'execute');
+    expect(execute?.targetFilePath).toBe('Support.swift');
+    expect(
+      result.resolutionOutcomes.some(
+        (outcome) =>
+          outcome.kind === 'suppressed' &&
+          outcome.reason === 'receiver-unresolved' &&
+          outcome.filePath === 'Scenario.swift' &&
+          outcome.name === 'execute',
+      ),
+    ).toBe(false);
+  });
+});
+
+describe.skipIf(!swiftAvailable)('Swift injected closure property call (#3425)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-injected-closure-call'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does not resolve an injected closure call to an unrelated method', () => {
+    expect(
+      getNodesByLabelFull(result, 'Property').some(
+        (node) => node.name === 'clock' && node.properties.filePath === 'Caller.swift',
+      ),
+    ).toBe(true);
+    expect(
+      getNodesByLabelFull(result, 'Function').some(
+        (node) => node.name === 'clock' && node.properties.filePath === 'Helpers.swift',
+      ),
+    ).toBe(true);
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'refreshValue');
+    expect(calls.filter((c) => c.target === 'clock')).toEqual([]);
+  });
+
+  it('does not resolve an inherited closure property call to the unrelated method', () => {
+    const extendsEdges = getRelationships(result, 'EXTENDS');
+    expect(
+      extendsEdges.some(
+        (edge) => edge.source === 'DerivedService' && edge.target === 'BaseService',
+      ),
+    ).toBe(true);
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'refreshInheritedValue',
+    );
+    expect(calls.filter((c) => c.target === 'clock')).toEqual([]);
+  });
+
+  it('keeps inherited closure calls in extensions unlinked', () => {
+    expect(
+      getNodesByLabelFull(result, 'Function').some(
+        (node) =>
+          node.name === 'refreshInheritedFromExtension' &&
+          node.properties.filePath === 'Helpers.swift',
+      ),
+    ).toBe(true);
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'refreshInheritedFromExtension',
+    );
+    expect(calls.filter((c) => c.target === 'clock')).toEqual([]);
+  });
+
+  it('keeps same-type closure calls in extensions unlinked', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'refreshOwnFromExtension',
+    );
+    expect(calls.filter((c) => c.target === 'clock')).toEqual([]);
+  });
+
+  it('still resolves the concrete-type extension call', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'runScenario');
+    expect(calls.map((c) => c.rel.targetId)).toEqual([
+      'Function:Helpers.swift:Example.makeValue#1',
+    ]);
+  });
+
+  it('keeps a nested function that shadows the stored closure', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'refreshWithLocalClock',
+    );
+    expect(calls.filter((c) => c.target === 'clock')).toHaveLength(1);
+    expect(calls.find((c) => c.target === 'clock')?.targetFilePath).toBe('Caller.swift');
+  });
+
+  it('keeps a labeled method selected alongside a same-name property', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'refreshLabeled');
+    expect(calls.map((c) => c.target)).toContain('first');
+    expect(calls.find((c) => c.target === 'first')?.targetFilePath).toBe('Caller.swift');
+  });
+
+  it('keeps a derived method despite an inaccessible ancestor property', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'refreshPrivateAncestor',
+    );
+    expect(calls.map((c) => c.target)).toContain('clock');
+    expect(calls.find((c) => c.target === 'clock')?.targetFilePath).toBe('Helpers.swift');
   });
 });
 
@@ -939,20 +1085,11 @@ describe.skipIf(!swiftAvailable)('Swift SPM multi-directory target grouping', ()
     expect(memberCall!.targetFilePath).toBe('Sources/Alpha/Core/User.swift');
   });
 
-  it('emits cross-directory IMPORTS edges within the Alpha target (Entry <-> Core)', () => {
-    const imports = getRelationships(result, 'IMPORTS');
-    const entryToCore = imports.find(
-      (c) =>
-        c.sourceFilePath === 'Sources/Alpha/Entry/App.swift' &&
-        c.targetFilePath === 'Sources/Alpha/Core/User.swift',
-    );
-    const coreToEntry = imports.find(
-      (c) =>
-        c.sourceFilePath === 'Sources/Alpha/Core/User.swift' &&
-        c.targetFilePath === 'Sources/Alpha/Entry/App.swift',
-    );
-    expect(entryToCore).toBeDefined();
-    expect(coreToEntry).toBeDefined();
+  it('puts both directories of the Alpha target in one module (Entry <-> Core)', () => {
+    const entry = moduleHubsOf(result, 'Sources/Alpha/Entry/App.swift');
+    expect(entry).toHaveLength(1);
+    expect(entry).toEqual(moduleHubsOf(result, 'Sources/Alpha/Core/User.swift'));
+    expect(entry).not.toEqual(moduleHubsOf(result, 'Sources/Beta/Core/User.swift'));
   });
 
   it('does NOT emit IMPORTS across distinct targets (no Alpha <-> Beta)', () => {
@@ -1008,17 +1145,118 @@ describe.skipIf(!swiftAvailable)(
       expect(memberCall!.targetFilePath).toBe('Models/User.swift');
     });
 
-    it('emits cross-folder IMPORTS edges between Models and Services', () => {
-      const imports = getRelationships(result, 'IMPORTS');
-      const crossFolder = imports.find(
-        (c) =>
-          (c.sourceFilePath === 'Services/App.swift' && c.targetFilePath === 'Models/User.swift') ||
-          (c.sourceFilePath === 'Models/User.swift' && c.targetFilePath === 'Services/App.swift'),
+    it('puts Models and Services in one __default__ module', () => {
+      expect(moduleHubsOf(result, 'Services/App.swift')).toHaveLength(1);
+      expect(moduleHubsOf(result, 'Services/App.swift')).toEqual(
+        moduleHubsOf(result, 'Models/User.swift'),
       );
-      expect(crossFolder).toBeDefined();
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// #3355 — Nested SwiftPM packages with no root manifest. Each package's
+// targets are their own module: files see same-target siblings only, and two
+// packages declaring a target named `Net` stay two modules.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift nested packages (no root Package.swift)', () => {
+  let result: PipelineResult;
+  const login = 'Features/Login/Sources/Login';
+  const otherNet = 'Features/Other/Sources/Net';
+  const coreNet = 'Core/Net/Sources/Net';
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'swift-nested-packages'), () => {});
+  }, 60000);
+
+  it('puts files of the same target in one module', () => {
+    expect(moduleHubsOf(result, `${coreNet}/Session.swift`)).toHaveLength(1);
+    expect(moduleHubsOf(result, `${coreNet}/Session.swift`)).toEqual(
+      moduleHubsOf(result, `${coreNet}/Client.swift`),
+    );
+    expect(moduleHubsOf(result, `${login}/LoginFlow.swift`)).toHaveLength(1);
+    expect(moduleHubsOf(result, `${login}/LoginFlow.swift`)).toEqual(
+      moduleHubsOf(result, `${login}/Config.swift`),
+    );
+  });
+
+  it('keeps every package in its own module, including same-named targets', () => {
+    const hubs = [
+      `${coreNet}/Client.swift`,
+      `${otherNet}/Config.swift`,
+      `${login}/Config.swift`,
+    ].map((file) => moduleHubsOf(result, file));
+    expect(hubs.every((h) => h.length === 1)).toBe(true);
+    expect(new Set(hubs.map((h) => h[0])).size).toBe(3);
+  });
+
+  it('keeps package manifests and files outside every target out of any module', () => {
+    for (const file of [
+      'Core/Net/Package.swift',
+      'Features/Login/Package.swift',
+      'Docs/Net/Snippet.swift',
+    ]) {
+      expect(moduleHubsOf(result, file)).toEqual([]);
+    }
+  });
+
+  it('resolves `import Net` by module name, not by a folder that happens to be named Net', () => {
+    const imported = getRelationships(result, 'IMPORTS')
+      .filter((c) => c.sourceFilePath === `${login}/Connect.swift` && c.targetLabel === 'File')
+      .map((c) => c.targetFilePath)
+      .sort();
+    expect(imported).toEqual([
+      `${coreNet}/Client.swift`,
+      `${coreNet}/Session.swift`,
+      `${otherNet}/Config.swift`,
+      `${otherNet}/Use.swift`,
+    ]);
+  });
+
+  it("resolves Config() to the caller's own package", () => {
+    const ctorCalls = getRelationships(result, 'CALLS').filter(
+      (c) => c.target === 'Config' && c.targetLabel === 'Class',
+    );
+    expect(ctorCalls.map((c) => `${c.sourceFilePath}->${c.targetFilePath}`).sort()).toEqual([
+      `${login}/LoginFlow.swift->${login}/Config.swift`,
+      `${otherNet}/Use.swift->${otherNet}/Config.swift`,
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3355 — Xcode native targets from project.pbxproj. The app and its widget
+// extension are separate modules that each declare a `Config` class.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift Xcode targets (project.pbxproj)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'swift-xcode-targets'), () => {});
+  }, 60000);
+
+  it('makes each Xcode target its own module', () => {
+    const app = moduleHubsOf(result, 'App/AppMain.swift');
+    const widget = moduleHubsOf(result, 'Widget/WidgetMain.swift');
+    expect(app).toHaveLength(1);
+    expect(widget).toHaveLength(1);
+    expect(app).toEqual(moduleHubsOf(result, 'App/Config.swift'));
+    expect(widget).toEqual(moduleHubsOf(result, 'Widget/Config.swift'));
+    expect(app).not.toEqual(widget);
+  });
+
+  it("resolves Config() to the caller's own target", () => {
+    const ctorCalls = getRelationships(result, 'CALLS').filter(
+      (c) => c.target === 'Config' && c.targetLabel === 'Class',
+    );
+    expect(ctorCalls.map((c) => `${c.sourceFilePath}->${c.targetFilePath}`).sort()).toEqual([
+      'App/AppMain.swift->App/Config.swift',
+      'Widget/WidgetMain.swift->Widget/Config.swift',
+    ]);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // U4 — BUG1: member-write read/write classification (issue #1948). A Swift
@@ -1252,6 +1490,36 @@ describe.skipIf(!swiftAvailable)('Swift nested-type extension (extension Foo.Bar
 });
 
 // ---------------------------------------------------------------------------
+// A bare constructor inside an extension must prefer a nested type owned by
+// the extended type over an unrelated top-level type with the same short name.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)(
+  'Swift nested constructor lookup in a public qualified extension (#3262)',
+  () => {
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(
+        path.join(FIXTURES, 'swift-nested-constructor-extension'),
+        () => {},
+      );
+    }, 60000);
+
+    it('resolves Entry(id:text:) to Outer.Container.Entry and not the top-level Entry', () => {
+      const entryCalls = getRelationships(result, 'CALLS').filter(
+        (call) => call.source === 'makeEntry' && call.target === 'Entry',
+      );
+
+      expect(entryCalls.map((call) => call.rel.targetId)).toEqual(['Struct:Types.swift:Entry']);
+      expect(entryCalls.some((call) => call.rel.targetId === 'Struct:Standalone.swift:Entry')).toBe(
+        false,
+      );
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
 // F75: protocol property requirements (`var title: String { get }`) are
 // extracted as Property symbols owned by the protocol. Before the fix these
 // protocol_property_declaration nodes were dropped (the structure query and
@@ -1357,3 +1625,212 @@ describe.skipIf(!swiftAvailable)('Swift enum members (F79)', () => {
     expect(headingEdges).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3498 RC2: `swiftBindingScopeFor` hoists every method's return-type binding
+// onto the Module scope, so `svc.getUser().save()` types its receiver only if
+// the receiver fold walks up there (`hoistTypeBindingsToModule`). The hoisted
+// entries are keyed by bare method name, so the walk must also refuse a
+// same-named method of ANOTHER class — the second describe pins that.
+// ---------------------------------------------------------------------------
+
+/** Every CALLS target id emitted by `source` in `filePath`, sorted. */
+function swiftCallTargets(result: PipelineResult, filePath: string, source: string): string[] {
+  return getRelationships(result, 'CALLS')
+    .filter((edge) => edge.source === source && edge.sourceFilePath === filePath)
+    .map((edge) => edge.rel.targetId)
+    .sort();
+}
+
+describe.skipIf(!swiftAvailable)(
+  'Swift chained receivers through hoisted return types (#3498)',
+  () => {
+    let root: string;
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-swift-hoisted-return-'));
+      writeFixtureRepo(root, {
+        'Models.swift': `class Address {
+    func save() {}
+}
+
+class User {
+    var address: Address = Address()
+    var optionalAddress: Address? = Address()
+    func save() {}
+}
+
+class Service {
+    func getUser() -> User { return User() }
+}
+
+class ChildService: Service {}
+
+extension Service {
+    func getProfile() -> User { return User() }
+}
+`,
+        'Callers.swift': `func plainChain(svc: Service) {
+    svc.getUser().save()
+}
+
+func plainDeepChain(svc: Service) {
+    svc.getUser().address.save()
+}
+
+func optionalChain(svc: Service) {
+    svc.getUser().optionalAddress?.save()
+}
+
+func nonNullAssert(svc: Service) {
+    svc.getUser().optionalAddress!.save()
+}
+
+func inheritedChain(child: ChildService) {
+    child.getUser().save()
+}
+
+func extensionChain(svc: Service) {
+    svc.getProfile().save()
+}
+`,
+      });
+      result = await runPipelineFromRepo(root, () => {});
+    }, 60000);
+
+    afterAll(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it.each([
+      {
+        source: 'plainChain',
+        targets: ['Function:Models.swift:Service.getUser#0', 'Function:Models.swift:User.save#0'],
+      },
+      {
+        source: 'plainDeepChain',
+        targets: [
+          'Function:Models.swift:Address.save#0',
+          'Function:Models.swift:Service.getUser#0',
+        ],
+      },
+      {
+        source: 'optionalChain',
+        targets: [
+          'Function:Models.swift:Address.save#0',
+          'Function:Models.swift:Service.getUser#0',
+        ],
+      },
+      {
+        source: 'nonNullAssert',
+        targets: [
+          'Function:Models.swift:Address.save#0',
+          'Function:Models.swift:Service.getUser#0',
+        ],
+      },
+      {
+        // The owner itself declares nothing; the walk refuses the binding for
+        // `ChildService` and accepts it for the `Service` it inherits from.
+        source: 'inheritedChain',
+        targets: ['Function:Models.swift:Service.getUser#0', 'Function:Models.swift:User.save#0'],
+      },
+      {
+        // An extension member is owned by the extended type, and its binding is
+        // hoisted to the same Module scope.
+        source: 'extensionChain',
+        targets: [
+          'Function:Models.swift:Service.getProfile#0',
+          'Function:Models.swift:User.save#0',
+        ],
+      },
+    ])('resolves every call in $source to $targets', ({ source, targets }) => {
+      expect(swiftCallTargets(result, 'Callers.swift', source)).toEqual(targets);
+    });
+  },
+);
+
+describe.skipIf(!swiftAvailable)(
+  'Swift same-named methods on two classes do not share a hoisted return type (#3498)',
+  () => {
+    let root: string;
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-swift-hoisted-collision-'));
+      // One Module-scope entry per method NAME: in each file the later class's
+      // `getUser` overwrites the earlier one's. Both orders are covered so the
+      // test does not depend on which one happens to win.
+      writeFixtureRepo(root, {
+        'Accounts.swift': `class User {
+    func save() {}
+}
+
+class Admin {
+    func save() {}
+}
+
+class A {
+    func getUser() -> User { return User() }
+}
+
+class B {
+    func getUser() -> Admin { return Admin() }
+}
+`,
+        'Reversed.swift': `class C {
+    func getUser() -> Admin { return Admin() }
+}
+
+class D {
+    func getUser() -> User { return User() }
+}
+`,
+        'Callers.swift': `func viaA(a: A) {
+    a.getUser().save()
+}
+
+func viaB(b: B) {
+    b.getUser().save()
+}
+
+func viaC(c: C) {
+    c.getUser().save()
+}
+
+func viaD(d: D) {
+    d.getUser().save()
+}
+`,
+      });
+      result = await runPipelineFromRepo(root, () => {});
+    }, 60000);
+
+    afterAll(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    // The module's bare-name return bindings are overwritten in both orders.
+    // Exact declaration return types must recover each class's own target.
+    it.each([
+      {
+        source: 'viaA',
+        targets: ['Function:Accounts.swift:A.getUser#0', 'Function:Accounts.swift:User.save#0'],
+      },
+      {
+        source: 'viaB',
+        targets: ['Function:Accounts.swift:Admin.save#0', 'Function:Accounts.swift:B.getUser#0'],
+      },
+      {
+        source: 'viaC',
+        targets: ['Function:Accounts.swift:Admin.save#0', 'Function:Reversed.swift:C.getUser#0'],
+      },
+      {
+        source: 'viaD',
+        targets: ['Function:Accounts.swift:User.save#0', 'Function:Reversed.swift:D.getUser#0'],
+      },
+    ])('resolves every call in $source to $targets', ({ source, targets }) => {
+      expect(swiftCallTargets(result, 'Callers.swift', source)).toEqual(targets);
+    });
+  },
+);

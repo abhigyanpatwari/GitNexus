@@ -22,13 +22,14 @@ import os from 'os';
 import { NODE_TABLES } from 'gitnexus-shared';
 import { buildTestGraph } from '../helpers/test-graph.js';
 import { getNodeQuery } from '../../src/server/api.js';
+import { runImpactPDG } from '../../src/mcp/local/pdg-impact.js';
 
 let tmpBase: string;
 let storagePath: string;
 let dbPath: string;
 
-const BB1 = 'BasicBlock:src/a.ts:0';
-const BB2 = 'BasicBlock:src/a.ts:1';
+const BB1 = 'BasicBlock:src/a.ts:1:0:0';
+const BB2 = 'BasicBlock:src/a.ts:1:0:1';
 const NEW_EDGE_TYPES = [
   'CFG',
   'REACHING_DEF',
@@ -53,13 +54,21 @@ beforeAll(async () => {
   const graph = buildTestGraph(
     [
       {
+        id: 'Module:src/a.ts:program',
+        label: 'Module',
+        name: 'program',
+        filePath: 'src/a.ts',
+        startLine: 0,
+        endLine: 6,
+      },
+      {
         id: BB1,
         label: 'BasicBlock',
         name: '', // BasicBlock has no name column; ignored by the writer
         filePath: 'src/a.ts',
         startLine: 1,
         endLine: 3,
-        extra: { text: 'const x = req.body;' },
+        extra: { text: 'const x = req.body;', ownerId: 'Module:src/a.ts:program' },
       },
       {
         id: BB2,
@@ -102,6 +111,39 @@ afterAll(async () => {
 });
 
 describe('BasicBlock + taint/PDG edge round-trip (#2080)', () => {
+  it('projects persisted explicit program ownership through the real PDG query path', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const result = await runImpactPDG({
+      repo: { lbugPath: dbPath },
+      sym: {
+        id: 'Function:src/a.ts:consumer',
+        name: 'consumer',
+        filePath: 'src/a.ts',
+        startLine: 3,
+        endLine: 6,
+      },
+      symType: 'Function',
+      direction: 'upstream',
+      maxDepth: 1,
+      limit: 50,
+      line: 4,
+      executeParameterized: (_db, query, params) => adapter.executePrepared(query, params),
+    });
+    expect(result).toMatchObject({
+      mode: 'pdg',
+      byDepth: { 1: [expect.objectContaining({ id: 'Module:src/a.ts:program', type: 'Module' })] },
+    });
+  });
+
+  it('persists a provider-declared executable owner without inventing owners for ordinary blocks', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const rows = await adapter.executeQuery(
+      'MATCH (n:BasicBlock) RETURN n.id AS id, n.ownerId AS ownerId ORDER BY n.id',
+    );
+    expect(rows[0].ownerId).toBe('Module:src/a.ts:program');
+    expect(rows[1].ownerId ?? '').toBe('');
+  });
+
   it('BasicBlock nodes round-trip with their source span and text', async () => {
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
     const rows = await adapter.executeQuery(
@@ -171,4 +213,70 @@ describe('BasicBlock + taint/PDG edge round-trip (#2080)', () => {
     expect(rows[0].from).toBe(BB1);
     expect(rows[0].to).toBe(BB2);
   });
+
+  it('persists explicit and absent owners through CREATE', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    for (const [index, ownerId] of ['Module:src/owner.ts:Before', undefined].entries()) {
+      const id = `BasicBlock:src/owner.ts:1:0:${index}`;
+      expect(
+        await adapter.insertNodeToLbug('BasicBlock', {
+          id,
+          filePath: 'src/owner.ts',
+          startLine: 1,
+          endLine: 1,
+          text: 'run();',
+          ...(ownerId ? { ownerId } : {}),
+        }),
+      ).toBe(true);
+      const rows = await adapter.executePrepared(
+        'MATCH (b:BasicBlock {id: $id}) RETURN b.ownerId AS ownerId',
+        { id },
+      );
+      expect(rows[0]?.ownerId).toBe(ownerId ?? '');
+    }
+  });
+
+  // Matches the native close/reopen guard in lbug-core-adapter and the metadata
+  // roundtrip suite. Query-generation coverage still runs on Windows.
+  (process.platform === 'win32' ? it.skip : it)(
+    'persists and clears explicit owners through MERGE',
+    async () => {
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      const id = 'BasicBlock:src/merged-owner.ts:1:0:0';
+      for (const ownerId of [
+        'Module:src/merged-owner.ts:Before',
+        'Module:src/merged-owner.ts:After',
+        undefined,
+      ]) {
+        await adapter.closeLbug();
+        try {
+          expect(
+            await adapter.batchInsertNodesToLbug(
+              [
+                {
+                  label: 'BasicBlock',
+                  properties: {
+                    id,
+                    filePath: 'src/merged-owner.ts',
+                    startLine: 1,
+                    endLine: 1,
+                    text: 'run();',
+                    ...(ownerId ? { ownerId } : {}),
+                  },
+                },
+              ],
+              dbPath,
+            ),
+          ).toEqual({ inserted: 1, failed: 0 });
+        } finally {
+          await adapter.initLbug(dbPath);
+        }
+        const rows = await adapter.executePrepared(
+          'MATCH (b:BasicBlock {id: $id}) RETURN b.ownerId AS ownerId',
+          { id },
+        );
+        expect(rows[0]?.ownerId).toBe(ownerId ?? '');
+      }
+    },
+  );
 });

@@ -32,6 +32,10 @@ def test_review_corpus_is_immutable_and_task_bound():
         assert task["ref"] == case["base_sha"]
         assert task["sandbox_copy"] == [f"eval/workflow_bench/review_cases/{patch.name}"]
         assert task["setup"] == review_case_setup_command(patch.name)
+        assert any(
+            dep.get("source") == "gitnexus-shared/dist" and dep.get("target") == "gitnexus-shared/dist"
+            for dep in task["sandbox_dependencies"]
+        )
 
 
 def test_hidden_labels_are_not_recoverable_from_visible_task_input():

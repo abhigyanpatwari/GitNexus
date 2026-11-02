@@ -35,6 +35,14 @@
 #     security group, and IAM setup are documented privately, not in this
 #     repo — publishing the exact topology of a real, live AWS account
 #     isn't safe to do in a public repo even without literal secrets.
+#     Hosted jobs start and stop the existing instance through its protected
+#     OIDC role. Reuse GITNEXUS_EVOLUTION_AWS_ROLE_ARN and
+#     GITNEXUS_EVOLUTION_EC2_INSTANCE_ID secrets, plus the
+#     GITNEXUS_EVOLUTION_AWS_REGION and GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC
+#     variables (the actual weekly stop as DAY HH:MM UTC). These historical
+#     configuration names are assumed; verify their private environment values.
+#     Keep the external stop watchdog enabled;
+#     it remains the fallback if GitHub cleanup is interrupted.
 #     Accepted tradeoff: the box is stopped between runs (an EventBridge
 #     schedule starts it ~15min before the Saturday cron and stops it 24h
 #     later) but is not destroyed/recreated per run, so it isn't fully
@@ -63,13 +71,27 @@
 #     uploads, and a promotion (if any) opens a well-formed PR. Run
 #     29907431284 (2026-07-22) went green end to end in 14h45m and reached a
 #     gate decision (`insufficient_evidence`, no promotion).
-# [ ] After resizing the runner, prove a manual workers=3 run has zero excluded
-#     runs and does not stretch the 48-minute serial mean toward the session
-#     ceiling; then set GITNEXUS_EVOLUTION_WORKERS=3 and
+# [ ] Confirm a workers=3 dispatch has zero excluded runs (review sessions in
+#     33962002890 averaged ~19m serial, well under the 90m session ceiling).
+#     Then set GITNEXUS_EVOLUTION_WORKERS=3 and
 #     GITNEXUS_EVOLUTION_ENABLED=true for scheduled runs. Scheduled runs
-#     require both values, so leaving workers unset/1 is an immediate rollback;
-#     workflow_dispatch remains available for the proof and bills real API
-#     usage on GITNEXUS_BENCH_ANTHROPIC_API_KEY or GITNEXUS_BENCH_OPENAI_API_KEY.
+#     require both values, so leaving the var unset is an immediate rollback.
+#     Dispatch defaults to 3; pass workers=1 only to debug a contended host.
+#     Weekly generations reuse matching incumbent/CE cells from the previous
+#     artifact so the paid matrix is the new candidate, not a 54-cell replay.
+#     Wall clock is quantised by ceil(cells_per_task / workers), and a review
+#     task is 9 cells cold, so 4 costs host contention for exactly the wall
+#     clock of 3. The next step up that buys anything is 5 (3 waves -> 2).
+#
+# Shared runner lock: this workflow and release-evaluation.yml use the one
+# concurrency group gitnexus-evolution-runner, so neither can stop the instance
+# during the other's run. GitHub keeps only ONE pending run per group, even with
+# cancel-in-progress: false: a newer queued run of either workflow cancels the
+# older pending run ("higher priority waiting request"). A release evaluation
+# dispatched for a stable publish can therefore vanish while it waits. Do not
+# queue evolution behind a pending release evaluation, and confirm the
+# evaluation's "Start the dedicated EC2 runner" job actually ran before relying
+# on its evidence; if the run shows Cancelled, dispatch it again.
 name: GitNexus skill evolution
 
 on:
@@ -92,9 +114,9 @@ on:
         default: '3'
         type: string
       workers:
-        description: 'Benchmark cells of one task to run at once — raise only to match the runner’s vCPUs'
+        description: 'Benchmark cells of one task to run at once — 3 fits the evolution box; drop to 1 only if siblings hit the session ceiling'
         required: false
-        default: '1'
+        default: '3'
         type: string
       model:
         description: 'Model for the benchmark arms (match the model your skill users run)'
@@ -136,18 +158,137 @@ on:
         required: false
         default: true
         type: boolean
+      runner_only:
+        description: 'Start, probe, and stop the runner without paid model calls'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: gitnexus-evolution-runner
   cancel-in-progress: false
 
 permissions: {}
 
 jobs:
+  start-runner:
+    name: Start the dedicated EC2 runner
+    if: >-
+      github.repository == 'abhigyanpatwari/GitNexus' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
+    runs-on: ubuntu-latest
+    environment: gitnexus-evolution
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      run_attempt: ${{ github.run_attempt }}
+      cleanup_required: ${{ steps.boot.outputs.cleanup_required }}
+      stop_deadline_epoch: ${{ steps.boot.outputs.stop_deadline_epoch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ec2-runner
+        id: boot
+        with:
+          operation: start
+          role-arn: ${{ secrets.GITNEXUS_EVOLUTION_AWS_ROLE_ARN }}
+          instance-id: ${{ secrets.GITNEXUS_EVOLUTION_EC2_INSTANCE_ID }}
+          region: ${{ vars.GITNEXUS_EVOLUTION_AWS_REGION }}
+          stop-schedule: ${{ vars.GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC }}
+
+  check-runner:
+    needs: [start-runner]
+    name: Bound the wait for the evolution runner
+    if: >-
+      github.repository == 'abhigyanpatwari/GitNexus' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
+    runs-on: ubuntu-latest
+    environment: gitnexus-evolution
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write # Cancel only this run if its dedicated runner stays offline.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # EC2 health does not prove the Actions service can accept a job.
+      - name: Verify the current run's native pickup probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/evolution-runner-ready.py
+      # A queued self-hosted job has no pickup timeout. Cancel this run so an
+      # offline probe cannot remain queued indefinitely and block later runs.
+      - name: Cancel this run when runner readiness fails
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"
+
+  runner-ready:
+    needs: [start-runner]
+    name: Verify the runner service is online
+    if: >-
+      github.repository == 'abhigyanpatwari/GitNexus' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
+    # Partial reruns reuse successful startup outputs after cleanup stopped EC2.
+    runs-on: ${{ fromJSON(needs.start-runner.outputs.run_attempt == github.run_attempt && '["self-hosted", "linux", "x64", "gitnexus-evolution"]' || '["ubuntu-latest"]') }}
+    environment: gitnexus-evolution
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require startup in this run attempt
+        run: |
+          set -euo pipefail
+          if [[ '${{ needs.start-runner.outputs.run_attempt }}' != "$GITHUB_RUN_ATTEMPT" ]]; then
+            echo '::error::The EC2 startup belongs to an earlier attempt. Select Re-run all jobs to start the runner again.'
+            exit 1
+          fi
+      - name: Verify runner pickup
+        run: |
+          set -euo pipefail
+          test -r /proc/uptime
+          git --version
+          uname -sm
+
+  watch-evolve-pickup:
+    name: Bound pickup of the paid evolution job
+    needs: [start-runner, check-runner, runner-ready]
+    if: inputs.runner_only != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write # Cancel this run if evolve stays queued after the probe.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require pickup of this run's paid evolution job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/evolution-runner-ready.py --job-name "Propose, benchmark, and gate skill candidates"
+      - name: Cancel this run when evolution pickup fails
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"
+
   evolve:
     name: Propose, benchmark, and gate skill candidates
     if: >-
       github.repository == 'abhigyanpatwari/GitNexus' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.runner_only != true &&
       (
         github.event_name == 'workflow_dispatch' ||
         (
@@ -155,7 +296,8 @@ jobs:
           vars.GITNEXUS_EVOLUTION_WORKERS == '3'
         )
       )
-    runs-on: [self-hosted, linux, x64, gitnexus-evolution]
+    needs: [start-runner, check-runner, runner-ready]
+    runs-on: ${{ fromJSON(needs.start-runner.outputs.run_attempt == github.run_attempt && '["self-hosted", "linux", "x64", "gitnexus-evolution"]' || '["ubuntu-latest"]') }}
     # Gate promotion runs on a protected Environment. An admin must attach a
     # deployment-branch rule (main only) and ideally scope the model and App
     # secrets to it — server-side enforcement a dispatched non-main ref cannot bypass by
@@ -172,6 +314,13 @@ jobs:
     # stops the runner just disappears mid-step. Scheduled runs can start well
     # after the cron (the 2026-08-01 run was queued 65min late), so the job
     # budget has to absorb that delay and still land inside the uptime window.
+    # A Friday workflow_dispatch on a box that already booted for Saturday's
+    # cron inherits leftover uptime, not a fresh 24h. Run 33962002890 started
+    # Friday 10:57 UTC and vanished at the Saturday 03:00 stop — 51 finished
+    # sessions never uploaded. run-evolution.sh therefore passes
+    # --max-runtime-from-instance-window, and the CLI derives its cap from
+    # /proc/uptime at startup, so the sweep fails in-process and this always()
+    # upload still runs.
     timeout-minutes: 1260
     permissions:
       contents: read # The promotion PR uses a short-lived App token minted below.
@@ -188,6 +337,13 @@ jobs:
       PROVIDER: ${{ inputs.provider || 'openai' }}
       INCLUDE_EXPENSIVE: ${{ inputs.include_expensive && '1' || '' }}
     steps:
+      - name: Require startup in this run attempt
+        run: |
+          set -euo pipefail
+          if [[ '${{ needs.start-runner.outputs.run_attempt }}' != "$GITHUB_RUN_ATTEMPT" ]]; then
+            echo '::error::The EC2 startup belongs to an earlier attempt. Select Re-run all jobs to start the runner again.'
+            exit 1
+          fi
       - name: Require the benchmark auth secret
         env:
           HAS_ANTHROPIC: ${{ secrets.GITNEXUS_BENCH_ANTHROPIC_API_KEY != '' || secrets.GITNEXUS_BENCH_AUTH_TOKEN != '' }}
@@ -241,12 +397,12 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.18.0'
           cache: npm
@@ -254,7 +410,7 @@ jobs:
             gitnexus/package-lock.json
             gitnexus-shared/package-lock.json
 
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
         with:
           version: '0.11.23'
           python-version: '3.13'
@@ -319,24 +475,20 @@ jobs:
           set -euo pipefail
           # The benchmark's task bindings sandbox-copy node_modules from the
           # monorepo root as well as gitnexus-shared and gitnexus (see the
-          # sandbox_copy entries in tasks.scenarios.yaml). The two steps below
-          # install the subpackage trees; the root tree needs its own install
-          # or capture_task_dependency_binding aborts at task binding on the
-          # missing root node_modules.
+          # sandbox_dependencies entries in tasks.scenarios.yaml). gitnexus
+          # npm ci plus build compiles shared through parent lib/tsc.js; do
+          # not npm ci gitnexus-shared (second TypeScript 7 optional install).
           npm ci
-
-      - name: Build pinned shared runtime
-        run: |
-          set -euo pipefail
-          npm ci
-          npm run build
-        working-directory: gitnexus-shared
 
       - name: Install and build pinned GitNexus runtime
         run: |
           set -euo pipefail
           npm ci
           npm run build
+          # Task YAML still mounts gitnexus-shared/node_modules. Keep an empty
+          # directory so capture_task_dependency_binding does not abort, without
+          # installing TypeScript 7 inside shared.
+          mkdir -p ../gitnexus-shared/node_modules
         working-directory: gitnexus
 
       - name: Point the benchmark task repo at the checkout
@@ -485,7 +637,9 @@ jobs:
           CE_PLUGIN_VERSION: 3.24.0
         run: |
           set -euo pipefail
-          ./workflow_bench/run-evolution.sh --apply
+          remaining=$(( ${{ needs.start-runner.outputs.stop_deadline_epoch }} - $(date +%s) - 5400 ))
+          (( remaining > 0 )) || { echo '::error::No time remains before the stop and evidence reserve.'; exit 1; }
+          timeout --signal=TERM --kill-after=60 "${remaining}s" ./workflow_bench/run-evolution.sh --apply
         working-directory: eval
 
       - name: Upload benchmark evidence
@@ -493,7 +647,7 @@ jobs:
         # goes, so a killed or failed generation still has evidence worth
         # keeping — and that is exactly the run whose evidence is needed.
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gitnexus-evolution-${{ github.run_id }}-${{ github.run_attempt }}
           # Addressed directly rather than carried from the sweep step: that is
@@ -547,7 +701,7 @@ jobs:
       - name: Mint GitHub App token
         id: app-token
         if: steps.promotion.outputs.promoted == 'true'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           # `client-id` supersedes the deprecated `app-id` in v3.x (the action
           # accepts the numeric App ID here, as publish.yml does). Request only
@@ -614,3 +768,28 @@ jobs:
             --head "${branch}" \
             --title 'feat(skills): promoted evolution overlay' \
             --body-file "${RUNNER_TEMP}/pr-body.md"
+
+  stop-runner:
+    name: Stop and verify the dedicated EC2 runner
+    needs: [start-runner, check-runner, runner-ready, watch-evolve-pickup, evolve]
+    if: >-
+      always() && github.repository == 'abhigyanpatwari/GitNexus' &&
+      github.ref == 'refs/heads/main' &&
+      needs.start-runner.outputs.cleanup_required == 'true'
+    runs-on: ubuntu-latest
+    environment: gitnexus-evolution
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ec2-runner
+        with:
+          operation: stop
+          role-arn: ${{ secrets.GITNEXUS_EVOLUTION_AWS_ROLE_ARN }}
+          instance-id: ${{ secrets.GITNEXUS_EVOLUTION_EC2_INSTANCE_ID }}
+          region: ${{ vars.GITNEXUS_EVOLUTION_AWS_REGION }}
+          stop-schedule: ${{ vars.GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC }}

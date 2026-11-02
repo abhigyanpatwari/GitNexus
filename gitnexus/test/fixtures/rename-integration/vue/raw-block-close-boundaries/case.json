@@ -1,0 +1,20 @@
+{
+  "language": "vue",
+  "description": "Keep raw custom blocks opaque when their content contains a longer closing tag with the same prefix.",
+  "categories": [
+    "raw-block",
+    "unrelated-name",
+    "template-binding"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Function",
+    "file": "App.vue",
+    "startLine": 1
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  }
+}

@@ -31,11 +31,26 @@ const PLATFORM_LOGIC = [
   'test/unit/setup-codex.test.ts',
   'test/unit/setup-antigravity.test.ts',
   'test/integration/setup-uninstall-roundtrip.test.ts',
+  'test/unit/opencode-plugin.test.ts',
+  'test/integration/opencode-plugin.test.ts',
+  'test/unit/uninstall.test.ts',
   'test/unit/resolve-invocation.test.ts',
   // CLI-spawn entry-point resolution; its path-separator assertion (cli[/\\]index)
   // must exercise the Windows backslash branch, so run it on the OS matrix (#2394).
   'test/unit/cli-entry.test.ts',
   'test/unit/platform-capabilities.test.ts',
+  // The tsconfig loader rebases `paths` targets through `path.resolve`, so the
+  // wildcard suffix it must recognise is `/*` on POSIX and `\*` on Windows. It
+  // only looked for `/*`, and every alias target came back as `src*` on
+  // Windows while the Ubuntu run stayed green — so this file has to run where
+  // the separator differs.
+  'test/unit/tsconfig-index.test.ts',
+  // The unit half of the same rebasing rule. Fixture-free and pathApi-injectable
+  // (every separator assertion passes an explicit `path.win32` / `path.posix`),
+  // so unlike the fixture suite above it fails on EVERY runner when the
+  // normalisation is removed rather than only on windows-latest. Registered
+  // beside its fixture sibling so the two halves stay discoverable as one group.
+  'test/unit/tsconfig-rebase-target.test.ts',
   // The gitnexus-plan safe writer resolves every name through a per-platform
   // backend: Linux anchors through /proc/self/fd, macOS resolves lexically and
   // verifies each step against descriptors it holds open. Publication is link(2)
@@ -73,6 +88,20 @@ const PLATFORM_LOGIC = [
   'test/unit/lbug-config-pagesize.test.ts',
   'test/unit/worker-pool-windows-quarantine.test.ts',
   'test/unit/lbug-pool-fts-load.test.ts',
+  // U7 arm B: Windows FTS names a vendor-neutral OpenSSL/VC++ prerequisite
+  // and must never recommend borrowing Git for Windows DLLs. The file's
+  // assertions are unconditional so a skip-only suite cannot stay green.
+  'test/integration/fts-windows-dependency.test.ts',
+  // Remedy-text suites: discoverability only. They pass explicit platform
+  // strings into pure classifiers and drive mocked rejections with hardcoded
+  // literals, so they assert identically on every runner. Registering them
+  // here does not claim Windows-specific behavioral coverage.
+  'test/unit/extension-load-error.test.ts',
+  'test/unit/fts-degraded-warning.test.ts',
+  // Vendored-root symlink containment uses realpathSync + path.relative; a
+  // prefix-only leak follows a Windows junction / POSIX symlink out of
+  // vendor/. Ubuntu-only would leave that guard unverified on the OS matrix.
+  'test/unit/lbug-extension-loader.test.ts',
   // Global registry writes use the platform-specific index-lock backend
   // (Windows named pipe, Linux socket, or macOS file lock). This includes the
   // overlapping-registration regression from #2716 on every OS matrix.
@@ -82,6 +111,7 @@ const PLATFORM_LOGIC = [
   'test/unit/hooks.test.ts',
   'test/unit/hook-db-lock-probe.test.ts',
   'test/unit/cursor-hook.test.ts',
+  'test/unit/factory-plugin.test.ts',
   'test/unit/sidecar-recovery.test.ts',
   'test/unit/pool-wal-recovery.test.ts',
   'test/unit/lbug-adapter-wal-schema.test.ts',
@@ -117,6 +147,10 @@ const PLATFORM_LOGIC = [
   // #3073: cwd-based repository selection canonicalizes real paths, compares
   // platform separators/case, and rejects nested Git-boundary fallthrough.
   'test/unit/calltool-dispatch.test.ts',
+  // Preview capabilities use real file symlinks, canonical temp paths, atomic
+  // replacements and physical-target drift checks on each host filesystem.
+  'test/unit/rename-preview-plans.test.ts',
+  'test/unit/rename-plan.test.ts',
   // The index write-lock (#2658) selects its backend by process.platform — the
   // OS socket lock (Windows named pipe / Linux abstract socket) vs the file
   // fallback — and its socket-backend describe block is gated to linux/win32.
@@ -130,7 +164,46 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
+  'test/integration/java-overload-impact-persistence.test.ts',
+  'test/integration/dangling-owner-edges.test.ts',
+  'test/integration/impact-private-type-file-seed.test.ts',
+  'test/integration/impact-private-type-source.test.ts',
+  // Inline-handler findings must survive native persistence and cold explain
+  // readers on each OS; passing the Ubuntu-only taint suite is insufficient.
+  'test/integration/taint-explain.test.ts',
+  // Real indexing/MCP previews include tracked/untracked edits, file-symlink
+  // retargets and staging failures; the helper runs in a separate native process.
+  'test/integration/rename-preview-plan.test.ts',
+  'test/integration/rename-provider-matrix.test.ts',
+  'test/integration/rename-provider-c.test.ts',
+  'test/integration/rename-provider-cobol.test.ts',
+  'test/integration/rename-provider-cpp.test.ts',
+  'test/integration/rename-provider-csharp.test.ts',
+  'test/integration/rename-provider-dart.test.ts',
+  'test/integration/rename-provider-go.test.ts',
+  'test/integration/rename-provider-java.test.ts',
+  'test/integration/rename-provider-javascript.test.ts',
+  'test/integration/rename-provider-kotlin.test.ts',
+  'test/integration/rename-provider-objective-c.test.ts',
+  'test/integration/rename-provider-php.test.ts',
+  'test/integration/rename-provider-python.test.ts',
+  'test/integration/rename-provider-ruby.test.ts',
+  'test/integration/rename-provider-rust.test.ts',
+  'test/integration/rename-provider-swift.test.ts',
+  'test/integration/rename-provider-typescript.test.ts',
+  'test/integration/rename-provider-vue.test.ts',
+  'test/integration/rename-provider-zig.test.ts',
+  'test/integration/pdg-explicit-owner.test.ts',
+  'test/integration/skip-fts.test.ts',
+  // Dirty snapshot freshness depends on native FTS, Git paths and file reads.
+  'test/integration/analyze-dirty-snapshot.test.ts',
+  'test/integration/incremental-worktree-context.test.ts',
   'test/integration/lbug-core-adapter.test.ts',
+  // Native COPY, cached vectors and cold shared-store readers vary by platform.
+  'test/integration/embedding-identity-integrity.test.ts',
+  'test/integration/shared-store-embedding-reuse.test.ts',
+  // Real endpoint retries include native index writes and cold database reads.
+  'test/integration/embedding-input-isolation.test.ts',
   'test/integration/lbug-vector-extension.test.ts',
   'test/integration/lbug-pool.test.ts',
   'test/integration/lbug-pool-stability.test.ts',
@@ -138,6 +211,20 @@ const LBUG_NATIVE = [
   'test/integration/lbug-open-retry.test.ts',
   'test/integration/lbug-close-handle-release.test.ts',
   'test/integration/lbug-orphan-sidecar-recovery.test.ts',
+  'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
+  'test/integration/lbug-checkpoint-accounting.test.ts',
+  'test/integration/lbug-rel-copy-page-padding.test.ts',
+  'test/integration/lbug-incremental-search.test.ts',
+  // Retained identities and reader metadata must agree on every native platform.
+  'test/integration/incremental-method-integrity.test.ts',
+  'test/integration/go-incremental-method-owners.test.ts',
+  'test/integration/query-symbol-integrity.test.ts',
+  'test/integration/mcp-index-generation.test.ts',
+  // A real refresh worker must preserve active readers or report native contention.
+  'test/integration/mcp-refresh-index-e2e.test.ts',
+  'test/integration/fts-repair-warm-session.test.ts',
+  'test/unit/lbug-pool-pinning.test.ts',
+  'test/unit/hybrid-search.test.ts',
   'test/integration/lbug-readonly-init.test.ts',
   'test/integration/lbug-non-ascii-path.test.ts',
   // Cross-repo trace e2e: builds two real lbug indexes + a real bridge and
@@ -146,12 +233,17 @@ const LBUG_NATIVE = [
   'test/integration/group/cross-trace-e2e.test.ts',
   'test/integration/group/graphql-resolve-symbol.test.ts',
   'test/integration/local-backend.test.ts',
+  'test/integration/bm25-symbol-hydration.test.ts',
   'test/integration/local-backend-calltool.test.ts',
   'test/integration/search-core.test.ts',
   'test/integration/search-pool.test.ts',
   'test/integration/fts-description-search.test.ts',
   'test/integration/staleness-and-stability.test.ts',
   'test/integration/analyze-wal-checkpoint-failure.test.ts',
+  // Publication, cold readers and sidecar handling depend on native filesystem behavior.
+  'test/integration/analyze-atomic-swap.test.ts',
+  'test/unit/incremental-write-integrity.test.ts',
+  'test/unit/lbug-publication.test.ts',
   'test/integration/fts-stemmer-sweep.test.ts',
   'test/integration/lbug-multiwriter-deadlock.test.ts',
   // #2409 batched incremental writeback: chunked IN-list DETACH DELETEs +
@@ -176,9 +268,8 @@ const LBUG_NATIVE = [
   // (the same reason fts-extension-e2e.test.ts is registered below), so the
   // FTS-unavailable branch has to run on a real Windows/macOS runner rather
   // than only on Ubuntu where FTS always loads. And its both-blocked case is
-  // gated on GITNEXUS_REQUIRE_VECTOR=1, which ci-tests.yml sets ONLY on this
-  // job — everywhere else an unavailable VECTOR extension skips instead of
-  // failing. Budget: four real analyze runs, so expect it to sit alongside the
+  // gated on GITNEXUS_REQUIRE_VECTOR=1, which ci-tests.yml requires in both
+  // coverage and platform jobs so an unavailable VECTOR fails loudly. Budget: four real analyze runs, so expect it to sit alongside the
   // VECTOR sibling's ~87s Windows measurement.
   'test/unit/incremental-index-extension-dml-gate.test.ts',
 ];
@@ -187,6 +278,10 @@ const LBUG_NATIVE = [
 // process spawning, which behaves differently across platforms (shell
 // quoting, path resolution, signal handling)
 const SPAWN_CLI = [
+  'test/integration/resolvers/java-javac-overloads.test.ts',
+  // Real shard/blob/JSON roundtrip: path identities and child invocation vary by OS.
+  'test/unit/shard-timings-roundtrip.test.ts',
+  'test/unit/run-cross-platform.test.ts',
   'test/integration/cli-e2e.test.ts',
   'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',
@@ -195,6 +290,7 @@ const SPAWN_CLI = [
   // FTS extension lifecycle — the #2374 bug was Windows-reported, so this must
   // run on the Windows/macOS matrix, not just the Ubuntu full suite.
   'test/integration/fts-extension-e2e.test.ts',
+  'test/integration/fts-vendored-root-seam.test.ts',
   'test/integration/server-http-startup.test.ts',
   'test/integration/mcp/server-startup.test.ts',
   'test/integration/analyze-heap-oom-e2e.test.ts',
@@ -240,9 +336,8 @@ const SPAWN_CLI = [
   // earlier attempt to register them still turned the matrix red — not from
   // their own cost, but because vitest sharded by file COUNT, so inserting any
   // file re-partitioned the list and happened to cluster `cli-e2e` (621 s) with
-  // `cli-limit-e2e` (75 s) on one shard. The split is weight-aware now
-  // (`scripts/cross-platform-shard.ts`), so a cheap file can no longer move a
-  // heavy one.
+  // `cli-limit-e2e` (75 s) on one shard. PerfSequencer now uses recorded timings
+  // through vitest-shard-balancer, shared by all shards in each workflow run.
   //
   // #2802: MCP startup must not eagerly load the analyze-only language
   // provider registry or the group contract extractors.
@@ -259,13 +354,28 @@ const SPAWN_CLI = [
 // Worker threads tests — exercise real worker_threads which have
 // platform-specific behavior (thread spawning, IPC, exit handling)
 const WORKER_THREADS = [
+  // Native callback parsing and exact caller/summary ownership (#3489).
+  'test/integration/cfg/interproc-taint.test.ts',
+  'test/integration/function-local-identity.test.ts',
+  'test/integration/java-imported-return-types.test.ts',
+  'test/integration/resolvers/java-overload-jls.test.ts',
+  'test/unit/community-processor.test.ts',
   'test/integration/worker-pool.test.ts',
+  'test/integration/class-expression-owners.test.ts',
   'test/integration/parse-impl-quarantine-cache-skip.test.ts',
+  // Real parse workers and both on-disk parse stores must retain lexical
+  // local-import ownership on each platform's native grammar/runtime pair.
+  'test/integration/local-import-worker-parity.test.ts',
+  'test/integration/resolvers/local-import-persistence.test.ts',
+  // The same worker and store path for fetch-wrapper facts and their resolution.
+  'test/integration/resolvers/fetch-wrapper-persistence.test.ts',
 ];
 
-// Tree-sitter native addon smoke tests — verify that native grammars
-// load correctly on each platform (binary compatibility, .node loading)
+// Native addon smoke tests — verify binary compatibility and recovery on each OS.
 const NATIVE_ADDON_SMOKE = [
+  // bunx skips the native install copy; recover it before recording identity.
+  'test/unit/lbug-native-check.test.ts',
+  'test/unit/lazy-action.test.ts',
   'test/integration/tree-sitter-languages.test.ts',
   'test/integration/parsing.test.ts',
   'test/integration/pipeline.test.ts',
@@ -277,8 +387,26 @@ const NATIVE_ADDON_SMOKE = [
 // Filesystem behavior tests — exercise operations that vary across
 // platforms (CRLF, symlinks, permissions, temp dirs)
 const FILESYSTEM = [
+  // The deletion-guard cases in this file require real Windows path semantics.
+  'test/unit/canonicalize-path-long-path-prefix.test.ts',
+  'test/unit/storage-resolver.test.ts',
+  // Dart package metadata is captured during the shared scan on every platform.
+  'test/unit/dart-package-imports.test.ts',
+  // Verify the same capture is reused by native parsing and scope resolution.
+  'test/integration/resolvers/dart.test.ts',
+  // Cargo membership uses path normalization, descriptor validation, symlinks,
+  // and Rust native parsing (including long Windows source strings).
+  'test/unit/scope-resolution/rust-cargo-targets.test.ts',
+  // The durable ParsedFile store's prune tolerates a chunk directory it cannot
+  // delete (#3204). The failures that motivate it — held handles, read-only
+  // mounts — are Windows- and macOS-flavored, and the permission-based case
+  // skips itself where chmod cannot block a delete, so run it everywhere.
+  'test/unit/parsedfile-store.test.ts',
   'test/integration/filesystem-walker.test.ts',
+  'test/integration/analyze-directory-symlinks.test.ts',
   'test/integration/watch-filesystem.test.ts',
+  'test/unit/watch-external-config.test.ts',
+  'test/integration/server-route-hook-config.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
   'test/integration/ignore-and-skip-e2e.test.ts',
   // Pins that the bridge pairing verdict is measured before the database is
@@ -303,6 +431,12 @@ const FILESYSTEM = [
   // 4893-file pass — 2.3 s on a slow virtualised filesystem, 0.34 s on a local
   // disk — against a 30 s testTimeout.
   'test/unit/source-control-bytes.test.ts',
+  // Auto-sync reads a cloned `.gitnexusrc` through the symlink/hard-link guard,
+  // and clone recovery uses real `git` plus temp dirs. Ubuntu coverage alone
+  // would never create the Windows file symlink (`type: 'file'`) or run the
+  // git-config failure path on windows-latest / macos-latest.
+  'test/unit/gitnexus-rc-embeddings.test.ts',
+  'test/unit/git-clone.test.ts',
 ];
 
 const ALL_CROSS_PLATFORM = [

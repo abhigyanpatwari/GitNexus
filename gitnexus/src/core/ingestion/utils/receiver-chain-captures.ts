@@ -1,9 +1,9 @@
 /**
- * Synthesize `@reference.receiver-chain` for a call match whose receiver is
+ * Synthesize `@reference.receiver-chain` for a reference match whose receiver is
  * itself an expression.
  *
  * Shared across every language emitter, and deliberately language-free (AGENTS.md
- * R6): the call gate reads the `@reference.call.*` tag vocabulary, which is
+ * R6): the gate reads the `@reference.call.*`, read and write tag vocabulary, which is
  * shared by every language's `.scm` query, rather than a per-language tag list.
  *
  * Lives in the emitter layer rather than the query because a `.scm` pattern
@@ -22,22 +22,28 @@ import { encodeReceiverChain } from './receiver-chain-codec.js';
  *  excluded by the trailing dot — it marks a callable VALUE, not a call site. */
 const CALL_TAG_PREFIX = '@reference.call.';
 
-/** Does this match represent a call? */
-function isCallMatch(grouped: Record<string, Capture>): boolean {
+/** Does this reference kind support compound receiver resolution? */
+function isReceiverMatch(grouped: Record<string, Capture>): boolean {
   for (const tag of Object.keys(grouped)) {
-    if (tag.startsWith(CALL_TAG_PREFIX)) return true;
+    if (
+      tag.startsWith(CALL_TAG_PREFIX) ||
+      tag === '@reference.read' ||
+      tag.startsWith('@reference.read.') ||
+      tag === '@reference.write' ||
+      tag.startsWith('@reference.write.')
+    )
+      return true;
   }
   return false;
 }
 
 /**
- * Add `@reference.receiver-chain` to `grouped` when the match is a call whose
- * receiver decodes to a chain over a nameable base. Mutates `grouped` in place
+ * Add `@reference.receiver-chain` to `grouped` when its receiver decodes to a
+ * chain over a nameable base. Mutates `grouped` in place
  * and returns nothing — mirroring how the other synthesized captures are added.
  *
- * Gated on the call tags: without that gate this fires on read, write and JSX
- * receivers too, which pay the AST walk and the persisted bytes for a field no
- * call-site resolver reads.
+ * Calls and field reads/writes share the compound-receiver resolver. Exclude
+ * other capture kinds whose consumers do not interpret a receiver chain.
  *
  * A chain is minted ONLY when the walk reached a nameable base.
  * `extractMixedChain` reports `baseReceiverName: undefined` whenever it stopped
@@ -52,7 +58,7 @@ export function synthesizeReceiverChainCapture(
 ): void {
   if (receiverNode === undefined || receiverNode === null) return;
   if (grouped['@reference.receiver-chain'] !== undefined) return;
-  if (!isCallMatch(grouped)) return;
+  if (!isReceiverMatch(grouped)) return;
 
   const extracted = extractMixedChain(receiverNode);
   if (extracted === undefined || extracted.baseReceiverName === undefined) return;

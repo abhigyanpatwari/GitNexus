@@ -116,7 +116,7 @@ describe('ControlFlowContext', () => {
 
   it('labeled break/continue resolve to the labeled loop, not the nearest', () => {
     const ctx = new ControlFlowContext();
-    ctx.pushLoop(/*outer*/ 100, 200, 'outer');
+    ctx.pushLoop(/*outer*/ 100, 200, ['outer']);
     ctx.pushLoop(/*inner*/ 110, 210);
     expect(ctx.breakTarget('outer')).toBe(200);
     expect(ctx.continueTarget('outer')).toBe(100);

@@ -1,0 +1,102 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A1000001 /* AppMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001 /* AppMain.swift */; };
+		A1000002 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000002 /* Config.swift */; };
+		A1000003 /* WidgetMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000003 /* WidgetMain.swift */; };
+		A1000004 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000004 /* Config.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A2000001 /* AppMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppMain.swift; sourceTree = "<group>"; };
+		A2000002 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
+		A2000003 /* WidgetMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetMain.swift; sourceTree = "<group>"; };
+		A2000004 /* Config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Config.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		A3000000 = {
+			isa = PBXGroup;
+			children = (
+				A3000001 /* App */,
+				A3000002 /* Widget */,
+			);
+			sourceTree = "<group>";
+		};
+		A3000001 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				A2000001 /* AppMain.swift */,
+				A2000002 /* Config.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		A3000002 /* Widget */ = {
+			isa = PBXGroup;
+			children = (
+				A2000003 /* WidgetMain.swift */,
+				A2000004 /* Config.swift */,
+			);
+			path = Widget;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A4000001 /* App */ = {
+			isa = PBXNativeTarget;
+			buildPhases = (
+				A5000001 /* Sources */,
+			);
+			name = App;
+			productType = "com.apple.product-type.application";
+		};
+		A4000002 /* Widget */ = {
+			isa = PBXNativeTarget;
+			buildPhases = (
+				A5000002 /* Sources */,
+			);
+			name = Widget;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A6000000 /* Project object */ = {
+			isa = PBXProject;
+			mainGroup = A3000000;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A4000001 /* App */,
+				A4000002 /* Widget */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A5000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+				A1000001 /* AppMain.swift in Sources */,
+				A1000002 /* Config.swift in Sources */,
+			);
+		};
+		A5000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+				A1000003 /* WidgetMain.swift in Sources */,
+				A1000004 /* Config.swift in Sources */,
+			);
+		};
+/* End PBXSourcesBuildPhase section */
+	};
+	rootObject = A6000000 /* Project object */;
+}

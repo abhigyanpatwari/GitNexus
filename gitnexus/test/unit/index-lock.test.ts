@@ -17,6 +17,7 @@ import {
   existsSync,
   chmodSync,
   symlinkSync,
+  mkdirSync,
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -178,6 +179,109 @@ describe('release', () => {
 });
 
 describe('sweepStagingArtifacts', () => {
+  const recoveryStage = 'lbug.staging.6e34c761-bf58-46cc-8b54-78d11607bc46';
+  const seedRecovery = (stagingFile = recoveryStage): void => {
+    writeFileSync(
+      path.join(dir, 'gitnexus.json'),
+      JSON.stringify({
+        embeddingCheckpoint: {
+          kind: 'interrupted',
+          at: '2026-10-03T12:00:00.000Z',
+          nodesProcessed: 1,
+          totalNodes: 2,
+          chunksProcessed: 1,
+          model: 'test-model',
+          dimensions: 2,
+          provider: 'local',
+          pendingNodeIds: ['node-2'],
+          recovery: {
+            stagingFile,
+            schemaFingerprint: 'schema-v1',
+            unsafeNodeIds: ['node-2'],
+          },
+        },
+      }),
+    );
+  };
+
+  it('retains the checkpoint-referenced family while reclaiming unrelated orphans', () => {
+    const family = [
+      '',
+      '.wal',
+      '.shadow',
+      '.wal.checkpoint',
+      '.lock',
+      '.checkpoint.intent.lock',
+      '.checkpoint.apply.lock',
+    ].map((suffix) => recoveryStage + suffix);
+    for (const name of [...family, `${recoveryStage}.unexpected`, 'lbug.staging.orphan']) {
+      writeFileSync(path.join(dir, name), 'x');
+    }
+    seedRecovery();
+
+    sweepStagingArtifacts(dir);
+
+    for (const name of family) expect(existsSync(path.join(dir, name))).toBe(true);
+    expect(existsSync(path.join(dir, `${recoveryStage}.unexpected`))).toBe(false);
+    expect(existsSync(path.join(dir, 'lbug.staging.orphan'))).toBe(false);
+  });
+
+  it('preserves a referenced generation when a shared caller acquires the lock', async () => {
+    writeFileSync(path.join(dir, recoveryStage), 'x');
+    seedRecovery();
+    const lock = await acquireIndexLock(dir);
+    try {
+      expect(existsSync(path.join(dir, recoveryStage))).toBe(true);
+    } finally {
+      lock.release();
+    }
+  });
+
+  it('retains only the referenced family in a branch sub-slot', async () => {
+    const branchDir = path.join(dir, 'branches', 'feature');
+    mkdirSync(branchDir, { recursive: true });
+    seedRecovery();
+    const metadata = JSON.parse(readFileSync(path.join(dir, 'gitnexus.json'), 'utf8'));
+    writeFileSync(
+      path.join(branchDir, 'gitnexus.json'),
+      JSON.stringify({ ...metadata, storagePath: dir }),
+    );
+    writeFileSync(path.join(branchDir, recoveryStage), 'stage');
+    writeFileSync(path.join(branchDir, 'lbug.staging.orphan'), 'orphan');
+    writeFileSync(path.join(dir, 'lbug.staging.orphan'), 'other-slot');
+
+    const lock = await acquireIndexLock(branchDir);
+    try {
+      expect(existsSync(path.join(branchDir, recoveryStage))).toBe(true);
+      expect(existsSync(path.join(branchDir, 'lbug.staging.orphan'))).toBe(false);
+      expect(existsSync(path.join(dir, 'lbug.staging.orphan'))).toBe(true);
+    } finally {
+      lock.release();
+    }
+  });
+
+  it('rejects a symlinked reference and never follows it while reclaiming the stage', () => {
+    const external = path.join(dir, 'foreign-database');
+    writeFileSync(external, 'external');
+    symlinkSync(external, path.join(dir, recoveryStage));
+    seedRecovery();
+
+    sweepStagingArtifacts(dir);
+
+    expect(existsSync(path.join(dir, recoveryStage))).toBe(false);
+    expect(readFileSync(external, 'utf8')).toBe('external');
+  });
+
+  it('does not sweep any generation when acquisition explicitly defers cleanup', async () => {
+    writeFileSync(path.join(dir, 'lbug.staging.orphan'), 'x');
+    const lock = await acquireIndexLock(dir, { sweep: false });
+    try {
+      expect(existsSync(path.join(dir, 'lbug.staging.orphan'))).toBe(true);
+    } finally {
+      lock.release();
+    }
+  });
+
   it('removes only staging files, never the live index or its sidecars', () => {
     const files = [
       'lbug',

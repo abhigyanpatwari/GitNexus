@@ -55,11 +55,13 @@ const copyColumns = (copyQuery: string): string[] => {
 // ── 1. CSV header / row builder (pure) ────────────────────────────────────────
 
 describe('BasicBlock calleeIds — CSV header + row builder', () => {
-  it('header lists calleeIds LAST, after callees', () => {
-    expect(BASICBLOCK_CSV_HEADER).toBe('id,filePath,startLine,endLine,text,callees,calleeIds');
+  it('header keeps call identities and explicit owner in distinct columns', () => {
+    expect(BASICBLOCK_CSV_HEADER).toBe(
+      'id,filePath,startLine,endLine,text,callees,calleeIds,ownerId',
+    );
     const cols = BASICBLOCK_CSV_HEADER.split(',');
-    expect(cols[cols.length - 1]).toBe('calleeIds');
-    expect(cols[cols.length - 2]).toBe('callees');
+    expect(cols[cols.length - 1]).toBe('ownerId');
+    expect(cols[cols.length - 2]).toBe('calleeIds');
   });
 
   it('round-trip: calleeIds lands in the column the header names for it', () => {
@@ -74,7 +76,7 @@ describe('BasicBlock calleeIds — CSV header + row builder', () => {
     expect(rowCells).toHaveLength(headerCols.length);
     const calleeIdsIdx = headerCols.indexOf('calleeIds');
     const calleesIdx = headerCols.indexOf('callees');
-    // escapeCSVField always wraps the cell in double quotes; the space-joined
+    // Non-empty string fields are quoted; the space-joined
     // id list contains no comma, so the cell is a single CSV column.
     expect(rowCells[calleeIdsIdx]).toBe('"id1 id2"');
     expect(rowCells[calleesIdx]).toBe('"foo bar"');
@@ -85,7 +87,8 @@ describe('BasicBlock calleeIds — CSV header + row builder', () => {
     const headerCols = BASICBLOCK_CSV_HEADER.split(',');
     const rowCells = buildBasicBlockRow(node).split(',');
     const calleeIdsIdx = headerCols.indexOf('calleeIds');
-    expect(rowCells[calleeIdsIdx]).toBe('""');
+    // An absent string must stay unquoted so native COPY loads SQL NULL.
+    expect(rowCells[calleeIdsIdx]).toBe('');
     expect(rowCells[calleeIdsIdx]).not.toContain('undefined');
   });
 });
@@ -100,10 +103,10 @@ describe('BasicBlock calleeIds — header/COPY/row column parity', () => {
       basicBlock('BasicBlock:src/a.ts:0', { callees: 'foo', calleeIds: 'id1' }),
     ).split(',');
 
-    // Exact counts (the drift guard): 7 columns through and through.
-    expect(headerCols).toHaveLength(7);
-    expect(copyCols).toHaveLength(7);
-    expect(rowCells).toHaveLength(7);
+    // Exact counts protect every positional COPY writer.
+    expect(headerCols).toHaveLength(8);
+    expect(copyCols).toHaveLength(8);
+    expect(rowCells).toHaveLength(8);
     expect(copyCols).toHaveLength(headerCols.length);
     expect(rowCells).toHaveLength(headerCols.length);
   });
@@ -112,7 +115,7 @@ describe('BasicBlock calleeIds — header/COPY/row column parity', () => {
     const headerCols = BASICBLOCK_CSV_HEADER.split(',');
     const copyCols = copyColumns(getCopyQuery('BasicBlock', '/tmp/bb.csv'));
     expect(copyCols).toEqual(headerCols);
-    expect(copyCols[copyCols.length - 1]).toBe('calleeIds');
+    expect(copyCols[copyCols.length - 1]).toBe('ownerId');
   });
 });
 
@@ -177,6 +180,9 @@ const makeConfigMock = () => {
     resolveNativeSafeStorageDir: (p: string) => p,
     WAL_RECOVERY_SUGGESTION: 'run analyze --force',
     waitForWindowsHandleRelease: vi.fn(async () => true),
+    isStorageVersionMismatchError: vi.fn(() => false),
+    throwIfStorageVersionMismatch: vi.fn(),
+    STORAGE_VERSION_MISMATCH_SUGGESTION: '',
   };
   return { mock, queries };
 };
@@ -204,6 +210,7 @@ describe('BasicBlock calleeIds — CREATE / MERGE query strings', () => {
         text: 'foo();',
         callees: 'foo',
         calleeIds: 'id1 id2',
+        ownerId: 'Module:src/a.ts:program',
       },
       '/tmp/gitnexus-bb-create/lbug',
     );
@@ -213,7 +220,8 @@ describe('BasicBlock calleeIds — CREATE / MERGE query strings', () => {
     expect(createQuery).toBeDefined();
     expect(createQuery).toContain("calleeIds: 'id1 id2'");
     expect(createQuery).toContain("callees: 'foo'");
-    // calleeIds is the LAST assignment in the tuple (mirrors the column order).
+    expect(createQuery).toContain("ownerId: 'Module:src/a.ts:program'");
+    // Call identities follow callees in the persisted column order.
     expect(createQuery?.indexOf('calleeIds:')).toBeGreaterThan(
       createQuery?.indexOf('callees:') ?? -1,
     );
@@ -240,6 +248,7 @@ describe('BasicBlock calleeIds — CREATE / MERGE query strings', () => {
 
     const createQuery = queries.find((q) => q.startsWith('CREATE (n:BasicBlock'));
     expect(createQuery).toContain("calleeIds: ''");
+    expect(createQuery).toContain("ownerId: ''");
     expect(createQuery).not.toContain('calleeIds: undefined');
   });
 
@@ -261,6 +270,7 @@ describe('BasicBlock calleeIds — CREATE / MERGE query strings', () => {
             text: 'foo();',
             callees: 'foo',
             calleeIds: 'id1 id2',
+            ownerId: 'Module:src/a.ts:program',
           },
         },
       ],
@@ -273,6 +283,7 @@ describe('BasicBlock calleeIds — CREATE / MERGE query strings', () => {
     expect(mergeQuery).toContain('n.calleeIds');
     expect(mergeQuery).toContain("n.calleeIds = 'id1 id2'");
     expect(mergeQuery).toContain("n.callees = 'foo'");
+    expect(mergeQuery).toContain("n.ownerId = 'Module:src/a.ts:program'");
     expect(mergeQuery?.indexOf('n.calleeIds')).toBeGreaterThan(
       mergeQuery?.indexOf('n.callees') ?? -1,
     );
@@ -303,6 +314,7 @@ describe('BasicBlock calleeIds — CREATE / MERGE query strings', () => {
 
     const mergeQuery = queries.find((q) => q.startsWith('MERGE (n:BasicBlock'));
     expect(mergeQuery).toContain("n.calleeIds = ''");
+    expect(mergeQuery).toContain("n.ownerId = ''");
     expect(mergeQuery).not.toContain('n.calleeIds = undefined');
   });
 });

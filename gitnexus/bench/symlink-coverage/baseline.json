@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "commit": "22a7608b7c5ff77302357c0f90c8d31294801b25",
+  "sizes": [512, 2048],
+  "linear_scaling_budget": 2,
+  "regression_budget": 1.5,
+  "results": [
+    {
+      "files": 512,
+      "directory_links": 16,
+      "returned": 529,
+      "median_ms": 21.164807999999994,
+      "samples_ms": [
+        20.16993500000001, 20.967993999999976, 21.164807999999994, 26.733215, 27.161917000000017
+      ]
+    },
+    {
+      "files": 2048,
+      "directory_links": 64,
+      "returned": 2113,
+      "median_ms": 64.14672399999995,
+      "samples_ms": [
+        58.77664099999993, 61.56197999999995, 64.14672399999995, 64.34605900000008,
+        82.21288199999992
+      ]
+    }
+  ],
+  "environment": {
+    "node": "v24.19.0",
+    "platform": "linux",
+    "arch": "x64",
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K"
+  },
+  "measuredAt": "2026-10-17"
+}

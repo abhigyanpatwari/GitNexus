@@ -5,9 +5,12 @@
  * instance, verifying cypher, context, impact, and query tools work
  * end-to-end against seeded graph data with FTS indexes.
  */
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import fs from 'fs/promises';
+import path from 'path';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
-import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
+import { renameSymbol } from '../../src/mcp/local/rename/rename-plan.js';
+import { listRegisteredRepos, saveMeta } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import {
   LOCAL_BACKEND_SEED_DATA,
@@ -25,6 +28,13 @@ vi.mock('../../src/storage/repo-manager.js', async (importActual) => ({
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
   findSiblingClones: vi.fn().mockResolvedValue([]),
 }));
+
+// Pass-through spy: rename still plans for real, the test just reads the inventory
+// LocalBackend.rename hands to the planner.
+vi.mock('../../src/mcp/local/rename/rename-plan.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../src/mcp/local/rename/rename-plan.js')>();
+  return { ...actual, renameSymbol: vi.fn(actual.renameSymbol) };
+});
 
 // ─── Block 2: callTool dispatch tests ────────────────────────────────
 
@@ -206,6 +216,110 @@ withTestLbugDB(
         // leaked some other node's community onto it. It must have none.
         expect(validate.module).toBeUndefined();
         expect(validate.content).toBe('function validate() {}');
+        // validate is a step in two processes, so it has two process_symbols
+        // rows; content is emitted once per symbol id — only the first row
+        // carries it, the sibling row omits the key entirely.
+        const validateRows = (validateRes.process_symbols ?? []).filter(
+          (s: { id: string }) => s.id === 'func:validate',
+        );
+        expect(validateRows).toHaveLength(2);
+        const withContent = validateRows.filter(
+          (s: { content?: string }) => s.content === 'function validate() {}',
+        );
+        expect(withContent).toHaveLength(1);
+        const withoutContent = validateRows.filter((s: object) => !('content' in s));
+        expect(withoutContent).toHaveLength(1);
+      });
+
+      it('reports content capability for the default full profile', async () => {
+        const query = await backend.callTool('query', { query: 'login', include_content: true });
+        const context = await backend.callTool('context', { name: 'login', include_content: true });
+
+        expect(query.contentAvailability).toEqual({
+          requested: true,
+          profile: 'full',
+          available: true,
+          scope: 'full',
+        });
+        expect(context.contentAvailability).toEqual(query.contentAvailability);
+        expect(context.symbol.content).toBe('function login() {}');
+      });
+
+      it('does not disclose lingering source text when metadata says retention is none', async () => {
+        const storagePath = handle.tmpHandle.dbPath;
+        await saveMeta(storagePath, {
+          repoPath: '/test/repo',
+          storagePath,
+          lastCommit: 'abc123',
+          indexedAt: new Date().toISOString(),
+          contentRetention: 'none',
+          contentRetentionSchemaVersion: 1,
+          ftsProfile: 'name-only',
+        });
+        try {
+          const query = await backend.callTool('query', { query: 'login', include_content: true });
+          const context = await backend.callTool('context', {
+            name: 'login',
+            include_content: true,
+          });
+          const login = (query.process_symbols ?? []).find(
+            (symbol: any) => symbol.id === 'func:login',
+          );
+
+          expect(query.contentAvailability).toEqual({
+            requested: true,
+            profile: 'none',
+            available: false,
+            scope: 'none',
+            reason: 'Source-derived content is not retained by this index.',
+          });
+          expect(login?.content).toBeUndefined();
+          expect(context.contentAvailability).toEqual(query.contentAvailability);
+          expect(context.symbol.content).toBeUndefined();
+        } finally {
+          await Promise.all([
+            fs.rm(`${storagePath}/gitnexus.json`, { force: true }),
+            fs.rm(`${storagePath}/meta.json`, { force: true }),
+          ]);
+        }
+      });
+
+      it('does not disclose lingering source text when retention metadata is invalid', async () => {
+        const storagePath = handle.tmpHandle.dbPath;
+        await saveMeta(storagePath, {
+          repoPath: '/test/repo',
+          storagePath,
+          lastCommit: 'abc123',
+          indexedAt: new Date().toISOString(),
+          contentRetention: 'invalid' as never,
+          contentRetentionSchemaVersion: 1,
+          ftsProfile: 'name-only',
+        });
+        try {
+          const query = await backend.callTool('query', { query: 'login', include_content: true });
+          const context = await backend.callTool('context', {
+            name: 'login',
+            include_content: true,
+          });
+          const login = (query.process_symbols ?? []).find(
+            (symbol: any) => symbol.id === 'func:login',
+          );
+
+          expect(query.contentAvailability).toMatchObject({
+            requested: true,
+            profile: 'none',
+            available: false,
+            scope: 'none',
+          });
+          expect(login?.content).toBeUndefined();
+          expect(context.contentAvailability).toEqual(query.contentAvailability);
+          expect(context.symbol.content).toBeUndefined();
+        } finally {
+          await Promise.all([
+            fs.rm(`${storagePath}/gitnexus.json`, { force: true }),
+            fs.rm(`${storagePath}/meta.json`, { force: true }),
+          ]);
+        }
       });
 
       // PR #222 port: a symbol in MULTIPLE processes is what fully exercises the
@@ -224,12 +338,23 @@ withTestLbugDB(
         expect(processIds).toContain('proc:login-flow');
         expect(processIds).toContain('proc:beta-flow');
 
-        // process_symbols dedups by id, so validate appears once carrying the
-        // pid+step of its top-ranked process — they must come from the SAME
-        // shifted row: login-flow⇒step 2, beta-flow⇒step 3.
-        const v = (res.process_symbols ?? []).find((s: any) => s.id === 'func:validate');
-        expect(v).toBeDefined();
-        expect(v.step_index).toBe(v.process_id === 'proc:beta-flow' ? 3 : 2);
+        // process_symbols keeps one row per (id, process_id): validate is a
+        // step in both flows and must appear under each, with that row's
+        // shifted pid↔step pairing (login-flow⇒step 2, beta-flow⇒step 3).
+        const validates = (res.process_symbols ?? []).filter((s: any) => s.id === 'func:validate');
+        expect(validates).toHaveLength(2);
+        const byProcess = Object.fromEntries(validates.map((s: any) => [s.process_id, s]));
+        expect(byProcess['proc:login-flow']?.step_index).toBe(2);
+        expect(byProcess['proc:beta-flow']?.step_index).toBe(3);
+        expect(byProcess['proc:login-flow']?.is_entry_point).toBeUndefined();
+        expect(byProcess['proc:beta-flow']?.is_entry_point).toBeUndefined();
+        for (const procId of ['proc:login-flow', 'proc:beta-flow'] as const) {
+          const card = (res.processes ?? []).find((p: any) => p.id === procId);
+          const attachCount = (res.process_symbols ?? []).filter(
+            (s: any) => s.process_id === procId,
+          ).length;
+          expect(card?.symbol_count).toBe(attachCount);
+        }
 
         // Ranking: 'login' surfaces proc:login-flow as the top process.
         const loginRes = await backend.callTool('query', { query: 'login' });
@@ -240,7 +365,9 @@ withTestLbugDB(
         const result = await backend.callTool('tool_map', {});
         expect(result).not.toHaveProperty('error');
 
-        const tools = new Map(result.tools.map((tool: any) => [tool.name, tool]));
+        const toolEntries: Array<{ name: string; description: string; flows: string[] }> =
+          result.tools;
+        const tools = new Map(toolEntries.map((tool) => [tool.name, tool]));
         expect(tools.get('alpha')?.description).toBe('Calls chain A.');
         expect(tools.get('beta')?.description).toBe('Calls chain B.');
         expect(tools.get('alpha')?.flows).toEqual(['AlphaFlow']);
@@ -837,6 +964,198 @@ withTestLbugDB(
       const backend = new LocalBackend();
       await backend.init();
       (handle as any)._backend = backend;
+    },
+  },
+);
+
+const PYTHON_METHOD_ID = 'Method:tests/test_supervisor.py:Supervisor.run';
+const PYTHON_CALLER_ID = 'Function:tests/test_supervisor.py:test_run';
+const SWIFT_METHOD_ID = 'Method:Sources/Supervisor.swift:Supervisor.run';
+const SWIFT_CALLER_ID = 'Constructor:Sources/Supervisor.swift:Supervisor.init';
+
+withTestLbugDB(
+  'symbol-identity-isolation-3424',
+  (handle) => {
+    describe('mixed Python/Swift symbol identity isolation (#3424)', () => {
+      let backend: LocalBackend;
+
+      beforeAll(() => {
+        backend = (handle as typeof handle & { _backend: LocalBackend })._backend;
+      });
+
+      it.each(['name and file', 'UID'])('keeps Python context isolated by %s', async (lookup) => {
+        const params =
+          lookup === 'UID'
+            ? { uid: PYTHON_METHOD_ID }
+            : { name: 'run', file_path: 'tests/test_supervisor.py' };
+        const result = await backend.callTool('context', params);
+        expect(result).not.toHaveProperty('error');
+        expect(result.symbol.uid).toBe(PYTHON_METHOD_ID);
+        expect(result.incoming.calls.map((caller: { uid: string }) => caller.uid)).toEqual([
+          PYTHON_CALLER_ID,
+        ]);
+      });
+
+      it.each(['name and file', 'UID'])('keeps Python impact isolated by %s', async (lookup) => {
+        const params =
+          lookup === 'UID'
+            ? { target_uid: PYTHON_METHOD_ID }
+            : { target: 'run', file_path: 'tests/test_supervisor.py' };
+        const result = await backend.callTool('impact', {
+          ...params,
+          direction: 'upstream',
+          includeTests: true,
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.target.id).toBe(PYTHON_METHOD_ID);
+        expect(result.impactedCount).toBe(1);
+        expect(result.byDepth[1].map((caller: { id: string }) => caller.id)).toEqual([
+          PYTHON_CALLER_ID,
+        ]);
+      });
+
+      it('keeps the unrelated Swift constructor queryable', async () => {
+        const context = await backend.callTool('context', { uid: SWIFT_METHOD_ID });
+        expect(context).not.toHaveProperty('error');
+        expect(context.symbol.uid).toBe(SWIFT_METHOD_ID);
+        expect(context.incoming.calls.map((caller: { uid: string }) => caller.uid)).toEqual([
+          SWIFT_CALLER_ID,
+        ]);
+        const impact = await backend.callTool('impact', {
+          target_uid: SWIFT_METHOD_ID,
+          direction: 'upstream',
+          includeTests: true,
+        });
+        expect(impact).not.toHaveProperty('error');
+        expect(impact.target.id).toBe(SWIFT_METHOD_ID);
+        expect(impact.impactedCount).toBe(1);
+        expect(impact.byDepth[1].map((caller: { id: string }) => caller.id)).toEqual([
+          SWIFT_CALLER_ID,
+        ]);
+      });
+    });
+  },
+  {
+    seed: [
+      `CREATE (:Method {id: '${PYTHON_METHOD_ID}', name: 'run', filePath: 'tests/test_supervisor.py', startLine: 3, endLine: 5})`,
+      `CREATE (:Function {id: '${PYTHON_CALLER_ID}', name: 'test_run', filePath: 'tests/test_supervisor.py', startLine: 7, endLine: 9})`,
+      `CREATE (:Method {id: '${SWIFT_METHOD_ID}', name: 'run', filePath: 'Sources/Supervisor.swift', startLine: 3, endLine: 5})`,
+      `CREATE (:Constructor {id: '${SWIFT_CALLER_ID}', name: 'init', filePath: 'Sources/Supervisor.swift', startLine: 7, endLine: 9})`,
+      `MATCH (a:Function), (b:Method) WHERE a.id = '${PYTHON_CALLER_ID}' AND b.id = '${PYTHON_METHOD_ID}' CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, reason: 'direct', step: 0}]->(b)`,
+      `MATCH (a:Constructor), (b:Method) WHERE a.id = '${SWIFT_CALLER_ID}' AND b.id = '${SWIFT_METHOD_ID}' CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, reason: 'direct', step: 0}]->(b)`,
+    ],
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'mixed-language-repo',
+          path: '/mixed-language/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
+          stats: { files: 2, nodes: 4, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as typeof handle & { _backend: LocalBackend })._backend = backend;
+    },
+  },
+);
+
+// ─── rename node inventory on a --pdg index (PR #3557 review) ─────────────
+// A --pdg index stores one BasicBlock row per CFG block, and BasicBlock has a
+// filePath column, so an unlabelled `MATCH (n) WHERE n.filePath ...` inventory
+// would hand every block to the planner, which adds each one to every fresh
+// scope-resolution graph. The real database must answer the label predicate:
+// the BasicBlock rows are dropped while File and declaration rows still arrive.
+const INVENTORY_FILE = 'target.ts';
+const INVENTORY_FILE_ID = `File:${INVENTORY_FILE}`;
+const INVENTORY_FUNCTION_ID = `Function:${INVENTORY_FILE}:target`;
+const INVENTORY_BLOCK_IDS = [
+  `BasicBlock:${INVENTORY_FILE}:0:0`,
+  `BasicBlock:${INVENTORY_FILE}:0:1`,
+];
+const INVENTORY_SOURCE = 'function target() {}\ntarget();\n';
+const INVENTORY_PROBE =
+  "MATCH (n) WHERE n.filePath IS NOT NULL AND n.filePath <> '' RETURN n.id AS id ORDER BY n.id";
+
+withTestLbugDB(
+  'rename-node-inventory-pdg',
+  (handle) => {
+    describe('rename node inventory with persisted BasicBlock rows', () => {
+      let backend: LocalBackend;
+
+      beforeAll(async () => {
+        const ext = handle as typeof handle & { _backend?: LocalBackend };
+        if (!ext._backend) throw new Error('LocalBackend not initialized in afterSetup');
+        backend = ext._backend;
+        // The planner lazily imports every language provider on first use (~30s
+        // cold); pay that under the hook timeout, not the per-test one.
+        await import('../../src/mcp/local/rename/graph-rename.js');
+      });
+
+      beforeEach(() => {
+        vi.mocked(renameSymbol).mockClear();
+      });
+
+      it('seeds BasicBlock rows that the unlabelled filePath scan would return', async () => {
+        const result = await backend.callTool('cypher', { query: INVENTORY_PROBE });
+        const ids = (result.markdown as string).split('\n').join(' ');
+        for (const id of [INVENTORY_FILE_ID, INVENTORY_FUNCTION_ID, ...INVENTORY_BLOCK_IDS]) {
+          expect(ids).toContain(id);
+        }
+      });
+
+      it('hands the planner File and declaration rows but no BasicBlock rows', async () => {
+        const result = await backend.callTool('rename', {
+          symbol_uid: INVENTORY_FUNCTION_ID,
+          new_name: 'renamed',
+          dry_run: true,
+        });
+        expect(result.status).toBe('success');
+        expect(result.applied).toBe(false);
+        // The declaration and its one call site: unchanged by the inventory filter.
+        expect(result.total_edits).toBe(2);
+        const calls = vi.mocked(renameSymbol).mock.calls;
+        expect(calls).toHaveLength(1);
+        const inventoryIds = calls[0][3].map((node) => node.id).sort();
+        expect(inventoryIds).toEqual([INVENTORY_FILE_ID, INVENTORY_FUNCTION_ID].sort());
+      });
+    });
+  },
+  {
+    seed: [
+      `CREATE (:File {id: '${INVENTORY_FILE_ID}', name: '${INVENTORY_FILE}', filePath: '${INVENTORY_FILE}'})`,
+      `CREATE (:Function {id: '${INVENTORY_FUNCTION_ID}', name: 'target', filePath: '${INVENTORY_FILE}', startLine: 0, endLine: 0})`,
+      ...INVENTORY_BLOCK_IDS.map(
+        (id, index) =>
+          `CREATE (:BasicBlock {id: '${id}', filePath: '${INVENTORY_FILE}', startLine: ${index}, endLine: ${index}, text: 'target()', callees: '', calleeIds: '', ownerId: '${INVENTORY_FUNCTION_ID}'})`,
+      ),
+    ],
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      const checkout = path.join(handle.tmpHandle.dbPath, 'checkout');
+      await fs.mkdir(checkout, { recursive: true });
+      await fs.writeFile(path.join(checkout, INVENTORY_FILE), INVENTORY_SOURCE);
+      const indexedAt = new Date().toISOString();
+      await fs.writeFile(
+        path.join(handle.tmpHandle.dbPath, 'gitnexus.json'),
+        JSON.stringify({ contentRetention: 'full', indexedAt }),
+      );
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'rename-inventory-repo',
+          path: checkout,
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt,
+          lastCommit: 'abc123',
+          stats: { files: 1, nodes: 4, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as typeof handle & { _backend: LocalBackend })._backend = backend;
     },
   },
 );
