@@ -179,7 +179,7 @@ const OPTIONAL_GRAMMAR_CORPUS = [
     // MEMBER_OWNER_NODE_TYPES, so the definition phase emits HAS_PROPERTY /
     // HAS_METHOD FROM a `Union` node. Shipped once with `Union` off the
     // generated grid — every resolver test passed on the in-memory graph while
-    // a real `analyze` of THIS fixture aborted at `assertDeclaredPair`
+    // a real `analyze` of THIS fixture aborted at `checkDeclaredPair`
     // (`Union|Property`). `Union` is now in `LINKABLE_LABELS`; take it out and
     // both sentinels vanish from the DDL and this fails.
     fixture: 'zig-basic',
@@ -225,7 +225,7 @@ afterAll(() => vi.unstubAllEnvs());
  *
  * Classifies through `relPairKeyFor` — the same call the emit path routes with
  * — so this guard and the router cannot disagree about which edges are skipped.
- * It keys off the node IDS, which is what `assertDeclaredPair` actually sees,
+ * It keys off the node IDS, which is what `checkDeclaredPair` actually sees,
  * not the node's `label` field.
  */
 const pairsEmittedBy = async (fixture: string): Promise<Set<string>> => {

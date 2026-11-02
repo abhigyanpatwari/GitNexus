@@ -272,7 +272,7 @@ export function buildGraphNodeLookup(
  *
  * That makes it load-bearing for the LadybugDB relation DDL: a label added here
  * without the matching `FROM x TO y` pairs in `RELATION_SCHEMA` crashes
- * `analyze` at `assertDeclaredPair` on whichever codebase first emits the pair
+ * `analyze` at `checkDeclaredPair` on whichever codebase first emits the pair
  * (#2792). `test/unit/schema-pair-coverage.test.ts` derives the required pairs
  * from this set and fails in CI instead.
  */

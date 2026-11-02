@@ -647,7 +647,7 @@ export const STRUCTURAL_PAIR_DDL = `  FROM File TO Folder,
  *
  * Generated rather than hand-listed because in both families the endpoint
  * labels are LOOKUP RESULTS, not literals at the emit site — so any pair drawn
- * from the sets can reach `assertDeclaredPair`, and an undeclared one aborts
+ * from the sets can reach `checkDeclaredPair`, and an undeclared one fails
  * `analyze` outright on whichever codebase happens to produce it. Every
  * hand-listed fix so far declared only the pair in the stack trace and left the
  * rest of its family missing: `Const→Method` (#2781), `Class→Variable` (#2792),
