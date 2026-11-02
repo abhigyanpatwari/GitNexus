@@ -23,7 +23,12 @@
           # _Static_assert requires C11 even when the rest of the C compiles.
           "msvs_settings": {
             "VCCLCompilerTool": {
-              "AdditionalOptions": ["/std:c11", "/utf-8"],
+              "LanguageStandard": "stdcpp20",
+              "LanguageStandard_C": "stdc11",
+              # Node headers also inject a raw C++ flag. MSBuild's language
+              # settings select the right standard for each .c / .cc source.
+              "AdditionalOptions!": ["-std:c++20", "/std:c++20"],
+              "AdditionalOptions": ["/utf-8"],
             },
           },
         }],
