@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 /**
  * U20 — Integration regression test for chunk-cache corruption on
  * worker quarantine.
@@ -80,6 +81,8 @@ import {
 } from '../../src/storage/parse-cache.js';
 import type { ParseCache } from '../../src/storage/parse-cache.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 /**
  * Inline READY preamble + IPC decode wrapper (mirrors
@@ -211,6 +214,7 @@ const hashPacks = (
         filePath: p,
         contentHash: fileContentHash(FIXTURE_FILES[p as keyof typeof FIXTURE_FILES]),
       })),
+      parseIdentity,
     );
   const poisonPack = packs.find((paths) => paths.includes(POISON_PATH));
   if (!poisonPack) throw new Error('poison.ts was not packed');
@@ -259,7 +263,7 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
     const expectedChunkHash = hashPacks(scanned).poison;
 
     const parseCache: ParseCache = {
-      version: 'test',
+      identity: parseIdentity,
       entries: new Map<string, ParseWorkerResult[]>(),
       usedKeys: new Set<string>(),
     };
@@ -343,7 +347,7 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
     const expectedChunkHash = hashPacks(scanned).poison;
 
     const parseCache: ParseCache = {
-      version: 'test',
+      identity: parseIdentity,
       entries: new Map<string, ParseWorkerResult[]>(),
       usedKeys: new Set<string>(),
     };

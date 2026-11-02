@@ -2,7 +2,7 @@
  * Vue language provider.
  *
  * Vue SFCs are preprocessed by extracting the <script> / <script setup>
- * block content, which is then parsed as TypeScript. This provider reuses
+ * block content, which is then parsed as TypeScript or TSX. This provider reuses
  * nearly all TypeScript infrastructure — queries, type config, field
  * extraction, and named binding extraction.
  *
@@ -12,16 +12,21 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
-import { createClassExtractor } from '../class-extractors/generic.js';
-import { vueClassConfig } from '../class-extractors/configs/typescript-javascript.js';
+import { isBuiltin } from 'node:module';
+import {
+  vueClassConfig,
+  resolveTsJsContainerTypeOwner,
+  createTsJsClassExtractor,
+} from '../class-extractors/configs/typescript-javascript.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { vueImportConfig } from '../import-resolvers/configs/typescript-javascript.js';
 import { TYPESCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
-import { BUILT_INS as TS_BUILT_INS } from './typescript.js';
+import {
+  BUILT_INS as TS_BUILT_INS,
+  EXTERNAL_RECEIVER_NAMES as TS_EXTERNAL_RECEIVER_NAMES,
+} from './typescript.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { typescriptVariableConfig } from '../variable-extractors/configs/typescript-javascript.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
@@ -37,7 +42,9 @@ import {
   resolveTsImportTarget,
 } from './typescript/index.js';
 import { emitVueScopeCaptures } from './vue/captures.js';
+import { getTsParser } from './typescript/query.js';
 import { createTypeScriptCfgVisitor } from '../cfg/visitors/typescript.js';
+import { vueRenameProvider } from './vue/rename.js';
 
 const VUE_SPECIFIC_BUILT_INS = [
   'ref',
@@ -73,29 +80,34 @@ const VUE_SPECIFIC_BUILT_INS = [
 
 const VUE_BUILT_INS: ReadonlySet<string> = new Set([...TS_BUILT_INS, ...VUE_SPECIFIC_BUILT_INS]);
 
-const vueClassExtractor = createClassExtractor(vueClassConfig);
+const vueClassExtractor = createTsJsClassExtractor(vueClassConfig);
 
 export const vueProvider = defineLanguage({
   id: SupportedLanguages.Vue,
+  rename: vueRenameProvider,
   extensions: ['.vue'],
   entryPointPatterns: [],
   astFrameworkPatterns: [],
   treeSitterQueries: TYPESCRIPT_QUERIES,
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,
-  importResolver: createImportResolver(vueImportConfig),
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
   classExtractor: vueClassExtractor,
+  resolveContainerTypeOwner: resolveTsJsContainerTypeOwner,
   builtInNames: VUE_BUILT_INS,
-  // Vue SFC <script> blocks are extracted and parsed with the TypeScript
-  // grammar (parse-worker GRAMMAR_BY_LANGUAGE[Vue] = TypeScript.typescript),
+  // A `<script>` block runs on the same host as any other module.
+  externalReceiverNames: TS_EXTERNAL_RECEIVER_NAMES,
+  isExternalModuleSpecifier: isBuiltin,
+  // Vue SFC <script> blocks use the TypeScript or TSX grammar,
   // so the TS CFG visitor builds CFGs for the script's functions verbatim —
   // no Vue-specific visitor needed (#2195).
   cfgVisitor: createTypeScriptCfgVisitor(),
   // Scope-resolution pipeline hooks (RFC #909 Ring 3)
   emitScopeCaptures: emitVueScopeCaptures,
+  selectEmbeddedGrammar: (lang) =>
+    getTsParser(lang === 'jsx' || lang === 'tsx' ? 'embedded.tsx' : 'embedded.ts').getLanguage(),
   interpretImport: interpretTsImport,
   interpretTypeBinding: interpretTsTypeBinding,
   bindingScopeFor: tsBindingScopeFor,

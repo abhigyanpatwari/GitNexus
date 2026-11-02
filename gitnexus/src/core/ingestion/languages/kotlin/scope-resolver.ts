@@ -2,6 +2,11 @@ import { SupportedLanguages, type ParsedFile } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import {
+  canonicalizeWorkspaceBindings,
+  canonicalModuleExports,
+} from '../../scope-resolution/scope/canonicalize-bindings.js';
+import { canonicalName } from './identifiers.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
@@ -20,7 +25,11 @@ import {
   clearKotlinClassAnnotationFacts,
 } from './capture-side-channel.js';
 import { isKotlinStaticOnly } from './owners.js';
-import { populateKotlinPackageSiblings } from './package-siblings.js';
+import {
+  resolveKotlinQualifiedCallee,
+  kotlinQualifiedTypeLookupSpelling,
+} from './qualified-callee.js';
+import { populateKotlinPackageSiblings, resolveKotlinSamePackageBase } from './package-siblings.js';
 import { attachKotlinSpringBeanCandidateMetadata } from './spring-bean-metadata.js';
 import { attachKotlinSpringAopMetadata } from './spring-aop.js';
 import { clearKotlinPackageFacts } from './package-facts.js';
@@ -66,6 +75,9 @@ import { attachKotlinSpringDynamicLookup } from './spring-dynamic-lookup.js';
  * its issue ref and rationale.
  */
 export const kotlinScopeResolver: ScopeResolver = {
+  moduleExports: (parsed) => canonicalModuleExports(parsed, canonicalName),
+  populateWorkspaceReferences: (parsedFiles) =>
+    canonicalizeWorkspaceBindings(parsedFiles, canonicalName),
   language: SupportedLanguages.Kotlin,
   languageProvider: kotlinProvider,
   importEdgeReason: 'kotlin-scope: import',
@@ -137,6 +149,11 @@ export const kotlinScopeResolver: ScopeResolver = {
 
   isStaticOnly: isKotlinStaticOnly,
 
+  // `val x = com.acme.mod.make()` / `kqfmod.make().m()`: a package path names a
+  // top-level function, read from the declared package facts (#3498 follow-up).
+  resolveQualifiedCallee: resolveKotlinQualifiedCallee,
+  qualifiedTypeLookupSpelling: kotlinQualifiedTypeLookupSpelling,
+
   fieldFallbackOnMethodLookup: false,
   propagatesReturnTypesAcrossImports: true,
   collapseMemberCallsByCallerTarget: false,
@@ -144,6 +161,7 @@ export const kotlinScopeResolver: ScopeResolver = {
   freeCallsRequireInstanceOwnership: true,
   postExtractSourceTextPolicy: 'uncached-files',
   populateNamespaceSiblings: populateKotlinPackageSiblings,
+  resolveImplicitInheritanceBase: resolveKotlinSamePackageBase,
   emitPostResolutionEdges: (graph, parsedFiles, nodeLookup, indexes) => {
     attachKotlinSpringBeanCandidateMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachKotlinSpringAopMetadata(graph, parsedFiles, nodeLookup, indexes);

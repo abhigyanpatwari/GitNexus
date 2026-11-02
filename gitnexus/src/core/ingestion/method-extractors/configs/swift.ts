@@ -10,6 +10,7 @@ import type {
 import { findVisibility, hasKeyword, hasModifier } from '../../field-extractors/configs/helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { memoizeDeclarationFact } from '../declaration-facts.js';
 
 // ---------------------------------------------------------------------------
 // Swift helpers
@@ -282,9 +283,9 @@ export const swiftMethodConfig: MethodExtractionConfig = {
   // dev-mode "body field type not in bodyNodeTypes" warning.
   bodyNodeTypes: ['class_body', 'protocol_body', 'enum_class_body'],
 
-  extractName: extractSwiftName,
-  extractReturnType: extractSwiftReturnType,
-  extractParameters: extractSwiftParameters,
+  extractName: memoizeDeclarationFact(extractSwiftName),
+  extractReturnType: memoizeDeclarationFact(extractSwiftReturnType),
+  extractParameters: memoizeDeclarationFact(extractSwiftParameters),
 
   extractVisibility(node) {
     return findVisibility(node, SWIFT_VIS, 'internal', 'modifiers');

@@ -20,9 +20,8 @@
  *
  * All of it is memory. `dirMap` is the array-valued map — one entry and one
  * array push per file per directory component, O(files × depth) in entries and
- * in churn — and only four call sites ever read it
- * (`import-resolvers/{php,csharp,jvm}.ts`, `import-resolvers/configs/
- * python.ts`), yet `workspace-file-index.ts` serving Ruby,
+ * in churn — and only `languages/{php,csharp}/import-helpers.ts` read it, yet
+ * `workspace-file-index.ts` serving Ruby,
  * `languages/typescript/scope-resolver.ts`, `languages/vue/import-target.ts`
  * and `group/extractors/include-extractor.ts` all built it and never touched
  * it: ~15% of the retained C# index and ~19% of the retained Ruby one on
@@ -79,7 +78,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSuffixIndex,
   type SuffixIndex,
-} from '../../../src/core/ingestion/import-resolvers/utils.js';
+} from '../../../src/core/ingestion/utils/suffix-index.js';
 
 // ─── verbatim pre-change implementations ─────────────────────────────────────
 
@@ -438,7 +437,7 @@ const ONE_PASS = RAW_FILES.length;
 /** Lookups driven bare before a count is read — the count must not move. */
 const LOOKUP_REPEATS = 20;
 
-/** `import-resolvers/pass-cache.ts` builds exactly this: lowercased, not slash-normalized. */
+/** A lowercased input list, rather than a slash-normalized one. */
 const LOWERCASED_FILES: string[] = ALL_FILES.map((f) => f.toLowerCase());
 
 // ─── parity: the directory map ───────────────────────────────────────────────

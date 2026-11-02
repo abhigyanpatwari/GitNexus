@@ -57,6 +57,20 @@ version that writes the completeness receipt. An older index or unreadable compl
 `incompleteReasons: ["scope-extraction-unverified"]`; re-analyze it before treating
 empty impact results as exact.
 
+**Invalid symbol identity:** `query`, `context`, or `impact` can return
+`The index returned an invalid symbol identity` with recovery guidance instead
+of returning malformed results. Rebuild from the affected repository root with
+`npx gitnexus analyze --force`. If the error returns, retain the failing command,
+GitNexus/Node versions and `gitnexus doctor` output for investigation. This check
+detects blank IDs and NUL-containing identity fields; it does not prove that
+every otherwise plausible name, path or source range is correct.
+
+**MCP freshness after rebuilding:** a warm session refreshes its index reference
+when it opens the replacement graph, including a rebuild at the same commit.
+A busy reader keeps its old reference until it can reopen. During an observed
+graph/metadata publication gap, freshness is `unknown`; retry after analysis
+finishes rather than treating that response as current.
+
 ---
 
 ## Embeddings
@@ -181,9 +195,68 @@ Orchestrator: `.github/workflows/ci.yml`.
 
 ---
 
+## Query memory limit
+
+**Symptom:** a CLI, MCP, or HTTP server process exits with code **70** and
+`GitNexus stopped: process memory reached …` on stderr.
+
+The pooled-read guard detected memory above its process-wide budget. Native
+query allocations are outside both V8's heap limit and LadybugDB's buffer pool.
+The Node binding cannot interrupt them, so the guard exits the process to
+release memory. Every request in that process is interrupted; restart the
+CLI/server or reconnect the MCP client. A read-only query does not require a
+reindex after this exit.
+
+To diagnose a repeat, set `GITNEXUS_QUERY_TRACE=1` in the query/server environment
+and retain stderr. It includes query text but not bound parameters. Review the
+output before sharing it with [issue #3696](https://github.com/abhigyanpatwari/GitNexus/issues/3696).
+Set `GITNEXUS_QUERY_MAX_RSS_MB=<MiB>` to change the limit; `0` disables it. The
+default is max(8 GiB, 25% of available RAM), capped at 75% of available RAM,
+including a reported container/runtime constraint.
+
+RSS is checked at query start/end and every 200 ms while reads run. On macOS,
+queries lasting at least one second also sample physical footprint at most
+once per second, including compressed/swapped memory. If the OS footprint
+command is unavailable, monitoring falls back to RSS. Sampling is a mitigation,
+not a hard OS memory limit: rapid allocation or a blocked event loop can outrun
+it. Writes during `analyze` are outside this guard.
+
+The caller's 30-second read deadline covers prepare, execution, and row
+materialization. Timing out does not cancel native work: monitoring and its
+checked-out connection remain owned by that work until it settles. An impact
+frontier is separately capped at 100,000 relationship rows per depth. A capped
+walk stops and reports `partial: true`. Both `risk` and `riskSharedAxes` retain
+HIGH/CRITICAL or report UNKNOWN instead of LOW/MEDIUM. This row cap does not bound the database's
+intermediate allocations. Narrow the target or relation filters before relying
+on a partial result.
+
 ## Memory / analyze crashes
 
 Analyze re-execs Node with a **large old-space heap** when needed (`analyze.ts`). If you still OOM on huge repos, close other processes, avoid `--embeddings` for a first pass, or analyze a smaller path if supported by your workflow.
+
+`Unable to allocate memory` / `The buffer pool is full` during graph writes
+refers to LadybugDB's native buffer pool. Increasing `NODE_OPTIONS`,
+`--memory-budget`, or worker heap limits does not resize that pool. Recognized
+pool exhaustion aborts analysis instead of retrying with row skipping.
+
+If the host has enough memory, set an explicit pool size in **bytes**, then
+rebuild. For example, 3 GiB is `3221225472` bytes:
+
+```bash
+GITNEXUS_LBUG_BUFFER_POOL_SIZE=3221225472 npx gitnexus analyze --force
+```
+
+The override bypasses automatic pool sizing. Budget for the Node heap, parse
+workers, other native allocations, and the OS alongside it; a larger pool can
+exhaust the host. `GITNEXUS_LBUG_BUFFER_POOL_SIZE=0` restores LadybugDB's native
+80%-of-RAM default, not an unlimited supply of memory. If memory is insufficient,
+exclude generated/vendor directories or use a larger host.
+
+A measured graph-write collapse aborts a staged build before publication,
+leaving the previous index, if any, intact. An in-place run cannot roll back:
+it records `graph-write-collapsed` and exits nonzero. Rebuild a previously
+collapsed index with `--force` after addressing memory, disk space, or the
+reported COPY error; do not rely on its incomplete query results.
 
 ---
 

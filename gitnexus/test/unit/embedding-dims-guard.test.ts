@@ -29,6 +29,7 @@ import {
   schemaFingerprintMismatch,
 } from '../../src/core/lbug/schema.js';
 import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
+import { resolveParseCacheIdentity } from '../../src/core/parse-cache-identity.js';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
 import {
   getStoragePaths,
@@ -95,7 +96,7 @@ describe('embeddingDimsMismatch (#2798)', () => {
  * Seed a git repo whose index is up to date at HEAD, so the `alreadyUpToDate`
  * fast path is reachable and ONLY the guard under test can stop it. Every
  * other force-rebuild guard is satisfied: current fingerprint, current runner
- * identity, current analysis features, no dirty flag, clean tree, and an
+ * and parser identities, current analysis features, no dirty flag, clean tree, and an
  * absent `cjkSegmentation` that defaults to the resolved 'none'.
  */
 async function seedIndexedRepo(
@@ -114,15 +115,21 @@ async function seedIndexedRepo(
     encoding: 'utf-8',
   }).trim();
   const { storagePath } = getStoragePaths(repo.dbPath);
+  const runAnalyzeUrl = pathToFileURL(
+    path.resolve(__dirname, '../../src/core/run-analyze.ts'),
+  ).href;
+  const parseIdentity = resolveParseCacheIdentity(runAnalyzeUrl);
+  if (parseIdentity.ok === false) {
+    throw new Error(`Cannot verify test parser artifacts: ${parseIdentity.reason}`);
+  }
   const meta: RepoMeta = {
     repoPath: repo.dbPath,
     lastCommit,
     indexedAt: new Date().toISOString(),
     schemaFingerprint: SCHEMA_FINGERPRINT,
     analysisFeatures: CURRENT_ANALYSIS_FEATURES,
-    runnerIdentity: resolveAnalyzerRunnerIdentity(
-      pathToFileURL(path.resolve(__dirname, '../../src/core/run-analyze.ts')).href,
-    ),
+    runnerIdentity: resolveAnalyzerRunnerIdentity(runAnalyzeUrl),
+    parseCacheIdentity: { base: parseIdentity.identity.base },
     embeddingDims,
   };
   await saveMeta(storagePath, meta);

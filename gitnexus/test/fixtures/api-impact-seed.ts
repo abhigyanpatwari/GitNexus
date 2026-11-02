@@ -22,7 +22,7 @@ export const API_IMPACT_SEED_DATA = [
   // /api/grants: success keys = [data, pagination], error keys = [error, message]
   `CREATE (r:Route {id: 'Route:/api/grants', name: '/api/grants', filePath: 'app/api/grants/route.ts', responseKeys: ['data', 'pagination'], errorKeys: ['error', 'message'], middleware: []})`,
   // /api/secure: middleware wrapped, separate success keys per method
-  `CREATE (r:Route {id: 'Route:/api/secure', name: '/api/secure', filePath: 'app/api/secure/route.ts', responseKeys: ['items', 'count'], errorKeys: [], middleware: ['withAuth', 'withRateLimit']})`,
+  `CREATE (r:Route {id: 'Route:/api/secure', name: '/api/secure', filePath: 'app/api/secure/route.ts', responseKeys: ['items', 'count'], errorKeys: [], middleware: ['withAuth', 'withRateLimit'], unverifiedConsumers: 2})`,
 
   // ─── Functions (consumers) ─────────────────────────────────────────
   `CREATE (fn:Function {id: 'func:GrantsList', name: 'GrantsList', filePath: 'components/GrantsList.tsx', startLine: 1, endLine: 10, isExported: true, content: 'export async function GrantsList()', description: 'Grants list component'})`,
@@ -55,6 +55,24 @@ export const API_IMPACT_SEED_DATA = [
    CREATE (fn)-[:CodeRelation {type: 'HANDLES_ROUTE', confidence: 1.0, reason: 'nextjs-app-router', step: 0}]->(r)`,
   `MATCH (fn:Function), (r:Route) WHERE fn.id = 'func:secure-POST' AND r.id = 'Route:/api/secure'
    CREATE (fn)-[:CodeRelation {type: 'HANDLES_ROUTE', confidence: 1.0, reason: 'nextjs-app-router', step: 0}]->(r)`,
+
+  // ─── Indirect consumers (#3644) ────────────────────────────────────
+  // backend-client.ts is the file that sends the request; the edge names the
+  // function holding the site. App and Header call that function without ever
+  // mentioning the URL. useMulti calls it too, but already fetches the route
+  // itself, so it stays a direct consumer only.
+  `CREATE (f:File {id: 'file:services/backend-client.ts', name: 'backend-client.ts', filePath: 'services/backend-client.ts', content: 'export const fetchSecure = () => fetch("/api/secure")'})`,
+  `CREATE (fn:Function {id: 'func:fetchSecure', name: 'fetchSecure', filePath: 'services/backend-client.ts', startLine: 1, endLine: 3, isExported: true, content: 'export const fetchSecure = () => fetch("/api/secure")', description: 'Secure request function'})`,
+  `CREATE (fn:Function {id: 'func:App', name: 'App', filePath: 'App.tsx', startLine: 1, endLine: 20, isExported: true, content: 'export function App() { fetchSecure() }', description: 'App root'})`,
+  `CREATE (fn:Function {id: 'func:Header', name: 'Header', filePath: 'components/Header.tsx', startLine: 1, endLine: 12, isExported: true, content: 'export function Header() { fetchSecure() }', description: 'Header'})`,
+  `MATCH (a:File), (r:Route) WHERE a.id = 'file:services/backend-client.ts' AND r.id = 'Route:/api/secure'
+   CREATE (a)-[:CodeRelation {type: 'FETCHES', confidence: 0.9, reason: 'fetch-url-match|via:func:fetchSecure', step: 0}]->(r)`,
+  `MATCH (a:Function), (b:Function) WHERE a.id = 'func:App' AND b.id = 'func:fetchSecure'
+   CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, reason: 'direct', step: 0}]->(b)`,
+  `MATCH (a:Function), (b:Function) WHERE a.id = 'func:Header' AND b.id = 'func:fetchSecure'
+   CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, reason: 'direct', step: 0}]->(b)`,
+  `MATCH (a:Function), (b:Function) WHERE a.id = 'func:useMulti' AND b.id = 'func:fetchSecure'
+   CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, reason: 'direct', step: 0}]->(b)`,
 ];
 
 export const API_IMPACT_FTS_INDEXES: FTSIndexDef[] = [

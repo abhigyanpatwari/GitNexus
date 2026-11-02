@@ -52,11 +52,11 @@ updates:
       - ci
 
   # Gitnexus npm deps — tree-sitter grammars checked daily so we catch
-  # new releases that unblock the tree-sitter 0.25 upgrade ASAP. Grammars
+  # releases that let us drop a pack-time peer patch ASAP. Grammars
   # are grouped so lockstep bumps produce a single PR. The tree-sitter
-  # RUNTIME is pinned — upgrade deliberately via the drift check workflow.
-  # See .github/scripts/check-tree-sitter-upgrade-readiness.py for
-  # the upgrade readiness tracker.
+  # RUNTIME is pinned — upgrade deliberately. See
+  # .github/scripts/check-tree-sitter-upgrade-readiness.py for the
+  # compatibility-workarounds tracker.
   - package-ecosystem: npm
     directory: /gitnexus
     schedule:

@@ -289,9 +289,12 @@ const sanitizeReason = (reason: string, url: string, apiKey?: string): string =>
  * underlying reason) is what the CLI surfaces to the user. See #2385.
  */
 export class HttpEmbeddingError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
+  readonly status?: number;
+
+  constructor(message: string, options?: { cause?: unknown; status?: number }) {
     super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
     this.name = 'HttpEmbeddingError';
+    this.status = options?.status;
   }
 }
 
@@ -573,7 +576,7 @@ const httpEmbedBatch = async (
     if (err instanceof ResilientFetchExhaustedError) {
       throw new HttpEmbeddingError(
         `Embedding endpoint returned ${err.response.status} (${safeUrl(url)}, batch ${batchIndex})`,
-        { cause: err },
+        { cause: err, status: err.response.status },
       );
     }
     const reason = sanitizeReason(err instanceof Error ? err.message : String(err), url, apiKey);
@@ -590,6 +593,7 @@ const httpEmbedBatch = async (
     // a terminal client error (4xx other than 429).
     throw new HttpEmbeddingError(
       `Embedding endpoint returned ${resp.status} (${safeUrl(url)}, batch ${batchIndex})`,
+      { status: resp.status },
     );
   }
 

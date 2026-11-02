@@ -10,6 +10,7 @@
 
 import type { ParsedFile } from 'gitnexus-shared';
 import type { JvmPackageFact } from '../jvm/package-facts.js';
+import { canonicalName } from './identifiers.js';
 
 export interface KotlinPackageIndex {
   /** Declared package -> top-level exported name -> files declaring that name. */
@@ -67,8 +68,9 @@ export function buildKotlinPackageIndex(
       ) {
         continue;
       }
-      const files = declarations.get(name);
-      if (files === undefined) declarations.set(name, [parsed.filePath]);
+      const key = canonicalName(name);
+      const files = declarations.get(key);
+      if (files === undefined) declarations.set(key, [parsed.filePath]);
       else if (!files.includes(parsed.filePath)) files.push(parsed.filePath);
     }
   }
@@ -111,7 +113,7 @@ function resolveTopLevelDeclaration(
     const name = parts[0];
     return name === undefined
       ? null
-      : declarationFiles(index.declarationsByPackage.get('')?.get(name));
+      : declarationFiles(index.declarationsByPackage.get('')?.get(canonicalName(name)));
   }
 
   for (let split = parts.length - 1; split >= 1; split--) {
@@ -121,7 +123,7 @@ function resolveTopLevelDeclaration(
 
     const declarationName = parts[split];
     if (declarationName === undefined) continue;
-    const files = declarations.get(declarationName);
+    const files = declarations.get(canonicalName(declarationName));
     if (files === undefined) continue;
     return declarationFiles(files);
   }

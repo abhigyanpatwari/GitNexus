@@ -26,14 +26,19 @@
 import { describe, it, expect } from 'vitest';
 import { goScopeResolver } from '../../src/core/ingestion/languages/go/scope-resolver.js';
 import { CountingSet, expectDistinctFileSetsGetOwnIndex } from '../helpers/counting-file-set.js';
+import type { GoWorkspaceConfig } from '../../src/core/ingestion/languages/go/workspace-config.js';
 
 // `resolveImportTarget` is a required member of `ScopeResolver`, so this is a
 // plain read — no optional call, and no `toBeDefined()` guarding a branch that
 // cannot be taken.
 const { resolveImportTarget } = goScopeResolver;
 
-/** The value `loadGoModulePath` produces for a repo with a `go.mod`. */
-const GO_MODULE = { modulePath: 'example.com/mod' };
+/** The value `captureGoWorkspaceConfig` produces for a repo whose only
+ *  `go.mod` is at its root. */
+const GO_MODULE: GoWorkspaceConfig = {
+  modules: [{ modulePath: 'example.com/mod', dir: '' }],
+  workFiles: [],
+};
 
 const FROM_FILE = 'main.go';
 

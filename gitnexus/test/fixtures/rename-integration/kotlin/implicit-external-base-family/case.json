@@ -1,0 +1,23 @@
+{
+  "language": "kotlin",
+  "description": "Refuse an explicit override of an unindexed implicit base member.",
+  "categories": [
+    "polymorphism",
+    "external-base",
+    "implicit-base",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "toString",
+    "kind": "Method",
+    "file": "model.kt",
+    "startLine": 1
+  },
+  "newName": "description",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_symbol_family",
+    "planningStatus": "unsupported"
+  }
+}

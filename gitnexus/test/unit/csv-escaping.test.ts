@@ -5,6 +5,7 @@
  * Covers hardening fix #23 (keyword arrays with backslashes and commas)
  */
 import { describe, it, expect } from 'vitest';
+import { assertValidGraphNodeId } from '../../src/core/graph/node-identity.js';
 import {
   escapeCSVField,
   escapeCSVNumber,
@@ -141,9 +142,38 @@ describe('sanitizeUTF8', () => {
     expect(sanitizeUTF8('hello\uD800world')).toBe('helloworld');
   });
 
+  it('preserves valid supplementary Unicode characters', () => {
+    expect(sanitizeUTF8('hello😀𐐀world')).toBe('hello😀𐐀world');
+  });
+
   it('strips BOM-like characters (FFFE/FFFF)', () => {
     expect(sanitizeUTF8('hello\uFFFEworld')).toBe('helloworld');
   });
+});
+
+describe('graph identity CSV fidelity', () => {
+  it.each([
+    ...Array.from({ length: 32 }, (_, code) => String.fromCharCode(code)).filter(
+      (char) => char !== '\t' && char !== '\n',
+    ),
+    '\x7F',
+    '\uD800',
+    '\uDFFF',
+    '\uFFFE',
+    '\uFFFF',
+  ])('rejects a character that CSV would alter: %j', (char) => {
+    expect(() => assertValidGraphNodeId(`Function:source.ts:a${char}b`, 'Graph COPY')).toThrow(
+      /invalid graph node ID/,
+    );
+  });
+
+  it.each(['Function:café.ts:😀', 'Function:𐐀.ts:method', 'Function:a\tb.ts:line\nname'])(
+    'preserves accepted identity %j through CSV escaping',
+    (id) => {
+      expect(() => assertValidGraphNodeId(id, 'Graph COPY')).not.toThrow();
+      expect(escapeCSVField(id)).toBe(`"${id}"`);
+    },
+  );
 });
 
 // ─── isBinaryContent ─────────────────────────────────────────────────

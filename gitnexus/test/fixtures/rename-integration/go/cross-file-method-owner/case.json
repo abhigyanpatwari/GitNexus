@@ -1,0 +1,50 @@
+{
+  "language": "go",
+  "description": "Rename a pointer receiver method whose owner, interface and callers live in sibling files; preserve unrelated same-name methods, comments and strings.",
+  "categories": ["cross-file", "method-family", "interface", "pointer-receiver", "homonyms"],
+  "target": {
+    "name": "Compute",
+    "kind": "Method",
+    "file": "methods.go",
+    "startLine": 2
+  },
+  "newName": "Calculate",
+  "expect": {
+    "status": "success",
+    "edits": 4
+  },
+  "edges": [
+    {
+      "type": "HAS_METHOD",
+      "from": { "name": "Worker", "kind": "Struct", "file": "types.go" },
+      "to": { "name": "Compute", "kind": "Method", "file": "methods.go", "startLine": 2 }
+    },
+    {
+      "type": "HAS_METHOD",
+      "from": { "name": "Other", "kind": "Struct", "file": "types.go" },
+      "to": { "name": "Compute", "kind": "Method", "file": "methods.go", "startLine": 3 }
+    },
+    {
+      "type": "METHOD_IMPLEMENTS",
+      "from": { "name": "Compute", "kind": "Method", "file": "methods.go", "startLine": 2 },
+      "to": { "name": "Compute", "kind": "Method", "file": "types.go", "startLine": 2 }
+    },
+    {
+      "type": "CALLS",
+      "from": { "name": "dispatch", "kind": "Function", "file": "callers.go" },
+      "to": { "name": "Compute", "kind": "Method", "file": "types.go", "startLine": 2 }
+    },
+    {
+      "type": "CALLS",
+      "from": { "name": "dispatch", "kind": "Function", "file": "callers.go" },
+      "to": { "name": "Compute", "kind": "Method", "file": "methods.go", "startLine": 2 }
+    },
+    {
+      "type": "CALLS",
+      "from": { "name": "dispatch", "kind": "Function", "file": "callers.go" },
+      "to": { "name": "Compute", "kind": "Method", "file": "methods.go", "startLine": 3 }
+    }
+  ],
+  "exactOutgoing": true,
+  "warmParseCache": true
+}

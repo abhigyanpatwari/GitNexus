@@ -8,13 +8,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import {
-  buildSuffixIndex,
-  suffixResolve,
-} from '../../src/core/ingestion/import-resolvers/utils.js';
-import { resolvePythonImportInternal } from '../../src/core/ingestion/import-resolvers/python.js';
-import { resolveImportPath } from '../../src/core/ingestion/import-resolvers/standard.js';
-import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { buildSuffixIndex, suffixResolve } from '../../src/core/ingestion/utils/suffix-index.js';
+import { resolvePythonImportInternal } from '../../src/core/ingestion/languages/python/import-helpers.js';
+import { EXTENSIONS } from '../../src/core/ingestion/languages/import-candidates.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -24,8 +20,7 @@ function makeCtx(files: string[]) {
   const normalized = files.map((f) => f.replace(/\\/g, '/'));
   const allFilesSet = new Set(files);
   const index = buildSuffixIndex(normalized, files);
-  const cache = new Map<string, string | null>();
-  return { files, normalized, allFilesSet, index, cache };
+  return { files, normalized, allFilesSet, index };
 }
 
 /** Simulate the full dispatch: resolvePythonImport first, then suffixResolve fallback. */
@@ -39,27 +34,7 @@ function resolvePython(
   if (importPath.startsWith('.')) return null;
   const pathLike = importPath.replace(/\./g, '/');
   const parts = pathLike.split('/').filter(Boolean);
-  return suffixResolve(parts, ctx.normalized, ctx.files, ctx.index);
-}
-
-/** For non-Python languages, delegate directly to standard resolveImportPath. */
-function resolve(
-  currentFile: string,
-  importPath: string,
-  language: SupportedLanguages,
-  ctx: ReturnType<typeof makeCtx>,
-): string | null {
-  return resolveImportPath(
-    currentFile,
-    importPath,
-    ctx.allFilesSet,
-    ctx.files,
-    ctx.normalized,
-    ctx.cache,
-    language,
-    null,
-    ctx.index,
-  );
+  return suffixResolve(parts, ctx.normalized, ctx.files, EXTENSIONS, ctx.index);
 }
 
 // ---------------------------------------------------------------------------
@@ -169,54 +144,5 @@ describe('resolvePythonImport — namespace packages (no __init__.py)', () => {
     const ctx = makeCtx(files);
     const result = resolvePython('app/services/auth.py', 'user.model', ctx);
     expect(result).toBe('app/services/user/model.py');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Ruby: bare require does NOT use proximity
-// ---------------------------------------------------------------------------
-
-describe('resolveImportPath — Ruby bare require does not use proximity', () => {
-  it('returns first-indexed file for bare require (Ruby $LOAD_PATH excludes current directory)', () => {
-    const ctx = makeCtx([
-      'lib/core/helpers.rb', // indexed first
-      'lib/utils/helpers.rb',
-      'lib/utils/formatter.rb',
-    ]);
-
-    // Ruby bare `require 'helpers'` searches $LOAD_PATH — current directory not included.
-    // No proximity bias; first-indexed file is returned, same as before.
-    const result = resolve('lib/utils/formatter.rb', 'helpers', SupportedLanguages.Ruby, ctx);
-    expect(result).toBe('lib/core/helpers.rb');
-  });
-
-  it('resolves require_relative (dot-prefixed) to same-directory file via generic relative resolver', () => {
-    const ctx = makeCtx(['lib/utils/helpers.rb', 'lib/utils/formatter.rb']);
-
-    // require_relative arrives as "./<path>" — caught by generic relative resolver, not proximity
-    const result = resolve('lib/utils/formatter.rb', './helpers', SupportedLanguages.Ruby, ctx);
-    expect(result).toBe('lib/utils/helpers.rb');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Other languages: no proximity applied
-// ---------------------------------------------------------------------------
-
-describe('resolveImportPath — no proximity for Java or TypeScript', () => {
-  it('Java: fully-qualified import resolves to the correct file via unique suffix', () => {
-    const ctx = makeCtx(['src/com/a/User.java', 'src/com/b/User.java', 'src/com/b/Service.java']);
-
-    // "com.b.User" → "com/b/User" → unique suffix; no ambiguity
-    const result = resolve('src/com/b/Service.java', 'com.b.User', SupportedLanguages.Java, ctx);
-    expect(result).toBe('src/com/b/User.java');
-  });
-
-  it('TypeScript: relative import resolves via generic relative resolver', () => {
-    const ctx = makeCtx(['src/services/user.ts', 'src/services/auth.ts', 'src/models/user.ts']);
-
-    // "./user" is explicit relative — resolved before proximity is checked
-    const result = resolve('src/services/auth.ts', './user', SupportedLanguages.TypeScript, ctx);
-    expect(result).toBe('src/services/user.ts');
   });
 });

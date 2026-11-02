@@ -1589,6 +1589,10 @@ const analyzeCommandImpl = async (
       // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
       // forwarded to the routes phase consumer scan.
       fetchWrappers: options.fetchWrappers,
+      routeHookConfig: {
+        routeFrameworkAliases: options.routeFrameworkAliases,
+        routeHandlerWrappers: options.routeHandlerWrappers,
+      },
       springActuatorPath: options.springActuator,
       asyncApiSpecPath: options.asyncapiSpec,
       // The CLI always process.exit()s after this returns (success path at the
@@ -1663,7 +1667,7 @@ const analyzeCommandImpl = async (
       }
       if (baseRefRefreshed.length > 0) {
         console.log(
-          `  Updated base_ref to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,
+          `  Updated regression-review target to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,
         );
       }
       // #2639: opt-in self-commit of any AGENTS.md/CLAUDE.md churn from this

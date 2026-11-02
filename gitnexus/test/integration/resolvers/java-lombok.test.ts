@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../../helpers/runtime-parse-identity.js';
 /**
  * Production-path Lombok accessor synthesis: Method nodes, HAS_METHOD, and CALLS
  * through the real worker/provider pipeline (not unit synthesizer alone).
@@ -11,10 +12,10 @@ import {
   runPipelineFromRepo,
   getRelationships,
   getNodesByLabelFull,
+  getResolutionOutcomes,
 } from './helpers.js';
 import {
   loadParseCache,
-  PARSE_CACHE_VERSION,
   pruneCache,
   saveParseCache,
   type ParseCache,
@@ -23,6 +24,8 @@ import {
   getDurableParsedFileDir,
   pruneAndSaveDurableParsedFileStore,
 } from '../../../src/storage/parsedfile-store.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 function projectLombokMethods(result: Awaited<ReturnType<typeof runPipelineFromRepo>>) {
   return [...result.graph.iterNodes()]
@@ -42,6 +45,76 @@ function projectCallsToGetName(result: Awaited<ReturnType<typeof runPipelineFrom
 }
 
 describe('Java Lombok accessor synthesis (pipeline)', () => {
+  it('keeps an inherited synthetic setter in the overload family when its formal types are unavailable', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-lombok-overload-'));
+    try {
+      writeFixtureRepo(root, {
+        'Inheritance.java': `import lombok.Data;
+@Data class GeneratedBase { private String value; }
+class GeneratedChild extends GeneratedBase { public void setValue(Object value) {} }
+class Consumer { void choose(GeneratedChild target) { target.setValue("x"); } }
+`,
+      });
+      const linked = await runPipelineFromRepo(root, () => {});
+      expect(
+        getRelationships(linked, 'CALLS').filter(
+          (edge) => edge.source === 'choose' && edge.target === 'setValue',
+        ),
+      ).toEqual([]);
+      expect(getResolutionOutcomes(linked)).toContainEqual(
+        expect.objectContaining({
+          kind: 'suppressed',
+          reason: 'overload-unknown',
+          name: 'setValue',
+          candidateGraphIds: expect.arrayContaining([
+            'Method:Inheritance.java:GeneratedBase.setValue#1',
+            'Method:Inheritance.java:GeneratedChild.setValue#1',
+          ]),
+          candidateSetComplete: true,
+        }),
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it.each(['same-file', 'cross-file'] as const)(
+    'resolves all getter and setter calls to their owner in a %s fixture',
+    async (layout) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-lombok-pair-'));
+      try {
+        const models = `import lombok.Data;
+@Data class Pair { private int first, second; }
+@Data class Decoy { private int first, second; }
+`;
+        const caller = `class Consumer {
+  void update(Pair pair) {
+    pair.setFirst(pair.getSecond());
+    pair.setSecond(pair.getFirst());
+  }
+}
+`;
+        writeFixtureRepo(
+          root,
+          layout === 'same-file'
+            ? { 'Models.java': models + caller }
+            : { 'Models.java': models, 'Consumer.java': caller },
+        );
+        const linked = await runPipelineFromRepo(root, () => {});
+        const calls = getRelationships(linked, 'CALLS').filter((edge) => edge.source === 'update');
+        expect(calls.map((edge) => edge.rel.targetId).sort()).toEqual([
+          'Method:Models.java:Pair.getFirst#0',
+          'Method:Models.java:Pair.getSecond#0',
+          'Method:Models.java:Pair.setFirst#1',
+          'Method:Models.java:Pair.setSecond#1',
+        ]);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+    60000,
+  );
+
   it('resolves Consumer.consume -> User.getName for @Data', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-lombok-'));
     try {
@@ -191,10 +264,11 @@ class Consumer {
       });
 
       const coldCache: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: parseIdentity,
         entries: new Map(),
         usedKeys: new Set(),
         storagePath: storage,
+        writeStoragePath: storage,
         onDiskKeys: new Set(),
       };
       const cold = await runPipelineFromRepo(root, () => {}, {
@@ -212,11 +286,11 @@ class Consumer {
       expect(savedKeys.length).toBeGreaterThan(0);
       await pruneAndSaveDurableParsedFileStore(
         getDurableParsedFileDir(storage),
-        PARSE_CACHE_VERSION,
+        parseIdentity.base,
         new Set(savedKeys),
       );
 
-      const warmCache = await loadParseCache(storage);
+      const warmCache = await loadParseCache(storage, parseIdentity, storage);
       expect(warmCache.onDiskKeys).toEqual(new Set(savedKeys));
       const warm = await runPipelineFromRepo(root, () => {}, {
         skipGraphPhases: true,
@@ -232,15 +306,16 @@ class Consumer {
       const index = JSON.parse(fs.readFileSync(indexPath, 'utf8')) as { version: string };
       index.version = '82+0.0.0-historical';
       fs.writeFileSync(indexPath, JSON.stringify(index), 'utf8');
-      const historical = await loadParseCache(storage);
+      const historical = await loadParseCache(storage, parseIdentity, storage);
       expect(historical.entries.size).toBe(0);
       expect(historical.onDiskKeys?.size ?? 0).toBe(0);
 
       const recoveredCache: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: parseIdentity,
         entries: new Map(),
         usedKeys: new Set(),
         storagePath: storage,
+        writeStoragePath: storage,
         onDiskKeys: new Set(),
       };
       const recovered = await runPipelineFromRepo(root, () => {}, {

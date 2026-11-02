@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Monitor tree-sitter 0.25 upgrade readiness — two things Dependabot can't see:
+"""Track the compatibility workarounds GitNexus carries for its bundled tree-sitter
+runtime — things Dependabot can't see:
 
-  1. Peer-dep compatibility: when every grammar's *latest npm release* accepts
-     tree-sitter@0.25.0 (so we can upgrade without --legacy-peer-deps).
-  2. Vendored upstream drift: whether a vendored grammar's upstream parser.c moved.
+  1. Peer-dep patches: several grammars' npm peer ranges reject the bundled
+     runtime, so prepare-tree-sitter-bundle.cjs patches their manifests at pack
+     time (AUDITED_PEERS). The report flags when npm latest (or upstream main)
+     accepts the runtime, so a patch can be dropped by bumping the grammar.
+  2. Intentional pins and vendored holds, plus vendored upstream drift.
 
 Invoked daily from tree-sitter-upgrade-readiness.yml; runs locally too. Outputs
-Markdown to stdout; exit 1 when blockers remain (the workflow upserts a tracking
-issue). stdlib-only — runs on any vanilla runner.
+Markdown to stdout; exit 1 while any workaround remains (the workflow upserts a
+tracking issue). stdlib-only — runs on any vanilla runner.
     python3 .github/scripts/check-tree-sitter-upgrade-readiness.py [--offline | --assert-current]
 """
 
@@ -31,10 +34,12 @@ GITNEXUS_DIR = REPO_ROOT / "gitnexus"
 # vendored ABIs are still read from the repo. The read-path mirror of --assert-current.
 OFFLINE = os.environ.get("GITNEXUS_TS_READINESS_OFFLINE", "") not in ("", "0", "false")
 
-# ── Upgrade target ──────────────────────────────────────────────────────
-# The runtime version we want to upgrade TO. Update this when the goal
-# changes (e.g. once 0.25 lands and we target 0.26).
-TARGET_RUNTIME = "0.25.0"
+# ── Target runtime ──────────────────────────────────────────────────────
+# The exact runtime GitNexus bundles, read from the package.json pin so the report
+# can never go stale against an upgrade (a hardcoded target did after 0.25 landed).
+TARGET_RUNTIME = json.loads((GITNEXUS_DIR / "package.json").read_text())["dependencies"][
+    "tree-sitter"
+]
 TARGET_RUNTIME_MAJOR_MINOR = ".".join(TARGET_RUNTIME.split(".")[:2])
 
 # Tree-sitter runtime -> (min_abi, max_abi) it can load. Only the current
@@ -166,6 +171,20 @@ def read_pinned_grammar_versions() -> dict[str, str]:
             if name.startswith("tree-sitter-"):
                 pinned[name] = spec
     return pinned
+
+
+def read_patched_peers() -> list[tuple[str, str, str]]:
+    """Return the pack-time peer patches as (name, version, original peer range).
+
+    Parsed from AUDITED_PEERS in gitnexus/scripts/prepare-tree-sitter-bundle.cjs,
+    the single source of truth for which bundled manifests get the runtime added
+    to their tree-sitter peer range.
+    """
+    script = GITNEXUS_DIR / "scripts" / "prepare-tree-sitter-bundle.cjs"
+    return re.findall(
+        r"\['(tree-sitter[\w-]*)@([\d.]+)',\s*'([^']+)'\]",
+        script.read_text(encoding="utf-8"),
+    )
 
 
 def npm_view_json(pkg: str) -> dict | None:
@@ -620,13 +639,13 @@ def _render_vendored_section(
         elif v["upstream_abi"] and v["vendored_abi"] and v["upstream_abi"] > v["vendored_abi"]:
             if v["upstream_abi"] <= target_abi_range[1]:
                 lines.append(
-                    f"  - **Action:** after upgrading to tree-sitter@{TARGET_RUNTIME}, "
-                    f"regenerate `parser.c` from upstream `{v['upstream_sha']}`."
+                    f"  - **Action:** regenerate `parser.c` from upstream "
+                    f"`{v['upstream_sha']}` (its ABI loads on tree-sitter@{TARGET_RUNTIME})."
                 )
             else:
                 lines.append(
                     f"  - **Action:** wait for a runtime supporting ABI "
-                    f"{v['upstream_abi']}; current target ({TARGET_RUNTIME}) only "
+                    f"{v['upstream_abi']}; tree-sitter@{TARGET_RUNTIME} only "
                     f"goes up to ABI {target_abi_range[1]}."
                 )
                 blockers[f"vendored-{v['name']}-abi"] = (
@@ -647,7 +666,7 @@ def main() -> int:
     # Label for npm/upstream values we couldn't determine: in --offline mode the
     # fetch was deliberately skipped (not "failed"), so say so honestly.
     miss_label = "offline" if OFFLINE else "fetch failed"
-    lines.append(md_h("Tree-sitter 0.25 upgrade readiness", 1))
+    lines.append(md_h("Tree-sitter compatibility workarounds", 1))
     lines.append("")
     if OFFLINE:
         lines.append(
@@ -663,8 +682,7 @@ def main() -> int:
     pinned_versions = read_pinned_grammar_versions()
 
     lines.append(
-        f"`tree-sitter@{current_runtime}.x` (ABI {current_abi_range[0]}–{current_abi_range[1]}) "
-        f"→ target `tree-sitter@{TARGET_RUNTIME}` "
+        f"Bundled runtime `tree-sitter@{TARGET_RUNTIME}` "
         f"(ABI {target_abi_range[0]}–{target_abi_range[1]})."
     )
     lines.append("")
@@ -674,7 +692,7 @@ def main() -> int:
     # workflow's row-diff change-detection keeps working).
     grammar_rows: list[dict] = []
     raw_matrix: list[str] = [
-        "| Grammar | Pinned | npm latest | Peer dep | Satisfies 0.25? | ABI | Upstream ABI | Status |",
+        "| Grammar | Pinned | npm latest | Peer dep | Peer accepts runtime | ABI | Upstream ABI | Status |",
         "|---|---|---|---|---|---|---|---|",
     ]
 
@@ -710,8 +728,8 @@ def main() -> int:
                     f"vendored `{name}`: ABI {v['vendored_abi']} outside target range "
                     f"{target_abi_range[0]}..{target_abi_range[1]}"
                 )
-            # A held vendored grammar (e.g. tree-sitter-c, #1242/#858) is frozen below
-            # a runtime upgrade: in-range ABI or not, keep it a blocker until the hold
+            # A held vendored grammar (e.g. tree-sitter-swift) is a workaround we carry:
+            # in-range ABI or not, keep it a blocker until the hold
             # (from the manifest) is lifted — same treatment as npm INTENTIONAL_PINS.
             if hold:
                 v["target_compat"] = False
@@ -802,19 +820,15 @@ def main() -> int:
             # (entry removed from INTENTIONAL_PINS), then reclassified next run.
             status = "Intentionally pinned"
             blockers[name] = (
-                f"`{name}` intentionally pinned at `{pinned_spec}` "
-                f"({INTENTIONAL_PINS[name]}) — pin must be lifted "
-                f"before the {TARGET_RUNTIME} runtime upgrade"
+                f"`{name}` intentionally pinned at `{pinned_spec}` ({INTENTIONAL_PINS[name]})"
             )
         elif target_compat:
             status = "Ready"
-        elif upstream_abi and upstream_abi >= 15:
-            status = "Unreleased (ABI 15 on main)"
-            upstream_progress = f"ABI 15 on `{upstream_repo}@{upstream_branch}` not yet published"
-            blockers[name] = f"`{name}`: ABI 15 on `{upstream_repo}` main but not published to npm"
         else:
-            status = "Blocking"
-            blockers[name] = f"`{name}@{npm_version}`: peer `{peer_display}` incompatible with 0.25"
+            status = "Peer patch required"
+            blockers[name] = (
+                f"`{name}@{npm_version}`: peer `{peer_display}` rejects {TARGET_RUNTIME}"
+            )
 
         # Also check upstream package.json for relaxed peer dep — beats
         # the ABI-15 hint when both are true.
@@ -874,11 +888,14 @@ def main() -> int:
     vendored_ready = sum(1 for v in vendored_grammars if v["target_compat"])
 
     if not blockers:
-        verdict = "**Ready** — all grammars are 0.25-compatible. The runtime upgrade can proceed."
+        verdict = (
+            f"**Clean** — every grammar runs on tree-sitter@{TARGET_RUNTIME} "
+            "without a workaround."
+        )
     else:
         moved = "no" if not by_bucket["waiting"] else f"yes — {len(by_bucket['waiting'])} grammars have unreleased fixes on main"
         verdict = (
-            f"**Blocked** — {len(blockers)} grammars are not yet 0.25-compatible. "
+            f"**Workarounds** — {len(blockers)} grammars still need one. "
             f"Upstream movement: {moved}."
         )
 
@@ -888,11 +905,11 @@ def main() -> int:
     lines.append(f"- {ready_count}/{npm_count} npm-installed grammars already accept tree-sitter@{TARGET_RUNTIME}")
     if vendored_count:
         lines.append(
-            f"- {vendored_ready}/{vendored_count} vendored grammars at an ABI within the target runtime range"
+            f"- {vendored_ready}/{vendored_count} vendored grammars at an ABI within the runtime range"
         )
     lines.append(f"- {len(by_bucket['intentional'])} intentionally pinned (see below)")
     lines.append(f"- {len(by_bucket['waiting'])} waiting on an upstream npm release")
-    lines.append(f"- {len(by_bucket['blocked'])} blocked on upstream (no fix even on main)")
+    lines.append(f"- {len(by_bucket['blocked'])} need a peer patch with no upstream fix (not even on main)")
     if by_bucket['fetch_failed']:
         why = "checks skipped in offline mode" if OFFLINE else "npm registry unreachable"
         lines.append(f"- {len(by_bucket['fetch_failed'])} could not be checked ({why})")
@@ -909,7 +926,8 @@ def main() -> int:
         lines.append(
             "These pins lag npm latest and the latest version's peer dep already "
             "accepts our current `tree-sitter@" + current_runtime + ".x` runtime. "
-            "Bumping is independent of the 0.25 upgrade and should be a quick PR."
+            "When bumping, remove the old version's `AUDITED_PEERS` entry in "
+            "`gitnexus/scripts/prepare-tree-sitter-bundle.cjs` (prepack fails until you do)."
         )
         lines.append("")
         for r in sorted(bump_now, key=lambda r: r["name"]):
@@ -933,8 +951,9 @@ def main() -> int:
     lines.append(md_h("Disposition", 2))
 
     _emit_bucket(
-        "Ready for 0.25",
-        "These grammars' npm-latest peer dep already accepts the target runtime. No action needed for the upgrade.",
+        "Peer accepts runtime",
+        f"These grammars' npm-latest peer dep already accepts tree-sitter@{TARGET_RUNTIME}. "
+        "No workaround needed at npm latest.",
         by_bucket["ready"],
         lambda r: (
             f"- `{r['name']}` — pinned `{r['pinned_spec']}`, npm latest `{r['npm_version_label']}`"
@@ -960,7 +979,7 @@ def main() -> int:
     _emit_bucket(
         "Waiting on upstream npm release",
         "Fixes are merged on the upstream main branch but not yet published to npm. "
-        "We can move forward as soon as upstream cuts a release.",
+        "The peer patch can be dropped as soon as upstream cuts a release.",
         by_bucket["waiting"],
         lambda r: (
             f"- `{r['name']}@{r['npm_version_label']}` — peer `{r['peer_range'] or 'none'}`. "
@@ -969,9 +988,9 @@ def main() -> int:
     )
 
     _emit_bucket(
-        "Blocked on upstream",
-        "Peer dep is too tight on both the latest npm release and on upstream main. "
-        "These need an upstream issue/PR before we can proceed.",
+        "Peer patch required",
+        "Peer dep rejects the runtime on both the latest npm release and upstream main. "
+        "The pack-time peer patch stays until upstream relaxes it.",
         by_bucket["blocked"],
         lambda r: f"- `{r['name']}@{r['npm_version_label']}` — peer `{r['peer_range'] or 'none'}`",
     )
@@ -987,6 +1006,35 @@ def main() -> int:
         by_bucket["fetch_failed"],
         lambda r: f"- `{r['name']}` (pinned `{r['pinned_spec']}`)",
     )
+
+    # ── Pack-time peer patches ──────────────────────────────────────
+    patched = read_patched_peers()
+    if patched:
+        rows_by_name = {r["name"]: r for r in grammar_rows}
+        patch_status = {
+            "ready": "can drop: npm latest accepts the runtime",
+            "intentional": "required while intentionally pinned",
+            "waiting": "drop once upstream publishes its relaxed peer",
+            "blocked": "required: no upstream fix yet",
+            "fetch_failed": f"unknown ({miss_label})",
+        }
+        lines.append(md_h(f"Pack-time peer patches ({len(patched)})", 2))
+        lines.append(
+            "`gitnexus/scripts/prepare-tree-sitter-bundle.cjs` adds "
+            f"`{TARGET_RUNTIME}` to these bundled manifests' tree-sitter peer range. "
+            "Removing an entry requires bumping (or dropping) the package that brings it in."
+        )
+        lines.append("")
+        for name, version, peer in sorted(patched):
+            row = rows_by_name.get(name)
+            if row is None or pinned_versions.get(name) != version:
+                status = "transitive: dropped when the grammar that depends on it is bumped"
+            elif row["bump_now"]:
+                status = f"can drop: bump to `{row['npm_version_label']}`"
+            else:
+                status = patch_status[row["bucket"]]
+            lines.append(f"- `{name}@{version}` (peer `{peer}`) — {status}")
+        lines.append("")
 
     # ── Vendored parsers ────────────────────────────────────────────
     lines.extend(_render_vendored_section(vendored_grammars, target_abi_range, blockers))

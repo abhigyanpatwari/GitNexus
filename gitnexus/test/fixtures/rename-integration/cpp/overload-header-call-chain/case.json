@@ -1,0 +1,80 @@
+{
+  "language": "cpp",
+  "warmParseCache": true,
+  "description": "Rename one overload across its header declaration, definition and typed call, preserving both an imported floating-point overload and a same-scope boolean overload.",
+  "categories": [
+    "cross-file",
+    "overloads",
+    "call-graph",
+    "declaration-family"
+  ],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "api.cpp",
+    "startLine": 1
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "outer",
+        "kind": "Function",
+        "file": "main.cpp"
+      },
+      "to": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "main.cpp"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "main.cpp"
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Function",
+        "file": "api.h",
+        "startLine": 0
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "floating",
+        "kind": "Function",
+        "file": "main.cpp"
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Function",
+        "file": "api.h",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "boolean",
+        "kind": "Function",
+        "file": "main.cpp"
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Function",
+        "file": "main.cpp",
+        "startLine": 1
+      }
+    }
+  ],
+  "exactOutgoing": true
+}

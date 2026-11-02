@@ -56,11 +56,10 @@ export interface GrpcDetection {
  * `GrpcDetection`s. The plugin is free to run multiple compiled query
  * bundles and walk the AST to cross-reference captures.
  *
- * `language` is typed `unknown` for the same reason as in
- * `tree-sitter-scanner.ts`.
+ * `language` is the concrete grammar selected from its package exports.
  */
 export interface GrpcLanguagePlugin {
   name: string;
-  language: unknown;
+  language: Parser.Language;
   scan(tree: Parser.Tree): GrpcDetection[];
 }

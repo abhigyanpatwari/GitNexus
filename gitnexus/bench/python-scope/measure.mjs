@@ -155,7 +155,9 @@ function computeFingerprint() {
   const perFixtureDigests = [];
   for (const { key, absPath } of collectPythonFixtures()) {
     const src = fs.readFileSync(absPath, 'utf8');
-    const matches = emitPythonScopeCaptures(src, absPath);
+    // Lexical policies carry scope IDs containing the input path. Keep the
+    // fingerprint independent of the checkout's absolute location.
+    const matches = emitPythonScopeCaptures(src, key);
     groups += matches.length;
     perFixtureDigests.push(`${key}\t${matches.length}\t${digestCaptures(matches)}`);
   }
@@ -199,6 +201,9 @@ if (!CHECK) {
   // the path is still linear (scaling ratio under budget). Re-baseline a
   // legitimate capture change with `node --import tsx measure.mjs` (no --check)
   // and commit the new baseline-fingerprint.txt deliberately.
+  // #3531: Tree-sitter 0.25 adds one zero-width module scope to each of the
+  // 15 empty __init__.py fixtures (3982 -> 3997 groups). All non-empty fixture
+  // captures and the synthetic DAO are unchanged; the golden test pins this.
   const baselinePath = path.resolve(__dirname, 'baseline-fingerprint.txt');
   const baseline = fs.readFileSync(baselinePath, 'utf8').trim();
   const failures = [];

@@ -14,9 +14,11 @@ import { describe, it, expect } from 'vitest';
 function parseReasonField(fetchReason: string | null): {
   accessedKeys?: string[];
   fetchCount?: number;
+  viaSymbolIds?: string[];
 } {
   let accessedKeys: string[] | undefined;
   let fetchCount: number | undefined;
+  let viaSymbolIds: string[] | undefined;
   if (fetchReason) {
     const keysMatch = fetchReason.match(/\|keys:([^|]+)/);
     if (keysMatch) {
@@ -26,10 +28,13 @@ function parseReasonField(fetchReason: string | null): {
     if (fetchesMatch) {
       fetchCount = parseInt(fetchesMatch[1], 10);
     }
+    const via = [...fetchReason.matchAll(/\|via:([^|]+)/g)].map((m) => m[1]);
+    if (via.length > 0) viaSymbolIds = via;
   }
   return {
     ...(accessedKeys ? { accessedKeys } : {}),
     ...(fetchCount && fetchCount > 1 ? { fetchCount } : {}),
+    ...(viaSymbolIds ? { viaSymbolIds } : {}),
   };
 }
 
@@ -78,6 +83,25 @@ describe('fetch reason field parsing', () => {
     const result = parseReasonField(reason);
     // Keys should NOT contain "fetches:3" or "pagination|fetches:3"
     expect(result.accessedKeys).not.toContain('pagination|fetches:3');
+    expect(result.accessedKeys).toEqual(['data', 'pagination']);
+  });
+
+  // #3644: one field per requesting function; ids carry ':' and '#'.
+  it('parses every via field, after keys and fetches', () => {
+    const result = parseReasonField(
+      'fetch-url-match|keys:data|fetches:2|via:Function:src/api.ts:getGrants#0|via:Method:src/api.ts:Api.list#1',
+    );
+    expect(result.accessedKeys).toEqual(['data']);
+    expect(result.fetchCount).toBe(2);
+    expect(result.viaSymbolIds).toEqual([
+      'Function:src/api.ts:getGrants#0',
+      'Method:src/api.ts:Api.list#1',
+    ]);
+  });
+
+  it('leaves viaSymbolIds out of a reason written before the attribution', () => {
+    const result = parseReasonField('fetch-url-match|keys:data,pagination|fetches:3');
+    expect(result.viaSymbolIds).toBeUndefined();
     expect(result.accessedKeys).toEqual(['data', 'pagination']);
   });
 });

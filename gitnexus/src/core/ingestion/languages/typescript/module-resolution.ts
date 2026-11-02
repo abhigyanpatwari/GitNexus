@@ -2,7 +2,7 @@
  * TypeScript / JavaScript module resolution (#2953).
  *
  * This is the algorithm `tsc` and Node actually run, in the order they run it.
- * It replaces `import-resolvers/utils.ts:suffixResolve` on the TS/JS/Vue path,
+ * It replaces `utils/suffix-index.ts:suffixResolve` on the TS/JS/Vue path,
  * which answered a different question — "does any file in this repo have a path
  * ending in this specifier?" — and answered it by dropping leading segments
  * until something matched. That is why `@acme/telemetry/nest`, a registry
@@ -31,14 +31,14 @@
  *   6. anything else — external. `null`.
  */
 
-import type { NodeWorkspacePackages } from '../../import-resolvers/node-workspace-packages.js';
+import type { NodeWorkspacePackages } from './workspace-packages.js';
 import {
   matchSubpathMap,
   nodePackageNameOf,
   owningPackage,
   resolveNodeWorkspaceImport,
   substituteStar,
-} from '../../import-resolvers/node-workspace-packages.js';
+} from './workspace-packages.js';
 import { resolveFile } from './file-candidates.js';
 import { tsconfigFor, type TsconfigIndex, type TsPathMapping } from './tsconfig.js';
 

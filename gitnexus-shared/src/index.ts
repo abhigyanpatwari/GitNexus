@@ -131,7 +131,11 @@ export type {
 } from './scope-resolution/method-dispatch-index.js';
 
 // SCC-aware cross-file finalize (RFC §3.2 Phase 2; Ring 2 SHARED #915)
-export { finalize } from './scope-resolution/finalize-algorithm.js';
+export {
+  finalize,
+  indexExportsByName,
+  indexTopLevelExportsByName,
+} from './scope-resolution/finalize-algorithm.js';
 export type {
   FinalizeInput,
   FinalizeFile,
@@ -223,3 +227,28 @@ export {
   stripGitSuffix,
 } from './integrations/understand-quickly.js';
 export type { UqDispatchPayload } from './integrations/understand-quickly.js';
+
+export type {
+  SourcePosition,
+  LookupPurpose,
+  NameClaim,
+  ScopeLookupPolicy,
+  NameLookupOptions,
+} from './scope-resolution/types.js';
+export {
+  lookupLexicalName,
+  nameClaimsFor,
+  selectClaimsAtScope,
+  rangesOverlap,
+} from './scope-resolution/name-claims.js';
+export type {
+  NameClaimResult,
+  NameClaimSources,
+  ScopeClaimSelection,
+} from './scope-resolution/name-claims.js';
+
+export * from './rename/types.js';
+export * from './rename/results.js';
+export * from './rename/edits.js';
+export * from './rename/positions.js';
+export * from './rename/family.js';

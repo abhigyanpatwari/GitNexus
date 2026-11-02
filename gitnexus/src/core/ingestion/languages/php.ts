@@ -18,6 +18,7 @@ import {
 } from './php/index.js';
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { phpRenameProvider } from './php/rename.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { phpClassConfig } from '../class-extractors/configs/php.js';
 import { createPhpCfgVisitor } from '../cfg/visitors/php.js';
@@ -28,8 +29,6 @@ import {
 } from '../language-provider.js';
 import { typeConfig as phpConfig } from '../type-extractors/php.js';
 import { phpExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { phpImportConfig } from '../import-resolvers/configs/php.js';
 import { PHP_QUERIES } from '../tree-sitter-queries.js';
 import {
   findDescendant,
@@ -266,6 +265,7 @@ function isPhpRouteFile(filePath: string): boolean {
 }
 
 export const phpProvider = defineLanguage({
+  rename: phpRenameProvider,
   id: SupportedLanguages.PHP,
   extensions: ['.php', '.phtml', '.php3', '.php4', '.php5', '.php8'],
   entryPointPatterns: [
@@ -306,7 +306,6 @@ export const phpProvider = defineLanguage({
   treeSitterQueries: PHP_QUERIES,
   typeConfig: phpConfig,
   exportChecker: phpExportChecker,
-  importResolver: createImportResolver(phpImportConfig),
   callExtractor: createCallExtractor(phpCallConfig),
   fieldExtractor: createFieldExtractor(phpFieldConfig),
   methodExtractor: createMethodExtractor(phpMethodConfig),

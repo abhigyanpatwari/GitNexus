@@ -1,0 +1,35 @@
+{
+  "language": "typescript",
+  "description": "Rename a canonical export imported through an escaped identifier to an escaped destination and preserve its persisted call edge.",
+  "categories": [
+    "cross-file",
+    "escaped-identifier",
+    "alias",
+    "call-graph"
+  ],
+  "target": {
+    "name": "calculate",
+    "kind": "Function",
+    "file": "source.ts"
+  },
+  "newName": "comp\\u0075te",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "entry.ts"
+      },
+      "to": {
+        "name": "calculate",
+        "kind": "Function",
+        "file": "source.ts"
+      }
+    }
+  ]
+}

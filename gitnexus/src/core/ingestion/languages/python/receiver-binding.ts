@@ -13,11 +13,19 @@
 import type { CaptureMatch } from 'gitnexus-shared';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { decoratorNames, isBuiltinDescriptor } from './builtin-descriptors.js';
+import { isPythonGlobalDeclaration, isPythonNonlocalDeclaration } from './simple-hooks.js';
+import { pythonReceiverField } from './field-helpers.js';
 
 /** Walk up to the enclosing `class_definition`, ignoring the immediate
  *  `decorated_definition` wrapper. Returns `null` when the function is
  *  free, lambda-bodied, or nested inside another function. */
 function findEnclosingClassDefinition(node: SyntaxNode): SyntaxNode | null {
+  const name = node.childForFieldName('name')?.text;
+  if (
+    name !== undefined &&
+    (isPythonGlobalDeclaration(node, name) || isPythonNonlocalDeclaration(node, name))
+  )
+    return null;
   let cur: SyntaxNode | null = node.parent;
   while (cur !== null) {
     if (cur.type === 'class_definition') return cur;
@@ -415,9 +423,8 @@ export function synthesizeConstructorFieldTypeBindings(fnNode: SyntaxNode): Capt
       const left = node.childForFieldName('left');
       const right = node.childForFieldName('right');
       if (left?.type === 'attribute') {
-        const object = left.childForFieldName('object');
-        const field = left.childForFieldName('attribute');
-        if (object?.type === 'identifier' && object.text === receiverName && field !== null) {
+        const field = pythonReceiverField(left, receiverName);
+        if (field !== null) {
           const explicitType = node.childForFieldName('type');
           const parameterType =
             right?.type === 'identifier' ? parameterTypes.get(right.text) : undefined;

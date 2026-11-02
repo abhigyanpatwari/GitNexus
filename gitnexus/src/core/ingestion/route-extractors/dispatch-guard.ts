@@ -242,7 +242,7 @@ function isPathExpression(node: SyntaxNode): boolean {
   if (node.type === 'member_expression') {
     const property = node.childForFieldName('property');
     if (property === null) return false;
-    if (PATH_IDENTIFIERS.has(property.text)) return true;
+    if (property.text === 'pathname') return true;
     if (property.text === 'url') {
       const object = node.childForFieldName('object');
       return object !== null && RAW_URL_RECEIVERS.has(object.text);

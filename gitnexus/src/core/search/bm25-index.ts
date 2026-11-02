@@ -15,6 +15,11 @@
 // that identical call itself — shared for the same reason, so the two paths
 // can no longer drift apart the way they had to be edited in lockstep before.
 import { queryFTS, classifyFtsQueryError, buildFtsQueryCypher } from '../lbug/lbug-adapter.js';
+import {
+  assertSymbolIdentity,
+  assertIdentityFields,
+  rethrowSymbolIdentityError,
+} from '../lbug/query-result-integrity.js';
 import { normalizeFtsText } from '../lbug/csv-generator.js';
 import { getExtensionCapabilities } from '../lbug/extension-loader.js';
 import { redactPaths } from './fts-indexes.js';
@@ -85,7 +90,9 @@ async function queryFTSViaExecutor(
     const rows = await executor(cypher, { query });
     return {
       rows: rows.map((row: any) => {
-        const node = row.node || row[0] || {};
+        const node = row.node ?? row[0] ?? {};
+        assertSymbolIdentity(node.nodeId ?? node.id);
+        assertIdentityFields(node.name, node.filePath);
         const score = row.score ?? row[1] ?? 0;
         return {
           filePath: node.filePath || '',
@@ -95,6 +102,7 @@ async function queryFTSViaExecutor(
       }),
     };
   } catch (e) {
+    rethrowSymbolIdentityError(e);
     const message = e instanceof Error ? e.message : String(e);
     return { benign: classifyFtsQueryError(message) === 'missing-index', message };
   }
@@ -207,6 +215,8 @@ export const searchFTSFromLbug = async (
 
   const addResults = (results: any[]) => {
     for (const r of results) {
+      assertSymbolIdentity(r.nodeId);
+      assertIdentityFields(r.name, r.filePath);
       if (!fileNodeScores.has(r.filePath)) fileNodeScores.set(r.filePath, []);
       fileNodeScores.get(r.filePath)!.push({ score: r.score, nodeId: r.nodeId });
     }

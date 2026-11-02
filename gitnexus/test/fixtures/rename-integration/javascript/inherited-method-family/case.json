@@ -1,0 +1,51 @@
+{
+  "language": "javascript",
+  "description": "Rename an overridden instance method and super dispatch, leaving an unrelated class untouched.",
+  "categories": [
+    "polymorphism",
+    "call-graph",
+    "unrelated-owner"
+  ],
+  "target": {
+    "name": "render",
+    "kind": "Method",
+    "file": "model.js",
+    "startLine": 1
+  },
+  "newName": "paint",
+  "expect": {
+    "status": "success",
+    "edits": 5
+  },
+  "edges": [
+    {
+      "type": "METHOD_OVERRIDES",
+      "from": {
+        "name": "Child",
+        "kind": "Class",
+        "file": "model.js"
+      },
+      "to": {
+        "name": "render",
+        "kind": "Method",
+        "file": "model.js",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "render",
+        "kind": "Method",
+        "file": "model.js",
+        "startLine": 4
+      },
+      "to": {
+        "name": "render",
+        "kind": "Method",
+        "file": "model.js",
+        "startLine": 1
+      }
+    }
+  ]
+}

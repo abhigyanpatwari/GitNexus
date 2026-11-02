@@ -2,7 +2,7 @@
  * Production-path regression guard for the Ruby import-resolution index (#2880).
  *
  * Ruby's bare `require` leg reads the shared `getWorkspaceFileIndex`
- * (`import-resolvers/workspace-file-index.ts`), memoized on the `allFilePaths`
+ * (`utils/workspace-file-index.ts`), memoized on the `allFilePaths`
  * Set identity via a WeakMap. Before #2880 every single `require` materialized
  * two arrays AND built a whole `buildSuffixIndex` over the repo, then threw it
  * away — the most expensive of the four resolvers hoisted.

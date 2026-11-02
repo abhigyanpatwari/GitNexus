@@ -137,7 +137,8 @@ function querySeam(query: string, params: Record<string, any> | undefined): Seam
   if (query.includes('RETURN s.id AS id, s.filePath AS filePath')) return 'pdgSpans';
   if (query.includes('RETURN c.id AS id, r.reason AS reason')) return 'pdgSummary';
   if (query.includes('RETURN a.id AS id, r.reason AS reason')) return 'pdgSelf';
-  if (query.includes('RETURN a.id AS id ORDER BY a.startLine')) return 'pdgSeed';
+  if (query.includes('RETURN a.id AS id, a.ownerId AS ownerId ORDER BY a.startLine'))
+    return 'pdgSeed';
   if (query.includes('RETURN b.id AS id')) {
     if (query.includes('b.calleeIds AS calleeIds')) return 'pdgCalleeBlocks';
     if (query.includes('b.text AS text')) return 'pdgStatement';

@@ -52,6 +52,7 @@
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { typescriptMethodConfig } from '../../method-extractors/configs/typescript-javascript.js';
+import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
 
 interface TsArityMetadata {
   readonly parameterCount: number | undefined;
@@ -64,14 +65,21 @@ export function computeTsArityMetadata(fnNode: SyntaxNode): TsArityMetadata {
 
   let hasRest = false;
   let optionalCount = 0;
-  const types: string[] = [];
+  const sharedTypes = declarationParameterTypes(params);
+  let normalized: string[] | undefined;
+  let index = 0;
   for (const p of params) {
     if (p.isVariadic) hasRest = true;
     else if (p.isOptional) optionalCount++;
     const t = p.type !== null && p.type !== undefined ? stripGenericsAndArraySuffix(p.type) : '';
-    types.push(t);
+    if (t !== sharedTypes[index]) {
+      normalized ??= sharedTypes.slice();
+      normalized[index] = t;
+    }
+    index++;
   }
-  if (hasRest) types.push('params');
+  const types = normalized ?? sharedTypes;
+  const markedTypes = hasRest ? [...types, 'params'] : types;
 
   const total = params.length;
   const parameterCount = hasRest ? undefined : total;
@@ -82,7 +90,7 @@ export function computeTsArityMetadata(fnNode: SyntaxNode): TsArityMetadata {
   // registry without aiding narrowing — callers treat absence as
   // "types unknown".
   const hasAnyType = types.some((t) => t !== '' && t !== 'params');
-  const parameterTypes = hasAnyType || hasRest ? (types.length > 0 ? types : undefined) : undefined;
+  const parameterTypes = hasAnyType || hasRest ? markedTypes : undefined;
 
   return {
     parameterCount,

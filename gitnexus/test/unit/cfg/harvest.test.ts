@@ -475,6 +475,56 @@ function siteFact(cfg: FunctionCfg, line?: number): StatementFacts {
 }
 
 describe('M3 U1 — taint-site harvest: call sites', () => {
+  it.each([2, 33])('preserves every repeated argument occurrence with %i arguments', (count) => {
+    const cfg = cfgOf(`function f(x) { exec(${Array(count).fill('x').join(',')}); }`);
+    const fact = siteFact(cfg, 1);
+    const x = bindingIdx(cfg, 'x');
+    expect(fact.sites![0].args).toEqual(Array.from({ length: count }, () => [x]));
+    expect(fact.uses.filter((binding) => binding === x)).toHaveLength(1);
+    if (count > 32) expect(cfg.refinementSafe).toBe(false);
+    else
+      expect(fact.refinement?.calls?.[0].arguments).toEqual(
+        Array(count).fill({ kind: 'binding', binding: x }),
+      );
+  });
+
+  it('retains ordinary call occurrences after exhausting the value-shape budget', () => {
+    const cfg = cfgOf(`function f(x) { ${'exec(x);'.repeat(257)} }`);
+    const facts = allFacts(cfg).filter((fact) =>
+      fact.sites?.some((site) => site.callee === 'exec'),
+    );
+    const x = bindingIdx(cfg, 'x');
+    expect(facts).toHaveLength(257);
+    expect(
+      facts.every((fact) => fact.uses.includes(x) && fact.sites![0].args?.[0]?.[0] === x),
+    ).toBe(true);
+    expect(facts[0].refinement?.calls).toHaveLength(1);
+    expect(facts[256].refinement).toBeUndefined();
+    expect(cfg.refinementSafe).toBe(false);
+  });
+
+  it.each(['label: function g() {}', 'if (condition) function g() {}'])(
+    'resolves a declaration beneath a non-scope parent: %s',
+    (declaration) => {
+      const cfg = cfgOf(`function f(g) {
+  {
+    let g = source();
+    ${declaration}
+    use(g);
+  }
+  use(g);
+}`);
+      const [outer, inner] = bindingIdxs(cfg, 'g');
+      expect(bindingIdxs(cfg, 'g')).toHaveLength(2);
+      const facts = allFacts(cfg);
+      const declared = facts.filter((fact) => fact.line === 4).flatMap((fact) => fact.defs);
+      expect(declared).toContain(inner);
+      expect(declared).not.toContain(outer);
+      expect(facts.find((fact) => fact.line === 5)?.uses).toContain(inner);
+      expect(facts.find((fact) => fact.line === 7)?.uses).toContain(outer);
+    },
+  );
+
   it('exec(a, b) → one call site mapping position 0→[a], 1→[b]', () => {
     const cfg = cfgOf(`function f(a, b) { exec(a, b); }`);
     const sites = siteFact(cfg, 1).sites!;

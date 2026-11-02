@@ -4,6 +4,7 @@ import path from 'path';
 import { pathToFileURL } from 'url';
 import { describe, it, expect, vi } from 'vitest';
 import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
+import { resolveParseCacheIdentity } from '../../src/core/parse-cache-identity.js';
 import {
   deriveEmbeddingMode,
   deriveEmbeddingCap,
@@ -35,7 +36,74 @@ const currentRunnerIdentity = () =>
     pathToFileURL(path.resolve(__dirname, '../../src/core/run-analyze.ts')).href,
   );
 
+const currentParserProvenance = () => {
+  const parser = resolveParseCacheIdentity(
+    pathToFileURL(path.resolve(__dirname, '../../src/core/run-analyze.ts')).href,
+  );
+  if (parser.ok === false)
+    throw new Error(`Cannot verify fixture parser artifacts: ${parser.reason}`);
+  return { base: parser.identity.base };
+};
+
 describe('run-analyze module', () => {
+  it('adds and removes dot-directory coverage on a clean same-commit analyze', async () => {
+    const tmpRepo = await createTempDir('gitnexus-dotdirs-policy-');
+    const tmpHome = await createTempDir('gitnexus-dotdirs-home-');
+    const savedHome = process.env.GITNEXUS_HOME;
+    const savedDirs = process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+    try {
+      const git = (...args: string[]) =>
+        execFileSync('git', args, { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      git('init');
+      await fs.mkdir(path.join(tmpRepo.dbPath, '.source'));
+      await fs.writeFile(
+        path.join(tmpRepo.dbPath, 'main.ts'),
+        'export function main() { return 1; }',
+      );
+      await fs.writeFile(
+        path.join(tmpRepo.dbPath, '.source', 'hidden.ts'),
+        'export function hidden() { return 2; }',
+      );
+      git('add', '.');
+      git('-c', 'user.name=test', '-c', 'user.email=test@test', 'commit', '-m', 'fixture');
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const analyze = () =>
+        runFullAnalysis(
+          tmpRepo.dbPath,
+          { skipAgentsMd: true, skipSkills: true, skipFts: true },
+          { onProgress: () => {} },
+        );
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await analyze();
+      expect((await loadMeta(storagePath))?.fileHashes).not.toHaveProperty('.source/hidden.ts');
+      expect((await analyze()).alreadyUpToDate).toBe(true);
+
+      process.env.GITNEXUS_INCLUDE_DOT_DIRS = '.source';
+      expect((await analyze()).alreadyUpToDate).not.toBe(true);
+      const included = await loadMeta(storagePath);
+      expect(Object.keys(included?.fileHashes ?? {})).toContain('.source/hidden.ts');
+      expect(included?.indexCoverage?.includeDotDirs).toEqual(['.source']);
+
+      process.env.GITNEXUS_INCLUDE_DOT_DIRS = ' .source/, .source ';
+      expect((await analyze()).alreadyUpToDate).toBe(true);
+      delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      expect((await analyze()).alreadyUpToDate).not.toBe(true);
+      expect(Object.keys((await loadMeta(storagePath))?.fileHashes ?? {})).not.toContain(
+        '.source/hidden.ts',
+      );
+      expect((await loadMeta(storagePath))?.indexCoverage?.includeDotDirs).toBeUndefined();
+    } finally {
+      if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedHome;
+      if (savedDirs === undefined) delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      else process.env.GITNEXUS_INCLUDE_DOT_DIRS = savedDirs;
+      await tmpRepo.cleanup();
+      await tmpHome.cleanup();
+    }
+  }, 120_000);
+
   it('exports runFullAnalysis as a function', async () => {
     const mod = await import('../../src/core/run-analyze.js');
     expect(typeof mod.runFullAnalysis).toBe('function');
@@ -78,6 +146,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       };
       await saveMeta(storagePath, meta);
 
@@ -122,6 +191,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
         capabilities: {
           graph: { provider: 'ladybugdb', status: 'available' },
           fts: {
@@ -183,6 +253,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       };
       await saveMeta(storagePath, meta);
       await registerRepo(tmpRepo.dbPath, meta, { name: 'old' });
@@ -234,6 +305,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       };
       await saveMeta(storagePath, meta);
       await registerRepo(tmpRepo.dbPath, meta, { name: 'kept' });
@@ -280,6 +352,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       };
       await registerRepo(tmpA.dbPath, metaA, { name: 'new' });
 
@@ -291,6 +364,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       };
       await saveMeta(storagePath, metaB);
       await registerRepo(tmpB.dbPath, metaB, { name: 'old' });
@@ -331,6 +405,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       };
       await saveMeta(storagePath, meta);
       await registerRepo(tmpRepo.dbPath, meta, { name: 'original' });
@@ -895,6 +970,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
+        parseCacheIdentity: currentParserProvenance(),
       };
       await saveMeta(flat.storagePath, flatMetaSeed);
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
@@ -906,6 +982,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
+        parseCacheIdentity: currentParserProvenance(),
       });
       // Register the repo in an isolated registry: the shadow cleanup only
       // runs for registered repos (#2364 review F2 — unregistered repos must
@@ -963,6 +1040,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
+        parseCacheIdentity: currentParserProvenance(),
       });
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
       await saveMeta(path.dirname(branch.metaPath), {
@@ -973,6 +1051,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
+        parseCacheIdentity: currentParserProvenance(),
       });
       // Deliberately NO registerRepo: the empty isolated registry makes this
       // repo unregistered, so the adopt must be a full no-op on disk
@@ -1022,6 +1101,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
+        parseCacheIdentity: currentParserProvenance(),
       });
 
       // Detached HEAD → branchLabel is null → the restamp block must not
@@ -1074,6 +1154,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
+        parseCacheIdentity: currentParserProvenance(),
       });
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
       await saveMeta(path.dirname(branch.metaPath), {
@@ -1084,6 +1165,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
+        parseCacheIdentity: currentParserProvenance(),
       });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -1143,6 +1225,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -1187,6 +1270,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -1231,6 +1315,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -1277,6 +1362,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -1324,6 +1410,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');

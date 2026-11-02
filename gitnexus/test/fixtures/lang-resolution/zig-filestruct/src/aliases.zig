@@ -68,6 +68,15 @@ fn b11(orig: *Local) void {
     var cur = orig;
     cur.go();
 }
+// b12 — a FORWARDING type constructor imported by name. `generic.Bridge(T)`
+// is `return Builder(T);`, so `Bridge(Local)` is `Builder(Local)` — a type
+// only generic.zig can name.
+const Bridge = generic.Bridge;
+fn b12() void {
+    const bound = Bridge(Local);
+    bound.accessor("bound");
+    Bridge(Local).prototypeChain();
+}
 
 // b9 — Lightpanda's `JsApi` shape: a container-level alias of a forwarding
 // type constructor, used by every member declaration of the container.

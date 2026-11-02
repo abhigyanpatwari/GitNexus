@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { TypeScriptFieldExtractor } from '../../src/core/ingestion/field-extractors/typescript.js';
 import { createFieldExtractor } from '../../src/core/ingestion/field-extractors/generic.js';
-import { typescriptConfig } from '../../src/core/ingestion/field-extractors/configs/typescript-javascript.js';
+import {
+  javascriptConfig,
+  typescriptConfig,
+} from '../../src/core/ingestion/field-extractors/configs/typescript-javascript.js';
 import { pythonConfig } from '../../src/core/ingestion/field-extractors/configs/python.js';
 import { goConfig } from '../../src/core/ingestion/field-extractors/configs/go.js';
 import { cppConfig } from '../../src/core/ingestion/field-extractors/configs/c-cpp.js';
@@ -9,30 +12,34 @@ import { rubyConfig } from '../../src/core/ingestion/field-extractors/configs/ru
 import { dartConfig } from '../../src/core/ingestion/field-extractors/configs/dart.js';
 import { javaConfig, kotlinConfig } from '../../src/core/ingestion/field-extractors/configs/jvm.js';
 import { swiftConfig } from '../../src/core/ingestion/field-extractors/configs/swift.js';
-import type { FieldExtractorContext } from '../../src/core/ingestion/field-types.js';
+import type {
+  ExtractedFields,
+  FieldExtractorContext,
+} from '../../src/core/ingestion/field-types.js';
 import type { TypeEnvironment } from '../../src/core/ingestion/type-env.js';
 import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
+import JavaScript from 'tree-sitter-javascript';
 import Python from 'tree-sitter-python';
 import Go from 'tree-sitter-go';
 import Cpp from 'tree-sitter-cpp';
 import Ruby from 'tree-sitter-ruby';
 import Java from 'tree-sitter-java';
-import CSharp from 'tree-sitter-c-sharp';
+import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 
 // Vendored grammars — loaded from vendor/ by absolute path, never node_modules (#2111).
 const Dart = requireVendoredGrammar('tree-sitter-dart');
 
-let Kotlin: unknown;
+let Kotlin: Parser.Language | null = null;
 try {
   Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 } catch {
   // Kotlin grammar may not have a prebuild for this platform
 }
 
-let Swift: unknown;
+let Swift: Parser.Language | null = null;
 try {
   Swift = requireVendoredGrammar('tree-sitter-swift');
 } catch {
@@ -1499,5 +1506,65 @@ describeSwift('GenericFieldExtractor — Swift (F75 protocol property requiremen
     const matches = result!.fields.filter((f) => f.name === 'name');
     expect(matches).toHaveLength(1);
     expect(matches[0].type).toBe('String');
+  });
+});
+
+// A JS/TS field with no declared type is typed only by what its initializer
+// constructs. The scope query binds that type for an INSTANCE field, but a
+// static field's binding is kept out of the class scope (it would retype an
+// instance field of the same name), so the field extractor records it on the
+// field instead, for the Property node. A declared type, when present, is the
+// type, and nothing is recorded beside it.
+describe('field initializer type (JS/TS)', () => {
+  const javascriptExtractor = createFieldExtractor(javascriptConfig);
+  const typescriptExtractor = new TypeScriptFieldExtractor();
+  const context = createMockContext();
+  const initializerTypeOf = (
+    language: Parser.Language,
+    extract: (node: Parser.SyntaxNode) => ExtractedFields | null,
+    source: string,
+    field: string,
+  ): string | undefined => {
+    const classParser = new Parser();
+    classParser.setLanguage(language);
+    const [classNode] = classParser.parse(source).rootNode.namedChildren;
+    return extract(classNode)?.fields.find((f) => f.name === field)?.initializerType;
+  };
+
+  it.each<readonly [string, string, string | undefined]>([
+    ['static DEFAULT = new Config();', 'DEFAULT', 'Config'],
+    ['static repo = new models.Repo();', 'repo', 'models.Repo'],
+    ['p = new Outer();', 'p', 'Outer'],
+    ['#q = new Outer();', '#q', 'Outer'],
+    ['static n = 5;', 'n', undefined],
+    ['static made = make();', 'made', undefined],
+    ['static bare;', 'bare', undefined],
+  ])('JavaScript `%s` -> %s: %s', (member, field, expected) => {
+    expect(
+      initializerTypeOf(
+        JavaScript,
+        (node) => javascriptExtractor.extract(node, context),
+        `class C { ${member} }`,
+        field,
+      ),
+    ).toBe(expected);
+  });
+
+  it.each<readonly [string, string, string | undefined]>([
+    ['static DEFAULT = new Config();', 'DEFAULT', 'Config'],
+    ['static repo = new models.Repo();', 'repo', 'models.Repo'],
+    ['private p = new Outer();', 'p', 'Outer'],
+    ['static r: Alien = new Alien();', 'r', undefined],
+    ['static n = 5;', 'n', undefined],
+    ['static made = make();', 'made', undefined],
+  ])('TypeScript `%s` -> %s: %s', (member, field, expected) => {
+    expect(
+      initializerTypeOf(
+        TypeScript.typescript,
+        (node) => typescriptExtractor.extract(node, context),
+        `class C { ${member} }`,
+        field,
+      ),
+    ).toBe(expected);
   });
 });

@@ -1,0 +1,62 @@
+{
+  "language": "javascript",
+  "description": "Keep escaped semantic keys aligned through persisted indexing, cached reload, and exact rename.",
+  "categories": [
+    "escaped-identifier",
+    "call-graph",
+    "cross-file"
+  ],
+  "target": {
+    "name": "calc\\u0075late",
+    "kind": "Function",
+    "file": "callbacks.js"
+  },
+  "newName": "compute",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "callbacks.js"
+      },
+      "to": {
+        "name": "calc\\u0075late",
+        "kind": "Function",
+        "file": "callbacks.js"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "throughParameter",
+        "kind": "Function",
+        "file": "callbacks.js"
+      },
+      "to": {
+        "name": "invoke",
+        "kind": "Function",
+        "file": "callbacks.js"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "invoke",
+        "kind": "Function",
+        "file": "callbacks.js"
+      },
+      "to": {
+        "name": "calc\\u0075late",
+        "kind": "Function",
+        "file": "callbacks.js"
+      }
+    }
+  ],
+  "exactOutgoing": true,
+  "warmParseCache": true
+}

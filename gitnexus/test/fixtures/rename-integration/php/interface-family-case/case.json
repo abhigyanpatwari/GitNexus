@@ -1,0 +1,52 @@
+{
+  "language": "php",
+  "description": "Rename an interface family through case-insensitive callable spellings while preserving a same-named public property and unrelated method.",
+  "categories": [
+    "polymorphism",
+    "call-graph",
+    "case-insensitive-method",
+    "public-field"
+  ],
+  "target": {
+    "name": "render",
+    "kind": "Method",
+    "file": "model.php",
+    "startLine": 2
+  },
+  "newName": "paint",
+  "expect": {
+    "status": "success",
+    "edits": 5
+  },
+  "edges": [
+    {
+      "type": "METHOD_IMPLEMENTS",
+      "from": {
+        "name": "render",
+        "kind": "Method",
+        "file": "model.php",
+        "startLine": 6
+      },
+      "to": {
+        "name": "render",
+        "kind": "Method",
+        "file": "model.php",
+        "startLine": 2
+      }
+    },
+    {
+      "type": "METHOD_OVERRIDES",
+      "from": {
+        "name": "Child",
+        "kind": "Class",
+        "file": "model.php"
+      },
+      "to": {
+        "name": "render",
+        "kind": "Method",
+        "file": "model.php",
+        "startLine": 6
+      }
+    }
+  ]
+}

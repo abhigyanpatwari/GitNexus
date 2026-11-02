@@ -1,11 +1,11 @@
 {
   "csharp-alias-imports/Models/Repo.cs": {
-    "captureGroups": 15,
-    "digest": "044a25113f7b90a72ad0e42cd7f747848222a21c4093775f08c133188dc25687"
+    "captureGroups": 16,
+    "digest": "478fd5dc5396be1826b6f62976460443184097f7cd1d6ab388a8726477d6d8ff"
   },
   "csharp-alias-imports/Models/User.cs": {
-    "captureGroups": 15,
-    "digest": "a3fe19d6bf25831c2e1afc836e0ed82cc903a43e006d7428a2386b0bc7ea0c47"
+    "captureGroups": 16,
+    "digest": "a2f0c4b32a34404b8649f37a1096feb449c4a263951857283ef8d126730bdd4e"
   },
   "csharp-alias-imports/Services/Main.cs": {
     "captureGroups": 18,
@@ -48,8 +48,8 @@
     "digest": "c2d5ef9688ff2fce345fe8d8148ee0d8281032b55083f70ac925e5407b3c0d0c"
   },
   "csharp-async-binding/OrderService.cs": {
-    "captureGroups": 14,
-    "digest": "492b2ceffaeae03b6a9d673f961dc5386bf08496ef4a8ae70dae68a604801c2f"
+    "captureGroups": 15,
+    "digest": "81b17a923e6cffb4dc087024844f8e5e83a4ea4aa0d1bfb8e57f92d4a29da71e"
   },
   "csharp-async-binding/Program.cs": {
     "captureGroups": 37,
@@ -60,20 +60,20 @@
     "digest": "d771395595ea17b22e3f7b448bb10463086aa89fe49f54fe24ee514e2392a880"
   },
   "csharp-async-binding/UserService.cs": {
-    "captureGroups": 14,
-    "digest": "e68423fbb601a61a100d01ef070e0d37f817be4a4c6555500b56fa2ed290adce"
+    "captureGroups": 15,
+    "digest": "2cbed3a07aa031cde84f8f3afd2c7574273e107eb45c6d17290d2ea5c4001235"
   },
   "csharp-call-result-binding/App.cs": {
-    "captureGroups": 27,
-    "digest": "7439cd5fada77ae186fb76594404a8650e21b4892ff268dfbcad6c3ec741c478"
+    "captureGroups": 29,
+    "digest": "90cf80e48027f116ea15c5405b5724eff6a2c30c03c0a23cf0efcd302b8516a9"
   },
   "csharp-calls/Services/UserService.cs": {
     "captureGroups": 11,
     "digest": "d527d47a183733c34d56227c383267f25acc951413639f1e6cc6cb7eabd2440a"
   },
   "csharp-calls/Utils/OneArg.cs": {
-    "captureGroups": 8,
-    "digest": "65bf57fabe6074033a64e5e5adca6aa433e5087576eac96b13172934f55f0c82"
+    "captureGroups": 9,
+    "digest": "0f54dc9fb028fd71a6c548459113aaf1507302e567e2e183e9f9a23b05a9978d"
   },
   "csharp-calls/Utils/ZeroArg.cs": {
     "captureGroups": 7,
@@ -117,7 +117,7 @@
   },
   "csharp-collection-accessor/Services/Renderer.cs": {
     "captureGroups": 16,
-    "digest": "b116c898071aab598ab151b9619ec8517fed67ad96b5bfd575138f62c5369f82"
+    "digest": "36bfb545a75a942e4e03512fef1f6033478459640a28bb05e3ef78e286fd8d54"
   },
   "csharp-deep-field-chain/Models.cs": {
     "captureGroups": 25,
@@ -125,7 +125,7 @@
   },
   "csharp-deep-field-chain/Service.cs": {
     "captureGroups": 14,
-    "digest": "daeb42918323c3f79de9b72ffc72d2c61bb085a65ffb1f67ca3a0d9a78ec06e8"
+    "digest": "d4570a2711736e865b58b38de6cdb33cf99fe37cc3de3a964b13bd3a03528caa"
   },
   "csharp-dictionary-keys-values/App.cs": {
     "captureGroups": 21,
@@ -140,12 +140,12 @@
     "digest": "49ec4930562a8e12040010b12535a1620aa5ab86e2aab3cad2623e8aec106518"
   },
   "csharp-explicit-ctor-init/Models/Base.cs": {
-    "captureGroups": 9,
-    "digest": "6adf4ac489b35e51161a4d67a0ab2fe3c7191e08a1c0c6bf051cb653a1cb4b31"
+    "captureGroups": 10,
+    "digest": "a395d4f736784b4fd453273bc8d2081b39b5dc9a1b9531fed351b8845d297f6c"
   },
   "csharp-explicit-ctor-init/Models/Child.cs": {
-    "captureGroups": 17,
-    "digest": "f056fbf3be0445392d0f67e35dff5e7690c6244d650322d20a2d35ca9f04c9aa"
+    "captureGroups": 18,
+    "digest": "a89dc2b9f02fd7a528d3e2152e18f143ad948b9ad98370a957c1edca22ad76b6"
   },
   "csharp-field-types/Models.cs": {
     "captureGroups": 17,
@@ -191,6 +191,38 @@
     "captureGroups": 25,
     "digest": "28246dd1c88ecfe07fcee84ba314dbd9e39ccd0c30f20b8fb4633ec71e48e375"
   },
+  "csharp-global-namespace-precedence/Audit/Checker.cs": {
+    "captureGroups": 12,
+    "digest": "3d2b6d491fe36886ee16d556d17f725aa7e3abe4c3a060921b95651b3bc789f3"
+  },
+  "csharp-global-namespace-precedence/Audit/Recorder.cs": {
+    "captureGroups": 12,
+    "digest": "807da0ef85a563fccf5a350d922c632ba82005bf4596af44784b2a3342904b1b"
+  },
+  "csharp-global-namespace-precedence/Billing/Reports/Summary.cs": {
+    "captureGroups": 11,
+    "digest": "c0bb69ad176fdf9c98614e30caf5c5bbd0f19fc177c3599867df6d23ec42bf54"
+  },
+  "csharp-global-namespace-precedence/Billing/Service.cs": {
+    "captureGroups": 16,
+    "digest": "67c79d86f33ef9e01aaafeed049dceb50797e1e69ba9280412f10682262a219b"
+  },
+  "csharp-global-namespace-precedence/Billing/Voucher.cs": {
+    "captureGroups": 20,
+    "digest": "31c8376a7c60a5303dcc45a67258a25ce16434d93aeaa9de7a7fb6e21915d8d3"
+  },
+  "csharp-global-namespace-precedence/Global/Voucher.cs": {
+    "captureGroups": 6,
+    "digest": "936e83dab4b1ed046d7ac5ae868c42672b55a92e475af7a7eff93b9645b946d9"
+  },
+  "csharp-global-namespace-precedence/Program.cs": {
+    "captureGroups": 8,
+    "digest": "e7f5a4aed98f0dc1ac2ded7f90dd772dd8f3f33f3f54ffa4df1106585b4d03ad"
+  },
+  "csharp-global-namespace-precedence/Tools/Importer.cs": {
+    "captureGroups": 10,
+    "digest": "59a1dc4ccdb9f278140bfce172460c55335c6e6810253a2570259f71a7c36dae"
+  },
   "csharp-grandparent-resolution/Models/A.cs": {
     "captureGroups": 10,
     "digest": "159a52b959e021b1a34cc0dfbf1ba1a0748a0f29c84634948e2e85afc75db003"
@@ -212,8 +244,8 @@
     "digest": "29a9220fcd1726794e0335200048b297d770a2feef9303431097537f8b07eaba"
   },
   "csharp-hello/Hello.cs": {
-    "captureGroups": 22,
-    "digest": "8952ec5a995332bc204cab3a9132370dfdf78594f592d569aca3c08db2da74a6"
+    "captureGroups": 23,
+    "digest": "b67606e0b429ecbf9b4e285193d9780f8f952da8a9001c515df702dd5495c9ce"
   },
   "csharp-inline-constructor-receiver/src/Runner.cs": {
     "captureGroups": 22,
@@ -228,8 +260,8 @@
     "digest": "1df65065f20b8d316238bd3f7c43f95cc0e2527c8f7cca88e95a872016a04ed2"
   },
   "csharp-interface-default-method/User.cs": {
-    "captureGroups": 14,
-    "digest": "ef10faa8e723eab836331e5c2d29c4b167cfd2c1e15c391989ea394eb1cab5c4"
+    "captureGroups": 15,
+    "digest": "ab6874964b5afac9d75fff23cc5df27c34d64e2f70d98ac8b51c112fa36d6f13"
   },
   "csharp-interface-default-method/Validator.cs": {
     "captureGroups": 8,
@@ -240,12 +272,12 @@
     "digest": "ca1d074837f867a78d9b5e1f197ab967128e89b20d62acdba34bfaa08b01ef6d"
   },
   "csharp-interface-dispatch/IRepository.cs": {
-    "captureGroups": 9,
-    "digest": "88c0a5b4146a78b07cfe361bfb20ced73c05be707997fbfa4bcefb8dd60f8b50"
+    "captureGroups": 11,
+    "digest": "a7504daa5b79f2abe2a568864e83ddbb543aed1d2d37f3f4361b62f8d4f2006c"
   },
   "csharp-interface-dispatch/SqlRepository.cs": {
-    "captureGroups": 14,
-    "digest": "4ec288844786e2b45a1cb7421474b3c1cc5606e42c34f2364fce642c60f1aae2"
+    "captureGroups": 16,
+    "digest": "cebddbd9c98dc69699d800a11af40f4d06e961ba1e9ec4a8ea8beb7872256746"
   },
   "csharp-interface-heritage/src/IAuditableService.cs": {
     "captureGroups": 8,
@@ -272,8 +304,8 @@
     "digest": "c5a6484f74d530463f3028036f401323d84ec2a825fd52450326d95c8088ccb2"
   },
   "csharp-interface-receiver-static/src/ILogger.cs": {
-    "captureGroups": 8,
-    "digest": "57032d77c03d756e71307aab5fc993754b4972598b6362689bf905786c4a32ac"
+    "captureGroups": 9,
+    "digest": "a56a2dd2725b387dcbe59080c8ec6d010c147952ddf556b346e40ea20083b9a4"
   },
   "csharp-interface-receiver-static/src/Runner.cs": {
     "captureGroups": 9,
@@ -288,8 +320,8 @@
     "digest": "2c97632b3beb8f5500e4d02b1150d2845fa6d6bc26ee1838e4e1118ec6a8e847"
   },
   "csharp-is-pattern/services/App.cs": {
-    "captureGroups": 12,
-    "digest": "4ad57edbcf5462d7a254fe63f59e5e513ab4032c18d437cc1154cde5c857897d"
+    "captureGroups": 13,
+    "digest": "a46b34a2bf98bdb99d3a44e23ab9d4f5a75dac4f9331124f3b0c6098949696c2"
   },
   "csharp-large-cache-miss-resolution/Models/User.cs": {
     "captureGroups": 8,
@@ -304,12 +336,12 @@
     "digest": "ac7dcf56199eb29174cfbfb775e956247f72abc476cc8e28751d94084d1b5c7a"
   },
   "csharp-local-shadow/App/Main.cs": {
-    "captureGroups": 14,
-    "digest": "b326e2800d010f3f0daa3ffa75444c59de53dbe4962ce4af4e90c76f8b6271c9"
+    "captureGroups": 15,
+    "digest": "96cb5b50e835b9ab6dfb5295c2dd0cab99b3a83980b6ae55bb1b1278dcf7bc5c"
   },
   "csharp-local-shadow/Utils/Logger.cs": {
-    "captureGroups": 10,
-    "digest": "8089cf6d43685f35d479d58106d2a1a7a35994ddd52522cb256e009943bc7844"
+    "captureGroups": 11,
+    "digest": "b948480418881cb00f526c995995c316351f5154a1762eaf07989a50fa835a48"
   },
   "csharp-member-calls/Models/User.cs": {
     "captureGroups": 8,
@@ -320,12 +352,12 @@
     "digest": "662512b485c31efe8b5a37df38e31bccf130e7625c7ef7594ea44e27b0b79d2c"
   },
   "csharp-method-chain-binding/App.cs": {
-    "captureGroups": 60,
-    "digest": "4cdccde81efbe41cac6bc82e33b365ccd79481a440e65012f78cb543421c9873"
+    "captureGroups": 61,
+    "digest": "7d08da704c897f0294d89709f4f3fe064c2e278bf01f5e3296f767f99b221160"
   },
   "csharp-method-enrichment/Animal.cs": {
-    "captureGroups": 18,
-    "digest": "ad7890731caf219c98664630dfe886f00ed33a4a3f6a4a30f945c889835eae1e"
+    "captureGroups": 19,
+    "digest": "af6d457b0f533e329e011b5f219f31c11c53289c584875e734279a9c53c0d3c4"
   },
   "csharp-method-enrichment/App.cs": {
     "captureGroups": 14,
@@ -340,8 +372,8 @@
     "digest": "be74672b6af6192d0b7872dcad9a6ba4af08156aad5cc01c6fe3eb2ee02b4127"
   },
   "csharp-mixed-decl-chain/Program.cs": {
-    "captureGroups": 28,
-    "digest": "466f29bc93a0293011c8c43f4655d87a26a57166261aaf85df3d08c2d38cf10b"
+    "captureGroups": 29,
+    "digest": "aed7707d6696322c44d75cf102f043a138a4eba0100b23b37e6d646ba8310e79"
   },
   "csharp-namespace-as-root-no-trailing-newline/App/Program.cs": {
     "captureGroups": 13,
@@ -365,7 +397,7 @@
   },
   "csharp-nested-member-foreach/App.cs": {
     "captureGroups": 19,
-    "digest": "e4a193bdab13753422287500c3933ddf8fde1290c2250c3fecc838968f3092e9"
+    "digest": "2525d8e28eb807bd1d716c14372470bfdefa5c377af7de06e28c59f26fc50b89"
   },
   "csharp-nested-member-foreach/Repo.cs": {
     "captureGroups": 7,
@@ -408,28 +440,28 @@
     "digest": "064640e172244bee5078073d4eed69df177681cba8c0a8105a391a65864612f9"
   },
   "csharp-optional-params/Services/App.cs": {
-    "captureGroups": 17,
-    "digest": "5fb11a605cac8fe2abf017e1724bf8881eacbc147f9a29052e432bf3ca26b284"
+    "captureGroups": 19,
+    "digest": "b78454518b177b4be6b13929cf166cbace8dbc57545628c4e79200c98430860e"
   },
   "csharp-overload-dispatch/App.cs": {
     "captureGroups": 12,
     "digest": "c0ac495ae6dc34db5cdb9f508be050fab06920e8f110b14a8c9f095613a269c5"
   },
   "csharp-overload-dispatch/IRepository.cs": {
-    "captureGroups": 13,
-    "digest": "9f7fc8cfd4c0e3b67581f96945760ffe96183f55ce93809d1fc9e0abb9d42b67"
+    "captureGroups": 17,
+    "digest": "994192d29436f6932c121a210b313134fd0eb8befc1e9a08ad085ac5be56ec79"
   },
   "csharp-overload-dispatch/SqlRepository.cs": {
-    "captureGroups": 22,
-    "digest": "d4d7156fc95fa515126011bffed810ecdcf94b2f4ea6e537b1d8dfa5d8d7abe9"
+    "captureGroups": 26,
+    "digest": "31c667138dfe7cb38c8954c5a036d2c2de50933aca6b73a1383132dbced40c3b"
   },
   "csharp-overload-interface/App/Caller.cs": {
     "captureGroups": 15,
-    "digest": "5769b1eda360cd588192335e47035683dae751b9f67e0528cccc066b1e4ed887"
+    "digest": "1f184c5beba9ecd5a414583fbf678f4e2f596b6870bb8e7037e32f6b9bcf1637"
   },
   "csharp-overload-interface/App/Logger.cs": {
-    "captureGroups": 14,
-    "digest": "71eb7a633b950c765dcfb50a28047b4156a121c653ee189a9288c1998c3c71a7"
+    "captureGroups": 17,
+    "digest": "15d03a3e89e08f9682723133525c86372b87a78b021019c9f2148b534e64a436"
   },
   "csharp-overload-interface/Greeting/EnGreeter.cs": {
     "captureGroups": 10,
@@ -444,8 +476,8 @@
     "digest": "4a42025fdcb4db0bf1b77e1e4fa024af5c2a4dc36fe6806ce397b980047790d0"
   },
   "csharp-overload-param-types/Models/UserService.cs": {
-    "captureGroups": 30,
-    "digest": "ba08bc90619c578582465cb9f640fd0bf0640a5a6a84fdfed0be987802086bb3"
+    "captureGroups": 32,
+    "digest": "5e7cb19378ce3b6d3e694546a46c42f538959187ee1c8e974735b753beed6251"
   },
   "csharp-parent-resolution/src/Models/BaseModel.cs": {
     "captureGroups": 8,
@@ -484,24 +516,24 @@
     "digest": "7ef5f84d5ab5764ee08c2de893f172af36fe9e3d264ed4b812ff67c8fa824453"
   },
   "csharp-primary-ctor-heritage/src/User.cs": {
-    "captureGroups": 12,
-    "digest": "d00fce2f19f4bd9138bbcf799dcd2c549ac014c202fafb35bfc3b03235a40852"
+    "captureGroups": 13,
+    "digest": "fe7ada7029067c956188e27d6d8fc1e6d08251020ceb7ba6d48d607fa505c39c"
   },
   "csharp-primary-ctors/App.cs": {
     "captureGroups": 14,
     "digest": "4c2e190ed675ac78244e0a4230d79e9e4c74f2ef794dd9b8126f6b57a4242f4c"
   },
   "csharp-primary-ctors/Models/Person.cs": {
-    "captureGroups": 6,
-    "digest": "07f166295f77ad0b1bb122971344e089dd76d3e277ed7994b927364e7880ba07"
+    "captureGroups": 8,
+    "digest": "6f6e0e489794a7ba626606b34821ab94387e2fcc09d0e1b49782703421127b26"
   },
   "csharp-primary-ctors/Models/User.cs": {
-    "captureGroups": 11,
-    "digest": "01bb40f83fca48db34d1c1c970317cf0fece5af7eb7e02836ef9e64304154b3a"
+    "captureGroups": 13,
+    "digest": "3b5791facd95716f8a1a7b269b40967a6203b40de5169add3885e00b3e4d49bc"
   },
   "csharp-proj/Interfaces/IRepository.cs": {
-    "captureGroups": 14,
-    "digest": "902f871892b4b772b60d7e852d1a4a85b3ad4b12358d73a0a946e17c8943942c"
+    "captureGroups": 15,
+    "digest": "aa82d23281f7eaea8aac1b510aaf010699587009a017d7e3856092bf75177f70"
   },
   "csharp-proj/Models/BaseEntity.cs": {
     "captureGroups": 9,
@@ -512,16 +544,16 @@
     "digest": "6c1b2e9adee1a7cf34ecd647be966c28aab7a8ac57c0fcb14373f2e562f3f456"
   },
   "csharp-proj/Services/UserService.cs": {
-    "captureGroups": 21,
-    "digest": "8004a914844e0a5ff0630b019889cca8db09612678683ade419d4c40a9f60e15"
+    "captureGroups": 22,
+    "digest": "9dd22fc875cac241bcb6bd6f4fd63ec00c3f451f4093d194dbf26ae7865b270e"
   },
   "csharp-qualified-base/src/Domain.cs": {
     "captureGroups": 16,
     "digest": "44e6d4b1da7a703f71ed04436946bd2a2d7d5695b62e4ba247573be3a2ad1d7e"
   },
   "csharp-qualified-base/src/Shapes.cs": {
-    "captureGroups": 39,
-    "digest": "f0596aeaf7f703a890f34a425c09d0b551ffd126933ff9bb9f326381bf7f9314"
+    "captureGroups": 41,
+    "digest": "a205b4650187ba95ff8ba1aa7385eeac911cf6795970d9fb9d92b5b7e66e9d99"
   },
   "csharp-qualified-constructor/App.cs": {
     "captureGroups": 12,
@@ -556,12 +588,12 @@
     "digest": "064640e172244bee5078073d4eed69df177681cba8c0a8105a391a65864612f9"
   },
   "csharp-record-base/src/Models/BaseEntity.cs": {
-    "captureGroups": 9,
-    "digest": "1a4fc04784f1de00213fedbfdf103acd095c6f9a64437951a831c5182c45d073"
+    "captureGroups": 10,
+    "digest": "46501f0dd4c44bea1cb411fe1cede10136067bf8a6fa3a615da0862e655fe5a3"
   },
   "csharp-record-base/src/Models/UserRecord.cs": {
-    "captureGroups": 12,
-    "digest": "bbb90a4b0e8854f12cf686174d28cc5af0e88603a7cdeedddb13c90b1f39dbf6"
+    "captureGroups": 13,
+    "digest": "c9fbb00f900e06fa40db9dd87e74b324261b71c635477f414388ff7589a4891e"
   },
   "csharp-recursive-pattern/Models/Repo.cs": {
     "captureGroups": 9,
@@ -572,16 +604,16 @@
     "digest": "80b9061d53bd0ceba23699c828100ebce5af9a7c006fff7e4a99d2f8e006b92e"
   },
   "csharp-recursive-pattern/Program.cs": {
-    "captureGroups": 15,
-    "digest": "ef252310d50287971d87e96e72b64575b9ee691602b62c74ea5b23811d2080a6"
+    "captureGroups": 16,
+    "digest": "1e37af0e3cea82b0bda8b20221e1bf0096b4cc416b03c4dbb1c05a5ba0324c6e"
   },
   "csharp-return-type/Models/Repo.cs": {
     "captureGroups": 8,
     "digest": "4953327fdde44fada4df0c55bd1dab9c2e96b28f42a1fbfb224c374f75ce0fbb"
   },
   "csharp-return-type/Models/User.cs": {
-    "captureGroups": 23,
-    "digest": "8ca5e28d14a29fb1f29ca6f19300b26fd99d20bc99bd9f537787a41cd9fe6196"
+    "captureGroups": 25,
+    "digest": "e020f06c4d79be4bd08111b68a44eee0948ca461712524543f7dae3687486ceb"
   },
   "csharp-return-type/Services/App.cs": {
     "captureGroups": 16,
@@ -592,16 +624,44 @@
     "digest": "899ca0e32e844b1d347eb0e7558da99644892dc894fcf7e3f632071bbd9cfcd7"
   },
   "csharp-same-arity-cross-file/DbLookup.cs": {
-    "captureGroups": 14,
-    "digest": "a33d9e4c3e1f7bc4f54e3cadbbf5cb044669ba5cc5912b19836cf58d8b9d5910"
+    "captureGroups": 16,
+    "digest": "e6b3d7a5ec00527775c3f7df8c014666a8d61bdd4c4d7aaada3b86add6f197c7"
   },
   "csharp-same-arity-cross-file/Formatter.cs": {
-    "captureGroups": 13,
-    "digest": "e2305d9beeb8c7d4452bacfa7cc078dba02a17f34a993d2986cd55f03bdcfc41"
+    "captureGroups": 15,
+    "digest": "ef13050ca8ceff4e60ead6da1906a55b3245fdc836f2e5d526575c481af2a810"
   },
   "csharp-same-arity-cross-file/ILookup.cs": {
-    "captureGroups": 9,
-    "digest": "f700d06ecdcb6d140c3c9514f85d30d04cfd19d131e570213ed166eaba691ec7"
+    "captureGroups": 11,
+    "digest": "daf34e132bd27b86fe012d64e6cc6fcf4f5e39dd168e9bd30dc1151644235d45"
+  },
+  "csharp-same-namespace-base-collision/App/App.cs": {
+    "captureGroups": 14,
+    "digest": "23a4e39b9e81bde699e0ea97801591b269565e22f6bd200641fd7e9d3119ec63"
+  },
+  "csharp-same-namespace-base-collision/Core/A.cs": {
+    "captureGroups": 10,
+    "digest": "e3feae117230f7458726093097b396ca752737bf46d377a8416591553014fb52"
+  },
+  "csharp-same-namespace-base-collision/Core/B.cs": {
+    "captureGroups": 6,
+    "digest": "51ec8184444d674f9dc646cac0cb3b88b0fc916edfb27d91f5e12a8cb1aa6803"
+  },
+  "csharp-same-namespace-base-collision/Core/Leaf.cs": {
+    "captureGroups": 6,
+    "digest": "0cf391c146ada3f91172e0c484ad2857868ac686dcdcc6058a61a50e2be94204"
+  },
+  "csharp-same-namespace-base-collision/Core/Stamp.cs": {
+    "captureGroups": 8,
+    "digest": "e8422aaf8c91bcaa8ed7bfac1c087f94dc5b912b7c5f86cb92a9d8547b0b94ef"
+  },
+  "csharp-same-namespace-base-collision/Legacy/A.cs": {
+    "captureGroups": 8,
+    "digest": "57ff887da3157871ba8c549c5fa80a31dd72039da9841a4057ca1a5b9cc9a196"
+  },
+  "csharp-same-namespace-base-collision/Legacy/B.cs": {
+    "captureGroups": 6,
+    "digest": "b20bc3cd08070a4242d3530e8fc6e55e5bf003989c56ac96f78c43cf9cdd6193"
   },
   "csharp-self-this-resolution/src/Models/Repo.cs": {
     "captureGroups": 8,
@@ -636,8 +696,8 @@
     "digest": "77a89bc40ea022b9e795adcc1bf5e8a1bc67d8d1c5061c2fe990ec3d72248de0"
   },
   "csharp-struct-overloads/src/Calc.cs": {
-    "captureGroups": 19,
-    "digest": "b45f1440bd589f070e2adfa99872d93f357a8c3831daecb1b9da31476115914e"
+    "captureGroups": 22,
+    "digest": "e54fc77240c589cd2b6cd98158e93d2c2958f9c014d20af0cc0fa061cb53a143"
   },
   "csharp-super-resolution/src/Models/BaseModel.cs": {
     "captureGroups": 8,
@@ -660,24 +720,24 @@
     "digest": "c51e7c7e0423087ddd3a439b99c95101a3bb8611bb6677d7bd1630a464a8cacb"
   },
   "csharp-switch-pattern/Program.cs": {
-    "captureGroups": 14,
-    "digest": "a090eff3ff572948716c931da3d62eeb137e36f08397b60748d4177293b10dc1"
+    "captureGroups": 15,
+    "digest": "cb3393844103419d54e091ea1cef778db2dc116be78d8700d416ddb417046889"
   },
   "csharp-using-static/App/Calculator.cs": {
-    "captureGroups": 12,
-    "digest": "b6f9dd906e1309338f21633d71e663cdfd95a8707d38b9a8bf74813415ee5d13"
+    "captureGroups": 13,
+    "digest": "d1f8a37ee0d9b81760c80da3748c641c896caa072746b78a45e4294662191c6a"
   },
   "csharp-using-static/App/NamespaceOwnerCollision.cs": {
     "captureGroups": 16,
     "digest": "d78082d240d14417ad3f502ef1e96e8e3575dd4e9cec00cfc15c7230c596ca53"
   },
   "csharp-using-static/App/SameFileCases.cs": {
-    "captureGroups": 67,
-    "digest": "50f41faf386131ecbf6cf9c22b3594cbafee8291f385252aad7c10202881d27e"
+    "captureGroups": 73,
+    "digest": "3c0190a75af33f4ccab8f40745298483b642d9a9c4c1222b6280f93705d941d1"
   },
   "csharp-using-static/Helpers/MathUtils.cs": {
-    "captureGroups": 8,
-    "digest": "32c174cbaade4e2d6e0aa7e95a2b5addd138441deb43ced286c9cf5cd30750aa"
+    "captureGroups": 9,
+    "digest": "10887bf60d5c19220e564ab4d5ad2313d30c04a11b10c6ae9c5f1b0533925b49"
   },
   "csharp-var-foreach/Models/Repo.cs": {
     "captureGroups": 8,
@@ -708,7 +768,7 @@
     "digest": "f97be4b109be6bdaa583e2e7b3268b2fb90ac1ce3cfaf0291a7873f09103a2f9"
   },
   "synthetic:dao-20": {
-    "captureGroups": 263,
-    "digest": "f082745a8fcb7a0acb364f3e3739b70f96fd2cf821ada7c4e743090348a06dcc"
+    "captureGroups": 283,
+    "digest": "3a94a40a8c6e4ec915981b9d1dafae9e2f104a3582e5f03bfea25bb16569255d"
   }
 }

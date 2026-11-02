@@ -1,9 +1,12 @@
+import type { ParameterTypeClass } from 'gitnexus-shared';
+import { classifyCppParameterType } from '../cpp/arity-metadata.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 export interface CArityInfo {
   parameterCount?: number;
   requiredParameterCount?: number;
   parameterTypes?: string[];
+  parameterTypeClasses?: ParameterTypeClass[];
 }
 
 /**
@@ -46,12 +49,18 @@ export function computeCDeclarationArity(node: SyntaxNode): CArityInfo {
   const nonVariadicCount = params.filter((p) => p.type !== 'variadic_parameter').length;
 
   const types: string[] = [];
+  const typeClasses: ParameterTypeClass[] = [];
   for (const p of params) {
     if (p.type === 'variadic_parameter') {
       types.push('...');
+      typeClasses.push({ base: '...', cv: 'unknown', indirection: 'unknown', pointerDepth: 0 });
     } else {
       const typeNode = p.childForFieldName('type');
-      types.push(typeNode?.text ?? 'unknown');
+      const type = typeNode?.text ?? 'unknown';
+      types.push(type);
+      typeClasses.push(
+        classifyCppParameterType(type, p.childForFieldName('declarator')?.text, p.text),
+      );
     }
   }
 
@@ -59,6 +68,7 @@ export function computeCDeclarationArity(node: SyntaxNode): CArityInfo {
     parameterCount: isVariadic ? undefined : nonVariadicCount,
     requiredParameterCount: nonVariadicCount,
     parameterTypes: types,
+    parameterTypeClasses: typeClasses,
   };
 }
 

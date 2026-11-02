@@ -1,0 +1,49 @@
+{
+  "language": "php",
+  "description": "Rename a namespaced function across grouped aliases and a three-file call graph without changing local aliases or variables.",
+  "categories": [
+    "cross-file",
+    "alias",
+    "call-graph",
+    "grouped-import",
+    "case-insensitive-function"
+  ],
+  "target": {
+    "name": "Calculate",
+    "kind": "Function",
+    "file": "Source/functions.php"
+  },
+  "newName": "compute",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "middle.php"
+      },
+      "to": {
+        "name": "Calculate",
+        "kind": "Function",
+        "file": "Source/functions.php"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "entry",
+        "kind": "Function",
+        "file": "entry.php"
+      },
+      "to": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "middle.php"
+      }
+    }
+  ]
+}

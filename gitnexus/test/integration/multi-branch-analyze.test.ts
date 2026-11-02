@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 import { execSync, execFileSync } from 'child_process';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -6,6 +7,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { getStoragePaths, loadMeta, listRegisteredRepos } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 import { isDetectRejectWarning } from '../helpers/detect-reject-warning.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 /**
  * #2106/#2354 — branch handling end-to-end. Proves that a plain analyze
@@ -139,7 +142,7 @@ describe('multi-branch analyze (#2106)', () => {
       // #2106 R6: the pinned analyze must NOT have evicted main's chunks from
       // the SHARED parse cache (they were unioned in via main's recorded keys).
       const { loadParseCache } = await import('../../src/storage/parse-cache.js');
-      const sharedCache = await loadParseCache(flat.storagePath);
+      const sharedCache = await loadParseCache(flat.storagePath, parseIdentity, flat.storagePath);
       const onDisk = sharedCache.onDiskKeys ?? new Set<string>();
       for (const k of mainCacheKeys) {
         expect(onDisk.has(k), `main chunk ${k} survives the feature prune`).toBe(true);

@@ -6,7 +6,9 @@
  * NOTE: Swift is installed as an optional dependency. These tests skip gracefully
  * if a consumer installs without optional dependencies.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'path';
 import {
   FIXTURES,
@@ -15,6 +17,7 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
+  writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
 import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
@@ -1622,3 +1625,212 @@ describe.skipIf(!swiftAvailable)('Swift enum members (F79)', () => {
     expect(headingEdges).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3498 RC2: `swiftBindingScopeFor` hoists every method's return-type binding
+// onto the Module scope, so `svc.getUser().save()` types its receiver only if
+// the receiver fold walks up there (`hoistTypeBindingsToModule`). The hoisted
+// entries are keyed by bare method name, so the walk must also refuse a
+// same-named method of ANOTHER class — the second describe pins that.
+// ---------------------------------------------------------------------------
+
+/** Every CALLS target id emitted by `source` in `filePath`, sorted. */
+function swiftCallTargets(result: PipelineResult, filePath: string, source: string): string[] {
+  return getRelationships(result, 'CALLS')
+    .filter((edge) => edge.source === source && edge.sourceFilePath === filePath)
+    .map((edge) => edge.rel.targetId)
+    .sort();
+}
+
+describe.skipIf(!swiftAvailable)(
+  'Swift chained receivers through hoisted return types (#3498)',
+  () => {
+    let root: string;
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-swift-hoisted-return-'));
+      writeFixtureRepo(root, {
+        'Models.swift': `class Address {
+    func save() {}
+}
+
+class User {
+    var address: Address = Address()
+    var optionalAddress: Address? = Address()
+    func save() {}
+}
+
+class Service {
+    func getUser() -> User { return User() }
+}
+
+class ChildService: Service {}
+
+extension Service {
+    func getProfile() -> User { return User() }
+}
+`,
+        'Callers.swift': `func plainChain(svc: Service) {
+    svc.getUser().save()
+}
+
+func plainDeepChain(svc: Service) {
+    svc.getUser().address.save()
+}
+
+func optionalChain(svc: Service) {
+    svc.getUser().optionalAddress?.save()
+}
+
+func nonNullAssert(svc: Service) {
+    svc.getUser().optionalAddress!.save()
+}
+
+func inheritedChain(child: ChildService) {
+    child.getUser().save()
+}
+
+func extensionChain(svc: Service) {
+    svc.getProfile().save()
+}
+`,
+      });
+      result = await runPipelineFromRepo(root, () => {});
+    }, 60000);
+
+    afterAll(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it.each([
+      {
+        source: 'plainChain',
+        targets: ['Function:Models.swift:Service.getUser#0', 'Function:Models.swift:User.save#0'],
+      },
+      {
+        source: 'plainDeepChain',
+        targets: [
+          'Function:Models.swift:Address.save#0',
+          'Function:Models.swift:Service.getUser#0',
+        ],
+      },
+      {
+        source: 'optionalChain',
+        targets: [
+          'Function:Models.swift:Address.save#0',
+          'Function:Models.swift:Service.getUser#0',
+        ],
+      },
+      {
+        source: 'nonNullAssert',
+        targets: [
+          'Function:Models.swift:Address.save#0',
+          'Function:Models.swift:Service.getUser#0',
+        ],
+      },
+      {
+        // The owner itself declares nothing; the walk refuses the binding for
+        // `ChildService` and accepts it for the `Service` it inherits from.
+        source: 'inheritedChain',
+        targets: ['Function:Models.swift:Service.getUser#0', 'Function:Models.swift:User.save#0'],
+      },
+      {
+        // An extension member is owned by the extended type, and its binding is
+        // hoisted to the same Module scope.
+        source: 'extensionChain',
+        targets: [
+          'Function:Models.swift:Service.getProfile#0',
+          'Function:Models.swift:User.save#0',
+        ],
+      },
+    ])('resolves every call in $source to $targets', ({ source, targets }) => {
+      expect(swiftCallTargets(result, 'Callers.swift', source)).toEqual(targets);
+    });
+  },
+);
+
+describe.skipIf(!swiftAvailable)(
+  'Swift same-named methods on two classes do not share a hoisted return type (#3498)',
+  () => {
+    let root: string;
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-swift-hoisted-collision-'));
+      // One Module-scope entry per method NAME: in each file the later class's
+      // `getUser` overwrites the earlier one's. Both orders are covered so the
+      // test does not depend on which one happens to win.
+      writeFixtureRepo(root, {
+        'Accounts.swift': `class User {
+    func save() {}
+}
+
+class Admin {
+    func save() {}
+}
+
+class A {
+    func getUser() -> User { return User() }
+}
+
+class B {
+    func getUser() -> Admin { return Admin() }
+}
+`,
+        'Reversed.swift': `class C {
+    func getUser() -> Admin { return Admin() }
+}
+
+class D {
+    func getUser() -> User { return User() }
+}
+`,
+        'Callers.swift': `func viaA(a: A) {
+    a.getUser().save()
+}
+
+func viaB(b: B) {
+    b.getUser().save()
+}
+
+func viaC(c: C) {
+    c.getUser().save()
+}
+
+func viaD(d: D) {
+    d.getUser().save()
+}
+`,
+      });
+      result = await runPipelineFromRepo(root, () => {});
+    }, 60000);
+
+    afterAll(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    // The module's bare-name return bindings are overwritten in both orders.
+    // Exact declaration return types must recover each class's own target.
+    it.each([
+      {
+        source: 'viaA',
+        targets: ['Function:Accounts.swift:A.getUser#0', 'Function:Accounts.swift:User.save#0'],
+      },
+      {
+        source: 'viaB',
+        targets: ['Function:Accounts.swift:Admin.save#0', 'Function:Accounts.swift:B.getUser#0'],
+      },
+      {
+        source: 'viaC',
+        targets: ['Function:Accounts.swift:Admin.save#0', 'Function:Reversed.swift:C.getUser#0'],
+      },
+      {
+        source: 'viaD',
+        targets: ['Function:Accounts.swift:User.save#0', 'Function:Reversed.swift:D.getUser#0'],
+      },
+    ])('resolves every call in $source to $targets', ({ source, targets }) => {
+      expect(swiftCallTargets(result, 'Callers.swift', source)).toEqual(targets);
+    });
+  },
+);

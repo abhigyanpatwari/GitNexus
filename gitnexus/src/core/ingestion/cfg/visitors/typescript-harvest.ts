@@ -38,6 +38,14 @@
  * NOTE: nothing serialized here may carry a field named `nodeId` — the durable
  * parsedfile-store reviver dedups objects keyed on that field name.
  */
+import {
+  hasDefaultShellArguments,
+  readPredicate,
+  readValueExpression,
+  type RefinementFileContext,
+} from './typescript-refinement.js';
+import type { FunctionCfg } from '../types.js';
+import type { StatementValueFacts, ValueExpression } from '../../taint/value-refinement.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, SiteArgOccurrence, SiteRecord, StatementFacts } from '../types.js';
 
@@ -114,7 +122,34 @@ interface Scope {
   readonly table: Map<string, number>;
 }
 
+const UNSAFE_REFINEMENT_NODES = new Set([
+  'try_statement',
+  'await_expression',
+  'yield_expression',
+  'with_statement',
+]);
+const PREDICATE_NODES = new Set([
+  'parenthesized_expression',
+  'unary_expression',
+  'binary_expression',
+  'call_expression',
+]);
+
 export class TsHarvester {
+  private refinementSafe = true;
+  private primitiveBindings?: Set<number>;
+  private hasRefinementFacts = false;
+  private needsValueFacts = false;
+  private shapeCount = 0;
+  private predicateCount = 0;
+  private captureShapes = false;
+  private readonly checkDynamicNames: boolean;
+  private readonly hasGuardCandidate: boolean;
+  private activeShapes?: {
+    sites?: Map<number, number>;
+    definitions?: NonNullable<StatementValueFacts['definitions']>[number][];
+    calls?: NonNullable<StatementValueFacts['calls']>[number][];
+  };
   private readonly bindings: BindingEntry[] = [];
   /** Scope-opening node id → its scope. */
   private readonly scopeByNode = new Map<number, Scope>();
@@ -123,13 +158,16 @@ export class TsHarvester {
   private readonly synthetic = new Map<string, number>();
   private readonly fnId: number;
   /**
-   * Innermost enclosing scope per visited node id, filled during the prescan
+   * Innermost enclosing scope per identifier id, filled during the prescan
    * (which already touches every named node once). Makes phase-2 resolution
    * O(scope-chain) instead of O(AST-depth) per identifier — a deeply-chained
    * single-statement expression (generated code) otherwise turns the
    * parent-chain walk quadratic (tri-review perf finding).
    */
   private readonly nearestScopeCache = new Map<number, Scope>();
+  /** Adjacent def/use and value-shape reads share the completed scope tables. */
+  private lastResolvedNodeId?: number;
+  private lastResolvedBinding?: number;
   /**
    * >0 while walking a conditionally-evaluated subexpression (short-circuit
    * right operand, ternary arm, logical-assignment target, case test). Defs
@@ -148,13 +186,29 @@ export class TsHarvester {
    */
   private readonly resultDefTargets = new Map<number, number[]>();
 
-  constructor(private readonly fnNode: SyntaxNode) {
+  constructor(
+    private readonly fnNode: SyntaxNode,
+    private readonly refinementContext?: RefinementFileContext,
+  ) {
+    const source = fnNode.text;
+    this.checkDynamicNames =
+      source.includes('eval') || source.includes('arguments') || source.includes('\\');
+    this.hasGuardCandidate =
+      source.includes('test') || source.includes('===') || source.includes('!==');
+    if (
+      fnNode.type.includes('generator') ||
+      (source.includes('async') && fnNode.children.some((child) => child.type === 'async'))
+    )
+      this.refinementSafe = false;
     this.fnId = fnNode.id;
-    this.scopeByNode.set(fnNode.id, this.root);
+    this.scopeByNode.set(this.fnId, this.root);
     this.declareParams(fnNode);
     const body = fnNode.childForFieldName('body');
     if (body)
-      this.prescan(body, body.type === 'statement_block' ? this.openScope(body) : this.root);
+      this.prescan(
+        body,
+        body.type === 'statement_block' ? this.openScope(body, this.root) : this.root,
+      );
   }
 
   /** The completed binding table — pass to `CfgBuilder.finish`. */
@@ -162,23 +216,30 @@ export class TsHarvester {
     return this.bindings;
   }
 
-  // ── phase 1: declaration pre-scan ────────────────────────────────────────
-
-  private openScope(node: SyntaxNode): Scope {
-    const existing = this.scopeByNode.get(node.id);
-    if (existing) return existing;
-    const scope: Scope = { parent: this.nearestScopeOf(node), table: new Map() };
-    this.scopeByNode.set(node.id, scope);
-    return scope;
+  decorate(cfg: FunctionCfg): FunctionCfg {
+    if (!this.refinementSafe) return { ...cfg, refinementSafe: false };
+    if (!this.hasRefinementFacts) return cfg;
+    return {
+      ...cfg,
+      refinementSafe: this.refinementSafe,
+      ...(this.primitiveBindings?.size ? { primitiveBindings: [...this.primitiveBindings] } : {}),
+    };
   }
 
-  private nearestScopeOf(node: SyntaxNode): Scope {
-    for (let p = node.parent; p; p = p.parent) {
-      const s = this.scopeByNode.get(p.id);
-      if (s) return s;
-      if (p.id === this.fnId) break;
-    }
-    return this.root;
+  private addPrimitiveBinding(binding: number): void {
+    if ((this.primitiveBindings?.size ?? 0) >= 256) this.refinementSafe = false;
+    else (this.primitiveBindings ??= new Set()).add(binding);
+  }
+
+  // ── phase 1: declaration pre-scan ────────────────────────────────────────
+
+  private openScope(node: SyntaxNode, parent: Scope): Scope {
+    const id = node.id;
+    const existing = this.scopeByNode.get(id);
+    if (existing) return existing;
+    const scope: Scope = { parent, table: new Map() };
+    this.scopeByNode.set(id, scope);
+    return scope;
   }
 
   private declare(
@@ -189,6 +250,9 @@ export class TsHarvester {
     formalIndex?: number,
   ): void {
     const target = hoistToRoot ? this.root : scope;
+    // Parameters are outside the body prescan. Their scope is already known;
+    // retain it so parameter facts need not climb through their AST wrappers.
+    if (kind === 'param') this.nearestScopeCache.set(nameNode.id, this.root);
     const name = nameNode.text;
     // `var` multi-declaration (and a param + `var` of the same name) is ONE
     // binding — first declaration in source order is canonical. The dedup is
@@ -196,10 +260,11 @@ export class TsHarvester {
     // `var x` still gets its own entry in its own scope.
     if (target.table.has(name)) return;
     target.table.set(name, this.bindings.length);
+    const position = nameNode.startPosition;
     this.bindings.push({
       name,
-      declLine: nameNode.startPosition.row + 1,
-      declColumn: nameNode.startPosition.column,
+      declLine: position.row + 1,
+      declColumn: position.column,
       kind,
       // Carry the enclosing formal position for params so the PDG call-summary
       // consumer joins by FORMAL slot, never the flattened binding ordinal. A
@@ -220,13 +285,25 @@ export class TsHarvester {
     // several inner names, but ALL inherit this one formal index, so the PDG
     // call-summary never misattributes an inner name to a later formal's slot.
     let formalIndex = 0;
-    for (let i = 0; i < params.namedChildCount; i++) {
+    for (let i = 0, count = params.namedChildCount; i < count; i++) {
       const p = params.namedChild(i);
       if (!p) continue;
       // TS wraps each param (required_parameter/optional_parameter, field
       // `pattern`); plain JS puts the pattern directly in formal_parameters.
       const pattern = p.childForFieldName('pattern') ?? p;
       this.declarePattern(pattern, 'param', this.root, true, formalIndex);
+      // A formal index identifies the argument slot, not a value extracted
+      // from it. Extraction/default/rest effects are not modeled as identity.
+      if (pattern.type !== 'identifier') this.refinementSafe = false;
+      if (
+        this.hasGuardCandidate &&
+        pattern.type === 'identifier' &&
+        p.type === 'required_parameter' &&
+        p.childForFieldName('type')?.text.replace(/\s/g, '') === ':string'
+      ) {
+        this.addPrimitiveBinding(this.root.table.get(pattern.text)!);
+      }
+      if (p.childForFieldName('value')) this.refinementSafe = false;
       formalIndex++;
     }
   }
@@ -280,9 +357,22 @@ export class TsHarvester {
   }
 
   private prescan(node: SyntaxNode, scope: Scope): void {
-    this.nearestScopeCache.set(node.id, scope);
     const t = node.type;
+    // Only names are resolved. Reading native ids and caching scopes for
+    // structural/literal nodes adds work without helping either fact walk.
+    if (t.includes('identifier')) this.nearestScopeCache.set(node.id, scope);
+    if (UNSAFE_REFINEMENT_NODES.has(t)) this.refinementSafe = false;
+    if (this.checkDynamicNames && t === 'identifier') {
+      const name = node.text;
+      // The legacy binding table does not canonicalize escaped identifier spellings.
+      if (name === 'arguments' || name === 'eval' || name.includes('\\'))
+        this.refinementSafe = false;
+    }
+    // Well-formed literal internals contain no declarations/references. Error
+    // recovery can place identifiers inside them; retain that ordinary walk.
+    if (t === 'identifier' || ((t === 'string' || t === 'regex') && !node.hasError)) return;
     if (NESTED_FUNCTION_TYPES.has(t) && node.id !== this.fnId) {
+      this.refinementSafe = false;
       // A nested function's NAME binds in the enclosing scope; its body is opaque.
       if (FUNCTION_DECL_TYPES.has(t)) {
         const name = node.childForFieldName('name');
@@ -292,11 +382,12 @@ export class TsHarvester {
     }
 
     let childScope = scope;
-    if (SCOPE_TYPES.has(t)) childScope = this.openScope(node);
+    if (SCOPE_TYPES.has(t)) childScope = this.openScope(node, scope);
 
     switch (t) {
       case 'lexical_declaration': {
         const kind = node.child(0)?.type === 'const' ? 'const' : 'let';
+        if (kind === 'const') this.needsValueFacts = true;
         this.declareDeclarators(node, kind, childScope, false);
         break;
       }
@@ -329,7 +420,9 @@ export class TsHarvester {
         break;
     }
 
-    for (let i = 0; i < node.namedChildCount; i++) {
+    const childCount = node.namedChildCount;
+    if (t === 'arguments' && childCount > 0) this.needsValueFacts = true;
+    for (let i = 0; i < childCount; i++) {
       const c = node.namedChild(i);
       if (c) this.prescan(c, childScope);
     }
@@ -341,7 +434,7 @@ export class TsHarvester {
     scope: Scope,
     hoistToRoot: boolean,
   ): void {
-    for (let i = 0; i < declNode.namedChildCount; i++) {
+    for (let i = 0, count = declNode.namedChildCount; i < count; i++) {
       const d = declNode.namedChild(i);
       if (d?.type !== 'variable_declarator') continue;
       const name = d.childForFieldName('name');
@@ -357,8 +450,42 @@ export class TsHarvester {
    */
   facts(node: SyntaxNode): StatementFacts {
     const acc = new FactAccumulator(node.startPosition.row + 1);
-    this.walkValue(node, acc);
-    return acc.finish();
+    if (!this.refinementSafe || (!this.hasGuardCandidate && !this.needsValueFacts)) {
+      this.walkValue(node, acc);
+      return acc.finish();
+    }
+    const prior = this.activeShapes;
+    const priorCapture = this.captureShapes;
+    this.activeShapes = undefined;
+    this.captureShapes = true;
+    try {
+      this.walkValue(node, acc);
+      const shapes = this.activeShapes;
+      let predicate =
+        this.hasGuardCandidate && PREDICATE_NODES.has(node.type)
+          ? readPredicate(
+              node,
+              (identifier) => this.resolve(identifier),
+              this.refinementContext,
+              (call) => shapes?.sites?.get(call.id),
+            )
+          : undefined;
+      if (predicate && ++this.predicateCount > 64) {
+        this.refinementSafe = false;
+        predicate = undefined;
+      }
+      if (!predicate && !shapes?.definitions?.length && !shapes?.calls?.length) return acc.finish();
+      this.hasRefinementFacts = true;
+      const refinement: StatementValueFacts = {
+        ...(predicate ? { predicate } : {}),
+        ...(shapes?.definitions?.length ? { definitions: shapes.definitions } : {}),
+        ...(shapes?.calls?.length ? { calls: shapes.calls } : {}),
+      };
+      return acc.finish(refinement);
+    } finally {
+      this.activeShapes = prior;
+      this.captureShapes = priorCapture;
+    }
   }
 
   /**
@@ -391,7 +518,7 @@ export class TsHarvester {
     if (params.type === 'identifier') {
       this.def(params, acc);
     } else {
-      for (let i = 0; i < params.namedChildCount; i++) {
+      for (let i = 0, count = params.namedChildCount; i < count; i++) {
         const p = params.namedChild(i);
         if (!p) continue;
         const pattern = p.childForFieldName('pattern') ?? p;
@@ -413,13 +540,15 @@ export class TsHarvester {
   }
 
   private resolve(nameNode: SyntaxNode): number {
+    const nodeId = nameNode.id;
+    if (nodeId === this.lastResolvedNodeId) return this.lastResolvedBinding!;
     const name = nameNode.text;
-    // Fast path: the prescan cached every visited node's innermost scope, so
+    // Fast path: the prescan cached every visited identifier's innermost scope, so
     // resolution walks the SCOPE chain (shallow), not the AST parent chain
     // (arbitrarily deep in chained expressions). The parent-chain walk remains
     // as fallback for the few nodes the prescan never visits (e.g. a nested
     // function declaration's own name node).
-    const cached = this.nearestScopeCache.get(nameNode.id);
+    const cached = this.nearestScopeCache.get(nodeId);
     let startScope: Scope | null = cached ?? null;
     if (!startScope) {
       for (let p: SyntaxNode | null = nameNode; p; p = p.parent) {
@@ -436,7 +565,11 @@ export class TsHarvester {
     }
     for (let s: Scope | null = startScope; s; s = s.parent) {
       const idx = s.table.get(name);
-      if (idx !== undefined) return idx;
+      if (idx !== undefined) {
+        this.lastResolvedNodeId = nodeId;
+        this.lastResolvedBinding = idx;
+        return idx;
+      }
     }
     // No in-function declaration — synthetic module-level binding, shared by
     // defs and uses so `notDeclared = 1; use(notDeclared)` still forms a fact.
@@ -446,6 +579,8 @@ export class TsHarvester {
       this.synthetic.set(name, idx);
       this.bindings.push({ name, declLine: 0, declColumn: 0, kind: 'module', synthetic: true });
     }
+    this.lastResolvedNodeId = nodeId;
+    this.lastResolvedBinding = idx;
     return idx;
   }
 
@@ -493,6 +628,7 @@ export class TsHarvester {
       return;
     }
 
+    if ((t === 'string' || t === 'regex') && !node.hasError) return;
     switch (t) {
       case 'identifier':
       case 'shorthand_property_identifier':
@@ -500,11 +636,12 @@ export class TsHarvester {
         return;
       case 'lexical_declaration':
       case 'variable_declaration':
-        for (let i = 0; i < node.namedChildCount; i++) {
+        for (let i = 0, count = node.namedChildCount; i < count; i++) {
           const d = node.namedChild(i);
           if (d?.type !== 'variable_declarator') continue;
           const name = d.childForFieldName('name');
           const value = d.childForFieldName('value');
+          let declaredBinding: number | undefined;
           // A bare `var x;` mid-function is hoisted and writes NOTHING at
           // runtime — harvesting it as a def would fabricate a kill of the
           // live def (`x = source(); var x; sink(x)` must keep source→sink;
@@ -512,9 +649,33 @@ export class TsHarvester {
           if (name && (value || t === 'lexical_declaration')) {
             const snap = acc.defSnapshot();
             this.walkDefPattern(name, acc);
-            if (value) this.registerResultDefs(value, acc.defsSince(snap));
+            if (value) {
+              const defs = acc.defsSince(snap);
+              this.registerResultDefs(value, defs);
+              if (defs.length === 1) declaredBinding = defs[0];
+            }
           }
           if (value) this.walkValue(value, acc);
+          if (
+            this.captureShapes &&
+            value &&
+            declaredBinding !== undefined &&
+            this.bindings[declaredBinding]?.kind === 'const' &&
+            name?.type === 'identifier'
+          ) {
+            const shapes = (this.activeShapes ??= {});
+            if (++this.shapeCount > 256) this.refinementSafe = false;
+            else
+              (shapes.definitions ??= []).push({
+                binding: declaredBinding,
+                value: readValueExpression(value, (identifier) => this.resolve(identifier)),
+              });
+            if (
+              this.hasGuardCandidate &&
+              d.childForFieldName('type')?.text.replace(/\s/g, '') === ':string'
+            )
+              this.addPrimitiveBinding(declaredBinding);
+          }
         }
         return;
       case 'assignment_expression': {
@@ -632,7 +793,7 @@ export class TsHarvester {
         // arg 0 with `x` (review fix). Defs/uses stay byte-identical to the old
         // default descent; only the sites layer narrows.
         const operands: SyntaxNode[] = [];
-        for (let i = 0; i < node.namedChildCount; i++) {
+        for (let i = 0, count = node.namedChildCount; i < count; i++) {
           const c = node.namedChild(i);
           if (c) operands.push(c);
         }
@@ -644,7 +805,7 @@ export class TsHarvester {
         return;
       }
       default:
-        for (let i = 0; i < node.namedChildCount; i++) {
+        for (let i = 0, count = node.namedChildCount; i < count; i++) {
           const c = node.namedChild(i);
           if (c) this.walkValue(c, acc);
         }
@@ -735,7 +896,31 @@ export class TsHarvester {
     const argsNode = node.childForFieldName('arguments');
     // `node` IS the call_expression/new_expression — the SAME node the
     // scope-extractor anchors `@reference.call.*` (its `atRange`) on (KTD7).
-    const siteIdx = acc.openCallSite(kind, [node.startPosition.row + 1, node.startPosition.column]);
+    const position = node.startPosition;
+    const siteIdx = acc.openCallSite(kind, [position.row + 1, position.column]);
+    let capturedArgs: SyntaxNode[] | undefined;
+    let argumentValues: ValueExpression[] | undefined;
+    if (argsNode?.type === 'arguments' && argsNode.namedChildCount > 0 && this.captureShapes) {
+      const shapes = (this.activeShapes ??= {});
+      if (this.hasGuardCandidate) (shapes.sites ??= new Map()).set(node.id, siteIdx);
+      if (++this.shapeCount > 256) this.refinementSafe = false;
+      else {
+        const args = (capturedArgs = argsNode.namedChildren.filter(
+          (argument) => argument.type !== 'comment',
+        ));
+        if (args.length > 32) this.refinementSafe = false;
+        else {
+          argumentValues = args.map((argument) =>
+            readValueExpression(argument, (identifier) => this.resolve(identifier)),
+          );
+          (shapes.calls ??= []).push({
+            site: siteIdx,
+            arguments: argumentValues,
+            ...(hasDefaultShellArguments(args) ? { defaultShell: true } : {}),
+          });
+        }
+      }
+    }
     acc.pushFrame(siteIdx);
     let calleePath: string | undefined;
     if (calleeNode) {
@@ -773,9 +958,8 @@ export class TsHarvester {
       this.walkValue(argsNode, acc);
     } else if (argsNode) {
       let pos = 0;
-      for (let i = 0; i < argsNode.namedChildCount; i++) {
-        const arg = argsNode.namedChild(i);
-        if (!arg || arg.type === 'comment') continue;
+      for (const arg of capturedArgs ?? argsNode.namedChildren) {
+        if (arg.type === 'comment') continue;
         acc.setFrameArg(pos);
         if (arg.type === 'spread_element') {
           acc.setSiteSpread(siteIdx, pos);
@@ -787,7 +971,11 @@ export class TsHarvester {
             // resolves require'd aliases like ESM imports (plan KTD7).
             acc.setSiteRequireArg(siteIdx, stringLiteralText(arg));
           }
-          this.walkValue(arg, acc);
+          const value = argumentValues?.[pos];
+          // Value capture already resolved a bare identifier against the same
+          // completed scopes. Still record its use in the active call frame.
+          if (arg.type === 'identifier' && value?.kind === 'binding') acc.addUse(value.binding);
+          else this.walkValue(arg, acc);
         }
         pos++;
       }
@@ -1101,7 +1289,7 @@ class FactAccumulator {
     list.push(via === undefined ? bindingIdx : [bindingIdx, via]);
   }
 
-  finish(): StatementFacts {
+  finish(refinement?: StatementValueFacts): StatementFacts {
     return {
       line: this.line,
       defs: this.defs,
@@ -1112,6 +1300,7 @@ class FactAccumulator {
       // Sites likewise omit-when-empty (#2083 M3 U1): flag-off runs never
       // harvest, and most fact-bearing statements carry no calls.
       ...(this.sites.length > 0 ? { sites: this.sites.map(finalizeSite) } : {}),
+      ...(refinement ? { refinement } : {}),
     };
   }
 }

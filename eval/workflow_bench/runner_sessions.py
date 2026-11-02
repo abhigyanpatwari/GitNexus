@@ -18,6 +18,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .process_control import run_managed
+from .session_budget import session_budget
+from .session_diagnostics import EventClock, diagnose_session
 from .proposer_sandbox import (
     SANDBOX_GITNEXUS,
     SANDBOX_GITNEXUS_REGISTRY,
@@ -26,6 +28,7 @@ from .proposer_sandbox import (
     SANDBOX_TMP,
     SANDBOX_WORKSPACE,
     SandboxError,
+    mcp_sandbox_prefix,
     redact_text,
 )
 
@@ -35,7 +38,10 @@ USAGE_FIELDS = (
     "cache_read_input_tokens",
     "output_tokens",
 )
-MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
+# A successful 142-turn release session exceeded 8 MiB (#3500, run
+# 40181565589). Keep capture, redacted artifacts, and reuse bounded together,
+# with headroom for verbose tool results in the three concurrent paid cells.
+MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 # Wall-clock ceiling for one headless session, shared by the runner and the
 # evolution loop so both CLIs kill a session at the same point. 3600s was too
 # tight for the `workflow` arm: run 29907431284 lost two investigation-task
@@ -350,6 +356,8 @@ GITNEXUS_READ_ONLY_TOOLS = (
     "mcp__gitnexus__list_repos",
     "mcp__gitnexus__query",
     "mcp__gitnexus__context",
+    "mcp__gitnexus__grep",
+    "mcp__gitnexus__read_file",
     "mcp__gitnexus__check",
     "mcp__gitnexus__impact",
     "mcp__gitnexus__explain",
@@ -365,29 +373,33 @@ GITNEXUS_MUTATING_TOOLS = ("mcp__gitnexus__rename",)
 BUILTIN_AGENT_TOOLS = ("Read", "Grep", "Glob", "Edit", "Write", "Bash", "Skill")
 
 
-def sandbox_mcp_config() -> str:
-    """Credential-free MCP configuration using only the pinned harness runtime."""
+def sandbox_mcp_config(*, unsafe_host: bool = False) -> str:
+    """Launch the pinned MCP runtime behind its own read-only boundary.
+
+    The explicitly unsafe diagnostic backend retains its credential-free host
+    launch; it cannot establish nested namespaces or produce release evidence.
+    """
 
     entrypoint = PurePosixPath(SANDBOX_GITNEXUS_ENTRYPOINT)
     workspace = PurePosixPath(SANDBOX_WORKSPACE)
     if not entrypoint.is_absolute() or entrypoint == workspace or workspace in entrypoint.parents:
         raise SandboxError(f"GitNexus MCP executable must stay outside {SANDBOX_WORKSPACE}")
 
+    prefix = mcp_sandbox_prefix() if not unsafe_host else [
+        "/usr/bin/env", "-i",
+        f"HOME={SANDBOX_HOME}", f"TMPDIR={SANDBOX_TMP}",
+        f"GITNEXUS_HOME={SANDBOX_GITNEXUS_REGISTRY}",
+        f"GITNEXUS_MCP_ALLOWED_REPOS={SANDBOX_WORKSPACE}",
+        f"GITNEXUS_MCP_DEFAULT_REPO={SANDBOX_WORKSPACE}",
+        "PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "GIT_TERMINAL_PROMPT=0",
+    ]
     config = {
         "mcpServers": {
             "gitnexus": {
                 "type": "stdio",
-                "command": "/usr/bin/env",
+                "command": prefix[0],
                 "args": [
-                    "-i",
-                    f"HOME={SANDBOX_HOME}",
-                    f"TMPDIR={SANDBOX_TMP}",
-                    f"GITNEXUS_HOME={SANDBOX_GITNEXUS_REGISTRY}",
-                    f"GITNEXUS_MCP_ALLOWED_REPOS={SANDBOX_WORKSPACE}",
-                    f"GITNEXUS_MCP_DEFAULT_REPO={SANDBOX_WORKSPACE}",
-                    "PATH=/usr/local/bin:/usr/bin:/bin",
-                    "LANG=C.UTF-8",
-                    "GIT_TERMINAL_PROMPT=0",
+                    *prefix[1:],
                     SANDBOX_NODE,
                     SANDBOX_GITNEXUS_ENTRYPOINT,
                     "mcp",
@@ -404,11 +416,12 @@ def allowed_agent_tools(
     include_mcp: bool = True,
     allow_edit: bool = True,
 ) -> list[str]:
+    # Retain the caller parameter for compatibility; all MCP phases are
+    # read-only so only the agent's own tools can author credited changes.
+    del implementation
     tools = [tool for tool in BUILTIN_AGENT_TOOLS if allow_edit or tool != "Edit"]
     if include_mcp:
         tools.extend(GITNEXUS_READ_ONLY_TOOLS)
-    if include_mcp and implementation:
-        tools.extend(GITNEXUS_MUTATING_TOOLS)
     return tools
 
 
@@ -613,6 +626,85 @@ def skill_was_invoked_events(events: Sequence[dict[str, Any]], skill_name: str) 
     return successful
 
 
+def _session_result(events: list[dict[str, Any]], duration_s: float) -> tuple[dict[str, Any], int]:
+    """Reduce proven background continuations, retaining one session's full accounting.
+
+    Claude Code 2.1.214 emits a result per foreground turn, including a turn
+    started by a background task notification. Usage/turns are per-turn; cost
+    is cumulative. The real-CLI canary pins these different scopes.
+    """
+    indexes = [index for index, event in enumerate(events) if event.get("type") == "result"]
+    if not indexes:
+        raise ValueError("expected a final result event, observed 0")
+    final_index = indexes[-1]
+    if any(event.get("type") != "system" for event in events[final_index + 1 :]):
+        raise ValueError("final result event is not the last event in the captured stream")
+    final = events[final_index]
+    if len(indexes) == 1:
+        return final, final_index
+
+    session_id = final.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError("background continuation has no session identity")
+    total_usage = dict.fromkeys(USAGE_FIELDS, 0)
+    turns = 0
+    cost = 0.0
+    result_ids: set[str] = set()
+    pending_notifications: deque[int] = deque()
+    previous_index = -1
+    for index in indexes:
+        result = events[index]
+        uuid = result.get("uuid")
+        if result.get("session_id") != session_id:
+            raise ValueError("background continuation changed session identity")
+        if not isinstance(uuid, str) or not uuid or uuid in result_ids:
+            raise ValueError("background continuation has a missing or repeated result id")
+        result_ids.add(uuid)
+        if result.get("subtype") != "success" or result.get("is_error") is not False:
+            raise ValueError("background continuation contains an unsuccessful result")
+        usage = result.get("usage")
+        if not isinstance(usage, dict) or any(
+            type(usage.get(field)) is not int or usage[field] < 0 for field in USAGE_FIELDS
+        ):
+            raise ValueError("background continuation has incomplete or invalid usage")
+        count = result.get("num_turns")
+        if type(count) is not int or count < 1:
+            raise ValueError("background continuation has invalid turn count")
+        next_cost = measured_cost(result.get("total_cost_usd"))
+        if next_cost is None or next_cost < cost:
+            raise ValueError("background continuation has missing or decreasing cumulative cost")
+        segment = events[previous_index + 1 : index]
+        if any(event.get("session_id", session_id) != session_id for event in segment):
+            raise ValueError("background continuation changed session identity")
+        pending_notifications.extend(
+            previous_index + 1 + i
+            for i, event in enumerate(segment)
+            if event.get("type") == "system" and event.get("subtype") == "task_notification"
+        )
+        if previous_index >= 0:
+            # The CLI can announce completion before the preceding result.
+            # Consume each pending notification only once, before a fresh turn.
+            init = next(
+                (i for i, e in enumerate(segment) if e.get("type") == "system" and e.get("subtype") == "init"), None
+            )
+            if (
+                not pending_notifications
+                or init is None
+                or pending_notifications[0] >= previous_index + 1 + init
+                or not any(e.get("type") == "assistant" for e in segment[init + 1 :])
+            ):
+                raise ValueError("additional result lacks a background completion turn")
+            pending_notifications.popleft()
+        for field in USAGE_FIELDS:
+            total_usage[field] += usage[field]
+        turns += count
+        cost = next_cost
+        previous_index = index
+    # Per-turn duration_ms excludes time waiting for background work. Use the
+    # trusted parent's elapsed time for the whole process, including that wait.
+    return {**final, "usage": total_usage, "num_turns": turns, "duration_ms": duration_s * 1000}, final_index
+
+
 def run_claude(
     prompt: str,
     cwd: Path,
@@ -627,7 +719,6 @@ def run_claude(
     expected_skill: str | None = None,
     command_prefix: list[str] | None = None,
     require_pid_namespace: bool = False,
-    bare: bool = False,
     settings_json: str | None = None,
     strict_mcp_config: bool = False,
     allowed_tools: list[str] | None = None,
@@ -641,6 +732,7 @@ def run_claude(
     transcript_secrets: tuple[str, ...] = (),
     plugin_dirs: Sequence[str] = (),
     progress_label: str | None = None,
+    max_budget_usd: float | None = None,
 ) -> dict[str, Any]:
     """Run one headless session and return its usage record."""
 
@@ -648,6 +740,7 @@ def run_claude(
     # every file under the sandbox HOME is writable by agent tools and cannot
     # serve as trusted evidence.
     del transcript_projects, transcript_cwd, transcript_wait_seconds
+    max_budget_usd = session_budget(max_budget_usd)
 
     cmd = [
         claude_bin,
@@ -658,8 +751,6 @@ def run_claude(
         "stream-json",
         "--verbose",
     ]
-    if bare:
-        cmd.append("--bare")
     for plugin_dir in plugin_dirs:
         cmd += ["--plugin-dir", plugin_dir]
     if settings_json is not None:
@@ -667,13 +758,11 @@ def run_claude(
     if strict_mcp_config:
         cmd += ["--strict-mcp-config", "--mcp-config", mcp_config_json or '{"mcpServers":{}}']
     if allowed_tools:
-        # --bare's own hard-coded Bash/Edit/Read ceiling already scopes bare
-        # sessions; outside --bare the built-in toolset defaults to
-        # everything (subagents, WebFetch, Task, ...), so --tools is needed
-        # to actually restrict it — --allowedTools only pre-approves within
-        # whatever set is available, it does not narrow that set.
-        if not bare:
-            cmd += ["--tools", *allowed_tools]
+        # The built-in toolset defaults to everything (subagents, WebFetch,
+        # Task, ...), so --tools is needed to actually restrict it --
+        # --allowedTools only pre-approves within whatever set is available,
+        # it does not narrow that set.
+        cmd += ["--tools", *allowed_tools]
         cmd += ["--allowedTools", *allowed_tools]
     if disable_slash_commands:
         cmd.append("--disable-slash-commands")
@@ -683,10 +772,13 @@ def run_claude(
         cmd += ["--model", model]
     if effort:
         cmd += ["--effort", effort]
+    if max_budget_usd is not None:
+        cmd += ["--max-budget-usd", str(max_budget_usd)]
     for tool in disallowed_tools or []:
         cmd += ["--disallowedTools", tool]
     managed_cmd = [*(command_prefix or []), *cmd]
     started = time.monotonic()
+    event_clock = EventClock()
     with contextlib.ExitStack() as progress_stack:
         progress = (
             progress_stack.enter_context(
@@ -698,6 +790,11 @@ def run_claude(
             if progress_label
             else None
         )
+        def observe(chunk: bytes) -> None:
+            event_clock.observe(chunk)
+            if progress is not None:
+                progress.observe(chunk)
+
         proc = run_managed(
             managed_cmd,
             cwd=None if command_prefix else cwd,
@@ -706,37 +803,36 @@ def run_claude(
             require_pid_namespace=require_pid_namespace,
             stdin_data=prompt.encode(),
             capture_stdout_bytes=MAX_TRANSCRIPT_BYTES,
-            stdout_observer=progress.observe if progress is not None else None,
+            stdout_observer=observe,
         )
     wall_s = time.monotonic() - started
     event_stream_error: str | None = None
     events: list[dict[str, Any]] = []
+    event_offsets: list[float] | None = None
     try:
         if proc.stdout_capture is None:
             raise ValueError("parent process did not capture Claude stdout")
         if proc.stdout_capture_overflow:
             raise ValueError(f"parent-captured event stream exceeds {MAX_TRANSCRIPT_BYTES} bytes")
         events = _parse_parent_event_stream(proc.stdout_capture)
-        result_indexes = [index for index, event in enumerate(events) if event.get("type") == "result"]
-        if len(result_indexes) != 1:
-            raise ValueError(f"expected exactly one final result event, observed {len(result_indexes)}")
-        result_index = result_indexes[0]
-        data = events[result_index]
+        event_offsets = event_clock.finish(len(events))
+        data, result_index = _session_result(events, proc.duration_s)
         # A session that used a background task drains its bookkeeping after
         # the final result event (`background_tasks_changed`, `task_updated`,
         # `task_notification` — all `type: "system"`), so the result is last
         # only among the events that carry evidence. `system` events hold no
         # tool_use/tool_result/usage payload and so cannot forge skill or cost
         # evidence; any other event after the result still fails closed.
-        if any(event.get("type") != "system" for event in events[result_index + 1 :]):
-            raise ValueError("final result event is not the last event in the captured stream")
         # Nothing after the result is evidence. Cut the window here so that is
         # a property of what the evidence readers below can see, rather than an
         # assumption that a `system` event never carries a tool_use block.
         events = events[: result_index + 1]
+        if event_offsets is not None:
+            event_offsets = event_offsets[: result_index + 1]
     except (UnicodeError, ValueError) as exc:
         event_stream_error = str(exc)
         data = {}
+        event_offsets = None
     usage = data.get("usage") or {}
     subtype = data.get("subtype")
     well_formed = all(field in usage for field in USAGE_FIELDS)
@@ -783,6 +879,8 @@ def run_claude(
         "transcript_missing": False,
         "tool_use_counts": tool_use_counts,
         "gitnexus_tool_uses": sum(count for name, count in tool_use_counts.items() if name.startswith("mcp__gitnexus")),
+        "session_diagnostics": [diagnose_session(events, event_offsets, wall_s)],
+        "max_budget_usd": max_budget_usd,
         **{field: usage.get(field, 0) for field in USAGE_FIELDS},
     }
     needs_evidence = expected_skill is not None or transcript_output_dir is not None
@@ -878,4 +976,7 @@ def sum_sessions(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         for name, count in session.get("tool_use_counts", {}).items():
             tool_use_counts[name] = tool_use_counts.get(name, 0) + int(count)
     total["tool_use_counts"] = tool_use_counts
+    total["session_diagnostics"] = [
+        diagnostic for session in sessions for diagnostic in session.get("session_diagnostics", [])
+    ]
     return total

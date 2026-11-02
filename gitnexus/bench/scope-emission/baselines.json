@@ -1,8 +1,8 @@
 {
-  "_comment": "Baselines for bench/scope-emission/measure.mjs --check (#2699), one entry per language. `scopes` is an EXACT count over a synthetic corpus fixed in measure.mjs — a correctness gate, not a timing one, so drift means the emitted scope set moved and must be explained, never re-baselined to make CI green. The two emit-side filters this guards (function-body blocks, and blocks that declare no binding) cut block scopes 19389 -> 5331 on a 762-file TypeScript corpus and took the block-scope overhead from ~+10% to ~+2% of analyze wall time. `@scope.block` = 400 is 2 per module: only the two `if`/`else` branches that declare `const chosen`. If that number jumps, the filters regressed and every scope-chain walk in every function got deeper. BOTH languages are baselined because the filters are implemented twice — FUNCTION_BODY_OWNER_TYPES in typescript/captures.ts and JS_FUNCTION_BODY_OWNER_TYPES in javascript/captures.ts, each with its own blockDeclaresBinding — so a TypeScript-only gate would let a JavaScript-only regression ship green. The two agree exactly on this corpus; that is a measured result, not an invariant the gate depends on. `emit_ms_budget` carries deliberate headroom for shared CI runners and exists to catch an order-of-magnitude regression, not a few percent.",
+  "_comment": "Baselines for bench/scope-emission/measure.mjs --check (#2699, #3532). Exact scope counts over the fixed synthetic corpus guard function-body suppression and removal of blocks without bindings. Each module has four Block scopes: two const-chosen branches, the lexical for environment, and the catch environment. Lookup-policy and name-claims captures decorate scopes and are excluded from this scope census; bench/scope-capture pins their full content. TypeScript and JavaScript retain separate baselines. emit_ms_budget is unchanged and carries headroom for shared CI runners.",
   "typescript": {
     "scopes": {
-      "@scope.block": 400,
+      "@scope.block": 800,
       "@scope.class": 200,
       "@scope.function": 1400,
       "@scope.module": 200
@@ -11,7 +11,7 @@
   },
   "javascript": {
     "scopes": {
-      "@scope.block": 400,
+      "@scope.block": 800,
       "@scope.class": 200,
       "@scope.function": 1400,
       "@scope.module": 200

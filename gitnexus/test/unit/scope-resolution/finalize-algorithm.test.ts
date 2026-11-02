@@ -316,6 +316,52 @@ describe('finalize', () => {
   });
 
   describe('wildcard expansion', () => {
+    it.each(
+      [
+        { importKind: 'none', parsedImports: [] },
+        { importKind: 'ordinary', parsedImports: [named('Leaf', 'Leaf', 'leaf')] },
+        { importKind: 'unresolved wildcard', parsedImports: [wildcard('missing')] },
+        { importKind: 'external wildcard', parsedImports: [wildcard('external')] },
+        { importKind: 'unresolved reexport', parsedImports: [reexport('X', 'X', 'missing')] },
+        { importKind: 'external reexport', parsedImports: [reexport('X', 'X', 'external')] },
+      ].flatMap((testCase) =>
+        [false, true].map((filteredWildcards) => ({ ...testCase, filteredWildcards })),
+      ),
+    )(
+      'does not inspect unrelated exports after a terminal miss ($importKind, filtered=$filteredWildcards)',
+      ({ parsedImports, filteredWildcards }) => {
+        const leaf = file('leaf', [def('def:Leaf', 'Class', 'Leaf')]);
+        const target = file('target', [], parsedImports);
+        let exportSurfaceReads = 0;
+        const unrelated: FinalizeFile = {
+          ...file('unrelated', [def('def:Unrelated', 'Class', 'Unrelated')]),
+          get localExports() {
+            exportSurfaceReads++;
+            return new Map([['Unrelated', def('def:Unrelated', 'Class', 'Unrelated')]]);
+          },
+        };
+        const wildcardImporter = file('wildcard-importer', [], [wildcard('unrelated')]);
+        const consumer = file('consumer', [], [named('Missing', 'Missing', 'target')]);
+        const files = [consumer, target, leaf, wildcardImporter, unrelated];
+        const hooks = defaultHooks(files);
+        const out = finalize(
+          { files, workspaceIndex: undefined },
+          {
+            ...hooks,
+            resolveImportTarget: (targetRaw, fromFile, workspace) =>
+              targetRaw === 'external'
+                ? targetRaw
+                : hooks.resolveImportTarget(targetRaw, fromFile, workspace),
+            ...(filteredWildcards ? { filterWildcardNames: (_scope, names) => names } : {}),
+          },
+        );
+
+        expect(firstImport(out, consumer.moduleScope)?.linkStatus).toBe('unresolved');
+        expect(firstImport(out, wildcardImporter.moduleScope)?.targetDefId).toBe('def:Unrelated');
+        expect(exportSurfaceReads).toBe(filteredWildcards ? 2 : 1);
+      },
+    );
+
     it('expands `wildcard` into one ImportEdge per exported name', () => {
       const b = file('b', [
         def('def:b.X', 'Class', 'b.X'),
@@ -356,12 +402,19 @@ describe('finalize', () => {
   });
 
   describe('re-export flattening', () => {
-    it('sets transitiveVia on reexport edges', () => {
+    it('resolves a reexport and its consumer after a terminal miss', () => {
       const c = file('c', [def('def:c.X', 'Class', 'c.X')]);
       const b = file('b', [], [reexport('X', 'X', 'c')]);
-      const a = file('a', [], [named('X', 'X', 'b')]);
+      const a = file('a', [], [named('Absent', 'Absent', 'c'), named('X', 'X', 'b')]);
       const files = [a, b, c];
       const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const imports = out.imports.get(a.moduleScope);
+      expect(imports).toHaveLength(2);
+      expect(imports?.[0].linkStatus).toBe('unresolved');
+      expect(imports?.[1]).toMatchObject({
+        targetDefId: 'def:c.X',
+        transitiveVia: ['b', 'c'],
+      });
       const reexportEdge = firstImport(out, b.moduleScope)!;
       expect(reexportEdge.kind).toBe('reexport');
       expect(reexportEdge.transitiveVia).toEqual(['c']);
@@ -788,6 +841,43 @@ describe('finalize', () => {
   });
 
   describe('module-scope binding materialization', () => {
+    it.each([
+      [true, undefined, true],
+      [true, false, false],
+      [false, true, true],
+      [false, undefined, false],
+    ] as const)(
+      'honors lexical policy %s with per-import override %s',
+      (providerPolicy, override, lexical) => {
+        const target = file('target', [def('def:target.User', 'Class', 'target.User')]);
+        const source = file(
+          'source',
+          [],
+          [
+            {
+              ...named('User', 'User', 'target'),
+              declaredAtScope: 'scope:source#function',
+              ...(override === undefined ? {} : { bindsAtLexicalScope: override }),
+            },
+          ],
+        );
+        const files = [source, target];
+        const result = finalize(
+          { files, workspaceIndex: undefined },
+          {
+            ...defaultHooks(files),
+            importsBindAtLexicalScope: providerPolicy,
+          },
+        );
+        const expected = lexical ? 'scope:source#function' : source.moduleScope;
+        const absent = lexical ? source.moduleScope : 'scope:source#function';
+        expect(bindingsFor(result, expected, 'User').map((binding) => binding.def.nodeId)).toEqual([
+          'def:target.User',
+        ]);
+        expect(bindingsFor(result, absent, 'User')).toEqual([]);
+        expect(result.imports.get(expected)).toHaveLength(1);
+      },
+    );
     it('lays down local defs with origin=local', () => {
       const a = file('a', [def('def:a.X', 'Class', 'a.X')]);
       const out = finalize({ files: [a], workspaceIndex: undefined }, defaultHooks([a]));
@@ -795,6 +885,71 @@ describe('finalize', () => {
       expect(bindings.length).toBe(1);
       expect(bindings[0]!.origin).toBe('local');
       expect(bindings[0]!.def.nodeId).toBe('def:a.X');
+    });
+
+    it('does not flatten nested declarations into the module binding bucket', () => {
+      const topLevel = { ...def('def:a.outer', 'Function', 'a.outer'), filePath: 'a' };
+      const nested = {
+        ...def('def:a.outer.target', 'Function', 'a.outer.target'),
+        filePath: 'a',
+      };
+      const a: FinalizeFile = {
+        ...file('a', [topLevel, nested]),
+        moduleBindings: new Map([['outer', [{ def: topLevel, origin: 'local' as const }]]]),
+      };
+
+      const out = finalize({ files: [a], workspaceIndex: undefined }, defaultHooks([a]));
+
+      expect(bindingsFor(out, a.moduleScope, 'outer').map((binding) => binding.def.nodeId)).toEqual(
+        ['def:a.outer'],
+      );
+      expect(bindingsFor(out, a.moduleScope, 'target')).toEqual([]);
+    });
+
+    it('does not duplicate namespace definitions already projected into module bindings', () => {
+      const namespaced = {
+        ...def('def:a.ns.target', 'Function', 'a.ns.target'),
+        filePath: 'a',
+        namespacePrefix: 'ns',
+      };
+      const a: FinalizeFile = {
+        ...file('a.cpp', [namespaced]),
+        moduleBindings: new Map([['target', [{ def: namespaced, origin: 'local' as const }]]]),
+      };
+
+      const out = finalize({ files: [a], workspaceIndex: undefined }, defaultHooks([a]));
+
+      expect(
+        bindingsFor(out, a.moduleScope, 'target').map((binding) => binding.def.nodeId),
+      ).toEqual(['def:a.ns.target']);
+    });
+
+    it('uses provider policy for owned members and retains synthetic dispatch entries', () => {
+      const method = { ...def('def:a.Box.target', 'Method', 'a.Box.target'), ownerId: 'def:a.Box' };
+      const synthetic = {
+        ...method,
+        nodeId: 'def:a.Box.generated',
+        qualifiedName: 'a.Box.generated',
+        isSynthetic: true,
+      };
+      const a: FinalizeFile = {
+        ...file('a.ipynb', [method, synthetic]),
+        moduleBindings: new Map(),
+      };
+      const input = { files: [a], workspaceIndex: undefined };
+      const lexical = finalize(input, {
+        ...defaultHooks([a]),
+        ownedMembersBindAtModuleScope: false,
+      });
+      expect(bindingsFor(lexical, a.moduleScope, 'target')).toEqual([]);
+      expect(
+        bindingsFor(lexical, a.moduleScope, 'generated').map((binding) => binding.def.nodeId),
+      ).toEqual(['def:a.Box.generated']);
+
+      const legacy = finalize(input, defaultHooks([a]));
+      expect(
+        bindingsFor(legacy, a.moduleScope, 'target').map((binding) => binding.def.nodeId),
+      ).toEqual(['def:a.Box.target']);
     });
 
     it('layers imports on top of local defs via mergeBindings', () => {

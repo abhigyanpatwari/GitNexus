@@ -1,0 +1,48 @@
+{
+  "language": "cpp",
+  "description": "Resolve a public struct member through mixed reference, dot and pointer access over three receiver hops.",
+  "categories": ["public-field", "deep-chain", "pointer-receiver", "homonyms", "writes"],
+  "target": {
+    "name": "value",
+    "kind": "Property",
+    "file": "model.cpp",
+    "startLine": 0
+  },
+  "newName": "amount",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "read",
+        "kind": "Function",
+        "file": "model.cpp",
+        "startLine": 4
+      },
+      "to": {
+        "name": "value",
+        "kind": "Property",
+        "file": "model.cpp",
+        "startLine": 0
+      }
+    },
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "write",
+        "kind": "Function",
+        "file": "model.cpp",
+        "startLine": 7
+      },
+      "to": {
+        "name": "value",
+        "kind": "Property",
+        "file": "model.cpp",
+        "startLine": 0
+      }
+    }
+  ]
+}

@@ -13,6 +13,7 @@ import {
   nodePlatformTuple,
   resolveFtsVersionPair,
   resolveVendoredFtsPath,
+  resolveVendoredVectorPath,
 } from './vendored-extension-path.js';
 import { logger } from '../logger.js';
 
@@ -219,8 +220,8 @@ export const installDuckDbExtensionOutOfProcess = async (
  * Centralized lifecycle manager for optional LadybugDB extensions.
  *
  * Tries `LOAD` first — it is per-connection, idempotent, and never
- * touches the network. For FTS, a packaged vendored path is path-LOADed
- * before the named `LOAD EXTENSION fts`. If `LOAD` fails and the active
+ * touches the network. For FTS and VECTOR, a packaged vendored path is
+ * path-LOADed before the named `LOAD EXTENSION`. If `LOAD` fails and the active
  * policy permits, the manager runs a single bounded out-of-process
  * `INSTALL` attempt per process and retries `LOAD`. Capability outcomes
  * are cached so unavailable extensions degrade search features without
@@ -289,10 +290,13 @@ export class ExtensionManager {
       return false;
     }
 
-    if (name === 'fts') {
+    const isVector = name.toLowerCase() === 'vector';
+    if (name === 'fts' || isVector) {
       const tuple = opts.platformTuple ?? nodePlatformTuple();
       const vendorRoot = opts.vendorRoot ?? defaultVendorRoot();
-      const vendored = resolveVendoredFtsPath({ vendorRoot, tuple });
+      const vendored = isVector
+        ? resolveVendoredVectorPath({ vendorRoot, tuple })
+        : resolveVendoredFtsPath({ vendorRoot, tuple });
       if (vendored) {
         attempts.push({ source: 'vendored', tuple });
         const vendoredError = await this.tryLoadPath(query, vendored);
@@ -301,7 +305,7 @@ export class ExtensionManager {
           return true;
         }
         lastInspectPath = vendored;
-      } else if (isUnsupportedFtsTuple(tuple, vendorRoot)) {
+      } else if (name === 'fts' && isUnsupportedFtsTuple(tuple, vendorRoot)) {
         attempts.push({ source: 'vendored', tuple });
         this.markUnavailable(
           name,

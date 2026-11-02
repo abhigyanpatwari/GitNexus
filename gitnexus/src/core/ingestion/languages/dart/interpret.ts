@@ -36,6 +36,16 @@ export function interpretDartImport(captures: CaptureMatch): ParsedImport | null
   const sourceCap = captures['@import.source'];
   if (sourceCap === undefined) return null;
   const raw = stripQuotes(sourceCap.text);
+  const alias = captures['@import.alias'];
+  if (alias !== undefined) {
+    return {
+      kind: 'namespace',
+      targetRaw: raw,
+      localName: alias.text,
+      importedName: raw,
+      explicitAlias: true,
+    };
+  }
   // Dart `import '...'` brings every PUBLIC top-level symbol of the target
   // library directly into scope (no prefix) — wildcard semantics. The
   // `expandsWildcardTo` hook enumerates those names so cross-file return
@@ -80,7 +90,12 @@ export function interpretDartTypeBinding(captures: CaptureMatch): ParsedTypeBind
   const typeCap = captures['@type-binding.type'];
   if (nameCap === undefined || typeCap === undefined) return null;
 
-  const rawType = normalizeDartType(typeCap.text);
+  // A call-derived `prefix.member` names a namespace function or a member
+  // call, not a library-prefixed type, so it keeps its prefix (#3498).
+  const rawType =
+    captures['@type-binding.constructor'] !== undefined && typeCap.text.includes('.')
+      ? typeCap.text
+      : normalizeDartType(typeCap.text);
   if (
     rawType === '' ||
     rawType === 'void' ||

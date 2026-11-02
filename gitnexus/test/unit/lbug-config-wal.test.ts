@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createLbugDatabase,
   estimateBufferPool,
+  maxDbSizeReachedRemedy,
+  parseMaxDbSize,
+  pastEofReadRemedy,
+  resolveMaxDbSize,
   isLbugCheckpointIoError,
   isStorageVersionMismatchError,
   isWalCorruptionError,
@@ -550,5 +554,212 @@ describe('bufferPoolExhaustionRemedy (#2631)', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe('GITNEXUS_LBUG_MAX_DB_SIZE power-of-two normalization (#3529)', () => {
+  const DEFAULT_MAX_DB_SIZE = 2 ** 34;
+
+  describe('parseMaxDbSize', () => {
+    it.each([
+      ['unset', undefined, DEFAULT_MAX_DB_SIZE],
+      ['exact power of two (default)', '17179869184', 2 ** 34],
+      ['exact power of two (256 GiB)', '274877906944', 2 ** 38],
+      ['rounds 300 GB up', '300000000000', 2 ** 39],
+      ['rounds 2^34 + 1 up', '17179869185', 2 ** 35],
+      ['rounds 2^40 + 1 up', '1099511627777', 2 ** 41],
+      ['floors a fraction before rounding', '17179869184.5', 2 ** 34],
+      ['non-numeric falls back', 'abc', DEFAULT_MAX_DB_SIZE],
+      ['zero falls back', '0', DEFAULT_MAX_DB_SIZE],
+      ['negative falls back', '-5', DEFAULT_MAX_DB_SIZE],
+      ['beyond the safe-integer range falls back', '1e30', DEFAULT_MAX_DB_SIZE],
+      ['empty falls back', '', DEFAULT_MAX_DB_SIZE],
+    ])('%s', (_label, raw, expected) => {
+      expect(parseMaxDbSize(raw).value).toBe(expected);
+    });
+
+    it.each([
+      ['300000000000', 300000000000],
+      ['17179869185', 17179869185],
+    ])('records the raw value when %s is rounded', (raw, rawNumber) => {
+      expect(parseMaxDbSize(raw).roundedFrom).toBe(rawNumber);
+    });
+
+    it.each([['17179869184'], ['274877906944'], ['abc'], [undefined]])(
+      'records no rounding for %s',
+      (raw) => {
+        expect(parseMaxDbSize(raw).roundedFrom).toBeUndefined();
+      },
+    );
+  });
+
+  describe('resolveMaxDbSize', () => {
+    /** Runs the resolver under a captured logger; returns the value and the max-size warnings. */
+    const resolveCapturingWarnings = (raw: string | undefined) => {
+      const cap = _captureLogger();
+      try {
+        const value = resolveMaxDbSize(raw);
+        const warnings = cap
+          .records()
+          .filter((r) => typeof r.msg === 'string' && r.msg.includes('GITNEXUS_LBUG_MAX_DB_SIZE'));
+        return { value, warnings };
+      } finally {
+        cap.restore();
+      }
+    };
+
+    it('warns once with the raw and effective values when it rounds', () => {
+      const { value, warnings } = resolveCapturingWarnings('300000000000');
+      expect(value).toBe(2 ** 39);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].msg).toContain('300000000000');
+      expect(warnings[0].msg).toContain(String(2 ** 39));
+    });
+
+    it('reports the operator value as supplied, not its floored integer', () => {
+      const { value, warnings } = resolveCapturingWarnings('300000000000.9');
+      expect(value).toBe(2 ** 39);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].msg).toContain('GITNEXUS_LBUG_MAX_DB_SIZE=300000000000.9 ');
+    });
+
+    it.each([['17179869184'], ['abc'], [undefined]])('does not warn for %s', (raw) => {
+      expect(resolveCapturingWarnings(raw).warnings).toHaveLength(0);
+    });
+  });
+
+  // `LBUG_MAX_DB_SIZE` is resolved when lbug-config loads, so the env must be
+  // staged and the module freshly imported (logger included, so its capture is
+  // the one the fresh module logs to). Calling `parseMaxDbSize` directly — as
+  // the cases above do — cannot show that the ROUNDED value is what the native
+  // constructor receives.
+  it('hands the rounded value to the native constructor and warns exactly once', async () => {
+    vi.stubEnv('GITNEXUS_LBUG_MAX_DB_SIZE', '300000000000');
+    vi.resetModules();
+    const { _captureLogger: captureFreshLogger } = await import('../../src/core/logger.js');
+    const cap = captureFreshLogger();
+    try {
+      const fresh = await import('../../src/core/lbug/lbug-config.js');
+      const Database = vi.fn(function (this: unknown, ..._ctorArgs: unknown[]) {});
+      const lbugModule = { Database } as unknown as Parameters<typeof fresh.createLbugDatabase>[0];
+
+      fresh.createLbugDatabase(lbugModule, '/tmp/lbug-max-db-size');
+
+      const MAX_DB_SIZE_ARG = 4;
+      expect(Database.mock.calls[0][MAX_DB_SIZE_ARG]).toBe(2 ** 39);
+      const warnings = cap
+        .records()
+        .filter((r) => typeof r.msg === 'string' && r.msg.includes('GITNEXUS_LBUG_MAX_DB_SIZE'));
+      expect(warnings).toHaveLength(1);
+    } finally {
+      cap.restore();
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+});
+
+describe('size-ceiling and past-EOF remedies (#3529, #3530)', () => {
+  const REACHED_3529 =
+    'Buffer manager exception: Maximum database size of 274877906944 bytes has been reached.';
+  const EOF_3530 =
+    'Failed to delete stale embedding rows — aborting to prevent vector-index corruption: ' +
+    'Batch execution failed for rows 1-4: IO exception: Cannot read from file: ' +
+    '/repo/.gitnexus/lbug.staging.abc fileDescriptor: 19 numBytesRead: 0 ' +
+    'numBytesToRead: 4096 position: 8011825152 (MATCH (e:CodeEmbedding {nodeId: $nodeId}) DELETE e)';
+  const OFF_SWITCH = 'GITNEXUS_ATOMIC_INCREMENTAL=0';
+  // The cost of taking the off-switch; it must travel with every mention of it.
+  const OFF_SWITCH_COST = 'leave the live index partly written, and the next run then rebuilds it';
+
+  describe('maxDbSizeReachedRemedy', () => {
+    it('explains the verbatim #3529 message as an address-space ceiling', () => {
+      const remedy = maxDbSizeReachedRemedy(REACHED_3529, 'in-place');
+      expect(remedy).toContain('274877906944');
+      expect(remedy).toContain('engine reported');
+      expect(remedy).toContain('GITNEXUS_LBUG_MAX_DB_SIZE');
+      expect(remedy).toContain('rounded up');
+      expect(remedy).toContain('not disk usage');
+    });
+
+    it('does not claim the configured size must itself be a power of 2', () => {
+      const remedy = maxDbSizeReachedRemedy(REACHED_3529, 'in-place');
+      expect(remedy).not.toContain('must be a power of 2');
+      expect(remedy).toContain('not a power of 2 is rounded up');
+      // The example must show a value actually being rounded, not one already a power of 2.
+      expect(remedy).toContain(`300000000000 becomes ${2 ** 39}`);
+    });
+
+    it.each([
+      ['staged-incremental', true],
+      ['staged-rebuild', false],
+      ['in-place', false],
+    ] as const)('names the off-switch only where it applies: %s', (mode, namesOffSwitch) => {
+      const remedy = maxDbSizeReachedRemedy(REACHED_3529, mode);
+      expect(remedy?.includes(OFF_SWITCH)).toBe(namesOffSwitch);
+      expect(remedy?.includes(OFF_SWITCH_COST)).toBe(namesOffSwitch);
+    });
+
+    it.each([
+      ['staged-incremental', true],
+      ['staged-rebuild', true],
+      ['in-place', false],
+    ] as const)(
+      'says the live index is untouched only for a staged build: %s',
+      (mode, untouched) => {
+        expect(
+          maxDbSizeReachedRemedy(REACHED_3529, mode)?.includes('live index is untouched'),
+        ).toBe(untouched);
+      },
+    );
+
+    it.each([
+      ['the generic wording the engine does not emit', 'Maximum database size exceeded'],
+      ['an unrelated error', 'Binder exception: Table CodeEmbedding does not exist.'],
+      ['the past-EOF message', EOF_3530],
+    ])('returns undefined for %s', (_label, message) => {
+      expect(maxDbSizeReachedRemedy(message, 'staged-incremental')).toBeUndefined();
+    });
+  });
+
+  describe('pastEofReadRemedy', () => {
+    it.each([
+      ['staged-incremental', true],
+      ['staged-rebuild', false],
+    ] as const)(
+      'staged build, %s: live index untouched, off-switch only where it applies',
+      (mode, namesOffSwitch) => {
+        const remedy = pastEofReadRemedy(EOF_3530, mode);
+        expect(remedy).toContain('live index is untouched');
+        expect(remedy?.includes(OFF_SWITCH)).toBe(namesOffSwitch);
+        expect(remedy?.includes(OFF_SWITCH_COST)).toBe(namesOffSwitch);
+      },
+    );
+
+    it('treats an in-place failure as possible index damage with a rebuild remedy', () => {
+      const remedy = pastEofReadRemedy(EOF_3530, 'in-place');
+      expect(remedy).toContain('analyze --force');
+      expect(remedy).not.toContain('live index is untouched');
+      expect(remedy).not.toContain(OFF_SWITCH);
+      expect(remedy).not.toContain(OFF_SWITCH_COST);
+    });
+
+    it.each([
+      ['a short read', EOF_3530.replace('numBytesRead: 0 ', 'numBytesRead: 512 ')],
+      [
+        'a nonzero count that starts with 0',
+        EOF_3530.replace('numBytesRead: 0 ', 'numBytesRead: 04096 '),
+      ],
+      ['the size-ceiling message', REACHED_3529],
+      ['an unrelated error', 'Binder exception: Table CodeEmbedding does not exist.'],
+    ])('returns undefined for %s', (_label, message) => {
+      expect(pastEofReadRemedy(message, 'staged-incremental')).toBeUndefined();
+    });
+  });
+
+  it.each([
+    ['size ceiling', () => maxDbSizeReachedRemedy(REACHED_3529, 'staged-incremental')],
+    ['past-EOF', () => pastEofReadRemedy(EOF_3530, 'staged-incremental')],
+  ])('the %s remedy never recommends lowering the WAL checkpoint threshold', (_label, remedy) => {
+    expect(remedy()).not.toContain('GITNEXUS_WAL_CHECKPOINT_THRESHOLD');
   });
 });

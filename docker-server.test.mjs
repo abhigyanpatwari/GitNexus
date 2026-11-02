@@ -199,6 +199,47 @@ it('injects __GITNEXUS_CONFIG__ into SPA fallback routes', async () => {
   });
 });
 
+it('injects a same-origin path when GITNEXUS_BACKEND_URL is /', async () => {
+  await withInjectionServer({ GITNEXUS_BACKEND_URL: '/' }, async (port) => {
+    const res = await rawGet(port, '/');
+    assert.equal(res.status, 200);
+    assert.ok(res.body.includes('"backendUrl":"/"'), 'Expected the root path as the backend URL');
+  });
+});
+
+it('injects a same-origin prefix without its trailing slash', async () => {
+  await withInjectionServer({ GITNEXUS_BACKEND_URL: '/gitnexus/' }, async (port) => {
+    const res = await rawGet(port, '/');
+    assert.equal(res.status, 200);
+    assert.ok(
+      res.body.includes('"backendUrl":"/gitnexus"'),
+      'Expected the prefix as the backend URL',
+    );
+  });
+});
+
+it('does not inject a protocol-relative GITNEXUS_BACKEND_URL', async () => {
+  await withInjectionServer({ GITNEXUS_BACKEND_URL: '//evil.example' }, async (port) => {
+    const res = await rawGet(port, '/');
+    assert.equal(res.status, 200);
+    assert.ok(
+      !res.body.includes('__GITNEXUS_CONFIG__'),
+      'Expected no __GITNEXUS_CONFIG__ for a protocol-relative value',
+    );
+  });
+});
+
+it('does not inject a backslash-prefixed GITNEXUS_BACKEND_URL, which a URL parser reads as a host', async () => {
+  await withInjectionServer({ GITNEXUS_BACKEND_URL: '/\\evil.example' }, async (port) => {
+    const res = await rawGet(port, '/');
+    assert.equal(res.status, 200);
+    assert.ok(
+      !res.body.includes('__GITNEXUS_CONFIG__'),
+      'Expected no __GITNEXUS_CONFIG__ for a backslash-prefixed value',
+    );
+  });
+});
+
 it('does not inject when GITNEXUS_BACKEND_URL is not set', async () => {
   await withInjectionServer({}, async (port) => {
     const res = await rawGet(port, '/');

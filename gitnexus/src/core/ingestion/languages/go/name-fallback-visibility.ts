@@ -47,8 +47,12 @@ function classifyGoFile(
   };
 }
 
-/** Go export rule: an upper-case initial, by Unicode letter case. */
-function isExportedGoName(name: string): boolean {
+/**
+ * Go export rule (spec, Exported identifiers): the first code point is a Unicode
+ * uppercase letter, category `Lu`. Titlecase (`Lt`), caseless letters (`日本`),
+ * letter numbers (`Ⅷ`), and `_` are NOT exported.
+ */
+export function isExportedGoName(name: string): boolean {
   return /^\p{Lu}/u.test(name);
 }
 
@@ -58,7 +62,7 @@ function isExportedGoName(name: string): boolean {
  * bare identifier for a function. Either way the LAST segment is the identifier
  * whose case decides export.
  */
-function goSimpleName(candidate: SymbolDefinition): string {
+export function goSimpleName(candidate: SymbolDefinition): string {
   const qualified = candidate.qualifiedName ?? '';
   const dot = qualified.lastIndexOf('.');
   return dot === -1 ? qualified : qualified.slice(dot + 1);

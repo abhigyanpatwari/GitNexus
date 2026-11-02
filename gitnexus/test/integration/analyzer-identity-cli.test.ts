@@ -19,6 +19,9 @@ function runAnalyzeWorker(
     const child = fork(workerEntry, [], {
       cwd: repoPath,
       env,
+      // Match the CLI subprocess's runtime conditions. Inheriting Vitest's
+      // development conditions would intentionally select a different identity.
+      execArgv: [],
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
     });
     let stderr = '';
@@ -54,7 +57,7 @@ function runAnalyzeWorker(
         force,
         skipAgentsMd: true,
         skipSkills: true,
-        workerCount: 1,
+        workerPoolSize: 1,
       },
     });
   });
@@ -123,6 +126,8 @@ describe('CLI analyzer identity receipt', () => {
         },
       });
 
+      expect(meta?.parseCacheIdentity?.base).toMatch(/^sha256:[a-f0-9]{64}$/);
+
       // A server worker sees a different process.argv[1], but that entrypoint
       // is diagnostic and already covered by the common build digest. It must
       // take the unchanged fast path after a CLI-authored index.
@@ -138,6 +143,7 @@ describe('CLI analyzer identity receipt', () => {
       await runAnalyzeWorker(workerEntry, repo.dbPath, env, true);
       const workerMeta = await loadMeta(getStoragePaths(repo.dbPath).storagePath);
       expect(workerMeta?.runnerIdentity?.invokedArtifact.path).toBe(workerEntry);
+      expect(workerMeta?.parseCacheIdentity).toEqual(meta?.parseCacheIdentity);
 
       const status = execFileSync(process.execPath, [cliEntry, 'status', '--json'], {
         cwd: repo.dbPath,

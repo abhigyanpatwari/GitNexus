@@ -18,7 +18,6 @@ export default defineConfig({
         __dirname,
         'node_modules/@anthropic-ai/sdk/lib/transform-json-schema.mjs',
       ),
-      mermaid: path.resolve(__dirname, 'node_modules/mermaid/dist/mermaid.esm.min.mjs'),
     },
   },
   test: {

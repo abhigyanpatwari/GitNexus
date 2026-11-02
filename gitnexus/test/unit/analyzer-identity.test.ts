@@ -30,6 +30,37 @@ import { setupMiniRepo } from '../helpers/mini-repo.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 describe('analyzer runner identity', () => {
+  it('ignores an unrelated root report created while computing identity', async () => {
+    const fixture = await createTempDir();
+    try {
+      const modulePath = path.join(fixture.dbPath, 'src', 'core', 'analyzer.ts');
+      const manifest = path.join(fixture.dbPath, 'package.json');
+      await mkdir(path.dirname(modulePath), { recursive: true });
+      await writeFile(manifest, '{"name":"fixture-analyzer","version":"1.0.0"}\n');
+      await writeFile(modulePath, 'export const analyzer = 1;\n');
+      const options = { cacheDirectory: path.join(fixture.dbPath, 'identity-cache') };
+      let created = false;
+      const identity = resolveAnalyzerRunnerIdentity(pathToFileURL(modulePath).href, {
+        ...options,
+        onCacheMissWork: (input) => {
+          if (input.kind === 'manifest-read' && input.path === manifest && !created) {
+            created = true;
+            writeFileSync(path.join(fixture.dbPath, 'test-report.json'), '{}\n');
+          }
+        },
+      });
+      expect(created).toBe(true);
+      expect(identity.build.digest).toMatch(/^sha256:/);
+      // Root reports are irrelevant, but analyzer changes must still fail closed.
+      await writeFile(modulePath, 'export const analyzer = 2;\n');
+      expect(() =>
+        finalizeAnalyzerRunnerIdentity(pathToFileURL(modulePath).href, identity, options),
+      ).toThrow(/changed/);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it('is versioned, resolved, and changes when the analyzer build tree changes', async () => {
     const fixture = await createTempDir();
     try {

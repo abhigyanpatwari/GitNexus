@@ -35,17 +35,14 @@ export interface PatternSpec<TMeta> {
  * A set of patterns owned by one language plugin, bound to a specific
  * tree-sitter grammar.
  *
- * `language` is typed as `unknown` because tree-sitter's TypeScript
- * declarations use `any` for the grammar object, and the grammar modules
- * export different shapes (plain grammar vs. namespace with `typescript`
- * / `tsx` members). Callers pass the concrete grammar object; this
- * module forwards it to `parser.setLanguage` / `new Parser.Query`.
+ * Callers select a concrete Parser.Language from each grammar package
+ * before passing it to `parser.setLanguage` / `new Parser.Query`.
  */
 export interface LanguagePatterns<TMeta> {
   /** Human-readable plugin name for diagnostics. */
   name: string;
   /** tree-sitter grammar object. */
-  language: unknown;
+  language: Parser.Language;
   /** Patterns authored against `language`. */
   patterns: PatternSpec<TMeta>[];
 }
@@ -58,7 +55,7 @@ export interface LanguagePatterns<TMeta> {
  */
 export interface CompiledPatterns<TMeta> {
   name: string;
-  language: unknown;
+  language: Parser.Language;
   patterns: CompiledPattern<TMeta>[];
 }
 
@@ -166,7 +163,9 @@ export function scanFile<TMeta>(
 /**
  * Strip enclosing quotes from a tree-sitter string literal node's text.
  * Handles single / double / template quotes, Python triple-quoted strings,
- * and Go raw string literals (backticks).
+ * Python string prefixes (`r`, `b`, `u`, `f`, `t` and pairs such as `rb`),
+ * and Go raw string literals (backticks). An f-string's `{…}` fields are
+ * left as text; plugins that need them as interpolations read the node.
  *
  * Returns null for empty/nullish input so callers can uniformly skip
  * captures whose value is missing.
@@ -174,18 +173,23 @@ export function scanFile<TMeta>(
 export function unquoteLiteral(raw: string): string | null {
   if (!raw) return null;
 
+  // Python string prefixes (#1675) and PHP's binary `b"…"` are the only
+  // letters before an opening quote; a prefix with no matching quote pair
+  // after it falls through to the raw return below.
+  const literal = raw.replace(/^[rRbBuUfFtT]{1,2}(?=["'])/, '');
+
   // Python triple-quoted
   if (
-    (raw.startsWith('"""') && raw.endsWith('"""')) ||
-    (raw.startsWith("'''") && raw.endsWith("'''"))
+    (literal.startsWith('"""') && literal.endsWith('"""')) ||
+    (literal.startsWith("'''") && literal.endsWith("'''"))
   ) {
-    return raw.slice(3, -3);
+    return literal.slice(3, -3);
   }
 
-  const first = raw[0];
-  const last = raw[raw.length - 1];
-  if ((first === '"' || first === "'" || first === '`') && last === first && raw.length >= 2) {
-    return raw.slice(1, -1);
+  const first = literal[0];
+  const last = literal[literal.length - 1];
+  if ((first === '"' || first === "'" || first === '`') && last === first && literal.length >= 2) {
+    return literal.slice(1, -1);
   }
 
   // Some grammars expose the string content without quotes already (e.g.

@@ -2,15 +2,13 @@
  * `resolveGoRouteHandler` (#3402): gin/echo handler designators resolved across
  * the files of a Go package, unique-or-decline at every step.
  *
- * The model is built the way the parse phase leaves it: a Method's `ownerId` is
- * the worker's `Struct:<methodFile>:<Receiver>` id, keyed on the method's own
- * file — not the struct's node id when the struct lives in a sibling file.
+ * The model is built the way the parse phase leaves it: detached Methods have
+ * a receiver-qualified name, with ownership deferred to semantic resolution.
  */
 import { describe, expect, it } from 'vitest';
 import { createSemanticModel } from '../../src/core/ingestion/model/index.js';
 import { resolveGoRouteHandler } from '../../src/core/ingestion/languages/go/route-handler.js';
 import type { ExtractedDecoratorRoute } from '../../src/core/ingestion/workers/parse-worker.js';
-import { generateId } from '../../src/lib/utils.js';
 
 const ROUTER = 'app/router/router.go';
 
@@ -19,10 +17,10 @@ type Model = ReturnType<typeof createSemanticModel>;
 const struct = (model: Model, file: string, name: string) =>
   model.symbols.add(file, name, `Struct:${file}:${name}`, 'Struct');
 
-/** A method as the worker registers it: owner keyed on the METHOD's file. */
+/** A method as the worker registers it before workspace ownership resolves. */
 const method = (model: Model, file: string, receiver: string, name: string) =>
   model.symbols.add(file, name, `Method:${file}:${receiver}.${name}`, 'Method', {
-    ownerId: generateId('Struct', `${file}:${receiver}`),
+    qualifiedName: `${receiver}.${name}`,
   });
 
 const fn = (model: Model, file: string, name: string, returnType?: string) =>
@@ -52,7 +50,10 @@ describe('resolveGoRouteHandler', () => {
   it('deduplicates a method indexed by both its canonical owner and receiver name', () => {
     const model = createSemanticModel();
     struct(model, 'app/router/h.go', 'H');
-    method(model, 'app/router/h.go', 'H', 'Do');
+    model.symbols.add('app/router/h.go', 'Do', 'Method:app/router/h.go:H.Do', 'Method', {
+      ownerId: 'Struct:app/router/h.go:H',
+      qualifiedName: 'H.Do',
+    });
     const context = { model, importTargetsFor: () => [] };
     const registration = route({
       handlerName: 'h.Do',
@@ -303,6 +304,49 @@ describe('resolveGoRouteHandler', () => {
       expect(
         resolve(model, { handlerName: 'h.Do', handlerReceiver: { kind: 'type', name: 'T' } }),
       ).toBeUndefined();
+    });
+  });
+
+  describe('configured handler wrappers', () => {
+    const wrapped = {
+      handlerWrapper: {
+        callee: 'common.Wrapper',
+        handlerName: 'api.CreateJob',
+        handlerReceiver: { kind: 'type', name: 'API', qualifier: 'consoleApi' },
+      },
+    } as const;
+    const model = (): Model => {
+      const m = createSemanticModel();
+      struct(m, 'app/api/api.go', 'API');
+      method(m, 'app/api/job.go', 'API', 'CreateJob');
+      return m;
+    };
+    const imports = { consoleApi: ['app/api/api.go', 'app/api/job.go'] };
+
+    it('resolves the wrapped handler when the callee is configured', () => {
+      expect(
+        resolveGoRouteHandler(route(wrapped), {
+          model: model(),
+          importTargetsFor: (_from, name) => imports[name as keyof typeof imports] ?? [],
+          routeHookConfig: { routeHandlerWrappers: ['common.Wrapper'] },
+        }),
+      ).toBe('Method:app/api/job.go:API.CreateJob');
+    });
+
+    it('declines an unconfigured wrapper, as before wrappers were recorded', () => {
+      expect(resolve(model(), wrapped, imports)).toBeUndefined();
+    });
+
+    it('prefers a direct handler designator over a wrapper', () => {
+      const m = model();
+      fn(m, ROUTER, 'Direct');
+      expect(
+        resolveGoRouteHandler(route({ ...wrapped, handlerName: 'Direct' }), {
+          model: m,
+          importTargetsFor: () => [],
+          routeHookConfig: { routeHandlerWrappers: ['common.Wrapper'] },
+        }),
+      ).toBe(`Function:${ROUTER}:Direct`);
     });
   });
 });

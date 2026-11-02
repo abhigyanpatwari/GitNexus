@@ -192,7 +192,7 @@ describe('BM25 search', () => {
       expect(results[0].nodeIds).toEqual(['func:m1', 'func:m2']);
     });
 
-    it('filters out empty nodeIds', async () => {
+    it('rejects empty native nodeIds instead of hiding them in file-only results', async () => {
       const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
       vi.mocked(queryFTS)
         .mockResolvedValueOnce([]) // File
@@ -205,10 +205,7 @@ describe('BM25 search', () => {
         .mockResolvedValueOnce([]) // Method
         .mockResolvedValueOnce([]); // Interface
 
-      const { results } = await searchFTSFromLbug('util');
-
-      expect(results).toHaveLength(1);
-      expect(results[0].nodeIds).toEqual([]);
+      await expect(searchFTSFromLbug('util')).rejects.toThrow('invalid symbol identity');
     });
 
     it('merges hits across multiple index tables for the same file', async () => {

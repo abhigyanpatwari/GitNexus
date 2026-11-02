@@ -1,0 +1,19 @@
+{
+  "language": "java",
+  "description": "Allow an underscore within a longer Java method identifier, preserving comments and strings.",
+  "categories": [
+    "identifier-rules",
+    "contextual-identifiers"
+  ],
+  "target": {
+    "name": "measure",
+    "kind": "Method",
+    "file": "Metric.java",
+    "startLine": 1
+  },
+  "newName": "_measure",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  }
+}

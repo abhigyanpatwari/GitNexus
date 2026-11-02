@@ -57,6 +57,25 @@ const JITTER_MAX_MS = 50;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Point-in-time view of the manual checkpoints this process has run. */
+export interface CheckpointActivity {
+  /** CHECKPOINTs that actually ran (`tryFlushWAL` resolved true); a no-connection no-op is not counted. */
+  readonly completed: number;
+  /** `Date.now()` when the latest one completed; `null` if none has. */
+  readonly lastCompletedAt: number | null;
+  /** Checkpoints currently running, retry back-off included. */
+  readonly inFlight: number;
+}
+
+// One record for every manual CHECKPOINT: `runCheckpointWithRetry` serves both
+// the periodic tick and `checkpointOnce` (the staged window-start CHECKPOINT
+// ahead of each embedding batch), so a failure report (#3530) can tell "pages
+// were still pending" from "GitNexus's own checkpoint just ran".
+const activity = { completed: 0, lastCompletedAt: null as number | null, inFlight: 0 };
+
+/** Snapshot of {@link CheckpointActivity}; a copy, so it never changes after the read. */
+export const readCheckpointActivity = (): CheckpointActivity => ({ ...activity });
+
 /**
  * Run a single CHECKPOINT with bounded retry on
  * `isLbugCheckpointIoError`. Returns the number of attempts actually
@@ -88,40 +107,49 @@ export const runCheckpointWithRetry = async (
   const checkpointImpl = options.checkpointFn ?? tryFlushWAL;
   const randomImpl = options.randomFn ?? Math.random;
 
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= CHECKPOINT_RETRY_ATTEMPTS; attempt++) {
-    try {
-      const flushed = await checkpointImpl();
-      return { attempts: attempt, flushed };
-    } catch (err) {
-      lastError = err;
-      if (!isLbugCheckpointIoError(err)) {
-        // Non-checkpoint error — propagate immediately. Examples:
-        // WAL corruption, missing connection, query syntax failure.
-        // Retrying these would only mask the real signal.
-        throw err;
+  activity.inFlight++;
+  try {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= CHECKPOINT_RETRY_ATTEMPTS; attempt++) {
+      try {
+        const flushed = await checkpointImpl();
+        if (flushed) {
+          activity.completed++;
+          activity.lastCompletedAt = Date.now();
+        }
+        return { attempts: attempt, flushed };
+      } catch (err) {
+        lastError = err;
+        if (!isLbugCheckpointIoError(err)) {
+          // Non-checkpoint error — propagate immediately. Examples:
+          // WAL corruption, missing connection, query syntax failure.
+          // Retrying these would only mask the real signal.
+          throw err;
+        }
+        if (attempt === CHECKPOINT_RETRY_ATTEMPTS) break;
+        const base = BASE_DELAYS_MS[Math.min(attempt - 1, BASE_DELAYS_MS.length - 1)] ?? 500;
+        // randomImpl defaults to Math.random — non-cryptographic by design; jitter only avoids
+        // synchronized retries between concurrent analyzers.
+        const delayMs = base + Math.floor(randomImpl() * JITTER_MAX_MS);
+        logger.debug(
+          { attempt, totalAttempts: CHECKPOINT_RETRY_ATTEMPTS, delayMs },
+          'GitNexus: WAL checkpoint IO error — retrying',
+        );
+        await sleepImpl(delayMs);
       }
-      if (attempt === CHECKPOINT_RETRY_ATTEMPTS) break;
-      const base = BASE_DELAYS_MS[Math.min(attempt - 1, BASE_DELAYS_MS.length - 1)] ?? 500;
-      // randomImpl defaults to Math.random — non-cryptographic by design; jitter only avoids
-      // synchronized retries between concurrent analyzers.
-      const delayMs = base + Math.floor(randomImpl() * JITTER_MAX_MS);
-      logger.debug(
-        { attempt, totalAttempts: CHECKPOINT_RETRY_ATTEMPTS, delayMs },
-        'GitNexus: WAL checkpoint IO error — retrying',
-      );
-      await sleepImpl(delayMs);
     }
-  }
 
-  logger.warn(
-    { attempts: CHECKPOINT_RETRY_ATTEMPTS },
-    'GitNexus: manual WAL checkpoint exhausted retry budget — surfacing IO error to caller',
-  );
-  // The held-open cause (#2599) is named at the CLI layer (analyze.ts) where the
-  // --wal-checkpoint-threshold recovery hint already renders, so the original IO
-  // error is preserved intact for that classifier rather than re-wrapped here.
-  throw lastError;
+    logger.warn(
+      { attempts: CHECKPOINT_RETRY_ATTEMPTS },
+      'GitNexus: manual WAL checkpoint exhausted retry budget — surfacing IO error to caller',
+    );
+    // The held-open cause (#2599) is named at the CLI layer (analyze.ts) where the
+    // --wal-checkpoint-threshold recovery hint already renders, so the original IO
+    // error is preserved intact for that classifier rather than re-wrapped here.
+    throw lastError;
+  } finally {
+    activity.inFlight--;
+  }
 };
 
 /**

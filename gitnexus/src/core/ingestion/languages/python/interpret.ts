@@ -54,6 +54,7 @@ export function interpretPythonImport(captures: CaptureMatch): ParsedImport | nu
       return {
         kind: 'namespace',
         localName: aliasCap.text,
+        explicitAlias: true,
         importedName: sourceCap.text,
         targetRaw: sourceCap.text,
       };

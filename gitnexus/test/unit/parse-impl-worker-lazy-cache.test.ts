@@ -16,6 +16,7 @@ import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
 import { computeChunkHash, fileContentHash } from '../../src/storage/parse-cache.js';
+import { TEST_PARSE_IDENTITY } from '../helpers/cache-identity.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
 
 const emptyWorkerResult = (filePath: string, name: string): ParseWorkerResult => ({
@@ -172,9 +173,12 @@ describe('parse-impl worker pool lazy startup', () => {
     fs.mkdirSync(path.dirname(full), { recursive: true });
     fs.writeFileSync(full, content);
 
-    const chunkHash = computeChunkHash([{ filePath: rel, contentHash: fileContentHash(content) }]);
+    const chunkHash = computeChunkHash(
+      [{ filePath: rel, contentHash: fileContentHash(content) }],
+      TEST_PARSE_IDENTITY,
+    );
     const parseCache = {
-      version: 'test',
+      identity: TEST_PARSE_IDENTITY,
       entries: new Map<string, ParseWorkerResult[]>([
         [chunkHash, [emptyWorkerResult(rel, 'cached')]],
       ]),
@@ -218,11 +222,14 @@ describe('parse-impl worker pool lazy startup', () => {
     writeResultWorker(workerPath, markerPath);
 
     const parseCache = {
-      version: 'test',
+      identity: TEST_PARSE_IDENTITY,
       entries: new Map<string, ParseWorkerResult[]>(),
       usedKeys: new Set<string>(),
     };
-    const chunkHash = computeChunkHash([{ filePath: rel, contentHash: fileContentHash(content) }]);
+    const chunkHash = computeChunkHash(
+      [{ filePath: rel, contentHash: fileContentHash(content) }],
+      TEST_PARSE_IDENTITY,
+    );
 
     const graph = createKnowledgeGraph();
     await runChunkedParseAndResolve(
@@ -256,7 +263,7 @@ describe('parse-impl worker pool lazy startup', () => {
     writeExitBeforeReadyWorker(workerPath);
 
     const parseCache = {
-      version: 'test',
+      identity: TEST_PARSE_IDENTITY,
       entries: new Map<string, ParseWorkerResult[]>(),
       usedKeys: new Set<string>(),
     };

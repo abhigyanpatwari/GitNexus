@@ -2,7 +2,7 @@
  * Phase: scan
  *
  * Walks the repository filesystem and collects file paths + sizes.
- * Does NOT read file contents — that happens in downstream phases.
+ * Captures required provider metadata; source contents are read downstream.
  *
  * @deps    (none — this is the pipeline root)
  * @reads   repoPath (filesystem)
@@ -14,11 +14,14 @@ import type { PipelinePhase, PipelineContext } from './types.js';
 import { walkRepositoryPaths } from '../filesystem-walker.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { getLanguageFromFilename, type SupportedLanguages } from 'gitnexus-shared';
+import { SCOPE_RESOLVERS } from '../scope-resolution/pipeline/registry.js';
 
 export interface ScanOutput {
   scannedFiles: { path: string; size: number }[];
   allPaths: string[];
   totalFiles: number;
+  resolutionConfigs?: ReadonlyMap<SupportedLanguages, unknown>;
 }
 
 const SPRING_ACTUATOR_ENDPOINT_FILES = new Set([
@@ -136,26 +139,47 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
         ...(ctx.options?.springActuatorScanExclusions ?? []),
       ]);
     let scannedFiles;
+    const resolutionConfigs = new Map<SupportedLanguages, unknown>();
     try {
-      scannedFiles = await walkRepositoryPaths(ctx.repoPath, (current, total, filePath) => {
-        const scanProgress = Math.round((current / total) * 15);
-        const isRuntimeInput = matchesActuatorExclusion(
-          canonicalRepoPath,
-          filePath,
-          actuatorExclusions,
-        );
-        ctx.onProgress({
-          phase: 'extracting',
-          percent: scanProgress,
-          message: 'Scanning repository...',
-          ...(isRuntimeInput ? {} : { detail: filePath }),
-          stats: {
-            filesProcessed: current,
-            totalFiles: total,
-            nodesCreated: ctx.graph.nodeCount,
+      scannedFiles = await walkRepositoryPaths(
+        ctx.repoPath,
+        (current, total, filePath) => {
+          const scanProgress = Math.round((current / total) * 15);
+          const isRuntimeInput = matchesActuatorExclusion(
+            canonicalRepoPath,
+            filePath,
+            actuatorExclusions,
+          );
+          ctx.onProgress({
+            phase: 'extracting',
+            percent: scanProgress,
+            message: 'Scanning repository...',
+            ...(isRuntimeInput ? {} : { detail: filePath }),
+            stats: {
+              filesProcessed: current,
+              totalFiles: total,
+              nodesCreated: ctx.graph.nodeCount,
+            },
+          });
+        },
+        {
+          onPathsDiscovered: async (paths) => {
+            const inputs = paths.filter(
+              (filePath) =>
+                !matchesActuatorExclusion(canonicalRepoPath, filePath, actuatorExclusions),
+            );
+            const languages = new Set(inputs.map(getLanguageFromFilename));
+            for (const [language, provider] of SCOPE_RESOLVERS) {
+              if (languages.has(language) && provider.captureResolutionConfig !== undefined) {
+                resolutionConfigs.set(
+                  language,
+                  await provider.captureResolutionConfig(ctx.repoPath, inputs),
+                );
+              }
+            }
           },
-        });
-      });
+        },
+      );
     } catch (err) {
       // Missing roots throw so status cannot treat an empty glob as "every
       // covered file was deleted". The pipeline still reports an empty scan
@@ -182,6 +206,6 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
     });
 
-    return { scannedFiles, allPaths, totalFiles };
+    return { scannedFiles, allPaths, totalFiles, resolutionConfigs };
   },
 };

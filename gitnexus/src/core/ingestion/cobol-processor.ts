@@ -281,12 +281,15 @@ export const processCobol = (
 // Graph mapping
 // ---------------------------------------------------------------------------
 
-/** Generate a deterministic Property node ID using composite key (section:level:name). */
+/** Preserve distinct declarations with the same level/name in different groups. */
 function generatePropertyId(
   filePath: string,
-  item: { section: string; level: number; name: string },
+  item: { section: string; level: number; name: string; line: number },
 ): string {
-  return generateId('Property', `${filePath}:${item.section}:${item.level}:${item.name}`);
+  return generateId(
+    'Property',
+    `${filePath}:${item.section}:${item.level}:${item.name}@${item.line}`,
+  );
 }
 
 /**

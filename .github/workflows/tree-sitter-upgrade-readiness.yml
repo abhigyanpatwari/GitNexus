@@ -1,8 +1,9 @@
-name: Tree-sitter Upgrade Readiness
+name: Tree-sitter Compatibility Workarounds
 
-# Monitors readiness for upgrading tree-sitter to 0.25.x. Tracks:
-#   1. Peer-dep compatibility — can each NPM-installed grammar install cleanly
-#      with tree-sitter@0.25.0 without --legacy-peer-deps?
+# Tracks the workarounds GitNexus carries for its bundled tree-sitter runtime:
+#   1. Peer-dep patches — which npm grammars still reject the runtime, so
+#      prepare-tree-sitter-bundle.cjs must keep patching their manifests at pack
+#      time, and which patches a grammar bump would let us drop.
 #   2. Vendored grammars — each grammar in .github/vendored-grammars.json
 #      (c/swift/kotlin/dart/proto/objc) is classified by its vendored ABI, read
 #      straight from gitnexus/vendor/<name>/src/parser.c (NOT node_modules,
@@ -30,6 +31,7 @@ on:
       - '.github/scripts/test_check_tree_sitter_upgrade_readiness.py'
       - '.github/vendored-grammars.json'
       - '.github/workflows/tree-sitter-upgrade-readiness.yml'
+      - 'gitnexus/scripts/prepare-tree-sitter-bundle.cjs'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -100,7 +102,7 @@ jobs:
       - name: Annotate PR with readiness status
         if: github.event_name == 'pull_request' && steps.readiness.outputs.exit_code != '0'
         run: |
-          echo "::warning::Tree-sitter 0.25 upgrade has blockers. See job output for the full readiness report."
+          echo "::notice::Tree-sitter compatibility workarounds remain. See job output for the full report."
 
   # Issue mutation is isolated here so `issues: write` is only ever granted on the
   # scheduled run (never on PRs). Consumes the report + exit_code via job outputs.
@@ -113,18 +115,20 @@ jobs:
     permissions:
       issues: write
     steps:
-      - name: Upsert tracking issue on blockers
+      - name: Upsert tracking issue while workarounds remain
         if: needs.report.outputs.exit_code != '0'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           REPORT: ${{ needs.report.outputs.report }}
         with:
           script: |
-            const title = 'Tree-sitter 0.25 upgrade readiness';
+            const title = 'Tree-sitter compatibility workarounds';
+            // Adopt the issue opened under the pre-0.25 title instead of opening a twin.
+            const titles = [title, 'Tree-sitter 0.25 upgrade readiness'];
             const report = process.env.REPORT;
             const body = report + '\n\n' +
               '<sub>Generated daily by `.github/workflows/tree-sitter-upgrade-readiness.yml`. ' +
-              'Closes automatically when all blockers are resolved.</sub>';
+              'Closes automatically when no workarounds remain.</sub>';
             const { data: open } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -132,7 +136,7 @@ jobs:
               labels: 'tree-sitter-drift',
               per_page: 10,
             });
-            const existing = open.find(i => i.title === title);
+            const existing = open.find(i => titles.includes(i.title));
             if (existing) {
               // Extract ready/total count for the changelog comment.
               // The two report.match() regexes below are mirrored as
@@ -156,7 +160,7 @@ jobs:
               );
               const blockerMatch = requireMatch(
                 'blocker count',
-                report.match(/\*\*Blocked\*\* — (\d+) grammars? /),
+                report.match(/\*\*Workarounds\*\* — (\d+) grammars? /),
               );
               const ready = readyMatch[1];
               const total = readyMatch[2];
@@ -188,7 +192,7 @@ jobs:
               }
 
               const today = new Date().toISOString().slice(0, 10);
-              let comment = `**${today}:** ${ready}/${total} npm-installed ready. ${blockers} blocker(s) remaining.`;
+              let comment = `**${today}:** ${ready}/${total} npm-installed accept the runtime. ${blockers} workaround(s) remaining.`;
               if (changes.length > 0) {
                 comment += '\n\nChanges:\n' + changes.map(c => `- ${c}`).join('\n');
               } else {
@@ -205,6 +209,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: existing.number,
+                title,
                 body,
               });
               core.info(`Updated existing issue #${existing.number}`);
@@ -224,7 +229,9 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            const title = 'Tree-sitter 0.25 upgrade readiness';
+            const title = 'Tree-sitter compatibility workarounds';
+            // Adopt the issue opened under the pre-0.25 title instead of opening a twin.
+            const titles = [title, 'Tree-sitter 0.25 upgrade readiness'];
             const { data: open } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -232,13 +239,13 @@ jobs:
               labels: 'tree-sitter-drift',
               per_page: 10,
             });
-            const existing = open.find(i => i.title === title);
+            const existing = open.find(i => titles.includes(i.title));
             if (existing) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: existing.number,
-                body: 'All grammars are now compatible with tree-sitter@0.25. Upgrade is ready! Closing automatically.',
+                body: 'No compatibility workarounds remain: every grammar runs on the bundled tree-sitter runtime as published. Closing automatically.',
               });
               await github.rest.issues.update({
                 owner: context.repo.owner,

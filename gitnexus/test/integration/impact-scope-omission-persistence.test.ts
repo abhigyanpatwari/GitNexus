@@ -2,6 +2,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos, saveMeta } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+import { summarizeUnresolvedOverloads } from '../../src/core/ingestion/scope-resolution/unresolved-overloads.js';
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/storage/repo-manager.js')>();
@@ -34,6 +35,7 @@ withTestLbugDB(
         lastCommit: 'abc123',
         indexedAt: new Date(0).toISOString(),
         scopeExtractionReceipt: 1 as const,
+        unresolvedOverloads: summarizeUnresolvedOverloads([]),
       };
       await saveMeta(handle.tmpHandle.dbPath, {
         ...baseMeta,

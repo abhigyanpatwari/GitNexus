@@ -1,0 +1,20 @@
+{
+  "language": "python",
+  "description": "Rename a member despite dynamic access to proven different literal attributes, including decoded escapes and concatenation.",
+  "categories": [
+    "dynamic-attribute",
+    "string-literal",
+    "unrelated-name"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Method",
+    "file": "model.py",
+    "startLine": 1
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  }
+}

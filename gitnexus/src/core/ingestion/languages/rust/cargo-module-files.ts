@@ -2,6 +2,12 @@ import path from 'node:path';
 import type Parser from 'tree-sitter';
 import { splitRustUseDeclaration } from './import-decomposer.js';
 
+export interface RustModuleLink {
+  readonly module: string;
+  readonly file: string;
+  readonly inline: boolean;
+}
+
 // Built-in attributes cannot expand to new module declarations. cfg is a union:
 // visiting both alternatives is conservative; cfg_attr may change a path.
 const NON_EXPANDING_ATTRIBUTES = new Set([
@@ -140,6 +146,7 @@ export function rustModuleFiles(
   files: ReadonlySet<string>,
   missingFiles?: Set<string>,
   isCrateRoot = false,
+  moduleLinks?: RustModuleLink[],
 ): readonly { file: string; ownsDirectory: boolean }[] | undefined {
   if (root.hasError) return undefined;
   // Built-in spellings are not proof when an import/local macro can shadow
@@ -216,7 +223,7 @@ export function rustModuleFiles(
     ownsDirectory || path.posix.basename(file) === 'mod.rs'
       ? fileDir
       : file.slice(0, -'.rs'.length);
-  const pending = [{ node: root, moduleDir, attributeDir: fileDir }];
+  const pending = [{ node: root, moduleDir, attributeDir: fileDir, module: '', lexical: false }];
   const result: { file: string; ownsDirectory: boolean }[] = [];
   let unresolved = false;
   while (pending.length) {
@@ -291,7 +298,13 @@ export function rustModuleFiles(
           node.type !== 'token_tree' &&
           node.namedChildCount > 0
         ) {
-          pending.push({ ...context, node });
+          pending.push({
+            ...context,
+            node,
+            lexical:
+              context.lexical ||
+              ['function_item', 'closure_expression', 'block'].includes(node.type),
+          });
         }
         continue;
       }
@@ -308,12 +321,20 @@ export function rustModuleFiles(
           return undefined;
       }
       const body = node.childForFieldName('body');
+      const module = [context.module, name].filter(Boolean).join('::');
       if (body) {
         const dir =
           override === undefined
             ? path.posix.join(context.moduleDir, name)
             : path.posix.join(context.attributeDir, override);
-        pending.push({ node: body, moduleDir: dir, attributeDir: dir });
+        if (!context.lexical) moduleLinks?.push({ module, file, inline: true });
+        pending.push({
+          node: body,
+          moduleDir: dir,
+          attributeDir: dir,
+          module,
+          lexical: context.lexical,
+        });
         continue;
       }
       const candidates =
@@ -334,6 +355,9 @@ export function rustModuleFiles(
       // #[path] makes the loaded file own its containing directory, just like
       // a crate root; its children do NOT acquire the file stem as a prefix.
       result.push(...existing.map((file) => ({ file, ownsDirectory: override !== undefined })));
+      if (!context.lexical) {
+        moduleLinks?.push(...existing.map((file) => ({ module, file, inline: false })));
+      }
     }
   }
   return unresolved ? undefined : result;

@@ -8,12 +8,38 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { getLanguageGrammar } from '../../../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { readRepoControlFile } from '../../../../config/repo-control-file.js';
-import { rustModuleFiles, rustPublicUses } from './cargo-module-files.js';
+import { rustModuleFiles, rustPublicUses, type RustModuleLink } from './cargo-module-files.js';
 
 const MAX_FILES = 100_000;
 type Table = Record<string, unknown>;
 const table = (value: unknown): value is Table =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function cargoPackageEdition(
+  manifest: string,
+  data: Table,
+  workspaceEditions?: ReadonlyMap<string, string>,
+): string | undefined {
+  if (!table(data.package)) return undefined;
+  const pkg = data.package;
+  const dir = path.posix.dirname(manifest);
+  let edition: unknown = pkg.edition ?? '2015';
+  if (table(edition) && edition.workspace === true) {
+    let workspace =
+      typeof pkg.workspace === 'string' ? path.posix.join(dir, pkg.workspace, '.') : dir;
+    while (
+      !workspaceEditions?.has(workspace) &&
+      typeof pkg.workspace !== 'string' &&
+      workspace !== '.'
+    ) {
+      workspace = path.posix.dirname(workspace);
+    }
+    edition = workspaceEditions?.get(workspace);
+  }
+  return typeof edition === 'string' && ['2015', '2018', '2021', '2024'].includes(edition)
+    ? edition
+    : undefined;
+}
 
 /** A target is identified by its entry file, not its package directory. */
 export function cargoTargetRoots(
@@ -34,21 +60,8 @@ export function cargoTargetRoots(
   if (pkg.build !== undefined && typeof pkg.build !== 'string' && typeof pkg.build !== 'boolean')
     return undefined;
   const dir = path.posix.dirname(manifest);
-  let edition: unknown = pkg.edition ?? '2015';
-  if (table(edition) && edition.workspace === true) {
-    let workspace =
-      typeof pkg.workspace === 'string' ? path.posix.join(dir, pkg.workspace, '.') : dir;
-    while (
-      !workspaceEditions?.has(workspace) &&
-      typeof pkg.workspace !== 'string' &&
-      workspace !== '.'
-    ) {
-      workspace = path.posix.dirname(workspace);
-    }
-    edition = workspaceEditions?.get(workspace);
-  }
-  if (typeof edition !== 'string' || !['2015', '2018', '2021', '2024'].includes(edition))
-    return undefined;
+  const edition = cargoPackageEdition(manifest, data, workspaceEditions);
+  if (edition === undefined) return undefined;
   const relative = (file: string): string => path.posix.normalize(path.posix.join(dir, file));
   const roots = new Set<string>();
   for (const [kind, folder] of [
@@ -115,12 +128,104 @@ export function cargoTargetRoots(
   return [...roots];
 }
 
+export interface RustModuleLocation {
+  readonly file: string;
+  /** Namespace within this source file; external file modules start empty. */
+  readonly module: string;
+}
+
+const moduleKey = (file: string, module: string): string => JSON.stringify([file, module]);
+
 class RustCargoTargets {
   constructor(
     readonly targetsByFile: ReadonlyMap<string, ReadonlySet<string>>,
     readonly rootImports: ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<string>>>,
     readonly publicUsesByFile: ReadonlyMap<string, ReadonlySet<string>>,
+    readonly relativeUseByFile: ReadonlyMap<string, boolean | null>,
+    readonly moduleChildren: ReadonlyMap<string, readonly RustModuleLocation[]>,
+    readonly moduleParents: ReadonlyMap<string, readonly RustModuleLocation[]>,
   ) {}
+}
+
+/** Resolve only module topology proven by the already-loaded Cargo ASTs. */
+export function rustCargoImportedModules(
+  config: unknown,
+  caller: string,
+  importedModule: readonly string[],
+  ownerModule: string,
+  absolute: boolean,
+): readonly RustModuleLocation[] | undefined {
+  if (!(config instanceof RustCargoTargets)) return undefined;
+  const targets = config.targetsByFile.get(caller);
+  if (targets === undefined) return undefined;
+  const parts = [...importedModule];
+  const head = parts.shift();
+  if (head === undefined) return undefined;
+  const roots = (): RustModuleLocation[] => [...targets].map((file) => ({ file, module: '' }));
+  let locations: readonly RustModuleLocation[];
+  if (head === 'crate' || head === '$crate') {
+    locations = roots();
+  } else if (head === 'self' || head === 'super') {
+    locations = [{ file: caller, module: ownerModule }];
+    if (head === 'super') parts.unshift(head);
+    while (parts[0] === 'super') {
+      parts.shift();
+      locations = locations.flatMap((location) =>
+        location.module !== ''
+          ? [{ file: location.file, module: location.module.split('::').slice(0, -1).join('::') }]
+          : (config.moduleParents.get(location.file) ?? []),
+      );
+    }
+  } else {
+    const local =
+      !absolute &&
+      config.moduleChildren.get(moduleKey(caller, [ownerModule, head].filter(Boolean).join('::')));
+    const mode = config.relativeUseByFile.get(caller);
+    const importedRoots = new Set<string>();
+    for (const target of targets) {
+      for (const file of config.rootImports.get(target)?.get(head) ?? []) importedRoots.add(file);
+    }
+    const external = [...importedRoots].map((file) => ({ file, module: '' }));
+    if (!absolute && mode === null) {
+      const legacy = roots().flatMap(
+        (root) => config.moduleChildren.get(moduleKey(root.file, head)) ?? [],
+      );
+      locations = [...(local || external), ...legacy, ...external];
+      if (locations.length === 0) return undefined;
+    } else if (local && mode !== false) {
+      locations = local;
+    } else {
+      if (importedRoots.size > 0) {
+        locations = external;
+      } else if (!absolute && mode === false) {
+        locations = roots();
+        parts.unshift(head);
+      } else {
+        return undefined;
+      }
+    }
+  }
+  for (const part of parts) {
+    locations = locations.flatMap(
+      (location) =>
+        config.moduleChildren.get(
+          moduleKey(location.file, [location.module, part].filter(Boolean).join('::')),
+        ) ?? [],
+    );
+  }
+  return [
+    ...new Map(
+      locations.map((location) => [moduleKey(location.file, location.module), location]),
+    ).values(),
+  ];
+}
+
+/** null retains mixed-edition ownership; undefined means no Cargo edition proof. */
+export function rustUsesRelativeImportPaths(
+  config: unknown,
+  file: string,
+): boolean | null | undefined {
+  return config instanceof RustCargoTargets ? config.relativeUseByFile.get(file) : undefined;
 }
 
 /** Exact public-use evidence, independent of the capture's coarse reexport kind. */
@@ -443,17 +548,39 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
       await discover(paths.map((file) => path.posix.join(path.posix.dirname(manifest), file)));
     }
     const roots = new Set<string>();
+    const relativeUseByTarget = new Map<string, boolean | null>();
     const targetsByManifest = new Map<string, readonly string[]>();
     for (const [manifest, content] of contents) {
       const targets = cargoTargetRoots(manifest, content, files, workspaceEditions);
       if (targets === undefined) return undefined;
       targetsByManifest.set(manifest, targets);
-      for (const target of targets) roots.add(target);
+      const relative =
+        cargoPackageEdition(manifest, manifestData.get(manifest)!, workspaceEditions) !== '2015';
+      for (const target of targets) {
+        roots.add(target);
+        const previous = relativeUseByTarget.get(target);
+        relativeUseByTarget.set(
+          target,
+          previous === undefined || previous === relative ? relative : null,
+        );
+      }
     }
     const parser = new Parser();
     parser.setLanguage(getLanguageGrammar(SupportedLanguages.Rust));
     const targetsByFile = new Map<string, Set<string>>();
     const publicUsesByFile = new Map<string, ReadonlySet<string>>();
+    const relativeUseByFile = new Map<string, boolean | null>();
+    const moduleChildren = new Map<string, Map<string, RustModuleLocation>>();
+    const moduleParents = new Map<string, Map<string, RustModuleLocation>>();
+    const addLocation = (
+      index: Map<string, Map<string, RustModuleLocation>>,
+      key: string,
+      location: RustModuleLocation,
+    ): void => {
+      let entries = index.get(key);
+      if (entries === undefined) index.set(key, (entries = new Map()));
+      entries.set(moduleKey(location.file, location.module), location);
+    };
     // A file may be reached conventionally AND through #[path]. Those have
     // different submodule bases, so cache and visit both contexts separately.
     const childrenByFile = new Map<string, NonNullable<ReturnType<typeof rustModuleFiles>>>();
@@ -470,10 +597,17 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
         let owners = targetsByFile.get(file);
         if (!owners) targetsByFile.set(file, (owners = new Set()));
         owners.add(target);
+        const relative = relativeUseByTarget.get(target)!;
+        const previous = relativeUseByFile.get(file);
+        relativeUseByFile.set(
+          file,
+          previous === undefined || previous === relative ? relative : null,
+        );
         let children = childrenByFile.get(key);
         if (!children) {
           const tree = parseSourceSafe(parser, await read(file));
           const missing = new Set<string>();
+          const moduleLinks: RustModuleLink[] = [];
           let result = rustModuleFiles(
             tree.rootNode,
             file,
@@ -481,9 +615,11 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
             files,
             missing,
             file === target,
+            moduleLinks,
           );
           if (result === undefined && missing.size > 0) {
             await discover(missing);
+            moduleLinks.length = 0;
             result = rustModuleFiles(
               tree.rootNode,
               file,
@@ -491,12 +627,25 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
               files,
               undefined,
               file === target,
+              moduleLinks,
             );
           }
           if (result === undefined) return undefined;
           publicUsesByFile.set(file, rustPublicUses(tree.rootNode));
           children = result;
           childrenByFile.set(key, children);
+          for (const link of moduleLinks) {
+            addLocation(moduleChildren, moduleKey(file, link.module), {
+              file: link.file,
+              module: link.inline ? link.module : '',
+            });
+            if (!link.inline) {
+              addLocation(moduleParents, link.file, {
+                file,
+                module: link.module.split('::').slice(0, -1).join('::'),
+              });
+            }
+          }
         }
         pending.push(...children);
       }
@@ -505,6 +654,9 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
       targetsByFile,
       cargoRootImports(manifestData, targetsByManifest),
       publicUsesByFile,
+      relativeUseByFile,
+      new Map([...moduleChildren].map(([key, entries]) => [key, [...entries.values()]])),
+      new Map([...moduleParents].map(([key, entries]) => [key, [...entries.values()]])),
     );
   } catch {
     // I/O, parse or containment failure cannot establish target separation.

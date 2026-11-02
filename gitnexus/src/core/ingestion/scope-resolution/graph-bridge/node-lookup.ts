@@ -43,8 +43,9 @@ function parseQualifiedFromId(id: string, label: NodeLabel, filePath: string): s
   if (!id.startsWith(prefix)) return undefined;
   const suffix = id.slice(prefix.length);
   if (suffix.length === 0) return undefined;
-  const hash = suffix.indexOf('#');
-  return hash === -1 ? suffix : suffix.slice(0, hash);
+  // A hash may belong to the written name. Only the terminal numeric arity
+  // tag (and its following signature tags) is a graph disambiguator.
+  return suffix.replace(/#\d+(?:~.*)?$/, '');
 }
 
 function stripCallableDisambiguatorTags(qualifiedName: string): string {
@@ -133,7 +134,10 @@ export function localNameKey(filePath: string, label: NodeLabel, name: string): 
 /** Tombstone for a position claimed by two nodes — see `positionKey`. */
 export const AMBIGUOUS_POSITION = '';
 
-export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
+export function buildGraphNodeLookup(
+  graph: KnowledgeGraph,
+  labels: ReadonlySet<NodeLabel> = LINKABLE_LABELS,
+): GraphNodeLookup {
   const lookup = new Map<string, string>();
   for (const node of graph.iterNodes()) {
     const props = node.properties as {
@@ -144,7 +148,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
       startColumn?: number;
     };
     if (props.filePath === undefined || props.name === undefined) continue;
-    if (!isLinkableLabel(node.label)) continue;
+    if (!labels.has(node.label)) continue;
 
     // Position key (#2699) — see `positionKey`. Second write on a key marks it
     // ambiguous rather than letting source order decide.

@@ -1,0 +1,16 @@
+{
+  "language": "go",
+  "description": "Refuse to unexport a method that another package calls on a value it obtained from the declaring package.",
+  "categories": ["cross-file", "visibility", "method-family", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "Run",
+    "kind": "Method",
+    "file": "api/service.go"
+  },
+  "newName": "run",
+  "expect": {
+    "status": "error",
+    "code": "invalid_name",
+    "planningStatus": "blocked"
+  }
+}

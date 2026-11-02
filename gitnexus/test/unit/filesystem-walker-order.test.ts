@@ -22,6 +22,24 @@ afterEach(async () => {
 });
 
 describe('walkRepositoryPaths ordering', () => {
+  it('preserves required candidates before size and stat failures can omit them', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-scan-capture-'));
+    temporaryRoots.push(root);
+    await fs.writeFile(path.join(root, 'large.yaml'), 'x'.repeat(100));
+    vi.mocked(glob).mockResolvedValue(['large.yaml', 'missing.yaml']);
+    const capture = vi.fn(async () => {
+      throw new Error('required metadata unavailable');
+    });
+
+    await expect(
+      walkRepositoryPaths(root, undefined, {
+        maxFileSizeBytes: 10,
+        onPathsDiscovered: capture,
+      }),
+    ).rejects.toThrow('required metadata unavailable');
+    expect(capture).toHaveBeenCalledExactlyOnceWith(['large.yaml', 'missing.yaml']);
+  });
+
   it('returns accepted files in canonical path order when glob order is unstable', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-scan-order-'));
     temporaryRoots.push(root);

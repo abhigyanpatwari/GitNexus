@@ -1,29 +1,16 @@
 ## GitNexus vendor notice
 
-This directory is a GitNexus-managed vendored copy of the official
-`tree-sitter-swift@0.7.1` npm runtime package. GitNexus keeps the top-level
-`tree-sitter` dependency pinned to `^0.21.1` until the broader parser runtime
-upgrade is handled separately.
+This runtime package uses upstream sources at [`7b7909f2f6b9414be0958275f4c8e5d69c3bca43`](https://github.com/alex-pinkus/tree-sitter-swift/commit/7b7909f2f6b9414be0958275f4c8e5d69c3bca43)
+with Tree-sitter **0.25.1**. The copied C sources, scanner (where present),
+headers, node metadata and native binding source are upstream-identical.
+GitNexus preserves its synchronous CommonJS loader and hardened `binding.gyp`.
+The exact version and source commit are recorded in `package.json`.
 
-Unified with the Dart/Proto/Kotlin/C vendored grammars, this copy also vendors
-the grammar **source** — `binding.gyp`, `bindings/node/binding.cc`,
-`src/parser.c` (the ABI-14 default; ~18 MB, compresses heavily in git),
-`src/scanner.c`, and `src/tree_sitter/` — so `gitnexus/scripts/build-tree-sitter-grammars.cjs`
-can source-build the native binding on any toolchain host when no committed
-prebuild matches (e.g. CI before the prebuilds land). Note: upstream
-deliberately omits the generated `parser.c` (see the FAQ below); GitNexus
-commits it on purpose so the source-build fallback is deterministic and never
-needs the tree-sitter CLI at install time. The native `prebuilds/` are
-GitNexus-cross-built by `.github/workflows/build-tree-sitter-prebuilds.yml`
-(originally upstream-shipped).
-
-When updating this vendor package, replace it from an official
-`tree-sitter-swift` npm release: refresh `src/parser.c`/`src/scanner.c`/
-`src/tree_sitter/`/`binding.gyp`/`bindings/node/binding.cc` (use the ABI-14
-`parser.c`, not the legacy `parser_abi13.c`), bump `version` in `package.json`
-to retrigger the prebuild workflow, update the `_vendoredBy` provenance, and
-verify the packed GitNexus tarball can both load a committed prebuild and
-source-build `tree-sitter-swift`.
+All six platform/architecture prebuilds are built from this vendored source by
+`.github/workflows/build-tree-sitter-prebuilds.yml`. Load through
+`requireVendoredGrammar`; do not copy the package into `node_modules`.
+See [the vendor update policy](../README.md), including the Swift release hold.
+Do not edit generated C files by hand.
 
 ![Parse rate badge](https://byob.yarr.is/alex-pinkus/tree-sitter-swift/parse_rate)
 [![Crates.io badge](https://byob.yarr.is/alex-pinkus/tree-sitter-swift/crates_io_version)](https://crates.io/crates/tree-sitter-swift)

@@ -2,6 +2,8 @@ dist/
 coverage/
 gitnexus/vendor/
 gitnexus/test/fixtures/
+# Line/column-sensitive callable identity and taint regression.
+gitnexus/test/integration/cfg/fixtures/inline-taint-repo/
 gitnexus-web/test/fixtures/
 gitnexus-web/playwright-report/
 gitnexus-web/test-results/

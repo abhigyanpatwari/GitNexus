@@ -3,6 +3,7 @@ import { IMPACT_MAX_DEPTH } from '../../src/mcp/tools.js';
 import { CALLEES_TRUNCATED_SENTINEL } from '../../src/core/ingestion/cfg/callee-cell-format.js';
 import {
   pdgLayerStatus,
+  resolvePdgBlockAnchor,
   runImpactPDG,
   splitCalleeIds,
   type RunPdgImpactDeps,
@@ -46,6 +47,104 @@ describe('splitCalleeIds', () => {
 });
 
 describe('runImpactPDG', () => {
+  it('classifies paragraph dependencies by seed program ownership across synthetic owner boundaries', async () => {
+    // Deliberately synthetic: the COBOL provider does not emit cross-program
+    // REACHING_DEF edges. Keep this defensive engine case in the unit layer;
+    // the integration fixture indexes real source and never manufactures edges.
+    const seed = 'BasicBlock:program.cbl:5:0:0';
+    const local = 'BasicBlock:program.cbl:5:0:1';
+    const foreign = 'BasicBlock:program.cbl:12:0:1';
+    const outer = 'Module:program.cbl:Outer';
+    const inner = 'Module:program.cbl:Inner';
+    const exec: RunPdgImpactDeps['executeParameterized'] = async (_repo, query) => {
+      if (query.includes('MATCH (a:BasicBlock) WHERE')) return [{ id: seed, ownerId: outer }];
+      if (query.includes('MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)')) {
+        return [{ id: local }, { id: foreign }];
+      }
+      if (query.includes('RETURN b.id AS id, b.ownerId AS ownerId')) {
+        return [
+          { id: local, ownerId: outer },
+          { id: foreign, ownerId: inner },
+        ];
+      }
+      if (query.includes('s.id IN $ownerIds')) {
+        return [
+          { id: outer, name: 'Outer', label: 'Module', filePath: 'program.cbl', startLine: 0 },
+          { id: inner, name: 'Inner', label: 'Module', filePath: 'program.cbl', startLine: 9 },
+        ];
+      }
+      if (query.includes('MATCH (b:BasicBlock) WHERE b.id IN $ids')) {
+        return [
+          { id: local, line: 6, text: 'DISPLAY OUTER-TOTAL', ownerId: outer },
+          { id: foreign, line: 13, text: 'DISPLAY INNER-TOTAL', ownerId: inner },
+        ];
+      }
+      return [];
+    };
+    const result = await runImpactPDG({
+      repo: { lbugPath: 'repo' },
+      sym: {
+        id: 'Function:program.cbl:Outer:main',
+        name: 'main',
+        filePath: 'program.cbl',
+        startLine: 4,
+        endLine: 6,
+      },
+      symType: 'Function',
+      direction: 'downstream',
+      maxDepth: 1,
+      limit: 50,
+      line: 5,
+      executeParameterized: exec,
+    });
+    expect(result).toMatchObject({
+      seedBlocks: [seed],
+      affectedStatements: [
+        { line: 6, scope: 'intra' },
+        { line: 13, scope: 'inter' },
+      ],
+    });
+  });
+
+  it('projects an explicitly owned executable region to its graph owner', async () => {
+    const seed = 'BasicBlock:program.cbl:8:0:0';
+    const affected = 'BasicBlock:program.cbl:8:0:2';
+    const owner = 'Module:program.cbl:PAYROLL';
+    let walks = 0;
+    const exec: RunPdgImpactDeps['executeParameterized'] = async (_repo, query) => {
+      if (query.includes('MATCH (a:BasicBlock) WHERE')) return [{ id: seed, ownerId: owner }];
+      if (query.includes('MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)')) {
+        return walks++ === 0 ? [{ id: affected }] : [];
+      }
+      if (query.includes('RETURN b.id AS id, b.ownerId AS ownerId'))
+        return [{ id: affected, ownerId: owner }];
+      if (query.includes('s.id IN $ownerIds')) {
+        return [
+          { id: owner, name: 'PAYROLL', label: 'Module', filePath: 'program.cbl', startLine: 1 },
+        ];
+      }
+      if (query.includes('MATCH (b:BasicBlock) WHERE b.id IN $ids')) {
+        return [{ id: affected, line: 10, text: 'DISPLAY TOTAL', ownerId: owner }];
+      }
+      return [];
+    };
+    const result = await runImpactPDG({
+      repo: { lbugPath: 'repo' },
+      sym: { id: owner, name: 'PAYROLL', filePath: 'program.cbl', startLine: 1, endLine: 15 },
+      symType: 'Module',
+      direction: 'downstream',
+      maxDepth: 2,
+      limit: 50,
+      line: 9,
+      executeParameterized: exec,
+    });
+    expect(result).toMatchObject({
+      mode: 'pdg',
+      byDepth: { 1: [expect.objectContaining({ id: owner, type: 'Module' })] },
+      affectedStatements: [expect.objectContaining({ scope: 'intra' })],
+    });
+  });
+
   it.each([
     ['leading', '\tFunction:src/hot.ts:callee'],
     ['interior', 'Function:src/hot.ts:a\t\tFunction:src/hot.ts:b'],
@@ -435,5 +534,21 @@ describe('pdgLayerStatus', () => {
     expect(result.note).toContain('probe failed');
     expect(result.note).not.toContain('no CDG/REACHING_DEF edges visible');
     expect(result.recoverySuggestion).toContain('LadybugDB');
+  });
+});
+
+describe('PDG ownership schema capability', () => {
+  const sym = { id: 'Function:src/a.ts:hot', filePath: 'src/a.ts', startLine: 0, endLine: 5 };
+  it.each([
+    'Database is locked',
+    'Binder exception: Cannot find property other for owner.',
+    'Binder exception: Cannot find property ownerId for unrelated.',
+  ])('preserves unrelated database errors: %s', async (message) => {
+    const error = new Error(message);
+    await expect(
+      resolvePdgBlockAnchor('repo', sym, async () => {
+        throw error;
+      }),
+    ).rejects.toBe(error);
   });
 });

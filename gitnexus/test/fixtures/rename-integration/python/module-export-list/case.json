@@ -1,0 +1,37 @@
+{
+  "language": "python",
+  "description": "Literal module export list retains the old name unless rename refuses.",
+  "categories": [
+    "module-exports",
+    "export-list",
+    "call-graph",
+    "scope-ownership"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Function",
+    "file": "model.py"
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  },
+  "exactOutgoing": true,
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "model.py"
+      },
+      "to": {
+        "name": "target",
+        "kind": "Function",
+        "file": "model.py"
+      }
+    }
+  ]
+}

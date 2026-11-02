@@ -1,4 +1,5 @@
 import type { MethodInfo } from '../method-types.js';
+import { declarationParameterTypes } from '../method-extractors/declaration-facts.js';
 import { SupportedLanguages, type ParameterTypeClass } from 'gitnexus-shared';
 
 /** Languages where class overload signatures are declaration-only contracts
@@ -210,12 +211,11 @@ export function parameterShapeIdTag(
 
 /** Convert MethodInfo from methodExtractor into flat properties for a graph node. */
 export function buildMethodProps(info: MethodInfo): Record<string, unknown> {
-  const types: string[] = [];
+  const types = declarationParameterTypes(info.parameters);
   const typeClasses: ParameterTypeClass[] = [];
   let optionalCount = 0;
   let hasVariadic = false;
   for (const p of info.parameters) {
-    if (p.type !== null) types.push(p.type);
     if (p.typeClass !== undefined) typeClasses.push(p.typeClass);
     if (p.isOptional) optionalCount++;
     if (p.isVariadic) hasVariadic = true;

@@ -22,8 +22,6 @@ export default defineConfig({
         __dirname,
         'node_modules/@anthropic-ai/sdk/lib/transform-json-schema.mjs',
       ),
-      // Fix for mermaid d3-color prototype crash on Vercel (known issue with mermaid 10.9.0+ and Vite)
-      mermaid: path.resolve(__dirname, 'node_modules/mermaid/dist/mermaid.esm.min.mjs'),
     },
   },
   server: {

@@ -1,0 +1,93 @@
+{
+  "language": "zig",
+  "description": "Rename a container field through a four-part typed member chain and pointer receiver, preserving a same-named unrelated field.",
+  "categories": ["public-field", "deep-chain", "typed-container"],
+  "target": {
+    "name": "value",
+    "kind": "Property",
+    "file": "model.zig",
+    "startLine": 0
+  },
+  "newName": "count",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "read",
+        "kind": "Function",
+        "file": "model.zig",
+        "startLine": 4
+      },
+      "to": {
+        "name": "branch",
+        "kind": "Property",
+        "file": "model.zig",
+        "startLine": 2
+      }
+    },
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "read",
+        "kind": "Function",
+        "file": "model.zig",
+        "startLine": 4
+      },
+      "to": {
+        "name": "leaf",
+        "kind": "Property",
+        "file": "model.zig",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "read",
+        "kind": "Function",
+        "file": "model.zig",
+        "startLine": 4
+      },
+      "to": {
+        "name": "value",
+        "kind": "Property",
+        "file": "model.zig",
+        "startLine": 0
+      }
+    },
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "read",
+        "kind": "Function",
+        "file": "model.zig",
+        "startLine": 4
+      },
+      "to": {
+        "name": "value",
+        "kind": "Property",
+        "file": "model.zig",
+        "startLine": 3
+      }
+    },
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "write",
+        "kind": "Function",
+        "file": "model.zig",
+        "startLine": 5
+      },
+      "to": {
+        "name": "value",
+        "kind": "Property",
+        "file": "model.zig",
+        "startLine": 0
+      }
+    }
+  ]
+}

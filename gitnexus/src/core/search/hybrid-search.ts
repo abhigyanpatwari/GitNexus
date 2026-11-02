@@ -11,6 +11,7 @@
 import { searchFTSFromLbug, type BM25SearchResult } from './bm25-index.js';
 import type { SemanticSearchResult } from '../embeddings/types.js';
 import type { FtsDisabledReason } from './fts-policy.js';
+import { rethrowSymbolIdentityError } from '../lbug/query-result-integrity.js';
 
 /**
  * RRF constant - standard value used in the literature
@@ -177,16 +178,24 @@ export const hybridSearch = async (
   // index recorded an explicit FTS opt-out (`disabledReason`, #3091).
   // If FTS fails (e.g. extension not loaded in MCP process), fall back to
   // semantic-only search instead of crashing with "bm25Results is not iterable".
-  const [bm25Results, semanticResults] = await Promise.all([
+  // Both lanes share the caller's database session. Drain the sibling before
+  // propagating corruption so it cannot query after that session is released.
+  const [keyword, semantic] = await Promise.allSettled([
     (async (): Promise<BM25SearchResult[]> => {
       try {
         const ftsResponse = await searchFTSFromLbug(query, limit, undefined, disabledReason);
         return ftsResponse?.results ?? [];
-      } catch {
+      } catch (error) {
+        rethrowSymbolIdentityError(error);
         return [];
       }
     })(),
-    semanticSearch(executeQuery, query, limit).catch(() => []),
+    semanticSearch(executeQuery, query, limit).catch((error) => {
+      rethrowSymbolIdentityError(error);
+      return [];
+    }),
   ]);
-  return mergeWithRRF(bm25Results, semanticResults, limit);
+  if (keyword.status === 'rejected') throw keyword.reason;
+  if (semantic.status === 'rejected') throw semantic.reason;
+  return mergeWithRRF(keyword.value, semantic.value, limit);
 };

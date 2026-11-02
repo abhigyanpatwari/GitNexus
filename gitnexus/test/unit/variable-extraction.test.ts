@@ -30,7 +30,7 @@ import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-gram
 const C = requireVendoredGrammar('tree-sitter-c');
 const Dart = requireVendoredGrammar('tree-sitter-dart');
 
-let Kotlin: unknown;
+let Kotlin: Parser.Language | null = null;
 try {
   Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 } catch {
@@ -664,10 +664,10 @@ describe('VariableExtractor — block-scoped declarations', () => {
     };
     parser.setLanguage(Go);
     const tree = parser.parse('package main\nfunc foo() { x := 5 }');
-    // source_file > function_declaration > block > short_var_declaration
+    // Go 0.25 inserts statement_list between the block and its statements.
     const funcDecl = tree.rootNode.namedChildren.find((c) => c.type === 'function_declaration')!;
     const body = funcDecl.childForFieldName('body')!;
-    const shortVarDecl = body.namedChildren.find((c) => c.type === 'short_var_declaration');
+    const shortVarDecl = body.descendantsOfType('short_var_declaration')[0];
     expect(shortVarDecl).toBeDefined();
     const info = extractor.extract(shortVarDecl!, ctx);
     expect(info).not.toBeNull();

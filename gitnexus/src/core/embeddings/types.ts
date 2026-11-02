@@ -227,6 +227,8 @@ export interface EmbeddingConfig {
   batchSize: number;
   /** Number of chunks passed to one local/HTTP embedding call */
   subBatchSize: number;
+  /** Maximum UTF-16 characters in each fully generated embedding input. */
+  maxInputChars: number;
   /** Maximum ONNX Runtime CPU threads for local inference */
   threads: number;
   /** Embedding vector dimensions */
@@ -252,6 +254,7 @@ export const DEFAULT_EMBEDDING_CONFIG: EmbeddingConfig = {
   modelId: 'Snowflake/snowflake-arctic-embed-xs',
   batchSize: 16,
   subBatchSize: 8,
+  maxInputChars: 4096,
   threads: 2,
   dimensions: 384,
   device: 'auto',

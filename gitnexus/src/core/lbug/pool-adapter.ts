@@ -20,6 +20,7 @@ import lbug from '@ladybugdb/core';
 import { isReadOnlyDbError, loadFTSExtension, loadVectorExtension } from './lbug-adapter.js';
 import { closeQueryResults } from './query-result-utils.js';
 import { warnIfQueryTextUnbounded } from './query-batch.js';
+import { queryMemoryGuard } from './query-memory-guard.js';
 import {
   createLbugDatabase,
   isWalCorruptionError,
@@ -98,6 +99,12 @@ export function dbIdentityChanged(prev: DbIdentity | null, next: DbIdentity | nu
 }
 
 const pool = new Map<string, PoolEntry>();
+
+/** Identity of the native database currently serving this pool, not the path's latest file. */
+export function getLbugDbIdentity(repoId: string): DbIdentity | null {
+  const identity = pool.get(repoId)?.dbIdentity;
+  return identity ? { ...identity } : null;
+}
 
 /**
  * Listeners notified when a pool entry is torn down (LRU eviction, idle
@@ -811,6 +818,14 @@ const initLbugInner = async (repoId: string, dbPath: string): Promise<InitLbugAt
     // freshness THROUGH initLbug (rather than calling closeLbug directly) get
     // this guard for free; that is why LocalBackend delegates here (#2614).
     if (existing.checkedOut > 0) return { status: 'done', reopened: false };
+    // Closing only this consumer would leave the shared native handle alive
+    // and doInitLbug would attach eight new connections to that same old
+    // generation. Keep this pool intact until the other consumers release it;
+    // its opened identity stays divergent so the next init can retry then.
+    const shared = dbCache.get(existing.dbPath);
+    if (shared && shared.db === existing.db && shared.refCount > 1) {
+      return { status: 'done', reopened: false };
+    }
     // Awaited: see the rationale on the evictLRU call site in doInitLbug below.
     await closeOne(repoId); // idle & changed → evict, then fall through to reopen the new file
   }
@@ -946,9 +961,9 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<InitLbugAttem
   // Register pool entry only after all connections are pre-warmed and FTS is
   // loaded.  Concurrent executeQuery calls see either "not initialized"
   // (and throw cleanly) or a fully ready pool — never a half-built one.
-  // Record the on-disk identity so a later initLbug can detect an analyze
-  // rebuild/mutation and re-open onto the new file (pool staleness invalidation).
-  const dbIdentity = await statDbIdentity(dbPath);
+  // Keep the opened SharedDB identity: another consumer may still hold an
+  // older native handle after the file at dbPath has been replaced.
+  const dbIdentity = shared.dbIdentity ?? null;
   pool.set(repoId, {
     db,
     available,
@@ -1307,37 +1322,54 @@ export const executeParameterized = async (
   entry.lastUsed = Date.now();
   silenceStdout();
   activeQueryCount++;
+  const guardToken = queryMemoryGuard.begin(cypher);
+  let rowCount: number | undefined;
   let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
-  try {
-    const stmt = await withTimeout(conn.prepare(cypher), QUERY_TIMEOUT_MS, 'Prepare');
-    if (!stmt.isSuccess()) {
-      const errMsg = await stmt.getErrorMessage();
-      throw new Error(`Prepare failed: ${errMsg}`);
+  const deadline = performance.now() + QUERY_TIMEOUT_MS;
+  const checkDeadline = () => {
+    if (performance.now() >= deadline) {
+      throw new Error(`Query timed out after ${QUERY_TIMEOUT_MS}ms`);
     }
-    queryResult = await withTimeout(conn.execute(stmt, params), QUERY_TIMEOUT_MS, 'Execute');
-    const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
-    const rows = await result.getAll();
-    return rows;
-  } catch (err) {
-    if (isReadOnlyDbError(err)) {
-      // Preserve the native error as `cause` so the original frame/message is
-      // not lost behind the friendly read-only message (#2068 follow-up).
-      throw new Error('Write operations are not allowed. The pool adapter is read-only.', {
-        cause: err,
-      });
+  };
+  const nativeQuery = (async () => {
+    try {
+      const stmt = await conn.prepare(cypher);
+      checkDeadline();
+      if (!stmt.isSuccess()) {
+        const errMsg = await stmt.getErrorMessage();
+        throw new Error(`Prepare failed: ${errMsg}`);
+      }
+      queryResult = await conn.execute(stmt, params);
+      checkDeadline();
+      const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+      const rows = await result.getAll();
+      rowCount = rows.length;
+      return rows;
+    } catch (err) {
+      if (isReadOnlyDbError(err)) {
+        // Preserve the native error as `cause` so the original frame/message is
+        // not lost behind the friendly read-only message (#2068 follow-up).
+        throw new Error('Write operations are not allowed. The pool adapter is read-only.', {
+          cause: err,
+        });
+      }
+      throw err;
+    } finally {
+      // Close the native QueryResult cursor(s) before returning the connection —
+      // getAll() drains rows but does not release the native cursor, so without
+      // this the cursor leaks for the connection's lifetime (#2068 follow-up).
+      // Best-effort via the shared helper; never masks the query result or a real
+      // error.
+      if (queryResult) await closeQueryResults(queryResult);
+      queryMemoryGuard.end(guardToken, rowCount);
+      activeQueryCount--;
+      restoreStdout();
+      checkin(entry, conn);
     }
-    throw err;
-  } finally {
-    // Close the native QueryResult cursor(s) before returning the connection —
-    // getAll() drains rows but does not release the native cursor, so without
-    // this the cursor leaks for the connection's lifetime (#2068 follow-up).
-    // Best-effort via the shared helper; never masks the query result or a real
-    // error.
-    if (queryResult) await closeQueryResults(queryResult);
-    activeQueryCount--;
-    restoreStdout();
-    checkin(entry, conn);
-  }
+  })();
+  // A JS timeout cannot cancel native work. Keep its guard, cursor and checked-out
+  // connection until that work settles, including results delivered after timeout.
+  return withTimeout(nativeQuery, QUERY_TIMEOUT_MS, 'Query');
 };
 
 /**

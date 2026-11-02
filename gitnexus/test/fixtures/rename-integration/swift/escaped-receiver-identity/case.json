@@ -1,0 +1,37 @@
+{
+  "language": "swift",
+  "description": "Preserve member calls through matching escaped type and local receiver spellings while renaming the member.",
+  "categories": [
+    "escaped-identifier",
+    "receiver",
+    "call-graph"
+  ],
+  "target": {
+    "name": "read",
+    "kind": "Function",
+    "file": "worker.swift",
+    "startLine": 1
+  },
+  "newName": "readValue",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "worker.swift",
+        "startLine": 3
+      },
+      "to": {
+        "name": "read",
+        "kind": "Function",
+        "file": "worker.swift",
+        "startLine": 1
+      }
+    }
+  ]
+}

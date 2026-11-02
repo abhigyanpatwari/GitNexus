@@ -19,6 +19,9 @@ import { dartIsGlobalNameFallbackPlausible } from '../../../src/core/ingestion/l
 import { rustIsGlobalNameFallbackPlausible } from '../../../src/core/ingestion/languages/rust/name-fallback-visibility.js';
 import { swiftIsGlobalNameFallbackPlausible } from '../../../src/core/ingestion/languages/swift/name-fallback-visibility.js';
 import { rubyIsGlobalNameFallbackPlausible } from '../../../src/core/ingestion/languages/ruby/name-fallback-visibility.js';
+import { isJsSelfBoundCallableFallbackPlausible } from '../../../src/core/ingestion/languages/javascript/callable-visibility.js';
+import { javascriptProvider } from '../../../src/core/ingestion/languages/typescript.js';
+import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
 import {
   directoryOf,
   modulePathReaches,
@@ -31,6 +34,53 @@ const namedImport = (targetRaw: string, localName = 'x'): ParsedImport => ({
   localName,
   importedName: localName,
   targetRaw,
+});
+
+describe('JavaScript: named function-expression visibility (#3489)', () => {
+  it('allows recursive/descendant calls and refuses callers outside the expression scope', () => {
+    const parsed = extractParsedFile(
+      javascriptProvider,
+      `function make() {
+      return function handler(req) {
+        handler(req);
+        (() => handler(req))();
+      };
+    }
+    function outside(req) { handler(req); }`,
+      'handlers.js',
+    )!;
+    const candidate = parsed.localDefs.find((def) => def.qualifiedName === 'handler')!;
+    const sites = parsed.referenceSites.filter((site) => site.name === 'handler');
+    expect(sites).toHaveLength(3);
+    expect(
+      sites.map((site) =>
+        isJsSelfBoundCallableFallbackPlausible({
+          callerParsed: parsed,
+          candidate,
+          parsedFileOf: () => parsed,
+          site,
+        }),
+      ),
+    ).toEqual([true, true, false]);
+    const outside = sites.at(-1)!;
+    const topLevel = parsed.localDefs.find((def) => def.qualifiedName === 'make')!;
+    expect(
+      isJsSelfBoundCallableFallbackPlausible({
+        callerParsed: parsed,
+        candidate: topLevel,
+        parsedFileOf: () => parsed,
+        site: outside,
+      }),
+    ).toBe(true);
+    expect(
+      isJsSelfBoundCallableFallbackPlausible({
+        callerParsed: parsed,
+        candidate,
+        parsedFileOf: () => undefined,
+        site: outside,
+      }),
+    ).toBe(true);
+  });
 });
 
 const mkCaller = (

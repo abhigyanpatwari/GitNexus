@@ -36,6 +36,62 @@ function pythonNotebook(cells: Array<{ source: string | string[]; language?: str
 }
 
 describe('Jupyter notebook Python pipeline', () => {
+  it.each(['array', 'string'] as const)(
+    'maps synthesized fields to notebook source rows (%s)',
+    async (format) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ipynb-field-'));
+      try {
+        const lines = ['class Box:\n', '    def __init__(self):\n', '        self.value = 1\n'];
+        const notebook = pythonNotebook([
+          { source: ['# preceding cell\n'] },
+          { source: format === 'array' ? lines : lines.join('') },
+          { source: ['def read(box: Box):\n', '    return box.value\n'] },
+        ]);
+        writeFixtureRepo(root, { 'fields.ipynb': notebook });
+        const result = await runPipelineFromRepo(root, () => {}, { skipGraphPhases: true });
+        const sourceRow = notebook.split('\n').findIndex((line) => line.includes('self.value = 1'));
+        expect(result.graph.getNode('Property:fields.ipynb:Box.value')).toMatchObject({
+          properties: { startLine: sourceRow, endLine: sourceRow },
+        });
+        expect(
+          getRelationships(result, 'ACCESSES').filter((edge) => edge.source === 'read'),
+        ).toEqual([expect.objectContaining({ target: 'value', targetFilePath: 'fields.ipynb' })]);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+    60000,
+  );
+
+  it('keeps class methods out of notebook module bindings', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ipynb-scope-'));
+    try {
+      const declarations = 'class Box:\n    def target(self):\n        return 1\n';
+      writeFixtureRepo(root, {
+        'lib.py': 'def target():\n    return 2\n',
+        'unbound.ipynb': pythonNotebook([
+          { source: declarations },
+          { source: 'def unbound_caller():\n    return target()\n' },
+        ]),
+        'imported.ipynb': pythonNotebook([
+          { source: 'from lib import target\n' },
+          { source: declarations },
+          { source: 'def imported_caller():\n    return target()\n' },
+        ]),
+      });
+      const result = await runPipelineFromRepo(root, () => {}, { skipGraphPhases: true });
+      const calls = getRelationships(result, 'CALLS').filter((edge) => edge.target === 'target');
+      expect(calls.filter((edge) => edge.rel.targetId.includes('Box.target'))).toEqual([]);
+      expect(
+        calls
+          .filter((edge) => edge.source === 'imported_caller')
+          .map((edge) => edge.targetFilePath),
+      ).toEqual(['lib.py']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60000);
+
   it('indexes notebook functions, imports sibling py, and skip-fails closed', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ipynb-'));
     try {

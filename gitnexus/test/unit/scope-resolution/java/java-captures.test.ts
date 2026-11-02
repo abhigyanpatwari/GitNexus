@@ -14,6 +14,25 @@
 import { describe, it, expect } from 'vitest';
 import { emitJavaScopeCaptures } from '../../../../src/core/ingestion/languages/java/captures.js';
 
+describe('Java invocation classification', () => {
+  it('does not also emit free references for qualified member calls', () => {
+    const captures = emitJavaScopeCaptures(
+      'class Delivery { void send(Courier courier) { courier.dispatch(); this.dispatch(); super.dispatch(); dispatch(); } }',
+      'Delivery.java',
+    );
+    expect(
+      captures
+        .filter((match) => match['@reference.call.free'])
+        .map((match) => match['@reference.call.free']?.text),
+    ).toEqual(['dispatch()']);
+    expect(
+      captures
+        .filter((match) => match['@reference.call.member'])
+        .map((match) => match['@reference.receiver']?.text),
+    ).toEqual(['courier', 'this', 'super']);
+  });
+});
+
 function wrapExpr(expr: string): string {
   return `class C { void m() { ${expr}; } }`;
 }
@@ -431,4 +450,20 @@ describe('emitJavaScopeCaptures — local-type identities (#2562)', () => {
 
     expect(visibility?.['@scope.block']?.range.endLine).toBe(6);
   });
+});
+
+it('captures primitive parameter bindings so they shadow lexical names', () => {
+  const captures = emitJavaScopeCaptures(
+    'class Model { void use(int first, double second, boolean third) {} }',
+    'model.java',
+  );
+  expect(
+    captures
+      .filter((capture) => capture['@type-binding.parameter'])
+      .map((capture) => [capture['@type-binding.name']?.text, capture['@type-binding.type']?.text]),
+  ).toEqual([
+    ['first', 'int'],
+    ['second', 'double'],
+    ['third', 'boolean'],
+  ]);
 });

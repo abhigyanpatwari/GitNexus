@@ -1,10 +1,9 @@
 name: Devcontainer Smoke
 
 # Smoke-tests .devcontainer/ whenever it changes. Two things happen here.
-# First, unit tests run on the pure host->container config transforms: the
-# plugin-registry path translation, and the strip of the machine field from
-# $HOME/.claude.json. Second, the devcontainer image is built through the
-# standard @devcontainers/cli path. That CLI reads build.args from
+# First, unit tests cover host->container config transforms and actual Husky
+# pre-commit enforcement in temporary repositories. Second, the image is built
+# through the standard @devcontainers/cli path. That CLI reads build.args from
 # devcontainer.json, so the version pin there stays the single source of truth.
 on:
   push:
@@ -12,10 +11,12 @@ on:
     paths:
       - '.devcontainer/**'
       - '.github/workflows/ci-devcontainer.yml'
+      - 'gitnexus-web/package-lock.json'
   pull_request:
     paths:
       - '.devcontainer/**'
       - '.github/workflows/ci-devcontainer.yml'
+      - 'gitnexus-web/package-lock.json'
 
 permissions:
   contents: read
@@ -39,20 +40,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - name: Unit-test the host->container config transforms
-        run: node --test .devcontainer/translate-plugin-registries.test.cjs
+      # Hook tests install real Husky in temporary repositories.
+      - name: Install hook test tooling
+        run: |
+          npm ci --no-audit --no-fund
+          node .devcontainer/verify-git-hooks.cjs
+      - name: Unit-test devcontainer setup and hooks
+        run: node --test .devcontainer/*.test.cjs
       - name: Syntax-check the lifecycle shell scripts
         run: |
           bash -n .devcontainer/install-deps.sh
           bash -n .devcontainer/post-create.sh
+          bash -n .devcontainer/seed-codex.sh
+          bash -n .devcontainer/tune-9p.sh
 
   build:
-    name: Build devcontainer image
+    name: Build devcontainer image (${{ matrix.profile }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [default, ui]
     steps:
       # persist-credentials: false — this is a read-only build smoke that
       # never pushes. The setting keeps GITHUB_TOKEN out of .git/config,
@@ -60,24 +72,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+      - name: Generate UI profile
+        if: matrix.profile == 'ui'
+        run: node .devcontainer/profile.cjs ui
       # Builds the image the same way a developer's "Reopen in Container" does.
       # @devcontainers/cli reads devcontainer.json (jsonc format), resolves
-      # build.args (the CLAUDE_CODE_VERSION / CODEX_VERSION pins), and runs the
-      # Dockerfile. This smoke catches Dockerfile regressions and any drift from
-      # the canonical version pins. The lifecycle hooks (post-create.sh) do not
+      # build.args (including BUN_VERSION), and runs the Dockerfile. This smoke
+      # catches Dockerfile regressions, including native CLI installation.
+      # The lifecycle hooks (post-create.sh) do not
       # run here. They need the host config mounts, and CI has none.
       #
       # ARCH COVERAGE: this runs on an x64 runner with no --platform or QEMU, so
-      # it builds only the amd64 Cursor branch (CURSOR_SHA256_X64). The arm64
-      # branch (CURSOR_SHA256_ARM64 plus the arm64 tarball URL) is pinned by a
-      # sha256 checked against the published artifact, but it is not BUILT here.
-      # Cursor's extract-and-symlink step does not depend on the architecture, so
-      # the only remaining gap is a stale arm64 URL or hash. If that becomes a
-      # concern, add a linux/arm64 matrix leg (docker/setup-qemu-action plus
-      # `--platform`).
+      # it builds only amd64. Native CLI installers also support arm64, but that
+      # path is not built here. Add QEMU and a linux/arm64 matrix leg if needed.
       #
       # The @devcontainers/cli version is pinned on purpose. A bare
       # `npx --yes @devcontainers/cli` would resolve @latest at run time. A
@@ -109,10 +119,12 @@ jobs:
           echo "::warning::failed to pre-pull ${img} after 3 attempts; continuing — build step may still succeed"
           exit 1
       - name: Build devcontainer via @devcontainers/cli
+        env:
+          DEVCONTAINER_CONFIG: ${{ matrix.profile == 'ui' && '.devcontainer/generated/devcontainer.json' || '.devcontainer/devcontainer.json' }}
         run: |
           set -euo pipefail
           for attempt in 1 2; do
-            if npx --yes @devcontainers/cli@0.87.0 build --workspace-folder .; then
+            if npx --yes @devcontainers/cli@0.87.0 build --workspace-folder . --config "$DEVCONTAINER_CONFIG" --frozen-lockfile; then
               if [ "$attempt" -eq 2 ]; then
                 echo "::notice::devcontainer build retry succeeded (attempt 2); investigate if this recurs across runs."
               fi

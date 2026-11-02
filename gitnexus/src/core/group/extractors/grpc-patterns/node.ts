@@ -123,7 +123,7 @@ interface NodeGrpcPatternBundle {
   loadPackageDefinition: CompiledPatterns<Record<string, never>>;
 }
 
-function compileBundle(language: unknown, name: string): NodeGrpcPatternBundle {
+function compileBundle(language: Parser.Language, name: string): NodeGrpcPatternBundle {
   const mk = (
     spec: PatternSpec<Record<string, never>> | PatternSpec<Record<string, never>>[],
     suffix: string,

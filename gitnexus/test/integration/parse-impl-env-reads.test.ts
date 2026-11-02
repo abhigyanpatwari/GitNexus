@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 /**
  * U14 (F7 architectural from PR #1693 review) — Function-scope env reads
  * in parse-impl.
@@ -28,7 +29,9 @@ import path from 'node:path';
 
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { PARSE_CACHE_VERSION, parseCacheBucketId } from '../../src/storage/parse-cache.js';
+import { parseCacheBucketId } from '../../src/storage/parse-cache.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 const ORIGINAL_BUDGET = process.env.GITNEXUS_CHUNK_BYTE_BUDGET;
 
@@ -161,7 +164,7 @@ describe('parse-impl chunkByteBudget resolution (U14 / F7)', () => {
     const files = ['a.ts', 'b.ts', 'c.ts'];
     const keysForPool = async (workerPoolSize: number): Promise<string[]> => {
       const parseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: parseIdentity,
         entries: new Map(),
         usedKeys: new Set<string>(),
       };

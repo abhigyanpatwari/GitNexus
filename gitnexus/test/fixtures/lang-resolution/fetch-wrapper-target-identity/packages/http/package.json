@@ -1,0 +1,4 @@
+{
+  "name": "@repo/http",
+  "exports": "./src/index.ts"
+}

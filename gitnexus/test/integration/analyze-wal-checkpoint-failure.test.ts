@@ -72,7 +72,7 @@ afterAll(() => {
   if (suiteGitnexusHome) cleanupTempDirSync(suiteGitnexusHome);
 });
 
-const runAnalyze = () =>
+const runAnalyze = (walCheckpointThreshold: string) =>
   spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, 'analyze', '--skip-skills'], {
     cwd: repoPath,
     encoding: 'utf8',
@@ -85,9 +85,7 @@ const runAnalyze = () =>
       GITNEXUS_HOME: suiteGitnexusHome,
       // Skip ensureHeap re-exec (which drops the tsx loader).
       NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-      // Tiny threshold forces auto-checkpoint on every write so the
-      // first write into the WAL trips the planted rename blocker.
-      GITNEXUS_WAL_CHECKPOINT_THRESHOLD: '1',
+      GITNEXUS_WAL_CHECKPOINT_THRESHOLD: walCheckpointThreshold,
       CI: '1',
     },
   });
@@ -105,8 +103,10 @@ describe('analyze WAL auto-checkpoint rename failure (real lbug, no mocks)', () 
 
     // 1) Clean full analyze (no blocker) — builds the index into staging and
     // swaps it in. Must succeed; the staging checkpoint name is unblocked.
-    const first = runAnalyze();
-    expect(first.status === null ? 'timeout' : first.status).toBe(0);
+    // Use the normal 64 MiB threshold while seeding the index. Checkpointing
+    // every setup write needlessly stalls schema and FTS creation on Windows.
+    const first = runAnalyze('67108864');
+    expect(first.status === null ? 'timeout' : first.status, first.stderr).toBe(0);
 
     // 2) Change a tracked source file and commit, so the next analyze is an
     // incremental writeback (in-place), not a full rebuild.
@@ -138,12 +138,12 @@ describe('analyze WAL auto-checkpoint rename failure (real lbug, no mocks)', () 
     fs.writeFileSync(path.join(blockerDir, 'blocker'), 'cannot-be-renamed-over');
 
     // 4) Incremental analyze into the blocked checkpoint target.
-    const result = runAnalyze();
+    const result = runAnalyze('1');
     const combined = `${result.stderr}\n${result.stdout}`;
 
-    // The CLI must exit non-zero. status === null means the timeout fired
-    // without a clean exit — also a failure for this assertion.
-    expect(result.status === null ? 'timeout' : result.status).not.toBe(0);
+    // The blocked checkpoint must produce an error, rather than a timeout.
+    expect(result.status, combined).not.toBeNull();
+    expect(result.status).not.toBe(0);
 
     // Recovery hint must reference the CLI flag and the recommended
     // 64 MiB threshold (67_108_864 bytes). Both come from the

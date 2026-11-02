@@ -646,7 +646,70 @@ static int helper(void) { return 1; }
         objcFunctionQualifiedName('SYModuleCompute', 'internal', 'SYModuleCaller.m'),
       ]),
     );
-    expect(parsed!.localDefs.some((def) => def.type === 'Method')).toBe(false);
+    expect(
+      parsed!.localDefs.filter((def) => def.type === 'Method').map((def) => def.qualifiedName),
+    ).toContain('objc:method:objc:class:SYModuleCaller:-:runTask:completion:');
+  });
+
+  it('captures C calls with function declarations outside their body and parameters inside it', () => {
+    const source = [
+      'int helper(void) { return 1; }',
+      'int caller(void) { return helper(); }',
+      'int indirect(int (*helper)(void)) { return helper(); }',
+      'int prototype(int helper);',
+      'int external(void) { return helper(); }',
+      '@interface Worker { int helper; } @end',
+      '@implementation Worker',
+      '+ (int)callHelper { return helper(); }',
+      '- (int)read { return helper; }',
+      '@end',
+      '',
+    ].join('\n');
+    const parsed = extractParsedFile(objectiveCProvider, source, 'Calls.m')!;
+    const module = parsed.scopes.find((scope) => scope.id === parsed.moduleScope)!;
+    expect(module.bindings.get('helper')?.map((binding) => binding.def.type)).toEqual(['Function']);
+    expect(module.bindings.get('caller')?.map((binding) => binding.def.type)).toEqual(['Function']);
+    const indirect = parsed.scopes.find(
+      (scope) => scope.kind === 'Function' && scope.range.startLine === 3,
+    )!;
+    expect(indirect.bindings.get('helper')?.map((binding) => binding.def.type)).toEqual([
+      'Variable',
+    ]);
+    expect(
+      parsed.referenceSites.map((site) => [site.name, site.kind, site.atRange.startLine]),
+    ).toEqual([
+      ['helper', 'call', 2],
+      ['helper', 'call', 3],
+      ['helper', 'call', 5],
+      ['helper', 'call', 8],
+    ]);
+    expect(parsed.localDefs).toContainEqual(
+      expect.objectContaining({
+        type: 'Method',
+        qualifiedName: 'objc:method:objc:class:Worker:+:callHelper',
+      }),
+    );
+    const facts = collectObjectiveCFacts(parseSource(source), 'Calls.m');
+    expect(facts.memberAccesses!.filter((access) => access.selector === 'helper')).toEqual([
+      expect.objectContaining({ sourceMethodKind: '-', startLine: 8 }),
+    ]);
+  });
+
+  it('preserves distinct method owners when implementations share a physical line', () => {
+    const parsed = extractParsedFile(
+      objectiveCProvider,
+      'int run(void) { return 1; }\n' +
+        '@interface First @end @interface Second @end\n' +
+        '@implementation First + (int)run { return run(); } @end ' +
+        '@implementation Second + (int)run { return run(); } @end\n',
+      'SameLine.m',
+    )!;
+    expect(
+      parsed.localDefs.filter((def) => def.type === 'Method').map((def) => def.qualifiedName),
+    ).toEqual(['objc:method:objc:class:First:+:run', 'objc:method:objc:class:Second:+:run']);
+    expect(parsed.referenceSites.filter((site) => site.name === 'run')).toHaveLength(2);
+    const module = parsed.scopes.find((scope) => scope.id === parsed.moduleScope)!;
+    expect(module.bindings.get('run')?.map((binding) => binding.def.type)).toEqual(['Function']);
   });
 
   it('shares provider-extracted header/implementation defs, not file-static functions', () => {

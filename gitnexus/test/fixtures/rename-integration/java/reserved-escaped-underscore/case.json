@@ -1,0 +1,20 @@
+{
+  "language": "java",
+  "description": "Refuse a Unicode escape that canonicalizes to the reserved single underscore.",
+  "categories": [
+    "identifier-rules",
+    "reserved-words"
+  ],
+  "target": {
+    "name": "measure",
+    "kind": "Method",
+    "file": "Metric.java",
+    "startLine": 1
+  },
+  "newName": "\\u005f",
+  "expect": {
+    "status": "error",
+    "code": "invalid_name",
+    "planningStatus": "blocked"
+  }
+}

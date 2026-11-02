@@ -23,7 +23,10 @@ import { METHOD_KINDS } from './context.js';
  * concise while still exposing the explicit-receiver + owner-contributor +
  * arity knobs the RFC algorithm needs.
  */
-export interface MethodLookupOptions {
+export interface MethodLookupOptions extends Pick<
+  CoreLookupParams,
+  'lookupPosition' | 'lookupPurpose'
+> {
   /** Call-site arity for `provider.arityCompatibility`. */
   readonly callsite?: Callsite;
   /** Explicit receiver (e.g., `user` in `user.save()`). See §4.1. */
@@ -40,6 +43,8 @@ export function buildMethodRegistry(ctx: RegistryContext): MethodRegistry {
   return {
     lookup(name: string, scope: ScopeId, options: MethodLookupOptions = {}) {
       const params: CoreLookupParams = {
+        lookupPosition: options.lookupPosition,
+        lookupPurpose: options.lookupPurpose,
         acceptedKinds: METHOD_KINDS,
         useReceiverTypeBinding: true,
         ownerScopedContributor: options.ownerScopedContributor ?? null,

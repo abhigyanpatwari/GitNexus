@@ -20,6 +20,7 @@ import { isDev } from './utils/env.js';
 import { PROCESS_DETECTION_BUDGET_DEFAULTS } from './process-detection-budget.js';
 
 import { logger } from '../logger.js';
+import { EnclosingCallableIndex } from './enclosing-callable.js';
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
@@ -730,13 +731,9 @@ export const traceFromEntryPoint = (
 export interface OutwardActionSite {
   readonly filePath: string;
   readonly lineNumber: number;
+  /** The parser's enclosing callable, null for module scope, or absent without AST attribution. */
+  readonly enclosingId?: string | null;
 }
-
-const CALLABLE_SINK_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
-  'Function',
-  'Method',
-  'Constructor',
-]);
 
 /**
  * Functions that DO something outward — issue a request, run a query (R3-6).
@@ -754,10 +751,9 @@ const CALLABLE_SINK_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
  * is too coarse to end a trace on — every function in a file containing one
  * would qualify. Attributing each site to the function whose range CONTAINS it
  * turns the same facts into the function-level signal the walk needs, with no
- * new extraction, no new relation pair, and no schema change.
- *
- * Innermost wins: a nested closure that performs the call is the sink, not the
- * outer function that merely spans it.
+ * new extraction, no new relation pair, and no schema change. The containment
+ * rule lives in {@link EnclosingCallableIndex}, shared with the FETCHES consumer
+ * attribution.
  */
 export function buildSinkFunctionSet(
   graph: KnowledgeGraph,
@@ -766,27 +762,10 @@ export function buildSinkFunctionSet(
   const sinks = new Set<string>();
   if (sites.length === 0) return sinks;
 
-  const byFile = new Map<string, { id: string; start: number; end: number }[]>();
-  for (const node of graph.iterNodes()) {
-    if (!CALLABLE_SINK_LABELS.has(node.label)) continue;
-    const props = node.properties as { filePath?: string; startLine?: number; endLine?: number };
-    if (typeof props.filePath !== 'string') continue;
-    if (typeof props.startLine !== 'number' || typeof props.endLine !== 'number') continue;
-    const entry = { id: node.id, start: props.startLine, end: props.endLine };
-    const list = byFile.get(props.filePath);
-    if (list === undefined) byFile.set(props.filePath, [entry]);
-    else list.push(entry);
-  }
-
+  const callables = new EnclosingCallableIndex(graph);
   for (const site of sites) {
-    const candidates = byFile.get(site.filePath);
-    if (candidates === undefined) continue;
-    let best: { id: string; start: number; end: number } | undefined;
-    for (const c of candidates) {
-      if (site.lineNumber < c.start || site.lineNumber > c.end) continue;
-      if (best === undefined || c.end - c.start < best.end - best.start) best = c;
-    }
-    if (best !== undefined) sinks.add(best.id);
+    const id = callables.of(site);
+    if (id !== undefined) sinks.add(id);
   }
   return sinks;
 }

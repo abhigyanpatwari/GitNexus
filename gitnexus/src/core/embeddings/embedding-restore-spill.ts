@@ -16,6 +16,7 @@ import { randomBytes } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import type { CachedEmbedding } from './types.js';
+import { assertValidEmbeddingKey } from './embedding-keys.js';
 
 /** In-RAM vector copies stay below this row count; larger tables use the spill. */
 export const DEFAULT_EMBEDDING_CACHE_IN_MEMORY_ROW_LIMIT = 2048;
@@ -385,7 +386,8 @@ export function ingestCachedEmbeddingRow(
 ): void {
   const rec = row as Record<string, unknown> & unknown[];
   const nodeId = String(rec.nodeId ?? rec[0] ?? '');
-  if (!nodeId) return;
+  const chunkIndex = Number(rec.chunkIndex ?? rec[1] ?? 0);
+  assertValidEmbeddingKey(nodeId, chunkIndex, 'Cached embedding');
   const embedding = rec.embedding ?? rec[4];
   const f32 = coerceEmbeddingToFloat32(embedding);
   if (!f32) return;
@@ -393,7 +395,7 @@ export function ingestCachedEmbeddingRow(
   builder.embeddingNodeIds.add(nodeId);
   const meta: CachedEmbeddingMeta = {
     nodeId,
-    chunkIndex: Number(rec.chunkIndex ?? rec[1] ?? 0),
+    chunkIndex,
     startLine: Number(rec.startLine ?? rec[2] ?? 0),
     endLine: Number(rec.endLine ?? rec[3] ?? 0),
     contentHash: hasContentHash

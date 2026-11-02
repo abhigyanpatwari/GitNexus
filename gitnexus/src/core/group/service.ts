@@ -9,6 +9,10 @@ import { checkStaleness } from '../git-staleness.js';
 import { stalenessStatus, type StalenessInfo, type StalenessStatus } from '../staleness-status.js';
 import { mapConcurrent } from '../../lib/utils.js';
 import {
+  SymbolIdentityError,
+  SYMBOL_IDENTITY_RECOVERY_SUGGESTION,
+} from '../lbug/query-result-integrity.js';
+import {
   canonicalizePath,
   loadMeta,
   readRegistryStrict,
@@ -840,7 +844,20 @@ export class GroupService {
             })) as {
               processes?: Array<Record<string, unknown>>;
               process_symbols?: Array<Record<string, unknown>>;
+              error?: string;
+              recoverySuggestion?: string;
             };
+            if (
+              queryResult.error &&
+              queryResult.recoverySuggestion === SYMBOL_IDENTITY_RECOVERY_SUGGESTION
+            ) {
+              return {
+                repo: repoPath,
+                score: 0,
+                processes: [] as unknown[],
+                integrityError: queryResult.error,
+              };
+            }
             const processes = servicePrefix
               ? filterQueryByServicePrefix(queryResult, servicePrefix).processes
               : queryResult.processes || [];
@@ -849,9 +866,19 @@ export class GroupService {
               _rrf_score: 1 / (idx + 1 + 60),
               _repo: repoPath,
             }));
-            return { repo: repoPath, score: 0, processes: scored as unknown[] };
-          } catch {
-            return { repo: repoPath, score: 0, processes: [] as unknown[] };
+            return {
+              repo: repoPath,
+              score: 0,
+              processes: scored as unknown[],
+              integrityError: undefined,
+            };
+          } catch (error) {
+            return {
+              repo: repoPath,
+              score: 0,
+              processes: [] as unknown[],
+              integrityError: error instanceof SymbolIdentityError ? error.message : undefined,
+            };
           }
         },
         { concurrency: GROUP_MEMBER_CONCURRENCY },
@@ -859,8 +886,20 @@ export class GroupService {
     ).map((result, index) => {
       if (result) return result;
       const [repoPath] = memberEntries[index]!;
-      return { repo: repoPath, score: 0, processes: [] as unknown[] };
+      return { repo: repoPath, score: 0, processes: [] as unknown[], integrityError: undefined };
     });
+
+    // A corrupt member is not an empty member. Preserve the same recovery
+    // contract as single-repo query rather than returning a misleading group.
+    const invalidMember = perRepo.find((result) => result.integrityError);
+    if (invalidMember) {
+      return {
+        error: invalidMember.integrityError,
+        recoverySuggestion: SYMBOL_IDENTITY_RECOVERY_SUGGESTION,
+        group: name,
+        repo: invalidMember.repo,
+      };
+    }
 
     const allProcesses = perRepo.flatMap((r) => r.processes as Array<Record<string, unknown>>);
     allProcesses.sort((a, b) => (b._rrf_score as number) - (a._rrf_score as number));

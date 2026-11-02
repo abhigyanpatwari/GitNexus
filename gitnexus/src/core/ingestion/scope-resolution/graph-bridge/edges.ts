@@ -7,7 +7,7 @@
  *   - `tryEmitEdge` — given a reference site + target def, resolve
  *     caller + target to graph ids and emit the edge with
  *     language-provided reason text, dedup-keyed by
- *     `(edgeType, callerId, targetId, line, col)`.
+ *     `(edgeType, callerId, targetId, accessKind, line, col)`.
  *
  * Next-consumer contract: any language provider can call `tryEmitEdge`
  * from its own post-pass to emit edges it resolves Python-specific
@@ -71,6 +71,21 @@ export function mapReferenceKindToEdgeType(
   }
 }
 
+/** Shared identity for precise and fallback reference edges. Augmented
+ * assignments read and write at the same location; retain both access kinds. */
+export function referenceEdgeKey(
+  edgeType: string,
+  callerGraphId: string,
+  targetGraphId: string,
+  site: { readonly kind: string; readonly atRange: { startLine: number; startCol: number } },
+  collapseByCallerTarget = false,
+): string {
+  const pair = `${edgeType}:${callerGraphId}->${targetGraphId}`;
+  if (collapseByCallerTarget && edgeType === 'CALLS') return pair;
+  const accessKind = edgeType === 'ACCESSES' ? `:${site.kind}` : '';
+  return `${pair}${accessKind}:${site.atRange.startLine}:${site.atRange.startCol}`;
+}
+
 /**
  * Is this read site a PHANTOM — a duplicate of the call happening beside it?
  *
@@ -111,7 +126,7 @@ function isPhantomCalleeRead(
  * if the edge was emitted (not deduped, not skipped).
  *
  * `seen` is a language-shared dedup set keyed by
- * `${edgeType}:${callerGraphId}->${targetGraphId}:${line}:${col}` so
+ * `referenceEdgeKey` so
  * multiple language-specific post-passes can share it and never
  * double-emit a resolution one of them already produced.
  */
@@ -121,6 +136,7 @@ export function tryEmitEdge(
   nodeLookup: GraphNodeLookup,
   site: {
     readonly inScope: ScopeId;
+    readonly callerScope?: ScopeId;
     readonly atRange: { startLine: number; startCol: number };
     readonly kind: string;
     /** See {@link isPhantomCalleeRead}. Set by the extractor from the
@@ -143,7 +159,12 @@ export function tryEmitEdge(
   // Inheritance edges are emitted directly by `preEmitInheritanceEdges` (which
   // owns the enclosing-class caller and the EXTENDS-vs-IMPLEMENTS type), so this
   // generic bridge derives caller + edge type purely from the site.
-  const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup, site.atRange);
+  const callerGraphId = resolveCallerGraphId(
+    site.callerScope ?? site.inScope,
+    scopes,
+    nodeLookup,
+    site.atRange,
+  );
   const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
   const edgeType = mapReferenceKindToEdgeType(site.kind as Reference['kind']);
   if (callerGraphId === undefined) return false;
@@ -167,10 +188,13 @@ export function tryEmitEdge(
   // the provider opts in (C# matches legacy DAG behavior this way).
   // Write/read ACCESSES keep per-site dedup so multiple writes to the
   // same field on different lines produce distinct edges.
-  const useCollapsed = collapseByCallerTarget && edgeType === 'CALLS';
-  const dedupKey = useCollapsed
-    ? `${edgeType}:${callerGraphId}->${targetGraphId}`
-    : `${edgeType}:${callerGraphId}->${targetGraphId}:${site.atRange.startLine}:${site.atRange.startCol}`;
+  const dedupKey = referenceEdgeKey(
+    edgeType,
+    callerGraphId,
+    targetGraphId,
+    site,
+    collapseByCallerTarget,
+  );
   if (seen.has(dedupKey)) return false;
   seen.add(dedupKey);
 
@@ -214,6 +238,7 @@ export function tryEmitEdgeWithExplicitTargetId(
   nodeLookup: GraphNodeLookup,
   site: {
     readonly inScope: ScopeId;
+    readonly callerScope?: ScopeId;
     readonly atRange: { startLine: number; startCol: number };
     readonly kind: string;
     /** See `ReferenceSite.staticGated`; copied onto the emitted edge. */
@@ -226,7 +251,12 @@ export function tryEmitEdgeWithExplicitTargetId(
   collapseByCallerTarget = false,
   calleeCapture?: CalleeIdCaptureCtx,
 ): boolean {
-  const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup, site.atRange);
+  const callerGraphId = resolveCallerGraphId(
+    site.callerScope ?? site.inScope,
+    scopes,
+    nodeLookup,
+    site.atRange,
+  );
   const edgeType = mapReferenceKindToEdgeType(site.kind as Reference['kind']);
   if (callerGraphId === undefined) return false;
   if (edgeType === undefined) return false;
@@ -242,10 +272,13 @@ export function tryEmitEdgeWithExplicitTargetId(
     );
   }
 
-  const useCollapsed = collapseByCallerTarget && edgeType === 'CALLS';
-  const dedupKey = useCollapsed
-    ? `${edgeType}:${callerGraphId}->${targetGraphId}`
-    : `${edgeType}:${callerGraphId}->${targetGraphId}:${site.atRange.startLine}:${site.atRange.startCol}`;
+  const dedupKey = referenceEdgeKey(
+    edgeType,
+    callerGraphId,
+    targetGraphId,
+    site,
+    collapseByCallerTarget,
+  );
   if (seen.has(dedupKey)) return false;
   seen.add(dedupKey);
 

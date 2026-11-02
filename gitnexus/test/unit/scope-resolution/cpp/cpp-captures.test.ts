@@ -614,3 +614,55 @@ describe('C++ pointer parameter — declared spelling', () => {
     expect(bindings).not.toHaveProperty('grid');
   });
 });
+
+/**
+ * Which name a declaration binds, and to what type — for the shapes where the
+ * written declaration names no type directly (`auto`) or names it in a way only
+ * one syntactic position may claim (a function prototype).
+ */
+describe('C++ deduced and prototype type bindings', () => {
+  function rawTypeOf(src: string, name: string): string | undefined {
+    const parsed = extractParsedFile(cppProvider, src, 'test.cpp');
+    const refs = (parsed?.scopes ?? []).flatMap((scope) => {
+      const ref = scope.typeBindings.get(name);
+      return ref === undefined ? [] : [ref.rawName];
+    });
+    return refs[0];
+  }
+
+  it.each<[string, string, string | undefined]>([
+    // `auto` names no type; a leftover placeholder binds nothing.
+    ['void f() { auto n = 5; }', 'n', undefined],
+    ['auto g = [](auto v) { return v; };', 'v', undefined],
+    // A qualified callee is bound as written, like a bare one.
+    ['void f() { auto x = make(); }', 'x', 'make'],
+    ['void f() { auto x = rp::make(); }', 'x', 'rp::make'],
+    ['void f() { auto x = a::b::make(); }', 'x', 'a::b::make'],
+    // A template factory keeps its dedicated rule (the template argument).
+    ['void f() { auto x = std::make_shared<Dog>(); }', 'x', 'Dog'],
+    // A prototype records its return type at namespace scope, through an
+    // include guard, and never in a function body (the most vexing parse).
+    ['D makeD();', 'makeD', 'D'],
+    ['D* makeP();', 'makeP', 'D'],
+    ['#ifndef G\n#define G\nnamespace rp { C make(); }\n#endif\n', 'make', 'C'],
+    ['void f() { E y(); }', 'y', undefined],
+  ])('%s binds %s to %s', (src, name, expected) => {
+    expect(rawTypeOf(src, name)).toBe(expected);
+  });
+});
+
+describe('written operator positions', () => {
+  it('keeps distinct synthetic operator references on their actual tokens', () => {
+    const source = 'int combine(A a, A b, A c) { return a + b + c; }';
+    const operators = emitCppScopeCaptures(source, 'operators.cpp')
+      .filter((match) => match['@reference.operator'])
+      .map((match) => match['@reference.name']);
+    const columns = [...new Set(operators.map((capture) => capture.range.startCol))].sort(
+      (a, b) => a - b,
+    );
+    expect(columns).toEqual([source.indexOf('+'), source.lastIndexOf('+')]);
+    for (const operator of operators) {
+      expect(operator.range.endCol - operator.range.startCol).toBe(1);
+    }
+  });
+});

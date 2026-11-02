@@ -22,19 +22,22 @@ import type {
 } from '../../scope-resolution/contract/scope-resolver.js';
 import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { pythonProvider } from '../python.js';
+import { expandPythonWildcardNames, pythonModuleExports } from './expand-wildcards.js';
 import {
   isPythonImportedModule,
   pythonNamespaceReceiverPaths,
+  pythonNamespaceBindingIdentity,
   pythonArityCompatibility,
   pythonMergeBindings,
   resolvePythonImportTarget,
   type PythonResolveContext,
 } from './index.js';
 import {
-  applyPythonSubtypeDispatchSideChannel,
   pythonSubtypeCallPositionalCount,
   pythonSubtypePositionalCapacity,
 } from './subtype-dispatch.js';
+import { applyPythonCaptureSideChannel } from './module-accessors.js';
+import { createPythonReceiverNamespaceResolver } from './module-accessor-resolution.js';
 
 /**
  * Python subtype dispatch is deliberately limited to instance receiver facts.
@@ -77,6 +80,15 @@ const pythonScopeResolver: ScopeResolver = {
   // A free call naming a class constructs it: `Service(db).do_work()` (#2708).
   constructionSyntax: { bare: true },
   language: SupportedLanguages.Python,
+  // Imported names on a package's __init__.py are addressable as module members.
+  namespaceExportsIncludeImportedNames: true,
+  importsBindAtLexicalScope: true,
+  moduleExports: pythonModuleExports,
+  filterWildcardNames: (scope, names, files) => expandPythonWildcardNames(scope, files, names),
+  namespaceBindingIdentity: pythonNamespaceBindingIdentity,
+  namespaceSkipsEnclosingClasses: true,
+  createReceiverNamespaceResolver: createPythonReceiverNamespaceResolver,
+  ownedMembersBindAtModuleScope: false,
   suppressReceiverLookup: (typeRef) => typeRef.source === 'decorator-unknown',
   languageProvider: pythonProvider,
   importEdgeReason: 'python-scope: import',
@@ -127,7 +139,7 @@ const pythonScopeResolver: ScopeResolver = {
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
 
-  applyCaptureSideChannel: applyPythonSubtypeDispatchSideChannel,
+  applyCaptureSideChannel: applyPythonCaptureSideChannel,
 
   isSuperReceiver: (text) => /^super\s*\(/.test(text),
 

@@ -103,6 +103,9 @@ export const detectIndexContentDrift = async (
     const scanned = await walkRepositoryPaths(repoPath, undefined, {
       quiet: true,
       maxFileSizeBytes: coverage?.maxFileSizeBytes,
+      // Replay the analyze-time list; an index without one covered no dot
+      // directories, whatever the current environment says.
+      includeDotDirs: coverage?.includeDotDirs ?? [],
     });
     const scannedPaths = scanned.map((file) => file.path).filter((p) => !isGitNexusManagedPath(p));
     const scannedSet = new Set(scannedPaths);

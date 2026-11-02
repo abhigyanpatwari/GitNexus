@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import lbug from '@ladybugdb/core';
 
 // Drive the REAL initLbug path (which calls evictLRU) rather than
 // initLbugWithDb (which bypasses eviction entirely). The native LadybugDB
@@ -81,7 +82,7 @@ vi.mock('../../src/core/lbug/sidecar-recovery.js', () => ({
   },
 }));
 
-const { initLbug, initLbugWithDb, closeLbug, isLbugReady, pinRepo, unpinRepo } =
+const { initLbug, initLbugWithDb, closeLbug, getLbugDbIdentity, isLbugReady, pinRepo, unpinRepo } =
   await import('../../src/core/lbug/pool-adapter.js');
 const { createLbugDatabase } = await import('../../src/core/lbug/lbug-config.js');
 const { initWikiDb, closeWikiDb, pinWikiDb } = await import('../../src/core/wiki/graph-queries.js');
@@ -310,5 +311,53 @@ describe('pool-adapter repo pinning (issue #2189)', () => {
     await closing;
     await injecting;
     expect(isLbugReady('injected-overlap')).toBe(true);
+  });
+
+  it('defers shared-handle refresh without connection churn until the other consumer releases it', async () => {
+    const dbPath = dbPathFor('shared-refresh');
+    await initLbug('refresh-reader', dbPath);
+    await initLbug('refresh-holder', dbPath);
+    const openedIdentity = getLbugDbIdentity('refresh-reader');
+    const database = vi.mocked(createLbugDatabase).mock.results.at(-1)?.value;
+    expect(database).toBeDefined();
+    const connectionCount = vi.mocked(lbug.Connection).mock.calls.length;
+    const connections = vi.mocked(lbug.Connection).mock.results.map(({ value }) => value);
+    const closeCounts = connections.map((conn) => conn.close.mock.calls.length);
+
+    // Real file stat changes on every OS; the mocked native handle remains on
+    // the opened generation without relying on POSIX replacement semantics.
+    writeFileSync(dbPath, 'new generation');
+    for (let i = 0; i < 3; i++) {
+      expect(await initLbug('refresh-reader', dbPath)).toBe(false);
+      expect(getLbugDbIdentity('refresh-reader')).toEqual(openedIdentity);
+      expect(isLbugReady('refresh-holder')).toBe(true);
+    }
+    expect(vi.mocked(lbug.Connection).mock.calls).toHaveLength(connectionCount);
+    expect(connections.map((conn) => conn.close.mock.calls.length)).toEqual(closeCounts);
+    expect(database.close).not.toHaveBeenCalled();
+
+    await closeLbug('refresh-holder');
+    expect(database.close).not.toHaveBeenCalled();
+    expect(await initLbug('refresh-reader', dbPath)).toBe(true);
+    expect(database.close).toHaveBeenCalledTimes(1);
+    expect(getLbugDbIdentity('refresh-reader')).not.toEqual(openedIdentity);
+    expect(await initLbug('refresh-reader', dbPath)).toBe(false);
+  });
+
+  it('keeps externally owned databases untracked and open across file changes', async () => {
+    const dbPath = dbPathFor('external-refresh');
+    const externalDb = {
+      init: vi.fn(),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    await initLbugWithDb('external-reader', externalDb as never, dbPath);
+    await initLbug('external-holder', dbPath);
+    writeFileSync(dbPath, 'new generation');
+    expect(await initLbug('external-reader', dbPath)).toBe(false);
+    expect(getLbugDbIdentity('external-reader')).toBeNull();
+    expect(getLbugDbIdentity('external-holder')).toBeNull();
+    await closeLbug('external-holder');
+    await closeLbug('external-reader');
+    expect(externalDb.close).not.toHaveBeenCalled();
   });
 });

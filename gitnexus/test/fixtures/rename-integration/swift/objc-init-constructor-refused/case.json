@@ -1,0 +1,21 @@
+{
+  "language": "swift",
+  "description": "Refuse a Swift initializer that an indexed Objective-C caller constructs as initWith..., because the selector base name init meets the selected name.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "init",
+    "kind": "Constructor",
+    "file": "Greeter.swift"
+  },
+  "newName": "make",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_boundary",
+    "planningStatus": "unsupported"
+  }
+}

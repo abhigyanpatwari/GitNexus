@@ -133,6 +133,7 @@ import {
   countedParsedFilesWith,
   pythonNamedImport,
 } from '../../helpers/counting-file-set.js';
+import type { GoWorkspaceConfig } from '../../../src/core/ingestion/languages/go/workspace-config.js';
 
 /**
  * The minimum a language needs for one `resolveImportTarget` call to reach
@@ -224,8 +225,12 @@ interface ImportTargetFixture {
 /** The `composer.json` PSR-4 map `loadPhpComposerConfig` would have produced. */
 const PHP_COMPOSER: ComposerConfig = { psr4: new Map([['App', 'app']]) };
 
-/** The value `loadGoModulePath` produces for a repo with a `go.mod`. */
-const GO_MODULE = { modulePath: 'example.com/mod' };
+/** The value `captureGoWorkspaceConfig` produces for a repo whose only
+ *  `go.mod` is at its root. */
+const GO_MODULE: GoWorkspaceConfig = {
+  modules: [{ modulePath: 'example.com/mod', dir: '' }],
+  workFiles: [],
+};
 
 /**
  * The `parsedImport` of an adapter that takes three or four parameters and so
@@ -413,9 +418,8 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
       // `App\Legacy\Ghost`, whose directory does not exist — costs one
       // traversal per import: swapping this fixture onto that spelling posts
       // 201 traversals for 200 imports against 3 for two (measured). The
-      // residual is real and is out of this file's reach — it lives in
-      // `import-resolvers/php.ts`, which the #2901 hoist does not touch — so it
-      // is pinned by name in `php-import-target-parity.test.ts` and this
+      // residual lives in `languages/php/import-helpers.ts` and is pinned by
+      // name in `php-import-target-parity.test.ts`. This
       // fixture takes the leg that IS indexed rather than restating it.
       missTarget: (i) => `Vendor${i}\\Ghost\\Missing`,
       hitTarget: 'App\\Models\\User',

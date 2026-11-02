@@ -29,7 +29,7 @@ const FRESH: StalenessInfo = { isStale: false, commitsBehind: 0 };
 const BEHIND: StalenessInfo = {
   isStale: true,
   commitsBehind: 3,
-  hint: '⚠️ Index is 3 commits behind HEAD. Run analyze tool to update.',
+  hint: '⚠️ Index is 3 commits behind HEAD. Run the CLI command `npx gitnexus analyze` from the repository directory to update.',
 };
 
 const meta = (over: Partial<RepoMeta> = {}): RepoMeta =>
@@ -119,7 +119,12 @@ describe('projectRepoListEntry — GET /api/repos', () => {
     const b = projectRepoListEntry(entry({ name: 'api', path: '/ws/b/api' }), FRESH, FULL_SOURCE);
     expect(a.id).not.toBe(b.id);
     expect(a.id).toBe(publicRepoId('/ws/a/api'));
-    expect(a.id).not.toContain('ws');
+    // The id is an HMAC under a per-process random key, so a short substring
+    // such as 'ws' appears in it by chance (~0.5% of runs). Assert the opaque
+    // base64url shape instead; '/' is outside that alphabet, so the path can
+    // never appear in the id by chance.
+    expect(a.id).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(a.id).not.toContain('/ws/a/api');
   });
 
   it('keeps every field the route returned before, unchanged', () => {

@@ -1,0 +1,1 @@
+int compute(int value);

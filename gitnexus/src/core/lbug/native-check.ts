@@ -3,7 +3,7 @@ import path from 'path';
 import { createRequire } from 'node:module';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { escapeCypherString } from './cypher-escape.js';
-import { resolveVendoredFtsPath } from './vendored-extension-path.js';
+import { resolveVendoredFtsPath, resolveVendoredVectorPath } from './vendored-extension-path.js';
 
 /** Cap the out-of-process native load probe so a hung filesystem cannot wedge a
  *  CLI startup gate (same bounding rationale as the extension probe below). */
@@ -200,6 +200,22 @@ function unrestorableBinaryFailure(
     kind: outcome === 'copy-failed' ? 'binary_unwritable' : 'binary_missing',
     message: lines.join('\n'),
   };
+}
+
+/**
+ * Materialize a skipped install-script copy before recording analyzer identity.
+ * This only copies the already-installed prebuilt; it never loads native code.
+ * checkLbugNative still owns load probing and diagnostics after identity capture.
+ */
+export function prepareLbugNativeBinary(overridePkgDir?: string): void {
+  try {
+    const pkgDir =
+      overridePkgDir ?? path.dirname(createRequire(import.meta.url).resolve('@ladybugdb/core'));
+    const binaryPath = path.join(pkgDir, 'lbugjs.node');
+    if (!fs.existsSync(binaryPath)) restorePrebuiltNativeBinary(pkgDir, binaryPath);
+  } catch {
+    // The normal check reports missing packages and failed recovery unchanged.
+  }
 }
 
 export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
@@ -505,7 +521,7 @@ export async function probeFtsExtensionLoad(
 export async function probeVectorExtensionLoad(
   timeoutMs: number = DEFAULT_FTS_PROBE_TIMEOUT_MS,
 ): Promise<ExtensionProbeResult> {
-  return await probeExtensionLoad('vector', timeoutMs);
+  return await probeExtensionLoad('vector', timeoutMs, resolveVendoredVectorPath());
 }
 
 /**
@@ -529,7 +545,7 @@ async function probeExtensionLoad(
   });
 
   const statements: string[] = [];
-  if (extension === 'fts' && vendoredPath) {
+  if (vendoredPath) {
     statements.push(`LOAD EXTENSION '${escapeCypherString(path.resolve(vendoredPath))}'`);
   }
   statements.push(`LOAD EXTENSION ${extension}`);

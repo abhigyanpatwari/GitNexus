@@ -1,0 +1,21 @@
+{
+  "language": "dart",
+  "description": "Refuse a built-in type name when renaming the default constructor and its owning class family.",
+  "categories": [
+    "identifier-rules",
+    "reserved-words",
+    "declaration-family"
+  ],
+  "target": {
+    "name": "Payload",
+    "kind": "Constructor",
+    "file": "payload.dart",
+    "startLine": 1
+  },
+  "newName": "import",
+  "expect": {
+    "status": "error",
+    "code": "invalid_name",
+    "planningStatus": "blocked"
+  }
+}

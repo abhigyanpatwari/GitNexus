@@ -11,69 +11,24 @@
  * (taint/site-safety.ts) first — this module dereferences binding/site
  * indices without re-validating them.
  *
- * ## Callee resolution precedence (bare and member-rooted calls)
+ * A ParsedFile-backed index resolves each call's root through the same lexical
+ * ownership policy as graph resolution. Only the selected import contributes
+ * module provenance, including external imports whose targets are not indexed.
+ * Ordinary declarations, inactive imports, and ambiguous provenance suppress
+ * module/global matching. The provider's validated loader facts are authoritative;
+ * a syntactic requireArg alone cannot establish module identity on this path.
  *
- * 1. ESM import join — the callee root's local name is resolved through the
- *    {@link TaintImportIndex} built from `parsedImports` (`named`/`alias`
- *    members, `namespace`/default-import module handles); `import { exec as
- *    run } from 'child_process'` makes `run(c)` resolve to
- *    `child_process.exec`, and `import * as cp …` makes `cp.exec(c)` resolve
- *    the same way.
- * 2. require-literal join — a binding whose in-function defining site carries
- *    `requireArg` resolves like a namespace handle (`const cp =
- *    require('child_process'); cp.exec(c)`). A BARE call of a require-joined
- *    binding is matched under BOTH interpretations, `<module>.default` (the
- *    module/default export invoked directly) and `<module>.<localName>`
- *    (non-renamed destructured require — the harvest attaches `resultDefs`
- *    to destructured bindings without recording the property path, and the
- *    binding name IS the member name in the non-renamed case).
- * 3. Bare-name fallback — TRUE GLOBALS only (`global: true` entries: `eval`,
- *    `new Function`, `encodeURIComponent`), and only when the name is neither
- *    import-bound nor shadowed. Conventional receiver names (`req`/`request`
- *    member-read sources, `res.send`, `.query`/`.execute`) are matched
- *    name-based by their own mechanisms, never via the global fallback.
+ * Imports-only callers retain the legacy function-binding/require-literal join.
+ * That compatibility path cannot distinguish sibling/block imports or module
+ * declarations, and cannot resolve renamed or module-level loader aliases.
  *
- * ## Shadowing rule (exact)
- *
- * A name is treated as function-local — blocking import/global resolution —
- * iff the function's binding table contains a NON-`synthetic` entry with that
- * name (an in-function `function exec(){}` / `const exec = …`). Synthetic
- * bindings (kind `module`, `synthetic: true`) are imports, true globals, or
- * enclosing-scope captures and do not shadow. Member-call roots use the
- * harvested `receiver` binding index directly (no name scan).
- *
- * ## Documented resolution gaps (direction stated, per plan KTD10)
- *
- * - MODULE-LEVEL `const cp = require('child_process')`: the binding is
- *   synthetic inside the function, produces no `ParsedImport`, and its
- *   defining site lives outside the function's harvested sites — the
- *   require join cannot see it. Module-mechanism sinks miss (FN) and
- *   sanitizers don't kill (FP noise — never a false kill, the safe
- *   direction). Only in-function requires resolve.
- * - RENAMED destructured require (`const { exec: run } = require(…)`):
- *   the dual interpretation resolves `run` to `child_process.run` — no
- *   match (FN). Non-renamed destructures resolve exactly.
- * - CONSERVATIVE shadow scan for bare calls: ANY non-synthetic binding of
- *   the callee name anywhere in the function blocks import/global
- *   resolution, even when the shadow is block-scoped elsewhere and the call
- *   site actually sees the import (FN; rare; safe for sanitizers).
- * - MODULE-LEVEL user declarations are indistinguishable from imports in
- *   the binding table (both synthetic). ESM forbids a module-level
- *   declaration colliding with an import name, so the import join is
- *   authoritative when an import exists; a module-level user function
- *   shadowing a TRUE GLOBAL (e.g. a local `encodeURIComponent`) is not
- *   detectable and would still match (pathological; accepted).
- * - Handle COPIES (`const c2 = cp; c2.exec(…)`) are not followed — joins
- *   are one level deep (binding → import/require), never through
- *   assignments (FN).
- * - `this.`/`super.`-rooted and call-rooted callee chains have no
- *   resolvable root: only the syntactic `anyReceiver`/`receivers`
- *   mechanisms can match them.
- * - `reexport`/`wildcard`/`dynamic-*`/`side-effect` imports introduce no
- *   matcher-visible local binding and are skipped by the index.
+ * Conventional receiver rules remain syntactic. Handle copies are not followed;
+ * call-rooted chains have no resolvable import root. Reexports, wildcards,
+ * dynamic dependencies, and side-effect imports provide no local provenance.
  */
 
-import type { ParsedImport } from 'gitnexus-shared';
+import { buildPositionIndex, lookupLexicalName } from 'gitnexus-shared';
+import type { ImportEdge, ParsedFile, ParsedImport, ScopeId } from 'gitnexus-shared';
 import type { FunctionCfg, SiteRecord } from '../cfg/types.js';
 import type {
   TaintCallResultSourceEntry,
@@ -102,8 +57,20 @@ export interface TaintImportBinding {
   readonly targetIncludesMember?: boolean;
 }
 
-/** Local name → import provenance for one file. Build once per file (U4). */
-export type TaintImportIndex = ReadonlyMap<string, TaintImportBinding>;
+interface TaintNameResolution {
+  readonly binding?: TaintImportBinding;
+  /** Only an absent lexical name can use a registered true-global rule. */
+  readonly globalRoot: boolean;
+}
+
+/** Import provenance for one file; imports-only maps remain source-compatible. */
+export interface TaintImportIndex extends ReadonlyMap<string, TaintImportBinding> {
+  readonly resolveAt?: (
+    name: string,
+    filePath: string,
+    at: SiteRecord['at'],
+  ) => TaintNameResolution;
+}
 
 /** A member-read site matched as a taint source. */
 export interface MatchedSourceRead {
@@ -181,31 +148,102 @@ const stripNodeScheme = (specifier: string): string =>
 const isCallResultSource = (entry: TaintSourceEntry): entry is TaintCallResultSourceEntry =>
   entry.type === 'call-result';
 
+/** Convert only runtime imports that introduce a local module/member name. */
+function importBinding(imp: ParsedImport): TaintImportBinding | undefined {
+  if (imp.kind !== 'named' && imp.kind !== 'alias' && imp.kind !== 'namespace') return undefined;
+  if (imp.typeOnly === true) return undefined;
+  const module = stripNodeScheme(imp.targetRaw);
+  if (imp.kind === 'namespace' || imp.importedName === 'default') return { module };
+  return {
+    module,
+    member: imp.importedName,
+    ...(imp.targetIncludesImportedName === true ? { targetIncludesMember: true } : {}),
+  };
+}
+
 /**
- * Build the local-name → module/member index from a file's `parsedImports`.
- * Only `named`/`alias`/`namespace` kinds bind matcher-visible local names;
- * `importedName === 'default'` collapses to a module handle.
+ * Build once per file. With parse context, exact call positions select lexical
+ * import provenance; without it, preserve the imports-only compatibility API.
  */
-export function buildTaintImportIndex(imports: readonly ParsedImport[]): TaintImportIndex {
+export function buildTaintImportIndex(
+  imports: readonly ParsedImport[],
+  parsed?: ParsedFile,
+): TaintImportIndex {
   const index = new Map<string, TaintImportBinding>();
   for (const imp of imports) {
-    if (imp.kind === 'named' || imp.kind === 'alias') {
-      const module = stripNodeScheme(imp.targetRaw);
-      index.set(
-        imp.localName,
-        imp.importedName === 'default'
-          ? { module }
-          : {
-              module,
-              member: imp.importedName,
-              ...(imp.targetIncludesImportedName === true ? { targetIncludesMember: true } : {}),
-            },
-      );
-    } else if (imp.kind === 'namespace') {
-      index.set(imp.localName, { module: stripNodeScheme(imp.targetRaw) });
-    }
+    const binding = importBinding(imp);
+    if (binding !== undefined && 'localName' in imp) index.set(imp.localName, binding);
   }
-  return index;
+  if (parsed === undefined) return index;
+
+  const scopes = new Map(parsed.scopes.map((scope) => [scope.id, scope]));
+  const positions = buildPositionIndex(parsed.scopes);
+  const byScope = new Map<ScopeId, ImportEdge[]>();
+  const provenance = new Map<ImportEdge, TaintImportBinding>();
+  for (const imp of imports) {
+    if (imp.kind !== 'named' && imp.kind !== 'alias' && imp.kind !== 'namespace') continue;
+    // Keep erased imports in ownership selection, but never in runtime provenance.
+    const edge: ImportEdge = {
+      localName: imp.localName,
+      kind: imp.kind,
+      targetFile: null,
+      targetExportedName: imp.importedName,
+      atRange: imp.atRange,
+      typeOnly: imp.typeOnly,
+      linkStatus: 'unresolved',
+    };
+    const owner = imp.declaredAtScope ?? parsed.moduleScope;
+    const bucket = byScope.get(owner);
+    if (bucket === undefined) byScope.set(owner, [edge]);
+    else bucket.push(edge);
+    const binding = importBinding(imp);
+    if (binding !== undefined) provenance.set(edge, binding);
+  }
+
+  // Semantic anchors can differ from physical containment (for example, a
+  // declaration's default arguments). Reuse the provider's reference facts.
+  const referenceScopes = new Map<string, ScopeId | null>();
+  for (const reference of parsed.referenceSites) {
+    if (reference.kind !== 'call') continue;
+    const key = `${reference.atRange.startLine}:${reference.atRange.startCol}`;
+    const scope = reference.lookupScope ?? reference.inScope;
+    const prior = referenceScopes.get(key);
+    referenceScopes.set(key, prior === undefined || prior === scope ? scope : null);
+  }
+  const unresolved: TaintNameResolution = { globalRoot: false };
+  const resolveAt: NonNullable<TaintImportIndex['resolveAt']> = (name, filePath, at) => {
+    if (at === undefined || filePath !== parsed.filePath) return unresolved;
+    const [startLine, startCol] = at;
+    const anchor = referenceScopes.get(`${startLine}:${startCol}`);
+    if (anchor === null) return unresolved;
+    const scope = anchor ?? positions.atPosition(filePath, startLine, startCol);
+    if (scope === undefined) return unresolved;
+    const selected = lookupLexicalName(
+      scope,
+      name,
+      {
+        scopes: { getScope: (id) => scopes.get(id) },
+        importsAt: (owner) => byScope.get(owner.id) ?? [],
+      },
+      { position: { startLine, startCol }, purpose: 'value' },
+    );
+    if (selected.status === 'absent') return { globalRoot: true };
+    let binding: TaintImportBinding | undefined;
+    for (const edge of selected.imports) {
+      const candidate = provenance.get(edge);
+      if (candidate === undefined) return unresolved;
+      if (
+        binding !== undefined &&
+        (binding.module !== candidate.module ||
+          binding.member !== candidate.member ||
+          binding.targetIncludesMember !== candidate.targetIncludesMember)
+      )
+        return unresolved;
+      binding = candidate;
+    }
+    return binding === undefined ? unresolved : { binding, globalRoot: false };
+  };
+  return Object.assign(index, { resolveAt });
 }
 
 /** Internal: a callee's resolution — canonical dotted names + syntactic path. */
@@ -233,7 +271,7 @@ export function matchFunctionSites(
   // shadow scan + bare-call require-join lookup.
   const nonSyntheticByName = new Map<string, number[]>();
   bindings.forEach((b, i) => {
-    if (b.synthetic === true) return;
+    if (imports.resolveAt !== undefined || b.synthetic === true) return;
     const list = nonSyntheticByName.get(b.name);
     if (list) list.push(i);
     else nonSyntheticByName.set(b.name, [i]);
@@ -244,7 +282,7 @@ export function matchFunctionSites(
   // either way could fabricate a sanitizer kill).
   const requireByBinding = new Map<number, string>();
   const conflicted = new Set<number>();
-  for (const block of cfg.blocks) {
+  for (const block of imports.resolveAt === undefined ? cfg.blocks : []) {
     for (const stmt of block.statements ?? []) {
       for (const site of stmt.sites ?? []) {
         if (site.requireArg === undefined || site.resultDefs === undefined) continue;
@@ -274,7 +312,25 @@ export function matchFunctionSites(
         ? [imp.module]
         : [imp.module, imp.member];
 
-    if (site.receiver !== undefined) {
+    if (imports.resolveAt !== undefined) {
+      // Never revive a blocked/unknown lexical claim via the legacy loader join.
+      if (site.receiver !== undefined || path.length === 1) {
+        const resolved = imports.resolveAt(root, cfg.filePath, site.at);
+        const imp = resolved.binding;
+        if (imp !== undefined) {
+          canonical.push(
+            path.length > 1
+              ? [...canonicalBase(imp), ...rest].join('.')
+              : imp.member === undefined
+                ? `${imp.module}.default`
+                : imp.targetIncludesMember === true
+                  ? imp.module
+                  : `${imp.module}.${imp.member}`,
+          );
+        }
+        globalRoot = resolved.globalRoot;
+      }
+    } else if (site.receiver !== undefined) {
       // Member chain with an identifier root — origin known by binding index.
       const rb = bindings[site.receiver];
       if (rb.synthetic === true) {

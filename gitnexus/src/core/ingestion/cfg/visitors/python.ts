@@ -33,8 +33,8 @@
  *  - `with_statement` field `body`; a `with_clause` of `with_item`s (field
  *    `value` = `as_pattern` or a bare expression). `__exit__` runs on normal AND
  *    exception exit — modeled as a finalizer (try/finally analogue).
- *  - `try_statement` field `body`; children `except_clause` /
- *    `except_group_clause` (each holds the exception expr/`as_pattern` + a
+ *  - `try_statement` field `body`; children `except_clause` (including
+ *    `except*`; each holds the exception expr/`as_pattern` + a
  *    `block`), `else_clause` (field `body`, runs if NO exception), and
  *    `finally_clause` (holds a `block`).
  *  - `match_statement` fields `subject`/`body`; the `body` `block` holds
@@ -553,7 +553,7 @@ class PythonCfgWalk {
     for (let i = 0; i < stmt.namedChildCount; i++) {
       const c = stmt.namedChild(i);
       if (!c) continue;
-      if (c.type === 'except_clause' || c.type === 'except_group_clause') exceptClauses.push(c);
+      if (c.type === 'except_clause') exceptClauses.push(c);
       else if (c.type === 'else_clause') elseClause = c;
       else if (c.type === 'finally_clause') finallyClause = c;
     }
