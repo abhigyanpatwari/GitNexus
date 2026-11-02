@@ -78,12 +78,26 @@ function numberFromEnv(label, fallback, min = 0) {
   return n;
 }
 
+// A root-relative value — `/`, or `/prefix` when the API is mounted under a
+// path — names no host at all: the browser resolves it against the origin that
+// served the page, so one deployment answers on every hostname a reverse proxy
+// gives it (#3593). Not a URL, so it is read before validHttpUrl would warn.
+// `//host` is protocol-relative, an origin change, and is left to the URL check;
+// so is `/\host`, since the URL parser reads a backslash as a slash.
+function sameOriginPath(value) {
+  if (typeof value !== 'string' || !/^\/(?![/\\])/.test(value)) return null;
+  // A base for `${base}/api/...`: no query, fragment, backslash, whitespace or
+  // control char.
+  if (/[?#\\\s\x00-\x1f\x7f]/.test(value)) return null;
+  return value.replace(/\/+$/, '') || '/';
+}
+
 // Falls back to RENDER_EXTERNAL_URL so a Render web service hands the browser
 // its own public origin — same-origin API calls via the proxy below, no config.
 const backendUrlVar =
   process.env.GITNEXUS_BACKEND_URL !== undefined ? 'GITNEXUS_BACKEND_URL' : 'RENDER_EXTERNAL_URL';
 const rawBackendUrl = process.env.GITNEXUS_BACKEND_URL ?? process.env.RENDER_EXTERNAL_URL ?? null;
-const backendUrl = validHttpUrl(backendUrlVar, rawBackendUrl);
+const backendUrl = sameOriginPath(rawBackendUrl) ?? validHttpUrl(backendUrlVar, rawBackendUrl);
 const configScript = backendUrl
   ? `<script>window.__GITNEXUS_CONFIG__=${jsonForScriptTag({ backendUrl })};</script>`
   : '';
@@ -111,6 +125,14 @@ const upstreamOrigin = upstreamBase ? new URL(upstreamBase).origin : null;
 // inject it next to `backendUrl`. Blank-is-absent follows resolveAuthToken
 // (gitnexus/src/mcp/http-transport.ts).
 const authToken = process.env.GITNEXUS_SERVE_AUTH_TOKEN?.trim() || null;
+
+// The protocol-layer credential the upstream `serve` expects on /api/mcp when it
+// runs with MCP Bearer auth enabled. Set it to the SAME value on both services:
+// the edge token is spent here and replaced with this one for MCP requests only
+// (see proxyToUpstream). Unset — the default — means no injection, so a backend
+// without MCP auth is unaffected. Blank-is-absent follows resolveAuthToken
+// (gitnexus/src/mcp/http-transport.ts). Never logged.
+const mcpAuthToken = process.env.GITNEXUS_MCP_AUTH_TOKEN?.trim() || null;
 
 // Mirrors the non-loopback refusal in http-transport.ts (startMcpHttpServer),
 // relocated because the trust boundary is here: an unguarded `serve` behind a
@@ -341,11 +363,17 @@ async function proxyToUpstream(req, res) {
   // talks to this same-origin web service.
   delete headers.origin;
   delete headers.referer;
-  // The edge token is spent here. `serve` reads no Authorization header
-  // (gitnexus/src/server/mcp-http.ts mounts /api/mcp unguarded), so forwarding
-  // it would only copy a live credential into another service's logs. Pinned by
-  // test.
+  // The edge token is spent here and must never be forwarded: copying
+  // Authorization would put a live credential into another service's logs. So
+  // drop it unconditionally first, then — for the MCP route alone, and only
+  // when a backend token is configured — replace it with that separate
+  // protocol credential. Unset GITNEXUS_MCP_AUTH_TOKEN (the default) leaves
+  // every request stripped, as before. The scope is the normalized pathname,
+  // so a query string can't widen it and /api/mcpfoo doesn't qualify.
   delete headers.authorization;
+  const upstreamPath = upstream.pathname;
+  const isMcpRoute = upstreamPath === '/api/mcp' || upstreamPath.startsWith('/api/mcp/');
+  if (isMcpRoute && mcpAuthToken) headers.authorization = `Bearer ${mcpAuthToken}`;
   headers.host = upstream.host;
   // Replace, never forward, the inbound chain (see clientAddressFor).
   const clientAddress = clientAddressFor(req);

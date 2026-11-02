@@ -1,39 +1,48 @@
 /**
- * Swift same-module implicit IMPORTS-edge emission for the
- * `emitImplicitImportEdges` hook.
+ * Swift same-module implicit IMPORTS for the `emitImplicitImportEdges` hook.
  *
- * Swift gives every file in a module (an SPM target) visibility of every
- * other file's top-level declarations WITHOUT any `import` statement
- * (whole-module visibility). The legacy DAG models this with File→File
- * IMPORTS edges via `wireSwiftImplicitImports`; under registry-primary
- * that wirer's `addImportEdge` is gated off, and the scope-resolution
- * import pipeline (`emitImportEdges`) only materializes edges from
- * finalized `ImportEdge`s — of which there are none here, because there
- * is no syntactic `import`. This hook emits the missing edges directly.
+ * Swift gives every file in a module visibility of every other file's
+ * top-level declarations WITHOUT any `import` statement (whole-module
+ * visibility). There is no syntactic `import`, so the finalized-ImportEdge
+ * pipeline (`emitImportEdges`) has nothing to materialize; this hook records
+ * module membership directly.
  *
- * Module identity: Swift has no in-source `package X` marker. Module
- * membership is the SPM target *subtree* (`Sources/<Target>/…`), threaded
- * in via the SPM target map (`resolutionConfig` → `coerceSwiftTargets`)
- * and grouped by `groupSwiftFilesBySpmTarget` — replicating legacy
- * `groupSwiftFilesByTarget`. With no scanned source dir the map is null
- * and all files form one `__default__` module (single-Xcode-project
- * assumption). Every pair of distinct `.swift` files in the same module
- * gets a directed IMPORTS edge in both directions (whole-module
- * visibility is symmetric).
+ * Representation: one `Module` node per Swift module with at least two member
+ * files, and one File → Module IMPORTS edge per member, reason
+ * `MODULE_MEMBERSHIP_REASON`. This is how the compiler sees it — a file
+ * imports its own module — and it is linear. The earlier File → File form
+ * wrote n·(n−1) edges per module and exhausted V8's 2^24 Map limit on a 5,200
+ * file module (#3355). "Files that see file B" is now "files with a
+ * membership edge to a Module that B also has one to"; incremental importer
+ * expansion follows that rule (`queryImportersBatch`).
  *
- * Node identity + edge construction mirror the generic `emitImportEdges`
- * convention (`graph-bridge/imports-to-edges.ts`): `generateId('File', path)`
- * for endpoints and `generateId('IMPORTS', key)` for the relationship id,
- * deduped by `(sourceFile -> targetFile)`. Re-invocation idempotency comes
- * from `graph.addRelationship` id-dedup (the same `IMPORTS` id is produced
- * for a given ordered pair), so no local `seen` set is needed.
+ * A file compiled into several Xcode targets gets an edge to each module.
+ *
+ * The Module node's `filePath` is the target directory (SwiftPM), the
+ * `.xcodeproj` bundle (Xcode), or '.' (`__default__`). Incremental writeback
+ * keys rows by `filePath`: a rewritten member file pulls that key into the
+ * write set across its membership edge, so the Module node and every
+ * membership edge are deleted and rewritten together.
+ *
+ * Idempotent: node and edge ids are derived from the module key and the
+ * member path, and `graph.addNode` / `graph.addRelationship` dedupe by id.
  */
 
-import type { ParsedFile } from 'gitnexus-shared';
+import { SupportedLanguages, type ParsedFile } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
+import { MODULE_MEMBERSHIP_REASON } from '../../../graph/edge-reasons.js';
 import { generateId } from '../../../../lib/utils.js';
-import { coerceSwiftTargets, groupSwiftFilesBySpmTarget } from './target-grouping.js';
+import {
+  DEFAULT_SWIFT_MODULE,
+  groupSwiftFilesByModule,
+  swiftModuleSpecOf,
+} from './target-grouping.js';
+
+/** Graph id of the `Module` node for a Swift module key. */
+export function swiftModuleNodeId(moduleKey: string): string {
+  return generateId('Module', `swift:${moduleKey}`);
+}
 
 export function emitSwiftImplicitImportEdges(
   graph: KnowledgeGraph,
@@ -41,31 +50,44 @@ export function emitSwiftImplicitImportEdges(
   _nodeLookup: GraphNodeLookup,
   resolutionConfig?: unknown,
 ): void {
-  // Group files by SPM target subtree (the module). No-source-dir → all
-  // files in one `__default__` bucket.
-  const targets = coerceSwiftTargets(resolutionConfig);
-  const filesByTarget = groupSwiftFilesBySpmTarget(
+  const modules = groupSwiftFilesByModule(
     parsedFiles,
     (parsed) => parsed.filePath,
-    targets,
+    resolutionConfig,
+    { allMemberships: true },
   );
 
-  for (const [, group] of filesByTarget) {
-    if (group.length < 2) continue; // no siblings to import
-    for (const source of group) {
-      for (const target of group) {
-        if (source.filePath === target.filePath) continue; // no self-import
-        const dedupKey = `${source.filePath}->${target.filePath}`;
-
-        graph.addRelationship({
-          id: generateId('IMPORTS', dedupKey),
-          sourceId: generateId('File', source.filePath),
-          targetId: generateId('File', target.filePath),
-          type: 'IMPORTS',
-          confidence: 1.0,
-          reason: 'swift-scope: implicit module visibility',
-        });
-      }
+  for (const [moduleKey, members] of modules) {
+    if (members.length < 2) continue;
+    const spec = swiftModuleSpecOf(moduleKey, resolutionConfig);
+    const moduleId = swiftModuleNodeId(moduleKey);
+    graph.addNode({
+      id: moduleId,
+      label: 'Module',
+      properties: {
+        name: spec?.name ?? DEFAULT_SWIFT_MODULE,
+        filePath: moduleFilePath(moduleKey, spec?.dir),
+        language: SupportedLanguages.Swift,
+        isExported: spec?.importable ?? false,
+      },
+    });
+    for (const member of members) {
+      graph.addRelationship({
+        id: generateId('IMPORTS', `${member.filePath}->${moduleId}`),
+        sourceId: generateId('File', member.filePath),
+        targetId: moduleId,
+        type: 'IMPORTS',
+        confidence: 1.0,
+        reason: MODULE_MEMBERSHIP_REASON,
+      });
     }
   }
+}
+
+/** Incremental-writeback key for a module node: see the file header. */
+function moduleFilePath(moduleKey: string, dir: string | undefined): string {
+  if (dir !== undefined) return dir === '' ? '.' : dir;
+  if (moduleKey.startsWith('xcode:'))
+    return moduleKey.slice('xcode:'.length, moduleKey.lastIndexOf(':'));
+  return '.';
 }

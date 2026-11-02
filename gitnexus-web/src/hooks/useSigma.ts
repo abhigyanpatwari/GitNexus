@@ -1458,7 +1458,11 @@ export const useSigma = (options: UseSigmaOptions = {}): UseSigmaReturn => {
 
       layoutTimeoutRef.current = setTimeout(() => {
         if (layoutRef.current) {
+          // stop() only flips the supervisor's running flag; kill() terminates
+          // the Web Worker and unbinds its graph listeners. Nulling the ref
+          // without kill() leaked one worker per completed layout.
           layoutRef.current.stop();
+          layoutRef.current.kill();
           layoutRef.current = null;
 
           // Light noverlap cleanup

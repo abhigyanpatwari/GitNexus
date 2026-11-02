@@ -19,6 +19,12 @@ import { writeSync } from 'node:fs';
 import { LocalBackend, VALID_NODE_LABELS } from '../mcp/local/local-backend.js';
 import { cliErrorKey, cliWarnKey } from './cli-message.js';
 import { formatDetectChangesResult } from './detect-changes-format.js';
+import {
+  ImpactBudgetExceededError,
+  shapeImpactForAgent,
+  withImpactAgentDefaults,
+} from '../mcp/impact-agent-output.js';
+import { resolveMcpMaxTokens } from '../mcp/output-budget.js';
 
 let _backend: LocalBackend | null = null;
 
@@ -53,7 +59,9 @@ function output<T>(data: T, render?: (data: T) => string): void {
     ? render(data)
     : typeof data === 'string'
       ? data
-      : JSON.stringify(data, null, 2);
+      : // Indent for a terminal only: agents and pipes re-read this output, and
+        // indentation made impact results ~45% larger with no added information.
+        JSON.stringify(data, null, process.stdout.isTTY ? 2 : undefined);
   try {
     writeSync(1, text + '\n');
   } catch (err: any) {
@@ -142,17 +150,28 @@ export async function queryCommand(
   }
 
   const backend = await getBackend();
-  const result = await backend.callTool('query', {
-    // #2175: canonical param is search_query; the backend still accepts legacy "query".
-    search_query: resolvedQuery,
-    task_context: options?.context,
-    goal: options?.goal,
-    limit: parseLimit(options?.limit),
-    include_content: options?.content ?? false,
-    repo: options?.repo,
-    branch: options?.branch,
-  });
-  output(result);
+  try {
+    const result = await backend.callTool('query', {
+      // #2175: canonical param is search_query; the backend still accepts legacy "query".
+      search_query: resolvedQuery,
+      task_context: options?.context,
+      goal: options?.goal,
+      limit: parseLimit(options?.limit),
+      include_content: options?.content ?? false,
+      repo: options?.repo,
+      branch: options?.branch,
+    });
+    output(result);
+  } finally {
+    // A local embedding query may start the sidecar. Direct CLI commands are
+    // one-shot, so leaving the backend connected keeps that child (and Node's
+    // event loop) alive after the complete result has already been printed.
+    try {
+      await backend.disconnect();
+    } finally {
+      _backend = null;
+    }
+  }
 }
 
 export async function contextCommand(
@@ -223,6 +242,7 @@ export async function impactCommand(
     limit?: string;
     offset?: string;
     summaryOnly?: boolean;
+    maxTokens?: string;
   },
 ): Promise<void> {
   // A `--`-prefixed uid means Commander swallowed a following flag as the uid
@@ -255,7 +275,8 @@ export async function impactCommand(
     // rather than on a silently-dropped flag. A non-numeric `--line` parses to
     // NaN, which the backend rejects as a non-positive integer (loud, not silent).
     const parsedLine = options?.line !== undefined ? parseInt(options.line, 10) : undefined;
-    const result = await backend.callTool('impact', {
+    const maxTokens = resolveMcpMaxTokens('impact', { maxTokens: options?.maxTokens }, {});
+    const impactArgs = withImpactAgentDefaults({
       target: target || undefined,
       target_uid: options?.uid,
       file_path: options?.file,
@@ -274,6 +295,7 @@ export async function impactCommand(
       offset: parsedOffset,
       summaryOnly: options?.summaryOnly ?? undefined,
     });
+    const result = await backend.callTool('impact', impactArgs);
     // Client-side cap of the affected-list payload to --limit (parity with the
     // other tool commands). The backend already paginates byDepth per level to
     // the same limit, so byDepth needs no client-side re-slice.
@@ -282,9 +304,18 @@ export async function impactCommand(
         result.affected_processes = result.affected_processes.slice(0, parsedLimit);
       if (Array.isArray(result.affected_modules))
         result.affected_modules = result.affected_modules.slice(0, parsedLimit);
+      if (Array.isArray(result.affected_routes))
+        result.affected_routes = result.affected_routes.slice(0, parsedLimit);
     }
-    output(result);
+    const shaped = shapeImpactForAgent(result, maxTokens);
+    // The budget is measured on compact JSON, even when stdout is a terminal.
+    output(shaped, maxTokens === undefined ? undefined : (data) => JSON.stringify(data));
   } catch (err: unknown) {
+    if (err instanceof ImpactBudgetExceededError) {
+      output(err.toJSONText());
+      process.exitCode = 1;
+      return;
+    }
     // Belt-and-suspenders: catch infrastructure failures (getBackend, callTool transport)
     // The backend's impact() already returns structured errors for graph query failures
     output({

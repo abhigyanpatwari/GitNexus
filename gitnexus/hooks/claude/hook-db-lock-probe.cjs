@@ -80,9 +80,11 @@ function debugLog(msg) {
 
 function resolveHookBinary(tool) {
   const envKey = tool === 'lsof' ? 'GITNEXUS_HOOK_LSOF_PATH' : 'GITNEXUS_HOOK_PS_PATH';
-  const fromEnv = process.env[envKey];
-  if (fromEnv && String(fromEnv).trim() && fs.existsSync(String(fromEnv))) {
-    return String(fromEnv);
+  // Trim once, exactly as hasMissingHookBinaryOverride does, so a padded but
+  // valid override (" /tmp/lsof ") is both accepted there and used here.
+  const fromEnv = process.env[envKey] ? String(process.env[envKey]).trim() : '';
+  if (fromEnv && fs.existsSync(fromEnv)) {
+    return fromEnv;
   }
   const candidates =
     tool === 'lsof'
@@ -177,7 +179,13 @@ function resolveUnixGuardTimeout() {
   const trimmed = fromEnv ? String(fromEnv).trim() : '';
   if (trimmed === 'disabled') return unixGuardTimeoutCache;
   const candidates = [];
-  if (trimmed && fs.existsSync(trimmed)) candidates.push(trimmed);
+  // Resolve the override against THIS process's cwd — the directory the
+  // existsSync check and the self-test run in — so the cached/returned path is
+  // always absolute. The adapters spawn the wrapper with a different `cwd`
+  // (the tool request's), where a relative value would resolve elsewhere
+  // (ENOENT), and a slashless name would switch to a PATH lookup.
+  const override = trimmed ? path.resolve(trimmed) : '';
+  if (override && fs.existsSync(override)) candidates.push(override);
   for (const builtin of [
     '/usr/bin/timeout',
     '/bin/timeout',
@@ -317,15 +325,30 @@ function getProcRoot() {
 // `node <abs path to .../node_modules/gitnexus/dist/cli/index.js> mcp` line
 // (the `mcp`/`serve` mode token lives at the very tail, so the cap must be large
 // enough to reach it — see PROC_CMDLINE_FLOOR escalation below). Overridable for
-// tests; never goes below PROC_CMDLINE_FLOOR.
+// tests via GITNEXUS_HOOK_PROC_CMDLINE_MAX: an integer in
+// [PROC_CMDLINE_FLOOR, PROC_CMDLINE_CEIL] is used as-is; a larger integer is
+// CLAMPED to PROC_CMDLINE_CEIL; anything else (below the floor, fractional,
+// non-numeric, Infinity) falls back to the 16 KiB default.
 const PROC_CMDLINE_FLOOR = 4096;
+// Upper bound for a single cmdline read chunk, and the absolute ceiling of the
+// escalation path in readLinuxCmdline (same 256 KiB — no single read may exceed
+// what the whole escalation is allowed to collect). Without it, an oversized
+// override (e.g. 2**40 — past buffer.constants.MAX_LENGTH on older Node lines
+// and unallocatable in practice on any) made Buffer.allocUnsafe throw; readLinuxCmdline's catch turned that into '' (a
+// NON-candidate), so a real server owner was silently missed (fail-OPEN, the
+// #1492 race). Oversized values are clamped rather than defaulted: the operator
+// asked for MORE bytes, and the ceiling is the most the read will ever collect
+// anyway, so clamping honours the intent while keeping allocation bounded.
+const PROC_CMDLINE_CEIL = 262144;
 function getCmdlineMaxBytes() {
   const raw = process.env.GITNEXUS_HOOK_PROC_CMDLINE_MAX;
   // Number() (not parseInt) so "8e3" reads as 8000, not 8 (parseInt stops at
   // 'e'). The `raw && String(raw).trim()` guard keeps empty/whitespace on the
   // default; trailing garbage ("8abc") now -> NaN -> default (stricter).
   const n = raw && String(raw).trim() ? Number(String(raw).trim()) : NaN;
-  if (Number.isFinite(n) && n >= PROC_CMDLINE_FLOOR) return n;
+  // Number.isInteger rejects NaN, +/-Infinity and fractions (a fractional
+  // Buffer/readSync length is not a byte count).
+  if (Number.isInteger(n) && n >= PROC_CMDLINE_FLOOR) return Math.min(n, PROC_CMDLINE_CEIL);
   return 16384;
 }
 
@@ -381,19 +404,24 @@ const CMDLINE_TIMEOUT = Symbol('gitnexus.cmdline.timeout');
 
 // Bounded /proc/<pid>/cmdline read for Phase 1. openSync+readSync (not
 // readFileSync) so a D-state holder cannot stall the hook on a huge or
-// never-EOF argv: we read at most `cap` bytes and stop. cmdline separates argv
-// with NULs; convert to spaces for isGitNexusServerCommand.
+// never-EOF argv: we read in `cap`-sized chunks and stop as soon as the text
+// holds both server tokens, at EOF, at PROC_CMDLINE_CEIL, or when the scan
+// budget runs out (see below). cmdline separates argv with NULs; convert to
+// spaces for isGitNexusServerCommand.
 //
 // Owner-miss guard for the 4 KB cap: the `gitnexus` token usually sits in the
 // first path component while the `mcp`/`serve` mode token is the LAST argv, so
 // a naive 4 KB read could clip the mode token off a server launched with a very
 // long interpreter path and silently miss a real owner. We mitigate two ways:
-// (a) the default cap (16 KiB) already clears realistic lines; (b) if the first
-// read fills the cap AND already contains the `gitnexus` token but no mode
-// token yet, we keep reading in bounded chunks (up to a hard ceiling) until the
-// mode token appears or the file ends — so a genuine server is never missed for
-// want of a few more bytes, while non-candidates still pay only the initial
-// bounded read.
+// (a) the default cap (16 KiB) already clears realistic lines, so almost every
+// process is decided by the first read hitting EOF; (b) a read that fills the
+// cap stops early ONLY once it holds BOTH tokens (decided owner). Holding one
+// token, or neither, decides nothing: interpreter flags can put a mode-looking
+// word first (`node --require mcp .../gitnexus/... serve`) or push the gitnexus
+// path past the first chunk. So we keep reading in cap-sized chunks until both
+// tokens appear, the file ends, or the hard ceiling is reached. Only processes
+// that passed the Phase 0 comm prefilter AND have a cmdline longer than the cap
+// ever escalate, and each escalation step is budget-gated (below).
 //
 // Budget (F3): the escalation loop above is the one place a SINGLE pathological
 // candidate could read up to HARD_CEIL (256 KiB) before the next scan-level
@@ -411,7 +439,7 @@ function readLinuxCmdline(procRoot, pidStr, cap, outOfBudget) {
     return '';
   }
   try {
-    const HARD_CEIL = 262144; // 256 KiB absolute ceiling for the escalation path
+    const HARD_CEIL = PROC_CMDLINE_CEIL; // 256 KiB absolute ceiling for the escalation path
     let collected = Buffer.alloc(0);
     let offset = 0;
     let chunkCap = cap;
@@ -425,16 +453,12 @@ function readLinuxCmdline(procRoot, pidStr, cap, outOfBudget) {
       collected = Buffer.concat([collected, buf.subarray(0, bytes)]);
       offset += bytes;
       const text = collected.toString('utf8').replace(/\0+/g, ' ');
-      // Stop early when we can already decide "owner": has both the gitnexus
-      // token and a mode token. Keep going only when gitnexus is present but
-      // the mode token might be just past the boundary.
-      const hasGitNexus =
-        /(?:^|[/\\\s])gitnexus(?:\.cmd)?(?:\s|$)/.test(text) ||
-        /node_modules[/\\]gitnexus[/\\]/.test(text);
-      const hasMode = /(?:^|\s)(mcp|serve)(?:\s|$)/.test(text);
-      if (hasMode) break; // decided (positive); isGitNexusServerCommand re-checks below
+      // Stop early only when the partial read is DECIDED: both the gitnexus
+      // token and a mode token are present (isGitNexusServerCommand is exactly
+      // that conjunction). A partial read missing either token is undecided —
+      // the missing one may lie past the chunk boundary — so it keeps reading.
+      if (isGitNexusServerCommand(text)) break; // decided (positive)
       if (bytes < chunkCap) break; // EOF: full cmdline read, definitive
-      if (!hasGitNexus) break; // not a candidate; do not escalate the read
       if (offset >= HARD_CEIL) break; // bounded escalation only
       // Budget gate the escalation: a single huge-argv candidate must not burn
       // the whole scan deadline before we re-check. Return the timeout sentinel
@@ -578,17 +602,24 @@ function linuxProcScanFindGitNexusServer(dbPathAbs, myPid) {
         );
         return 'timeout';
       }
-      // Any other shape (ENOTDIR — fd path is not a directory at all, so this
-      // is not a plausible live-procfs owner — and the long tail) is treated as
-      // "this candidate is not an owner": move to the next candidate instead of
-      // the old blanket 'owned'. If no other candidate owns the lbug the scan
-      // ends not-owned (dispatcher fail-open) — acceptable because ENOTDIR means
-      // the fd entry is structurally not a real /proc/<pid>/fd.
+      if (code === 'ENOTDIR') {
+        // The fd path is not a directory at all, so this is structurally not a
+        // real /proc/<pid>/fd — not a plausible live owner. Move on.
+        debugLog(
+          `fd dir not a directory for candidate pid ${pidStr} (ENOTDIR); ` +
+            `treating candidate as non-owner -> continue`,
+        );
+        continue;
+      }
+      // Any other error (EMFILE, ENFILE, ENOMEM, EINTR, no code, …) says nothing
+      // about whether this already-identified server candidate holds the lbug.
+      // Only ENOENT/ENOTDIR above establish non-ownership; everything else is
+      // inconclusive and fails closed via 'timeout', same as EACCES/EIO.
       debugLog(
-        `fd dir not a readable directory for candidate pid ${pidStr} ` +
-          `(${code || 'unknown'}); treating candidate as non-owner -> continue`,
+        `fd dir read failed for candidate pid ${pidStr} ` +
+          `(${code || 'unknown'}); probe inconclusive -> fail-closed (timeout)`,
       );
-      continue;
+      return 'timeout';
     }
     for (const fd of fds) {
       if (outOfBudget()) return 'timeout';
@@ -707,16 +738,12 @@ module.exports = {
   // name is pinned by a source-contract test.
   linuxProcScanFindGitNexusServer,
   // #2163 follow-up: the hook adapters wrap the augment CLI in the same
-  // guard. Returns a self-tested wrapper path — the built-in candidates are
-  // always absolute; a GITNEXUS_HOOK_TIMEOUT_PATH override is adopted as the
-  // exact string that passed the self-test. Same string is also the same
-  // RESOLUTION for absolute paths and for slashless names (PATH lookup is
-  // cwd-independent); a slash-containing RELATIVE override, however, is
-  // existsSync-checked and self-tested against this process's cwd while the
-  // adapters spawn the CLI with a `cwd` option (chdir-before-exec), so such
-  // a value can pass here yet ENOENT at the augment call site — set the
-  // override to an absolute path. Returns null when the wrapper is
-  // disabled/unavailable. Never call on win32 (see its JSDoc).
+  // guard. Returns a self-tested, always-ABSOLUTE wrapper path: the built-in
+  // candidates are absolute, and a GITNEXUS_HOOK_TIMEOUT_PATH override is
+  // path.resolve()d against this process's cwd before its existsSync check
+  // and self-test, so the adapters can spawn it under any `cwd` option.
+  // Returns null when the wrapper is disabled/unavailable. Never call on
+  // win32 (see its JSDoc).
   resolveUnixGuardTimeout,
   // Exported for white-box unit tests of the numeric-env parsing (#2183 review):
   // Number()-not-parseInt so "16e3" reads as 16000, plus the empty/whitespace
@@ -725,4 +752,8 @@ module.exports = {
   // otherwise only observable indirectly through scan timing/escalation.
   getCmdlineMaxBytes,
   resolveLinuxProcBudgetMs,
+  // Exported for white-box tests pinning that the override check and the
+  // override lookup agree on whitespace-padded GITNEXUS_HOOK_{LSOF,PS}_PATH.
+  resolveHookBinary,
+  hasMissingHookBinaryOverride,
 };

@@ -1,0 +1,21 @@
+{
+  "language": "swift",
+  "description": "Refuse a Swift method whose first argument label Objective-C spells as a With clause of the first selector piece, until the Objective-C binding is proven.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "greet",
+    "kind": "Function",
+    "file": "Greeter.swift"
+  },
+  "newName": "welcome",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_boundary",
+    "planningStatus": "unsupported"
+  }
+}

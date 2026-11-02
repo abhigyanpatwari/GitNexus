@@ -12,6 +12,7 @@
  */
 
 import { chunk } from '../../lib/utils.js';
+import { parseTruthyEnv } from '../ingestion/utils/env.js';
 import {
   CircuitOpenError,
   ResilientFetchExhaustedError,
@@ -39,6 +40,7 @@ interface HttpConfig {
   retryCapMs: number;
   minIntervalMs: number;
   timeoutMs: number;
+  retryTimeouts: boolean;
   requestDimensions?: number;
 }
 
@@ -202,6 +204,12 @@ const readConfig = (): HttpConfig | null => {
       DEFAULT_HTTP_TIMEOUT_MS,
       MAX_HTTP_TIMEOUT_MS,
     ),
+    // A boolean toggle, so it takes the repo's truthy convention (`1`/`true`/
+    // `yes`) and falls back to the documented default on anything else. The
+    // integer parser this used throws on a non-digit, which turned the
+    // conventional `=true` into a hard failure of every embedding call rather
+    // than either enabling the flag or leaving it off.
+    retryTimeouts: parseTruthyEnv(process.env.GITNEXUS_EMBEDDING_RETRY_TIMEOUTS),
     requestDimensions,
   };
 };
@@ -281,9 +289,12 @@ const sanitizeReason = (reason: string, url: string, apiKey?: string): string =>
  * underlying reason) is what the CLI surfaces to the user. See #2385.
  */
 export class HttpEmbeddingError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
+  readonly status?: number;
+
+  constructor(message: string, options?: { cause?: unknown; status?: number }) {
     super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
     this.name = 'HttpEmbeddingError';
+    this.status = options?.status;
   }
 }
 
@@ -338,6 +349,36 @@ class RetryableEmbeddingBodyError extends Error {
   }
 }
 
+class RetryableEmbeddingTimeoutError extends Error {
+  constructor(
+    readonly timeoutMs: number,
+    options?: { cause?: unknown },
+  ) {
+    super(
+      `Embedding request timed out after ${timeoutMs}ms`,
+      options?.cause !== undefined ? { cause: options.cause } : undefined,
+    );
+    this.name = 'RetryableEmbeddingTimeoutError';
+  }
+}
+
+/** Re-wrap an opt-in TimeoutError so `resilientFetch` retries it. Abort stays terminal. */
+const throwIfRetryableTimeout = (
+  err: unknown,
+  retryTimeouts: boolean,
+  callerAborted: boolean | undefined,
+  timeoutMs: number,
+): void => {
+  if (
+    retryTimeouts &&
+    !callerAborted &&
+    isTerminalNetworkError(err) &&
+    err.name === 'TimeoutError'
+  ) {
+    throw new RetryableEmbeddingTimeoutError(timeoutMs, { cause: err });
+  }
+};
+
 /**
  * Build the message for a 2xx body carrying the wrong number of vectors.
  *
@@ -384,6 +425,7 @@ const httpEmbedBatch = async (
   retryCapMs = HTTP_RETRY_CAP_MS,
   minIntervalMs = 0,
   timeoutMs = DEFAULT_HTTP_TIMEOUT_MS,
+  retryTimeouts = false,
 ): Promise<EmbeddingItem[]> => {
   const requestBody: { input: string[]; model: string; dimensions?: number } = {
     input: batch,
@@ -428,7 +470,13 @@ const httpEmbedBatch = async (
           const signal = requestOptions.signal
             ? AbortSignal.any([requestOptions.signal, timeoutSignal])
             : timeoutSignal;
-          const attemptResp = await globalThis.fetch(input, { ...init, signal });
+          let attemptResp: Response;
+          try {
+            attemptResp = await globalThis.fetch(input, { ...init, signal });
+          } catch (err) {
+            throwIfRetryableTimeout(err, retryTimeouts, requestOptions.signal?.aborted, timeoutMs);
+            throw err;
+          }
           // Non-OK bodies are none of our business: hand the response straight
           // back so `resilientFetch` keeps classifying 4xx/5xx/429 unchanged.
           if (!attemptResp.ok) return attemptResp;
@@ -447,15 +495,19 @@ const httpEmbedBatch = async (
             // Not every `.json()` rejection is a parse error: the per-attempt
             // signal (`AbortSignal.any([caller, AbortSignal.timeout(...)])`) is
             // wired to the body stream, so a stalled body rejects with the abort
-            // reason. Re-raise those untouched — `isTerminalNetworkError` is
-            // `resilientFetch`'s own predicate, so this test agrees with
-            // `classifyOutcome` by construction. Wrapping one would flip its
-            // verdict from `terminal-network` (returned without retry AND
-            // without touching the breaker, via `recordNeutral()`) to
-            // `retryable-network` (retried, then `breaker.recordFailure()`): the
-            // same timeout would take 3 attempts instead of 1, count toward the
-            // process-global `embeddings-http` breaker, and reach the operator as
-            // "unparseable response" so they never reach for the timeout knob.
+            // reason. Re-raise AbortError (and TimeoutError when retry is off)
+            // untouched — `isTerminalNetworkError` is `resilientFetch`'s own
+            // predicate, so this test agrees with `classifyOutcome` by
+            // construction. Wrapping one would flip its verdict from
+            // `terminal-network` (returned without retry AND without touching
+            // the breaker, via `recordNeutral()`) to `retryable-network`
+            // (retried, then `breaker.recordFailure()`): the same timeout would
+            // take 3 attempts instead of 1, count toward the process-global
+            // `embeddings-http` breaker, and reach the operator as "unparseable
+            // response" so they never reach for the timeout knob.
+            // Opt-in `GITNEXUS_EMBEDDING_RETRY_TIMEOUTS=1` is the exception:
+            // TimeoutError is re-wrapped so the existing retry loop can retry it.
+            throwIfRetryableTimeout(err, retryTimeouts, requestOptions.signal?.aborted, timeoutMs);
             if (isTerminalNetworkError(err)) throw err;
             throw new RetryableEmbeddingBodyError(unparseableMessage(), { cause: err });
           }
@@ -503,6 +555,12 @@ const httpEmbedBatch = async (
     if (err instanceof RetryableEmbeddingBodyError) {
       throw new HttpEmbeddingError(err.terminalMessage, { cause: err.cause });
     }
+    if (err instanceof RetryableEmbeddingTimeoutError) {
+      throw new HttpEmbeddingError(
+        `${err.message} after ${maxAttempts} attempt(s) (${safeUrl(url)}, batch ${batchIndex})`,
+        { cause: err.cause },
+      );
+    }
     if (err instanceof CircuitOpenError) {
       throw new HttpEmbeddingError(
         `Embedding endpoint circuit open (${safeUrl(url)}, batch ${batchIndex}): retry in ${Math.ceil(err.retryAfterMs / 1000)}s`,
@@ -518,7 +576,7 @@ const httpEmbedBatch = async (
     if (err instanceof ResilientFetchExhaustedError) {
       throw new HttpEmbeddingError(
         `Embedding endpoint returned ${err.response.status} (${safeUrl(url)}, batch ${batchIndex})`,
-        { cause: err },
+        { cause: err, status: err.response.status },
       );
     }
     const reason = sanitizeReason(err instanceof Error ? err.message : String(err), url, apiKey);
@@ -535,6 +593,7 @@ const httpEmbedBatch = async (
     // a terminal client error (4xx other than 429).
     throw new HttpEmbeddingError(
       `Embedding endpoint returned ${resp.status} (${safeUrl(url)}, batch ${batchIndex})`,
+      { status: resp.status },
     );
   }
 
@@ -580,6 +639,7 @@ export const httpEmbed = async (
       config.retryCapMs,
       config.minIntervalMs,
       config.timeoutMs,
+      config.retryTimeouts,
     );
 
     // Defensive backstop, deliberately kept: `httpEmbedBatch` now rejects a
@@ -655,6 +715,7 @@ export const httpEmbedQuery = async (
     config.retryCapMs,
     config.minIntervalMs,
     config.timeoutMs,
+    config.retryTimeouts,
   );
   // Defensive backstop like the `httpEmbed` one above: an empty `data` array is
   // now a cardinality mismatch (0 vectors for 1 text) rejected and retried

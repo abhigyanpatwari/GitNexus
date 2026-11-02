@@ -28,6 +28,31 @@ const baseFacts: Facts = {
 };
 
 describe('ownFactsDigest', () => {
+  it('includes value effects and sink-use contracts in summary identity', () => {
+    const restricted: Facts = {
+      ...baseFacts,
+      paramToSink: [
+        {
+          param: 0,
+          sinkKind: 'command-injection',
+          valueEffect: { kind: 'input' },
+          inertCommandPrefixes: ['git show ', 'git log -1 '],
+        },
+      ],
+    };
+    const other: Facts = {
+      ...restricted,
+      paramToSink: [{ ...restricted.paramToSink[0], valueEffect: { kind: 'unknown' } }],
+    };
+    const reordered: Facts = {
+      ...restricted,
+      paramToSink: [
+        { ...restricted.paramToSink[0], inertCommandPrefixes: ['git log -1 ', 'git show '] },
+      ],
+    };
+    expect(ownFactsDigest(restricted)).not.toBe(ownFactsDigest(other));
+    expect(ownFactsDigest(restricted)).toBe(ownFactsDigest(reordered));
+  });
   it('is stable for identical facts', () => {
     expect(ownFactsDigest(baseFacts)).toBe(ownFactsDigest({ ...baseFacts }));
   });

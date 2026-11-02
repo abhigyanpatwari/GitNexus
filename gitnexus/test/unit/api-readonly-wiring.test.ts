@@ -24,13 +24,15 @@ describe('api read-only endpoint wiring', () => {
   it('/api/graph stream path opens read-only', async () => {
     const source = await readSource();
     expect(source).toMatch(
-      /streamGraphNdjson\(res, includeContent, abortController\.signal\)[\s\S]{0,200}readOnly:\s*true/,
+      /streamGraphNdjson\(res, includeContent, abortController\.signal\)[\s\S]{0,200}(?:readOnly:\s*true|readOnlyFtsOptions\()/,
     );
   });
 
   it('/api/graph non-stream path opens read-only', async () => {
     const source = await readSource();
-    expect(source).toMatch(/buildGraph\(includeContent\)[\s\S]{0,80}readOnly:\s*true/);
+    expect(source).toMatch(
+      /buildGraph\(includeContent\)[\s\S]{0,80}(?:readOnly:\s*true|readOnlyFtsOptions\()/,
+    );
   });
 
   it('/api/search opens read-only', async () => {
@@ -39,12 +41,44 @@ describe('api read-only endpoint wiring', () => {
     // `return { searchResults: enriched, ftsAvailable };` immediately before
     // the closing brace + options object. Match that suffix to confirm the
     // search call site, not /api/query.
-    expect(source).toMatch(/searchResults: enriched, ftsAvailable[\s\S]{0,80}readOnly:\s*true/);
+    expect(source).toMatch(
+      /searchResults: enriched, ftsAvailable[\s\S]{0,80}(?:readOnly:\s*true|readOnlyFtsOptions\()/,
+    );
   });
 
   it('/api/grep opens read-only', async () => {
     const source = await readSource();
-    expect(source).toMatch(/MATCH \(n:File\)[\s\S]{0,300}readOnly:\s*true/);
+    expect(source).toMatch(
+      /MATCH \(n:File\)[\s\S]{0,300}(?:readOnly:\s*true|readOnlyFtsOptions\()/,
+    );
+  });
+
+  it('readOnlyFtsOptions carries readOnly: true on both branches', async () => {
+    const source = await readSource();
+    // The read-only routes above open through this helper rather than an inline
+    // `{ readOnly: true }` (#3091 threads the persisted FTS mode through the same
+    // option object). That indirection is why those assertions accept the helper
+    // by name — so the read-only half of the contract is pinned here instead, or
+    // a skip-fts index could open write-mode and re-trip the `.shadow` failure.
+    const helper = source.match(/function readOnlyFtsOptions\([\s\S]*?\n\}/);
+    expect(helper).not.toBeNull();
+    expect(helper![0]).toMatch(
+      /skipFts\s*\?\s*\{ readOnly: true, skipFts: true \}\s*:\s*\{ readOnly: true \}/,
+    );
+  });
+
+  it('/api/embed refuses an in-place FTS crash WAL before the writable open', async () => {
+    const source = await readSource();
+    const embedSection = source.match(
+      /\/\/ Run embedding pipeline asynchronously[\s\S]*?skipFtsOption\(ftsSession\.skipFts\)/,
+    );
+    expect(embedSection).not.toBeNull();
+    const gateIdx = embedSection![0].indexOf('assertReadOnlyFtsCrashSafe(lbugPath)');
+    const openIdx = embedSection![0].indexOf('await withLbugDb(');
+    expect(gateIdx).toBeGreaterThan(-1);
+    expect(openIdx).toBeGreaterThan(gateIdx);
+    expect(embedSection![0]).not.toMatch(/fts-inplace-checkpointed/);
+    expect(embedSection![0]).not.toMatch(/readOnly:\s*true/);
   });
 
   it('/api/embed remains write-mode (writes embeddings — must not be flipped to readOnly)', async () => {

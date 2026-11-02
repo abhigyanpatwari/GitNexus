@@ -153,6 +153,21 @@ describe('extends chains', () => {
 });
 
 describe('which config governs a file', () => {
+  it('prunes root artifact configs while keeping nested source directories', async () => {
+    const root = repo({
+      'generated/tsconfig.json': JSON.stringify({ compilerOptions: { baseUrl: 'root-artifact' } }),
+      'packages/api/generated/tsconfig.json': JSON.stringify({
+        compilerOptions: { baseUrl: 'src' },
+      }),
+    });
+    const index = await loadTsconfigIndex(root);
+
+    expect(tsconfigFor(index, 'generated/main.ts')).toBeNull();
+    expect(tsconfigFor(index, 'packages/api/generated/main.ts')?.baseUrl).toBe(
+      'packages/api/generated/src',
+    );
+  });
+
   it('lets a child config with no baseUrl shadow the root, rather than inheriting it', async () => {
     // The child project declares no `baseUrl`, which in TypeScript means its
     // non-relative specifiers are PACKAGE lookups. Dropping the empty child let
@@ -214,6 +229,24 @@ describe('parsing', () => {
     const scope = tsconfigFor(await loadTsconfigIndex(root), 'src/a.ts');
 
     expect(scope?.paths[0]?.targets).toEqual(['src/*', 'generated/*']);
+  });
+
+  it('encodes a repo-root target as the bare `*`', async () => {
+    // `"*": ["./*"]` resolves to the repo root itself, so the repo-relative
+    // prefix is empty and the suffix is the whole target. `/*` substitutes to
+    // `/lib/date`, which `resolveFile` never matches — see the unit assertions
+    // in `tsconfig-rebase-target.test.ts` for both path flavours.
+    const root = repo({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: { baseUrl: '.', paths: { '*': ['./*'], '@/*': ['./src/*'] } },
+      }),
+    });
+
+    const scope = tsconfigFor(await loadTsconfigIndex(root), 'src/a.ts');
+
+    expect(scope?.paths.find((mapping) => mapping.pattern === '*')?.targets).toEqual(['*']);
+    // The common alias is unaffected — only the empty-prefix case changes.
+    expect(scope?.paths.find((mapping) => mapping.pattern === '@/*')?.targets).toEqual(['src/*']);
   });
 
   it('returns null for a repo with no config at all', async () => {

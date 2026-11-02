@@ -1,0 +1,66 @@
+{
+  "workload": "Fixed synthetic responses through the real MCP server; includes unchanged hints",
+  "fidelity": true,
+  "corpusSha256": "721dfda688ec3372ad49ec756515646b20b9bd0ab1d91eebd198306a2d97df9e",
+  "serverSha256": "df7bf999fcb8a67c51d14ecc9bfd9715365a8dc911c89627b32d52315937df8a",
+  "measurements": [
+    {
+      "name": "query",
+      "baselineBytes": 5836,
+      "currentBytes": 4223,
+      "o200k_tokens": 1167,
+      "baseline_o200k_tokens": 1792,
+      "cl100k_tokens": 1137,
+      "baseline_cl100k_tokens": 1764
+    },
+    {
+      "name": "context with source",
+      "baselineBytes": 7065,
+      "currentBytes": 4805,
+      "o200k_tokens": 1344,
+      "baseline_o200k_tokens": 2046,
+      "cl100k_tokens": 1311,
+      "baseline_cl100k_tokens": 2015
+    },
+    {
+      "name": "impact with incomplete evidence",
+      "baselineBytes": 6405,
+      "currentBytes": 4349,
+      "o200k_tokens": 1211,
+      "baseline_o200k_tokens": 1855,
+      "cl100k_tokens": 1181,
+      "baseline_cl100k_tokens": 1826
+    },
+    {
+      "name": "empty query",
+      "baselineBytes": 229,
+      "currentBytes": 216,
+      "o200k_tokens": 46,
+      "baseline_o200k_tokens": 53,
+      "cl100k_tokens": 47,
+      "baseline_cl100k_tokens": 53
+    },
+    {
+      "name": "structured error",
+      "baselineBytes": 518,
+      "currentBytes": 449,
+      "o200k_tokens": 112,
+      "baseline_o200k_tokens": 151,
+      "cl100k_tokens": 113,
+      "baseline_cl100k_tokens": 152
+    },
+    {
+      "name": "plain text",
+      "baselineBytes": 176,
+      "currentBytes": 176,
+      "o200k_tokens": 48,
+      "baseline_o200k_tokens": 48,
+      "cl100k_tokens": 49,
+      "baseline_cl100k_tokens": 49
+    }
+  ],
+  "bytes": 14218,
+  "o200k_tokens": 3928,
+  "cl100k_tokens": 3838,
+  "tokenizer": "tiktoken 0.12.0"
+}

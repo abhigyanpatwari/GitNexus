@@ -115,7 +115,7 @@ describe('build-tree-sitter-grammars.cjs consolidated activation', () => {
   });
 
   it('never exits non-zero across grammars and env permutations (postinstall hard invariant)', () => {
-    for (const grammar of ['c', 'dart', 'proto', 'swift', 'kotlin']) {
+    for (const grammar of ['c', 'dart', 'proto', 'swift', 'kotlin', 'zig']) {
       for (const overrides of [{ GITNEXUS_SKIP_OPTIONAL_GRAMMARS: '1' }, {}]) {
         const r = runBuild(grammar, overrides);
         expect(r.status, `${grammar} ${JSON.stringify(overrides)}`).toBe(0);

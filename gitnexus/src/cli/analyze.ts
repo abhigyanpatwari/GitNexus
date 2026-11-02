@@ -13,6 +13,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
+import { formatAnalyzeFtsSkipSummary } from '../core/search/fts-policy.js';
 import { isLbugReady, LbugWipeError } from '../core/lbug/lbug-adapter.js';
 import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
 import { findUndeclaredRelationPairError } from '../core/lbug/rel-pair-routing.js';
@@ -28,7 +29,6 @@ import {
   WAL_RECOVERY_SUGGESTION,
 } from '../core/lbug/lbug-config.js';
 import {
-  getStoragePaths,
   getGlobalRegistryPath,
   RegistryNameCollisionError,
   AnalysisNotFinalizedError,
@@ -42,7 +42,7 @@ import {
   selfCommitContextFiles,
   snapshotSelfCommitSafety,
 } from '../storage/git.js';
-import { IndexLockTimeoutError } from '../storage/index-lock.js';
+import { IndexLockTimeoutError, isIndexLockGuardTimeout } from '../storage/index-lock.js';
 import {
   loadAnalyzeConfig,
   mergeAnalyzeOptions,
@@ -54,11 +54,23 @@ import type { AnalyzeOptions } from './analyze-options.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
+import {
+  formatInvalidProcessDetectionOverride,
+  formatProcessDetectionBudgetBanner,
+  parseProcessDetectionBudgetStrings,
+  resolveProcessDetectionBudget,
+} from '../core/ingestion/process-detection-budget.js';
 import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError, cliWarn } from './cli-message.js';
-import { heapCapMbFor, memoryAutopilotDisabled } from '../core/ingestion/utils/effective-ram.js';
+import { IntegerOptionError, parseIntegerOption, parseMemoryBudgetMb } from './int-option.js';
+import {
+  HEAP_LIMIT_SOURCE_ENV,
+  heapCapMbFor,
+  memoryAutopilotDisabled,
+  type HeapLimitSource,
+} from '../core/ingestion/utils/effective-ram.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
@@ -69,9 +81,9 @@ import {
   safeUrl,
 } from '../core/embeddings/http-client.js';
 import {
+  assessLocalEmbeddingRuntime,
   isLocalEmbeddingRuntimeBlockerMessage,
   isMissingLocalEmbeddingStackMessage,
-  localEmbeddingPrefixUnloadableMessage,
   localEmbeddingStackMissingMessage,
 } from '../core/embeddings/runtime-support.js';
 import {
@@ -79,8 +91,6 @@ import {
   getEmbeddingInstallTimeoutMs,
   getEmbeddingRuntimeDir,
   installEmbeddingRuntime,
-  isPrefixRuntimeLoadable,
-  resolveEmbeddingRuntime,
 } from '../core/embeddings/runtime-install.js';
 import { warnIfNpm11NpxRisk } from './resolve-invocation.js';
 
@@ -363,6 +373,7 @@ interface RespawnExit {
   stdout?: string;
   stderr?: string;
   message?: string;
+  forwardedSignal?: NodeJS.Signals;
 }
 
 const appendOutputTail = (tail: string, chunk: unknown): string => {
@@ -395,17 +406,28 @@ const runRespawnedAnalyze = (
     let stdout = '';
     let stderr = '';
     let settled = false;
-    const finish = (exit: RespawnExit): void => {
-      if (settled) return;
-      settled = true;
-      resolve(exit);
-    };
-
+    let forwardedSignal: NodeJS.Signals | undefined;
     const child = spawn(process.execPath, [...args], {
       stdio: ['inherit', 'pipe', 'pipe'],
       windowsHide: true,
       env,
     });
+    const forwardSignal = (signal: NodeJS.Signals): void => {
+      forwardedSignal ??= signal;
+      if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+    };
+    const forwardSigint = () => forwardSignal('SIGINT');
+    const forwardSigterm = () => forwardSignal('SIGTERM');
+    const finish = (exit: RespawnExit): void => {
+      if (settled) return;
+      settled = true;
+      process.removeListener('SIGINT', forwardSigint);
+      process.removeListener('SIGTERM', forwardSigterm);
+      resolve({ ...exit, forwardedSignal });
+    };
+
+    process.once('SIGINT', forwardSigint);
+    process.once('SIGTERM', forwardSigterm);
 
     child.stdout?.on('data', (chunk) => {
       stdout = appendOutputTail(stdout, chunk);
@@ -527,36 +549,189 @@ const RECOMMENDED_WAL_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
  * later-flag-wins semantics when NODE_OPTIONS repeats a flag.
  */
 export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
-  // V8 accepts `-` and `_` interchangeably in flag names, and Node accepts a
-  // space-separated value in NODE_OPTIONS — honor every spelling of the pin
-  // instead of silently overriding it (#2649 review).
-  const matches = [...nodeOptions.matchAll(/--max[-_]old[-_]space[-_]size(?:=|\s+)(\d+)/g)];
+  return parseV8SizeFlagMb(nodeOptions, 'max-old-space-size');
+}
+
+/**
+ * Last value (MB) of a V8 `--<name>` size flag in a flag string. V8 accepts
+ * `-` and `_` interchangeably in flag names, and Node accepts a
+ * space-separated value — honor every spelling instead of silently
+ * overriding it (#2649 review).
+ */
+function parseV8SizeFlagMb(flags: string, name: string): number | null {
+  const stem = name.split('-').join('[-_]');
+  const matches = [...flags.matchAll(new RegExp(`--${stem}(?:=|\\s+)(\\d+)`, 'g'))];
   if (matches.length === 0) return null;
   const mb = Number(matches[matches.length - 1][1]);
   return Number.isFinite(mb) && mb > 0 ? mb : null;
 }
 
+export function forwardedSignalExitCode(signal: NodeJS.Signals, cleanTermination: boolean): number {
+  if (cleanTermination) return 0;
+  if (signal === 'SIGINT') return 130;
+  if (signal === 'SIGTERM') return 143;
+  return 1;
+}
+
+/** Old-space and semi-space flags (MB) that give a child a V8 heap of exactly the budget. */
+export interface BudgetHeapSizing {
+  oldSpaceMb: number;
+  semiSpaceMb: number;
+}
+
+/**
+ * Size the respawn flags so the child's `heap_size_limit` equals the budget
+ * (#3137). V8's limit is old space plus three semi-spaces, and V8 rounds the
+ * semi-space up to a power of two (measured on Node 22.18: semi 10 → 16), so
+ * the semi-space is budget/25 rounded up the same way, capped at the usual
+ * 128MB, and the old space takes the rest: 2000 → 1616 + 3 × 128, 200 → 176 + 3 × 8.
+ */
+export function budgetHeapSizing(budgetMb: number): BudgetHeapSizing {
+  const scaled = Math.max(1, Math.floor(budgetMb / 25));
+  const semiSpaceMb = Math.min(SEMI_SPACE_MB, 2 ** Math.ceil(Math.log2(scaled)));
+  return { oldSpaceMb: budgetMb - 3 * semiSpaceMb, semiSpaceMb };
+}
+
+export interface BudgetHeapInput {
+  budgetMb: number;
+  execArgv: readonly string[];
+  nodeOptions: string;
+  /** The RAM-aware auto cap the budget replaces. */
+  autoCapMb: number;
+  /** `GITNEXUS_MEMORY=off`: names Node's default limit as the one replaced. */
+  autopilotDisabled: boolean;
+  /** Inherited `GITNEXUS_HEAP_LIMIT_SOURCE`; `budget` marks a budget-respawned child. */
+  inheritedSource: string | undefined;
+}
+
+export interface BudgetHeapDecision {
+  respawn: boolean;
+  sizing: BudgetHeapSizing;
+  /** At most one warning line for the operator; absent in a budget-respawned child. */
+  warning?: string;
+}
+
+/**
+ * The `--memory-budget` heap decision (#3137), kept pure so every branch is
+ * testable without a process. The effective requested old space is the last
+ * `--max-old-space-size` in execArgv, else in NODE_OPTIONS (every spelling
+ * `parseMaxOldSpaceMb` accepts). Only the budget-respawned child keeps
+ * running; anything else respawns once at the budget. The budget's own flags
+ * follow the user's in the child, so the child always resolves to "at the
+ * budget".
+ */
+export function resolveBudgetHeap(input: BudgetHeapInput): BudgetHeapDecision {
+  const { budgetMb, autoCapMb } = input;
+  const sizing = budgetHeapSizing(budgetMb);
+  const execFlags = input.execArgv.join(' ');
+  const pinnedMb = parseMaxOldSpaceMb(execFlags) ?? parseMaxOldSpaceMb(input.nodeOptions);
+  const semiSpaceMb =
+    parseV8SizeFlagMb(execFlags, 'max-semi-space-size') ??
+    parseV8SizeFlagMb(input.nodeOptions, 'max-semi-space-size');
+  // Only a budget-respawned child carries both the budget's old space and its
+  // semi-space, so only it is exactly at the budget. A pin that merely equals
+  // the budget leaves V8's young generation on top (a 2000MB pin is a 2048MB
+  // heap), so that process respawns once like any other. The respawning
+  // parent already logged; the child stays quiet. The env marker alone is not
+  // proof — it is inherited — so both budget flags must be present too.
+  if (
+    input.inheritedSource === 'budget' &&
+    pinnedMb === sizing.oldSpaceMb &&
+    semiSpaceMb === sizing.semiSpaceMb
+  ) {
+    return { respawn: false, sizing };
+  }
+  const swapWarning =
+    budgetMb > autoCapMb
+      ? `  --memory-budget ${budgetMb}MB is above the ${autoCapMb}MB this machine's RAM supports — analyze may swap-thrash.\n`
+      : '';
+  const replaced =
+    pinnedMb !== null
+      ? `the ${pinnedMb}MB --max-old-space-size heap limit`
+      : input.autopilotDisabled
+        ? `Node's default heap limit`
+        : `the auto-sized ${autoCapMb}MB heap cap`;
+  return {
+    respawn: true,
+    sizing,
+    warning:
+      `  --memory-budget replaces ${replaced}: re-running analyze with a ${budgetMb}MB heap.\n` +
+      swapWarning,
+  };
+}
+
 /** Re-exec the process with the RAM-aware auto heap cap + larger semi-space/stack
- *  if we're currently below that.
+ *  if we're currently below that, or at the `--memory-budget` heap (#3137).
  *
- *  Heap-source precedence (#2649):
- *  - an explicit per-invocation `--max-old-space-size` (execArgv) always wins;
+ *  Heap-source precedence (#2649, #3137):
+ *  - an explicit `--memory-budget` wins over everything, including
+ *    `GITNEXUS_MEMORY=off` and any `--max-old-space-size` pin;
+ *  - an explicit per-invocation `--max-old-space-size` (execArgv) wins next;
  *  - `GITNEXUS_MEMORY=off` declines the memory autopilot entirely;
  *  - an ambient NODE_OPTIONS heap >= the auto cap is honored as-is;
  *  - an ambient NODE_OPTIONS heap BELOW the auto cap is treated as an
  *    inherited environment default (devcontainers/CI export one for other
  *    tooling), not a deliberate per-run choice: warn and respawn with the
  *    auto cap. Pre-#2649 this returned early and large repos then OOM'd on
- *    whatever heap the environment happened to specify. */
-async function ensureHeap(): Promise<boolean> {
+ *    whatever heap the environment happened to specify.
+ *
+ *  Paths managed by the auto-sizer or `--memory-budget` record the source in
+ *  `GITNEXUS_HEAP_LIMIT_SOURCE` (this process when kept, the child env when
+ *  respawned) so the parse phase's remedy text advises by source. Explicit
+ *  heap pins and `GITNEXUS_MEMORY=off` intentionally leave it unset. */
+export async function ensureHeap(
+  options: { cleanForwardedTermination?: boolean; memoryBudget?: string } = {},
+): Promise<boolean> {
+  const nodeOpts = process.env.NODE_OPTIONS || '';
+  // The budget is checked BEFORE the GITNEXUS_MEMORY=off return: an explicit
+  // flag is a deliberate per-run choice, which the opt-out does not cover.
+  if (options.memoryBudget !== undefined) {
+    let budgetMb: number;
+    try {
+      budgetMb = parseMemoryBudgetMb(options.memoryBudget);
+    } catch (error) {
+      // The CLI's preAction hook rejects bad values first; this covers
+      // programmatic callers.
+      if (!(error instanceof IntegerOptionError)) throw error;
+      cliError(`  ${error.message}\n`);
+      process.exitCode = 1;
+      return true;
+    }
+    const decision = resolveBudgetHeap({
+      budgetMb,
+      execArgv: process.execArgv,
+      nodeOptions: nodeOpts,
+      autoCapMb: RESPAWN_HEAP_MB,
+      autopilotDisabled: memoryAutopilotDisabled(),
+      inheritedSource: process.env[HEAP_LIMIT_SOURCE_ENV],
+    });
+    if (decision.warning) cliWarn(decision.warning);
+    if (!decision.respawn) {
+      process.env[HEAP_LIMIT_SOURCE_ENV] = 'budget';
+      return false;
+    }
+    const { oldSpaceMb, semiSpaceMb } = decision.sizing;
+    return respawnWithHeap(
+      `--max-old-space-size=${oldSpaceMb}`,
+      `--max-semi-space-size=${semiSpaceMb}`,
+      'budget',
+      `  Analysis likely ran out of memory (heap limit set to ${budgetMb}MB by --memory-budget).\n` +
+        `  This repository's working set exceeds the budget. Raise it, or omit --memory-budget\n` +
+        `  to use the auto-sized cap (a budget above physical RAM causes swap-thrash — use with care):\n` +
+        `    gitnexus analyze --memory-budget <MB> [your-args]\n` +
+        `  If this persists, it may be a native crash unrelated to heap size.\n`,
+      nodeOpts,
+      options,
+    );
+  }
+
   // Explicit opt-out disables auto-sizing ENTIRELY — both the ambient-pin
   // override and the default v8-limit respawn — and is honored SILENTLY:
   // the operator already made the call, and stderr-sensitive consumers
   // (test harnesses, scripts, supervisors that track a single PID) rely on
   // a quiet, single-process run.
   if (memoryAutopilotDisabled()) return false;
-  const nodeOpts = process.env.NODE_OPTIONS || '';
-  if (process.execArgv.some((a) => a.startsWith('--max-old-space-size'))) return false;
+  if (parseMaxOldSpaceMb(process.execArgv.join(' ')) !== null) return false;
 
   const ambientHeapMb = parseMaxOldSpaceMb(nodeOpts);
   if (ambientHeapMb !== null) {
@@ -567,12 +742,39 @@ async function ensureHeap(): Promise<boolean> {
     );
   } else {
     const v8Heap = v8.getHeapStatistics().heap_size_limit;
-    if (v8Heap >= HEAP_MB * 1024 * 1024 * 0.9) return false;
+    if (v8Heap >= HEAP_MB * 1024 * 1024 * 0.9) {
+      process.env[HEAP_LIMIT_SOURCE_ENV] = 'auto';
+      return false;
+    }
   }
 
+  return respawnWithHeap(
+    HEAP_FLAG,
+    SEMI_FLAG,
+    'auto',
+    `  Analysis likely ran out of memory (heap cap auto-sized to ${RESPAWN_HEAP_MB}MB ≈ 0.75x RAM).\n` +
+      `  This repository's working set exceeds available RAM. Use a machine with more RAM,\n` +
+      `  or override the cap (a cap above physical RAM causes swap-thrash — use with care):\n` +
+      `    NODE_OPTIONS="--max-old-space-size=<MB>" gitnexus analyze [your-args]\n` +
+      `    (Windows: set NODE_OPTIONS=--max-old-space-size=<MB> && gitnexus analyze [your-args])\n` +
+      `  If this persists, it may be a native crash unrelated to heap size.\n`,
+    nodeOpts,
+    options,
+  );
+}
+
+/** Run the analyze child with the given heap flags and map its exit onto this process. */
+async function respawnWithHeap(
+  heapFlag: string,
+  semiFlag: string,
+  source: HeapLimitSource,
+  oomGuidance: string,
+  nodeOpts: string,
+  options: { cleanForwardedTermination?: boolean },
+): Promise<boolean> {
   // --stack-size is a V8 flag not allowed in NODE_OPTIONS on Node 24+, so pass it
   // only as a direct CLI argument. --max-semi-space-size IS allowed in NODE_OPTIONS.
-  const cliFlags = [HEAP_FLAG, SEMI_FLAG];
+  const cliFlags = [heapFlag, semiFlag];
   if (!nodeOpts.includes('--stack-size')) cliFlags.push(STACK_FLAG);
 
   // Preserve the parent's node flags (execArgv) — dropping them breaks any
@@ -586,21 +788,21 @@ async function ensureHeap(): Promise<boolean> {
   const childArgs = [...preservedExecArgv, ...cliFlags, ...process.argv.slice(1)];
   const childEnv = {
     ...process.env,
-    NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG} ${SEMI_FLAG}`.trim(),
+    NODE_OPTIONS: `${nodeOpts} ${heapFlag} ${semiFlag}`.trim(),
+    [HEAP_LIMIT_SOURCE_ENV]: source,
   };
   if (shouldBridgeRespawnProgressTty()) childEnv[RESPAWN_PROGRESS_ENV] = '1';
   const childExit = await runRespawnedAnalyze(childArgs, childEnv);
+  if (childExit.forwardedSignal !== undefined) {
+    process.exitCode = forwardedSignalExitCode(
+      childExit.forwardedSignal,
+      options.cleanForwardedTermination === true,
+    );
+    return true;
+  }
   if (childExit.status !== 0 || childExit.signal) {
     if (childProcessLikelyOom(childExit)) {
-      cliError(
-        `  Analysis likely ran out of memory (heap cap auto-sized to ${RESPAWN_HEAP_MB}MB ≈ 0.75x RAM).\n` +
-          `  This repository's working set exceeds available RAM. Use a machine with more RAM,\n` +
-          `  or override the cap (a cap above physical RAM causes swap-thrash — use with care):\n` +
-          `    NODE_OPTIONS="--max-old-space-size=<MB>" gitnexus analyze [your-args]\n` +
-          `    (Windows: set NODE_OPTIONS=--max-old-space-size=<MB> && gitnexus analyze [your-args])\n` +
-          `  If this persists, it may be a native crash unrelated to heap size.\n`,
-        { recoveryHint: 'heap-oom-respawn' },
-      );
+      cliError(oomGuidance, { recoveryHint: 'heap-oom-respawn' });
     } else if (childProcessLikelyNativeAbort(childExit)) {
       cliError(
         `  Analysis aborted in a native worker or native binding path.\n` +
@@ -627,6 +829,7 @@ async function ensureHeap(): Promise<boolean> {
  * for it in the first place.
  */
 const ANALYZE_CLI_ENV_KEYS = [
+  HEAP_LIMIT_SOURCE_ENV,
   'GITNEXUS_VERBOSE',
   'GITNEXUS_PROFILE_DEFERRED',
   'GITNEXUS_PROFILE_DEFERRED_SLOW_MS',
@@ -640,6 +843,8 @@ const ANALYZE_CLI_ENV_KEYS = [
   'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
   'GITNEXUS_EMBEDDING_DEVICE',
   'GITNEXUS_ANALYZE_PROGRESS_ACTIVE',
+  'GITNEXUS_ANALYZER_IDENTITY_IN_PROCESS_GUARDS',
+  'GITNEXUS_RESOLVE_DEF_GRAPH_ID_MEMO',
   'GITNEXUS_EMBEDDING_URL',
   'GITNEXUS_EMBEDDING_MODEL',
   'GITNEXUS_EMBEDDING_API_KEY',
@@ -694,7 +899,10 @@ export const analyzeCommand = async (
   options?: AnalyzeOptions,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ) => {
-  if (await ensureHeap()) return;
+  // Snapshot before ensureHeap: it records GITNEXUS_HEAP_LIMIT_SOURCE on a
+  // kept process, which must not leak into a later programmatic call.
+  const envSnap = snapshotAnalyzeEnv();
+  if (await ensureHeap({ memoryBudget: options?.memoryBudget })) return;
   forceHeapOOMForTestIfEnabled();
 
   // Install fatal handlers immediately after re-exec resolution so any
@@ -714,7 +922,6 @@ export const analyzeCommand = async (
   // exiting, restoration is moot. For early-return paths (validation
   // errors) and the alreadyUpToDate fast path the finally restores the
   // pre-call values.
-  const envSnap = snapshotAnalyzeEnv();
   try {
     await analyzeCommandImpl(inputPath, options, runnerIdentityAtBootstrap);
   } finally {
@@ -740,13 +947,24 @@ export const analyzeCommandWithRunnerIdentity = async (
   options?: AnalyzeOptions,
 ): Promise<void> => analyzeCommand(inputPath, options, runnerIdentityAtBootstrap);
 
+export async function analyzeOrWatchCommandWithRunnerIdentity(
+  runnerIdentityAtBootstrap: AnalyzerRunnerIdentity,
+  inputPath?: string,
+  options: AnalyzeOptions = {},
+): Promise<void> {
+  if (options.watch) {
+    const { watchCommandWithRunnerIdentity } = await import('./analyze-watch.js');
+    await watchCommandWithRunnerIdentity(runnerIdentityAtBootstrap, inputPath, options);
+    return;
+  }
+  await analyzeCommandWithRunnerIdentity(runnerIdentityAtBootstrap, inputPath, options);
+}
+
 const analyzeCommandImpl = async (
   inputPath?: string,
   cliOptions?: AnalyzeOptions,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<void> => {
-  console.log('\n  GitNexus Analyzer\n');
-
   // ── Resolve the target repo root ──────────────────────────────────
   // Resolved FIRST because `.gitnexusrc` is read from the repo root (not the
   // caller's cwd), and config can set defaults that the validation below
@@ -895,8 +1113,10 @@ const analyzeCommandImpl = async (
   // previous call leaked.
   let workerPoolSize: number | undefined;
   if (options.workers !== undefined) {
-    const parsedWorkers = Number(options.workers);
-    if (!Number.isInteger(parsedWorkers) || parsedWorkers < 1) {
+    try {
+      workerPoolSize = parseIntegerOption(options.workers, '--workers', { minimum: 1 });
+    } catch (error) {
+      if (!(error instanceof IntegerOptionError)) throw error;
       cliError(
         '  --workers must be a positive integer (>= 1). ' +
           'GitNexus parses through a worker pool only — there is no sequential ' +
@@ -905,8 +1125,19 @@ const analyzeCommandImpl = async (
       process.exitCode = 1;
       return;
     }
-    workerPoolSize = parsedWorkers;
   }
+
+  const processDetectionFromFlags = parseProcessDetectionBudgetStrings(
+    {
+      maxProcesses: options.maxProcesses,
+      maxProcessBranching: options.maxProcessBranching,
+      maxProcessTraceDepth: options.maxProcessTraceDepth,
+      maxEntryPointCandidates: options.maxEntryPointCandidates,
+    },
+    (flag, raw) => {
+      cliWarn(`  ${formatInvalidProcessDetectionOverride(flag, raw)}\n`);
+    },
+  );
 
   // Parse `--embeddings [limit]`: `true` → default cap, string → numeric cap
   // (0 disables the cap entirely). Validated up here so failures match the
@@ -914,8 +1145,12 @@ const analyzeCommandImpl = async (
   // process.exit() leaves the progress bar's hidden cursor uncleared).
   let embeddingsNodeLimit: number | undefined;
   if (typeof options.embeddings === 'string') {
-    const parsed = Number(options.embeddings);
-    if (!Number.isInteger(parsed) || parsed < 0) {
+    try {
+      embeddingsNodeLimit = parseIntegerOption(options.embeddings, '--embeddings', {
+        minimum: 0,
+      });
+    } catch (error) {
+      if (!(error instanceof IntegerOptionError)) throw error;
       cliError(
         `  --embeddings expects a non-negative integer (got "${options.embeddings}"). ` +
           `Pass 0 to disable the safety cap, or omit the value to keep the default.\n`,
@@ -923,7 +1158,6 @@ const analyzeCommandImpl = async (
       process.exitCode = 1;
       return;
     }
-    embeddingsNodeLimit = parsed;
   }
   const embeddingsEnabled = !!options.embeddings;
 
@@ -933,13 +1167,14 @@ const analyzeCommandImpl = async (
     value: string | undefined,
   ): boolean => {
     if (value === undefined) return true;
-    const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-      cliError(`  ${optionName} must be a positive integer.\n`);
+    try {
+      process.env[envName] = String(parseIntegerOption(value, optionName, { minimum: 1 }));
+    } catch (error) {
+      if (!(error instanceof IntegerOptionError)) throw error;
+      cliError(`  ${error.message}.\n`);
       process.exitCode = 1;
       return false;
     }
-    process.env[envName] = String(parsed);
     return true;
   };
 
@@ -960,6 +1195,17 @@ const analyzeCommandImpl = async (
       options.embeddingSubBatchSize,
     )
   ) {
+    return;
+  }
+
+  // An empty value resolves to the repository root, so `--asyncapi-spec ""`
+  // walks the whole tree — defeating the module's own rule that there is no
+  // glob-based auto-discovery, and spending the walk budget on `node_modules`.
+  // The HTTP entry point already rejects exactly this value; two doors onto one
+  // option must not hold different rules.
+  if (options.asyncapiSpec !== undefined && options.asyncapiSpec.trim() === '') {
+    cliError('  --asyncapi-spec must be a non-empty path.\n');
+    process.exitCode = 1;
     return;
   }
 
@@ -1076,14 +1322,18 @@ const analyzeCommandImpl = async (
     );
   }
 
-  // On-demand embedding runtime (#2370): when the optional stack was pruned at
-  // install time (proxy-blocked NuGet download in onnxruntime-node's
-  // postinstall), heal it here instead of failing later in the pipeline. The
-  // install goes through the user's npm registry config (mirrors/proxies
-  // apply) with --ignore-scripts, so no NuGet download is attempted. Runs
-  // before bar.start() like the sibling validations above.
+  // Local embeddings: refuse Intel Mac / unloadable prefix before any registry
+  // download, then auto-heal a missing stack. Analyze uses a short install
+  // timeout so a blackholed proxy cannot stall the index run.
   if (embeddingsEnabled && !isHttpMode()) {
-    const resolved = resolveEmbeddingRuntime();
+    const assessment = assessLocalEmbeddingRuntime();
+    if (assessment.status === 'blocked') {
+      cliError(`  ${assessment.message.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'local-embedding-unsupported',
+      });
+      process.exitCode = 1;
+      return;
+    }
     // Resolved-but-unloadable (a populated prefix on a Node with no
     // module.registerHooks), or nothing installed on such a Node: fail fast with
     // capability guidance instead of dying mid-pipeline over an unusable prefix
@@ -1091,28 +1341,20 @@ const analyzeCommandImpl = async (
     // never needs the hook, so it is excluded. --embeddings was explicitly
     // requested and this failure is deterministic, so fail fast rather than
     // silently degrading to BM25 (distinct from a transient install timeout).
-    if (!isPrefixRuntimeLoadable() && (resolved === null || resolved.source === 'runtime-prefix')) {
-      cliError(`  ${localEmbeddingPrefixUnloadableMessage().replace(/\n/g, '\n  ')}\n`, {
+    if (assessment.status === 'prefix-unloadable') {
+      cliError(`  ${assessment.message.replace(/\n/g, '\n  ')}\n`, {
         recoveryHint: 'local-embedding-stack-missing',
       });
       process.exitCode = 1;
       return;
     }
-    // On-demand embedding runtime (#2370): when the optional stack was pruned at
-    // install time (proxy-blocked NuGet download in onnxruntime-node's
-    // postinstall), heal it here instead of failing later in the pipeline. The
-    // install goes through the user's npm registry config (mirrors/proxies
-    // apply) with --ignore-scripts, so no NuGet download is attempted.
-    if (resolved === null) {
+    if (assessment.status === 'needs-install') {
       console.log(
-        `  Local embedding runtime is not installed (optional packages were skipped at install time).\n` +
+        `  Local embedding runtime is not installed.\n` +
           `  Downloading it now from your npm registry into ${getEmbeddingRuntimeDir()} …\n` +
           `  (one-time; rerun manually anytime with \`gitnexus embeddings install\`)\n`,
       );
       try {
-        // Short deadline (env override still wins): analyze is interactive, so a
-        // blackholed proxy must not stall the whole index run for the 10-minute
-        // default — fail over to the guidance below instead.
         await installEmbeddingRuntime(
           {},
           getEmbeddingInstallTimeoutMs(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS),
@@ -1130,10 +1372,10 @@ const analyzeCommandImpl = async (
     }
   }
 
-  if (options.repairFts && options.force) {
+  if (options.repairFts && (options.force || options.parseCache === false)) {
     cliError(
-      '  Cannot combine `--repair-fts` with `--force`. ' +
-        'Use `--repair-fts` for fast FTS-only repair, or `--force` for a full rebuild.\n',
+      '  Cannot combine `--repair-fts` with a full rebuild. ' +
+        'Use `--repair-fts` alone for fast FTS-only repair.\n',
     );
     process.exitCode = 1;
     return;
@@ -1143,7 +1385,7 @@ const analyzeCommandImpl = async (
   // injection, including community skill writes that `--skills` would normally
   // produce. Surface the override explicitly so users don't wonder why a
   // pipeline re-index ran but no skill files appeared. The pipeline still
-  // re-runs (see `force: options.force || options.skills` below); the warning
+  // re-runs (`skills` is passed to runFullAnalysis below); the warning
   // is purely about the dropped post-index write step.
   if (options.indexOnly && options.skills) {
     console.log(
@@ -1189,6 +1431,12 @@ const analyzeCommandImpl = async (
   const maxFileSizeBanner = getMaxFileSizeBannerMessage();
   if (maxFileSizeBanner) {
     console.log(`${maxFileSizeBanner}\n`);
+  }
+  const processDetectionBanner = formatProcessDetectionBudgetBanner(
+    resolveProcessDetectionBudget(processDetectionFromFlags),
+  );
+  if (processDetectionBanner) {
+    console.log(`${processDetectionBanner}\n`);
   }
 
   // ── CLI progress bar setup ─────────────────────────────────────────
@@ -1291,11 +1539,15 @@ const analyzeCommandImpl = async (
     const skipAgentsMd = skipAll || options.skipAgentsMd;
     const skipSkills = skipAll || options.skipSkills;
     const runOptions = {
-      // Pipeline re-index — OR'd with --skills because skill generation
-      // needs a fresh pipelineResult. Has no bearing on the registry
-      // collision guard (see allowDuplicateName below).
-      force: options.force || options.skills,
+      // The user's own --force only. --skills (skill generation needs a fresh
+      // pipelineResult) and --no-parse-cache (bypassing parser output means
+      // anything only when the pipeline runs) each force the rebuild inside
+      // runFullAnalysis under their own named reason (#3137).
+      force: options.force,
+      skills: options.skills,
+      useParseCache: options.parseCache !== false,
       repairFts: options.repairFts,
+      skipFts: options.skipFts,
       embeddings: embeddingsEnabled,
       embeddingsNodeLimit,
       dropEmbeddings: options.dropEmbeddings,
@@ -1324,13 +1576,25 @@ const analyzeCommandImpl = async (
       // be able to accept the duplicate name without also paying the
       // cost of a full pipeline re-index. See #829 review round 2.
       allowDuplicateName: options.allowDuplicateName,
+      shareWith: options.shareWith,
+      noShare: options.share === false,
       // Worker pool size threaded from --workers, replacing the previous
       // GITNEXUS_WORKER_POOL_SIZE env mutation. `undefined` defers to the
       // env / auto-formula fallback inside the pipeline.
       workerPoolSize,
+      maxProcesses: processDetectionFromFlags.maxProcesses,
+      maxProcessBranching: processDetectionFromFlags.maxProcessBranching,
+      maxProcessTraceDepth: processDetectionFromFlags.maxProcessTraceDepth,
+      maxEntryPointCandidates: processDetectionFromFlags.maxEntryPointCandidates,
       // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
       // forwarded to the routes phase consumer scan.
       fetchWrappers: options.fetchWrappers,
+      routeHookConfig: {
+        routeFrameworkAliases: options.routeFrameworkAliases,
+        routeHandlerWrappers: options.routeHandlerWrappers,
+      },
+      springActuatorPath: options.springActuator,
+      asyncApiSpecPath: options.asyncapiSpec,
       // The CLI always process.exit()s after this returns (success path at the
       // end of analyzeCommandImpl, error/interrupt paths via process.exit too),
       // so the finalize close skips the native conn/db close — it can double-free
@@ -1363,7 +1627,7 @@ const analyzeCommandImpl = async (
       // run can write meta.json and then fail before registerRepo(); in
       // that half-finalized state, runFullAnalysis returns alreadyUpToDate
       // on the next invocation unless we check the registry here too.
-      await assertAnalysisFinalized(repoPath);
+      await assertAnalysisFinalized(repoPath, result.storagePath);
       // The fast path skips context regeneration, but a changed `.gitnexusrc`
       // defaultBranch / `--default-branch` must still take effect. Surgically
       // refresh just the `base_ref` line in AGENTS.md/CLAUDE.md in place,
@@ -1395,9 +1659,15 @@ const analyzeCommandImpl = async (
       console.error = origError;
       bar.stop();
       console.log('  Already up to date\n');
+      if (result.ftsSkipped) {
+        console.log(`  ${formatAnalyzeFtsSkipSummary(result.ftsSkipReason)}\n`);
+      }
+      if (runOptions.registryName) {
+        console.log(`  Registry name: ${result.repoName}\n`);
+      }
       if (baseRefRefreshed.length > 0) {
         console.log(
-          `  Updated base_ref to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,
+          `  Updated regression-review target to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,
         );
       }
       // #2639: opt-in self-commit of any AGENTS.md/CLAUDE.md churn from this
@@ -1430,7 +1700,7 @@ const analyzeCommandImpl = async (
     // success so the silent-finalize state surfaces with a non-zero
     // exit code and an actionable error instead of being mistaken for
     // a healthy index.
-    await assertAnalysisFinalized(repoPath);
+    await assertAnalysisFinalized(repoPath, result.storagePath);
 
     // Skill generation (CLI-only, uses pipeline result from analysis).
     // Gated so `--index-only --skills` skips community skill writes too
@@ -1461,10 +1731,9 @@ const analyzeCommandImpl = async (
               (count: number) => count >= 5,
             ).length;
           }
-          const { storagePath: sp } = getStoragePaths(repoPath);
           await generateAIContextFiles(
             repoPath,
-            sp,
+            result.storagePath,
             result.repoName,
             {
               files: s.files ?? 0,
@@ -1486,6 +1755,7 @@ const analyzeCommandImpl = async (
               // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
               noStats: options.stats === false,
               hasPdg: options.pdg === true,
+              hasSpringActuator: options.springActuator !== undefined,
             },
           );
         }
@@ -1549,26 +1819,9 @@ const analyzeCommandImpl = async (
     // progress-bar log() that fired mid-run has already scrolled away, so the
     // degraded-search state must also appear in the final summary (#1161).
     if (result.ftsSkipped) {
-      // #2658 review L2: a build/verify failure is NOT an extension-unavailable
-      // problem — sending the user to install the extension is the wrong remedy.
-      if (result.ftsSkipReason === 'build-failed') {
-        console.log(
-          `\n  Warning: full-text/BM25 search is disabled — the search index build failed this run.\n` +
-            `  The FTS extension is available; rerun \`gitnexus analyze --repair-fts\`. If it persists,\n` +
-            `  check the disk for space or corruption. Run \`gitnexus doctor\` for details.`,
-        );
-      } else {
-        console.log(
-          // NOT "then rerun" (#2841 §5.C): this run stamped `lastCommit`, so a
-          // plain rerun on an unchanged tree takes the up-to-date fast path and
-          // returns before Phase 3 could rebuild anything — the advice would be
-          // ineffective exactly when the user follows it. `--repair-fts` is the
-          // verb that rebuilds the search indexes without re-parsing the repo.
-          `\n  Warning: full-text/BM25 search is disabled — the LadybugDB FTS extension was unavailable.\n` +
-            `  Install it once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto), then run\n` +
-            `  \`gitnexus analyze --repair-fts\` to build the search indexes. Run \`gitnexus doctor\` for details.`,
-        );
-      }
+      // Total switch (#2658 L2 + native-abort/tuple-missing): a new skip
+      // reason must not inherit the network-install remedy.
+      console.log(`\n  ${formatAnalyzeFtsSkipSummary(result.ftsSkipReason)}`);
     }
 
     try {
@@ -1610,6 +1863,14 @@ const analyzeCommandImpl = async (
     // refreshed by the holder — this is a clean, expected condition, not a
     // crash, so render the message without a stack trace.
     if (err instanceof IndexLockTimeoutError) {
+      if (isIndexLockGuardTimeout(err)) {
+        cliError(err.message, {
+          recoveryHint: 'index-lock-guard-recovery',
+          guardPath: err.guardPath,
+        });
+        process.exitCode = 1;
+        return;
+      }
       cliError(
         `  Another gitnexus analyze (pid ${err.holder.pid} on ${err.holder.hostname}) is ` +
           `already refreshing this index and did not finish within the wait window.\n` +

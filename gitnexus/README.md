@@ -2,7 +2,7 @@
 
 **Graph-powered code intelligence for AI agents.** Index any codebase into a knowledge graph, then query it via MCP or CLI.
 
-Works with **Cursor**, **Claude Code**, **Antigravity** (Google), **Codex**, **Windsurf**, **Cline**, **OpenCode**, **CodeBuddy** (Tencent), **Qoder** (Alibaba), and any MCP-compatible tool.
+Works with **Cursor**, **Claude Code**, **Antigravity** (Google), **Codex**, **Factory** (Droid), **Windsurf**, **Cline**, **OpenCode**, **CodeBuddy** (Tencent), **Qoder** (Alibaba), and any MCP-compatible tool.
 
 [![npm version](https://img.shields.io/npm/v/gitnexus.svg)](https://www.npmjs.com/package/gitnexus)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](https://polyformproject.org/licenses/noncommercial/1.0.0/)
@@ -36,6 +36,8 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 
 `gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once. To configure only selected integrations, pass `--coding-agent`/`-c` with a comma-separated list or repeat the option, for example `gitnexus setup -c cursor,codex`.
 
+For Claude Code, Cursor, and Codex, setup keeps an existing URL-based `gitnexus` MCP entry and its authentication settings. Skills are still installed; setup installs Claude Code and Codex hooks, while Cursor hooks require [manual installation](../gitnexus-cursor-integration/README.md#hook-install).
+
 ### Editor Support
 
 | Editor                   | MCP | Skills | Hooks (auto-augment)                                                                       | Support      |
@@ -44,12 +46,13 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 | **Cursor**               | Yes | Yes    | Yes (postToolUse, [manual install](../gitnexus-cursor-integration/README.md#hook-install)) | **Full**     |
 | **Antigravity** (Google) | Yes | Yes    | Yes (AfterTool, [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/))    | **Full**     |
 | **Codex**                | Yes | Yes    | Yes (PreToolUse + PostToolUse, [Codex hooks](https://developers.openai.com/codex/hooks))   | **Full**     |
+| **Factory** (Droid)      | Yes | Yes    | Yes (PostToolUse, [plugin](../gitnexus-factory-plugin/))                                   | **Full**     |
 | **OpenCode**             | Yes | Yes    | —                                                                                          | MCP + Skills |
 | **CodeBuddy** (Tencent)  | Yes | Yes    | —                                                                                          | MCP + Skills |
 | **Qoder** (Alibaba)      | Yes | Yes    | —                                                                                          | MCP + Skills |
 | **Windsurf**             | Yes | —      | —                                                                                          | MCP          |
 
-> **Claude Code** and **Codex** get the deepest integration: MCP tools + agent skills + PreToolUse hooks that automatically enrich grep/glob/bash calls with knowledge graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
+> **Full** means MCP tools + agent skills + hooks that enrich searches with graph context. **Claude Code** and **Codex** go deepest: their PreToolUse hooks enrich the search before it runs, and their PostToolUse hooks also detect a stale index after commits and prompt the agent to reindex. **Cursor**, **Antigravity**, and **Factory** augment from a post-tool hook only, so they enrich the result rather than the query and do not carry the stale-index hint.
 
 ### Community Integrations
 
@@ -88,6 +91,33 @@ codex plugin marketplace add abhigyanpatwari/GitNexus
 
 > **Codex notes:** SessionStart is intentionally not registered — Codex reads [AGENTS.md natively](https://developers.openai.com/codex/guides/agents-md), which already carries the GitNexus context block. Newly installed hooks need a one-time approval in Codex via `/hooks` before they run. Pick **one** install route (`gitnexus setup -c codex` **or** the plugin): plugin hooks load alongside `~/.codex/hooks.json`, so installing both can fire duplicate hooks per tool call.
 
+### Factory (Droid) (full support — MCP + skills + hooks)
+
+`gitnexus setup -c droid` writes the MCP server to `~/.factory/mcp.json` and installs skills to
+`~/.factory/skills/`. To configure MCP by hand instead, add to `~/.factory/mcp.json`
+([user scope](https://docs.factory.ai/cli/configuration/mcp) — applies to all projects):
+
+```json
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
+    }
+  }
+}
+```
+
+For the PostToolUse search-augment hook, install the bundled
+[`gitnexus-factory-plugin/`](../gitnexus-factory-plugin/) with `droid plugin install gitnexus@<marketplace>`
+from a marketplace that includes this repo, or point Droid at it via `extraKnownMarketplaces` in
+`.factory/settings.json`.
+
+> **Factory notes:** Droid reads [AGENTS.md natively](https://docs.factory.ai/), which already carries the
+> GitNexus context block, so no SessionStart hook is registered. Pick **one** install route
+> (`gitnexus setup -c droid` **or** the plugin) — the plugin ships its own MCP entry, so installing both
+> can register the server twice.
+
 ### Cursor / Windsurf
 
 Add to `~/.cursor/mcp.json` (global — works for all projects):
@@ -104,6 +134,21 @@ Add to `~/.cursor/mcp.json` (global — works for all projects):
 ```
 
 ### OpenCode
+
+`gitnexus setup -c opencode` writes the MCP entry plus skills and the hooks
+plugin (`~/.config/opencode/plugins/gitnexus.js`, auto-loaded by OpenCode —
+search augmentation via the OpenCode v1 `tool.execute.after` API and a
+stale-index hint after git mutations). Restart OpenCode after setup. Verified
+with OpenCode 1.19.5; the OpenCode v2 plugin API is not covered. Bash hooks
+recognize literal commands and known options, skip ambiguous shell constructs,
+and check the current OpenCode project's index for staleness.
+
+Bash search augmentation requires `rg` or `grep` to be the first command.
+For example, `cd src && rg UserService .` runs normally but receives no graph
+augmentation. Use a direct search command or OpenCode's `grep`/`glob` tools to
+get graph context.
+
+Manual MCP configuration:
 
 Add to `~/.config/opencode/config.json`:
 
@@ -161,7 +206,7 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 5. **Processes** — Traces execution flows from entry points through call chains
 6. **Search** — Builds hybrid search indexes for fast retrieval
 
-The result is a **LadybugDB graph database** stored locally in `.gitnexus/` with full-text search and semantic embeddings.
+The result is a **LadybugDB graph database** stored locally in `.gitnexus/` by default, with full-text search and semantic embeddings.
 
 ### Experimental community detection engine
 
@@ -182,29 +227,31 @@ Note that the bundled Graphology path is no longer the slow option it once was: 
 
 ## MCP Tools
 
-Your AI agent gets **17 tools** (15 per-repo + 2 group) automatically:
+Your AI agent gets **19 tools** (including 2 group tools) automatically:
 
-| Tool             | What It Does                                                           |
-| ---------------- | ---------------------------------------------------------------------- |
-| `list_repos`     | Discover all indexed repositories (paginated — `limit`/`offset`)       |
-| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF)                  |
-| `context`        | 360-degree symbol view — categorized refs, process participation       |
-| `impact`         | Blast radius analysis with depth grouping and confidence               |
-| `trace`          | Shortest directed path between two symbols (call + class-member edges) |
-| `detect_changes` | Git-diff impact — maps changed lines to affected processes             |
-| `check`          | Read-only structural checks against the indexed graph                  |
-| `rename`         | Multi-file coordinated rename with graph + text search                 |
-| `cypher`         | Raw Cypher graph queries                                               |
-| `route_map`      | API route map — which components fetch which endpoints, and handlers   |
-| `tool_map`       | MCP/RPC tool definitions — where they're defined and handled           |
-| `shape_check`    | Validate API response shapes against consumers' property accesses      |
-| `api_impact`     | Pre-change impact report for an API route handler                      |
-| `explain`        | Explain persisted taint findings (source→sink flows, `--pdg` indexes)  |
-| `pdg_query`      | Query control/data dependence at statement level (`--pdg` indexes)     |
-| `group_list`     | List configured repository groups                                      |
-| `group_sync`     | Rebuild a group's Contract Registry and cross-repo links               |
+| Tool             | What It Does                                                                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_repos`     | Discover all indexed repositories (paginated — `limit`/`offset`)                                                                                  |
+| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF); optional `chain_depth` expands each result's call chain                                    |
+| `context`        | 360-degree symbol view — categorized refs, process participation, HTTP routes, `is_entry_point` flag; optional `chain_depth` call-chain expansion |
+| `impact`         | Blast radius analysis with depth grouping and confidence                                                                                          |
+| `trace`          | Shortest directed path between two symbols (call + class-member edges)                                                                            |
+| `detect_changes` | Git-diff impact — maps changed lines to affected processes                                                                                        |
+| `check`          | Read-only structural checks against the indexed graph                                                                                             |
+| `rename`         | Semantic rename: previews by default (`dry_run` omitted/true), applies with `dry_run: false`; unsupported or ambiguous occurrences block the rename |
+| `cypher`         | Raw Cypher graph queries                                                                                                                          |
+| `route_map`      | API route map — which components fetch which endpoints, and handlers                                                                              |
+| `tool_map`       | MCP/RPC tool definitions — where they're defined and handled                                                                                      |
+| `shape_check`    | Validate API response shapes against consumers' property accesses                                                                                 |
+| `api_impact`     | Pre-change impact report for an API route handler                                                                                                 |
+| `explain`        | Explain persisted taint findings (source→sink flows, `--pdg` indexes)                                                                             |
+| `pdg_query`      | Query control/data dependence at statement level (`--pdg` indexes)                                                                                |
+| `read_file`      | Read a checkout file (optional 0-indexed slice; `maxLines` cap)                                                                                   |
+| `grep`           | Regex search of the working tree for indexed files (1-based hits; optional `caseSensitive` / `literal`)                                           |
+| `group_list`     | List configured repository groups                                                                                                                 |
+| `group_sync`     | Rebuild a group's Contract Registry and cross-repo links                                                                                          |
 
-> With one indexed repo, the `repo` param is optional. With multiple, specify which: `query({search_query: "auth", repo: "my-app"})`. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`; omitting it queries the workspace index, which follows your checked-out working tree. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
+> Read-only tools can omit `repo` when one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout. Otherwise—and for mutating tools with multiple indexed repos and no MCP default—specify it explicitly: `query({search_query: "auth", repo: "my-app"})`. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`, except `read_file`, `grep`, and `rename`, which use the current checkout and do not accept `branch`. A `rename` preview (`dry_run` omitted or `true`) may also omit `repo` under the same cwd rule; `rename` with `dry_run: false` always needs one repo indexed, an MCP default, or an explicit `repo`. Omitting `branch` queries the workspace index, which follows your checked-out working tree. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
 
 ## MCP Resources
 
@@ -234,19 +281,26 @@ Your AI agent gets **17 tools** (15 per-repo + 2 group) automatically:
 gitnexus setup                   # Configure MCP for detected editors (one-time; use -c to select)
 gitnexus uninstall               # Preview removal of GitNexus MCP/skills/hooks (add --force to apply)
 gitnexus analyze [path]          # Index a repository (or update stale index)
+gitnexus analyze [path] --watch  # Watch local files and serialize incremental refreshes
 gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
-gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS rebuild
+gitnexus analyze --force         # Rebuild graph + FTS; may reuse unchanged parser output
+gitnexus analyze --no-parse-cache # Re-parse every source file, then rebuild graph + FTS
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus embeddings install      # Fetch the optional local embedding stack on demand (--cuda, --force)
 gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
-gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
+gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits (does not skip standard skills; use --skip-skills; community --skills files are unaffected)
 gitnexus analyze --skip-skills   # Skip installing standard .claude/skills/gitnexus-* skill files
 gitnexus analyze --skip-git      # Index folders that are not Git repositories
 gitnexus analyze --workers <n>   # Parse worker pool size (>=1; default: cores-1, capped at 16)
+gitnexus analyze --max-processes <n>  # Process-detection process cap (replaces dynamic max(20, round(symbols/10)))
+gitnexus analyze --max-entry-point-candidates <n>  # Ranked entry-point pool (default 200; raise when the warning names it)
+gitnexus analyze --spring-actuator ./actuator  # Enrich with local Spring Boot Actuator JSON snapshots
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --max-file-size 1024  # Skip files larger than N KB (default: 512, cap: 32768)
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
+gitnexus analyze --memory-budget 3000  # Main-thread V8 heap in MB (>= 200); overrides the auto-sizer and any --max-old-space-size pin
 gitnexus analyze --wal-checkpoint-threshold 67108864  # 64 MiB. Control LadybugDB WAL auto-checkpoint threshold (default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB)
+gitnexus auto-sync [init|start|restart|stop|status|reset]  # Scheduled remote clone/pull + analyze from GITNEXUS_HOME/watch_config.yml
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI
 gitnexus index                   # Register an existing .gitnexus/ folder into the global registry
@@ -256,9 +310,11 @@ gitnexus clean                   # Delete index for current repo
 gitnexus clean --all --force     # Delete all indexes
 gitnexus wiki [path]             # Generate LLM-powered docs from knowledge graph
 gitnexus wiki --model <model>    # Wiki with custom LLM model (default: minimax/minimax-m2.5)
+gitnexus wiki --provider grok    # Local Grok Build CLI (uses `grok login`, no API key)
 gitnexus wiki --base-url http://llama-box.local:8080/v1 --allow-insecure-connection llama-box.local
                                   # Allow an exact LAN/self-hosted HTTP LLM host; env: GITNEXUS_ALLOW_INSECURE_CONNECTION
 gitnexus doctor                  # Show runtime platform capabilities and embedding configuration
+gitnexus update                  # Install the latest published GitNexus (`npm i -g gitnexus@<x.y.z>`)
 
 # Direct graph queries — the same tools the MCP server exposes, no MCP daemon needed
 gitnexus query "<concept>"                                    # Process-grouped hybrid search
@@ -281,7 +337,100 @@ gitnexus group status <name>     # Check staleness of repos in a group
 gitnexus group impact <name> --target <symbol> --repo <groupPath>  # Cross-repo blast radius
 ```
 
-> **`gitnexus uninstall`** reverses `gitnexus setup` — it removes the GitNexus MCP entries, hooks, and skill directories it added to each detected editor. Skill directories are identified **by bundled gitnexus skill name** (e.g. `gitnexus-cli/`), so if you customized files inside an installed skill directory, back them up first. It is a dry-run preview by default and prints the exact paths it would remove; pass `--force` to apply. Per-repo indexes (`gitnexus clean --all`) and the global npm package (`npm uninstall -g gitnexus`) are left for you to remove.
+`gitnexus analyze --watch` requires a Git repository. It performs an initial
+analysis and then debounces scanner-admitted working-tree changes for 300 ms by
+default into serialized incremental refreshes. Events arriving during a run
+remain queued, and retryable failures retain the same batch with bounded
+backoff. Invalid `.gitnexusrc` or ignore-file reloads pause ordinary refreshes
+until the control file is fixed. Watch refreshes update only the graph: they
+intentionally skip AGENTS.md / CLAUDE.md injection and standard skill
+installation. Run a one-shot `gitnexus analyze` when those generated files need
+updating. Stop watch mode with Ctrl+C.
+
+Watch mode accepts `--debounce`, `--workers`, `--worker-timeout`,
+`--max-file-size`, `--max-processes`, `--max-process-branching`,
+`--max-process-trace-depth`, `--max-entry-point-candidates`, `--branch`, `--pdg`, `--name`, `--allow-duplicate-name`, and
+`--verbose`. Explicit one-shot options such as `--force`, `--repair-fts`,
+embedding flags, `--skills`, `--default-branch`, `--skip-agents-md`,
+`--skip-skills`, `--no-stats`, `--self-commit`, `--index-only`, and `--skip-git`
+are rejected. Unsupported defaults from `.gitnexusrc` are ignored with a warning.
+
+POSIX requests clone-first copy-and-swap publication when the live index has no
+orphan sidecars. Windows and sidecar fallback runs update in place: failures
+known to occur before writes are retried, while a failure that may have mutated
+the live index stops the watcher. Watch mode does not pull remotes. Running MCP
+and `serve` processes periodically check for a newly published index and reopen
+it without a restart. MCP checks are throttled to once every five seconds, so a
+tool call before the next check can briefly use the previous index.
+
+### `gitnexus auto-sync`
+
+`gitnexus auto-sync` is a different product from `gitnexus analyze --watch`. It is the explicit long-running auto-sync entrypoint that clones or pulls configured remotes. `gitnexus watch` is reserved and does not start either job: it prints this split. `GITNEXUS_HOME` defaults to `~/.gitnexus`; `gitnexus auto-sync init` creates its default `$GITNEXUS_HOME/watch_config.yml`. Bare `gitnexus auto-sync` is the same as `gitnexus auto-sync start`; `restart`, `stop`, `status`, and `reset` manage the same `GITNEXUS_HOME` instance. `reset` removes only the derived analysis state and commit snapshot; clones, indexes, and registry entries are untouched. `start` runs in the foreground, reads the configuration once at startup, runs once immediately, then repeats on `sync_interval_minutes`; restart it after changing the configuration. Watch runtime artifacts live under `$GITNEXUS_HOME/watch/`: `project_commit_info.txt` is the human-readable per-loop snapshot, `auto-sync-state.json` is the machine state used for commit skipping and analyze failure thresholds, `watch.mutex` prevents multiple auto-sync processes for one home, `watch.owner.json` records ownership metadata, `watch.pid` plus `watch.status.json` expose process state, `watch.stop.<ownerId>.json` is a temporary owner-fenced stop request, and `quarantine/` stores partial clone output before entries are removed after 14 days, keeping at most the five newest entries per repository regardless of age. Mutexes with verified dead owners are reclaimed automatically after an abnormal exit. Invalid or legacy mutexes fail closed; confirm no auto-sync process is running before manually removing `watch.mutex` and stale `watch.pid` / `watch.owner.json`.
+
+```yaml
+sync_interval_minutes: 10
+max_concurrency: 1
+repo_git_timeout: 10s
+analyze_timeout: 5m
+analyze_failure_threshold: 3
+# allowed_hosts: [gitlab.mycompany.com]
+projects:
+  - local_path: /abs/path/to/repos
+    branches: [master, main]
+    # pdg: omit = preserve live index mode; true = keep PDG current;
+    # false = init default (warns, then strips PDG on the next successful rebuild).
+    # Do not paste pdg: false onto an existing watch file unless you intend to drop PDG.
+    pdg: false
+    overwrite_local_changes: false
+    remote_urls:
+      - git@github.com:owner/repo.git
+      - git@gitlab.com:group/repo.git
+      - git@gitee.com:owner/repo.git
+```
+
+`sync_interval_minutes` must be an integer of at least `5`. `local_path` must be an absolute path without traversal; each remote is cloned below it as `host/namespace/repo`, preventing same-basename repositories from colliding. `remote_urls` may use SSH SCP form (`git@host:owner/repo.git`) or HTTPS (`https://host/owner/repo.git`). Hosts are limited to github.com, gitlab.com, and gitee.com unless listed in top-level `allowed_hosts` (exact DNS names, no wildcards). The published CLI image includes `openssh-client` so SSH remotes can clone; mount keys and `known_hosts` yourself. An invalid `watch_config.yml` skips auto-sync immediately with the validation error. `repo_git_timeout` applies to each repo clone/pull and defaults to `10s`; a bare number such as `10` is interpreted as seconds, while `10000ms`, `10s`, and `1m` keep their explicit units. It must not exceed one hour or `sync_interval_minutes`, whichever is smaller — so a bare `600000` is rejected, because it means 600000 seconds rather than milliseconds. `analyze_timeout` applies to each isolated analysis worker and defaults to half of `sync_interval_minutes`, but it is independent of polling and may be longer, up to Node's timer limit (`2147483647ms`). A `5` minute poll with `analyze_timeout: 30m` is valid. Auto-sync analysis honors the cloned repo's `.gitnexusrc` embeddings settings; the CLI image still needs `GITNEXUS_EMBEDDING_URL` or a bind-mounted embedding stack because npm is stripped. A tick that arrives while the previous loop is active never overlaps it: ticks coalesce into one immediate follow-up run, which pulls and analyzes the newest commit. If the parent times out and leaves that worker running, the follow-up is deferred to the next interval so a leftover lock holder is not counted as a hard analyze failure. Timeout and `auto-sync stop` request safe cancellation; a worker already in native work exits after it returns to a JS-visible safe point. While waiting, auto-sync reports `cancelling` or `stopping` and keeps its ownership files so another auto-sync cannot take over. The parent waits up to 5 seconds for the worker to exit; after that it stops waiting, releases its ownership files, and leaves the worker to finish and exit on its own rather than killing it mid-write. `auto-sync stop` uses this same control path on macOS and Windows.
+
+`pdg` is configured per project. `pdg: true` builds and maintains the full CFG, control-dependence, reaching-definition, and taint layers on both initial and incremental analyses. Auto-sync requests staged atomic incremental publication where the analyzer supports it: the old graph remains available to readers until the replacement succeeds, and analysis errors are recorded while the old graph remains intact. Unsupported paths retain the analyzer's existing in-place behavior. Untouched configs that omit `pdg` preserve the existing index mode and cannot silently strip PDG data. Do not paste `pdg: false` from this example onto an existing watch file unless you intend to drop PDG. An explicit `pdg: false` disables PDG and emits a warning before a successful rebuild removes those layers. `overwrite_local_changes` defaults to `false`; a dirty local clone is skipped with an error log, while `true` allows branch fallback to replace local changes and additionally discards untracked files and directories in the clone after checkout — ignored paths, including GitNexus's own `.gitnexus/` storage, are preserved. `max_concurrency` defaults to `1` and is capped at runtime by `floor(availableMemoryGB / 2)` with a minimum of `1`; the effective value is printed at the start of each loop. Each analysis worker's heap cap is the machine-wide cap divided by the number of repositories analyzed in parallel, so concurrent workers share one memory budget instead of each claiming the whole machine. `analyze_failure_threshold` defaults to `3`, must be at least `2`, and pauses repeated failures only for the same repo branch, commit, and requested PDG mode; a new commit, a PDG mode change, or `gitnexus auto-sync reset` clears the block and allows analysis again. Repositories are registered and added to groups by their full remote identity (`host/namespace/repo`), so repositories with the same basename remain distinct. Use `branches` to try branches in order; legacy `branch` remains supported, but the two fields cannot be set together. If all branches are unavailable or time out, watch logs an error, records the repo status, and skips that repo for the loop. Leave `group_name` empty or omit it to skip group add/sync for that project; otherwise create the group first with `gitnexus group create <name>`. `$GITNEXUS_HOME/watch/project_commit_info.txt` is for inspection only; GitNexus stores machine state separately in `$GITNEXUS_HOME/watch/auto-sync-state.json`.
+
+GraphQL contract matching is opt-in in the group's `group.yaml`:
+
+```yaml
+detect:
+  graphql: true
+```
+
+The initial exact-only slice matches methods and properties on top-level NestJS `@Resolver`
+classes using imported `@Query`, `@Mutation`, and `@Subscription` decorators. Named
+`.graphql`/`.gql` operations are anchored by generated `<OperationName>Document` declarations;
+object, static `gql` template, and `TypedDocumentString` initializers must prove the operation name
+and root fields. Dynamic decorator names, anonymous operations, and ambiguous or missing graph
+anchors are deliberately omitted. Add common infrastructure fields such as `/health` to
+`matching.exclude_links_paths` to keep those GraphQL contracts visible without cross-linking them.
+
+`--spring-actuator` is explicitly opt-in. The path may be a JSON bundle keyed by `mappings`, `beans`, `conditions`, `configprops`, and/or `env`, or a directory containing endpoint-named JSON files. Runtime mappings and beans confirm matching static nodes; conditions and configuration property keys enrich existing evidence, with conservative runtime-only nodes added when no match exists. The configured input is excluded from source scanning; only normalized repository-relative exclusions are retained for future scans, never absolute paths. Env/configprops values, origins, condition messages, and source names are never persisted or printed. Enabled runs always rebuild because runtime snapshots are external to git freshness; omitting the option later rebuilds once to remove runtime evidence. Project config can set the same path with `springActuator` in `.gitnexusrc`.
+
+Go gin/echo routes are indexed when a file imports `github.com/gin-gonic/gin` or `github.com/labstack/echo` directly. A service that registers routes through an internal wrapper package — `func InitRoute(s *core.Engine)`, where the dependency declares `type Engine = gin.Engine` — produces no routes, because the wrapper's source is usually not in the repository and the equivalence cannot be proven. Declare it in `.gitnexusrc`, together with any application adapters that wrap the real handler (`common.Wrapper(api.CreateJob)`):
+
+```json
+{
+  "goRouterAliases": [
+    { "importPath": "example.com/infra/pkg", "type": "Engine", "framework": "gin" }
+  ],
+  "goHandlerWrappers": ["common.Wrapper", "common.WrapperWithSuccessCode"]
+}
+```
+
+`framework` is `gin` or `echo` and selects the handler argument order. A wrapper entry is the callee exactly as written at the registration site; its first argument becomes the route's handler. Registrations on an undeclared wrapper type are dropped, and `analyze` logs how many were dropped per `importPath.Type` so you can see what to declare. Changing either key rebuilds Route evidence on the next `analyze` without `--force`.
+
+To keep this configuration out of the working tree, set `GITNEXUS_RC` to the absolute path of a JSON file with the same shape as `.gitnexusrc`. Its keys override the repository's `.gitnexusrc` key by key, and CLI flags still win. Hooks, MCP servers, and watch processes that re-index must see the same variable; if a later run no longer has it, `analyze` warns before removing the Routes it produced.
+
+`--asyncapi-spec` is explicitly opt-in and accepts a directory of AsyncAPI documents or a single document; the path is resolved against the repository root, so a committed `docs/asyncapi` and an absolute cache written by something else both work. Each `operations[]` entry of an **AsyncAPI 3.x** document can contribute a `Destination` node keyed by broker and address, with `action: send` emitting `PUBLISHES_TO` and `action: receive` emitting `CONSUMES_FROM`, so a document and source code that name one address on one broker land on the same node. Edges start at the document, not at a callable — a document states that the service talks to an address, not which method does — and no address a document names is ever attached to an unresolved source site.
+
+An operation must name a protocol, either through its own `bindings` or through the `servers[].protocol` of the servers its channel resolves to (a channel that lists no `servers` resolves to all of them); operations that name none are refused, as are operations whose two readings name different brokers, and channels that inherit a multi-protocol server set without choosing. HTTP and WebSocket documents are refused for destination minting: there the host rather than the address names the place, and an HTTP endpoint is already modelled as a `Route`. A parameterized address — a channel declaring `parameters`, or an address containing `{` — is refused rather than keyed: two services publishing `{env}.orders` share a pattern, not a queue. AsyncAPI **2.x is refused** under its own counted reason and never mapped, because its `publish`/`subscribe` are inverted relative to 3.x `send`/`receive` and a naive mapping would reverse the async graph while leaving it connected. Every refusal is counted, and a configured path that yields nothing is reported rather than passed over in silence.
+
+Like Actuator snapshots, documents are external to git freshness — replacing one moves no commit and dirties no file — so an enabled run always rebuilds, and the first later run without the option rebuilds once to remove document-derived evidence. There is no glob-based auto-discovery, and the option is unsupported with `--watch`.
+
+> **`gitnexus uninstall`** removes the named GitNexus MCP entries, hooks, and skill directories from detected editors. This includes a URL-based MCP entry you configured yourself, even if setup preserved it. Skill directories are identified **by bundled gitnexus skill name** (e.g. `gitnexus-cli/`), so if you customized files inside an installed skill directory, back them up first. It is a dry-run preview by default and prints the exact paths it would remove; pass `--force` to apply. Per-repo indexes (`gitnexus clean --all`) and the global npm package (`npm uninstall -g gitnexus`) are left for you to remove.
 
 ## Remote Embeddings
 
@@ -297,8 +446,18 @@ export GITNEXUS_EMBEDDING_MAX_ATTEMPTS=3     # optional, total attempts (1-20)
 export GITNEXUS_EMBEDDING_RETRY_CAP_MS=5000  # optional, maximum retry delay
 export GITNEXUS_EMBEDDING_MIN_INTERVAL_MS=0  # optional, minimum request spacing
 export GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS=180000 # optional, per-request timeout (max 300000)
+export GITNEXUS_EMBEDDING_MAX_INPUT_CHARS=4096 # optional, final generated input budget (minimum 2)
 gitnexus analyze . --embeddings
 ```
+
+The input budget includes generated headers and context. Longer inputs are split
+without truncating their text. It counts UTF-16 characters, not model tokens;
+lower it for endpoints with smaller token limits. Changing it invalidates cached
+embedding chunks. Input rejections (HTTP 400, 413 or 422) are isolated by splitting
+the request batch, so healthy inputs can finish. Rejected nodes remain pending and
+are retried by the next analyze run. Repeated rejections across distinct nodes
+without a successful input stop the run after the current node batch, preserving
+later batches and reporting a likely endpoint or input-budget configuration problem.
 
 `GITNEXUS_EMBEDDING_REQUEST_DIMS` controls only the `dimensions` field sent in
 the request body, independently of `GITNEXUS_EMBEDDING_DIMS` (which still
@@ -342,7 +501,7 @@ GitNexus supports indexing multiple repositories. Each `gitnexus analyze` regist
 
 ## Supported Languages
 
-TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby, Dart
+TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby, Dart, Zig
 
 ### Language Feature Matrix
 
@@ -355,13 +514,14 @@ TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, 
 | Kotlin     | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | C#         | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
 | Go         | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
-| Rust       | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| Rust       | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
 | PHP        | ✓       | ✓              | ✓       | —        | ✓                | ✓                     | ✓      | ✓          | ✓            |
 | Ruby       | ✓       | —              | ✓       | ✓        | —                | ✓                     | —      | ✓          | ✓            |
 | Swift      | —       | —              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
 | C          | —       | —              | ✓       | —        | ✓                | ✓                     | —      | ✓          | ✓            |
 | C++        | —       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Dart       | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| Zig        | ✓       | —              | ✓       | —        | ✓                | ✓                     | ✓      | —          | ✓            |
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
 
@@ -389,7 +549,7 @@ Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setu
   LadybugDB native binary ships as a prebuild against that floor, so on an older host it cannot
   load and reinstalling does not help — see
   [Linux: `GLIBC_2.34' not found`](#linux-glibc_234-not-found).
-- **Windows, for full-text search:** the Microsoft Visual C++ 2015-2022 Redistributable (x64) *and*
+- **Windows, for full-text search:** the Microsoft Visual C++ 2015-2022 Redistributable (x64) _and_
   OpenSSL 3 (`libssl-3-x64.dll`, `libcrypto-3-x64.dll`) resolvable on `PATH` — see
   [Windows: full-text search unavailable](#windows-full-text-search-unavailable).
 
@@ -416,11 +576,45 @@ bigger cycle) and `N` increments per published rc. Example sequence:
 `1.6.3-rc.1`. See the [Releases page](https://github.com/abhigyanpatwari/GitNexus/releases)
 for the full list; stable `latest` is unaffected.
 
+## Update notifications
+
+GitNexus checks the npm registry's `latest` dist-tag at most once every 24
+hours per installation and tells you when a newer stable version exists. The
+result is cached under `$GITNEXUS_HOME` (`~/.gitnexus` by default), so the
+check never runs on the command's hot path and never blocks output. Where the
+notice appears:
+
+- **CLI** — one line on stderr when you run a command interactively (never on
+  stdout, so `gitnexus query … | jq` and other piped output stay clean), a
+  line in `gitnexus doctor` when an update is known. Automatic notices never
+  install. `gitnexus update` checks even when notices are opted out, then
+  runs `npm i -g gitnexus@<x.y.z>` (same idea as `claude update` /
+  `codex update`).
+- **MCP server** — one structured log record on the server's stderr per
+  process per version (visible in your host's MCP log panel). Tool results,
+  resources, prompts, and server instructions never carry update text.
+- **Web UI** — a dismissible banner when the server reports a newer version;
+  dismissal persists per version.
+
+The check is skipped entirely (no network request, no output) when `CI` is
+truthy, when the install is not an npm global/local install (npx cache, dev
+checkout, Docker image — the Docker CLI image sets the opt-out itself), or
+when opted out:
+
+| Variable                      | Effect                                                                                                                                                                                                                 |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GITNEXUS_NO_UPDATE_NOTIFIER` | Truthy (`1`, `true`, …) disables the update check on every surface.                                                                                                                                                    |
+| `NO_UPDATE_NOTIFIER`          | Cross-tool convention; honored the same way.                                                                                                                                                                           |
+| `npm_config_registry`         | The check reads the `latest` dist-tag from this registry instead of `https://registry.npmjs.org`. Credentials are never sent, and registries that require authentication are not supported (the check silently skips). |
+
+Eval harnesses running a global install can set `GITNEXUS_NO_UPDATE_NOTIFIER`
+for a quiet registry.
+
 ## Troubleshooting
 
 ### `Cannot destructure property 'package' of 'node.target' as it is null`
 
-This error comes from **npm 11.x's arborist** while installing gitnexus (often via `npx`), before gitnexus code runs. It is triggered by platform-filtered `optionalDependencies` in native packages such as `onnxruntime-node` / `@huggingface/transformers` (used when indexing with `--embeddings`). GitNexus cannot catch it at runtime — use one of these workarounds:
+This error comes from **npm 11.x's arborist** while installing a package with platform-filtered `optionalDependencies` (often via `npx`), before gitnexus code runs. Default `npm install` / `npx gitnexus` no longer fetch `@huggingface/transformers` or `onnxruntime-node`; those packages appear only if you run `gitnexus embeddings install` (or you still have a leftover 1.6.12 package-first tree). Other native optionals can still trigger the same arborist crash. GitNexus cannot catch it at runtime — use one of these workarounds:
 
 ```bash
 pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze       # auto-selected when pnpm + npm 11+
@@ -503,24 +697,21 @@ runtime dependencies Windows does not ship by default:
 
 1. **Microsoft Visual C++ 2015-2022 Redistributable (x64)** —
    <https://aka.ms/vs/17/release/vc_redist.x64.exe>
-2. **OpenSSL 3** — `libssl-3-x64.dll` and `libcrypto-3-x64.dll`, resolvable on `PATH`
+2. **OpenSSL 3** — install it as a system runtime so `libssl-3-x64.dll` and
+   `libcrypto-3-x64.dll` resolve without borrowing them from another application.
 
-The redistributable alone is **not** sufficient. If Git for Windows is installed you already have
-the OpenSSL DLLs — run `gitnexus` from **Git Bash**, or prepend the directory to `PATH` in the
-shell you use:
+The redistributable alone is **not** sufficient. Do not prepend a third-party
+application directory (including Git for Windows) to `PATH` to pick up those DLLs.
 
-```powershell
-$env:PATH = "C:\Program Files\Git\mingw64\bin;$env:PATH"
-gitnexus analyze --repair-fts
-```
-
-Without them the index is still built, but without search tables, so `query` returns empty keyword
-results until you re-run `gitnexus analyze --repair-fts` from a shell where the DLLs resolve
-([#2669](https://github.com/abhigyanpatwari/GitNexus/issues/2669)).
+Without both runtimes the index is still built, but without search tables, so
+`query` returns empty keyword results until you install the prerequisites and
+re-run `gitnexus analyze --repair-fts`
+([#2669](https://github.com/abhigyanpatwari/GitNexus/issues/2669),
+[#3218](https://github.com/abhigyanpatwari/GitNexus/issues/3218)).
 
 ### Installation fails with native module errors
 
-Some optional language grammars (Dart, Proto, Swift, Kotlin) require native compilation. If they fail, GitNexus still works — those languages will be skipped. To skip them intentionally (no C++ toolchain needed), set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before installing.
+Some optional language grammars (Dart, Proto, Swift, Kotlin, Zig) ship vendored native prebuilds. If a prebuild is missing and a source build is not possible, GitNexus still works — those languages will be skipped. To skip them intentionally (no C++ toolchain needed), set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before installing.
 
 If `npm install -g gitnexus` fails on native modules:
 
@@ -537,7 +728,7 @@ npm install -g gitnexus
 
 `onnxruntime-node`'s postinstall downloads optional CUDA GPU binaries from `api.nuget.org` — outside the npm registry, so registry mirrors don't cover it, and its proxy layer (`global-agent`) ignores the standard `HTTP_PROXY`/`HTTPS_PROXY` variables and rejects 302 redirects ([#2370](https://github.com/abhigyanpatwari/GitNexus/issues/2370)).
 
-Since the packages are optional dependencies, a failed download no longer breaks `npm install -g gitnexus` — npm skips the embedding stack and everything else works. The stack then **self-heals on demand**: the first `gitnexus analyze --embeddings` (or an explicit `gitnexus embeddings install`) fetches it through your configured npm registry — mirrors and proxies apply, no NuGet download involved — into `~/.gitnexus/embedding-runtime`.
+Default `npm install -g gitnexus` no longer fetches the embedding stack. **Opt in on demand**: the first `gitnexus analyze --embeddings` (or an explicit `gitnexus embeddings install`) fetches it through your configured npm registry — mirrors and proxies apply, no NuGet download involved — into `~/.gitnexus/embedding-runtime`. A leftover 1.6.12 package-first tree in gitnexus `node_modules` is residual until a clean reinstall; `--force` only refreshes prefix overrides.
 
 ```bash
 # heal a proxy-degraded install manually (CPU embeddings; registry-only)
@@ -552,7 +743,7 @@ GLOBAL_AGENT_HTTPS_PROXY=<proxy-url> gitnexus embeddings install --cuda
 
 The prefix defaults to `~/.gitnexus/embedding-runtime`; set `GITNEXUS_EMBEDDING_RUNTIME_DIR` to install it elsewhere (e.g. a writable path in a container).
 
-> **Node requirement for the on-demand prefix:** the self-heal loads the prefixed packages via `module.registerHooks`, available on Node **≥ 22.15** (on the 22.x line) or **≥ 23.5** (on the 23.x line). On an older Node the packages install but can't be loaded from the prefix — reinstall them into the install itself instead (works on every supported Node): `ONNXRUNTIME_NODE_INSTALL=skip npm install -g gitnexus` (Windows: `set ONNXRUNTIME_NODE_INSTALL=skip && npm install -g gitnexus`). Skipping only the CUDA download keeps full CPU embeddings (CPU embeddings don't need it). Check the result any time with `gitnexus doctor` (Embeddings → Support line).
+> **Node requirement for the on-demand prefix:** the prefix loads via `module.registerHooks`, available on Node **≥ 22.15** (on the 22.x line) or **≥ 23.5** (on the 23.x line). On an older Node the packages install but can't be loaded from the prefix — upgrade Node, then run `gitnexus embeddings install`. Check the result any time with `gitnexus doctor` (Embeddings → Support line).
 
 ### Analyze warns about unavailable FTS or VECTOR extensions
 
@@ -560,17 +751,21 @@ GitNexus uses optional DuckDB extensions for BM25 and vector search. The `gitnex
 
 Configure the behavior with these environment variables:
 
-| Variable                                     | Values                         | Default                | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| -------------------------------------------- | ------------------------------ | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GITNEXUS_LBUG_EXTENSION_INSTALL`            | `auto`, `load-only`, `never`   | `auto`                 | `auto` runs one bounded install if LOAD fails — a plain `INSTALL`, escalating to `FORCE INSTALL` only when the LOAD error shows the present extension file is broken. `load-only` only uses already-installed extensions (recommended for offline / firewalled environments). `never` skips optional extensions entirely.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS` | positive integer               | `15000`                | Wall-clock budget for the out-of-process extension-install child before it is killed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `GITNEXUS_FTS_STEMMER`                       | supported LadybugDB stemmer    | `porter`               | Stemmer used when rebuilding BM25/FTS indexes. Use `none` for CJK-heavy repositories, or a language stemmer such as `german`, `french`, or `spanish` when that better matches repository comments and identifiers. Re-run `gitnexus analyze --repair-fts` after changing it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `GITNEXUS_FTS_CJK_SEGMENTATION`              | `none`, `bigram`               | `none`                 | `bigram` inserts overlapping character-bigram boundaries into Chinese/Japanese Han-ideograph spans in `content`/`description` before FTS indexing, so LadybugDB's space-only tokenizer can see sub-phrase word boundaries. Scoped to CJK Unified Ideographs only — Japanese Hiragana/Katakana and Korean Hangul are not currently segmented. Unlike `GITNEXUS_FTS_STEMMER`, this rewrites stored text — enabling it on an already-indexed repo requires a full `gitnexus analyze --force`; neither `--repair-fts` nor a plain incremental `analyze` applies it to previously-indexed files. Set the same value wherever `analyze` and search-serving processes (CLI query, MCP server, web server) run.                                                                                                                                       |
-| `GITNEXUS_STREAM_GRAPH_EMIT`                 | `0`, `1`                       | `1` (on)               | **On by default** on a full rebuild (`--force`); incremental runs ignore it. Holds structural relationships (CALLS, IMPORTS, ACCESSES, CONTAINS, ...) as CSV-on-disk plus compact in-memory columns instead of as objects in three overlapping indexes, cutting peak in-memory graph heap by ~1.4x at no measurable CPU cost (measured A/B on a synthetic 400k-node / 1.08M-edge graph: 819 MB -> 584 MB, iteration at parity, scaling verified linear from 100k to 800k nodes, with every edge still visible through the graph interface; no end-to-end measurement on a real repository yet). Nothing is traded away — community detection, process extraction, PDG taint summaries and the local-symbol pruner all read a complete relationship set and behave identically. Set to `0` only to bisect a suspected streaming-related fault. |
-| `GITNEXUS_COMMUNITY_ENGINE`                  | `graphology`, `icebug`, `auto` | `graphology`           | Community-detection engine used during analyze. `graphology` is the supported default. `icebug` and `auto` are **experimental** and currently behave identically: both try the optional `@ladybugmem/icebug` native Leiden over a CSR export and fall back to Graphology if it is not installed, cannot load, or lacks the deterministic thread/seed controls. Experimental engines partition differently, so community IDs are not comparable across engines.                                                                                                                                                                                                                                                                                                                                                                                |
-| `GITNEXUS_WAL_CHECKPOINT_THRESHOLD`          | integer `>= -1`                | `67108864` (64 MiB)    | LadybugDB WAL auto-checkpoint threshold during analyze (bytes). Auto-checkpoint remains enabled; `-1` keeps Ladybug's stock ~16 MiB. Larger thresholds reduce checkpoint frequency but increase the WAL size at rotation time — choose a smaller value on disk-constrained environments.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `GITNEXUS_LBUG_BUFFER_POOL_SIZE`             | integer `>= 0` (bytes)         | min(2 GiB, 80% RAM)    | LadybugDB buffer-pool ceiling for every GitNexus database (analyze, MCP server, serve, group bridges). Bounded so a long-lived `gitnexus mcp` process or a large incremental `analyze` cannot grow toward LadybugDB's native 80%-of-RAM default and OOM the host (#2557). `0` restores that native unbounded default; invalid values warn and fall back to the default. During `analyze` the pool is right-sized to the graph and, on non-4 KiB-page hosts (Apple Silicon 16 KiB, Ascend/aarch64 64 KiB), scaled by the page-size granule ratio up to min(2 GiB × pageSize/4 KiB, 80% RAM) (#2631); this env var overrides all of that as an absolute value.                                                                                                                                                                                  |
-| `GITNEXUS_LBUG_MAX_DB_SIZE`                  | positive integer (bytes)       | `17179869184` (16 GiB) | Upper bound for a single LadybugDB database file. This is an mmap/disk-address-space ceiling, not a memory limit — it does not constrain the buffer pool (use `GITNEXUS_LBUG_BUFFER_POOL_SIZE` for that). Raise it when indexing genuinely huge monorepos; invalid values silently fall back to the default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Variable                                     | Values                         | Default                                            | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------------------------------- | ------------------------------ | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GITNEXUS_LBUG_EXTENSION_INSTALL`            | `auto`, `load-only`, `never`   | `load-only` globally; `analyze` defaults to `auto` | The process-wide default is `load-only` so serve/MCP/query never install over the network. `gitnexus analyze` overrides to `auto` unless you set the env. FTS loads the packaged per-platform artifact first (macOS, Windows, and Linux), then a named `LOAD`, then `INSTALL` only under `auto`. `never` skips optional extensions entirely.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS` | positive integer               | `15000`                                            | Wall-clock budget for the out-of-process extension-install child before it is killed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `GITNEXUS_FTS_STEMMER`                       | supported LadybugDB stemmer    | `porter`                                           | Stemmer used when rebuilding BM25/FTS indexes. Use `none` for CJK-heavy repositories, or a language stemmer such as `german`, `french`, or `spanish` when that better matches repository comments and identifiers. Re-run `gitnexus analyze --repair-fts` after changing it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `GITNEXUS_FTS_CJK_SEGMENTATION`              | `none`, `bigram`               | `none`                                             | `bigram` inserts overlapping character-bigram boundaries into Chinese/Japanese Han-ideograph spans in `content`/`description` before FTS indexing, so LadybugDB's space-only tokenizer can see sub-phrase word boundaries. Scoped to CJK Unified Ideographs only — Japanese Hiragana/Katakana and Korean Hangul are not currently segmented. Unlike `GITNEXUS_FTS_STEMMER`, this rewrites stored text — enabling it on an already-indexed repo requires a full `gitnexus analyze --force`; neither `--repair-fts` nor a plain incremental `analyze` applies it to previously-indexed files. Set the same value wherever `analyze` and search-serving processes (CLI query, MCP server, web server) run.                                                                                                                                       |
+| `GITNEXUS_STORAGE_PATH`                      | absolute, non-empty directory  | unset (repo-local)                                 | Complete external index directory. This preserves the existing configuration semantics and takes precedence over `GITNEXUS_STORAGE_ROOT` when both are set.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `GITNEXUS_STORAGE_ROOT`                      | absolute, non-empty directory  | unset (repo-local)                                 | Absolute root directory for external indexes. GitNexus creates an isolated `<repo-basename>-<canonical-path-hash>/` slot beneath it for each repository, then registers the resolved slot so `status`, MCP, and `serve` can reopen it later.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `GITNEXUS_CONTENT_RETENTION`                 | `full`, `symbol`, `none`       | `full`                                             | Source-text retention profile: `full` keeps file and symbol text, `symbol` keeps symbol snippets without full file content, and `none` keeps the structural graph without source body text.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `GITNEXUS_STREAM_GRAPH_EMIT`                 | `0`, `1`                       | `1` (on)                                           | **On by default** on a full rebuild (`--force`); incremental runs ignore it. Holds structural relationships (CALLS, IMPORTS, ACCESSES, CONTAINS, ...) as CSV-on-disk plus compact in-memory columns instead of as objects in three overlapping indexes, cutting peak in-memory graph heap by ~1.4x at no measurable CPU cost (measured A/B on a synthetic 400k-node / 1.08M-edge graph: 819 MB -> 584 MB, iteration at parity, scaling verified linear from 100k to 800k nodes, with every edge still visible through the graph interface; no end-to-end measurement on a real repository yet). Nothing is traded away — community detection, process extraction, PDG taint summaries and the local-symbol pruner all read a complete relationship set and behave identically. Set to `0` only to bisect a suspected streaming-related fault. |
+| `GITNEXUS_COMMUNITY_ENGINE`                  | `graphology`, `icebug`, `auto` | `graphology`                                       | Community-detection engine used during analyze. `graphology` is the supported default. `icebug` and `auto` are **experimental** and currently behave identically: both try the optional `@ladybugmem/icebug` native Leiden over a CSR export and fall back to Graphology if it is not installed, cannot load, or lacks the deterministic thread/seed controls. Experimental engines partition differently, so community IDs are not comparable across engines.                                                                                                                                                                                                                                                                                                                                                                                |
+| `GITNEXUS_WAL_CHECKPOINT_THRESHOLD`          | integer `>= -1`                | `67108864` (64 MiB)                                | LadybugDB WAL auto-checkpoint threshold during analyze (bytes). Auto-checkpoint remains enabled; `-1` keeps Ladybug's stock ~16 MiB. Larger thresholds reduce checkpoint frequency but increase the WAL size at rotation time — choose a smaller value on disk-constrained environments.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `GITNEXUS_LBUG_BUFFER_POOL_SIZE`             | integer `>= 0` (bytes)         | min(2 GiB, 80% RAM)                                | LadybugDB buffer-pool ceiling for every GitNexus database (analyze, MCP server, serve, group bridges). Bounded so a long-lived `gitnexus mcp` process or a large incremental `analyze` cannot grow toward LadybugDB's native 80%-of-RAM default and OOM the host (#2557). `0` restores the native 80%-of-RAM default; invalid values warn and fall back to the default. During `analyze` the pool is right-sized to the graph and, on non-4 KiB-page hosts (Apple Silicon 16 KiB, Ascend/aarch64 64 KiB), scaled by the page-size granule ratio up to min(2 GiB × pageSize/4 KiB, 80% RAM) (#2631); this env var overrides all of that as an absolute value.                                                                                                                                                                                  |
+| `GITNEXUS_LBUG_MAX_DB_SIZE`                  | positive integer (bytes)       | `17179869184` (16 GiB)                             | Upper bound for a single LadybugDB database file. This is an mmap/disk-address-space ceiling, not a memory limit — it does not constrain the buffer pool (use `GITNEXUS_LBUG_BUFFER_POOL_SIZE` for that). The native engine requires a power of two: any other positive integer is rounded up to the next power of two with a warning. Raise it when indexing genuinely huge monorepos; invalid values silently fall back to the default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `GITNEXUS_ATOMIC_INCREMENTAL` | `0`, `1` | unset (the caller's choice) | `1` stages an incremental analyze into a copy of the index and swaps it in at the end, so a failed run leaves the live index untouched. `0` turns that off even for callers that request it (watch mode, auto-sync); the run logs a line when it overrides one. The cost: a failed in-place write can leave the live index partly written, and the next run then rebuilds it in full. A full rebuild, and an incremental run that escalates to a staged rebuild, still stage. POSIX only. |
 
 ```bash
 # Offline/airgapped: never reach the network for extensions
@@ -590,6 +785,27 @@ GITNEXUS_FTS_CJK_SEGMENTATION=bigram npx gitnexus analyze --force
 
 ### Analysis runs out of memory
 
+If graph writes fail with `Unable to allocate memory` or `The buffer pool is
+full`, LadybugDB's **native buffer pool** is exhausted. Analysis stops on these
+errors rather than retrying with row skipping. This pool is separate from the
+Node/V8 heap and parse-worker budgets; raising `NODE_OPTIONS`,
+`--memory-budget`, or worker heap limits does not increase it.
+
+On a host with memory to spare, override the pool in **bytes** and rebuild:
+
+```bash
+# 3 GiB native pool; leave room for Node, workers, other native memory, and the OS
+GITNEXUS_LBUG_BUFFER_POOL_SIZE=3221225472 npx gitnexus analyze --force
+```
+
+An explicit value bypasses automatic pool sizing and can exhaust the host if
+set too high. `0` restores LadybugDB's native 80%-of-RAM default; it does not
+provide unlimited memory. Reduce the indexed scope or use more RAM when the
+combined budgets do not fit. A collapsed staged build is discarded before
+publication, preserving the previous index if one exists. In-place collapse
+leaves an incomplete index and exits nonzero; recover with `--force` once the
+underlying problem is fixed.
+
 Memory management is automatic: `analyze` sizes its heap to the machine
 (always below physical RAM), caps each parse worker, and — rather than
 grinding into a GC death spiral or crash — stops early with a message telling
@@ -605,6 +821,11 @@ If analyze says the repository doesn't fit, do what the message says:
   re-run without the pin — no flags needed.
 - **The machine is the ceiling**: shrink the scope (exclude generated or
   vendored directories, below) or use a machine with more RAM.
+
+To set the main-thread heap yourself on a memory-constrained host, pass
+`--memory-budget <mb>`: analyze re-runs with exactly that V8 heap, overriding
+the auto-sizer and any `--max-old-space-size` pin. It sizes the main thread
+only; parse workers keep their own caps.
 
 Escape hatches (`GITNEXUS_MEMORY=off` to decline the autopilot,
 `GITNEXUS_WORKER_HEAP_MB` to size workers yourself) are listed in the
@@ -632,6 +853,24 @@ echo "docs/" >> ~/.gitignore_global
 echo "build/" >> .git/info/exclude                          # this repo only, untracked
 ```
 
+### Incremental analyze fails with `Maximum database size … has been reached` or `numBytesRead: 0`
+
+Both errors come from LadybugDB while an incremental analyze writes embeddings, and both can be intermittent.
+
+- **`Maximum database size of N bytes has been reached`** — the engine's address-space ceiling, an mmap budget rather than disk usage, so an index of a few GB can hit it. `N` is the limit the engine reported. `GITNEXUS_LBUG_MAX_DB_SIZE` sets the ceiling; a value that is not a power of two is rounded up with a warning. Raise it, for example to `549755813888` (512 GiB), and retry.
+- **`Cannot read from file … numBytesRead: 0`** — a read reached end-of-file. If the failing path is a `lbug.staging.<id>` file, the build was a staged copy and your live index is untouched: retry the analyze. If it keeps failing, set `GITNEXUS_ATOMIC_INCREMENTAL=0` to write in place instead; that only affects incremental runs, because a full rebuild always stages. The cost: a failed in-place write can leave the live index partly written, and the next run then rebuilds it in full. If a caller that asked for staging (watch mode, auto-sync) is overridden by the variable, the run logs a line saying so. If the failing path is the live `lbug` file, the index may be damaged: run `gitnexus analyze --force`.
+
+On these two failures GitNexus also prints `Failure evidence — …` lines:
+
+- `live index` and `staging copy`: apparent and allocated size and the filesystem type (the raw hex `f_type`).
+- `staging copy .wal`, `.shadow` and `.wal.checkpoint`: the same for the staging copy's sidecar files; one that does not exist reads `absent`.
+- A `checkpoints:` line: how many GitNexus-issued CHECKPOINTs completed, how long before the failure the last one finished, and how many were in flight when the failure hit.
+- The configured max DB size and the buffer pool size.
+
+The remedy and these lines are appended to the error message that `gitnexus analyze`, `gitnexus analyze --watch` (also without `GITNEXUS_VERBOSE`) and the auto-sync worker print; paste them from there when you report the problem. Also paste the `atomic-incremental: staged … staging copy: apparent …` line from the same run's log: it is the size right after the copy, which tells a copy that was truncated from one that grew afterwards. It is a progress-log line, so it appears only in the progress output of `gitnexus analyze` or, under `analyze --watch`, with `GITNEXUS_VERBOSE=1`.
+
+To check whether a GitNexus-issued CHECKPOINT is involved in the `numBytesRead: 0` failure, set `GITNEXUS_WAL_MANUAL_CHECKPOINT=0` and retry. It disables GitNexus's own manual CHECKPOINTs on the staging database (the periodic driver and the checkpoints around the embedding windows); the engine's automatic checkpointing is unaffected, and analyze then does a full write instead of an incremental one. If the read stops failing with it set, the failure involves a GitNexus-issued checkpoint, which is useful evidence to report.
+
 ### Large files are being skipped
 
 By default the walker skips files larger than **512 KB** (see log line `Skipped N large files (>512KB)`). Raise the threshold via either the CLI flag or the environment variable — both accept a value in **KB**:
@@ -646,6 +885,37 @@ npx gitnexus analyze
 ```
 
 Values above **32768 KB (32 MB)** are clamped to the tree-sitter parser ceiling; invalid values fall back to the 512 KB default with a one-time warning. When an override is active, `analyze` prints the effective threshold in its startup banner (e.g. `GITNEXUS_MAX_FILE_SIZE: effective threshold 2048KB (default 512KB)`).
+
+### Code under a dot directory is missing
+
+The walker skips hidden paths, so symbols defined under a directory such as `.scallywag/` or `.config/` never reach the graph: `impact` and `context` answer `Target not found`, and `detect_changes` reports no changed symbols for a diff that only touches them. To index specific dot directories, list their names (comma-separated) and re-run `analyze`:
+
+```bash
+export GITNEXUS_INCLUDE_DOT_DIRS=.scallywag,.config
+npx gitnexus analyze
+```
+
+Each name matches that directory at any depth (`pkg/.scallywag/` too). Hidden files and other dot directories inside it stay excluded. Ignore rules still apply (the built-in list covers `.github/`, so also add `!.github/` to `.gitnexusignore` to index it). Changing or removing the list takes effect on the next `analyze`, even on a clean checkout. The list is recorded with the index, so `status` compares against the same file set even if the variable changes later.
+
+Version-control and credential directories are refused case-insensitively, including `.git`, `.ssh`, `.aws`, `.azure`, `.kube`, `.gnupg`, and `.docker`. Inside opted-in directories, known credential files, key/certificate files, and credential stores such as `.config/gcloud/` and `.config/gh/` stay excluded even when ignore rules negate their exclusions. Symlink files and directory links under these paths are excluded, including a listed directory that is itself a symlink. These checks run before content or resolution metadata is read.
+
+This is path-based protection, not secret-content scanning. List only directories whose contents you trust to expose through GitNexus's code tools; a hardcoded secret in an otherwise allowed source file can still be indexed. Use `.gitnexusignore` for project-specific secret paths.
+
+### Process detection reports missing flows
+
+On a large repository, `analyze` may warn that `[processes] … whole flows are MISSING`. That means ranked entry points or completed flows were sampled away by the analyze-time detection budget — not that the code path is absent, and not the query-time `IMPACT_MAX_CHUNKS` cap.
+
+Defaults stay in place when nothing is set: dynamic `maxProcesses = max(20, round(non-File symbols / 10))`, branching `4`, trace depth `10`, entry-point candidate pool `200`. Raise a knob only when the warning names it:
+
+```bash
+# Usual first move when entryPointCandidatesDropped is the loud counter
+npx gitnexus analyze --max-entry-point-candidates 400
+
+# When ranked entry points were never traced, or flows were dropped at maxProcesses
+npx gitnexus analyze --max-processes 80
+```
+
+Equivalent `.gitnexusrc` keys: `maxProcesses`, `maxProcessBranching`, `maxProcessTraceDepth`, `maxEntryPointCandidates`. Equivalent env vars: `GITNEXUS_MAX_PROCESSES`, `GITNEXUS_MAX_PROCESS_BRANCHING`, `GITNEXUS_MAX_PROCESS_TRACE_DEPTH`, `GITNEXUS_MAX_ENTRY_POINT_CANDIDATES`. Precedence is CLI > `.gitnexusrc` > env > default. `0` is invalid, not unlimited. Changing these knobs re-runs process detection on the next `analyze` without `--force`. Raising them increases CPU and memory; this is not a heap-OOM fix.
 
 ### Analyze reports a worker timeout
 
@@ -666,17 +936,18 @@ For repositories with very large source files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BY
 
 Four env vars expose the pool's resilience layers (respawn budget, cumulative-timeout cap, circuit breaker, startup handshake). Defaults are tuned for typical repos; bump them when an analyze legitimately needs more retries, or lower them to fail-fast on a known-bad shape.
 
-| Variable                                        | Default                 | Effect                                                                                                                                                                                                                                                    |
-| ----------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT`         | `3`                     | Max replacement spawns per slot before the slot is dropped from the active rotation.                                                                                                                                                                      |
-| `GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS`     | `5 × subBatchTimeoutMs` | Total retry wall-time budget per job before quarantining. Bounds exponentially-growing retry waits.                                                                                                                                                       |
-| `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD` | `max(3, poolSize)`      | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, dispatches require a fresh pool.                                                                                                                                     |
-| `GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS`             | `30000`                 | Max wait at pool shutdown for a retired worker still inside native code — terminated at its next JS-safe point instead of mid-native-call, which would abort the process (`Napi::Error`, #2432).                                                          |
-| `GITNEXUS_WORKER_READY_TIMEOUT_MS`              | `5000`                  | Startup budget for a parse worker to load its grammar bindings and report `{type:'ready'}`. Slots that miss it are treated as startup crashes. Raise it on a slow or heavily loaded host where a full pool cold-starting concurrently needs more than 5s. |
-| `GITNEXUS_MEMORY`                            | `off`                          | unset (autopilot on) | `off` declines GitNexus's memory autopilot: analyze will neither re-run itself with a RAM-aware heap cap nor abort the parse before V8 enters its ineffective-mark-compact death spiral. Use it when you want to drive memory manually; to simply pin a heap size, pass Node's own `--max-old-space-size`, which is already honoured as your decision. |
-| `GITNEXUS_WORKER_HEAP_MB`                       | `clamp(512, RAM/2/poolSize, 4096)` | Per-worker V8 old-generation heap cap (#2649). Bounds pool RSS on large repos; a worker exceeding it dies with a real heap error handled by quarantine/respawn.                                                                    |
-| `GITNEXUS_SERVER_ANALYZE_HEAP_MB`               | `min(8192, auto cap)`   | Heap for the web/MCP server's forked analyze worker (#2649). Defaults to the historical 8192 MB bounded by the machine/container's RAM-aware auto cap; set an absolute MB value to override.                                                              |
-| `GITNEXUS_CPP_CAPTURE_BUDGET_MS`                | `20000`                 | Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning (#2432). `0` expires immediately.                                                |
+| Variable                                        | Default                            | Effect                                                                                                                                                                                                                                                    |
+| ----------------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT`         | `3`                                | Max replacement spawns per slot before the slot is dropped from the active rotation.                                                                                                                                                                      |
+| `GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS`     | `5 × subBatchTimeoutMs`            | Total retry wall-time budget per job before quarantining. Bounds exponentially-growing retry waits.                                                                                                                                                       |
+| `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD` | `max(3, poolSize)`                 | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, dispatches require a fresh pool.                                                                                                                                     |
+| `GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS`             | `30000`                            | Max wait at pool shutdown for a retired worker still inside native code — terminated at its next JS-safe point instead of mid-native-call, which would abort the process (`Napi::Error`, #2432).                                                          |
+| `GITNEXUS_WORKER_READY_TIMEOUT_MS`              | `5000`                             | Startup budget for a parse worker to load its grammar bindings and report `{type:'ready'}`. Slots that miss it are treated as startup crashes. Raise it on a slow or heavily loaded host where a full pool cold-starting concurrently needs more than 5s. |
+| `GITNEXUS_MEMORY`                               | `off`                              | unset (autopilot on)                                                                                                                                                                                                                                      | `off` declines GitNexus's memory autopilot: analyze will neither re-run itself with a RAM-aware heap cap nor abort the parse before V8 enters its ineffective-mark-compact death spiral. Use it when you want to drive memory manually; to simply pin a heap size, pass Node's own `--max-old-space-size`, which is already honoured as your decision. |
+| `GITNEXUS_WORKER_HEAP_MB`                       | `clamp(512, RAM/2/poolSize, 4096)` | Per-worker V8 old-generation heap cap (#2649). Bounds pool RSS on large repos; a worker exceeding it dies with a real heap error handled by quarantine/respawn.                                                                                           |
+| `GITNEXUS_HEAP_LIMIT_SOURCE`                    | unset                              | Set by analyze itself (`budget` or `auto`) to record where the heap limit came from, so out-of-memory advice points at `--memory-budget` rather than a `--max-old-space-size` pin.                                                                        | Never — internal; set `--memory-budget` instead.                                                                                                                                                                                                                                                                                                       |
+| `GITNEXUS_SERVER_ANALYZE_HEAP_MB`               | `min(8192, auto cap)`              | Heap for the web/MCP server's forked analyze worker (#2649). Defaults to the historical 8192 MB bounded by the machine/container's RAM-aware auto cap; set an absolute MB value to override.                                                              |
+| `GITNEXUS_CPP_CAPTURE_BUDGET_MS`                | `20000`                            | Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning (#2432). `0` expires immediately.                                                                                                         |
 
 ### Graph cleanup tuning
 
@@ -690,8 +961,8 @@ Programmatic callers can pass `keepLocalValueSymbols: true` in `PipelineOptions`
 
 ### Scope-resolution property-key dispatch cap
 
-During scope resolution GitNexus synthesizes CALLS edges through *property-key
-dispatch* — call sites like `hooks.emitScopeCaptures()` where a property key is
+During scope resolution GitNexus synthesizes CALLS edges through _property-key
+dispatch_ — call sites like `hooks.emitScopeCaptures()` where a property key is
 registered by multiple definitions across the codebase. To keep this fan-in
 bounded, each property key is capped at **32 registrations**: a key registered
 by more than 32 distinct functions is skipped entirely (no CALLS are synthesized
@@ -699,8 +970,8 @@ through it), and the dropped key names are surfaced in the analyze log for
 operator visibility. The cap is calibrated at 2× this repo's own provider table
 (16 legitimate registrations, one per language provider).
 
-| Variable                                | Default | Effect                                                                                                                                                                                                                                                                                                                |
-| --------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Variable                                | Default | Effect                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GITNEXUS_MAX_PROPERTY_DISPATCH_FANOUT` | `32`    | Per-property-key registration cap in the property-dispatch scope-resolution pass. Set to a positive integer to raise it for repositories whose provider/hook tables exceed the default and lose CALLS coverage on a legitimate key; non-integer or `< 1` values fall back to `32`. Lowering it tightens the overflow budget. |
 
 ```bash
@@ -713,11 +984,11 @@ npx gitnexus analyze --force
 
 ### Scope-resolution dispatch-target cap
 
-During scope resolution GitNexus resolves calls that flow through *callable
-values* — function/method references bound to variables, passed as arguments,
+During scope resolution GitNexus resolves calls that flow through _callable
+values_ — function/method references bound to variables, passed as arguments,
 or stored in maps/tables. To keep that inclusion-based resolution finite, each
 callable site is capped at **32 dispatch targets**. When a site gathers more
-candidates than the cap it is treated as **overflowed** and *all* of its call
+candidates than the cap it is treated as **overflowed** and _all_ of its call
 edges are dropped — a cliff, not a tail, so a repository with a legitimately
 wide dispatch table (a single callable site resolving to 33+ targets) loses
 that site's whole call chain. In that case `analyze` logs
@@ -727,8 +998,8 @@ candidate count, and the cap (32).
 
 Raise the cap for such repositories:
 
-| Variable                              | Default | Effect                                                                                                                                                                                                                                                                                                              |
-| ------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Variable                              | Default | Effect                                                                                                                                                                                                                                                                                                               |
+| ------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GITNEXUS_MAX_CALLABLE_VALUE_TARGETS` | `32`    | Per-callable-site dispatch-target cap in the callable-value-flow scope-resolution pass. Set to a positive integer to raise it for repositories whose wide dispatch tables overflow the default and lose a whole call chain; non-integer or `< 1` values fall back to `32`. Lowering it tightens the overflow budget. |
 
 ```bash
@@ -771,7 +1042,7 @@ only — the hook's structured stdout (the JSON the agent consumes) is unaffecte
 
 - All processing happens locally on your machine
 - No code is sent to any server
-- Index stored in `.gitnexus/` inside your repo (gitignored)
+- Index stored in `.gitnexus/` inside your repo by default (gitignored), in the complete external directory selected by `GITNEXUS_STORAGE_PATH`, or in a repository-specific slot beneath `GITNEXUS_STORAGE_ROOT`
 - Global registry at `~/.gitnexus/` stores only paths and metadata
 
 ## Web UI

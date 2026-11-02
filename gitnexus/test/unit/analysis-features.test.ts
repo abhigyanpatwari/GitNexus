@@ -5,62 +5,58 @@ import {
   resolveAnalysisFeatureVersions,
   type AnalysisFeatureDescriptor,
 } from '../../src/core/analysis-features.js';
+import { ANALYSIS_FEATURES } from '../../src/core/analysis-feature-registry.js';
+import { OBJECTIVE_C_PROVIDER_FEATURE } from '../../src/core/ingestion/languages/objective-c/analysis-features.js';
 import {
-  SPRING_AOP_FEATURE,
-  SPRING_BEAN_INVENTORY_FEATURE,
-  SPRING_CONDITIONALS_FEATURE,
-  SPRING_NON_HTTP_HANDLERS_FEATURE,
-} from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
-import {
-  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
-  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
-  SPRING_CONFIG_BINDINGS_FEATURE,
-} from '../../src/core/ingestion/languages/java/analysis-features.js';
-
-const FEATURES = [
-  CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
-  SPRING_AOP_FEATURE,
-  SPRING_BEAN_INVENTORY_FEATURE,
-  SPRING_CONDITIONALS_FEATURE,
-  SPRING_NON_HTTP_HANDLERS_FEATURE,
-  SPRING_CONFIG_BINDINGS_FEATURE,
-  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
-  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
-] as const;
+  OBJECTIVE_C_GRAMMAR_PACKAGE,
+  OBJECTIVE_C_GRAMMAR_VERSION,
+  OBJECTIVE_C_PROVIDER_VERSION,
+} from '../../src/core/ingestion/languages/objective-c/facts.js';
 
 describe('analysis feature versions', () => {
   it('separates the global Class schema capability from JVM-only Bean evidence', () => {
-    expect(resolveAnalysisFeatureVersions(FEATURES, ['src/app.ts'])).toEqual({
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['src/app.ts'])).toEqual({
       'graph.class-framework-annotations': 1,
     });
-    expect(resolveAnalysisFeatureVersions(FEATURES, ['src/App.java'])).toEqual({
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['src/App.java'])).toEqual({
       'graph.class-framework-annotations': 1,
       'java.heritage-captures': 1,
       'java.record-component-accessors': 1,
       'spring.aop-advice': 1,
       'spring.bean-inventory': 2,
       'spring.conditionals-auto-configuration': 1,
-      'spring.config-bindings': 1,
+      'spring.config-bindings': 2,
       'spring.non-http-handlers': 1,
+      'spring.route-bindings': 2,
     });
-    expect(resolveAnalysisFeatureVersions(FEATURES, ['BUILD.GRADLE.KTS'])).toEqual({
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['src/App.kt'])).toEqual({
+      'graph.class-framework-annotations': 1,
+      'spring.aop-advice': 1,
+      'spring.bean-inventory': 2,
+      'spring.conditionals-auto-configuration': 1,
+      'spring.config-bindings': 2,
+      'spring.non-http-handlers': 1,
+      'spring.route-bindings': 2,
+    });
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['BUILD.GRADLE.KTS'])).toEqual({
       'graph.class-framework-annotations': 1,
       'spring.aop-advice': 1,
       'spring.bean-inventory': 2,
       'spring.conditionals-auto-configuration': 1,
       'spring.non-http-handlers': 1,
+      'spring.route-bindings': 2,
     });
     expect(
-      resolveAnalysisFeatureVersions(FEATURES, [
+      resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, [
         'src/main/resources/application-local.yml',
         'README.md',
       ]),
     ).toEqual({
       'graph.class-framework-annotations': 1,
-      'spring.config-bindings': 1,
+      'spring.config-bindings': 2,
     });
     expect(
-      resolveAnalysisFeatureVersions(FEATURES, [
+      resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, [
         'src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports',
       ]),
     ).toEqual({
@@ -96,6 +92,32 @@ describe('analysis feature versions', () => {
     expect(findAnalysisFeatureMismatches({ ...expected, toString: 1 }, expected)).toEqual([
       'unexpected:toString',
     ]);
+  });
+
+  it('stamps Objective-C provider and grammar versions for semantic rebuilds', () => {
+    const expectedId =
+      `objective-c.provider-${OBJECTIVE_C_PROVIDER_VERSION}.` +
+      `${OBJECTIVE_C_GRAMMAR_PACKAGE}-${OBJECTIVE_C_GRAMMAR_VERSION}`;
+    expect(OBJECTIVE_C_PROVIDER_FEATURE.id).toBe(expectedId);
+
+    const objcFeatures = resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, [
+      'Sources/SYModuleCaller.m',
+      'Sources/SYModuleCaller.mm',
+      'Headers/SYModuleCaller.h',
+    ]);
+    expect(objcFeatures).toMatchObject({
+      [OBJECTIVE_C_PROVIDER_FEATURE.id]: OBJECTIVE_C_PROVIDER_FEATURE.version,
+    });
+
+    expect(
+      resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['include/plain.hpp']),
+    ).not.toHaveProperty(OBJECTIVE_C_PROVIDER_FEATURE.id);
+    expect(
+      findAnalysisFeatureMismatches(
+        { [OBJECTIVE_C_PROVIDER_FEATURE.id]: OBJECTIVE_C_PROVIDER_FEATURE.version - 1 },
+        { [OBJECTIVE_C_PROVIDER_FEATURE.id]: OBJECTIVE_C_PROVIDER_FEATURE.version },
+      ),
+    ).toEqual([`version:${OBJECTIVE_C_PROVIDER_FEATURE.id}`]);
   });
 
   it('rejects invalid or duplicate descriptors', () => {

@@ -20,7 +20,7 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { StructureOutput } from './structure.js';
 import type { BindingAccumulator } from '../binding-accumulator.js';
-import type { ParsedFile } from 'gitnexus-shared';
+import type { ParsedFile, SupportedLanguages } from 'gitnexus-shared';
 import type {
   ExtractedFetchCall,
   ExtractedRoute,
@@ -31,6 +31,8 @@ import type {
 } from '../workers/parse-worker.js';
 import { runChunkedParseAndResolve } from './parse-impl.js';
 import type { MutableSemanticModel } from '../model/index.js';
+import type { FetchWrapperCall } from '../route-extractors/fetch-wrapper.js';
+import type { ModuleConstants } from '../route-extractors/constant-resolver.js';
 
 export interface ParseOutput {
   /**
@@ -47,8 +49,11 @@ export interface ParseOutput {
   readonly exportedTypeMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
   readonly allFetchCalls: readonly ExtractedFetchCall[];
   readonly allFetchWrapperDefs: readonly FetchWrapperDef[];
+  readonly allFetchWrapperCalls: readonly FetchWrapperCall[];
   readonly allExtractedRoutes: readonly ExtractedRoute[];
   readonly allDecoratorRoutes: readonly ExtractedDecoratorRoute[];
+  /** Exact admitted declarations that own Route nodes and handler attribution. */
+  readonly selectedRoutes: ReadonlySet<ExtractedRoute | ExtractedDecoratorRoute>;
   readonly allToolDefs: readonly ExtractedToolDef[];
   readonly allORMQueries: readonly ExtractedORMQuery[];
   /** Route URL → resolved handler symbol UID (Part 2, #2138). Consumed by the
@@ -71,6 +76,8 @@ export interface ParseOutput {
    * is no sequential parser; the pool is the sole parse path on a cache miss.
    */
   readonly usedWorkerPool: boolean;
+  /** Files actually dispatched to parser workers after parse-cache lookup. */
+  readonly reparsedFileCount: number;
   /**
    * Per-file `ParsedFile` artifacts produced by workers' calls to
    * `extractParsedFile`. Threaded through to `scopeResolutionPhase`
@@ -80,6 +87,32 @@ export interface ParseOutput {
    * costing ~58s on a 1000-file repo).
    */
   readonly parsedFiles: readonly ParsedFile[];
+  /**
+   * Content-derived language decisions for files such as `.h` whose extension
+   * is ambiguous. Scope resolution reuses this result rather than rereading
+   * source solely to classify it.
+   */
+  readonly contentLanguageByPath: ReadonlyMap<string, SupportedLanguages | null>;
+  /**
+   * Repo-wide string constants harvested by the providers that declare
+   * `extractModuleConstants`, keyed by file path and already through each
+   * provider's `prepareRouteConstants` hook.
+   *
+   * Exposed so a later phase can fold a constant reference the same way the
+   * decorator-route pass does — `springDestinations` resolves a broker address
+   * written as `Topics.ORDERS` against this table. It is a snapshot: parse does
+   * not mutate it after returning, and consumers must not either, because the
+   * preparation that made it foldable has already run.
+   *
+   * Empty when no provider in this repo harvests constants. A downstream fold
+   * against an empty table simply fails to resolve, which is a recorded refusal
+   * rather than a wrong answer.
+   */
+  readonly moduleConstants: ReadonlyMap<string, ModuleConstants>;
+  /** Files whose scope extraction failed while legacy parsing continued. */
+  readonly scopeExtractionFailures: readonly string[];
+  /** Files omitted because their non-standalone language parser was unavailable. */
+  readonly unavailableScopeLanguageFiles: number;
 }
 
 export const parsePhase: PipelinePhase<ParseOutput> = {
@@ -96,10 +129,8 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
     // nothing before parse produces bulk edge volume anyway.
     ctx.graphEmit?.beginStreaming();
 
-    const { scannedFiles, allPaths, allPathSet, totalFiles } = getPhaseOutput<StructureOutput>(
-      deps,
-      'structure',
-    );
+    const { scannedFiles, allPaths, allPathSet, totalFiles, resolutionConfigs } =
+      getPhaseOutput<StructureOutput>(deps, 'structure');
 
     const result = await runChunkedParseAndResolve(
       ctx.graph,
@@ -110,6 +141,7 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
       ctx.pipelineStart,
       ctx.onProgress,
       ctx.options,
+      resolutionConfigs,
     );
 
     return {

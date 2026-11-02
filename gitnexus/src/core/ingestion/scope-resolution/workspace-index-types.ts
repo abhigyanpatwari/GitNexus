@@ -13,7 +13,7 @@
  * on `SemanticModel`, and for the builder itself.
  */
 
-import type { Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type { Scope, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 
 export interface WorkspaceResolutionIndex {
   /** Class def `nodeId` → that class's `Scope`. */
@@ -36,4 +36,10 @@ export interface WorkspaceResolutionIndex {
    *  killer). "First module-local callable in `moduleScopeByFile` order" is the
    *  exact semantics the old scan returned, so it is byte-identical. */
   readonly exportedCallableByName: ReadonlyMap<string, SymbolDefinition>;
+
+  /** Exact callable def `nodeId` → its declared return type binding.
+   * Built from definitions owned by each callable's Function scope, so methods
+   * declared in extension/partial scopes remain addressable even when those
+   * scopes deliberately own no separate class-like definition. */
+  readonly declaredReturnTypeByCallableId: ReadonlyMap<string, TypeRef>;
 }

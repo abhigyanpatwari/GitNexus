@@ -67,6 +67,10 @@ import {
 import type { TraversalResult } from '../traversal-result.js';
 import type { CfgVisitor, FunctionCfg } from '../types.js';
 import { TsHarvester } from './typescript-harvest.js';
+import {
+  createRefinementFileContext,
+  type RefinementFileContext,
+} from './typescript-refinement.js';
 
 /** TS/JS node types that own a CFG-bearing function body. */
 const TS_FUNCTION_TYPES = new Set([
@@ -723,7 +727,11 @@ class TsCfgWalk {
 }
 
 /** Build the CFG for one TS/JS function node (or `undefined` if not a function). */
-function buildFunctionCfg(fnNode: SyntaxNode, filePath: string): FunctionCfg | undefined {
+function buildFunctionCfg(
+  fnNode: SyntaxNode,
+  filePath: string,
+  refinementContext?: RefinementFileContext,
+): FunctionCfg | undefined {
   if (!TS_FUNCTION_TYPES.has(fnNode.type)) return undefined;
   const startLine = startLineOf(fnNode);
   const endLine = endLineOf(fnNode);
@@ -735,7 +743,7 @@ function buildFunctionCfg(fnNode: SyntaxNode, filePath: string): FunctionCfg | u
 
   // Phase-1 declaration pre-scan (#2082 M2 U1) — must complete before any
   // facts are extracted; the CFG walk below is not source-order.
-  const harvest = new TsHarvester(fnNode);
+  const harvest = new TsHarvester(fnNode, refinementContext);
 
   // Parameters define at ENTRY (facts only — never touch the entry block's
   // text or span: bench fingerprints and CFG snapshots include block text).
@@ -754,18 +762,18 @@ function buildFunctionCfg(fnNode: SyntaxNode, filePath: string): FunctionCfg | u
     );
     builder.edge(builder.entryIndex, blk, 'seq');
     builder.edge(blk, builder.exitIndex, 'return');
-    return builder.finish(harvest.table());
+    return harvest.decorate(builder.finish(harvest.table()));
   }
 
   const walk = new TsCfgWalk(builder, harvest);
   const res = walk.visitSeq(body.namedChildren.filter((c) => c.type !== 'comment'));
   if (!res) {
     builder.edge(builder.entryIndex, builder.exitIndex, 'seq'); // empty body
-    return builder.finish(harvest.table());
+    return harvest.decorate(builder.finish(harvest.table()));
   }
   builder.edge(builder.entryIndex, res.entry, 'seq');
   builder.connect(res.exits, builder.exitIndex, 'seq'); // normal fall-off → EXIT
-  return builder.finish(harvest.table());
+  return harvest.decorate(builder.finish(harvest.table()));
 }
 
 /** Whether a node is a TS/JS function this visitor builds a CFG for. */
@@ -775,7 +783,14 @@ function isFunction(node: SyntaxNode): boolean {
 
 /** The TS/JS CFG visitor (shared by TypeScript and JavaScript). */
 export function createTypeScriptCfgVisitor(): CfgVisitor<SyntaxNode> {
-  return { buildFunctionCfg, isFunction };
+  return {
+    buildFunctionCfg,
+    isFunction,
+    forFile(root) {
+      const context = createRefinementFileContext(root);
+      return { buildFunctionCfg: (fn, path) => buildFunctionCfg(fn, path, context), isFunction };
+    },
+  };
 }
 
 export { TS_FUNCTION_TYPES };

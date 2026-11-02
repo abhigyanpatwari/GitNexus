@@ -2,7 +2,30 @@
 export const ERROR_RESET_DELAY_MS = 3000;
 export const BACKEND_URL_DEBOUNCE_MS = 500;
 
+/**
+ * A root-relative injected backend (`/`, or `/prefix`) resolved against the
+ * page's own origin, so the API is reached on whichever hostname served the UI
+ * (#3593); undefined when nothing was injected or an absolute URL was.
+ * `//host` and `/\host` (the URL parser reads a backslash as a slash) are
+ * origin changes, not paths, and are left to the URL validation to reject.
+ */
+function sameOriginBackendUrl(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const configured = window.__GITNEXUS_CONFIG__?.backendUrl;
+  if (!configured || !/^\/(?![/\\])/.test(configured)) return undefined;
+  return new URL(configured, window.location.origin).href.replace(/\/+$/, '');
+}
+
+/**
+ * The backend base a same-origin deployment mounted the API under, kept as
+ * configured by normalizeServerUrl: a prefix such as `/proxy/api` names a
+ * mount point, not a pasted endpoint. Undefined for an absolute injected URL,
+ * which is normalized like any other.
+ */
+export const SAME_ORIGIN_BACKEND_URL = sameOriginBackendUrl();
+
 export const DEFAULT_BACKEND_URL =
+  SAME_ORIGIN_BACKEND_URL ||
   (typeof window !== 'undefined' && window.__GITNEXUS_CONFIG__?.backendUrl) ||
   'http://localhost:4747';
 export const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434';
@@ -22,6 +45,12 @@ export const DEFAULT_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
  * no CSRF backstop is left to catch it. A header is not sent automatically.
  */
 export const AUTH_TOKEN_STORAGE_KEY = 'gitnexus-auth-token';
+
+/** localStorage key holding the version whose update banner the user dismissed. */
+export const UPDATE_DISMISSED_VERSION_KEY = 'gitnexus.updateDismissedVersion';
+
+/** How often the exploring view re-reads /api/info so server-side update discoveries surface. */
+export const UPDATE_INFO_REFETCH_MS = 5 * 60 * 1000;
 
 /**
  * Default node-count above which the WebUI connects in chat-only mode (skips

@@ -5,39 +5,801 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import sys
 import threading
+import time
+import uuid
+from contextlib import ExitStack
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from workflow_bench import runner
+from workflow_bench import runner, runner_artifacts
+from workflow_bench import proposer_sandbox
+from workflow_bench import release_build
+from workflow_bench.mock_provider import MockProvider, Reply
 
 from workflow_bench.process_control import ManagedProcessResult, run_managed
+
+
 from workflow_bench.proposer_sandbox import (
     MAX_BUNDLE_BYTES,
     MAX_EVIDENCE_FILE_BYTES,
+    SANDBOX_CLAUDE,
     SANDBOX_NODE,
     SANDBOX_NODE_PREFIX,
+    SANDBOX_EVIDENCE,
+    SANDBOX_GITNEXUS_CLI,
+    SANDBOX_GIT_EXCLUDES,
     VITE_TEMP_DIR,
     SANDBOX_PATH,
+    SANDBOX_REVIEW_OUTPUT,
     SANDBOX_PYTHON3,
     SANDBOX_SHELL_PREFIX,
     SANDBOX_USER_SKILLS,
+    SANDBOX_WORKSPACE,
     ReadOnlyMount,
     SandboxError,
-    _runtime_mount_args,
+    runtime_mount_args,
     build_claude_settings,
     build_sandbox_environment,
+    _force_rmtree,
+    host_workspace_write_boundary,
+    prepare_review_workspace,
     prepare_sandbox,
     preflight_bubblewrap,
+    sandbox_workspace_write_boundary,
     stage_evidence_bundle,
     stage_task_assets,
 )
+from workflow_bench.review_scoring import REVIEW_OUTPUT, parse_review_output
 from workflow_bench.task_assets import TaskAssetCache, stage_task_assets as stage_immutable_task_assets
+
+
+@pytest.fixture
+def mcp_socket_client(monkeypatch):
+    """Exercise a real connection attempt between bind() and listen()."""
+    bound, attempted = threading.Event(), threading.Event()
+    original_listen = socket.socket.listen
+
+    def delayed_listen(listener, backlog):
+        bound.set()
+        assert attempted.wait(5), "client never attempted to connect"
+        return original_listen(listener, backlog)
+
+    monkeypatch.setattr(socket.socket, "listen", delayed_listen)
+
+    def connect(endpoint):
+        assert bound.wait(5), "server never bound its socket"
+        deadline = time.monotonic() + 5
+        while True:
+            client = socket.socket(socket.AF_UNIX)
+            client.settimeout(5)
+            try:
+                client.connect(str(endpoint))
+                return client
+            except ConnectionRefusedError:
+                client.close()
+                if time.monotonic() >= deadline:
+                    raise
+            except Exception:
+                client.close()
+                raise
+            finally:
+                attempted.set()
+            time.sleep(0.01)
+
+    return connect
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix socket transport requires POSIX socket flags")
+def test_mcp_socket_transport_reconnects_and_reports_server_failure(tmp_path: Path, mcp_socket_client) -> None:
+    from workflow_bench.mcp_transport import serve_stdio
+
+    endpoint = tmp_path / "mcp.sock"
+    failure = tmp_path / "failure"
+    command = [sys.executable, "-c", "import sys; line=sys.stdin.readline(); print(line.strip(), flush=True); sys.exit(3 if line.strip() == 'fail' else 0)"]
+    errors: list[Exception] = []
+
+    def serve() -> None:
+        try:
+            serve_stdio(endpoint, failure, command)
+        except Exception as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=serve, daemon=True)
+    worker.start()
+    try:
+        for message in (b"first\n", b"second\n", b"fail\n"):
+            with mcp_socket_client(endpoint) as client:
+                client.sendall(message)
+                client.shutdown(socket.SHUT_WR)
+                assert client.recv(100) == message
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert errors and "3" in failure.read_text()
+    finally:
+        worker.join(timeout=1)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix socket transport requires POSIX socket flags")
+def test_mcp_socket_transport_rejects_premature_clean_server_exit(tmp_path, mcp_socket_client):
+    from workflow_bench.mcp_transport import serve_stdio
+
+    endpoint, failure = tmp_path / "mcp.sock", tmp_path / "failure"
+    errors = []
+
+    def serve():
+        try:
+            serve_stdio(endpoint, failure, [sys.executable, "-c", "pass"])
+        except Exception as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=serve, daemon=True)
+    worker.start()
+    with mcp_socket_client(endpoint):
+        worker.join(timeout=2)
+        assert errors and "before client EOF" in failure.read_text()
+
+
+def test_mcp_only_sandbox_does_not_supply_a_cli_wrapper(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with prepare_sandbox(
+        clone=clone, claude_bin=sys.executable, bwrap_bin=sys.executable,
+        preflight=False, gitnexus_cli_available=False,
+    ) as sandbox:
+        assert not (sandbox.private_root / "gitnexus").exists()
+        assert SANDBOX_GITNEXUS_CLI not in {mount.target for mount in sandbox.read_only_mounts}
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_sibling_mcp_failure_invalidates_cell_after_client_eof(tmp_path):
+    from workflow_bench.mcp_transport import isolated_mcp
+
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    runtime = tmp_path / "runtime"
+    entrypoint = runtime / "dist/cli/index.js"
+    entrypoint.parent.mkdir(parents=True)
+    entrypoint.write_text("process.exit(7)")
+    bwrap = preflight_bubblewrap()
+    with pytest.raises(SandboxError, match="MCP transport failed"):
+        with isolated_mcp(clone=clone, mounts=[ReadOnlyMount(runtime, proposer_sandbox.SANDBOX_GITNEXUS)],
+                          bwrap_bin=bwrap) as endpoint:
+            with socket.socket(socket.AF_UNIX) as client:
+                client.settimeout(10)
+                client.connect(str(endpoint.source))
+                assert client.recv(1) == b""
+    assert not endpoint.source.exists()
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_sibling_mcp_hides_runtime_and_reaps_detached_children(tmp_path):
+    from workflow_bench.mcp_transport import isolated_mcp, connector_config
+
+    marker = "mcp-child-" + uuid.uuid4().hex
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "source.txt").write_text("unsolved")
+    runtime = tmp_path / "runtime with spaces"
+    entrypoint = runtime / "dist/cli/index.js"
+    entrypoint.parent.mkdir(parents=True)
+    host_listener = socket.socket()
+    host_listener.bind(("127.0.0.1", 0))
+    host_listener.listen()
+    entrypoint.write_text("""
+const fs = require('fs');
+const cp = require('child_process');
+const net = require('net');
+const readline = require('readline');
+cp.spawn('/usr/bin/python3', ['-c', 'import time; time.sleep(60)', MARKER],
+  {detached:true, stdio:'ignore'}).unref();
+const input = readline.createInterface({input:process.stdin});
+input.on('line', async line => {
+  const request = JSON.parse(line);
+  let writeBlocked = false;
+  try { fs.writeFileSync('/workspace/source.txt', 'solution'); } catch { writeBlocked = true; }
+  const privateState = !fs.existsSync('/home/agent/secret');
+  const runtimeReadable = fs.readFileSync(__filename, 'utf8').length > 0;
+  const credentialAbsent = !process.env.ANTHROPIC_API_KEY;
+  const networkBlocked = await new Promise(resolve => {
+    const client = net.connect({host:'127.0.0.1', port:HOST_PORT});
+    client.once('connect', () => { client.destroy(); resolve(false); });
+    client.once('error', () => resolve(true));
+    client.setTimeout(1000, () => { client.destroy(); resolve(true); });
+  });
+  process.stdout.write(JSON.stringify({id:request.id, writeBlocked, privateState,
+    runtimeReadable, credentialAbsent, networkBlocked}) + '\\n');
+});
+""".replace("MARKER", json.dumps(marker)).replace("HOST_PORT", str(host_listener.getsockname()[1])))
+    bwrap = preflight_bubblewrap()
+    mounts = [ReadOnlyMount(runtime, proposer_sandbox.SANDBOX_GITNEXUS)]
+    with host_listener, ExitStack() as clients, ExitStack() as stack:
+        endpoints = [stack.enter_context(isolated_mcp(clone=clone, mounts=mounts, bwrap_bin=bwrap)) for _ in range(2)]
+        assert endpoints[0].source != endpoints[1].source
+        server = json.loads(connector_config())["mcpServers"]["gitnexus"]
+        connector = [server["command"], *server["args"]]
+        for index, endpoint in enumerate(endpoints):
+            with prepare_sandbox(
+                clone=clone, claude_bin=sys.executable, bwrap_bin=bwrap,
+                read_only_mounts=[endpoint], preflight=False, gitnexus_cli_available=False,
+            ) as sandbox:
+                (sandbox.home / "secret").write_text("agent-secret")
+                probe = f"""
+import json, subprocess
+from pathlib import Path
+for path in ['/opt/gitnexus', '/opt/gitnexus-shared', '/opt/gitnexus-registry',
+             '/opt/claude/gitnexus', {str(endpoint.source.parent)!r}]:
+    assert not Path(path).exists(), path
+for proc in Path('/proc').glob('[0-9]*'):
+    assert not (proc / 'root/opt/gitnexus').exists()
+for request_id in [{index}, {index + 10}]:
+    result = subprocess.run({connector!r}, input=json.dumps({{'id':request_id}})+'\\n',
+        text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    reply = json.loads(result.stdout)
+    assert reply.pop('id') == request_id
+    assert all(reply.values()), reply
+"""
+                result = sandbox.run(["/usr/bin/python3", "-c", probe], timeout=30,
+                                     env=build_sandbox_environment(auth_token="agent-secret"))
+                assert result.ok, result.stderr_tail
+        # Keep requests open while the cell owner cancels its server namespaces.
+        for endpoint in endpoints:
+            client = clients.enter_context(socket.socket(socket.AF_UNIX))
+            client.settimeout(10)
+            client.connect(str(endpoint.source))
+            client.sendall(b'{"id":99}\n')
+            assert json.loads(client.recv(4096))["id"] == 99
+        children = []
+        for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
+            try:
+                if marker.encode() in cmdline.read_bytes():
+                    children.append(cmdline.parent)
+            except (FileNotFoundError, PermissionError):
+                # Processes may exit during the scan or belong to another user.
+                pass
+        assert children, "canary must create detached descendants"
+    assert all(not process.exists() for process in children)
+    assert all(not endpoint.source.exists() for endpoint in endpoints)
+    assert (clone / "source.txt").read_text() == "unsolved"
+
+
+def test_nomcp_sandbox_hides_graph_and_guidance_without_exposing_the_cli(tmp_path):
+    clone = tmp_path / "clone"
+    (clone / ".gitnexus").mkdir(parents=True)
+    (clone / ".gitnexus" / "lbug").write_text("prebuilt graph")
+    (clone / ".gitnexus" / "run.cjs").write_text("supplied CLI fallback")
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        (clone / name).write_text("MUST use GitNexus before editing; bootstrap with npx gitnexus.")
+    bwrap = tmp_path / "bwrap"
+    bwrap.write_text("#!/bin/sh\nexit 0\n")
+    bwrap.chmod(0o755)
+
+    with prepare_sandbox(
+        clone=clone,
+        claude_bin=sys.executable,
+        bwrap_bin=bwrap,
+        preflight=False,
+        gitnexus_available=False,
+    ) as sandbox:
+        mounts = {mount.target: mount.source for mount in sandbox.read_only_mounts}
+        assert SANDBOX_GITNEXUS_CLI not in mounts
+        assert not (sandbox.private_root / "gitnexus").exists()
+        assert not list(mounts["/workspace/.gitnexus"].iterdir())
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            note = mounts[f"/workspace/{name}"].read_text()
+            assert "GitNexus tools are unavailable" in note
+            assert "MUST use GitNexus" not in note
+        assert "GITNEXUS_INVOCATION=gitnexus" not in mounts[SANDBOX_SHELL_PREFIX].read_text()
+
+    # Mounts alter the model's view, never the credited task source or patch.
+    assert (clone / ".gitnexus" / "lbug").read_text() == "prebuilt graph"
+    assert "MUST use GitNexus" in (clone / "AGENTS.md").read_text()
+
+
+def test_filtered_guidance_is_excluded_from_all_agent_work_evidence(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        (clone / name).write_text("Run repository tests.\nMUST use GitNexus before editing.\n")
+    (clone / "source.txt").write_text("original\n")
+    subprocess.run(["git", "init", "--quiet", str(clone)], check=True)
+    subprocess.run(["git", "-C", str(clone), "add", "."], check=True)
+    subprocess.run([
+        "git", "-C", str(clone), "-c", "user.name=test", "-c", "user.email=test@invalid",
+        "commit", "--quiet", "-m", "base",
+    ], check=True)
+    sha = subprocess.check_output(["git", "-C", str(clone), "rev-parse", "HEAD"], text=True).strip()
+    bwrap = tmp_path / "fake-bwrap"
+    bwrap.write_text("#!/bin/sh\nexit 0\n")
+    bwrap.chmod(0o700)
+    with prepare_sandbox(
+        clone=clone, claude_bin=sys.executable, bwrap_bin=bwrap, preflight=False, gitnexus_available=False,
+    ) as session:
+        assert set(session.synthetic_guidance_paths) == {"AGENTS.md", "CLAUDE.md"}
+        # Materialize the overlay in this private fixture to exercise real Git
+        # even on hosts that cannot create user namespaces.
+        for mount in session.read_only_mounts:
+            if mount.target.removeprefix('/workspace/') in session.synthetic_guidance_paths:
+                (clone / mount.target.removeprefix('/workspace/')).write_bytes(mount.source.read_bytes())
+        local = replace(session, backend="host-unsafe", command_prefix=[])
+        before = runner_artifacts.implementation_diff_digest(local, sha)
+        assert runner_artifacts.diff_churn(local, sha) == {
+            "diff_files": 0, "diff_insertions": 0, "diff_deletions": 0,
+        }
+        assert runner_artifacts.capture_patch(local, clone, sha) == b""
+        assert runner_artifacts.diff_churn(local, sha) == {
+            "diff_files": 0, "diff_insertions": 0, "diff_deletions": 0,
+        }
+        assert runner_artifacts.implementation_diff_digest(local, sha) == before
+        assert runner_artifacts.capture_patch(local, clone, sha) == b""
+        (clone / "source.txt").write_text("agent change\n")
+        assert runner_artifacts.implementation_diff_digest(local, sha) != before
+        assert runner_artifacts.diff_churn(local, sha) == {
+            "diff_files": 1, "diff_insertions": 1, "diff_deletions": 1,
+        }
+        patch = runner_artifacts.capture_patch(local, clone, sha)
+        assert b"source.txt" in patch and b"AGENTS.md" not in patch and b"CLAUDE.md" not in patch
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_bubblewrap_guidance_overlays_produce_no_agent_patch_or_churn(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "CLAUDE.md").write_text("Run tests.\nMUST use GitNexus before editing.\n")
+    subprocess.run(["git", "init", "--quiet", str(clone)], check=True)
+    subprocess.run(["git", "-C", str(clone), "add", "."], check=True)
+    subprocess.run([
+        "git", "-C", str(clone), "-c", "user.name=test", "-c", "user.email=test@invalid",
+        "commit", "--quiet", "-m", "base",
+    ], check=True)
+    sha = subprocess.check_output(["git", "-C", str(clone), "rev-parse", "HEAD"], text=True).strip()
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, gitnexus_available=False) as sandbox:
+        assert runner_artifacts.capture_patch(sandbox, clone, sha) == b""
+        assert runner_artifacts.diff_churn(sandbox, sha) == {
+            "diff_files": 0, "diff_insertions": 0, "diff_deletions": 0,
+        }
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_bubblewrap_candidate_lifecycle_cannot_replace_harness_or_read_tokens(tmp_path, monkeypatch):
+    candidate = tmp_path / "candidate"
+    core = candidate / "gitnexus"
+    core.mkdir(parents=True)
+    harness = tmp_path / "trusted-harness.py"
+    harness.write_text("trusted main evaluator\n")
+    monkeypatch.setenv("GITNEXUS_BENCH_OPENAI_API_KEY", "canary-token")
+    monkeypatch.setenv("ONNXRUNTIME_NODE_INSTALL", "cuda12")
+    attack = (
+        "const fs=require('fs');\n"
+        f"const target={json.dumps(str(harness))};\n"
+        "const visible=fs.existsSync(target);\n"
+        "try { fs.writeFileSync(target,'forged evaluator'); } catch {}\n"
+        "try { fs.appendFileSync('.git/config','[core]\\n\\tfsmonitor = forged\\n'); } catch {}\n"
+        "fs.writeFileSync('receipt.json', JSON.stringify({visible, token:"
+        "process.env.GITNEXUS_BENCH_OPENAI_API_KEY ?? null,"
+        "onnxInstall:process.env.ONNXRUNTIME_NODE_INSTALL ?? null,"
+        "interfaces:Object.keys(require('os').networkInterfaces()).sort()}));\n"
+    )
+    (candidate / "attack.cjs").write_text(attack)
+    for folder, name, scripts in (
+        (candidate, "candidate-root", {"preinstall": "node attack.cjs"}),
+        (core, "candidate-core", {"build": "node -e \"require('fs').writeFileSync('built.txt','runtime')\""}),
+    ):
+        package = {"name": name, "version": "1.0.0", "scripts": scripts}
+        (folder / "package.json").write_text(json.dumps(package))
+        (folder / "package-lock.json").write_text(json.dumps({
+            "name": name, "version": "1.0.0", "lockfileVersion": 3,
+            "packages": {"": {"name": name, "version": "1.0.0"}},
+        }))
+    (candidate / ".git").mkdir()
+    (candidate / ".git/config").write_text("[core]\n\tbare = false\n")
+    release_build.build_candidate(candidate)
+    assert harness.read_text() == "trusted main evaluator\n"
+    assert (candidate / ".git/config").read_text() == "[core]\n\tbare = false\n"
+    # Lifecycle scripts run in a fresh network namespace: loopback only.
+    assert json.loads((candidate / "receipt.json").read_text()) == {
+        "visible": False,
+        "token": None,
+        "onnxInstall": "skip",
+        "interfaces": ["lo"],
+    }
+    assert (core / "built.txt").read_text() == "runtime"
+    assert (candidate / "gitnexus-shared/node_modules").is_dir()
+
+
+def test_nomcp_sandbox_preserves_mixed_repository_guidance_in_each_file(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    ordinary = (
+        "# GitNexus\n\n## Repo reference\n\n"
+        "| CLI/Core | `gitnexus/` | TypeScript CLI, indexing pipeline, MCP server. |\n\n"
+        "- Shared code in `gitnexus/src/core/ingestion/` must not name languages; "
+        "use `LanguageProvider` / `ScopeResolver` hooks.\n"
+        "- `cd gitnexus && npm test` and `npx tsc --noEmit` verify the change.\n"
+    )
+    original = {}
+    for name in ("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"):
+        path = clone / name
+        path.parent.mkdir(exist_ok=True)
+        original[name] = (
+            f"Ordinary guidance from {name}.\n\n"
+            + ordinary
+            + "\n<!-- gitnexus:start -->\nMUST run impact analysis before editing.\n<!-- gitnexus:end -->\n"
+            + "\n## Engineering planning (`/gitnexus-plan`)\nRead `.claude/skills/gitnexus-plan/SKILL.md`.\n"
+            + "\n## Further validation\nRun the package's tests in the foreground.\n"
+            + "MUST use GitNexus before editing; bootstrap with npx gitnexus.\n"
+            + "Run mcp__gitnexus__impact before editing, or bootstrap with npx --yes gitnexus.\n"
+        )
+        path.write_text(original[name])
+    bwrap = tmp_path / "bwrap"
+    bwrap.write_text("#!/bin/sh\nexit 0\n")
+    bwrap.chmod(0o755)
+
+    with prepare_sandbox(
+        clone=clone,
+        claude_bin=sys.executable,
+        bwrap_bin=bwrap,
+        preflight=False,
+        gitnexus_available=False,
+    ) as sandbox:
+        mounts = {mount.target: mount.source for mount in sandbox.read_only_mounts}
+        for name in original:
+            guidance = mounts[f"/workspace/{name}"].read_text()
+            assert f"Ordinary guidance from {name}." in guidance
+            assert ordinary in guidance
+            assert "Run the package's tests in the foreground." in guidance
+            assert "GitNexus tools are unavailable" in guidance
+            assert "MUST run impact" not in guidance
+            assert "MUST use GitNexus" not in guidance
+            assert "gitnexus-plan" not in guidance
+            assert "mcp__gitnexus__impact" not in guidance
+            assert "npx --yes gitnexus" not in guidance
+    for name, content in original.items():
+        assert (clone / name).read_text() == content
+
+
+def test_nomcp_sandbox_requires_containment(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with pytest.raises(SandboxError, match="baseline_nomcp requires Bubblewrap"):
+        with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe", gitnexus_available=False):
+            pass
+
+
+@pytest.mark.parametrize(
+    "target", [
+        "/", "/opt", "/opt/claude", "/workspace",
+        "/opt/gitnexus", "/opt/gitnexus-shared", "/opt/gitnexus-registry",
+        "/opt/claude/gitnexus", "/workspace/.gitnexus",
+        "/opt/gitnexus/dist", "/opt/gitnexus-shared/dist", "/opt/gitnexus-registry/registry.json",
+        "/opt/claude/gitnexus/child", "/workspace/.gitnexus/lbug",
+        "//opt", "//opt/gitnexus", "/opt//gitnexus", "/opt/./gitnexus/", "//workspace/.gitnexus",
+    ]
+)
+def test_nomcp_sandbox_refuses_supplied_graph_or_runtime_mounts(tmp_path, target):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with pytest.raises(SandboxError, match="baseline_nomcp cannot mount GitNexus"):
+        with prepare_sandbox(
+            clone=clone,
+            claude_bin=sys.executable,
+            gitnexus_available=False,
+            read_only_mounts=(ReadOnlyMount(tmp_path / "runtime", target),),
+        ):
+            pass
+
+
+@pytest.mark.parametrize("target", ["opt/gitnexus", "", "/opt/safe/../gitnexus", "/workspace/../opt"])
+def test_nomcp_sandbox_rejects_nonabsolute_or_parent_traversing_mount_targets(tmp_path, target):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with pytest.raises(SandboxError, match="baseline_nomcp mount target must be absolute"):
+        with prepare_sandbox(
+            clone=clone,
+            claude_bin=sys.executable,
+            gitnexus_available=False,
+            read_only_mounts=(ReadOnlyMount(tmp_path / "runtime", target),),
+        ):
+            pass
+
+
+@pytest.mark.parametrize(
+    "target", [
+        "/opt/gitnexus-tools", "/opt/gitnexus-shared-extra", "/opt/gitnexus-registry-backup",
+        "/opt/claude/gitnexus-extra", "/workspace/.gitnexus-cache", "/opt/ce-plugin",
+        "/workspace/node_modules", "/workspace/gitnexus/node_modules", "//workspace/gitnexus/node_modules",
+    ]
+)
+def test_nomcp_sandbox_accepts_nearby_paths_and_normal_dependency_mounts(tmp_path, target):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    dependency = tmp_path / "dependency"
+    dependency.mkdir()
+    bwrap = tmp_path / "bwrap"
+    bwrap.write_text("#!/bin/sh\nexit 0\n")
+    bwrap.chmod(0o755)
+    mount = ReadOnlyMount(dependency, target)
+    with prepare_sandbox(
+        clone=clone,
+        claude_bin=sys.executable,
+        bwrap_bin=bwrap,
+        gitnexus_available=False,
+        read_only_mounts=(mount,),
+        preflight=False,
+    ) as sandbox:
+        assert mount in sandbox.read_only_mounts
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_bubblewrap_nomcp_denies_graph_cli_and_fallbacks_but_allows_task_tests(tmp_path):
+    clone = tmp_path / "clone"
+    (clone / ".gitnexus").mkdir(parents=True)
+    (clone / ".gitnexus" / "lbug").write_text("prebuilt graph")
+    (clone / ".gitnexus" / "run.cjs").write_text("require('fs').writeFileSync('/workspace/cli-ran', 'leaked')")
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        (clone / name).write_text("MUST use GitNexus before editing; bootstrap with npx gitnexus.")
+    source = clone / "gitnexus" / "src" / "task.js"
+    source.parent.mkdir(parents=True)
+    source.write_text("task source")
+    modules = clone / "gitnexus" / "node_modules"
+    (modules / ".bin").mkdir(parents=True)
+    check = modules / "fixture-check.js"
+    check.write_text("#!/usr/bin/env node\nconsole.log('task tests passed')\n")
+    check.chmod(0o755)
+    (modules / ".bin" / "fixture-check").symlink_to("../fixture-check.js")
+
+    script = """
+import os, shutil, subprocess
+from pathlib import Path
+for path in (
+    '/workspace/.gitnexus/lbug', '/workspace/.gitnexus/run.cjs',
+    '/opt/gitnexus', '/opt/gitnexus-shared', '/opt/gitnexus-registry', '/opt/claude/gitnexus',
+):
+    assert not Path(path).exists(), path
+assert shutil.which('gitnexus') is None
+for name in ('AGENTS.md', 'CLAUDE.md'):
+    assert 'GitNexus tools are unavailable' in Path('/workspace', name).read_text()
+assert subprocess.run(['node', '/workspace/.gitnexus/run.cjs', 'query', 'task'], capture_output=True).returncode != 0
+assert subprocess.run(['npx', '--offline', '--no', '--package', 'gitnexus', 'gitnexus', '--version'], capture_output=True).returncode != 0
+assert not Path('/workspace/cli-ran').exists()
+Path('/workspace/gitnexus/src/task.js').write_text('edited task source')
+test = subprocess.run(['npx', '--offline', '--no', 'fixture-check'], cwd='/workspace/gitnexus', capture_output=True, text=True)
+assert test.returncode == 0, test.stderr
+assert 'task tests passed' in test.stdout
+print('no GitNexus access; task source and npx tests available')
+"""
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, gitnexus_available=False) as sandbox:
+        result = run_managed(
+            [*sandbox.command_prefix_for(unshare_network=True), "/usr/bin/python3", "-c", script],
+            timeout=30,
+            env=sandbox.environment(),
+            require_pid_namespace=True,
+        )
+    assert result.ok, result.stderr_tail
+    assert "no GitNexus access" in result.stdout_tail
+    assert source.read_text() == "edited task source"
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_CLAUDE_CANARY") != "1",
+    reason="real Claude no-MCP canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_claude_nomcp_loads_ordinary_context_without_skills_hooks_or_gitnexus(tmp_path):
+    """Use run_arm's actual no-MCP flags, with only the model scripted."""
+
+    claude = Path(os.environ["CLAUDE_CANARY_BIN"]).resolve()
+    assert claude.is_file()
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "AGENTS.md").write_text("# GitNexus\nordinary-provider-guidance-canary: use LanguageProvider hooks.\n")
+    (clone / "CLAUDE.md").write_text(
+        "@AGENTS.md\nordinary-npm-test-guidance-canary: run npm test.\n"
+        "<!-- gitnexus:start -->\nMUST run impact before editing.\n<!-- gitnexus:end -->\n"
+    )
+    skill = clone / ".claude" / "skills" / "gitnexus-work"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: gitnexus-work\ndescription: forbidden-skill-discovery-canary\n---\nUse graph tools.\n"
+    )
+    (clone / ".claude" / "settings.json").write_text(
+        json.dumps(
+            {
+                "disableAllHooks": False,
+                "hooks": {
+                    event: [{"hooks": [{"type": "command", "command": "printf hook > /workspace/startup-hook-ran"}]}]
+                    for event in ("SessionStart", "PreToolUse")
+                },
+            }
+        )
+    )
+    (clone / "unexpected_mcp.py").write_text(
+        "from pathlib import Path; Path('/workspace/mcp-started').write_text('leaked')"
+    )
+    (clone / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {"gitnexus": {"command": "/usr/bin/python3", "args": ["/workspace/unexpected_mcp.py"]}},
+            }
+        )
+    )
+    (clone / ".gitnexus").mkdir()
+    (clone / ".gitnexus" / "lbug").write_text("supplied graph")
+    (clone / ".gitnexus" / "run.cjs").write_text("require('fs').writeFileSync('/workspace/cli-ran', 'leaked')")
+    (clone / "canary.txt").write_text("ordinary source is available")
+    bash_probe = (
+        'test -z "${ANTHROPIC_API_KEY:-}" && test -z "${GITHUB_TOKEN:-}" && '
+        "test ! -e /workspace/.gitnexus/lbug && test ! -e /workspace/.gitnexus/run.cjs && "
+        "test ! -e /opt/gitnexus && test ! -e /opt/gitnexus-shared && test ! -e /opt/gitnexus-registry && "
+        "! command -v gitnexus && "
+        "printf 'task source and Bash available' > /workspace/bash-called"
+    )
+    reply = Reply(
+        tools=[
+            {"name": "Read", "input": {"file_path": "/workspace/canary.txt"}},
+            {"name": "Skill", "input": {"skill": "gitnexus-work"}},
+            {"name": "mcp__gitnexus__list_repos", "input": {}},
+            {"name": "Bash", "input": {"command": bash_probe}},
+        ]
+    )
+    with prepare_sandbox(clone=clone, claude_bin=claude, gitnexus_available=False) as sandbox:
+        with MockProvider(replies=[reply]) as provider:
+            args = SimpleNamespace(
+                claude_bin=str(claude),
+                timeout=60,
+                model="claude-canary-20260718",
+                effort="high",
+                auth_token="offline-canary-key",
+                base_url=provider.base_url,
+            )
+            record = runner.run_arm(
+                "baseline_nomcp",
+                {
+                    "prompt": "Inspect the source, attempt the requested tools, and finish.",
+                    "verify": "test -s /workspace/bash-called",
+                },
+                clone,
+                args,
+                sandbox=sandbox,
+            )
+        assert record["ok"] is True, record.get("error_detail")
+        assert record["authored_tests_passed"] is True, record.get("authored_test_output")
+        first = provider.requests[0].body
+        # Claude 2.1.214 sends CLAUDE.md/imported AGENTS.md as a startup
+        # system-reminder text block in its first user message.
+        initial_user = first["messages"][0]
+        assert initial_user["role"] == "user"
+        reminders = [
+            block["text"] for block in initial_user["content"]
+            if block.get("type") == "text" and "<system-reminder>" in block.get("text", "")
+            and "Contents of /workspace/CLAUDE.md (" in block["text"]
+        ]
+        assert len(reminders) == 1
+        context = reminders[0]
+        assert "Contents of /workspace/AGENTS.md" in context
+        assert "ordinary-npm-test-guidance-canary" in context
+        assert "ordinary-provider-guidance-canary" in context
+        assert "forbidden-skill-discovery-canary" not in json.dumps(first)
+        advertised = {tool["name"] for tool in first.get("tools", [])}
+        assert "Read" in advertised and "Bash" in advertised
+        assert advertised <= {tool for tool in runner.BUILTIN_AGENT_TOOLS if tool != "Skill"}
+        assert "Skill" not in advertised
+        assert not any(name.startswith("mcp__") for name in advertised)
+        results = {
+            block["tool_use_id"]: block
+            for request in provider.requests
+            for message in request.body.get("messages", [])
+            if isinstance(message.get("content"), list)
+            for block in message["content"]
+            if block.get("type") == "tool_result"
+        }
+        assert results["toolu_mock_0"].get("is_error") is not True
+        assert results["toolu_mock_1"].get("is_error") is True
+        assert results["toolu_mock_2"].get("is_error") is True
+        assert results["toolu_mock_3"].get("is_error") is not True
+    assert (clone / "bash-called").read_text() == "task source and Bash available"
+    for marker in ("startup-hook-ran", "mcp-started", "cli-ran"):
+        assert not (clone / marker).exists(), marker
+
+
+@pytest.mark.parametrize("entry", ["directory", "relative-link", "absolute-link"])
+def test_review_preparation_rejects_a_reused_artifact_directory(tmp_path, entry):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    sentinel = tmp_path / "sentinel"
+    sentinel.write_text("must survive")
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        stale = proposer_sandbox.review_output_path(sandbox, "review-output.json").parent
+        if entry == "directory":
+            stale.mkdir()
+            (stale / "review-output.json").write_text("a previous cell's verdict")
+        else:
+            # relpath, not a hand-written "../sentinel": stale is
+            # <private_root>/review-output, which is nowhere near tmp_path, so the
+            # literal produced a dangling link and the assertion below proved nothing.
+            stale.symlink_to(
+                sentinel if entry == "absolute-link" else Path(os.path.relpath(sentinel, stale.parent))
+            )
+        with pytest.raises(SandboxError, match="already exists"):
+            proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
+    assert sentinel.read_text() == "must survive"
+
+
+def test_review_preparation_leaves_a_clone_entry_of_the_same_name_alone(tmp_path):
+    # The artifact no longer lives in the workspace, so a file that happens to
+    # share its name is just one of the repository's own files.
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "review-output.json").write_text("repository content")
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        output = proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
+    assert (clone / "review-output.json").read_text() == "repository content"
+    assert clone not in output.parents
+
+
+def test_review_preparation_creates_a_private_directory_and_not_the_file(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        output = proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
+        assert output == proposer_sandbox.review_output_path(sandbox, "review-output.json")
+        # The DIRECTORY is what has to exist and be writable: the agent writes
+        # a temp file beside the target and renames it.
+        assert output.parent.is_dir()
+        assert stat.S_IMODE(output.parent.stat().st_mode) == 0o700
+        # The file is deliberately absent — absence is how "never written" is
+        # told apart from "written badly".
+        assert not output.exists()
+
+
+def test_review_preparation_preserves_existing_runtime_files_and_tracks_only_created_paths(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "bunfig.toml").write_text("existing configuration\n")
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        proposer_sandbox.prepare_review_workspace(replace(sandbox, backend="bwrap"), "review-output.json")
+        created = json.loads((sandbox.private_root / "review-created-paths.json").read_text())
+        assert "bunfig.toml" not in created
+        assert ".npmrc" in created
+        assert ".mcp.json" in created
+        assert json.loads((clone / ".mcp.json").read_text()) == {}
+        assert (clone / "bunfig.toml").read_text() == "existing configuration\n"
+        assert (clone / ".git/commondir").read_text() == ".\n"
+
+
+def test_review_preparation_rejects_a_runtime_symlink_parent(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (clone / ".claude").symlink_to(outside, target_is_directory=True)
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        with pytest.raises(SandboxError):
+            proposer_sandbox.prepare_review_workspace(replace(sandbox, backend="bwrap"), "review-output.json")
+    assert list(outside.iterdir()) == []
 
 
 def test_environment_is_allowlisted_and_shell_children_are_credential_free(monkeypatch) -> None:
@@ -65,11 +827,179 @@ def test_environment_is_allowlisted_and_shell_children_are_credential_free(monke
     assert settings["sandbox"]["failIfUnavailable"] is True
     assert settings["sandbox"]["allowUnsandboxedCommands"] is False
     assert settings["sandbox"]["network"]["deniedDomains"] == ["*"]
+    assert SANDBOX_EVIDENCE in settings["sandbox"]["filesystem"]["allowRead"]
+    # Headless `claude -p` (2.1.247) never dispatches PreToolUse from any
+    # settings source, so a hook here would be confinement theater: it would
+    # read as a control in review while enforcing nothing at runtime.
+    assert "hooks" not in settings
     # ENV_SCRUB forces "default" mode; the proposer's tools (Bash writes the
     # overlay) run headless only because they are explicitly pre-approved.
     # Requesting a non-default defaultMode would merely warn, so it must be gone.
     assert settings["permissions"]["allow"] == ["Read", "Grep", "Glob", "Bash"]
     assert "defaultMode" not in settings["permissions"]
+
+
+def test_unsafe_host_session_translates_virtual_paths_and_disables_containment(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    evidence = tmp_path / "evidence"
+    for directory in (clone, evidence):
+        directory.mkdir()
+
+    with prepare_sandbox(
+        clone=clone,
+        backend="host-unsafe",
+        claude_bin=sys.executable,
+        read_only_mounts=(ReadOnlyMount(evidence, "/evidence"),),
+    ) as sandbox:
+        assert sandbox.command_prefix == []
+        assert sandbox.require_pid_namespace is False
+        assert sandbox.host_path("/workspace/review-output.json") == str(clone / "review-output.json")
+        assert sandbox.host_path("/evidence/selected-rows.json") == str(evidence / "selected-rows.json")
+        # The review artifact left the workspace, so the host-unsafe backend has
+        # to translate its new home too. Untranslated, the review prompt names a
+        # path that exists on neither backend and the cell writes nothing.
+        assert sandbox.host_path(
+            f"{proposer_sandbox.SANDBOX_REVIEW_OUTPUT}/review-output.json"
+        ) == str(proposer_sandbox.review_output_path(sandbox, "review-output.json"))
+        assert sandbox.host_text(
+            f"write {proposer_sandbox.SANDBOX_REVIEW_OUTPUT}/review-output.json"
+        ) == f"write {proposer_sandbox.review_output_path(sandbox, 'review-output.json')}"
+        assert sandbox.host_text("read /evidence and write /workspace/out") == (
+            f"read {evidence} and write {clone}/out"
+        )
+        # Sessions spawn the binary directly, so it must be the host executable
+        # rather than the sandbox-only mount target.
+        assert sandbox.claude_bin != SANDBOX_CLAUDE
+        assert Path(sandbox.claude_bin).exists()
+        assert sandbox.environment()["HOME"] == str(sandbox.home)
+        assert "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB" not in sandbox.environment()
+        assert all(
+            Path(entry).is_dir() for entry in sandbox.environment()["PATH"].split(":")
+        )
+        unsafe_settings = json.loads(sandbox.settings_json)
+        assert unsafe_settings["sandbox"]["enabled"] is False
+        assert unsafe_settings["sandbox"]["failIfUnavailable"] is False
+        assert "disableBypassPermissionsMode" not in unsafe_settings["permissions"]
+
+
+def test_host_workspace_write_boundary_keeps_only_the_review_artifact_writable(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    nested = clone / "src"
+    nested.mkdir(parents=True)
+    source = nested / "source.ts"
+    source.write_text("trusted\n")
+    output = clone / "review-output.json"
+    output.write_text("")
+    original_source_mode = stat.S_IMODE(source.stat().st_mode)
+    original_output_mode = stat.S_IMODE(output.stat().st_mode)
+
+    with host_workspace_write_boundary(clone, writable=(output,)):
+        with pytest.raises(OSError):
+            source.write_text("tampered\n")
+        with pytest.raises(OSError):
+            (clone / "extra.py").write_text("nope\n")
+        output.write_text('{"schema_version":1}\n')
+
+    assert source.read_text() == "trusted\n"
+    assert output.read_text() == '{"schema_version":1}\n'
+    assert not (clone / "extra.py").exists()
+    assert stat.S_IMODE(source.stat().st_mode) == original_source_mode
+    assert stat.S_IMODE(output.stat().st_mode) == original_output_mode
+
+
+def test_host_workspace_write_boundary_keeps_files_under_an_allowed_directory(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    artifacts = clone / "artifacts"
+    artifacts.mkdir(parents=True)
+    existing = artifacts / "review-output.json"
+    existing.write_text("{}\n")
+    (clone / "src").mkdir()
+    locked = clone / "src" / "source.ts"
+    locked.write_text("trusted\n")
+
+    with host_workspace_write_boundary(clone, writable=(artifacts,)):
+        existing.write_text('{"schema_version":1}\n')
+        with pytest.raises(OSError):
+            locked.write_text("tampered\n")
+
+    assert existing.read_text() == '{"schema_version":1}\n'
+    assert locked.read_text() == "trusted\n"
+
+
+def test_host_workspace_write_boundary_rejects_a_symlinked_writable_artifact(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    target = tmp_path / "outside.json"
+    target.write_text("{}\n")
+    output = clone / "review-output.json"
+    output.symlink_to(target)
+    with pytest.raises(SandboxError, match="non-symlink"):
+        with host_workspace_write_boundary(clone, writable=(output,)):
+            pass
+
+
+def test_sandbox_workspace_write_boundary_is_noop_unless_host_unsafe(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    source = clone / "source.ts"
+    source.write_text("trusted\n")
+    bwrap_sandbox = SimpleNamespace(backend="bwrap", clone=clone)
+    with sandbox_workspace_write_boundary(
+        bwrap_sandbox,
+        read_only_workspace=True,
+        writable=(),
+    ):
+        source.write_text("still writable under bwrap no-op\n")
+    assert source.read_text() == "still writable under bwrap no-op\n"
+
+    output = clone / "review-output.json"
+    output.write_text("")
+    source.write_text("trusted\n")
+    unsafe = SimpleNamespace(backend="host-unsafe", clone=clone)
+    with sandbox_workspace_write_boundary(
+        unsafe,
+        read_only_workspace=True,
+        writable=(output,),
+    ):
+        with pytest.raises(OSError):
+            source.write_text("tampered\n")
+        output.write_text("ok\n")
+    assert source.read_text() == "trusted\n"
+    assert output.read_text() == "ok\n"
+
+
+def test_force_rmtree_deletes_nonempty_directories_copied_from_a_locked_workspace(tmp_path) -> None:
+    locked = tmp_path / "locked"
+    nested = locked / "gitnexus-shared" / "src"
+    nested.mkdir(parents=True)
+    (nested / "index.ts").write_text("export {}\n")
+    os.chmod(nested, 0o500)
+    os.chmod(locked / "gitnexus-shared", 0o500)
+    os.chmod(locked, 0o500)
+
+    copied = tmp_path / "sandbox-tmp" / "tmp.XXXX" / "gitnexus-shared"
+    copied.parent.mkdir(parents=True)
+    shutil.copytree(locked / "gitnexus-shared", copied)
+    assert stat.S_IMODE(copied.stat().st_mode) & 0o222 == 0
+
+    _force_rmtree(copied.parent)
+    assert not copied.parent.exists()
+
+
+def test_host_unsafe_sandbox_cleanup_survives_readonly_tmpdir_copies(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    leftover = None
+    with prepare_sandbox(clone=clone, backend="host-unsafe", claude_bin=sys.executable) as sandbox:
+        leftover = sandbox.private_root
+        copied = sandbox.temp / "tmp.XXXX" / "gitnexus-shared" / "src"
+        copied.mkdir(parents=True)
+        (copied / "index.ts").write_text("export {}\n")
+        os.chmod(copied, 0o500)
+        os.chmod(copied.parent, 0o500)
+        os.chmod(copied.parent.parent, 0o500)
+    assert leftover is not None
+    assert not leftover.exists()
 
 
 @pytest.mark.parametrize(
@@ -152,6 +1082,10 @@ def test_sandbox_command_has_minimal_mounts_and_no_host_root_bind(tmp_path: Path
         assert str(clone.resolve()) in argv
         assert "/workspace" in argv
         assert sandbox.claude_bin == "/opt/claude/claude"
+        bwrap_index = argv.index(proposer_sandbox.SANDBOX_BWRAP)
+        assert argv[bwrap_index - 2:bwrap_index + 1] == [
+            "--ro-bind", str(bwrap.resolve()), proposer_sandbox.SANDBOX_BWRAP,
+        ]
         assert sandbox.transcript_projects.parent.name == ".claude"
         shell_prefix_index = argv.index(SANDBOX_SHELL_PREFIX)
         assert argv[shell_prefix_index - 2] == "--ro-bind"
@@ -169,6 +1103,16 @@ def test_sandbox_command_has_minimal_mounts_and_no_host_root_bind(tmp_path: Path
         )
         assert probe.returncode == 0, probe.stderr
         assert probe.stdout == f"/home/agent|{SANDBOX_PATH}"
+
+        gitnexus_index = argv.index(SANDBOX_GITNEXUS_CLI)
+        gitnexus_wrapper = Path(argv[gitnexus_index - 1])
+        assert stat.S_IMODE(gitnexus_wrapper.stat().st_mode) == 0o500
+        assert "/opt/gitnexus/dist/cli/index.js" in gitnexus_wrapper.read_text()
+
+        excludes_index = argv.index(SANDBOX_GIT_EXCLUDES)
+        excludes = Path(argv[excludes_index - 1])
+        assert stat.S_IMODE(excludes.stat().st_mode) == 0o400
+        assert "/.bash_profile" in excludes.read_text().splitlines()
 
         # The evidence-provenance.mjs plan-writer's PATH-scan trusts a Python 3
         # candidate only if it (and its directory) is owned by root or by the
@@ -214,7 +1158,7 @@ def test_runtime_mounts_bind_the_resolved_node_to_a_fresh_sandbox_path(monkeypat
         "workflow_bench.proposer_sandbox.shutil.which",
         lambda name: "/opt/hostedtoolcache/node/22.18.0/x64/bin/node" if name == "node" else None,
     )
-    args = _runtime_mount_args()
+    args = runtime_mount_args()
     node_index = args.index("/opt/hostedtoolcache/node/22.18.0/x64/bin/node")
     assert args[node_index - 1] == "--ro-bind"
     assert args[node_index + 1] == SANDBOX_NODE
@@ -240,7 +1184,7 @@ def test_runtime_mounts_bind_the_node_prefix_so_npx_and_npm_resolve(monkeypatch,
         "workflow_bench.proposer_sandbox.shutil.which",
         lambda name: str(prefix / "bin" / "node") if name == "node" else None,
     )
-    args = _runtime_mount_args()
+    args = runtime_mount_args()
     prefix_index = args.index(str(prefix))
     assert args[prefix_index - 1] == "--ro-bind"
     assert args[prefix_index + 1] == SANDBOX_NODE_PREFIX
@@ -267,7 +1211,7 @@ def test_runtime_mounts_skip_the_prefix_bind_for_an_unrecognized_node_layout(mon
         "workflow_bench.proposer_sandbox.shutil.which",
         lambda name: str(bare / "node") if name == "node" else None,
     )
-    args = _runtime_mount_args()
+    args = runtime_mount_args()
     assert SANDBOX_NODE_PREFIX not in args
     assert str(tmp_path) not in args
     # the node bind itself is unaffected -- SANDBOX_NODE still works.
@@ -284,7 +1228,7 @@ def test_runtime_mounts_skip_the_prefix_bind_without_npx_beside_node(monkeypatch
         "workflow_bench.proposer_sandbox.shutil.which",
         lambda name: str(prefix / "bin" / "node") if name == "node" else None,
     )
-    args = _runtime_mount_args()
+    args = runtime_mount_args()
     assert SANDBOX_NODE_PREFIX not in args
 
 
@@ -301,7 +1245,7 @@ def test_runtime_mounts_bind_a_real_tool_cache_layout(monkeypatch, tmp_path) -> 
         "workflow_bench.proposer_sandbox.shutil.which",
         lambda name: str(prefix / "bin" / "node") if name == "node" else None,
     )
-    args = _runtime_mount_args()
+    args = runtime_mount_args()
     prefix_index = args.index(SANDBOX_NODE_PREFIX)
     assert args[prefix_index - 2] == "--ro-bind"
     assert args[prefix_index - 1] == str(prefix)
@@ -316,14 +1260,14 @@ def test_runtime_mounts_skip_the_prefix_bind_when_it_is_already_bound(monkeypatc
         "workflow_bench.proposer_sandbox.shutil.which",
         lambda name: "/usr/local/bin/node" if name == "node" else None,
     )
-    args = _runtime_mount_args()
+    args = runtime_mount_args()
     assert SANDBOX_NODE_PREFIX not in args
     assert args[args.index("/usr/local/bin/node") + 1] == SANDBOX_NODE
 
 
 def test_runtime_mounts_skip_the_node_bind_when_node_is_unresolvable(monkeypatch) -> None:
     monkeypatch.setattr("workflow_bench.proposer_sandbox.shutil.which", lambda name: None)
-    args = _runtime_mount_args()
+    args = runtime_mount_args()
     assert SANDBOX_NODE not in args
 
 
@@ -617,6 +1561,63 @@ finally:
     assert not (clone / "oracle-leak.txt").exists()
 
 
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_read_only_review_workspace_exposes_only_one_writable_artifact(tmp_path: Path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    source = clone / "source.ts"
+    source.write_text("trusted\n")
+    script = """
+import os
+from pathlib import Path
+try:
+    Path('/workspace/source.ts').write_text('tampered')
+except OSError:
+    pass
+else:
+    raise SystemExit('review source remained writable')
+# Write the way the agent's Write tool does: a temp file beside the target,
+# then rename. Writing in place would pass against the mount shape that
+# shipped every artifact empty, which is the regression this canary exists for.
+target = Path('/review-output/review-output.json')
+staging = target.with_name(target.name + '.tmp.1.abc')
+staging.write_text('{"schema_version":1}')
+os.replace(staging, target)
+"""
+    with prepare_sandbox(clone=clone, claude_bin=Path(sys.executable), preflight=True) as sandbox:
+        output = proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
+        result = run_managed(
+            [
+                *sandbox.command_prefix_for(
+                    read_only_workspace=True,
+                    extra_writable_mounts=(
+                        ReadOnlyMount(
+                            source=output.parent, target=proposer_sandbox.SANDBOX_REVIEW_OUTPUT
+                        ),
+                    ),
+                ),
+                "/usr/bin/python3",
+                "-c",
+                script,
+            ],
+            timeout=10,
+            env=sandbox.environment(),
+            require_pid_namespace=True,
+        )
+
+        # Inside the sandbox scope: the artifact now lives under the session's
+        # private root, which prepare_sandbox removes on exit. run_arm reads it
+        # here too, while the session is still alive.
+        assert result.ok, result.stderr_tail
+        assert source.read_text() == "trusted\n"
+        assert output.read_text() == '{"schema_version":1}'
+        # The staging file is gone: the rename landed rather than a copy.
+        assert list(output.parent.iterdir()) == [output]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation may require elevated Windows privileges")
 @pytest.mark.parametrize("operation", ["stage", "sandbox"])
 def test_clone_root_symlink_is_rejected_before_host_access(tmp_path: Path, operation: str) -> None:
@@ -674,7 +1675,7 @@ def test_preflight_failure_is_returned_before_a_model_command(monkeypatch, tmp_p
 
     monkeypatch.setattr("workflow_bench.proposer_sandbox.run_managed", fail)
     monkeypatch.setattr(
-        "workflow_bench.proposer_sandbox._runtime_mount_args",
+        "workflow_bench.proposer_sandbox.runtime_mount_args",
         lambda: runtime_mounts,
     )
     with pytest.raises(SandboxError, match="preflight"):
@@ -792,6 +1793,172 @@ def test_real_bubblewrap_denies_parent_read_and_allows_clone_write(tmp_path: Pat
     assert (clone / "allowed").read_text() == "ok"
 
 
+def test_mcp_boundary_has_only_readonly_inputs_and_private_state() -> None:
+    server = json.loads(runner.sandbox_mcp_config())["mcpServers"]["gitnexus"]
+    command = [server["command"], *server["args"]]
+    assert command[:3] == ["/usr/bin/env", "-i", proposer_sandbox.SANDBOX_BWRAP]
+    for option in ("--unshare-user", "--unshare-pid", "--unshare-net", "--unshare-ipc", "--unshare-uts"):
+        assert option in command
+    index = command.index("--cap-drop")
+    assert command[index:index + 2] == ["--cap-drop", "ALL"]
+    assert "--bind" not in command
+    assert "--clearenv" in command
+    for path in (SANDBOX_WORKSPACE, proposer_sandbox.SANDBOX_GITNEXUS, SANDBOX_NODE):
+        assert any(command[index:index + 3] == ["--ro-bind", path, path] for index in range(len(command)))
+    for path in ("/home", "/tmp", "/run"):
+        assert any(command[index:index + 2] == ["--tmpfs", path] for index in range(len(command)))
+    assert proposer_sandbox.SANDBOX_CLAUDE not in command
+    assert proposer_sandbox.SANDBOX_EVIDENCE not in command
+    assert proposer_sandbox.SANDBOX_REVIEW_OUTPUT not in command
+
+
+def test_unsafe_host_mcp_retains_explicit_credential_free_diagnostic_launch(tmp_path: Path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        config = json.loads(sandbox.host_text(runner.sandbox_mcp_config(unsafe_host=True)))
+        server = config["mcpServers"]["gitnexus"]
+        command = [server["command"], *server["args"]]
+        assert command[:2] == ["/usr/bin/env", "-i"]
+        assert "--unshare-pid" not in command
+        assert f"HOME={sandbox.home}" in command
+        assert f"TMPDIR={sandbox.temp}" in command
+        assert f"GITNEXUS_MCP_ALLOWED_REPOS={clone}" in command
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_bubblewrap_mcp_startup_and_tools_cannot_apply_credited_patches(tmp_path: Path) -> None:
+    clone = tmp_path / "clone"
+    (clone / ".gitnexus").mkdir(parents=True)
+    source = clone / "source.txt"
+    source.write_text("unsolved")
+    (clone / "oracle.txt").write_text("trusted oracle")
+    graph = tmp_path / "graph"
+    graph.mkdir()
+    (graph / "metadata.json").write_text("trusted graph")
+    runtime = tmp_path / "runtime"
+    entrypoint = runtime / "dist" / "cli" / "index.js"
+    entrypoint.parent.mkdir(parents=True)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "package.json").write_text("trusted shared")
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    (registry / "registry.json").write_text("trusted registry")
+    entrypoint.write_text("""
+const fs = require('fs');
+const net = require('net');
+const readline = require('readline');
+const [parentPid, parentNamespace, port] = process.argv.slice(-3);
+async function probe(phase) {
+  const readable = ['/workspace/source.txt', '/workspace/oracle.txt',
+    '/workspace/.gitnexus/metadata.json', '/opt/gitnexus-registry/registry.json',
+    '/opt/gitnexus-shared/package.json', '/opt/gitnexus/dist/cli/index.js'];
+  const reads = readable.map(path => fs.readFileSync(path, 'utf8').length > 0);
+  const blocked = readable.map(path => {
+    try { fs.writeFileSync(path, 'known solution'); return false; } catch { return true; }
+  });
+  let creationBlocked = false;
+  try { fs.writeFileSync('/workspace/credited-patch', 'known solution'); }
+  catch { creationBlocked = true; }
+  const agentStateAbsent = !fs.existsSync('/home/agent/agent-token') &&
+    !fs.existsSync('/tmp/agent-token') && !fs.existsSync('/review-output') && !fs.existsSync('/evidence');
+  // PID numbers can repeat in nested namespaces. A same-numbered process
+  // belongs to this namespace, not the credential-bearing agent's namespace.
+  const parentHidden = !fs.existsSync('/proc/' + parentPid + '/ns/pid') ||
+    fs.readlinkSync('/proc/' + parentPid + '/ns/pid') !== parentNamespace;
+  let credentialAbsent = !process.env.ANTHROPIC_API_KEY;
+  for (const pid of fs.readdirSync('/proc').filter(value => /^\\d+$/.test(value))) {
+    try { credentialAbsent &&= !fs.readFileSync('/proc/' + pid + '/environ', 'utf8')
+      .includes('nested-mcp-canary-secret'); } catch {}
+  }
+  const capZero = /^CapEff:\\s+0+$/m.test(fs.readFileSync('/proc/self/status', 'utf8'));
+  const privateState = phase === 'startup' ? !fs.existsSync('/tmp/mcp-state') :
+    fs.readFileSync('/tmp/mcp-state', 'utf8') === 'startup';
+  fs.writeFileSync('/tmp/mcp-state', phase);
+  fs.writeFileSync('/home/agent/mcp-state', phase);
+  const networkBlocked = await new Promise(resolve => {
+    const socket = net.connect({host: '127.0.0.1', port: Number(port)});
+    socket.once('connect', () => { socket.destroy(); resolve(false); });
+    socket.once('error', () => resolve(true));
+    socket.setTimeout(1000, () => { socket.destroy(); resolve(true); });
+  });
+  return {phase, reads, blocked, creationBlocked, agentStateAbsent, parentHidden,
+    credentialAbsent, capZero, privateState, networkBlocked};
+}
+(async () => {
+  process.stdout.write(JSON.stringify(await probe('startup')) + '\\n');
+  const input = readline.createInterface({input: process.stdin});
+  for await (const line of input) {
+    const request = JSON.parse(line);
+    if (request.method !== 'tools/call') throw new Error('expected tool request');
+    process.stdout.write(JSON.stringify({jsonrpc: '2.0', id: request.id,
+      result: await probe('tool')}) + '\\n');
+  }
+})().catch(error => { process.stderr.write(String(error)); process.exit(1); });
+""")
+    original_runtime = entrypoint.read_bytes()
+    mounts = [
+        ReadOnlyMount(runtime, proposer_sandbox.SANDBOX_GITNEXUS),
+        ReadOnlyMount(shared, proposer_sandbox.SANDBOX_GITNEXUS_SHARED),
+        ReadOnlyMount(registry, proposer_sandbox.SANDBOX_GITNEXUS_REGISTRY),
+        ReadOnlyMount(graph, f"{SANDBOX_WORKSPACE}/.gitnexus"),
+    ]
+    server = json.loads(runner.sandbox_mcp_config())["mcpServers"]["gitnexus"]
+    command = [server["command"], *server["args"]]
+    # The credential-bearing agent stays alive while its MCP child attempts
+    # startup and tool-handler attacks. A same-namespace env scrub is not enough.
+    launcher = f"""
+import json, os, socket, subprocess
+from pathlib import Path
+Path('/home/agent/agent-token').write_text('nested-mcp-canary-secret')
+Path('/tmp/agent-token').write_text('nested-mcp-canary-secret')
+listener = socket.socket()
+listener.bind(('127.0.0.1', 0))
+listener.listen()
+command = {command!r} + [str(os.getpid()), os.readlink('/proc/self/ns/pid'),
+    str(listener.getsockname()[1])]
+result = subprocess.run(command, input=json.dumps({{'jsonrpc': '2.0', 'id': 1,
+    'method': 'tools/call', 'params': {{'name': 'apply_known_solution'}}}}) + '\\n',
+    text=True, capture_output=True, timeout=10)
+assert result.returncode == 0, result.stderr
+assert not Path('/home/agent/mcp-state').exists()
+assert not Path('/tmp/mcp-state').exists()
+assert Path('/home/agent/agent-token').read_text() == 'nested-mcp-canary-secret'
+assert Path('/tmp/agent-token').read_text() == 'nested-mcp-canary-secret'
+Path('/workspace/agent-patch').write_text('agent implementation')
+print(result.stdout, end='')
+"""
+    with prepare_sandbox(
+        clone=clone, claude_bin=sys.executable, read_only_mounts=mounts, preflight=True,
+    ) as sandbox:
+        result = sandbox.run(
+            ["/usr/bin/python3", "-c", launcher], timeout=15,
+            env=sandbox.environment(auth_token="nested-mcp-canary-secret"),
+        )
+    assert result.ok, result.stderr_tail
+    startup, response = [json.loads(line) for line in result.stdout_tail.splitlines()]
+    tool = response["result"]
+    assert [startup["phase"], tool["phase"]] == ["startup", "tool"]
+    for probe in (startup, tool):
+        assert all(probe["reads"])
+        assert all(probe["blocked"])
+        for field in ("creationBlocked", "agentStateAbsent", "parentHidden", "credentialAbsent",
+                      "capZero", "privateState", "networkBlocked"):
+            assert probe[field], (probe["phase"], field)
+    assert source.read_text() == "unsolved"
+    assert (clone / "oracle.txt").read_text() == "trusted oracle"
+    assert (graph / "metadata.json").read_text() == "trusted graph"
+    assert (registry / "registry.json").read_text() == "trusted registry"
+    assert (shared / "package.json").read_text() == "trusted shared"
+    assert entrypoint.read_bytes() == original_runtime
+    assert not (clone / "credited-patch").exists()
+    assert (clone / "agent-patch").read_text() == "agent implementation"
+
+
 @pytest.mark.skipif(
     os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
     reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
@@ -839,13 +2006,15 @@ def test_clone_controlled_mcp_replacement_is_never_executed_or_credentialed(tmp_
     os.environ.get("GITNEXUS_REQUIRE_CLAUDE_CANARY") != "1",
     reason="real Claude/Bash/MCP canary is mandatory in the named Ubuntu CI job",
 )
-def test_real_claude_bare_auth_inner_sandbox_and_mcp_permissions(tmp_path: Path) -> None:
+@pytest.mark.parametrize("review_layout", [False, True])
+def test_real_claude_auth_inner_sandbox_and_mcp_permissions(tmp_path: Path, review_layout: bool) -> None:
     """Exercise the exact CLI boundary without contacting a paid model."""
 
     claude = Path(os.environ["CLAUDE_CANARY_BIN"]).resolve()
     assert claude.is_file()
     clone = tmp_path / "clone"
     clone.mkdir()
+    (clone / "canary.txt").write_text("hook-readable")
     fake_mcp = clone / "fake_mcp.py"
     fake_mcp.write_text(
         """import json
@@ -872,7 +2041,7 @@ for line in sys.stdin:
             }]
         }
     elif method == "tools/call":
-        Path("/workspace/mcp-called").write_text("ok")
+        Path("/tmp/mcp-called").write_text("ok")
         result = {"content": [{"type": "text", "text": "repository list ready"}]}
     else:
         result = {}
@@ -880,6 +2049,35 @@ for line in sys.stdin:
 """
     )
     fake_mcp.chmod(0o500)
+
+    review_command = """test -z "${ANTHROPIC_API_KEY:-}" && python3 - <<'PY'
+import json
+import os
+import subprocess
+from pathlib import Path
+source = Path('/workspace/canary.txt')
+assert 'hook-readable' in source.read_text()
+assert 'changed for review' in subprocess.check_output(['git', 'diff', '--', 'canary.txt'], text=True)
+for operation in (lambda: source.write_text('forbidden'), lambda: source.rename(source.with_name('renamed')), source.unlink):
+    try:
+        operation()
+    except OSError:
+        pass
+    else:
+        raise AssertionError('source mutation was allowed')
+target = Path('/review-output/review-output.json')
+staging = target.with_name(target.name + '.tmp.1.abc')
+staging.write_text(json.dumps({'schema_version': 1, 'verdict': 'approve', 'findings': []}))
+os.replace(staging, target)
+PY"""
+    if review_layout:
+        for command in (
+            ["git", "init", "-q"],
+            ["git", "add", "canary.txt", "fake_mcp.py"],
+            ["git", "-c", "user.name=Canary", "-c", "user.email=canary@example.test", "commit", "-qm", "fixture"],
+        ):
+            subprocess.run(command, cwd=clone, check=True, capture_output=True)
+        (clone / "canary.txt").write_text("hook-readable\nchanged for review\n")
 
     observed_tool_results: dict[str, dict] = {}
 
@@ -910,7 +2108,19 @@ for line in sys.stdin:
                     and isinstance(block.get("tool_use_id"), str)
                 }
             )
-            if "toolu_mcp_canary" not in tool_result_ids:
+            if "toolu_read_canary" not in tool_result_ids:
+                blocks = [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_read_canary",
+                        "name": "Read",
+                        "input": {
+                            "file_path": "/workspace/canary.txt",
+                        },
+                    }
+                ]
+                stop_reason = "tool_use"
+            elif "toolu_mcp_canary" not in tool_result_ids:
                 blocks = [
                     {
                         "type": "tool_use",
@@ -927,7 +2137,9 @@ for line in sys.stdin:
                         "id": "toolu_bash_canary",
                         "name": "Bash",
                         "input": {
-                            "command": ('test -z "${ANTHROPIC_API_KEY:-}" && printf canary > /workspace/bash-called')
+                            "command": review_command
+                            if review_layout
+                            else ('test -z "${ANTHROPIC_API_KEY:-}" && printf canary > /workspace/bash-called')
                         },
                     }
                 ]
@@ -1024,6 +2236,22 @@ for line in sys.stdin:
             }
         )
         with prepare_sandbox(clone=clone, claude_bin=claude, preflight=True) as sandbox:
+            output = None
+            before = {}
+            if review_layout:
+                output = proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
+                before = runner_artifacts.workspace_snapshot(clone)
+                sandbox = replace(
+                    sandbox,
+                    command_prefix=sandbox.command_prefix_for(
+                        read_only_workspace=True,
+                        extra_writable_mounts=(
+                            ReadOnlyMount(
+                                output.parent, proposer_sandbox.SANDBOX_REVIEW_OUTPUT
+                            ),
+                        ),
+                    ),
+                )
             result = sandbox.run(
                 [
                     sandbox.claude_bin,
@@ -1032,7 +2260,6 @@ for line in sys.stdin:
                     "text",
                     "--output-format",
                     "json",
-                    "--bare",
                     "--settings",
                     sandbox.settings_json,
                     "--strict-mcp-config",
@@ -1044,7 +2271,12 @@ for line in sys.stdin:
                     # authoritative empirical gate for that behavior.
                     "--model",
                     "claude-canary-20260718",
+                    "--tools",
+                    "Read",
+                    "Bash",
+                    "mcp__gitnexus__list_repos",
                     "--allowedTools",
+                    "Read",
                     "Bash",
                     "mcp__gitnexus__list_repos",
                 ],
@@ -1053,17 +2285,139 @@ for line in sys.stdin:
                     auth_token="offline-canary-key",
                     base_url=f"http://127.0.0.1:{server.server_port}",
                 ),
-                stdin_data=b"Use both available tools, then finish.",
+                stdin_data=b"Use all three available tools, then finish.",
             )
+            assert result.ok, result.stderr_tail + result.stdout_tail
+            report = json.loads(result.stdout_tail)
+            assert report["subtype"] == "success" and report["is_error"] is False, report
+            read_result = observed_tool_results["toolu_read_canary"]
+            assert read_result.get("is_error") is not True, read_result
+            assert "hook-readable" in json.dumps(read_result)
+            bash_result = observed_tool_results["toolu_bash_canary"]
+            assert bash_result.get("is_error") is not True, bash_result
+            assert (sandbox.temp / "mcp-called").read_text() == "ok"
+            if review_layout:
+                assert output is not None
+                runner_artifacts.enforce_phase_workspace(clone, before, allowed_artifact=None)
+                assert json.loads(output.read_text())["verdict"] == "approve"
+                assert (clone / "canary.txt").read_text() == "hook-readable\nchanged for review\n"
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
 
-    assert result.ok, result.stderr_tail + result.stdout_tail
-    report = json.loads(result.stdout_tail)
-    assert report["subtype"] == "success" and report["is_error"] is False, report
-    bash_result = observed_tool_results["toolu_bash_canary"]
-    assert bash_result.get("is_error") is not True, bash_result
-    assert (clone / "bash-called").read_text() == "canary"
-    assert (clone / "mcp-called").read_text() == "ok"
+    if not review_layout:
+        assert (clone / "bash-called").read_text() == "canary"
+
+
+def test_review_artifact_binds_a_writable_directory_outside_the_workspace(tmp_path):
+    """The bwrap argv, since the mount shape is the whole bug.
+
+    bwrap cannot create a mount point inside an already-read-only bind, so a
+    writable path has to live outside /workspace — and it has to be the
+    directory, or the agent has nowhere to put the temp file it renames into
+    place.
+    """
+
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as session:
+        sandbox = replace(session, backend="bwrap")
+        output = proposer_sandbox.review_output_path(sandbox, "review-output.json")
+        output.parent.mkdir(mode=0o700)
+        argv = sandbox.command_prefix_for(
+            read_only_workspace=True,
+            extra_writable_mounts=(
+                proposer_sandbox.ReadOnlyMount(
+                    source=output.parent,
+                    target=proposer_sandbox.SANDBOX_REVIEW_OUTPUT,
+                ),
+            ),
+        )
+
+        target = proposer_sandbox.SANDBOX_REVIEW_OUTPUT
+        assert not target.startswith(proposer_sandbox.SANDBOX_WORKSPACE + "/")
+        # The workspace itself is bound read-only...
+        workspace_at = argv.index(proposer_sandbox.SANDBOX_WORKSPACE)
+        assert argv[workspace_at - 2] == "--ro-bind"
+        # ...and the artifact directory is bound writable, as a directory.
+        artifact_at = argv.index(target)
+        assert argv[artifact_at - 2] == "--bind"
+        assert Path(argv[artifact_at - 1]) == output.parent
+        assert Path(argv[artifact_at - 1]).is_dir()
+        assert f"{proposer_sandbox.SANDBOX_WORKSPACE}/review-output.json" not in argv
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_bubblewrap_lets_a_review_artifact_be_written_atomically(tmp_path: Path) -> None:
+    """The filesystem contract the EROFS defect broke, under a real sandbox.
+
+    Argv assertions cannot establish this. The artifact came back empty because
+    an atomic write - temp file beside the target, then rename - needs a
+    WRITABLE PARENT DIRECTORY, and only a real bwrap invocation shows whether
+    the mount grants one. A deterministic writer stands in for the agent: no
+    model session, no credentials.
+
+    Scope: this proves the filesystem and process contract of the production
+    mount configuration. It does not establish that a particular agent CLI's
+    own file-access policy permits the same operation - that is a second,
+    independent gate.
+    """
+
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "tracked.txt").write_text("original\n")
+
+    with prepare_sandbox(clone=clone, claude_bin=Path(sys.executable), preflight=True) as sandbox:
+        review_output = prepare_review_workspace(sandbox, REVIEW_OUTPUT)
+        # The production configuration, not a hand-built mount tuple: the same
+        # command_prefix_for call run_arm makes for a review cell.
+        prefix = sandbox.command_prefix_for(
+            read_only_workspace=True,
+            extra_writable_mounts=(
+                ReadOnlyMount(source=review_output.parent, target=SANDBOX_REVIEW_OUTPUT),
+            ),
+        )
+        target = f"{SANDBOX_REVIEW_OUTPUT}/{REVIEW_OUTPUT}"
+        script = (
+            # 1. temp file beside the destination, then atomic rename over it.
+            f'printf %s \'{{"schema_version": 1, "verdict": "approve", "findings": []}}\' > {target}.tmp && '
+            f"mv {target}.tmp {target} && "
+            # 2. the workspace must refuse the write that the mount forbids.
+            f"(printf x >> {SANDBOX_WORKSPACE}/tracked.txt 2>/dev/null && echo WORKSPACE-WRITABLE || echo workspace-readonly)"
+        )
+        result = subprocess.run(
+            [*prefix, "/bin/sh", "-c", script],
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+
+        assert result.returncode == 0, f"atomic write failed inside the sandbox: {result.stderr[-400:]}"
+        assert "workspace-readonly" in result.stdout, "the workspace must stay read-only"
+        assert (clone / "tracked.txt").read_text() == "original\n", "the clone was modified"
+
+        # Read while the session is alive: the artifact lives under the private
+        # root that prepare_sandbox removes on exit, which is also why run_arm
+        # consumes it before leaving the scope.
+        _verdict, findings = parse_review_output(review_output)
+        assert findings == ()
+
+
+def test_nomcp_sandbox_refuses_unbalanced_repository_guidance(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "AGENTS.md").write_text("Build first.\n<!-- gitnexus:start -->\nUse GitNexus.\n")
+    bwrap = tmp_path / "bwrap"
+    bwrap.write_text("#!/bin/sh\nexit 0\n")
+    bwrap.chmod(0o755)
+    with pytest.raises(SandboxError, match="unbalanced GitNexus markers"):
+        with prepare_sandbox(
+            clone=clone,
+            claude_bin=sys.executable,
+            bwrap_bin=bwrap,
+            preflight=False,
+            gitnexus_available=False,
+        ):
+            pass

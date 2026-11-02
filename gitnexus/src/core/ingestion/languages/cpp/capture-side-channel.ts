@@ -27,6 +27,7 @@
  */
 
 import type { ParsedFile } from 'gitnexus-shared';
+import { collectCppUsingDeclarations, type CppUsingDeclaration } from './using-bindings.js';
 import { collectCppAdlSideChannel, applyCppAdlSideChannel, type CppAdlSideChannel } from './adl.js';
 import {
   collectCppInlineNamespaceSideChannel,
@@ -68,6 +69,7 @@ export interface CppCaptureSideChannel {
   readonly fileLocal: CppFileLocalSideChannel;
   readonly twoPhase: CppTwoPhaseSideChannel;
   readonly memberLookup: CppMemberLookupSideChannel;
+  readonly usingDeclarations?: readonly CppUsingDeclaration[];
 }
 
 /**
@@ -81,6 +83,7 @@ export function collectCppCaptureSideChannel(filePath: string): CppCaptureSideCh
   const fileLocal = collectCppFileLocalSideChannel(filePath);
   const twoPhase = collectCppTwoPhaseSideChannel(filePath);
   const memberLookup = collectCppMemberLookupSideChannel(filePath);
+  const usingDeclarations = collectCppUsingDeclarations(filePath);
 
   const isEmpty =
     adl.argInfoBySite.length === 0 &&
@@ -91,10 +94,19 @@ export function collectCppCaptureSideChannel(filePath: string): CppCaptureSideCh
     twoPhase.dependentBases.length === 0 &&
     twoPhase.dependentPackBaseClasses.length === 0 &&
     memberLookup.baseEdges.length === 0 &&
-    memberLookup.memberUsings.length === 0;
+    memberLookup.memberUsings.length === 0 &&
+    usingDeclarations.length === 0;
   if (isEmpty) return undefined;
 
-  return { kind: 'cpp', adl, inlineNamespaceRanges, fileLocal, twoPhase, memberLookup };
+  return {
+    kind: 'cpp',
+    adl,
+    inlineNamespaceRanges,
+    fileLocal,
+    twoPhase,
+    memberLookup,
+    usingDeclarations,
+  };
 }
 
 /**

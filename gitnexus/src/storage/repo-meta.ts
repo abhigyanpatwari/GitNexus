@@ -3,8 +3,9 @@
  *
  * Holds the on-disk shape of a GitNexus index's metadata file
  * (`.gitnexus/gitnexus.json`, plus its legacy `meta.json` mirror) and the
- * read-side helpers that locate and parse it. Nothing here writes, and nothing
- * here knows about the global registry.
+ * read-side helpers that locate and parse it. Nothing here writes. Path
+ * lookup may consult configured or registered storage via `resolveStoragePath`;
+ * registry mutation stays in `repo-manager.ts`.
  *
  * Why it is its own module: `repo-manager.ts` owns the registry and the write
  * side, and `branch-index.ts` (#2106) owns the multi-branch slug/placement
@@ -21,21 +22,36 @@
  * `isMissingFilesystemError`) so every existing import site keeps working
  * unchanged.
  *
- * Imports `node:fs`/`node:path` and two type-only shapes. Keep it that way: a
+ * Imports `node:fs`/`node:path` and a few type-only summary shapes. Keep it that way: a
  * value import here would land in every consumer of `storage/`.
  */
 
 import fs from 'fs/promises';
 import path from 'path';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
+import type { UnresolvedOverloadSummary } from '../core/ingestion/scope-resolution/unresolved-overloads.js';
+import type { NameFallbackSummary } from '../core/ingestion/scope-resolution/name-fallback-summary.js';
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
+import { resolveStoragePath } from './storage-resolver.js';
+import type { ScopeExtractionFailureSummary } from '../core/ingestion/scope-resolution/scope-extraction-failures.js';
+import type { StoredRebuildReason } from '../core/rebuild-reasons.js';
+import { INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
 
-/** The `.gitnexus` directory name, relative to a repo root. */
-export const GITNEXUS_DIR = '.gitnexus';
-export const INDEX_METADATA_FILE = 'gitnexus.json';
-// Dual-written mirror of INDEX_METADATA_FILE, kept for backward compatibility
-// with consumers that only know the pre-rename filename (see MIGRATION.md).
-export const LEGACY_METADATA_FILE = 'meta.json';
+export { GITNEXUS_DIR, INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
+
+/** How much source text an index is allowed to persist. */
+export type ContentRetention = 'full' | 'symbol' | 'none';
+export type FtsProfile = 'full' | 'symbol-no-file-content' | 'name-only';
+export const CONTENT_RETENTION_SCHEMA_VERSION = 1;
+
+/** Exact staged generation whose completed embedding groups can survive a retry. */
+export interface EmbeddingRecoveryReference {
+  /** A run-minted basename within this metadata file's index slot. */
+  stagingFile: string;
+  schemaFingerprint: string;
+  /** Active-window and inherited incomplete groups: never reusable until completed. */
+  unsafeNodeIds: string[];
+}
 
 /**
  * Versioned receipt for the analyzer process that produced an index.
@@ -81,10 +97,63 @@ export interface AnalyzerRunnerIdentity {
   };
 }
 
+/**
+ * Hand-mirrored `FtsSkipReason` from core/search/fts-policy.ts so storage
+ * takes no core import. Change both declarations together.
+ */
+export type PersistedFtsSkipReason =
+  | 'extension-unavailable'
+  | 'build-failed'
+  | 'disabled-by-flag'
+  | 'disabled-by-env'
+  | 'native-abort'
+  | 'tuple-missing';
+
 export interface RepoMeta {
   repoPath: string;
+  /** Complete index directory selected for this successful analysis. */
+  storagePath?: string;
+  /**
+   * Shared-store checkouts only (#3352): the graph this slot reads when it is
+   * not `<storagePath>/lbug` — a commit graph under the same store. Resolved
+   * and validated by `resolveGraphPath`.
+   */
+  graphPath?: string;
   lastCommit: string;
   indexedAt: string;
+  /** Missing on legacy metadata means the upstream-compatible `full` profile. */
+  contentRetention?: ContentRetention;
+  contentRetentionSchemaVersion?: number;
+  ftsProfile?: FtsProfile;
+  /**
+   * Runtime enrichment mode plus redacted scan exclusions. Payload data and
+   * absolute/external paths are deliberately excluded from metadata.
+   */
+  springActuator?: {
+    enabled: boolean;
+    /**
+     * Normalized repo-relative inputs that must remain excluded from all future
+     * source scans. The list is empty when every configured input was external.
+     */
+    repoRelativeInputs: string[];
+  };
+  /**
+   * Whether the index was built with AsyncAPI document reading enabled.
+   *
+   * Only the FLAG is recorded, unlike `springActuator` above, because the two
+   * options need different things from this field. Actuator inputs are retained
+   * so future scans keep excluding them; documents are deliberately NOT
+   * excluded from scanning — a committed one wants its real `File` node — so
+   * there is nothing to retain, and recording the configured path would put an
+   * operator's absolute directory layout into index metadata for no consumer.
+   *
+   * The flag alone is what the disable transition needs: without it, dropping
+   * the option leaves document-derived destinations in an index with nothing
+   * able to notice they should go.
+   */
+  asyncApiSpec?: {
+    enabled: boolean;
+  };
   /**
    * Analyzer/runtime receipt for the successful run represented by this
    * metadata. Optional so indexes written by older GitNexus releases remain
@@ -92,6 +161,13 @@ export interface RepoMeta {
    * matches the currently invoked analyzer.
    */
   runnerIdentity?: AnalyzerRunnerIdentity;
+  /** Parser artifacts and extraction options that produced the successful graph.
+   * Missing provenance never authorizes reuse. FTS-only repair preserves it.
+   */
+  parseCacheIdentity?: {
+    base: string;
+    pdg?: { identity: string; maxFunctionLines: number };
+  };
   /**
    * Canonical `origin` remote URL captured at index time. Used to
    * fingerprint the same logical repo across multiple on-disk clones
@@ -133,23 +209,39 @@ export interface RepoMeta {
        * `'unavailable'` (#2841). Mirrors `AnalysisResult.ftsSkipReason` in
        * core/run-analyze.ts — the same discriminator that surface already
        * reports to the CLI, persisted rather than re-derived because the two
-       * causes need OPPOSITE handling on the next run:
+       * causes need distinct diagnostics and recovery handling:
        *
        *  - `extension-unavailable` — the FTS extension could not load. Healable
-       *    from outside the repo (install it), so the up-to-date fast path
-       *    probes whether it loads now and re-analyzes when it does.
+       *    from outside the repo (install it), then rebuild with --repair-fts.
        *  - `build-failed` — the extension loaded fine and the index BUILD
        *    failed (e.g. one un-tokenizable pre-existing row, #2544/#2546).
        *    Deterministic: the same probe would "heal" it into a full
        *    re-analysis that degrades identically and restamps, forever. Only
        *    `--repair-fts` or a content change addresses it.
+       *  - `disabled-by-flag` / `disabled-by-env` — deliberate opt-out.
+       *    A later analyze without the opt-out rebuilds FTS at the same commit.
+       *  - `native-abort` — inferred on the next run from an FTS-phase dirty
+       *    flag after the previous process died in the native FTS build.
+       *  - `tuple-missing` — no packaged artifact for this platform tuple.
+       *    The tuple itself is not persisted (closed enum; live messages name it).
        *
        * Collapsing both into `status: 'unavailable'` is exactly what made that
        * loop reachable. ABSENT on indexes written before #2841 and on the
        * `--repair-fts` stamp (which writes `status: 'available'`); `undefined`
        * therefore reads as "cause unknown" and keeps the pre-#2841 behaviour.
+       * No schema version: meta reads are unchecked casts. An older binary
+       * still sees the raw JSON string for an unknown member; it does not
+       * drop the field to `undefined` at parse time.
        */
-      skipReason?: 'extension-unavailable' | 'build-failed';
+      skipReason?: PersistedFtsSkipReason;
+      /**
+       * Write plan of the analyze that aborted, persisted with
+       * `skipReason: 'native-abort'` so readers can refuse a leftover live
+       * WAL after recovery clears `incrementalInProgress`. Staging persist
+       * also writes `native-abort` and must keep its live WAL. Absent on
+       * older indexes and on non-abort skips.
+       */
+      writePlan?: 'in-place' | 'staging';
     };
     vectorSearch: {
       provider: string;
@@ -189,6 +281,16 @@ export interface RepoMeta {
    * containing relevant source files.
    */
   analysisFeatures?: Record<string, number>;
+  /**
+   * Canonical registered-prefix list used to resolve vendor Spring mapping
+   * annotations. A changed value invalidates persisted JVM Route evidence.
+   */
+  springVendorPrefixes?: string;
+  /**
+   * Canonical declared route aliases + handler wrappers (`goRouterAliases`,
+   * `goHandlerWrappers`). A changed value invalidates persisted Route evidence.
+   */
+  routeHookConfig?: string;
   /**
    * The resolved GITNEXUS_FTS_CJK_SEGMENTATION mode ('none' | 'bigram') the
    * existing index's content/description columns were last written under
@@ -246,6 +348,27 @@ export interface RepoMeta {
    */
   unresolvedReceiverMembers?: UnresolvedReceiverSummary;
   /**
+   * Final unresolved overload/implementation call sites, attributed by public
+   * candidate, caller and declaring-owner identity. A complete empty summary
+   * certifies measured-clean coverage; absence or invalid metadata is unverified.
+   */
+  unresolvedOverloads?: UnresolvedOverloadSummary;
+  /**
+   * Files omitted from scope-resolution because their provider capture or
+   * extraction step threw. The rest of each file may still be present in the
+   * graph, so this is an index-completeness signal rather than a parse failure.
+   * Absent means the successful run recorded no such omission; older indexes
+   * also read as absent until re-analyzed.
+   */
+  scopeExtractionFailures?: ScopeExtractionFailureSummary;
+  /**
+   * Completeness receipt for scope extraction in the successful run represented
+   * by this metadata. A missing or different value means completeness is
+   * unknown (legacy, malformed, or unreadable metadata), not that zero files
+   * were omitted.
+   */
+  scopeExtractionReceipt?: 1;
+  /**
    * Interfaces whose structural-satisfaction check this run could not COMPLETE
    * (#2873) — not interfaces found to have no implementors.
    *
@@ -262,12 +385,38 @@ export interface RepoMeta {
    */
   undecidedInterfaceSatisfaction?: UndecidedSatisfactionSummary;
   /**
+   * Census of name-guessed call sites before edge coalescing, the impossible
+   * candidates the run refused, and the ambiguous
+   * `export *` names it declined to publish. Absent on indexes built before the
+   * census existed. The legacy key does not imply final edge counts: a precise
+   * site may prove a dependency shared with a guessed site.
+   * See `scope-resolution/name-fallback-summary.ts`.
+   */
+  nameFallbackEdges?: NameFallbackSummary;
+  /**
    * SHA-256 of every file's content at the time of the last successful
    * indexing run. The next run computes current hashes and diffs against
    * this map to determine which files' DB rows must be replaced.
    * Map keys are repo-relative paths.
    */
   fileHashes?: Record<string, string>;
+  /**
+   * Coverage policy used when `fileHashes` was recorded. `status` replays it
+   * so analyze-time `--max-file-size` / `GITNEXUS_MAX_FILE_SIZE` cannot make
+   * a later default-cap walk drop a file the index actually covers.
+   * `dirtyPaths` are covered files that were dirty vs HEAD at that moment —
+   * status must re-hash those even after Git becomes clean (indexed-dirty then
+   * restore). Absent on indexes written before this field.
+   */
+  indexCoverage?: {
+    maxFileSizeBytes: number;
+    /**
+     * Dot directories indexed via `GITNEXUS_INCLUDE_DOT_DIRS`. Absent means
+     * none: the index predates the option or was built without it.
+     */
+    includeDotDirs?: string[];
+    dirtyPaths?: string[];
+  };
   /**
    * Set when a run finished but the persisted edge count came back far short
    * of what the pipeline produced — the B2 "refresh reports SUCCESS while the
@@ -317,8 +466,17 @@ export interface RepoMeta {
     /** Number of files in the writable set, for diagnostic logs.
      *  `0` on the full-rebuild path (no incremental write set exists). */
     toWriteCount: number;
-    /** Last completed writeback phase before the process stopped. */
+    /**
+     * Last completed writeback phase before the process stopped.
+     * `'fts'` is the graph-boundary / FTS-build marker: recovery may act
+     * more narrowly than a bare dirty flag, and `--repair-fts` must not
+     * treat it as a half-written graph.
+     */
     phase?: string;
+    /** Settled write plan at the FTS boundary (in-place vs unpublished staging). */
+    writePlan?: 'in-place' | 'staging';
+    /** Whether the converged graph-boundary CHECKPOINT succeeded. */
+    checkpointSucceeded?: boolean;
     /** Directly changed/added files before importer expansion. */
     directWriteCount?: number;
     /** Extra files pulled into the writable set by importer BFS. */
@@ -335,6 +493,12 @@ export interface RepoMeta {
      *  diagnostics must show whether the write set was already
      *  under-expanded when the run died. */
     droppedImporterChunks?: number;
+    /**
+     * Why this run rebuilds (#3137), so an interrupted rebuild can name its
+     * causes on the next run. Untrusted on read: parse it with
+     * `readStoredRebuildReasons`, since the file is schema-less JSON.
+     */
+    reasons?: StoredRebuildReason[];
   };
   /**
    * Durable embedding-resume marker, written in two distinct situations that
@@ -390,6 +554,11 @@ export interface RepoMeta {
      * subset of their chunks; for `'partial'` they hold none.
      */
     pendingNodeIds?: string[];
+    /**
+     * Interrupted atomic builds only. This does not publish the staged graph
+     * or advance live embedding statistics; it identifies a recovery source.
+     */
+    recovery?: EmbeddingRecoveryReference;
   };
   /**
    * Name of the git branch this index represents (#2106). Absent for the
@@ -499,14 +668,31 @@ export interface RepoMeta {
      */
     hasCallSummary?: boolean;
   };
+  /**
+   * The process-detection budget this index's Community/Process rows were
+   * built under (#3313). Compared on the next analyze so a budget-only
+   * config change re-detects flows without `--force`. `maxProcesses: null`
+   * means the dynamic `symbols / 10` formula. Absent on pre-#3313 metas:
+   * that absence matches default/dynamic knobs (backfill) and mismatches
+   * any explicit override.
+   */
+  processDetection?: {
+    maxProcesses: number | null;
+    maxProcessBranching: number;
+    maxProcessTraceDepth: number;
+    maxEntryPointCandidates: number;
+    /** Live Community/Process rows are not certified under this stamp (#3322). */
+    uncertified?: true;
+  };
 }
 
 /**
- * Get the .gitnexus storage path for a repository.
- * Used for local metadata and caches that are not committed.
+ * Resolve the configured storage path for a repository.
+ * This can be its repository-local `.gitnexus` directory, an external slot,
+ * or a previously registered storage path.
  */
 export const getStoragePath = (repoPath: string): string => {
-  return path.join(path.resolve(repoPath), GITNEXUS_DIR);
+  return resolveStoragePath(repoPath);
 };
 
 /**

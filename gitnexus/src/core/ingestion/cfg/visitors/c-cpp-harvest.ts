@@ -95,7 +95,7 @@ export class CCppHarvester extends ScopeTreeHarvester {
   // ── phase 1: declaration pre-scan ────────────────────────────────────────
 
   /** The bare identifier a declarator chain ultimately names (or undefined). */
-  private declaratorName(node: SyntaxNode | null): SyntaxNode | undefined {
+  protected declaratorName(node: SyntaxNode | null): SyntaxNode | undefined {
     let cur: SyntaxNode | null = node;
     let hops = 12;
     while (cur && hops-- > 0) {
@@ -119,19 +119,29 @@ export class CCppHarvester extends ScopeTreeHarvester {
     return undefined;
   }
 
-  private declareParams(fnNode: SyntaxNode): void {
+  protected parameterNames(fnNode: SyntaxNode): SyntaxNode[] {
     // function_definition: declarator → function_declarator → parameter_list.
     // A C++ lambda routes through abstract_function_declarator.
     const declarator = fnNode.childForFieldName('declarator');
     const fnDeclarator = this.findFunctionDeclarator(declarator);
     const params = fnDeclarator?.childForFieldName('parameters');
-    if (!params) return;
+    if (!params) return [];
+    const names: SyntaxNode[] = [];
     for (let i = 0; i < params.namedChildCount; i++) {
       const p = params.namedChild(i);
       if (p?.type !== 'parameter_declaration') continue;
       const name = this.declaratorName(p.childForFieldName('declarator') ?? null);
-      if (name) this.declare(name, 'param', this.root);
+      if (name) names.push(name);
     }
+    return names;
+  }
+
+  private declareParams(fnNode: SyntaxNode): void {
+    for (const name of this.parameterNames(fnNode)) this.declare(name, 'param', this.root);
+  }
+
+  protected isNestedFunction(node: SyntaxNode): boolean {
+    return NESTED_FUNCTION_TYPES.has(node.type) && node.id !== this.fnId;
   }
 
   private findFunctionDeclarator(node: SyntaxNode | null): SyntaxNode | undefined {
@@ -149,7 +159,7 @@ export class CCppHarvester extends ScopeTreeHarvester {
   protected prescan(node: SyntaxNode, scope: Scope): void {
     this.nearestScopeCache.set(node.id, scope);
     const t = node.type;
-    if (NESTED_FUNCTION_TYPES.has(t) && node.id !== this.fnId) {
+    if (this.isNestedFunction(node)) {
       // A nested function/lambda body is opaque — do not descend.
       return;
     }
@@ -274,17 +284,8 @@ export class CCppHarvester extends ScopeTreeHarvester {
 
   /** ENTRY-block facts for the function's parameters (defs only). */
   paramFacts(): StatementFacts | undefined {
-    const declarator = this.fnNode.childForFieldName('declarator');
-    const fnDeclarator = this.findFunctionDeclarator(declarator);
-    const params = fnDeclarator?.childForFieldName('parameters');
-    if (!params) return undefined;
     const acc = new FactAccumulator(this.fnNode.startPosition.row + 1);
-    for (let i = 0; i < params.namedChildCount; i++) {
-      const p = params.namedChild(i);
-      if (p?.type !== 'parameter_declaration') continue;
-      const name = this.declaratorName(p.childForFieldName('declarator') ?? null);
-      if (name) this.def(name, acc);
-    }
+    for (const name of this.parameterNames(this.fnNode)) this.def(name, acc);
     return acc.defCount() ? acc.finish() : undefined;
   }
 
@@ -315,10 +316,10 @@ export class CCppHarvester extends ScopeTreeHarvester {
   }
 
   /** Value-position walk: collect uses; route def positions to the lvalue handler. */
-  private walkValue(node: SyntaxNode, acc: FactAccumulator): void {
+  protected walkValue(node: SyntaxNode, acc: FactAccumulator): void {
     const t = node.type;
     if (TYPE_CONTEXT_TYPES.has(t)) return;
-    if (NESTED_FUNCTION_TYPES.has(t) && node.id !== this.fnId) {
+    if (this.isNestedFunction(node)) {
       // Opaque nested function / lambda — captured reads/writes are invisible.
       return;
     }
@@ -441,7 +442,7 @@ export class CCppHarvester extends ScopeTreeHarvester {
    * that its site should carry `resultDefs: defs` — consumed by
    * {@link visitCall} once the value walk reaches the node.
    */
-  private registerResultDefs(value: SyntaxNode, defs: readonly number[]): void {
+  protected registerResultDefs(value: SyntaxNode, defs: readonly number[]): void {
     if (defs.length === 0) return;
     const root = this.unwrapLvalue(value);
     if (root.type === 'call_expression' || root.type === 'new_expression') {

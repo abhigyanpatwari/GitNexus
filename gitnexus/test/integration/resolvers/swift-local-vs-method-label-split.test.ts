@@ -116,19 +116,7 @@ describe.skipIf(!swiftAvailable)('a function-local callable keeps its own node (
     });
   });
 
-  /**
-   * KNOWN GAP, pinned so it cannot be mistaken for part of the fix above.
-   *
-   * `helper(x, x)` inside `run` still targets the one-argument METHOD instead of
-   * the two-argument local. That is decided upstream of the graph bridge: the
-   * free-call binding hands `emitFreeCallFallback` the class-member def
-   * (`def:src/app.swift#5:4:Method:helper`), never the local's
-   * (`def:src/app.swift#9:8:Method:helper`), so no def→node mapping can correct
-   * it — both defs carry the same `qualifiedName` and the same label, and the
-   * binding walk picks the member. Recorded here rather than fixed because it
-   * lives in the scope walk, not in `resolveDefGraphId`.
-   */
-  it('KNOWN GAP: the call to the local still binds to the same-named method', () => {
-    expect(targetsFrom(RUN)).toEqual([METHOD_HELPER]);
+  it('binds the call in run to the function-local rather than the same-named method', () => {
+    expect(targetsFrom(RUN)).toEqual([LOCAL_HELPER]);
   });
 });

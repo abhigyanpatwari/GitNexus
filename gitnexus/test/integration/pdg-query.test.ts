@@ -134,7 +134,7 @@ withTestLbugDB(
         // An MCP client may send {"name":"pdg_query"} with no `arguments` field;
         // the dispatch then hands `params: undefined` to the impl. It must
         // default to {} and surface the mode-validation error, not a TypeError.
-        const result = await backend.callTool('pdg_query');
+        const result = await backend.callTool('pdg_query', undefined);
         expect(result).toHaveProperty('error');
         expect(result.error).toMatch(/mode/i);
       });

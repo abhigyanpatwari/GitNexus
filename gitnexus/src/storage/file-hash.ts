@@ -44,18 +44,32 @@ export const computeFileHashes = async (
   repoPath: string,
   relPaths: readonly string[],
 ): Promise<Map<string, string>> => {
-  const out = new Map<string, string>();
+  const { hashes } = await computeFileHashesDetailed(repoPath, relPaths);
+  return hashes;
+};
+
+/** Like {@link computeFileHashes}, but keeps paths whose content could not be read. */
+export const computeFileHashesDetailed = async (
+  repoPath: string,
+  relPaths: readonly string[],
+): Promise<{ hashes: Map<string, string>; unreadable: string[] }> => {
+  const hashes = new Map<string, string>();
+  const unreadable: string[] = [];
   const BATCH = 100;
   for (const batch of chunk(relPaths, BATCH)) {
     const results = await Promise.all(
       batch.map(async (rel) => {
         const h = await computeFileHash(path.join(repoPath, rel));
-        return h ? ([rel, h] as const) : null;
+        return { rel, h };
       }),
     );
-    for (const r of results) if (r) out.set(r[0], r[1]);
+    for (const { rel, h } of results) {
+      if (h) hashes.set(rel, h);
+      else unreadable.push(rel);
+    }
   }
-  return out;
+  unreadable.sort();
+  return { hashes, unreadable };
 };
 
 /** Result of comparing the current on-disk hashes against stored ones. */

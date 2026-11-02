@@ -1,4 +1,4 @@
-import type { ParsedFile } from 'gitnexus-shared';
+import type { ParsedFile, TypeRef } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
@@ -6,7 +6,7 @@ import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { rustProvider } from '../rust.js';
 import { rustArityCompatibility, rustMergeBindings, resolveRustImportTarget } from './index.js';
 import { populateRustOwners } from './method-owners.js';
-import { resolveRustQualifiedFreeCall } from './qualified-call.js';
+import { resolveRustQualifiedCallee, resolveRustQualifiedFreeCall } from './qualified-call.js';
 import { populateRustRangeBindings } from './range-binding.js';
 import {
   isClassLike,
@@ -19,6 +19,8 @@ import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-l
 import type { HeritageTypeArgumentSink } from '../../scope-resolution/utils/generic-instantiation.js';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
+import { rustIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
+import { loadRustCargoTargets } from './cargo-targets.js';
 
 /**
  * Emit Rust `S IMPLEMENTS T` edges from `impl T for S` trait implementations.
@@ -156,9 +158,10 @@ export const rustScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Rust,
   languageProvider: rustProvider,
   importEdgeReason: 'rust-scope: use',
+  loadResolutionConfig: loadRustCargoTargets,
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
-    resolveRustImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig),
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) =>
+    resolveRustImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig, context),
 
   mergeBindings: (existing, incoming, scopeId) => rustMergeBindings(existing, incoming, scopeId),
 
@@ -166,6 +169,33 @@ export const rustScopeResolver: ScopeResolver = {
 
   resolveQualifiedFreeCall: (site, callerParsed, scopes, workspaceIndex, allFilePaths) =>
     resolveRustQualifiedFreeCall(site, callerParsed, scopes, workspaceIndex, allFilePaths),
+
+  resolveQualifiedCallee: resolveRustQualifiedCallee,
+
+  // A qualified initializer may name either a module factory or an associated
+  // function. Restore the constructor's type only after lexical type ownership
+  // is known, before imported-return propagation follows the remaining paths.
+  populateNamespaceSiblings: (parsedFiles, scopes) => {
+    for (const parsed of parsedFiles) {
+      for (const scope of parsed.scopes) {
+        for (const [name, ref] of scope.typeBindings) {
+          if (ref.source !== 'constructor-inferred') continue;
+          const separator = ref.rawName.lastIndexOf('::');
+          if (separator < 1) continue;
+          const owner = ref.rawName.slice(0, separator);
+          if (
+            findClassBindingInScope(ref.declaredAtScope, owner, scopes, undefined, {
+              uniqueQualifiedNameFallback: false,
+              purpose: 'type',
+              position: ref.lookupPosition ?? ref.bindingRange,
+            }) !== undefined
+          ) {
+            (scope.typeBindings as Map<string, TypeRef>).set(name, { ...ref, rawName: owner });
+          }
+        }
+      }
+    }
+  },
 
   buildMro: (graph, parsedFiles, nodeLookup) => buildRustMro(graph, parsedFiles, nodeLookup),
 
@@ -192,4 +222,6 @@ export const rustScopeResolver: ScopeResolver = {
   hoistTypeBindingsToModule: true,
   propagatesReturnTypesAcrossImports: true,
   allowGlobalFreeCallFallback: true,
+  importsBindAtLexicalScope: true,
+  isGlobalNameFallbackPlausible: rustIsGlobalNameFallbackPlausible,
 };

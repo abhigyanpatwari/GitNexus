@@ -1,3 +1,5 @@
+import { cppRenameProvider } from './cpp/rename.js';
+import { cRenameProvider } from './c/rename.js';
 /**
  * C and C++ language providers.
  *
@@ -15,8 +17,6 @@ import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { typeConfig as cCppConfig } from '../type-extractors/c-cpp.js';
 import { cCppExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { cImportConfig, cppImportConfig } from '../import-resolvers/configs/c-cpp.js';
 import { C_QUERIES, CPP_QUERIES } from '../tree-sitter-queries.js';
 
 /**
@@ -352,6 +352,7 @@ const cppLabelOverride: NonNullable<LanguageProvider['labelOverride']> = (
 };
 
 export const cProvider = defineLanguage({
+  rename: cRenameProvider,
   id: SupportedLanguages.C,
   extensions: ['.c'],
   entryPointPatterns: [
@@ -386,10 +387,14 @@ export const cProvider = defineLanguage({
     /^notify_/,
     /^control_/,
   ],
-  treeSitterQueries: C_QUERIES,
+  // C field definitions must carry graph identities as well as scope captures.
+  treeSitterQueries: `${C_QUERIES}
+    (field_declaration declarator: (field_identifier) @name) @definition.property
+    (field_declaration declarator: (pointer_declarator declarator: (field_identifier) @name)) @definition.property
+    (field_declaration declarator: (array_declarator declarator: (field_identifier) @name)) @definition.property
+  `,
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
-  importResolver: createImportResolver(cImportConfig),
   callExtractor: createCallExtractor(cCallConfig),
   fieldExtractor: createFieldExtractor(cFieldConfig),
   methodExtractor: createMethodExtractor({
@@ -436,6 +441,8 @@ export const cProvider = defineLanguage({
 });
 
 export const cppProvider = defineLanguage({
+  overloadsFreeFunctions: true,
+  rename: cppRenameProvider,
   id: SupportedLanguages.CPlusPlus,
   // CUDA files route through tree-sitter-cpp as a conservative C++-subset parser:
   // definitions still extract, but CUDA launch syntax (`<<< >>>`) is not modeled as calls.
@@ -482,7 +489,6 @@ export const cppProvider = defineLanguage({
   preprocessSource: stripUeMacros,
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
-  importResolver: createImportResolver(cppImportConfig),
   mroStrategy: 'leftmost-base',
   callExtractor: createCallExtractor(cppCallConfig),
   fieldExtractor: createFieldExtractor(cppFieldConfig),

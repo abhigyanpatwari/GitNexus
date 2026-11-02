@@ -295,7 +295,14 @@ function buildAdlIndex(
           if (parentQName !== '' && parentQName !== qName) keys.push(parentQName);
         }
       }
-      for (const def of scope.ownedDefs) {
+      // Function definitions own their body scope structurally, while their
+      // ordinary declaration binds in this namespace. Include those lexical
+      // bindings alongside prototypes owned directly by the namespace.
+      const namespaceDefs = new Map(scope.ownedDefs.map((def) => [def.nodeId, def]));
+      for (const bindings of scope.bindings.values()) {
+        for (const binding of bindings) namespaceDefs.set(binding.def.nodeId, binding.def);
+      }
+      for (const def of namespaceDefs.values()) {
         if (def.type === 'Function' || def.type === 'Method') {
           const sn = adlSimpleName(def);
           pushFlat(idx.nsFunctionsBySimple, sn, def);

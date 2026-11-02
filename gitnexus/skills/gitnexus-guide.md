@@ -11,11 +11,12 @@ Quick reference for all GitNexus MCP tools, resources, and the knowledge graph s
 
 For any task involving code understanding, debugging, impact analysis, or refactoring:
 
-1. **Read `gitnexus://repo/{name}/context`** — codebase overview + check index freshness
+1. **Bind the repository once** — use a confirmed registry name/path or configured default; call `list_repos` if unknown. Read hot-tool `staleness`; use `gitnexus://repo/{name}/context` when an overview is needed.
 2. **Match your task to a skill below** and **read that skill file**
 3. **Follow the skill's workflow and checklist**
 
 > If step 1 warns the index is stale, run `node .gitnexus/run.cjs analyze` in the terminal first.
+> On `query` / `context` / `impact` / `cypher`, read `staleness.status` and `staleness.branch`/`lastCommit` before using the answer. Re-analyze only for `behind` or `diverged`.
 
 ## Skills
 
@@ -37,7 +38,7 @@ For any task involving code understanding, debugging, impact analysis, or refact
 | `impact`         | Symbol blast radius — what breaks at depth 1/2/3 with confidence         |
 | `trace`          | Shortest path between two symbols — "how does A reach B?" in one call     |
 | `detect_changes` | Git-diff impact — what do your current changes affect                    |
-| `rename`         | Multi-file coordinated rename with confidence-tagged edits               |
+| `rename`         | Semantic rename: previews by default (`dry_run` omitted/true), applies with `dry_run: false` and the preview's `plan_token`; inspect application status and failures |
 | `cypher`         | Raw graph queries (read `gitnexus://repo/{name}/schema` first)           |
 | `explain`        | Persisted taint findings — source→sink data flows (needs `analyze --pdg`) |
 | `pdg_query`      | Control/data dependence — what gates X (CDG) / where Y flows (REACHING_DEF); needs `analyze --pdg` |
@@ -49,6 +50,39 @@ For any task involving code understanding, debugging, impact analysis, or refact
 | `group_list`     | List configured multi-repo groups, or one group's config                 |
 | `group_sync`     | Rebuild a group's Contract Registry (cross-repo HTTP contract links); run after `group.yaml` changes or member re-index |
 | `list_repos`     | Discover indexed repos (paginated — `limit`/`offset`)                    |
+
+### Choose a focused response
+
+Use the connected server's schema; older servers may not advertise the new
+filters. All options below are explicit: omitting them preserves existing output.
+Use filters for bulky unwanted sections; on an already-small response, omission
+metadata can outweigh the bytes saved.
+
+| Question | Options |
+| --- | --- |
+| Which symbols implement this? | `query`: `limit: 3`, `max_symbols: 3`, `include_content: false`, `chain_depth: 0`, `response_sections: ["process_symbols", "definitions"]` |
+| Which execution flows match? | `query`: keep `processes` in `response_sections`; join its `id` to `process_symbols[].process_id` |
+| Who calls this exact symbol? | `context`: `uid`, `response_sections: ["incoming"]`, `relationTypes: ["CALLS"]` |
+| What does it call, with source? | `context`: `uid`, `include_content: true`, `response_sections: ["outgoing"]`, `relationTypes: ["CALLS"]` |
+| What is the impact summary? | `impact`: `direction: "upstream"`, `summaryOnly: true`; risk calculation and totals are retained |
+| Which affected symbols need inspection? | `impact`: `limit: 10`, `offset: 0`; page as indicated by the response |
+| How does A reach B? | `trace`: `from_uid`, `to_uid` |
+
+`response_sections` selects data sections for single-repository MCP `query` or
+`context` (not `@group` routes). Query choices: `processes`, `process_symbols`,
+`definitions`. Context choices: `incoming`, `outgoing`, `processes`, `chain`,
+`routes`, `typed_properties`; the selected symbol always remains. Context
+`relationTypes` accepts uppercase relationship names advertised by its schema
+and filters only the existing incoming/outgoing categories. It does not change
+ranking, traversal, source retention or the bounded candidate/reference windows.
+
+Filters add `response_filter` with the selection and omitted fields/categories.
+Warnings, ambiguity, staleness and completeness metadata always remain. An empty
+filtered view is not proof of absence. Omit filters to expand, and never waive
+impact checks because a selected category is empty. `maxTokens` is a byte cutoff,
+not pagination: it can cut JSON. Prefer these filters, small result counts, and
+source/chain expansion for a selected symbol rather than a large search result.
+Stop once enough evidence answers the question; do not run every tool by default.
 
 ### Paginating `list_repos`
 
@@ -80,6 +114,54 @@ list_repos { offset: 400 }  → repos 401–437,                 hasMore false  
 ```
 
 Notes: `offset` ≥ `total` returns an empty page (with `total` still reported). Out-of-range or malformed `limit`/`offset` (non-integer, `limit` outside `[1, 200]`, `offset < 0`) are rejected with a clear error — `limit` above the max is rejected, not silently capped. The order is deterministic (lower-cased name, then path), so paging never skips or duplicates an entry while the registry is unchanged.
+
+### Inline staleness signal (`query` / `context` / `impact` / `cypher`)
+
+These four hot read tools attach a non-blocking `staleness` field to every response, in the shape `{ status, branch?, lastCommit, indexedAt, measuredAgainst, commitsBehind?, hint? }`. It answers two different questions at once: **which index answered** and **how fresh it is**. The identity half is why the field is present even when nothing is wrong — an answer computed from a branch-pinned index is otherwise indistinguishable from one computed from the default branch (#3291):
+
+```jsonc
+{ /* …the tool's normal result… */
+  "staleness": {
+    "status": "current",
+    "branch": "feature/checkout-v2",
+    "lastCommit": "4f2a1c9e8b7d6a5c4e3f2a1b0c9d8e7f6a5b4c3d",
+    "indexedAt": "2026-09-15T07:12:00.000Z",
+    "measuredAgainst": "HEAD"
+  }
+}
+```
+
+`status: "current"` here means *this index is at the HEAD of the clone it was built from* — not that it is current with the default branch. `measuredAgainst` names what `commitsBehind` is counted against: the checked-out HEAD of that clone, never the remote. `branch` is the branch the index represents; it is absent for a detached HEAD, a non-git folder, or a legacy index that never recorded one, so read `lastCommit` when you need an identifier that is always present.
+
+When the index is behind that HEAD, the count and hint ride along:
+
+```jsonc
+{ /* …the tool's normal result… */
+  "staleness": {
+    "status": "behind", "commitsBehind": 3, "branch": "main",
+    "lastCommit": "a0c945022d06b8815f93ffd8838df9ed5c08cbc0",
+    "indexedAt": "2026-09-04T20:45:47.481Z", "measuredAgainst": "HEAD",
+    "hint": "⚠️ Index is 3 commits behind HEAD. Run analyze tool to update."
+  }
+}
+```
+
+`commitsBehind` is present only when git counted the gap. When git could not count it but HEAD still resolves to a commit other than the indexed one — usually because the indexed commit is no longer in the clone's history — the index is provably not at HEAD with no countable gap, so no number is reported:
+
+```jsonc
+{ /* …the tool's normal result… */
+  "staleness": {
+    "status": "diverged", "branch": "main",
+    "lastCommit": "a0c945022d06b8815f93ffd8838df9ed5c08cbc0",
+    "indexedAt": "2026-09-04T20:45:47.481Z", "measuredAgainst": "HEAD",
+    "hint": "⚠️ Index is not at HEAD and the commit gap could not be counted — the recorded commit may no longer be in this clone's history. Run analyze tool to update."
+  }
+}
+```
+
+So: **read `status` before using `commitsBehind`**, and read `branch`/`lastCommit` before assuming which ref the answer describes. `status: "unknown"` means the freshness check could not run at all (a `--skip-git` folder has no history to measure) — the ref is still reported, because which index answered is knowable even when its freshness is not. The field is only ever added to object results — raw-array `cypher` output and error envelopes are returned unchanged. `@group`-targeted calls do not carry it (multi-repo staleness is ill-defined). Re-run `analyze` only for `behind` or `diverged` — those mean the index is not at this clone's HEAD. `unknown` is unmeasurable, not stale; analyze cannot make it `current` unless git history exists.
+
+`list_repos` and the HTTP repo routes are unchanged: they omit `staleness` entirely for a current index and report the ref through their own top-level `branch` / `lastCommit` / `indexedAt` fields.
 
 ### Taint findings (`explain`)
 

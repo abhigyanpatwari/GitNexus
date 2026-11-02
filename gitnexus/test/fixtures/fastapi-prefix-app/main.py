@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from api import items
 from api import users
+from api import router as api_router
 from api.calls import router as calls_router
 from .relative import router as rel_router
 
@@ -13,3 +14,4 @@ application.include_router(items.router, prefix="/v1")
 application.include_router(users.router, prefix="/users", tags=["users"])
 application.include_router(calls_router, prefix="/calls")
 application.include_router(rel_router, prefix="/rel")
+application.include_router(api_router, prefix="/api")

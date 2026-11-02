@@ -9,6 +9,8 @@ export type ResolutionSuppressionReason =
   | 'selected-callable-deleted'
   | 'overload-ambiguous'
   | 'overload-ambiguous-normalization'
+  | 'overload-unknown'
+  | 'overload-inapplicable'
   | 'free-call-instance-ownership'
   /** #2701 — the receiver is rebound by its own scope and has no type
    *  there (a JS/TS ordinary `function`'s `this`), so no enclosing type
@@ -41,6 +43,15 @@ export type ResolutionOutcome =
        * qualified namespace resolver returns only an `ambiguous` sentinel.
        */
       readonly candidateIds: readonly string[];
+      /** Public graph identities, kept separate from scope definition IDs. */
+      readonly candidateGraphIds?: readonly string[];
+      /** Public graph identities of the candidates' declaring types. */
+      readonly candidateOwnerIds?: readonly string[];
+      /** Public graph identity of the enclosing callable or initializer. */
+      readonly callerId?: string;
+      /** Candidate inventory and every required graph identity were proven. */
+      readonly candidateSetComplete?: boolean;
+      readonly detail?: string;
       readonly phase: string;
       readonly filePath: string;
       readonly name: string;
@@ -108,6 +119,60 @@ export type ResolutionOutcome =
        * every real codebase and taught readers to ignore it.
        */
       readonly receiverOrigin?: ReceiverOrigin;
+    }
+  /**
+   * The global-name fallback fired: a callable was chosen because its SIMPLE
+   * NAME is unique in the workspace, with no import or scope chain leading to
+   * it. A labeled low-confidence edge WAS emitted.
+   *
+   * Separate from `resolved` because it is not a resolution, and separate from
+   * `suppressed` because an edge exists. Counting it is the only way a reader
+   * can tell how much of a language's call graph rests on name uniqueness — the
+   * number that was previously invisible because these edges were emitted with
+   * the same reason and confidence as import-resolved ones.
+   */
+  | {
+      readonly kind: 'fallback-guessed';
+      readonly targetId: string;
+      readonly language?: string;
+      readonly phase: string;
+      readonly filePath: string;
+      readonly name: string;
+      readonly range: Range;
+    }
+  /**
+   * A global-name-fallback candidate was REFUSED by the language's plausibility
+   * hook: the language's own visibility rules make that call impossible, so no
+   * edge was emitted.
+   *
+   * The counterpart of `fallback-guessed`, and the pair is what makes the
+   * refusal auditable — a refusal count with no guess count cannot distinguish
+   * "the guard works" from "the guard rejects everything".
+   */
+  | {
+      readonly kind: 'fallback-refused';
+      readonly candidateId: string;
+      readonly language?: string;
+      readonly phase: string;
+      readonly filePath: string;
+      readonly name: string;
+      readonly range: Range;
+    }
+  /**
+   * A barrel re-exported `name` through two or more `export *` sources that
+   * each declare it, so the language names no winner. The shared finalize pass
+   * REFUSED the binding (see `FinalizeStats.ambiguousWildcardExports`) instead
+   * of publishing the first-listed source as `import-resolved`; every importer
+   * of `name` through `filePath` stays unresolved. No `range`: the collision
+   * belongs to the file's export surface, not to one statement.
+   */
+  | {
+      readonly kind: 'reexport-ambiguous';
+      readonly candidateIds: readonly string[];
+      readonly phase: string;
+      /** The barrel file whose `export *` sources collide. */
+      readonly filePath: string;
+      readonly name: string;
     };
 
 /**
@@ -179,3 +244,58 @@ export function classifyReceiverShape(decoded: DecodedReceiverChain | undefined)
 }
 
 export type ResolutionOutcomeRecorder = (outcome: ResolutionOutcome) => void;
+
+/**
+ * Identity of ONE reference site, for withdrawing that site's drop and no
+ * other's.
+ *
+ * Position alone is not enough: `cfg.timeouts` (a read of `timeouts`) and
+ * `cfg.timeouts.retry()` (a call of `retry`) both start at `cfg`, so a key of
+ * file + line + column names two sites. The kind, member name, and full range
+ * separate them, including repeated names such as `res.data.data`.
+ */
+export function answeredSiteKey(
+  filePath: string,
+  range: Range,
+  siteKind: ReferenceKind,
+  name: string,
+): string {
+  return `${filePath}:${range.startLine}:${range.startCol}:${range.endLine}:${range.endCol}:${siteKind}:${name}`;
+}
+
+/**
+ * Withdraw every `receiver-unresolved` drop whose site a LATER pass answered
+ * with an edge, keyed by {@link answeredSiteKey}. Returns how many it removed.
+ *
+ * The receiver-bound pass records a drop as soon as its own cases give up, but
+ * it is not the last pass to see a read or write: the return-shape and
+ * unique-name passes run after it and can still emit an `ACCESSES` edge for the
+ * same site. A drop says the site was lost with no candidate, and a site with an
+ * edge was not lost. A site those passes also left alone keeps its drop.
+ *
+ * A drop without a `siteKind` is kept: the key needs the kind, and guessing it
+ * would withdraw on a weaker identity than the one the passes recorded.
+ * Compacts in place, keeping the survivors in their recorded order.
+ */
+export function withdrawAnsweredReceiverDrops(
+  outcomes: ResolutionOutcome[],
+  answered: ReadonlySet<string>,
+): number {
+  if (answered.size === 0) return 0;
+  let kept = 0;
+  for (const outcome of outcomes) {
+    const isAnsweredDrop =
+      outcome.kind === 'suppressed' &&
+      outcome.reason === 'receiver-unresolved' &&
+      outcome.siteKind !== undefined &&
+      answered.has(
+        answeredSiteKey(outcome.filePath, outcome.range, outcome.siteKind, outcome.name),
+      );
+    if (isAnsweredDrop) continue;
+    outcomes[kept] = outcome;
+    kept++;
+  }
+  const withdrawn = outcomes.length - kept;
+  outcomes.length = kept;
+  return withdrawn;
+}

@@ -21,7 +21,10 @@ vi.mock('../../src/core/group/storage.js', () => ({
   listGroups: listGroupsMock,
 }));
 
-vi.mock('../../src/core/group/sync.js', () => ({ syncGroup: syncGroupMock }));
+vi.mock('../../src/core/group/sync.js', () => ({
+  syncGroup: syncGroupMock,
+  formatGroupSyncAmbiguousError: (err: Error) => err.message,
+}));
 vi.mock('../../src/core/git-staleness.js', () => ({ checkStaleness: vi.fn() }));
 
 describe('GroupService — missing group error handling', () => {

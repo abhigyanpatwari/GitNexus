@@ -150,6 +150,23 @@ describe('cppConversionRank braced-init-list ranks (#1899)', () => {
     expect(result).toEqual([]);
   });
 
+  it('keeps conversion-only suppression when a parameter slot is unknown', () => {
+    const unknown = mkDef('f:unknown', [''], []);
+    const byInt = mkDef('f:int', ['int'], [value('int')]);
+    const argument = 'braced-init:unknown:2';
+
+    expect(cppConversionRank(argument, '')).toBe(Infinity);
+    expect(cppConversionRank(argument, 'int')).toBe(Infinity);
+
+    const result = narrowOverloadCandidates([unknown, byInt], 1, [argument], {
+      argumentTypeClasses: [value(argument)],
+      conversionRankFn: cppConversionRank,
+      conversionOnlyArgTypePrefixes: CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES,
+    });
+
+    expect(result).toEqual([]);
+  });
+
   it('preserves single-candidate recall for unrankable braced-init lists', () => {
     const byIntList = mkDef(
       'f:int-list',

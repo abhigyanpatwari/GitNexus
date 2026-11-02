@@ -33,9 +33,13 @@
  */
 
 import type { ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 import { isOverloadableCallable } from '../../utils/callable-labels.js';
-import { lookupBindingsAt } from '../../scope-resolution/scope/walkers.js';
+import {
+  isClassLike,
+  lookupBindingsAt,
+  lookupNameClaim,
+} from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../../scope-resolution/workspace-index.js';
 import {
@@ -58,9 +62,44 @@ const moduleIndexFor = perFileSet(
   (allFilePaths: ReadonlySet<string>): RustModuleIndex => buildRustModuleIndex(allFilePaths),
 );
 
+/** What path resolution reads off the calling file. */
+type RustCaller = Pick<ParsedFile, 'filePath' | 'moduleScope'>;
+
+/** The callee name ending a `::` path (`make` in `crate::modx::make`). */
+const RUST_PATH_TAIL_RE = /::\s*((?:r#)?[_\p{XID_Start}][\p{XID_Continue}]*)\s*$/u;
+
+/**
+ * `ScopeResolver.resolveQualifiedCallee`: the function a callee path names
+ * (`rp::make` in `let x = rp::make()` or `rp::make().m()`), resolved over the
+ * module tree exactly like the free call itself, so the call's type and its
+ * CALLS edge cannot disagree (#3498). A type-qualified path (`Foo::new`)
+ * names no module and is refused.
+ */
+export function resolveRustQualifiedCallee(
+  calleeText: string,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  workspaceIndex: WorkspaceResolutionIndex,
+  allFilePaths: ReadonlySet<string>,
+): SymbolDefinition | undefined {
+  const name = RUST_PATH_TAIL_RE.exec(calleeText)?.[1];
+  if (name === undefined) return undefined;
+  const filePath = scopes.scopeTree.getScope(inScope)?.filePath;
+  if (filePath === undefined) return undefined;
+  const moduleScope = workspaceIndex.moduleScopeByFile.get(filePath);
+  if (moduleScope === undefined) return undefined;
+  return resolveRustQualifiedFreeCall(
+    { name, rawQualifiedName: calleeText, inScope },
+    { filePath, moduleScope: moduleScope.id },
+    scopes,
+    workspaceIndex,
+    allFilePaths,
+  );
+}
+
 export function resolveRustQualifiedFreeCall(
   site: { readonly name: string; readonly rawQualifiedName?: string; readonly inScope: ScopeId },
-  callerParsed: ParsedFile,
+  callerParsed: RustCaller,
   scopes: ScopeResolutionIndexes,
   workspaceIndex: WorkspaceResolutionIndex,
   allFilePaths: ReadonlySet<string>,
@@ -99,7 +138,13 @@ export function resolveRustQualifiedFreeCall(
   // which is the part that scales with the workspace.
   const index = moduleIndexFor(allFilePaths);
   const pass = passIndexFor(workspaceIndex, index, scopes);
-  if (!couldNameAModule(qualifier, pass.knownModuleNames)) {
+  // A `use crate::modx as rp;` alias is a module name only in this file, so the
+  // workspace-wide filter cannot know it; candidate 2 resolves it.
+  if (
+    !couldNameAModule(qualifier, pass.knownModuleNames) &&
+    importedModulesNamed(qualifier[0], scopes, workspaceIndex, index, site.inScope).next().done ===
+      true
+  ) {
     return undefined;
   }
 
@@ -117,6 +162,7 @@ export function resolveRustQualifiedFreeCall(
     scopes,
     workspaceIndex,
     index,
+    site.inScope,
   )) {
     const hit =
       findMemberInModule(targetModule, site.name, scopes, workspaceIndex, index) ??
@@ -132,7 +178,7 @@ export function resolveRustQualifiedFreeCall(
  * makes `super::` correct from inside an inline module.
  */
 function callerModuleOf(
-  callerParsed: ParsedFile,
+  callerParsed: RustCaller,
   inScope: ScopeId,
   scopes: ScopeResolutionIndexes,
   index: RustModuleIndex,
@@ -166,10 +212,11 @@ function* candidateModules(
   anchored: { readonly module: RustModule; readonly anchored: boolean },
   qualifier: readonly string[],
   callerModule: RustModule,
-  callerParsed: ParsedFile,
+  callerParsed: RustCaller,
   scopes: ScopeResolutionIndexes,
   workspaceIndex: WorkspaceResolutionIndex,
   index: RustModuleIndex,
+  inScope: ScopeId,
 ): Generator<RustModule> {
   if (anchored.anchored) {
     yield anchored.module;
@@ -188,35 +235,59 @@ function* candidateModules(
   //    A `mod` declaration — inline or file-backed — emits a `Namespace` def
   //    bound in the declaring scope, so the check is a binding lookup.
   const head = qualifier[0];
+  if (head === undefined) return;
+  const claim = lookupNameClaim(inScope, head, scopes, { purpose: 'type' });
+  if (claim.status !== 'absent' && claim.bindings.length === 0 && claim.imports.length === 0)
+    return;
   if (
-    head !== undefined &&
-    declaresSubmodule(callerParsed, callerModule, head, workspaceIndex, index, scopes)
-  ) {
-    yield { crateRoot: callerModule.crateRoot, segments: [...callerModule.segments, ...qualifier] };
+    claim.bindings.some(
+      (binding) =>
+        isClassLike(binding.def.type) ||
+        binding.def.type === 'Typedef' ||
+        binding.def.type === 'TypeAlias',
+    )
+  )
+    return;
+  if (claim.imports.length > 0) {
+    for (const importedModule of importedModulesNamed(
+      head,
+      scopes,
+      workspaceIndex,
+      index,
+      inScope,
+    )) {
+      yield {
+        crateRoot: importedModule.crateRoot,
+        segments: [...importedModule.segments, ...qualifier.slice(1)],
+      };
+    }
+    return;
   }
-
-  // 2. A `use` binding for the first segment. Finalize already resolved the
-  //    import to a file, so the module path comes back through the same
-  //    file → module mapping as everything else. Covers `use crate::tools;`,
-  //    `use crate::tools::{self}` and `use crate::a::b as tools`.
-  //
-  //    The binding must name a MODULE, not a symbol inside one. Import
-  //    resolution deliberately strips a trailing symbol segment when probing for
-  //    a file ("the last segment might be a symbol, not a module" —
-  //    import-resolvers/rust.ts), so `use crate::client::ClientBuilder;` also
-  //    lands on `client/mod.rs`. Taking that at face value made the imported
-  //    TYPE look like the module `client`, and `ClientBuilder::new()` then
-  //    resolved against `client`'s module members — binding an associated
-  //    function to an unrelated module-level `new` (#2741 review H2).
-  for (const edge of scopes.imports.get(callerParsed.moduleScope) ?? []) {
-    if (edge.localName !== head || edge.targetFile === null) continue;
-    const importedModule = moduleOfFile(edge.targetFile, index);
-    if (importedModule === undefined) continue;
-    if (!importNamesModule(edge.targetExportedName, importedModule)) continue;
-    yield {
-      crateRoot: importedModule.crateRoot,
-      segments: [...importedModule.segments, ...qualifier.slice(1)],
-    };
+  const namespaces = claim.bindings.filter((binding) => binding.def.type === 'Namespace');
+  if (namespaces.length > 0) {
+    const modules = new Map<string, RustModule>();
+    for (const { def } of namespaces) {
+      const target = moduleOfImport(
+        { targetFile: def.filePath, targetExportedName: head, targetDefId: def.nodeId },
+        scopes,
+        workspaceIndex,
+        index,
+      );
+      if (target !== undefined)
+        modules.set(`${target.crateRoot}\0${target.segments.join('::')}`, target);
+    }
+    if (modules.size === 1) {
+      const selected = modules.values().next().value!;
+      yield {
+        crateRoot: selected.crateRoot,
+        segments: [...selected.segments, ...qualifier.slice(1)],
+      };
+    }
+    if (modules.size > 0) return;
+  }
+  if (declaresSubmodule(callerParsed, callerModule, head, workspaceIndex, index, scopes)) {
+    yield { crateRoot: callerModule.crateRoot, segments: [...callerModule.segments, ...qualifier] };
+    return;
   }
 
   // 3. Crate-root-relative (`a::b::f()` written from a nested module — 2015
@@ -239,9 +310,67 @@ function* candidateModules(
   //    callee the source never names. The base emitted no edge at all, and per the
   //    doctrine quoted in `ids.ts` that is the correct failure direction: a missing
   //    edge is recoverable, a fabricated caller silently misleads `impact`.
-  if (callerModule.segments.length > 0 && !headBoundLocally(callerParsed, head, scopes)) {
+  if (
+    claim.status === 'absent' &&
+    callerModule.segments.length > 0 &&
+    !headBoundLocally(callerParsed, head, scopes)
+  ) {
     yield { crateRoot: callerModule.crateRoot, segments: [...qualifier] };
   }
+}
+
+/** Modules selected by the nearest lexical type-namespace import. */
+function* importedModulesNamed(
+  name: string | undefined,
+  scopes: ScopeResolutionIndexes,
+  workspaceIndex: WorkspaceResolutionIndex,
+  index: RustModuleIndex,
+  inScope: ScopeId,
+): Generator<RustModule> {
+  if (name === undefined) return;
+  for (const edge of lookupNameClaim(inScope, name, scopes, { purpose: 'type' }).imports) {
+    if (edge.localName !== name) continue;
+    const importedModule = moduleOfImport(edge, scopes, workspaceIndex, index);
+    if (importedModule !== undefined) yield importedModule;
+  }
+}
+
+/**
+ * The module a `use` binding names, or `undefined` when it names a symbol.
+ *
+ * Path-based import resolution lands on the module's own file
+ * (`use crate::tools;` → `tools.rs`). Cargo-aware resolution instead binds the
+ * module's DECLARATION — the `Namespace` def `mod tools;` leaves in its parent's
+ * file — so the module is the parent's path plus the def's name. Only a
+ * declaration bound at its file's top level (or carrying its enclosing path in
+ * `namespacePrefix`) is read this way; a nested inline `mod` def records no
+ * enclosing path, and guessing one could name the wrong module.
+ */
+function moduleOfImport(
+  edge: {
+    readonly targetFile: string | null;
+    readonly targetExportedName: string;
+    readonly targetDefId?: string;
+  },
+  scopes: ScopeResolutionIndexes,
+  workspaceIndex: WorkspaceResolutionIndex,
+  index: RustModuleIndex,
+): RustModule | undefined {
+  const declaration =
+    edge.targetDefId === undefined ? undefined : scopes.defs.get(edge.targetDefId);
+  if (declaration !== undefined && declaration.type !== 'Namespace') return undefined;
+  if (declaration?.type === 'Namespace' && declaration.qualifiedName !== undefined) {
+    const name = tailSegment(declaration.qualifiedName);
+    if (!isModuleLevelMember(declaration, name, workspaceIndex)) return undefined;
+    const parent = moduleOfDef(declaration.filePath, declaration.namespacePrefix, index);
+    return parent === undefined
+      ? undefined
+      : { crateRoot: parent.crateRoot, segments: [...parent.segments, name] };
+  }
+  if (edge.targetFile === null) return undefined;
+  const importedModule = moduleOfFile(edge.targetFile, index);
+  if (importedModule === undefined) return undefined;
+  return importNamesModule(edge.targetExportedName, importedModule) ? importedModule : undefined;
 }
 
 /**
@@ -253,7 +382,7 @@ function* candidateModules(
  * case, which candidate 2 already handles, is not double-counted here.
  */
 function headBoundLocally(
-  callerParsed: ParsedFile,
+  callerParsed: RustCaller,
   name: string | undefined,
   scopes: ScopeResolutionIndexes,
 ): boolean {
@@ -290,7 +419,7 @@ function tailSegment(qualifiedName: string): string {
  * contributes nothing and cannot outrank a real `use` binding (#2741 review).
  */
 function declaresSubmodule(
-  callerParsed: ParsedFile,
+  callerParsed: RustCaller,
   callerModule: RustModule,
   name: string,
   workspaceIndex: WorkspaceResolutionIndex,
@@ -483,7 +612,7 @@ interface PassModuleIndex {
 }
 
 /**
- * DELIBERATELY NOT ON `import-resolvers/per-file-set.ts` (#2909 sweep), unlike
+ * DELIBERATELY NOT ON `utils/per-file-set.ts` (#2909 sweep), unlike
  * {@link moduleIndexFor} above. {@link passIndexFor} takes THREE inputs —
  * `workspaceIndex`, `index` and `scopes` — and keys on the first alone; the
  * builder reads `scopes.defs.byId` and `index`, neither of which is derivable

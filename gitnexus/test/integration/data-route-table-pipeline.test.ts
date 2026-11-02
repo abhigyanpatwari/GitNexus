@@ -1,13 +1,13 @@
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 import { beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
-import type { PipelineResult } from '../../types/pipeline.js';
+import type { PipelineResult } from '../../src/types/pipeline.js';
 import { DATA_ROUTE_TABLE_SOURCE } from '../../src/core/ingestion/route-extractors/data-route-table.js';
 import {
   loadParseCache,
-  PARSE_CACHE_VERSION,
   pruneCache,
   saveParseCache,
   type ParseCache,
@@ -16,6 +16,8 @@ import {
   getDurableParsedFileDir,
   pruneAndSaveDurableParsedFileStore,
 } from '../../src/storage/parsedfile-store.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 const FIXTURE = path.resolve(__dirname, '..', 'fixtures', 'data-route-table-app');
 
@@ -75,6 +77,11 @@ describe('data-driven route table ingestion', () => {
       const source = result.graph.getNode(rel.sourceId);
       const target = result.graph.getNode(rel.targetId);
       if (source === undefined || target === undefined) return;
+      // A resolved route also carries a definition-level edge from the handler
+      // symbol itself; this assertion is about the file-level edge, which is the
+      // one `http-route-extractor.ts` queries. The definition edges are pinned
+      // by the next test.
+      if (source.label !== 'File') return;
       handled.push({
         filePath: String(source.properties.filePath),
         method: target.properties.method as string | undefined,
@@ -104,6 +111,29 @@ describe('data-driven route table ingestion', () => {
         reason: DATA_ROUTE_TABLE_SOURCE,
       },
     ]);
+  });
+
+  it('also links every resolved route from the handler definition it stamped', () => {
+    // The definition-level edge must agree with `Route.handlerSymbolId` — both
+    // come from the same graph-resolved symbol — and its source must be a real
+    // definition node, not a File.
+    const definitionEdges = new Map<string, string>();
+    result.graph.forEachRelationship((rel) => {
+      if (rel.type !== 'HANDLES_ROUTE' || rel.reason !== DATA_ROUTE_TABLE_SOURCE) return;
+      const source = result.graph.getNode(rel.sourceId);
+      if (source === undefined || source.label === 'File') return;
+      definitionEdges.set(rel.targetId, rel.sourceId);
+    });
+
+    const resolved = routes().filter((route) => route.handler !== undefined);
+    expect(resolved).toHaveLength(3);
+    result.graph.forEachNode((node) => {
+      if (node.label !== 'Route') return;
+      const handlerSymbolId = node.properties.handlerSymbolId as string | undefined;
+      if (handlerSymbolId === undefined) return;
+      expect(definitionEdges.get(node.id), String(node.properties.name)).toBe(handlerSymbolId);
+      expect(result.graph.getNode(handlerSymbolId)?.label).toMatch(/^(Function|Method)$/);
+    });
   });
 
   it('extracts response shapes from each resolved handler only', () => {
@@ -193,10 +223,11 @@ for (const route of routes) {
     const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-route-table-warm-'));
     try {
       const cold: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: parseIdentity,
         entries: new Map(),
         usedKeys: new Set<string>(),
         storagePath: storageDir,
+        writeStoragePath: storageDir,
         onDiskKeys: new Set<string>(),
       };
       const coldResult = await runPipelineFromRepo(FIXTURE, () => {}, {
@@ -209,10 +240,10 @@ for (const route of routes) {
       const savedKeys = await saveParseCache(storageDir, cold);
       await pruneAndSaveDurableParsedFileStore(
         getDurableParsedFileDir(storageDir),
-        PARSE_CACHE_VERSION,
+        parseIdentity.base,
         new Set(savedKeys),
       );
-      const warm = await loadParseCache(storageDir);
+      const warm = await loadParseCache(storageDir, parseIdentity, storageDir);
       expect(warm).not.toBeNull();
 
       const replay = await runPipelineFromRepo(FIXTURE, () => {}, {

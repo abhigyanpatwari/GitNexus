@@ -7,13 +7,12 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { csharpRenameProvider } from './csharp/rename.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { csharpClassConfig } from '../class-extractors/configs/csharp.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as csharpConfig } from '../type-extractors/csharp.js';
 import { csharpExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { csharpImportConfig } from '../import-resolvers/configs/csharp.js';
 import { CSHARP_QUERIES } from '../tree-sitter-queries.js';
 import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
@@ -133,7 +132,33 @@ const BUILT_INS: ReadonlySet<string> = new Set([
   'ThrowIfNull',
 ]);
 
+/**
+ * Program-boundary names for `LanguageProvider.externalReceiverNames`, read
+ * against a dropped receiver's base (`System.Console.WriteLine(...)`) and
+ * against the type a receiver chain ends at (`this.data.Keys` with
+ * `Dictionary<string, User> data`). Kept out of `BUILT_INS`, which also
+ * filters callee names.
+ *
+ * `System` is the BCL's root namespace. These two-argument collection types
+ * retain their outer name at capture rather than reducing to one element type,
+ * so they reach a receiver position spelled as themselves. `string`
+ * is a keyword alias of `System.String` and cannot be declared by a program.
+ * A program type or binding by any of these names still wins.
+ */
+const EXTERNAL_RECEIVER_NAMES: ReadonlySet<string> = new Set([
+  'System',
+  'Dictionary',
+  'SortedDictionary',
+  'SortedList',
+  'ConcurrentDictionary',
+  'ReadOnlyDictionary',
+  'IDictionary',
+  'IReadOnlyDictionary',
+  'string',
+]);
+
 export const csharpProvider = defineLanguage({
+  rename: csharpRenameProvider,
   id: SupportedLanguages.CSharp,
   extensions: ['.cs'],
   entryPointPatterns: [
@@ -185,10 +210,14 @@ export const csharpProvider = defineLanguage({
       patterns: ['DbContext', 'DbSet<', 'OnModelCreating'],
     },
   ] satisfies AstFrameworkPatternConfig[],
-  treeSitterQueries: CSHARP_QUERIES,
+  treeSitterQueries: `${CSHARP_QUERIES}
+; Fields are graph-addressable members, alongside C# properties.
+(field_declaration
+  (variable_declaration
+    (variable_declarator name: (identifier) @name))) @definition.property
+`,
   typeConfig: csharpConfig,
   exportChecker: csharpExportChecker,
-  importResolver: createImportResolver(csharpImportConfig),
   mroStrategy: 'implements-split',
   callExtractor: createCallExtractor(csharpCallConfig),
   fieldExtractor: createFieldExtractor(csharpFieldConfig),
@@ -198,6 +227,7 @@ export const csharpProvider = defineLanguage({
   // ── XML doc comments (`///`) → description (issue #2270) ──
   descriptionExtractor: createLeadingDocDescriptionExtractor(),
   builtInNames: BUILT_INS,
+  externalReceiverNames: EXTERNAL_RECEIVER_NAMES,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
   // C# is the second migration after Python. See ./csharp/index.ts for

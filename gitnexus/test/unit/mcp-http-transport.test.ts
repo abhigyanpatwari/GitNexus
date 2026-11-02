@@ -34,7 +34,7 @@ import {
   installSignalShutdown,
   SHUTDOWN_EXIT_CODES,
 } from '../../src/mcp/server.js';
-import { mountMCPEndpoints } from '../../src/server/mcp-http.js';
+import { installServeMcpAuth, mountMCPEndpoints } from '../../src/server/mcp-http.js';
 
 // ─── Live-HTTP helpers (real req/res for SDK-touching paths) ───────────
 
@@ -638,6 +638,112 @@ describe('createSseHandlers', () => {
 // ─── mountMCPEndpoints refactor safety ───────────────────────────────
 
 describe('mountMCPEndpoints', () => {
+  it.each([{}, { GITNEXUS_MCP_AUTH_TOKEN: '' }, { GITNEXUS_MCP_AUTH_TOKEN: '   ' }])(
+    'does not install serve auth without a nonblank token (%j)',
+    (env) => {
+      const app = { use: vi.fn() };
+
+      expect(installServeMcpAuth(app as never, env)).toBe(false);
+      expect(app.use).not.toHaveBeenCalled();
+    },
+  );
+
+  it('installs the shared Bearer middleware for serve /api/mcp', () => {
+    const app = { use: vi.fn() };
+
+    expect(installServeMcpAuth(app as never, { GITNEXUS_MCP_AUTH_TOKEN: 'serve-secret' })).toBe(
+      true,
+    );
+    expect(app.use).toHaveBeenCalledTimes(1);
+    expect(app.use.mock.calls[0]?.[0]).toBe('/api/mcp');
+
+    const middleware = app.use.mock.calls[0]?.[1] as (
+      req: Request,
+      res: Response,
+      next: NextFunction,
+    ) => void;
+    const missingRes = createMockRes();
+    const missingNext = vi.fn();
+    middleware(createMockReq(), missingRes, missingNext);
+    expect(missingRes._status).toBe(401);
+    expect(missingNext).not.toHaveBeenCalled();
+
+    const wrongRes = createMockRes();
+    const wrongNext = vi.fn();
+    middleware(createMockReq({ authorization: 'Bearer wrong-secret' }), wrongRes, wrongNext);
+    expect(wrongRes._status).toBe(401);
+    expect(wrongNext).not.toHaveBeenCalled();
+
+    const validRes = createMockRes();
+    const validNext = vi.fn();
+    middleware(createMockReq({ authorization: 'Bearer serve-secret' }), validRes, validNext);
+    expect(validNext).toHaveBeenCalledOnce();
+    expect(validRes._status).toBe(200);
+  });
+
+  it('wires serve MCP auth before the global JSON body parser', async () => {
+    const app = express();
+    let parsedBodies = 0;
+
+    expect(installServeMcpAuth(app, { GITNEXUS_MCP_AUTH_TOKEN: 'serve-secret' })).toBe(true);
+    app.use(
+      express.json({
+        limit: '10mb',
+        verify: () => {
+          parsedBodies += 1;
+        },
+      }),
+    );
+    app.all('/api/mcp', (_req: Request, res: Response) => {
+      res.status(204).end();
+    });
+    app.post('/api/other', (req: Request, res: Response) => {
+      res.status(200).json(req.body);
+    });
+
+    const { port, close } = await listen(app);
+    const json = { 'Content-Type': 'application/json' };
+    const payload = JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 1 });
+
+    try {
+      const missing = await request(port, 'POST', '/api/mcp', json, payload);
+      expect(missing.status).toBe(401);
+      expect(JSON.parse(missing.body)).toMatchObject({
+        jsonrpc: '2.0',
+        error: { code: -32001, message: 'Unauthorized' },
+      });
+      expect(parsedBodies).toBe(0);
+
+      const wrong = await request(
+        port,
+        'POST',
+        '/api/mcp',
+        { ...json, Authorization: 'Bearer wrong-secret' },
+        payload,
+      );
+      expect(wrong.status).toBe(401);
+      expect(parsedBodies).toBe(0);
+
+      const valid = await request(
+        port,
+        'POST',
+        '/api/mcp',
+        { ...json, Authorization: 'Bearer serve-secret' },
+        payload,
+      );
+      expect(valid.status).toBe(204);
+      expect(parsedBodies).toBe(1);
+
+      // The auth gate is scoped to /api/mcp: other routes stay unauthenticated and parsed.
+      const other = await request(port, 'POST', '/api/other', json, JSON.stringify({ ok: true }));
+      expect(other.status).toBe(200);
+      expect(JSON.parse(other.body)).toEqual({ ok: true });
+      expect(parsedBodies).toBe(2);
+    } finally {
+      await close();
+    }
+  });
+
   it('returns a cleanup function', async () => {
     const backend = createMockBackend();
     const mockApp = {

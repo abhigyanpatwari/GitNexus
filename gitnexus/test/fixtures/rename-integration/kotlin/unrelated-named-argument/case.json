@@ -1,0 +1,19 @@
+{
+  "language": "kotlin",
+  "description": "Rename a primary-constructor property beside labels proven to bind another function or another type's property.",
+  "categories": [
+    "named-argument",
+    "unrelated-name"
+  ],
+  "target": {
+    "name": "first",
+    "kind": "Property",
+    "file": "Model.kt",
+    "startLine": 0
+  },
+  "newName": "head",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  }
+}

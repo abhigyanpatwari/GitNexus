@@ -12,6 +12,7 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import { processStructure } from '../structure-processor.js';
 import type { ScanOutput } from './scan.js';
+import type { SupportedLanguages } from 'gitnexus-shared';
 
 /** Structure phase produces no additional data — it writes directly to the graph. */
 export interface StructureOutput {
@@ -25,6 +26,7 @@ export interface StructureOutput {
    */
   allPathSet: ReadonlySet<string>;
   totalFiles: number;
+  resolutionConfigs?: ReadonlyMap<SupportedLanguages, unknown>;
 }
 
 export const structurePhase: PipelinePhase<StructureOutput> = {
@@ -35,7 +37,10 @@ export const structurePhase: PipelinePhase<StructureOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<StructureOutput> {
-    const { scannedFiles, allPaths, totalFiles } = getPhaseOutput<ScanOutput>(deps, 'scan');
+    const { scannedFiles, allPaths, totalFiles, resolutionConfigs } = getPhaseOutput<ScanOutput>(
+      deps,
+      'scan',
+    );
 
     ctx.onProgress({
       phase: 'structure',
@@ -57,6 +62,6 @@ export const structurePhase: PipelinePhase<StructureOutput> = {
     // can all reuse it instead of re-materializing `new Set(allPaths)` each.
     const allPathSet: ReadonlySet<string> = new Set(allPaths);
 
-    return { scannedFiles, allPaths, allPathSet, totalFiles };
+    return { scannedFiles, allPaths, allPathSet, totalFiles, resolutionConfigs };
   },
 };

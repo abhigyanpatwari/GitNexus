@@ -38,7 +38,7 @@ function pdgFindings(overrides: Record<string, unknown> = {}): Record<string, un
   ];
   return {
     mode: 'pdg',
-    pdgResultVersion: 2,
+    pdgResultVersion: 3,
     target: {
       id: 'Function:src/svc.ts:computeTotal',
       name: 'computeTotal',
@@ -136,7 +136,7 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
     // The PDG result family advertises a contract version (FIX #2) so external
     // MCP/agent consumers can version against future shape evolution. It is a
     // mode:'pdg'-only field — never on the default callgraph result.
-    expect(pdgFindings()).toMatchObject({ mode: 'pdg', pdgResultVersion: 2 });
+    expect(pdgFindings()).toMatchObject({ mode: 'pdg', pdgResultVersion: 3 });
   });
 
   it('surfaces ambiguous-projection and unresolved block counts honestly', () => {
@@ -498,9 +498,10 @@ describe('formatImpactResult — callgraph rendering is UNCHANGED (regression gu
     },
   };
 
-  it('renders the callgraph result with the exact pre-U5 text (byte-identical)', () => {
+  it('renders the callgraph result with Risk on the callgraph contract (byte-identical for U5+risk)', () => {
     const expected = [
       'Blast radius for Function computeTotal (upstream): 2 symbol(s) depends on this (will break if changed)',
+      'Risk: MEDIUM',
       '',
       'd=1: WILL BREAK (direct) (1)',
       '  Function callerA → src/a.ts [CALLS]',
@@ -532,14 +533,14 @@ describe('formatImpactResult — callgraph rendering is UNCHANGED (regression gu
     expect(out).not.toContain('PDG-dependent symbols');
   });
 
-  it('renders the callgraph isolated / zero case unchanged', () => {
+  it('renders the callgraph isolated / zero case with risk, without claiming isolation', () => {
     const out = formatImpactResult({
       target: { name: 'lonely' },
       direction: 'downstream',
       impactedCount: 0,
       risk: 'LOW',
     });
-    expect(out).toBe('lonely: No downstream dependencies found. This symbol appears isolated.');
+    expect(out).toBe('lonely: No downstream dependencies found.\nRisk: LOW');
   });
 
   it('renders the callgraph lower-bound (DI/dynamic-dispatch) copy unchanged', () => {

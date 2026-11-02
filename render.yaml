@@ -17,7 +17,9 @@ projects:
     environments:
       - name: production
         services:
-          # Private: no public URL. `serve` has no authentication of its own.
+          # Private: no public URL. `serve`'s own protocol auth (MCP Bearer) is
+          # optional and unset by this Blueprint; the public edge token on the
+          # web service below remains the access control.
           - type: pserv
             name: gitnexus-server
             runtime: docker

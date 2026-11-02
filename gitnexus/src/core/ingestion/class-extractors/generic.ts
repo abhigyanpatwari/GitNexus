@@ -57,6 +57,7 @@ const CLASS_LIKE_LABELS = new Set<ClassLikeNodeLabel>([
   'Interface',
   'Enum',
   'Record',
+  'Union',
 ]);
 
 const extractScopeSegmentsFromNode = (
@@ -91,17 +92,18 @@ export function createClassExtractor(config: ClassExtractionConfig): ClassExtrac
   ]);
 
   const buildQualifiedName = (node: SyntaxNode, simpleName: string): string => {
-    let root = node;
-    while (root.parent) root = root.parent;
-
     const readScopeSegments = (scopeNode: SyntaxNode): string[] =>
       config.extractScopeSegments?.(scopeNode) ??
       extractScopeSegmentsFromNode(scopeNode, scopeNameNodeTypes);
 
     const fileScopeSegments: string[] = [];
-    for (const child of root.namedChildren ?? []) {
-      if (fileScopeSet.has(child.type)) {
-        fileScopeSegments.push(...readScopeSegments(child));
+    if (fileScopeSet.size > 0) {
+      let root = node;
+      while (root.parent) root = root.parent;
+      for (const child of root.namedChildren ?? []) {
+        if (fileScopeSet.has(child.type)) {
+          fileScopeSegments.push(...readScopeSegments(child));
+        }
       }
     }
 
@@ -129,11 +131,15 @@ export function createClassExtractor(config: ClassExtractionConfig): ClassExtrac
     fallback?: {
       name?: string;
       type?: NodeLabel | null;
+      filePath?: string;
     },
   ): ExtractedClassSymbol | null => {
     if (!typeDeclarationSet.has(node.type)) return null;
 
-    const name = config.extractName?.(node) ?? extractTypeNameFromNode(node) ?? fallback?.name;
+    const name =
+      config.extractName?.(node, fallback?.filePath) ??
+      extractTypeNameFromNode(node) ??
+      fallback?.name;
     const type =
       config.extractType?.(node) ??
       DEFAULT_LABEL_BY_NODE_TYPE[node.type] ??

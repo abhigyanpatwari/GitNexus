@@ -248,6 +248,91 @@ describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () =
     expect(out[0].symbolName).toBe('createOrder');
   });
 
+  it('fast path: CONTAINING_QUERY runs once per file, not once per resolved route', async () => {
+    // The fast path resolves a handler per ROUTE but CONTAINING_QUERY is a
+    // per-FILE lookup. Three resolved routes in one controller must therefore
+    // execute it exactly once — otherwise a group sync re-scans the same file
+    // for every route it registers.
+    const ids = ['listOrders', 'createOrder', 'deleteOrder'].map(
+      (name) => [name, `Method:OrderController.java:OrderController.${name}#0`] as const,
+    );
+    const symbols = ids.map(([name, uid]) => ({
+      uid,
+      name,
+      filePath: 'OrderController.java',
+      startLine: 10,
+      endLine: 12,
+      labels: ['Method'],
+      0: uid,
+      1: name,
+      2: 'OrderController.java',
+    }));
+
+    const db = vi.fn(async (query: string) => {
+      if (query.includes('HANDLES_ROUTE')) {
+        return ids.map(([name, uid], i) => ({
+          fileId: 'f1',
+          filePath: 'OrderController.java',
+          routePath: `/api/orders/${name}`,
+          routeId: `r${i}`,
+          routeMethod: 'GET',
+          handlerSymbolId: uid,
+          routeSource: 'framework-route',
+        }));
+      }
+      if (query.includes('UNION ALL')) return symbols;
+      return [];
+    });
+
+    const out = await new HttpRouteExtractor().extract(db, '/repo', {
+      name: 'r',
+      url: 'r',
+    } as never);
+
+    const containingCalls = db.mock.calls.filter(([query]) => query.includes('UNION ALL'));
+    expect(containingCalls).toHaveLength(1);
+    // Memoization must not cost resolution: every route still names its handler.
+    expect(out.map((c) => c.symbolName).sort()).toEqual([
+      'createOrder',
+      'deleteOrder',
+      'listOrders',
+    ]);
+  });
+
+  it('fast path: a failed CONTAINING_QUERY is cached as empty and not retried per route', async () => {
+    // Failures previously fell through to the uid + basename fallback per route;
+    // memoizing must keep that fallback while collapsing the retries.
+    const ids = ['listOrders', 'createOrder'].map(
+      (name) => [name, `Method:OrderController.java:OrderController.${name}#0`] as const,
+    );
+
+    const db = vi.fn(async (query: string) => {
+      if (query.includes('HANDLES_ROUTE')) {
+        return ids.map(([name, uid], i) => ({
+          fileId: 'f1',
+          filePath: 'OrderController.java',
+          routePath: `/api/orders/${name}`,
+          routeId: `r${i}`,
+          routeMethod: 'GET',
+          handlerSymbolId: uid,
+          routeSource: 'framework-route',
+        }));
+      }
+      if (query.includes('UNION ALL')) throw new Error('boom');
+      return [];
+    });
+
+    const out = await new HttpRouteExtractor().extract(db, '/repo', {
+      name: 'r',
+      url: 'r',
+    } as never);
+
+    expect(db.mock.calls.filter(([query]) => query.includes('UNION ALL'))).toHaveLength(1);
+    expect(out.map((c) => c.symbolUid).sort()).toEqual(ids.map(([, uid]) => uid).sort());
+    // The authoritative uid survives; only the display name falls back.
+    for (const contract of out) expect(contract.symbolName).toBe('OrderController.java');
+  });
+
   it('backward-compat: no Route.method and undecodable reason stays at conservative GET', async () => {
     FILE_DETECTIONS.set('routes.ts', [detection('provider', 'POST', '/api/orders', 'createOrder')]);
 

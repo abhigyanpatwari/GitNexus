@@ -9,6 +9,7 @@
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from 'gitnexus-shared';
 import {
+  SAME_ORIGIN_BACKEND_URL,
   AUTH_TOKEN_STORAGE_KEY,
   LARGE_GRAPH_NODE_THRESHOLD,
   LARGE_GRAPH_EDGE_THRESHOLD,
@@ -18,11 +19,35 @@ import { decideSkipGraph } from '../lib/graph-load-decision';
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface BackendRepo {
+  /** Opaque per-server-process handle; matches `repoId` on analyze completion. */
+  id?: string;
   name: string;
   path: string;
   repoPath?: string; // git HEAD returns "repoPath"; older versions return "path"
   indexedAt: string;
   lastCommit?: string;
+  /**
+   * Branch this index was built from. Absent on legacy entries and non-git
+   * repos. Since #3199 a branch-pinned analyze registers its own entry, so this
+   * is what tells two entries for the same repository apart — the name is
+   * derived from the clone directory and is not a contract.
+   */
+  branch?: string;
+  /** Non-primary branch indexes recorded for the same path. */
+  branches?: Array<{ branch: string; indexedAt?: string; lastCommit?: string }>;
+  /**
+   * Absent when the index is at the repo's checked-out HEAD. Otherwise `status`
+   * says what the server could establish: `behind` (with the counted
+   * `commitsBehind`), `diverged` (HEAD has moved off the indexed commit but the
+   * history needed to count the gap is gone, so there is no `commitsBehind`),
+   * or `unknown` (the repository could not be measured). Same shape MCP
+   * `list_repos` returns; see the server's `core/staleness-status.ts` (#3256).
+   */
+  staleness?: {
+    status: 'behind' | 'diverged' | 'unknown';
+    commitsBehind?: number;
+    hint?: string;
+  };
   stats?: {
     files?: number;
     nodes?: number;
@@ -64,6 +89,12 @@ export interface GrepResult {
   text: string;
 }
 
+/** Full `/api/grep` payload — `timedOut` is true when the 5s budget cut the scan short. */
+export interface GrepResponse {
+  results: GrepResult[];
+  timedOut: boolean;
+}
+
 export interface JobProgress {
   phase: string;
   percent: number;
@@ -82,6 +113,52 @@ export interface JobStatus {
   completedAt?: number;
 }
 
+/** Snapshot from GET /api/ops — execution metrics for the ops dashboard. */
+export interface OpsLaneMetrics {
+  total: number;
+  active: number;
+  queued: number;
+  complete: number;
+  failed: number;
+  byStatus: Record<JobStatus['status'], number>;
+  avgDurationMs: number | null;
+  maxDurationMs: number | null;
+  activeProgressSum: number;
+}
+
+export interface OpsJobView extends JobStatus {
+  lane: 'analyze' | 'embed';
+  branch?: string;
+  retryCount: number;
+  durationMs: number;
+  partial?: {
+    kind: 'embedding-partial';
+    pendingNodeCount: number;
+    nodesProcessed: number;
+  };
+}
+
+export interface OpsSnapshot {
+  generatedAt: number;
+  uptimeMs: number;
+  health: 'ok';
+  server: {
+    version: string;
+    launchContext: string;
+    nodeVersion: string;
+    latestVersion?: string;
+    updateAvailable?: boolean;
+  };
+  analyze: { jobs: OpsJobView[]; metrics: OpsLaneMetrics };
+  embed: { jobs: OpsJobView[]; metrics: OpsLaneMetrics };
+  totals: {
+    jobs: number;
+    active: number;
+    failed: number;
+    complete: number;
+  };
+}
+
 export class BackendError extends Error {
   constructor(
     message: string,
@@ -91,6 +168,7 @@ export class BackendError extends Error {
       | 'server'
       | 'client'
       | 'not_found'
+      | 'source_unavailable'
       | 'timeout'
       | 'rate_limited'
       // The write-route same-host Origin guard rejected this request (HTTP 403
@@ -161,6 +239,18 @@ export interface SSEOptions {
    * the edge's token gate resolves itself once a token is entered.
    */
   retryOnHttpError?: boolean;
+  /**
+   * When true (default), a successful HTTP open resets the retry counter so a
+   * long-lived stream can reconnect forever after transient drops. Set false
+   * for finite budgets (ops → poll fallback): otherwise a 200 that then closes
+   * would reset the counter on every reconnect and never reach `onError`.
+   */
+  resetRetriesOnOpen?: boolean;
+  /**
+   * Abort the handshake if response headers do not arrive in this window.
+   * Fires `onError` so callers (ops → poll) are not stuck on a pending fetch.
+   */
+  connectTimeoutMs?: number;
 }
 
 /**
@@ -181,6 +271,7 @@ export function streamSSE<T = unknown>(
   const maxRetries = options.maxRetries ?? 3;
   const baseDelayMs = options.baseDelayMs ?? 1_000;
   const capDelayMs = options.capDelayMs ?? Infinity;
+  const resetRetriesOnOpen = options.resetRetriesOnOpen ?? true;
 
   let lastEventId = '';
 
@@ -196,13 +287,26 @@ export function streamSSE<T = unknown>(
     if (controller.signal.aborted) return;
 
     (async () => {
+      let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         const headers = withAuthHeader(new Headers());
         if (lastEventId) {
           headers.set('Last-Event-ID', lastEventId);
         }
 
+        if (options.connectTimeoutMs && options.connectTimeoutMs > 0) {
+          handshakeTimer = setTimeout(() => {
+            if (controller.signal.aborted) return;
+            handlers.onError?.('SSE handshake timed out');
+            controller.abort();
+          }, options.connectTimeoutMs);
+        }
+
         const response = await fetch(url, { signal: controller.signal, headers });
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer);
+          handshakeTimer = undefined;
+        }
         if (!response.ok) {
           if (options.retryOnHttpError && scheduleRetry(retryCount)) return;
           handlers.onError?.(`Server returned ${response.status}`);
@@ -215,8 +319,10 @@ export function streamSSE<T = unknown>(
           return;
         }
 
-        // Reset retry count on successful connection
-        retryCount = 0;
+        // Long-lived streams reset; finite budgets (ops poll fallback) must not.
+        if (resetRetriesOnOpen) {
+          retryCount = 0;
+        }
         handlers.onOpen?.();
 
         const decoder = new TextDecoder();
@@ -263,12 +369,20 @@ export function streamSSE<T = unknown>(
           }
         }
 
-        // Stream ended without terminal event — try to reconnect
-        scheduleRetry(retryCount);
+        // Stream ended without terminal event — try to reconnect; when the
+        // retry budget is spent, surface the same onError path the catch arm
+        // already uses so callers (e.g. ops dashboard → poll fallback) can run.
+        // scheduleRetry also returns false when aborted — mirror the catch arm
+        // and do not invoke onError after the caller cancelled the stream.
+        if (!controller.signal.aborted && !scheduleRetry(retryCount)) {
+          handlers.onError?.('Stream ended');
+        }
       } catch (err: unknown) {
+        if (handshakeTimer) clearTimeout(handshakeTimer);
         if (err instanceof DOMException && err.name === 'AbortError') return;
-        // Network error — attempt reconnect with backoff
-        if (!scheduleRetry(retryCount)) {
+        // Network error — attempt reconnect with backoff. Skip onError when the
+        // caller already aborted (scheduleRetry returns false for abort too).
+        if (!controller.signal.aborted && !scheduleRetry(retryCount)) {
           handlers.onError?.(err instanceof Error ? err.message : 'Stream error');
         }
       }
@@ -314,12 +428,35 @@ export const setBackendUrl = (url: string): void => {
 export const getBackendUrl = (): string => _backendUrl;
 
 /**
+ * Strip `user[:password]@` userinfo from an http(s) URL so credentials never
+ * land in `?server=`, history, or `_backendUrl` display/storage paths.
+ */
+function stripBackendUrlCredentials(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.username && !parsed.password) return url;
+    parsed.username = '';
+    parsed.password = '';
+    // URL() may add a trailing slash for bare origins; keep normalize's contract.
+    return parsed.toString().replace(/\/+$/, '');
+  } catch {
+    return url.replace(/^(https?:\/\/)[^/]*@/i, '$1');
+  }
+}
+
+/**
  * Normalize a user-entered server URL into a base URL suitable for setBackendUrl().
- * Adds protocol if missing, strips trailing slashes, and strips a trailing /api suffix
- * (since all API methods append their own /api/... paths to _backendUrl).
+ * Adds protocol if missing, strips trailing slashes / userinfo, and strips a
+ * trailing /api suffix (since all API methods append their own /api/... paths).
  */
 export function normalizeServerUrl(input: string): string {
   let url = input.trim().replace(/\/+$/, '');
+
+  // A same-origin deployment's base is kept as configured: a prefix such as
+  // `/proxy/api` names where the API is mounted, not a pasted endpoint, so the
+  // `/api` cleanup below is for hand-entered and absolute URLs only (#3593).
+  // That base is resolved from the page origin, so it carries no credentials.
+  if (SAME_ORIGIN_BACKEND_URL !== undefined && url === SAME_ORIGIN_BACKEND_URL) return url;
 
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
     if (url.startsWith('localhost') || url.startsWith('127.0.0.1')) {
@@ -332,7 +469,7 @@ export function normalizeServerUrl(input: string): string {
   // Strip /api suffix if present — _backendUrl stores the base, not the /api path
   url = url.replace(/\/api$/, '');
 
-  return url;
+  return stripBackendUrlCredentials(url);
 }
 
 // ── Access token ───────────────────────────────────────────────────────────
@@ -521,22 +658,22 @@ const assertOk = async (response: Response): Promise<void> => {
     // Response body was not JSON
   }
 
-  const code =
-    response.status === 404
-      ? 'not_found'
-      : response.status === 429
-        ? 'rate_limited'
-        : // The public edge's token gate returns 401 with this discriminator;
-          // surface it as a distinct code so the UI can prompt for the token.
-          bodyCode === 'unauthorized'
-          ? 'unauthorized'
-          : // The write-route Origin guard returns 403 with this discriminator;
-            // surface it as a distinct code so the UI can give actionable guidance.
-            bodyCode === 'origin_not_allowed'
-            ? 'origin_blocked'
-            : response.status >= 400 && response.status < 500
-              ? 'client'
-              : 'server';
+  let code: ConstructorParameters<typeof BackendError>[2] = 'server';
+  if (bodyCode === 'source-unavailable') {
+    code = 'source_unavailable';
+  } else if (response.status === 404) {
+    code = 'not_found';
+  } else if (response.status === 429) {
+    code = 'rate_limited';
+  } else if (bodyCode === 'unauthorized') {
+    // Public-edge token gate: HTTP 401 with this discriminator.
+    code = 'unauthorized';
+  } else if (bodyCode === 'origin_not_allowed') {
+    // Write-route Origin guard: HTTP 403 with this discriminator.
+    code = 'origin_blocked';
+  } else if (response.status >= 400 && response.status < 500) {
+    code = 'client';
+  }
 
   // Retry-After is the standard HTTP signal for when the client may try again.
   // express-rate-limit emits it on 429 with seconds (integer) or HTTP-date.
@@ -569,9 +706,11 @@ export interface ServerInfo {
   version: string;
   launchContext: 'npx' | 'global' | 'local';
   nodeVersion: string;
+  latestVersion?: string;
+  updateAvailable?: boolean;
 }
 
-/** Fetch server info (version, launch context). */
+/** Fetch server info (version, launch context, and optional update state). */
 export const fetchServerInfo = async (): Promise<ServerInfo> => {
   const response = await fetchWithTimeout(`${_backendUrl}/api/info`);
   await assertOk(response);
@@ -655,7 +794,14 @@ export type BackendProbeStatus = 'ok' | 'unauthorized' | 'unreachable';
  */
 export const probeBackendStatus = async (): Promise<BackendProbeStatus> => {
   try {
-    const response = await fetchWithTimeout(`${_backendUrl}/api/repos`, {}, PROBE_TIMEOUT_MS);
+    // `/api/health` rather than `/api/repos`: this is a liveness question on a
+    // 2s budget, and `/api/repos` now spawns a `git rev-list` per registered
+    // repo to answer freshness. Probing it made the cost of "is the server up?"
+    // scale with the number of indexed repos, and a failed probe re-polls,
+    // stacking more children on the way (#3232 review). `/api/health` is a
+    // constant, and still sits behind the same `/api/*` edge gate, so the 401
+    // branch below keeps distinguishing "gated" from "not there".
+    const response = await fetchWithTimeout(`${_backendUrl}/api/health`, {}, PROBE_TIMEOUT_MS);
     if (response.status === 200) return 'ok';
     return response.status === 401 ? 'unauthorized' : 'unreachable';
   } catch {
@@ -869,23 +1015,37 @@ export const search = async (
   return (body.results ?? []) as EnrichedSearchResult[];
 };
 
-/** Grep across file contents in the indexed repo. */
+/** Options for {@link grep} beyond pattern/repo/limit. */
+export interface GrepOptions {
+  /** Only search files whose path contains this substring (case-insensitive). */
+  fileFilter?: string | null;
+  /** Case-sensitive matching (default: insensitive). */
+  caseSensitive?: boolean;
+}
+
+/** Grep across file contents in the indexed repo. Regex semantics server-side. */
 export const grep = async (
   pattern: string,
   repo?: string,
   limit?: number,
-): Promise<GrepResult[]> => {
+  opts?: GrepOptions,
+): Promise<GrepResponse> => {
   const params = [
     `pattern=${encodeURIComponent(pattern)}`,
     repoParam(repo),
     limit ? `limit=${limit}` : '',
+    opts?.fileFilter ? `fileFilter=${encodeURIComponent(opts.fileFilter)}` : '',
+    opts?.caseSensitive ? 'caseSensitive=1' : '',
   ]
     .filter(Boolean)
     .join('&');
   const response = await fetchWithTimeout(`${_backendUrl}/api/grep?${params}`);
   await assertOk(response);
-  const body = await response.json();
-  return (body.results ?? []) as GrepResult[];
+  const body = (await response.json()) as Partial<GrepResponse>;
+  return {
+    results: body.results ?? [],
+    timedOut: body.timedOut === true,
+  };
 };
 
 /** Result from reading a file, optionally with line range. */
@@ -988,6 +1148,13 @@ export const startAnalyze = async (request: {
   force?: boolean;
   embeddings?: boolean;
   token?: string;
+  /**
+   * Index-branch selector. Omitted: a `url` with no existing clone takes the
+   * remote's default branch, an existing clone updates whichever branch it
+   * already has checked out, and a `path` request is not cloned at all and
+   * indexes that working tree as it stands.
+   */
+  branch?: string;
 }): Promise<{ jobId: string; status: string }> => {
   const response = await fetchWithTimeout(
     `${_backendUrl}/api/analyze`,
@@ -1011,6 +1178,40 @@ export const getAnalyzeStatus = async (jobId: string): Promise<JobStatus> => {
   return response.json() as Promise<JobStatus>;
 };
 
+/** Fetch the ops / execution metrics snapshot. */
+export const fetchOpsSnapshot = async (): Promise<OpsSnapshot> => {
+  const response = await fetchWithTimeout(`${_backendUrl}/api/ops`, {}, 5_000);
+  await assertOk(response);
+  return response.json() as Promise<OpsSnapshot>;
+};
+
+/**
+ * Stream ops snapshots via SSE (≈1 Hz). Falls back callers should use
+ * `fetchOpsSnapshot` polling when the stream cannot be established.
+ */
+export const streamOpsSnapshot = (
+  onSnapshot: (snapshot: OpsSnapshot) => void,
+  onError: (error: string) => void,
+): AbortController => {
+  return streamSSE<OpsSnapshot>(
+    `${_backendUrl}/api/ops/stream`,
+    {
+      onMessage: onSnapshot,
+      onError,
+    },
+    // Finite retries so onError can fire and the dashboard falls back to poll.
+    // Do not reset the budget on a successful open — short-lived 200s must count.
+    {
+      maxRetries: 3,
+      baseDelayMs: 1_000,
+      capDelayMs: 5_000,
+      retryOnHttpError: true,
+      resetRetriesOnOpen: false,
+      connectTimeoutMs: 5_000,
+    },
+  );
+};
+
 /** Cancel a running analysis job. */
 export const cancelAnalyze = async (jobId: string): Promise<void> => {
   const response = await fetchWithTimeout(
@@ -1024,7 +1225,7 @@ export const cancelAnalyze = async (jobId: string): Promise<void> => {
 export const streamAnalyzeProgress = (
   jobId: string,
   onProgress: (progress: JobProgress) => void,
-  onComplete: (data: { repoName?: string; repoPath?: string }) => void,
+  onComplete: (data: { repoName?: string; repoPath?: string; repoId?: string }) => void,
   onError: (error: string) => void,
 ): AbortController => {
   return streamSSE<JobProgress>(

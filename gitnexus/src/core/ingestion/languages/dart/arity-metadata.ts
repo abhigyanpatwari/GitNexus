@@ -12,6 +12,7 @@
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { dartMethodConfig } from '../../method-extractors/configs/dart.js';
+import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
 
 interface DartArityMetadata {
   parameterCount: number | undefined;
@@ -29,10 +30,9 @@ export function computeDartArityMetadata(fnNode: SyntaxNode): DartArityMetadata 
   const params = dartMethodConfig.extractParameters?.(fnNode) ?? [];
 
   let optionalCount = 0;
-  const types: string[] = [];
+  const types = declarationParameterTypes(params);
   for (const p of params) {
     if (p.isOptional) optionalCount++;
-    if (p.type !== null) types.push(p.type);
   }
 
   const total = params.length;

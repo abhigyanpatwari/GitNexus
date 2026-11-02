@@ -29,7 +29,7 @@ export const AnalyzeProgress = ({ progress, onCancel }: AnalyzeProgressProps) =>
   const pct = Math.max(0, Math.min(100, progress.percent));
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" data-testid="analyze-progress">
       {/* Phase label + elapsed */}
       <div className="flex items-center justify-between text-sm">
         <span className="font-medium text-text-secondary">{label}</span>

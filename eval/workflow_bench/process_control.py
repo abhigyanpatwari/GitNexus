@@ -12,9 +12,12 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import BinaryIO, Literal
@@ -22,9 +25,42 @@ from typing import BinaryIO, Literal
 
 MAX_TAIL_BYTES = 64 * 1024
 DEFAULT_TERMINATE_GRACE = 5.0
+_CANCELLATION: ContextVar[threading.Event | None] = ContextVar("managed_process_cancellation", default=None)
+
+
+@contextmanager
+def cancellation_scope(
+    event: threading.Event | None = None, *, handle_signals: bool = False
+) -> Iterator[threading.Event]:
+    """Share one cancellation signal through every managed command in a run.
+
+    Worker contexts must be copied explicitly at executor submission. This also
+    covers clone/setup and evidence helpers which call run_managed indirectly.
+    """
+    event = event or _CANCELLATION.get() or threading.Event()
+    token = _CANCELLATION.set(event)
+    previous = {}
+    try:
+        if handle_signals and threading.current_thread() is threading.main_thread():
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                previous[signum] = signal.signal(signum, lambda *_: event.set())
+        yield event
+    except BaseException:
+        event.set()
+        raise
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+        _CANCELLATION.reset(token)
+
+
+class _CancellationRequested(Exception):
+    pass
+
 
 ProcessState = Literal[
     "exited",
+    "cancelled",
     "input-failure",
     "timeout",
     "forced-kill",
@@ -124,12 +160,36 @@ def _drain(
     pipe: BinaryIO,
     tail: _TailBuffer,
     capture: _BoundedCapture | None = None,
+    echo: BinaryIO | None = None,
+    observer: Callable[[bytes], None] | None = None,
 ) -> None:
     try:
-        while chunk := pipe.read(8192):
+        # read1, not read: on a BufferedReader, read(n) blocks until it has all
+        # n bytes or the pipe closes. A child that emits a line every 45 minutes
+        # never fills 8 KB, so its output would surface only when it exits —
+        # which is precisely what echo_stdout exists to avoid.
+        while chunk := pipe.read1(8192):
             tail.append(chunk)
             if capture is not None:
                 capture.append(chunk)
+            if echo is not None:
+                # Progress passthrough for long child runs whose output is
+                # ordinary log text (see run_managed's echo_stdout). Never
+                # enabled for a Claude session, whose stdout is the evidence
+                # stream and is only written out after redaction.
+                try:
+                    echo.write(chunk)
+                    echo.flush()
+                except (OSError, ValueError):
+                    echo = None
+            if observer is not None:
+                # Progress reporting must never be able to break the drain, and
+                # the drain must keep running even if the observer is broken:
+                # a stalled reader is what deadlocks the child.
+                try:
+                    observer(chunk)
+                except Exception:
+                    observer = None
     except (OSError, ValueError):
         # A forced close is part of the reap path. The terminal result records
         # an actual reap failure; a reader seeing the close is not one itself.
@@ -419,11 +479,17 @@ def _run_managed_inner(
     require_pid_namespace: bool = False,
     stdin_data: bytes | None = None,
     capture_stdout_bytes: int | None = None,
+    echo_stdout: bool = False,
+    stdout_observer: Callable[[bytes], None] | None = None,
+    cancel_event: threading.Event | None = None,
     _ownership_slot: list[tuple[subprocess.Popen[bytes], _WindowsJob | None, int | None]],
 ) -> ManagedProcessResult:
     """Implementation registered with an outer post-spawn ownership guard."""
 
     started = time.monotonic()
+    cancel_event = cancel_event or _CANCELLATION.get()
+    if cancel_event is not None and cancel_event.is_set():
+        return _empty_result("cancelled", started, "cancelled before spawn")
     if timeout <= 0 or terminate_grace < 0 or tail_bytes <= 0:
         raise ValueError("timeout and tail_bytes must be positive; terminate_grace must be non-negative")
     if capture_stdout_bytes is not None and capture_stdout_bytes <= 0:
@@ -465,8 +531,13 @@ def _run_managed_inner(
     stdout = _TailBuffer(tail_bytes)
     stderr = _TailBuffer(tail_bytes)
     stdout_capture = _BoundedCapture(capture_stdout_bytes) if capture_stdout_bytes is not None else None
+    echo = getattr(sys.stderr, "buffer", None) if echo_stdout else None
     readers = [
-        threading.Thread(target=_drain, args=(process.stdout, stdout, stdout_capture), daemon=True),
+        threading.Thread(
+            target=_drain,
+            args=(process.stdout, stdout, stdout_capture, echo, stdout_observer),
+            daemon=True,
+        ),
         threading.Thread(target=_drain, args=(process.stderr, stderr), daemon=True),
     ]
     for reader in readers:
@@ -486,14 +557,28 @@ def _run_managed_inner(
     detail = None
     timed_out = False
     forced_kill = False
+    cancelled = False
     try:
-        process.wait(timeout=timeout)
+        deadline = time.monotonic() + timeout
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise _CancellationRequested()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            try:
+                process.wait(timeout=min(0.1, remaining) if cancel_event is not None else remaining)
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() >= deadline:
+                    raise
     except (KeyboardInterrupt, SystemExit):
         _abort_owned_process(process, job, owned_pgid)
         raise
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        state = "timeout"
+    except (subprocess.TimeoutExpired, _CancellationRequested) as stopped:
+        cancelled = isinstance(stopped, _CancellationRequested)
+        timed_out = not cancelled
+        state = "cancelled" if cancelled else "timeout"
         try:
             if job is not None:
                 # Job Object termination is the Windows tree-wide primitive;
@@ -656,6 +741,8 @@ def _run_managed_inner(
             raise
 
     captured_stdout, capture_overflow = stdout_capture.result() if stdout_capture is not None else (None, False)
+    if cancelled and state in ("timeout", "forced-kill", "cancelled"):
+        state = "cancelled"
     return ManagedProcessResult(
         state=state,
         returncode=process.returncode,
@@ -683,8 +770,22 @@ def run_managed(
     require_pid_namespace: bool = False,
     stdin_data: bytes | None = None,
     capture_stdout_bytes: int | None = None,
+    echo_stdout: bool = False,
+    stdout_observer: Callable[[bytes], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> ManagedProcessResult:
-    """Run one command with bounded output and owned-tree termination."""
+    """Run one command with bounded output and owned-tree termination.
+
+    `echo_stdout` streams the child's stdout to this process's stderr as it
+    arrives, so a long child (the benchmark sweep) reports progress in the CI
+    log instead of surfacing only its bounded tail after it finishes. Use it
+    only for children whose stdout is log text.
+
+    `stdout_observer` sees the same chunks without copying them anywhere, so a
+    child whose stdout is *not* printable (a Claude session's evidence stream)
+    can still report derived progress. The observer runs on the reader thread:
+    it must not block, and raising only disables further calls.
+    """
 
     ownership_slot: list[tuple[subprocess.Popen[bytes], _WindowsJob | None, int | None]] = []
     try:
@@ -699,6 +800,9 @@ def run_managed(
             require_pid_namespace=require_pid_namespace,
             stdin_data=stdin_data,
             capture_stdout_bytes=capture_stdout_bytes,
+            echo_stdout=echo_stdout,
+            stdout_observer=stdout_observer,
+            cancel_event=cancel_event,
             _ownership_slot=ownership_slot,
         )
     except BaseException:

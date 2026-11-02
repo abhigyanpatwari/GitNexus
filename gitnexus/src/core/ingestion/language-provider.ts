@@ -20,12 +20,14 @@ import type {
   ScopeKind,
   ScopeTree,
   ParsedImport,
+  ParsedFile,
   ParsedTypeBinding,
   SymbolDefinition,
   Callsite,
   WorkspaceIndex,
 } from 'gitnexus-shared';
 import type { LanguageTypeConfig } from './type-extractors/types.js';
+import type { NotebookLineSegment } from './ipynb-extractor.js';
 import type { CallRouter } from './call-routing.js';
 import type { CallExtractor } from './call-types.js';
 import type { ClassExtractor } from './class-types.js';
@@ -33,18 +35,193 @@ import type { ExportChecker } from './export-detection.js';
 import type { FieldExtractor } from './field-extractor.js';
 import type { MethodExtractor } from './method-types.js';
 import type { VariableExtractor } from './variable-types.js';
-import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { CfgVisitor } from './cfg/types.js';
-import type { NodeLabel } from 'gitnexus-shared';
+import type { CollectedCfgs } from './cfg/collect.js';
+import type { RenameProvider } from './rename-provider.js';
+import type { GraphNode, NodeLabel, ParameterTypeClass, RelationshipType } from 'gitnexus-shared';
 import type { ExtractedRoute } from './route-extractors/laravel.js';
 import type { SharedSpringType } from './route-extractors/spring-shared.js';
+import type {
+  ModuleConstants,
+  Operand,
+  RepoConstants,
+} from './route-extractors/constant-resolver.js';
 import type Parser from 'tree-sitter';
-import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
+import type {
+  FetchWrapperCall,
+  FetchWrapperFacts,
+  FetchWrapperReexport,
+} from './route-extractors/fetch-wrapper.js';
+import type { ExtractedDecoratorRoute, ExtractedToolDef } from './workers/parse-worker.js';
+import type { SemanticModel } from './model/semantic-model.js';
+
+/**
+ * A declared router-framework equivalence: values of type `type` reached
+ * through `importPath` are the `framework`'s router root. Framework names are
+ * opaque here; the provider that owns the framework interprets them.
+ */
+export interface RouteFrameworkAlias {
+  readonly importPath: string;
+  readonly type: string;
+  readonly framework: string;
+}
+
+/** User route configuration handed to provider route hooks on the main thread. */
+export interface RouteHookConfig {
+  /** Declared router-framework aliases; empty when none are configured. */
+  readonly routeFrameworkAliases?: readonly RouteFrameworkAlias[];
+  /** Callee designators (`pkg.Wrap`) whose first argument is the real handler. */
+  readonly routeHandlerWrappers?: readonly string[];
+}
+
+/** What a provider's {@link LanguageProviderConfig.resolveRouteHandler} can see. */
+export interface RouteHandlerResolutionHookContext {
+  readonly routeHookConfig?: RouteHookConfig;
+  /** The model after every file has been parsed; scope resolution has not run. */
+  readonly model: SemanticModel;
+  /**
+   * Every workspace file the import bound to `localName` in `fromFile` resolves
+   * to. `[]` when the name is not a unique import binding or the import does
+   * not resolve inside the workspace (stdlib, third-party).
+   */
+  readonly importTargetsFor: (fromFile: string, localName: string) => readonly string[];
+}
+import type { SpringNonHttpHandlerFact } from './frameworks/spring/non-http-handlers.js';
+import type { SpringMessageProducerFact } from './frameworks/spring/message-producers.js';
+
+/** One file's captured Spring async messaging facts, in both directions. */
+export interface SpringMessagingFacts {
+  /** Callables carrying a listener annotation — the inbound side. */
+  readonly handlers: readonly SpringNonHttpHandlerFact[];
+  /** Messaging-template publishes — the outbound side. */
+  readonly producers: readonly SpringMessageProducerFact[];
+}
 
 // ── Shared type aliases ────────────────────────────────────────────────────
 /** Tree-sitter query captures: capture name → AST node (or undefined if not captured). */
 export type CaptureMap = Record<string, SyntaxNode | undefined>;
+
+export interface DefinitionPropertiesContext {
+  readonly nodeLabel: NodeLabel;
+  readonly nodeName: string;
+  readonly filePath: string;
+  readonly definitionNode: SyntaxNode;
+  readonly parsedImports: readonly ParsedImport[];
+  readonly isExported: boolean;
+}
+
+export type DefinitionPropertiesExtractor = (
+  context: DefinitionPropertiesContext,
+) => Readonly<Record<string, unknown>> | undefined;
+
+export interface RuntimeCallableIdentity {
+  readonly name: string;
+  readonly descriptorParameterTypes: readonly string[] | undefined;
+}
+
+/**
+ * Optional language-owned bridge from runtime/compiler symbol identities to
+ * source graph symbols. Framework importers use this instead of naming
+ * languages or reproducing compiler conventions in shared ingestion code.
+ */
+export interface RuntimeSymbolStrategy {
+  /** Runtime owner names that may contain this callable/property. */
+  readonly callableOwnerAliases?: (
+    node: GraphNode,
+    owner: GraphNode | undefined,
+  ) => readonly string[];
+  /** Whether a runtime callable identity can conservatively identify a node. */
+  readonly matchesCallable: (node: GraphNode, runtime: RuntimeCallableIdentity) => boolean;
+}
+
+/** Run optional provider enrichment without allowing one hook failure to drop
+ * the rest of the worker's language batch. */
+export function runDefinitionPropertiesExtractor(
+  extractor: DefinitionPropertiesExtractor,
+  context: DefinitionPropertiesContext,
+  onError: (error: unknown) => void,
+): Readonly<Record<string, unknown>> | undefined {
+  try {
+    return extractor(context);
+  } catch (error) {
+    onError(error);
+    return undefined;
+  }
+}
+
+/** Provider metadata is additive; graph identity and source-location fields
+ * supplied by the worker remain authoritative. */
+export function mergeCanonicalDefinitionProperties<
+  TCanonical extends Readonly<Record<string, unknown>>,
+>(
+  providerProperties: Readonly<Record<string, unknown>>,
+  canonicalProperties: TCanonical,
+): Record<string, unknown> & TCanonical {
+  return { ...providerProperties, ...canonicalProperties } as Record<string, unknown> & TCanonical;
+}
+
+export interface ProviderSemanticNode {
+  readonly id: string;
+  readonly label: NodeLabel;
+  readonly properties: {
+    readonly name: string;
+    readonly filePath: string;
+    readonly startLine: number;
+    readonly endLine: number;
+    readonly language: SupportedLanguages;
+    readonly isExported: boolean;
+    readonly qualifiedName?: string;
+    readonly parameterCount?: number;
+    readonly requiredParameterCount?: number;
+    readonly parameterTypes?: readonly string[];
+    readonly parameterTypeClasses?: readonly ParameterTypeClass[];
+    readonly returnType?: string;
+    readonly declaredType?: string;
+    readonly visibility?: string;
+    readonly isStatic?: boolean;
+    readonly isReadonly?: boolean;
+    readonly [key: string]: unknown;
+  };
+}
+
+export type ProviderSemanticRelationshipType = Extract<
+  RelationshipType,
+  'DECLARES' | 'DEFINES' | 'HAS_METHOD' | 'HAS_PROPERTY'
+>;
+
+export interface ProviderSemanticRelationship {
+  readonly id: string;
+  readonly sourceId: string;
+  readonly targetId: string;
+  readonly type: ProviderSemanticRelationshipType;
+  readonly confidence: number;
+  readonly reason: string;
+}
+
+export interface ProviderSemanticSymbol {
+  readonly filePath: string;
+  readonly name: string;
+  readonly nodeId: string;
+  readonly type: NodeLabel;
+  readonly qualifiedName?: string;
+  readonly parameterCount?: number;
+  readonly requiredParameterCount?: number;
+  readonly parameterTypes?: readonly string[];
+  readonly parameterTypeClasses?: readonly ParameterTypeClass[];
+  readonly returnType?: string;
+  readonly declaredType?: string;
+  readonly ownerId?: string;
+  readonly visibility?: string;
+  readonly isStatic?: boolean;
+  readonly isReadonly?: boolean;
+}
+
+export interface ProviderSemanticGraph {
+  readonly nodes: readonly ProviderSemanticNode[];
+  readonly relationships: readonly ProviderSemanticRelationship[];
+  readonly symbols: readonly ProviderSemanticSymbol[];
+}
 
 // ── Strategy tag types ─────────────────────────────────────────────────────
 // NOTE: `MroStrategy` is defined in `gitnexus-shared` and re-exported above
@@ -64,11 +241,39 @@ export interface AstFrameworkPatternConfig {
  * Required fields must be explicitly set; optional fields have defaults
  * applied by defineLanguage().
  */
+/**
+ * Should the parse worker run {@link LanguageProviderConfig.extractModuleConstants}
+ * on this file?
+ *
+ * Exported so the DECISION is testable without booting a worker. It encodes the
+ * one rule that is easy to get backwards: a provider that declares no
+ * `moduleConstantHeuristic` harvests unconditionally. Writing the gate as
+ * `provider.moduleConstantHeuristic?.(content)` reads `undefined` as "skip" and
+ * silently disables the hook for every provider without a heuristic — which is
+ * exactly how Python's already-shipped harvest was turned off (#2391/#2980).
+ */
+export function shouldHarvestModuleConstants(
+  provider: Pick<LanguageProvider, 'extractModuleConstants' | 'moduleConstantHeuristic'>,
+  content: string,
+): boolean {
+  if (!provider.extractModuleConstants) return false;
+  return !provider.moduleConstantHeuristic || provider.moduleConstantHeuristic(content);
+}
+
 interface LanguageProviderConfig {
   // ── Identity ──────────────────────────────────────────────────────
   readonly id: SupportedLanguages;
   /** File extensions that map to this language (e.g., ['.ts', '.tsx']) */
   readonly extensions: readonly string[];
+
+  /**
+   * Files with the same provider-local key must be rewritten together when
+   * any member changes, is added, or is deleted. Resolution can change edges
+   * between untouched members even without an import or current graph edge.
+   * Derive the key from the path alone: deleted files have no current source.
+   * This only widens incremental invalidation, not semantic resolution scope.
+   */
+  readonly incrementalResolutionGroup?: (filePath: string) => string | undefined;
 
   /** Entry-point function name patterns specific to this language.
    *  Merged with universal patterns at runtime for process detection scoring.
@@ -130,13 +335,71 @@ interface LanguageProviderConfig {
    */
   readonly preprocessSource?: (sourceText: string, filePath: string) => string;
 
+  /** Select the native grammar for a pre-extracted embedded script. */
+  readonly selectEmbeddedGrammar?: (scriptLanguage: string) => Parser.Language;
+
+  /**
+   * Runtime/compiler identity reconciliation for framework metadata. The
+   * central importer owns ambiguity handling; providers only supply aliases
+   * and language-specific callable compatibility.
+   */
+  readonly runtimeSymbolStrategy?: RuntimeSymbolStrategy;
+
+  /**
+   * Optional content-based language classifier. The filename detector remains
+   * the default source of truth; this hook lets a provider claim ambiguous
+   * files only when the source text carries language-specific evidence.
+   *
+   * Used for extensions shared by several languages, where mapping the suffix
+   * globally would steal files from an existing provider. Implementations must
+   * be deterministic and conservative: false negatives are acceptable, false
+   * positives change which parser and resolver consumes the file.
+   *
+   * Default: undefined (provider never overrides filename detection).
+   */
+  readonly classifyFileContent?: (filePath: string, sourceText: string) => boolean;
+
+  /**
+   * Cheap path-only prefilter for `classifyFileContent`. When supplied, callers
+   * can avoid loading source text for files this provider would never claim.
+   *
+   * Default: undefined (only callers that already have content invoke
+   * `classifyFileContent`).
+   */
+  readonly shouldClassifyFileContent?: (filePath: string) => boolean;
+
   // ── Core (required) ───────────────────────────────────────────────
   /** Type extraction: declarations, initializers, for-loop bindings */
   readonly typeConfig: LanguageTypeConfig;
   /** Export detection: is this AST node a public/exported symbol? */
   readonly exportChecker: ExportChecker;
-  /** Import resolution: resolves raw import path to file system path */
-  readonly importResolver: ImportResolverFn;
+
+  /**
+   * Does a stored `false` from `exportChecker` prove file privacy? A function
+   * can confirm this against the indexed file content; missing content must
+   * retain the fallback. The graph flag is NOT SymbolDefinition's tri-state
+   * export evidence: JS/TS export clauses and CommonJS can also store false.
+   * True for Swift `private`/`fileprivate`, a Zig declaration without
+   * `pub` (an `export fn` without `pub` is recorded true for its C linkage, so
+   * `false` never hides an FFI symbol).
+   *
+   * Absent where `false` is a narrower fact than "file-private": Java
+   * package-private, C# and Kotlin `internal`, Go lowercase (the rest of the
+   * package / assembly / module still sees it); Python and Dart `_name` (a
+   * convention, `from m import _x` works and a Dart `part` shares its
+   * library's privates); Rust (a child module reaches `super::` privates);
+   * C/C++ (`static` or an anonymous namespace in a header is visible to every
+   * file that `#include`s it).
+   *
+   * Read by consumers that drop a file-level fallback for a not-exported
+   * symbol — the owning-file seed of `impact` (#3602) — which must otherwise
+   * keep the fallback and over-approximate rather than miss a dependant. A
+   * capability on the provider rather than a language set in `mcp/`: the
+   * meaning of a stored `isExported` is a property of the language.
+   *
+   * Default: undefined, read as `false`.
+   */
+  readonly notExportedIsFilePrivate?: boolean | ((filePath: string, content: string) => boolean);
 
   // ── Calls & Imports (optional) ────────────────────────────────────
   /** Call routing for languages that express imports/heritage as calls (e.g., Ruby).
@@ -157,6 +420,50 @@ interface LanguageProviderConfig {
    *  Default: undefined (no remapping). */
   readonly resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null;
 
+  /** Name an owner declared outside this member's lexical container.
+   *  Consulted for each ancestor during the enclosing-owner walk. The name
+   *  qualifies member identities, but carries no graph id: ownership is
+   *  resolved by `ScopeResolver.populateWorkspaceOwners` after all files load.
+   *  Default: undefined (owners are derived from lexical containers). */
+  readonly resolveDetachedOwnerName?: (node: SyntaxNode) => string | undefined;
+
+  /**
+   * The type a whole FILE declares, when the language makes the file itself
+   * a type (Zig: a `.zig` file with top-level fields is a struct whose name
+   * is the file stem — `Page.zig` declares `Page`, and `page.getArena()`
+   * dispatches onto the file's top-level `fn getArena(self: *Page)`).
+   *
+   * Consulted by the enclosing-owner walk when it reaches the tree root
+   * without meeting a container, and by the class/method/field extractors
+   * for the owner name. Return `null` for a file that is only a namespace.
+   * The name is the class-like node's name (`Struct:<file>:<name>`), so the
+   * owner id and the node id agree by construction.
+   * Default: undefined (a file never owns members). */
+  readonly resolveFileTypeOwner?: (
+    root: SyntaxNode,
+    filePath: string,
+  ) => { readonly name: string; readonly label: NodeLabel } | null;
+
+  /**
+   * The type a CONTAINER node declares, when the language names it from its
+   * context rather than from a name child of the node — a binding wrapper,
+   * an enclosing callable, an ordinal among anonymous siblings (Zig:
+   * `const T = struct {…}` is `T`; a function-local `const R = struct {…}`
+   * inside `fn string` is `string$R`; `struct { fn lessThan … }.lessThan`
+   * passed to a sort is `<fn>$1`).
+   *
+   * Consulted by the enclosing-owner walk for every `CLASS_CONTAINER_TYPES`
+   * node it meets (after `resolveEnclosingOwner` remapping), BEFORE the
+   * generic name-child derivation; return `null` to fall back to it. The name
+   * must be the one the class-like node is minted under
+   * (`<label>:<file>:<name>`), so a member's owner id and the node id agree
+   * by construction.
+   * Default: undefined (containers are named by the generic derivation). */
+  readonly resolveContainerTypeOwner?: (
+    container: SyntaxNode,
+    filePath: string,
+  ) => { readonly name: string; readonly label: NodeLabel } | null;
+
   // ── Enclosing function resolution ───────────────────────────────
   /** Resolve the enclosing function name + label from an AST ancestor node
    *  that is NOT a standard FUNCTION_NODE_TYPE.  For languages where the
@@ -169,6 +476,9 @@ interface LanguageProviderConfig {
   readonly enclosingFunctionFinder?: (
     ancestorNode: SyntaxNode,
   ) => { funcName: string; label: NodeLabel } | null;
+
+  /** Free functions have distinct graph identities for each callable signature. */
+  readonly overloadsFreeFunctions?: boolean;
 
   // ── Template constraint extraction (SFINAE / `requires`) ────────────
   /**
@@ -252,6 +562,10 @@ interface LanguageProviderConfig {
    *  constant, and static declarations. Produces VariableInfo with type, visibility,
    *  isConst, isStatic, isMutable metadata. Default: undefined (no variable extraction). */
   readonly variableExtractor?: VariableExtractor;
+  /** Add language-owned, structured properties to a definition node. Values
+   *  cross the worker boundary and must therefore be structured-clone-safe.
+   *  Shared ingestion code treats these properties as opaque. */
+  readonly definitionPropertiesExtractor?: DefinitionPropertiesExtractor;
   /** Class/type extractor for deriving canonical qualified names for class-like symbols.
    *  Uses the same provider-driven strategy pattern as method/field extraction so
    *  namespace/package/module rules stay language-specific. */
@@ -294,6 +608,26 @@ interface LanguageProviderConfig {
     reader: (relativePath: string) => string | null,
     parser?: Parser | null,
   ) => ExtractedRoute[];
+  /**
+   * Extract routes from file text without an AST.
+   *
+   * Content-based (regex / line scan), not tree-sitter. tRPC uses this hook:
+   * procedure routers are recognized from source text (`publicProcedure.query`)
+   * rather than grammar captures. The parse worker calls this when the hook is
+   * defined. Providers that need a path-gate apply it inside the hook.
+   *
+   * Default: undefined (no text-route extraction).
+   */
+  readonly extractTextRoutes?: (filePath: string, content: string) => ExtractedRoute[];
+
+  /** Extract tool registrations after captures, using only emitted callable identities.
+   * The map keys are declaration-name AST node IDs, local to this parsed tree. */
+  readonly extractToolDefinitions?: (
+    tree: Parser.Tree,
+    filePath: string,
+    lineOffset: number,
+    callableBindings: ReadonlyMap<number, string>,
+  ) => ExtractedToolDef[];
 
   /**
    * Extract routes that a parsed file declares in its own AST.
@@ -306,7 +640,8 @@ interface LanguageProviderConfig {
    * Decorators are the common case and the reason for the name, but not the only
    * shape: JS/TS uses this hook for hand-rolled dispatch guards
    * (`route-extractors/dispatch-guard.ts`), where a raw `node:http` server
-   * declares a route by comparing the request path to a literal. Anything that
+   * declares a route by comparing the request path to a literal, and Go uses it
+   * for gin/echo verb calls (`route-extractors/go-gin-echo.ts`). Anything that
    * yields a `(path, verb, handler)` triple from one file's AST belongs here —
    * set `ExtractedDecoratorRoute.source` when the provenance is not a decorator,
    * so the `HANDLES_ROUTE` edge does not claim one.
@@ -318,6 +653,87 @@ interface LanguageProviderConfig {
     filePath: string,
     lineOffset: number,
   ) => ExtractedDecoratorRoute[];
+
+  /** JSON-safe provider-owned facts captured from the existing AST and lexical
+   * identities. Shared parsing transports these without interpreting them. */
+  readonly extractRouteFacts?: (
+    tree: Parser.Tree,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => unknown;
+
+  /** Resolve project-wide provider facts before route winner selection. The
+   * callback uses the language's configured ScopeResolver module resolution. */
+  readonly resolveRouteFacts?: (
+    files: readonly { filePath: string; facts: unknown }[],
+    context: {
+      readonly routeHookConfig?: RouteHookConfig;
+      resolveImportTargets: (fromFile: string, moduleSpecifier: string) => readonly string[];
+    },
+  ) => ExtractedDecoratorRoute[];
+
+  /** URL-bearing call candidates from the existing AST, before wrapper names
+   * are known across files. Routes selects known wrappers after parsing. */
+  readonly extractFetchWrapperCalls?: (
+    tree: Parser.Tree,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => FetchWrapperCall[];
+
+  /** Module exports that forward another module's export, so barrels resolve to definitions. */
+  readonly extractFetchWrapperReexports?: (
+    tree: Parser.Tree,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => FetchWrapperReexport[];
+
+  /** Scope-aware evidence for every callable declaration, including non-wrappers. */
+  readonly extractFetchWrapperFacts?: (
+    definition: Parser.SyntaxNode,
+    nameNode: Parser.SyntaxNode | undefined,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => FetchWrapperFacts | undefined;
+
+  /**
+   * Name of the function a route decorator captured by the worker's generic
+   * `@decorator` query applies to, given the decorator's own AST node.
+   *
+   * The worker knows a decorator is a route decorator but not how this
+   * language's grammar attaches it to a definition, so it hands the node over
+   * unchanged and takes whatever the language returns. Only languages that
+   * declare route handlers through the generic decorator captures need this;
+   * languages with a dedicated {@link extractDecoratorRoutes} extractor
+   * (JS/TS via `nest.ts`, Java via `spring.ts`) already set
+   * `ExtractedDecoratorRoute.handlerName` there and should leave this undefined.
+   *
+   * Implementations must read their own decorated-definition shape directly and
+   * return undefined for anything else — never climb ancestors to find a name,
+   * since a decorator that is not attached to a function has no handler and a
+   * borrowed enclosing name resolves `handlerSymbolId` to the wrong symbol. The
+   * routes phase treats undefined as "fall back to the file-level edge".
+   *
+   * Default: undefined (no handler name from generic decorator captures).
+   */
+  readonly decoratorRouteHandlerName?: (decoratorNode: SyntaxNode) => string | undefined;
+
+  /**
+   * Resolve a route's `handlerName` to a symbol node id, for routes this
+   * language extracted. When defined, the routes phase asks this hook instead of
+   * looking the name up in the route's own file — for languages whose handlers
+   * routinely live in other files of the same package or module, and whose
+   * visibility rules only the language knows.
+   *
+   * Return a node id only when exactly one definition matches; `undefined`
+   * leaves the route without `handlerSymbolId` (fail-open, never a wrong
+   * handler).
+   *
+   * Default: undefined (same-file lookup by name).
+   */
+  readonly resolveRouteHandler?: (
+    route: ExtractedDecoratorRoute,
+    context: RouteHandlerResolutionHookContext,
+  ) => string | undefined;
 
   /**
    * Collect a project-wide, language-agnostic view of route-defining
@@ -336,10 +752,208 @@ interface LanguageProviderConfig {
     filePath: string,
   ) => SharedSpringType[];
 
+  /**
+   * Optional post-capture emission of synthetic structure members (nodes,
+   * symbols, ownership edges) that have no AST method node — e.g. Lombok
+   * accessors. Called once per file after the capture loop, at the same
+   * post-capture site as {@link extractDecoratorRoutes}.
+   *
+   * `classOwnersByNodeId` maps in-memory tree-sitter node ids of type
+   * declarations materialized in THIS file's capture loop to their graph
+   * node ids. Keys are never persisted; they exist only for the duration
+   * of the worker pass.
+   *
+   * Default: undefined (no synthetic structure members).
+   */
+  readonly synthesizeStructureMembers?: (
+    tree: Parser.Tree,
+    filePath: string,
+    classOwnersByNodeId: ReadonlyMap<number, string>,
+  ) => {
+    nodes: ReadonlyArray<{
+      id: string;
+      label: string;
+      properties: Record<string, unknown>;
+    }>;
+    symbols: ReadonlyArray<{
+      filePath: string;
+      name: string;
+      nodeId: string;
+      type: string;
+      ownerId?: string;
+      parameterCount?: number;
+      requiredParameterCount?: number;
+      parameterTypes?: string[];
+      returnType?: string;
+      visibility?: string;
+      isStatic?: boolean;
+      isAbstract?: boolean;
+      isFinal?: boolean;
+    }>;
+    relationships: ReadonlyArray<{
+      id: string;
+      sourceId: string;
+      targetId: string;
+      type: string;
+      confidence: number;
+      reason: string;
+    }>;
+  };
+
+  /**
+   * Harvest this file's module-level string constants (#2391 core, #2980 Java
+   * parity) into the language-agnostic {@link ModuleConstants} shape, so the
+   * parse phase can resolve non-literal decorator route paths cross-file.
+   *
+   * The worker calls this when BOTH hold:
+   *  - the provider declares no `moduleConstantHeuristic`, or the one it
+   *    declares matched — syntax-driven, e.g. a `static final String` field or
+   *    a constants-bearing import; NEVER a class-name pattern like
+   *    `*Constants`, which silently drops route constants living in classes
+   *    named e.g. `ApiPaths`/`Routes`, and
+   *  - the extraction yields something resolvable (a literal, an expression, or
+   *    an import binding), keeping the aggregate bounded on large repos.
+   *
+   * Default: undefined (no constant harvest; non-literal route paths of this
+   * language floor to skip).
+   */
+  readonly extractModuleConstants?: (tree: Parser.Tree) => ModuleConstants;
+
+  /**
+   * Cheap content heuristic deciding whether the worker should run
+   * {@link extractModuleConstants} on a file. Guards the harvest cost on huge
+   * repos: files that cannot contribute (no constant-bearing syntax) are not
+   * walked. Must be syntax-driven (field/import shape), not identifier
+   * pattern-matching on class names.
+   *
+   * Default: undefined — harvest EVERY file of this language. A gate is opt-in
+   * because getting it wrong silently drops routes that already resolve, and a
+   * missed gate only costs time. Declare one only where the cost bites (Java's
+   * Maven monorepos) and only after checking it against every shape
+   * {@link extractModuleConstants} accepts.
+   */
+  readonly moduleConstantHeuristic?: (content: string) => boolean;
+
+  /**
+   * Prepare this language's harvested constants once the complete repo map is
+   * available and before route operands are folded. The parse phase passes only
+   * entries owned by this provider, so implementations can build one reusable
+   * language-specific index and may materialize deferred bindings in place.
+   *
+   * Default: undefined (the harvested constants are already fold-ready).
+   */
+  readonly prepareRouteConstants?: (repo: RepoConstants) => void;
+
+  /**
+   * Spring async messaging facts captured for one file — the listener
+   * annotations that subscribe to a broker destination and the template calls
+   * that publish to one.
+   *
+   * Both families are collected during capture and restored on the main thread
+   * by {@link LanguageProviderConfig.applyCaptureSideChannel}, so they are only
+   * readable AFTER scope resolution has run. The `springDestinations` phase is
+   * the caller; routing through a provider hook is what keeps that phase from
+   * naming a language to reach a per-language fact store.
+   *
+   * Default: undefined — this language captures no Spring messaging facts, and
+   * the phase contributes nothing for its files.
+   */
+  readonly getSpringMessagingFacts?: (filePath: string) => SpringMessagingFacts;
+
+  /**
+   * Whether this language INTERPOLATES its string literals — Kotlin's
+   * `"orders-$env"` and `"orders-${env}"` are string templates evaluated at
+   * runtime, while Java's are ordinary characters.
+   *
+   * A capability rather than a language name, because shared ingestion code may
+   * not branch on a language (see AGENTS.md) and because the capability is what
+   * the consumer actually needs. Spring destination resolution is the caller:
+   * in an interpolating language an unescaped `$` in a destination literal is a
+   * runtime value and must be refused, and `"${app.topic}"` is a TEMPLATE, not
+   * a Spring property placeholder — the placeholder has to be written
+   * `"\${app.topic}"` there. Reading either as an address gives two unrelated
+   * services one shared destination node.
+   *
+   * Default: false — literals are literal, `$` is a character.
+   */
+  readonly interpolatesStringLiterals?: boolean;
+
+  /**
+   * Fold one file's non-literal route-path operand list
+   * (`routePathExpr`/`routePathOperands` of an `ExtractedDecoratorRoute`)
+   * against the repo-wide, file-path-keyed constant map, or null when it cannot
+   * be fully folded (skip floor — never a phantom path). Languages whose
+   * qualified refs resolve through class imports (`Outer.CONST`,
+   * `com.example.ApiPaths.USERS`) need this hook because the shared fold has no
+   * notion of qualified names; Python's bare-name refs use the shared default.
+   *
+   * Default: undefined (the parse phase falls back to the shared
+   * language-agnostic operand fold).
+   */
+  readonly foldRoutePathOperands?: (
+    filePath: string,
+    operands: readonly Operand[],
+    repo: RepoConstants,
+  ) => string | null;
+
+  /**
+   * Optional provider-owned semantic graph extraction for languages whose
+   * stable symbol identities cannot be represented by the generic query
+   * pipeline's `(label, filePath, qualifiedName)` rule.
+   *
+   * Runs in the parse worker after tree-sitter has parsed the file and after
+   * `extractParsedFile` has produced the scope-resolution artifact. The hook is
+   * deterministic and AST-based: it receives the already-parsed tree and must
+   * return plain graph nodes/relationships/symbol-table rows. Existing
+   * providers leave it undefined, preserving the generic capture path exactly.
+   */
+  readonly extractSemanticGraph?: (
+    tree: Parser.Tree,
+    filePath: string,
+    sourceText: string,
+  ) => ProviderSemanticGraph;
+
   // ── Noise filtering ────────────────────────────────────────────────
   /** Built-in/stdlib names that should be filtered from the call graph for this language.
    *  Default: undefined (no language-specific filtering). */
   readonly builtInNames?: ReadonlySet<string>;
+
+  // ── Program boundary (receiver-origin classification only) ───────────
+  /**
+   * Values, namespaces and types the language's RUNTIME or STANDARD LIBRARY
+   * supplies without the program declaring them — `document`, `process`,
+   * `System`, `Dictionary` — matched against a bare identifier: a dropped
+   * receiver's chain base, or the head of the type a receiver chain ends at.
+   *
+   * Read ONLY by `classifyReceiverOrigin`, which labels a call it could not
+   * resolve `external` (nothing in the program could have been the target)
+   * instead of `unknown`. Kept apart from `builtInNames` on purpose: that set
+   * also filters CALLEE names out of the call graph (`parse-worker.ts`,
+   * `type-env.ts`, the free-call fallback), so `process` there would drop every
+   * call to an in-program function named `process`. Nothing here can change an
+   * edge.
+   *
+   * A name only counts where the program binds nothing by it at the site and
+   * declares no type or value by it, so a local `document` parameter or an
+   * in-program `class System` still wins. The failure is asymmetric — a wrong
+   * entry hides a real resolver gap behind `epistemic: 'exact'`, a missing one
+   * only costs a hedge — so a set should under-include. Default: undefined (no
+   * name is evidence).
+   */
+  readonly externalReceiverNames?: ReadonlySet<string>;
+  /**
+   * Does this import SPECIFIER name a module the language reserves for its
+   * runtime or standard library (Python `os`, Zig `std`, Java `java.util`)?
+   *
+   * Read ONLY by `classifyReceiverOrigin`, and only for an import that also
+   * resolved to no file in the program: a name bound by such an import is
+   * rooted outside the program however it is spelled locally
+   * (`const s = @import("std")`). Third-party packages are NOT answered here —
+   * an unresolved `fastapi` or `express` import cannot be told apart from an
+   * in-program module the resolver missed, so it stays `unknown`. Default:
+   * undefined (no import is evidence).
+   */
+  readonly isExternalModuleSpecifier?: (specifier: string) => boolean;
 
   // ══════════════════════════════════════════════════════════════════════════
   //  Scope-based resolution hooks (RFC #909 — Ring 1 #911)
@@ -408,6 +1022,14 @@ interface LanguageProviderConfig {
      */
     sourceMeta?: {
       readonly sourceKind?: 'full-file' | 'pre-extracted-script';
+      /** Explicit language of an embedded script, interpreted by its provider. */
+      readonly scriptLanguage?: string;
+      /** Row offset from an embedded parse buffer to graph-source positions. */
+      readonly lineOffset?: number;
+      /** Original zero-based source row for each embedded buffer row. */
+      readonly sourceLineMap?: readonly number[];
+      /** Python `.ipynb` only: JSON line segments for the pre-extracted buffer. */
+      readonly notebookSegments?: readonly NotebookLineSegment[];
     },
   ) => readonly CaptureMatch[];
 
@@ -442,10 +1064,22 @@ interface LanguageProviderConfig {
    * gated on the `--pdg` opt-in; the resulting per-function CFGs are serialized
    * onto `ParsedFile.cfgSideChannel` and emitted as BasicBlock nodes + CFG
    * edges during scope-resolution. `TNode` is `SyntaxNode` for the tree-sitter
-   * languages. Default: undefined (language has no CFG support yet — TS/JS are
-   * the M1 set).
+   * languages. Providers with a standalone source parser use collectSourceCfgs
+   * instead. Default: undefined.
    */
   readonly cfgVisitor?: CfgVisitor<SyntaxNode>;
+
+  /** Source-backed flow extraction for providers that do not use a tree AST.
+   * Runs on fresh scope extraction only when PDG is enabled. The provider owns
+   * executable-region discovery and reports the same caps as AST visitors. */
+  readonly collectSourceCfgs?: (
+    sourceText: string,
+    filePath: string,
+    maxFunctionLines: number,
+  ) => CollectedCfgs;
+
+  /** Provider-owned source names and rewrites over the existing semantic model. */
+  readonly rename?: RenameProvider;
 
   /**
    * Interpret a raw `@import.statement` capture group into a `ParsedImport`.
@@ -734,6 +1368,34 @@ export interface LanguageProvider extends Omit<LanguageProviderConfig, 'mroStrat
   readonly mroStrategy: MroStrategy;
   /** Check if a name is a built-in/stdlib function that should be filtered from the call graph. */
   readonly isBuiltInName: (name: string) => boolean;
+}
+
+/**
+ * Run each provider's repo-constant preparation hook once over only the files
+ * that provider owns. Values are shared with `repo`, so in-place preparation
+ * is visible to the subsequent fold without copying the complete map.
+ */
+export function prepareRouteConstantsByProvider(
+  repo: RepoConstants,
+  providerForFile: (filePath: string) => Pick<LanguageProvider, 'prepareRouteConstants'> | null,
+): void {
+  const slices = new Map<
+    Pick<LanguageProvider, 'prepareRouteConstants'>,
+    Map<string, ModuleConstants>
+  >();
+  for (const [filePath, constants] of repo) {
+    const provider = providerForFile(filePath);
+    if (!provider?.prepareRouteConstants) continue;
+    let slice = slices.get(provider);
+    if (!slice) {
+      slice = new Map();
+      slices.set(provider, slice);
+    }
+    slice.set(filePath, constants);
+  }
+  for (const [provider, slice] of slices) {
+    provider.prepareRouteConstants?.(slice);
+  }
 }
 
 const DEFAULTS: Pick<LanguageProvider, 'mroStrategy'> = {

@@ -3,7 +3,7 @@
 # Task fields:
 #   id:      short slug used in reports
 #   class:   task class for cost/quality routing analysis. The suite spans:
-#            trivial → investigation-bug → investigation-feature → cross-module
+#            trivial → investigation-feature → cross-module
 #   repo:    path to a git repo that is GitNexus-indexed
 #   ref:     git ref benchmarked (fresh detached worktree per arm per run)
 #   setup:   optional shell command run in the fresh worktree first
@@ -28,15 +28,17 @@
 # cache only that sanitized graph for every arm. The target repository's
 # prebuilt .gitnexus directory is never copied. Three declared dependency trees
 # are mounted read-only; missing assets fail before model execution.
+# Every task starts at the exact v1.6.12 commit, where all four tasks remain
+# unsolved. The C provenance feature replaces the invalid historical system-include task.
 
 tasks:
   # Overhead floor — measured 2026-07-11 (see README calibration): the
   # workflow is EXPECTED to lose here. Kept in the suite so regressions in
   # the overhead floor stay visible.
-  - id: trivial-version-alias
+  - id: trivial-status-json-alias
     class: trivial
     repo: ~/GitNexus
-    ref: main
+    ref: c4ecf398de637cf779ab2238e69958cfd5d601ce
     sandbox_dependencies: &gitnexus_sandbox_dependencies
       - source: node_modules
         target: node_modules
@@ -44,54 +46,67 @@ tasks:
         target: gitnexus/node_modules
       - source: gitnexus-shared/node_modules
         target: gitnexus-shared/node_modules
+      # Host-built types/JS. The clone has no dist/, and node_modules/gitnexus-shared
+      # is a relative symlink into that unbuilt tree — without this mount, in-sandbox
+      # `tsc --noEmit` / vitest fail with TS2307 / TS6379 (run 33962002890).
+      - source: gitnexus-shared/dist
+        target: gitnexus-shared/dist
     prompt: >
-      Add -V as a short alias for --version to the gitnexus CLI
+      Add -j as a short alias for --json on the gitnexus status command
       (gitnexus/src/cli/index.ts), and cover the alias with a unit test in
-      gitnexus/test/unit/cli-commands.test.ts.
-    verify: cd gitnexus && npx tsc --noEmit && npx vitest run test/unit/cli-commands.test.ts
+      gitnexus/test/unit/status-json-alias.test.ts.
+    verify: cd gitnexus && npx tsc --noEmit && npx vitest run test/unit/status-json-alias.test.ts
     oracle:
       command: >-
         cd gitnexus && ./node_modules/.bin/vitest run
         --config "$GITNEXUS_BENCH_ORACLE_ROOT/vitest.config.mts"
-        "$GITNEXUS_BENCH_ORACLE_ROOT/trivial-version-alias.oracle.test.ts"
+        "$GITNEXUS_BENCH_ORACLE_ROOT/trivial-status-json-alias.oracle.test.ts"
       files:
         - source: vitest.config.mts
           target: vitest.config.mts
-        - source: trivial-version-alias.oracle.test.ts
-          target: trivial-version-alias.oracle.test.ts
+        - source: trivial-status-json-alias.oracle.test.ts
+          target: trivial-status-json-alias.oracle.test.ts
 
-  # Investigation-heavy bug: requires locating the degraded-result path in
-  # local-backend, understanding the layer probe, and changing a contract
-  # message without breaking existing consumers.
-  - id: inv-bug-pdg-note
-    class: investigation-bug
+  # Investigation-heavy feature: retain literal include provenance through
+  # parsing and resolution without binding system headers to repository decoys.
+  - id: inv-feature-c-include-provenance
+    class: investigation-feature
     repo: ~/GitNexus
-    ref: main
+    ref: c4ecf398de637cf779ab2238e69958cfd5d601ce
     sandbox_dependencies: *gitnexus_sandbox_dependencies
     prompt: >
-      When the pdg_query MCP tool returns its "no PDG layer" note, make the
-      note say WHICH sub-layer is missing (CDG vs REACHING_DEF) instead of a
-      generic message, keeping the existing degraded-result contract intact.
-      Cover both modes with unit tests in
-      gitnexus/test/unit/pdg-note-sublayer.test.ts.
-    verify: cd gitnexus && npx tsc --noEmit && npx vitest run test/unit/pdg-note-sublayer.test.ts
+      Retain literal C #include records after parsing and interpretation, including
+      system includes such as <stdio.h>. Preserve each header's identity and enough
+      provenance to distinguish system from quoted includes. With no configured
+      system include roots, system includes must never resolve to unrelated
+      same-named repository headers; quoted sibling and relative includes must
+      still resolve. Computed macro includes remain unsupported and produce no
+      parsed import. Cover the real parser, include decomposition, interpretation
+      and resolver in test/unit/scope-resolution/c/c-include-provenance.test.ts.
+      Correct the C conformance fixture to distinguish system and quoted forms of
+      the same header, and remove C from KNOWN_GAPS. Choose the representation;
+      shared dependency declarations are immutable.
+    verify: >-
+      cd gitnexus && npx tsc --noEmit && npx vitest run
+      test/unit/scope-resolution/c/c-include-provenance.test.ts
+      test/unit/scope-resolution/external-import-conformance.test.ts
     oracle:
       command: >-
         cd gitnexus && ./node_modules/.bin/vitest run
         --config "$GITNEXUS_BENCH_ORACLE_ROOT/vitest.config.mts"
-        "$GITNEXUS_BENCH_ORACLE_ROOT/inv-bug-pdg-note.oracle.test.ts"
+        "$GITNEXUS_BENCH_ORACLE_ROOT/inv-feature-c-include-provenance.oracle.test.ts"
       files:
         - source: vitest.config.mts
           target: vitest.config.mts
-        - source: inv-bug-pdg-note.oracle.test.ts
-          target: inv-bug-pdg-note.oracle.test.ts
+        - source: inv-feature-c-include-provenance.oracle.test.ts
+          target: inv-feature-c-include-provenance.oracle.test.ts
 
   # Investigation-heavy feature: touches tool schema, backend filtering, and
   # pagination totals — three seams that must stay consistent.
   - id: inv-feature-list-repos-filter
     class: investigation-feature
     repo: ~/GitNexus
-    ref: main
+    ref: c4ecf398de637cf779ab2238e69958cfd5d601ce
     sandbox_dependencies: *gitnexus_sandbox_dependencies
     prompt: >
       Add an optional "name_contains" filter parameter to the list_repos MCP
@@ -117,12 +132,14 @@ tasks:
     class: cross-module
     expensive: true
     repo: ~/GitNexus
-    ref: main
+    ref: c4ecf398de637cf779ab2238e69958cfd5d601ce
     sandbox_dependencies: *gitnexus_sandbox_dependencies
     prompt: >
       Add bounded retry with backoff to the ingestion pipeline so a transient
       parse-worker failure on a file is retried up to 2 times before the file
-      is marked failed, without retrying deterministic parse errors. Cover
+      is marked failed, without retrying deterministic parse errors. Treat
+      EAGAIN worker error messages/events and worker exit code 75 as transient;
+      SyntaxError messages/events and exit code 65 are deterministic. Cover
       the retry/no-retry decision with unit tests in
       gitnexus/test/unit/parse-retry.test.ts.
     verify: cd gitnexus && npx tsc --noEmit && npx vitest run test/unit/parse-retry.test.ts

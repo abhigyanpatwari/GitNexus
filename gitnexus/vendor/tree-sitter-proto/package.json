@@ -1,12 +1,18 @@
 {
   "name": "tree-sitter-proto",
-  "version": "0.4.1",
+  "version": "0.6.0-g1836649",
   "description": "tree-sitter grammar for protobuf — ABI 14 build from coder3101/tree-sitter-proto latest grammar.js, compatible with tree-sitter 0.25",
   "repository": "https://github.com/coder3101/tree-sitter-proto",
   "license": "MIT",
   "main": "bindings/node",
-  "_vendoredBy": "gitnexus — loaded from vendor/ by absolute path at runtime (vendored-grammars.ts) — NEVER copied to node_modules (#2111); native build via build-tree-sitter-grammars.cjs. Do NOT re-add dependencies or an install script (#836, #1728).",
+  "_vendoredBy": "gitnexus - re-vendored from coder3101/tree-sitter-proto@18366491f37d43d6d5d02cbb1e79b650b5728145 by grammar-update-monitor on ABI 15. Source-build inputs (parser.c/scanner.c/src/) refreshed; the GitNexus-hardened binding.gyp + synchronous loader + vendor README + prebuilds are preserved (prebuilds are rebuilt by build-tree-sitter-prebuilds.yml on this version change). No scripts/dependencies here (#836/#1728).",
   "peerDependencies": {
-    "tree-sitter": ">=0.21.0"
+    "tree-sitter": "0.25.1"
+  },
+  "_upstreamCommit": "18366491f37d43d6d5d02cbb1e79b650b5728145",
+  "peerDependenciesMeta": {
+    "tree-sitter": {
+      "optional": true
+    }
   }
 }

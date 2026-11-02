@@ -16,8 +16,8 @@
  *   - C#'s `resolveDirectMatch` lets a whole-path match win over a suffix match
  *     found EARLIER in iteration order, while `resolveByProgressiveStripping`
  *     takes whichever comes first;
- *   - Dart tries `lib/<rel>` fully before bare `<rel>`, and compares raw paths
- *     (no backslash normalization) on both legs.
+ *   - Dart's relative suffix fallback compares raw workspace paths. Package
+ *     identity changed in #2963 and is covered by separate boundary tests.
  *
  * So this file keeps copies of the pre-change implementations and asserts the
  * new ones agree with them on a deterministic corpus built to force exactly
@@ -44,12 +44,19 @@
  * `WeakMap` key per call — lives one layer above everything in this file, which
  * calls the resolver functions directly. Inserting that copy into
  * `<lang>/scope-resolver.ts` leaves every arm here green. The adapter is guarded
- * by `test/integration/{go,csharp,dart,ruby,kotlin,python}-import-index-reuse.test.ts`.
+ * by the per-language reuse tests and the shared import-target reuse contract.
  */
 import { describe, expect, it } from 'vitest';
-import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
+import type {
+  ParsedFile,
+  ParsedImport,
+  ScopeId,
+  SymbolDefinition,
+  WorkspaceIndex,
+} from 'gitnexus-shared';
 
 import { resolveGoImportTarget } from '../../../src/core/ingestion/languages/go/import-target.js';
+import type { GoWorkspaceConfig } from '../../../src/core/ingestion/languages/go/workspace-config.js';
 import { resolveDartImportTarget } from '../../../src/core/ingestion/languages/dart/import-target.js';
 import { resolveRubyImportTarget } from '../../../src/core/ingestion/languages/ruby/import-target.js';
 import {
@@ -57,14 +64,22 @@ import {
   type CsharpResolveContext,
 } from '../../../src/core/ingestion/languages/csharp/import-target.js';
 import { resolveKotlinImportTarget } from '../../../src/core/ingestion/languages/kotlin/import-target.js';
-import { resolveRubyImportInternal } from '../../../src/core/ingestion/import-resolvers/ruby.js';
-import { buildSuffixIndex } from '../../../src/core/ingestion/import-resolvers/utils.js';
+import {
+  clearKotlinPackageFacts,
+  setKotlinPackageFact,
+} from '../../../src/core/ingestion/languages/kotlin/package-facts.js';
+import { resolveRubyImportInternal } from '../../../src/core/ingestion/languages/ruby/import-helpers.js';
+import { buildSuffixIndex } from '../../../src/core/ingestion/utils/suffix-index.js';
 import { isHeritageMarker } from '../../../src/core/ingestion/utils/heritage-marker.js';
-import { csharpSuffixFallbackAllowed } from '../../../src/core/ingestion/csharp-namespace-gate.js';
+import { csharpSuffixFallbackAllowed } from '../../../src/core/ingestion/languages/csharp/namespace-gate.js';
 import { DART_HERITAGE_PREFIX } from '../../../src/core/ingestion/languages/dart/interpret.js';
-import { CountingSet } from '../../helpers/counting-file-set.js';
+import { CountingSet, countedParsedFilesWith } from '../../helpers/counting-file-set.js';
 
 // ─── pre-change implementations, minus the rule #2881 removed ────────────────
+//
+// And with Go's module leg anchored at the module root, which the multi-module
+// change made deliberately: a module-relative package path names ONE
+// directory, so the module leg no longer shares the GOPATH leg's suffix match.
 
 function legacyFindRootPackageFiles(allFilePaths: ReadonlySet<string>): string[] {
   const result: string[] = [];
@@ -93,22 +108,42 @@ function legacyFindAllFilesInPkgDir(allFilePaths: ReadonlySet<string>, pkgPath: 
   return result;
 }
 
+/** Files whose parent directory IS `dir`, in Set order: the module leg. */
+function legacyFindFilesInExactDir(allFilePaths: ReadonlySet<string>, dir: string): string[] {
+  const result: string[] = [];
+  for (const raw of allFilePaths) {
+    const normalized = raw.replace(/\\/g, '/');
+    if (!normalized.endsWith('.go') || normalized.endsWith('_test.go')) continue;
+    const slash = normalized.lastIndexOf('/');
+    if (slash >= 0 && normalized.slice(0, slash) === dir) result.push(raw);
+  }
+  return result;
+}
+
+/** The config `captureGoWorkspaceConfig` produces for a root-only go.mod. */
+function goRootModule(modulePath: string | undefined): GoWorkspaceConfig | undefined {
+  return modulePath === undefined
+    ? undefined
+    : { modules: [{ modulePath, dir: '' }], workFiles: [] };
+}
+
 function legacyResolveGoImportTarget(
   targetRaw: string,
   allFilePaths: ReadonlySet<string>,
   modulePath: string | undefined,
 ): string | readonly string[] | null {
   if (!targetRaw) return null;
-  if (
-    modulePath !== undefined &&
-    (targetRaw === modulePath || targetRaw.startsWith(`${modulePath}/`))
-  ) {
+  if (modulePath !== undefined) {
+    const ownedByModule = targetRaw === modulePath || targetRaw.startsWith(`${modulePath}/`);
+    if (!ownedByModule) return null;
+
     const relativePkg = targetRaw === modulePath ? '' : targetRaw.slice(modulePath.length + 1);
     const files =
       relativePkg === ''
         ? legacyFindRootPackageFiles(allFilePaths)
-        : legacyFindAllFilesInPkgDir(allFilePaths, relativePkg);
+        : legacyFindFilesInExactDir(allFilePaths, relativePkg);
     if (files.length > 0) return files;
+    return null;
   }
   const parts = targetRaw.split('/').filter(Boolean);
   for (let i = 0; i < parts.length - 1; i++) {
@@ -385,10 +420,12 @@ const GO_TARGETS = [
 const DART_TARGETS = [
   '',
   'dart:core',
-  'package:app/models.dart',
-  'package:app/src/models.dart',
-  'package:app',
-  'package:other/lib/util.dart',
+  // Package identity intentionally changed in #2963; legacy parity applies
+  // only to relative imports. Package boundaries have dedicated regressions.
+  '../../lib/models.dart',
+  '../../lib/src/models.dart',
+  '../../models.dart',
+  '../util.dart',
   'models.dart',
   './models.dart',
   '../models.dart',
@@ -450,7 +487,7 @@ describe('import-target index hoist — output parity with the pre-change scans'
     for (let repo = 0; repo < 40; repo++) {
       const files = corpus(repo, '.go', 6 + (repo % 25));
       for (const modulePath of [undefined, 'example.com/mod']) {
-        const config = modulePath === undefined ? undefined : { modulePath };
+        const config = goRootModule(modulePath);
         for (const target of GO_TARGETS) {
           const actual = resolveGoImportTarget(target, 'main.go', files, config);
           const expected = legacyResolveGoImportTarget(target, files, modulePath);
@@ -589,18 +626,19 @@ describe('import-target index hoist — output parity with the pre-change scans'
     {
       lang: 'go',
       why: 'a package dir nested inside itself DOES answer the query (#2881)',
-      files: ['a/pkg/b/pkg/x.go'],
-      // Addressed through the MODULE leg as the single segment `pkg`, not as
-      // `a/pkg`. `a/pkg` never reached the first-occurrence branch this case
-      // was named for: `'/a/pkg/b/pkg/'.endsWith('/a/pkg/')` is already false,
-      // so the `endsWith` form agreed with the old predicate and the case
-      // passed either way. With `pkg`, `endsWith('/pkg/')` is TRUE and ONLY the
-      // "…and that occurrence is the FIRST" half rejected it — which is exactly
-      // why this case is the one that flips, and why it is still the case that
-      // tells the two predicates apart. The module leg is required because the
-      // GOPATH cascade skips single-segment targets.
-      target: 'example.com/mod/pkg',
-      modulePath: 'example.com/mod',
+      files: ['x/pkg/a/x/pkg/y.go'],
+      // The queried path must REPEAT inside the directory for this case to
+      // tell the two predicates apart: `'/x/pkg/a/x/pkg/'.endsWith('/x/pkg/')`
+      // is TRUE, and ONLY the "…and that occurrence is the FIRST" half rejected
+      // it — which is exactly why this case is the one that flips. A target
+      // that does not repeat (`a/pkg` against `a/pkg/b/pkg`) fails `endsWith`
+      // outright and passes under either rule.
+      //
+      // It used to reach the suffix match through the MODULE leg as the single
+      // segment `pkg`, which the GOPATH cascade skips. The module leg is now
+      // anchored at the module root and asks for `pkg/` exactly, so the case
+      // moved to the GOPATH leg with a two-segment repeat instead.
+      target: 'x/pkg',
     },
     {
       lang: 'go',
@@ -610,32 +648,28 @@ describe('import-target index hoist — output parity with the pre-change scans'
     },
     {
       lang: 'dart',
-      why: '`lib/<rel>` beats bare `<rel>` even when the bare hit comes FIRST in Set order',
+      why: 'relative suffix lookup keeps the importer directory prefix',
       files: ['a/models.dart', 'z/lib/models.dart'],
-      target: 'package:app/models.dart',
+      target: 'models.dart',
     },
     {
       lang: 'dart',
-      why: 'bare `<rel>` is reached only after `lib/<rel>` misses entirely',
+      why: 'relative root lookup reaches a nested suffix',
       files: ['a/models.dart'],
-      target: 'package:app/models.dart',
+      target: 'models.dart',
+      fromFile: 'main.dart',
     },
     {
       lang: 'dart',
       why: 'paths are matched RAW — a backslash path is not normalized into a hit',
       files: ['win\\dir\\thing.dart'],
-      target: 'package:app/dir/thing.dart',
+      target: 'dir/thing.dart',
     },
     {
-      // The negative case above pins the guard NEXT DOOR to the one it names:
-      // the basename bucket lookup misses before the raw comparison is ever
-      // consulted, so normalizing only the bucket key, or only the comparison,
-      // still yields null and still matches. This positive twin puts the
-      // backslashes in the TARGET so a hit depends on both halves staying raw.
       lang: 'dart',
-      why: 'a backslash TARGET matches only because neither the bucket key nor the comparison normalizes',
-      files: ['dir\\thing.dart'],
-      target: 'package:app/dir\\thing.dart',
+      why: 'relative targets normalize backslashes before exact membership lookup',
+      files: ['lib/dir/thing.dart'],
+      target: 'dir\\thing.dart',
     },
     {
       lang: 'dart',
@@ -662,7 +696,7 @@ describe('import-target index hoist — output parity with the pre-change scans'
   it.each(HANDBUILT)('$lang hand-built: $why', ({ lang, files, target, fromFile, modulePath }) => {
     const set = new Set(files);
     if (lang === 'go') {
-      const config = modulePath === undefined ? undefined : { modulePath };
+      const config = goRootModule(modulePath);
       expect(resolveGoImportTarget(target, 'main.go', set, config)).toEqual(
         legacyResolveGoImportTarget(target, set, modulePath),
       );
@@ -717,7 +751,7 @@ describe('import-target index hoist — output parity with the pre-change scans'
     for (let repo = 0; repo < 40; repo++) {
       const go = corpus(repo, '.go', 6 + (repo % 25));
       for (const t of GO_TARGETS) {
-        if (resolveGoImportTarget(t, 'main.go', go, { modulePath: 'example.com/mod' }) !== null) {
+        if (resolveGoImportTarget(t, 'main.go', go) !== null) {
           hits.go++;
         }
       }
@@ -734,7 +768,7 @@ describe('import-target index hoist — output parity with the pre-change scans'
         if (csharp(t, cs) !== null) hits.csharp++;
       }
     }
-    // Measured on this corpus: go 366, dart 75, ruby 259, csharp 220. Ruby and
+    // Historical corpus counts: go 366, dart 75, ruby 259, csharp 220. Ruby and
     // C# gained 40 each from the `win\dir\thing.<ext>` targets — one per repo,
     // which is also the floor those two arms now defend. #2881 moved go 364 ->
     // 366 and csharp 196 -> 220, from the corpus's `pkg/pkg`, `a/pkg/b/pkg` and
@@ -771,8 +805,8 @@ describe('import-target index hoist — output parity with the pre-change scans'
  * the `new Set(allFilePaths)` hazard they are sometimes cited for: production
  * reaches the resolvers through `<lang>ScopeResolver.resolveImportTarget`, and
  * a defensive copy inserted in that adapter leaves every arm below green. The
- * adapter-level guards are
- * `test/integration/{go,csharp,dart,ruby,kotlin,python}-import-index-reuse.test.ts`.
+ * adapter-level guards are the per-language reuse tests and
+ * `test/unit/scope-resolution/import-target-index-reuse.contract.test.ts`.
  */
 function countingCorpus(seed: number, extension: string): CountingSet {
   return new CountingSet(corpus(seed, extension, 200));
@@ -782,9 +816,12 @@ describe('import-target index hoist — built once per file set, not once per im
   it('go builds one index for many imports (#2877)', () => {
     const files = countingCorpus(1, '.go');
     for (let i = 0; i < 200; i++) {
-      resolveGoImportTarget(`github.com/org/repo${i}/pkg`, 'main.go', files, {
-        modulePath: 'example.com/mod',
-      });
+      resolveGoImportTarget(
+        `example.com/mod/repo${i}/pkg`,
+        'main.go',
+        files,
+        goRootModule('example.com/mod'),
+      );
     }
     // One pass: the package-dir index (root files are collected in the same pass).
     expect(files.scans).toBe(1);
@@ -793,7 +830,7 @@ describe('import-target index hoist — built once per file set, not once per im
   it('dart builds one index for many imports (#2879)', () => {
     const files = countingCorpus(2, '.dart');
     for (let i = 0; i < 200; i++) {
-      resolveDartImportTarget(`package:pkg${i}/ghost${i}.dart`, 'lib/main.dart', files);
+      resolveDartImportTarget(`pkg${i}/ghost${i}.dart`, 'lib/main.dart', files);
     }
     expect(files.scans).toBe(1);
   });
@@ -815,19 +852,81 @@ describe('import-target index hoist — built once per file set, not once per im
     expect(files.scans).toBe(2);
   });
 
-  it('kotlin builds one index for many imports (#2872)', () => {
-    // Kotlin's own guard (`test/integration/kotlin-import-index-reuse.test.ts`)
-    // counts the same traversals one layer up, at the adapter. This arm covers
-    // the resolver function directly, so a rescan reintroduced inside
-    // `resolveKotlinImportTarget` fails here even if the adapter is untouched.
-    const files = countingCorpus(7, '.kt');
-    for (let i = 0; i < 200; i++) {
-      resolveKotlinImportTarget(
-        { kind: 'named', localName: 'X', importedName: 'X', targetRaw: `ghost${i}.deep.Missing` },
-        { fromFile: 'App.kt', allFilePaths: files } as unknown as WorkspaceIndex,
-      );
+  it('kotlin builds one declared-package index for many imports (#2872, #2960)', () => {
+    const paths = ['flat/TargetSource.kt', 'app/App.kt'];
+    const files = new CountingSet(paths);
+    const counted = countedParsedFilesWith(paths, (filePath): ParsedFile => {
+      const moduleScope = `module:${filePath}` as ScopeId;
+      const name = filePath === 'flat/TargetSource.kt' ? 'Target' : 'App';
+      const def: SymbolDefinition = {
+        nodeId: `Class:${filePath}:${name}`,
+        filePath,
+        type: 'Class',
+        qualifiedName: name,
+      };
+      return {
+        filePath,
+        moduleScope,
+        scopes: [
+          {
+            id: moduleScope,
+            parent: null,
+            kind: 'Module',
+            range: { startLine: 1, startCol: 0, endLine: 1, endCol: 1 },
+            filePath,
+            bindings: new Map([[name, [{ def, origin: 'local' }]]]),
+            ownedDefs: [def],
+            imports: [],
+            typeBindings: new Map(),
+          },
+        ],
+        parsedImports: [],
+        localDefs: [def],
+        referenceSites: [],
+      };
+    });
+
+    clearKotlinPackageFacts();
+    setKotlinPackageFact('flat/TargetSource.kt', {
+      status: 'known',
+      packageName: 'com.example',
+    });
+    setKotlinPackageFact('app/App.kt', { status: 'known', packageName: 'app' });
+
+    try {
+      const workspace = {
+        fromFile: 'app/App.kt',
+        allFilePaths: files,
+        parsedFiles: counted.parsedFiles,
+      } as unknown as WorkspaceIndex;
+      for (let i = 0; i < 200; i++) {
+        resolveKotlinImportTarget(
+          {
+            kind: 'named',
+            localName: 'X',
+            importedName: 'X',
+            targetRaw: `ghost${i}.deep.Missing`,
+          },
+          workspace,
+        );
+      }
+
+      expect(
+        resolveKotlinImportTarget(
+          {
+            kind: 'named',
+            localName: 'Target',
+            importedName: 'Target',
+            targetRaw: 'com.example.Target',
+          },
+          workspace,
+        ),
+      ).toBe('flat/TargetSource.kt');
+      expect(files.scans).toBe(0);
+      expect(counted.reads()).toBe(paths.length);
+    } finally {
+      clearKotlinPackageFacts();
     }
-    expect(files.scans).toBe(1);
   });
 
   it('a distinct file set gets its own index (no stale cross-run reuse)', () => {

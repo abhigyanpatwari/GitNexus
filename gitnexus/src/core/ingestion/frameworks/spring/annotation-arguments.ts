@@ -124,7 +124,13 @@ export function parseSpringAnnotationArguments(
   const body = annotationText.slice(open + 1, close).trim();
   if (body.length === 0) return [];
   const rawArguments = splitTopLevel(body, ',');
-  if (rawArguments === null || rawArguments.some((argument) => argument.length === 0)) return null;
+  if (rawArguments === null) return null;
+  // Kotlin (and some formatters) allow a trailing comma. An empty *middle*
+  // argument is still invalid and fail-closed.
+  while (rawArguments.at(-1)?.length === 0) {
+    rawArguments.pop();
+  }
+  if (rawArguments.some((argument) => argument.length === 0)) return null;
 
   const parsed: SpringAnnotationArgument[] = [];
   for (const raw of rawArguments) {

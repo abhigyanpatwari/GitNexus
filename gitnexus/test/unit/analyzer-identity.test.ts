@@ -1,6 +1,15 @@
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
-import { link, mkdir, readFile, readdir, symlink, unlink, writeFile } from 'node:fs/promises';
+import {
+  link,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  symlink,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,6 +30,37 @@ import { setupMiniRepo } from '../helpers/mini-repo.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 describe('analyzer runner identity', () => {
+  it('ignores an unrelated root report created while computing identity', async () => {
+    const fixture = await createTempDir();
+    try {
+      const modulePath = path.join(fixture.dbPath, 'src', 'core', 'analyzer.ts');
+      const manifest = path.join(fixture.dbPath, 'package.json');
+      await mkdir(path.dirname(modulePath), { recursive: true });
+      await writeFile(manifest, '{"name":"fixture-analyzer","version":"1.0.0"}\n');
+      await writeFile(modulePath, 'export const analyzer = 1;\n');
+      const options = { cacheDirectory: path.join(fixture.dbPath, 'identity-cache') };
+      let created = false;
+      const identity = resolveAnalyzerRunnerIdentity(pathToFileURL(modulePath).href, {
+        ...options,
+        onCacheMissWork: (input) => {
+          if (input.kind === 'manifest-read' && input.path === manifest && !created) {
+            created = true;
+            writeFileSync(path.join(fixture.dbPath, 'test-report.json'), '{}\n');
+          }
+        },
+      });
+      expect(created).toBe(true);
+      expect(identity.build.digest).toMatch(/^sha256:/);
+      // Root reports are irrelevant, but analyzer changes must still fail closed.
+      await writeFile(modulePath, 'export const analyzer = 2;\n');
+      expect(() =>
+        finalizeAnalyzerRunnerIdentity(pathToFileURL(modulePath).href, identity, options),
+      ).toThrow(/changed/);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it('is versioned, resolved, and changes when the analyzer build tree changes', async () => {
     const fixture = await createTempDir();
     try {
@@ -34,6 +74,10 @@ describe('analyzer runner identity', () => {
       await writeFile(path.join(fixture.dbPath, 'package-lock.json'), '{"lockfileVersion":3}\n');
       await writeFile(modulePath, 'export const analyzer = 1;\n');
       const cacheDirectory = path.join(fixture.dbPath, 'identity-cache');
+      const resolvedModulePath = await realpath(modulePath);
+      const resolvedSourceRoot = await realpath(sourceRoot);
+      const resolvedManifestPath = await realpath(path.join(fixture.dbPath, 'package.json'));
+      const resolvedLockfilePath = await realpath(path.join(fixture.dbPath, 'package-lock.json'));
 
       const first = resolveAnalyzerRunnerIdentity(pathToFileURL(modulePath).href, {
         cacheDirectory,
@@ -50,18 +94,18 @@ describe('analyzer runner identity', () => {
           libc: expect.any(String),
         },
         invokedArtifact: {
-          path: modulePath,
+          path: resolvedModulePath,
           digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
         },
         build: {
           kind: 'source',
-          rootPath: sourceRoot,
+          rootPath: resolvedSourceRoot,
           canonicalization: 'gitnexus-analyzer-build-v2',
           digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
         },
         dependencyRuntime: {
-          manifestPath: path.join(fixture.dbPath, 'package.json'),
-          lockfilePath: path.join(fixture.dbPath, 'package-lock.json'),
+          manifestPath: resolvedManifestPath,
+          lockfilePath: resolvedLockfilePath,
           canonicalization: 'gitnexus-analyzer-dependency-runtime-v4',
           packageCount: 1,
           artifactCount: 0,
@@ -312,7 +356,7 @@ describe('analyzer runner identity', () => {
         return bytes;
       };
 
-      process.env.GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR = protectedCache.dbPath;
+      process.env.GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR = await realpath(protectedCache.dbPath);
       _clearAnalyzerIdentityProcessCacheForTests();
       expect(hashedBytes()).toBeGreaterThanOrEqual(64 * 1024);
       _clearAnalyzerIdentityProcessCacheForTests();
@@ -602,7 +646,7 @@ describe('analyzer runner identity', () => {
       const withLock = resolveAnalyzerRunnerIdentity(pathToFileURL(modulePath).href, {
         cacheDirectory,
       });
-      expect(withLock.dependencyRuntime.lockfilePath).toBe(ancestorLock);
+      expect(withLock.dependencyRuntime.lockfilePath).toBe(await realpath(ancestorLock));
       expect(withLock.dependencyRuntime.digest).not.toBe(withoutLock.dependencyRuntime.digest);
     } finally {
       await fixture.cleanup();
@@ -1095,7 +1139,9 @@ describe('analyzer runner identity', () => {
       const first = resolveAnalyzerRunnerIdentity(pathToFileURL(modulePath).href, {
         cacheDirectory,
       });
-      expect(first.dependencyRuntime.lockfilePath).toBe(lockLink);
+      expect(first.dependencyRuntime.lockfilePath).toBe(
+        path.join(await realpath(path.dirname(lockLink)), path.basename(lockLink)),
+      );
 
       await writeFile(lockTarget, '{"lockfileVersion":4,"changed":true}\n');
       const targetChanged = resolveAnalyzerRunnerIdentity(pathToFileURL(modulePath).href, {

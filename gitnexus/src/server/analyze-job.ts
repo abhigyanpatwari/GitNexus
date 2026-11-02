@@ -68,6 +68,13 @@ export interface AnalyzeJob {
   repoUrl?: string;
   repoPath?: string;
   repoName?: string;
+  /**
+   * Index-branch selector this job was started with, part of the job's dedup
+   * identity. A repo is not "the same repo" for reuse purposes when a different
+   * branch was asked for — reusing across branches would hand the caller a 202
+   * for a job indexing something else.
+   */
+  branch?: string;
   progress: AnalyzeJobProgress;
   error?: string;
   /** Set only when a terminal `failed` job still persisted usable work. */
@@ -81,12 +88,17 @@ export interface AnalyzeJob {
 const JOB_TTL_MS = 60 * 60 * 1000; // 1 hour
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const JOB_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+/** How long a cancelled worker gets to exit via IPC before a signal is sent. */
+const CANCEL_GRACE_MS = 15_000;
 
 export class JobManager {
   private jobs = new Map<string, AnalyzeJob>();
   private children = new Map<string, ChildProcess>();
   private abortControllers = new Map<string, AbortController>();
   private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  private cancelGraceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Cancel reason to apply when a still-running worker exits. */
+  private pendingCancelReasons = new Map<string, string>();
   private emitter = new EventEmitter();
   private cleanupTimer: ReturnType<typeof setInterval>;
 
@@ -94,15 +106,32 @@ export class JobManager {
     this.cleanupTimer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS);
   }
 
-  /** Create a new job, or return existing active job for the same repo. */
-  createJob(params: { repoUrl?: string; repoPath?: string }): AnalyzeJob {
-    // Dedup: return existing active job for the same repo (by URL or path)
+  /**
+   * Create a new job, or return the existing active job for the same repo AND
+   * the same branch.
+   *
+   * Branch is part of the identity deliberately. Deduping on repo alone would
+   * return the in-flight job for branch A to a caller that asked for branch B,
+   * and that caller would read the resulting 202/`complete` as "B is indexed"
+   * — the same silent wrong-branch outcome that made `branch` worth honoring in
+   * the first place. Falling through instead lets the single-slot guard below
+   * reject the request outright, which is a truthful answer.
+   */
+  createJob(params: { repoUrl?: string; repoPath?: string; branch?: string }): AnalyzeJob {
+    // Dedup: return existing active job for the same repo (by URL or path) and branch.
+    // A cancelled job still occupies the slot while its worker is registered —
+    // flipping to `failed` before exit used to let a second POST start cloneOrPull
+    // against a LadybugDB file the first worker was still writing.
     for (const job of this.jobs.values()) {
-      if (!this.isTerminal(job.status)) {
+      if (this.isSlotOccupied(job)) {
         const isSameRepo =
           (params.repoUrl && job.repoUrl === params.repoUrl) ||
           (params.repoPath && job.repoPath === params.repoPath);
-        if (isSameRepo) {
+        if (isSameRepo && job.branch === params.branch) {
+          // A dying job still occupies the slot (pending cancel, or already
+          // failed while the child/lock is held until exit). Do not 202-reuse
+          // it — fall through to the single-slot throw.
+          if (this.hasPendingCancel(job.id) || this.isTerminal(job.status)) continue;
           return job;
         }
       }
@@ -110,7 +139,7 @@ export class JobManager {
 
     // Single-slot: reject if another job is active (different repo)
     for (const job of this.jobs.values()) {
-      if (!this.isTerminal(job.status)) {
+      if (this.isSlotOccupied(job)) {
         throw new Error(`Analysis already in progress (job ${job.id})`);
       }
     }
@@ -120,6 +149,7 @@ export class JobManager {
       status: 'queued',
       repoUrl: params.repoUrl,
       repoPath: params.repoPath,
+      branch: params.branch,
       progress: { phase: 'queued', percent: 0, message: 'Waiting to start...' },
       startedAt: Date.now(),
       retryCount: 0,
@@ -189,15 +219,58 @@ export class JobManager {
     }, JOB_TIMEOUT_MS);
     this.timeouts.set(jobId, timer);
 
-    // Clean up tracking when child exits
-    child.on('exit', () => {
-      this.children.delete(jobId);
-      const t = this.timeouts.get(jobId);
-      if (t) {
-        clearTimeout(t);
-        this.timeouts.delete(jobId);
-      }
-    });
+    // Apply a pending cancel BEFORE other `exit` listeners (analyze-launch's
+    // crash-retry) see a still-non-terminal job and fork a replacement worker.
+    const onExit = (): void => {
+      this.releaseChild(jobId);
+      this.applyPendingCancel(jobId);
+    };
+    if (typeof child.prependListener === 'function') {
+      child.prependListener('exit', onExit);
+    } else {
+      child.on('exit', onExit);
+    }
+  }
+
+  /** True while cancel was requested and the worker has not exited yet. */
+  hasPendingCancel(jobId: string): boolean {
+    return this.pendingCancelReasons.has(jobId);
+  }
+
+  /**
+   * Drop a registered child without waiting for `exit`. Spawn failures emit
+   * `error` and never `exit`, which would otherwise leave `isSlotOccupied`
+   * true forever after the job is already failed.
+   */
+  releaseChild(jobId: string): void {
+    this.children.delete(jobId);
+    const t = this.timeouts.get(jobId);
+    if (t) {
+      clearTimeout(t);
+      this.timeouts.delete(jobId);
+    }
+    const grace = this.cancelGraceTimers.get(jobId);
+    if (grace) {
+      clearTimeout(grace);
+      this.cancelGraceTimers.delete(jobId);
+    }
+  }
+
+  /**
+   * Apply a stored cancel reason if one is pending. Returns true when a reason
+   * was consumed. Used by the worker-exit handler and by analyze-launch when
+   * the child reports a generic cancel IPC — that message must not overwrite
+   * the caller's reason (timeout vs user cancel).
+   */
+  applyPendingCancel(jobId: string): boolean {
+    const reason = this.pendingCancelReasons.get(jobId);
+    if (reason === undefined) return false;
+    this.pendingCancelReasons.delete(jobId);
+    const current = this.jobs.get(jobId);
+    if (current && !this.isTerminal(current.status)) {
+      this.updateJob(jobId, { status: 'failed', error: reason });
+    }
+    return true;
   }
 
   /** Register cancellable in-process work for a job. */
@@ -210,21 +283,38 @@ export class JobManager {
     this.abortControllers.set(jobId, controller);
   }
 
-  /** Cancel a running job — sends SIGTERM to child process. */
+  /**
+   * Cancel a running job.
+   *
+   * The worker is asked to stop over IPC first (`{ type: 'cancel' }`), which
+   * lets it reach a JS-visible safe point and checkpoint before exiting —
+   * the same cross-platform control path `core/auto-sync` uses. A signal is
+   * sent only as a bounded fallback: on Windows `child.kill('SIGTERM')` is a
+   * forceful termination (Node ignores the signal name there), so leading
+   * with it could kill the worker mid LadybugDB write.
+   */
   cancelJob(jobId: string, reason?: string): boolean {
     const job = this.jobs.get(jobId);
     if (!job || this.isTerminal(job.status)) return false;
 
     const child = this.children.get(jobId);
     if (child) {
-      child.kill('SIGTERM');
+      this.requestChildShutdown(jobId, child);
     }
     this.abortControllers.get(jobId)?.abort();
     this.abortControllers.delete(jobId);
 
+    const cancelReason = reason || 'Analysis cancelled';
+    if (child) {
+      // Keep the job non-terminal until the worker exits so createJob and
+      // the resolveRepo hold-queue still see the slot as occupied.
+      this.pendingCancelReasons.set(jobId, cancelReason);
+      return true;
+    }
+
     this.updateJob(jobId, {
       status: 'failed',
-      error: reason || 'Analysis cancelled',
+      error: cancelReason,
     });
 
     return true;
@@ -237,12 +327,57 @@ export class JobManager {
     return () => this.emitter.off(event, listener);
   }
 
-  dispose() {
-    // Kill all active child processes
-    for (const child of this.children.values()) {
+  /**
+   * Ask a worker to shut down: IPC cancel now, signal after a grace period if
+   * it has not exited on its own. The grace timer is cleared by the child's
+   * `exit` handler registered in `registerChild`.
+   */
+  private requestChildShutdown(jobId: string, child: ChildProcess): void {
+    let ipcSent = false;
+    if (child.connected) {
+      try {
+        child.send({ type: 'cancel' });
+        ipcSent = true;
+      } catch {
+        // Channel already closed — fall through to the signal path.
+      }
+    }
+    if (!ipcSent) {
       child.kill('SIGTERM');
+      return;
+    }
+    if (this.cancelGraceTimers.has(jobId)) return;
+    const grace = setTimeout(() => {
+      this.cancelGraceTimers.delete(jobId);
+      if (child.exitCode === null && child.signalCode === null) {
+        // IPC already set the worker's cooperative cancel flag; a second
+        // SIGTERM is a no-op there. SIGKILL is the actual bounded fallback
+        // (on Windows `kill()` is already TerminateProcess).
+        child.kill('SIGKILL');
+      }
+    }, CANCEL_GRACE_MS);
+    grace.unref?.();
+    this.cancelGraceTimers.set(jobId, grace);
+  }
+
+  dispose() {
+    // IPC first so a worker that checks in can stop at a safe point.
+    // On Windows `child.kill('SIGTERM')` is TerminateProcess — skip that
+    // immediate kill and leave the 15s grace timer to SIGKILL. On Unix,
+    // SIGTERM after IPC is cooperative, so the grace timers can be dropped.
+    const windows = process.platform === 'win32';
+    for (const [jobId, child] of this.children) {
+      this.requestChildShutdown(jobId, child);
+      if (!windows) {
+        child.kill('SIGTERM');
+      }
     }
     this.children.clear();
+    if (!windows) {
+      for (const timer of this.cancelGraceTimers.values()) clearTimeout(timer);
+      this.cancelGraceTimers.clear();
+    }
+    this.pendingCancelReasons.clear();
     for (const controller of this.abortControllers.values()) controller.abort();
     this.abortControllers.clear();
 
@@ -258,6 +393,10 @@ export class JobManager {
 
   private isTerminal(status: AnalyzeJob['status']): boolean {
     return isTerminalJobStatus(status);
+  }
+
+  private isSlotOccupied(job: AnalyzeJob): boolean {
+    return !this.isTerminal(job.status) || this.children.has(job.id);
   }
 
   private cleanup() {

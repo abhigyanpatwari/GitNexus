@@ -1,0 +1,10 @@
+{
+  "_comment": "Baselines for bench/kotlin-star-route-constants/measure.mjs --check (#3110). fingerprint is sha256 over 800 folded route facts from 800 constant files and must match the explicit-import control. The feature arm resolves package-star names through one prepared KotlinConstantIndex.",
+  "fingerprint": "881101236c511d73d3894d3c9bd2e4a166e3437329149dd99fd16c256435482e",
+  "scaling_budget": 1.6,
+  "_scaling_note": "(t_large/t_small)/(800/250) while both constant files and importing controllers scale. Measured about 1.07-1.14.",
+  "widening_overhead_budget": 2.5,
+  "_widening_overhead_note": "star_large_ms / named_large_ms. Measured below 1.0; budget guards against a pathological star-lookup regression.",
+  "absolute_ms_budget": 5,
+  "_absolute_ms_note": "Package-star folding for 800 controllers. Measured below 0.6 ms; budget includes substantial CI headroom."
+}

@@ -1,0 +1,30 @@
+{
+  "language": "go",
+  "description": "Unexport a function whose every use stays in its declaring package, even though another package imports that package for unrelated symbols.",
+  "categories": ["cross-file", "visibility", "same-package"],
+  "target": {
+    "name": "Target",
+    "kind": "Function",
+    "file": "api/api.go"
+  },
+  "newName": "target",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "helper",
+        "kind": "Function",
+        "file": "api/helper.go"
+      },
+      "to": {
+        "name": "Target",
+        "kind": "Function",
+        "file": "api/api.go"
+      }
+    }
+  ]
+}

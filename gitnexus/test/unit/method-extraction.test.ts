@@ -12,6 +12,8 @@ import {
 } from '../../src/core/ingestion/method-extractors/configs/typescript-javascript.js';
 import { cppMethodConfig } from '../../src/core/ingestion/method-extractors/configs/c-cpp.js';
 import { pythonMethodConfig } from '../../src/core/ingestion/method-extractors/configs/python.js';
+import { computePythonArityMetadata } from '../../src/core/ingestion/languages/python/arity-metadata.js';
+import { synthesizeReceiverTypeBinding } from '../../src/core/ingestion/languages/python/receiver-binding.js';
 import { rubyMethodConfig } from '../../src/core/ingestion/method-extractors/configs/ruby.js';
 import { rustMethodConfig } from '../../src/core/ingestion/method-extractors/configs/rust.js';
 import { dartMethodConfig } from '../../src/core/ingestion/method-extractors/configs/dart.js';
@@ -23,7 +25,7 @@ import { methodInfoKey } from '../../src/core/ingestion/utils/method-props.js';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import Go from 'tree-sitter-go';
-import CSharp from 'tree-sitter-c-sharp';
+import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 import CPP from 'tree-sitter-cpp';
 import TypeScript from 'tree-sitter-typescript';
 import JavaScript from 'tree-sitter-javascript';
@@ -35,29 +37,29 @@ import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 
 // Vendored grammars — loaded from vendor/ by absolute path, never node_modules (#2111).
-let Kotlin: unknown;
+let Kotlin: Parser.Language | null = null;
 try {
   Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 } catch {
   // Kotlin grammar may not be installed
 }
 
-let Dart: unknown;
+let Dart: Parser.Language | null = null;
 try {
   Dart = requireVendoredGrammar('tree-sitter-dart');
   // Verify the grammar actually works with the installed tree-sitter version
   const testParser = new Parser();
-  testParser.setLanguage(Dart as Parser.Language);
+  testParser.setLanguage(Dart);
 } catch {
   Dart = null;
 }
 
-let Swift: unknown;
+let Swift: Parser.Language | null = null;
 try {
   Swift = requireVendoredGrammar('tree-sitter-swift');
   // Verify the grammar actually works with the installed tree-sitter version
   const testParser = new Parser();
-  testParser.setLanguage(Swift as Parser.Language);
+  testParser.setLanguage(Swift);
 } catch {
   Swift = null;
 }
@@ -71,7 +73,7 @@ const parseJava = (code: string) => {
 
 const parseKotlin = (code: string) => {
   if (!Kotlin) throw new Error('tree-sitter-kotlin not available');
-  parser.setLanguage(Kotlin as Parser.Language);
+  parser.setLanguage(Kotlin);
   return parser.parse(code);
 };
 
@@ -2748,6 +2750,202 @@ class UserService:
     });
   });
 
+  describe('bound receiver parameters', () => {
+    it('uses class and decorator context instead of receiver spelling', () => {
+      const tree = parsePython(`
+class Service:
+    def ordinary(instance):
+        pass
+
+    @trace
+    def decorated(receiver):
+        pass
+
+    @classmethod
+    def factory(owner):
+        pass
+
+    @staticmethod
+    def static(self):
+        pass
+
+    def typed_args(*args: int):
+        pass
+
+    def typed_kwargs(**kwargs: int):
+        pass
+      `);
+      const result = extractor.extract(tree.rootNode.child(0)!, pythonCtx);
+      const byName = new Map(result!.methods.map((method) => [method.name, method]));
+
+      expect(byName.get('ordinary')!.parameters).toHaveLength(0);
+      expect(byName.get('decorated')!.parameters).toHaveLength(0);
+      expect(byName.get('factory')!.parameters).toHaveLength(0);
+      expect(byName.get('static')!.parameters.map((parameter) => parameter.name)).toEqual(['self']);
+      expect(byName.get('typed_args')!.parameters[0]).toMatchObject({
+        name: 'args',
+        isVariadic: true,
+      });
+      expect(byName.get('typed_kwargs')!.parameters[0]).toMatchObject({
+        name: 'kwargs',
+        isVariadic: true,
+      });
+    });
+
+    it('reads decorator identity from the expression, not its trailing comment', () => {
+      const tree = parsePython(`
+class Service:
+    @staticmethod  # type: ignore[misc]
+    def commented(value):
+        pass
+      `);
+      const result = extractor.extract(tree.rootNode.child(0)!, pythonCtx);
+
+      expect(result!.methods[0]!.parameters.map((parameter) => parameter.name)).toEqual(['value']);
+    });
+
+    it('keeps a static first parameter when the file only reads staticmethod', () => {
+      const tree = parsePython(`
+class Service:
+    @staticmethod
+    def build(value):
+        pass
+
+helper = staticmethod(len)
+      `);
+      const result = extractor.extract(tree.rootNode.child(0)!, pythonCtx);
+
+      expect(result!.methods[0]!.parameters.map((parameter) => parameter.name)).toEqual(['value']);
+    });
+
+    it('retains first parameters on module and nested functions', () => {
+      const tree = parsePython(`
+def module(instance):
+    pass
+
+def outer():
+    def nested(receiver):
+        pass
+      `);
+      const functions = tree.rootNode.descendantsOfType('function_definition');
+      const moduleFn = functions.find((node) => node.childForFieldName('name')?.text === 'module')!;
+      const nestedFn = functions.find((node) => node.childForFieldName('name')?.text === 'nested')!;
+
+      expect(
+        pythonMethodConfig.extractParameters(moduleFn).map((parameter) => parameter.name),
+      ).toEqual(['instance']);
+      expect(
+        pythonMethodConfig.extractParameters(nestedFn).map((parameter) => parameter.name),
+      ).toEqual(['receiver']);
+    });
+
+    it('recognizes receivers through class-suite control flow', () => {
+      const tree = parsePython(`
+class Service:
+    if ENABLED:
+        def conditional(instance):
+            pass
+      `);
+      const conditional = tree.rootNode
+        .descendantsOfType('function_definition')
+        .find((node) => node.childForFieldName('name')?.text === 'conditional')!;
+
+      expect(pythonMethodConfig.extractParameters(conditional)).toEqual([]);
+      expect(computePythonArityMetadata(conditional)).toMatchObject({
+        parameterCount: 0,
+        requiredParameterCount: 0,
+      });
+    });
+
+    it('recognizes implicit descriptor kinds for Python lifecycle methods', () => {
+      const tree = parsePython(`
+class Service:
+    def __init_subclass__(owner, flag):
+        pass
+
+    def __new__(owner, value):
+        pass
+
+    def __class_getitem__(owner, item):
+        pass
+
+    @classmethod
+    def variadic_factory(*args):
+        pass
+      `);
+      const functions = tree.rootNode.descendantsOfType('function_definition');
+      const byName = new Map(
+        functions.map((node) => [node.childForFieldName('name')?.text, node] as const),
+      );
+      const extractedByName = new Map(
+        extractor
+          .extract(tree.rootNode.child(0)!, pythonCtx)!
+          .methods.map((method) => [method.name, method] as const),
+      );
+
+      expect(
+        pythonMethodConfig
+          .extractParameters(byName.get('__init_subclass__')!)
+          .map((parameter) => parameter.name),
+      ).toEqual(['flag']);
+      expect(
+        pythonMethodConfig
+          .extractParameters(byName.get('__new__')!)
+          .map((parameter) => parameter.name),
+      ).toEqual(['owner', 'value']);
+      const newBinding = synthesizeReceiverTypeBinding(byName.get('__new__')!);
+      expect(newBinding?.['@type-binding.cls']).toBeDefined();
+      expect(newBinding?.['@type-binding.self']).toBeUndefined();
+      const classGetitemBinding = synthesizeReceiverTypeBinding(byName.get('__class_getitem__')!);
+      expect(classGetitemBinding?.['@type-binding.cls']).toBeDefined();
+      expect(classGetitemBinding?.['@type-binding.self']).toBeUndefined();
+      expect(
+        pythonMethodConfig
+          .extractParameters(byName.get('__class_getitem__')!)
+          .map((parameter) => parameter.name),
+      ).toEqual(['item']);
+      expect(extractedByName.get('__init_subclass__')!.isStatic).toBe(true);
+      expect(extractedByName.get('__class_getitem__')!.isStatic).toBe(true);
+      expect(extractedByName.get('__new__')!.isStatic).toBe(true);
+      expect(extractedByName.get('variadic_factory')!.isStatic).toBe(true);
+      expect(extractedByName.get('variadic_factory')!.parameters).toHaveLength(1);
+    });
+
+    it('preserves non-receiver splats, keyword-only parameters, and variadic minima', () => {
+      const tree = parsePython(`
+class Service:
+    def variadic(*args: int):
+        pass
+
+    def keyword_only(*, option: int):
+        pass
+
+    def needs_value(instance, required: int, *args: int):
+        pass
+      `);
+      const functions = tree.rootNode.descendantsOfType('function_definition');
+      const byName = new Map(
+        functions.map((node) => [node.childForFieldName('name')?.text, node] as const),
+      );
+
+      expect(
+        pythonMethodConfig
+          .extractParameters(byName.get('variadic')!)
+          .map((parameter) => parameter.name),
+      ).toEqual(['args']);
+      expect(
+        pythonMethodConfig
+          .extractParameters(byName.get('keyword_only')!)
+          .map((parameter) => parameter.name),
+      ).toEqual(['option']);
+      expect(computePythonArityMetadata(byName.get('needs_value')!)).toMatchObject({
+        parameterCount: undefined,
+        requiredParameterCount: undefined,
+        parameterNames: ['required', 'args'],
+      });
+    });
+  });
+
   describe('@abstractmethod', () => {
     it('detects abstract method', () => {
       const tree = parsePython(`
@@ -3585,7 +3783,7 @@ end
 
 const parseDart = (code: string) => {
   if (!Dart) throw new Error('tree-sitter-dart not available');
-  parser.setLanguage(Dart as Parser.Language);
+  parser.setLanguage(Dart);
   return parser.parse(code);
 };
 
@@ -3845,7 +4043,7 @@ extension StringExt on String {
 // ---------------------------------------------------------------------------
 
 const parsePHP = (code: string) => {
-  parser.setLanguage(PHP.php_only as Parser.Language);
+  parser.setLanguage(PHP.php_only);
   return parser.parse(code);
 };
 
@@ -4485,7 +4683,7 @@ describe('Rust MethodExtractor', () => {
 
 const parseSwift = (code: string) => {
   if (!Swift) throw new Error('tree-sitter-swift not available');
-  parser.setLanguage(Swift as Parser.Language);
+  parser.setLanguage(Swift);
   return parser.parse(code);
 };
 

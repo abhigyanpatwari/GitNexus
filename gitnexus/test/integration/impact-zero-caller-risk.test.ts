@@ -71,6 +71,8 @@ withTestLbugDB(
       expect(result).not.toHaveProperty('error');
       expect(result.impactedCount).toBe(0);
       expect(result.risk).toBe('UNKNOWN');
+      expect(result.riskScale.comparableAcrossKinds).toBe(true);
+      expect(result.riskNote).toBeDefined();
     });
 
     // The ambiguous fan-out narrows candidates into a fresh object, and that
@@ -93,6 +95,11 @@ withTestLbugDB(
         expect(c.risk).toBe('UNKNOWN');
         expect(typeof c.riskNote).toBe('string');
         expect(c.riskNote).toMatch(/not evidence/i);
+        expect(
+          (c as { riskScale?: { unusedAxes?: { reason: string }[] } }).riskScale?.unusedAxes,
+        ).toEqual(
+          expect.arrayContaining([expect.objectContaining({ reason: 'enrichment-skipped' })]),
+        );
       }
     });
 

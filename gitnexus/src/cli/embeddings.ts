@@ -6,7 +6,10 @@ import {
   isPrefixRuntimeLoadable,
   resolveEmbeddingRuntime,
 } from '../core/embeddings/runtime-install.js';
-import { localEmbeddingPrefixUnloadableMessage } from '../core/embeddings/runtime-support.js';
+import {
+  getLocalEmbeddingRuntimeBlocker,
+  localEmbeddingPrefixUnloadableMessage,
+} from '../core/embeddings/runtime-support.js';
 
 export interface EmbeddingsInstallOptions {
   cuda?: boolean;
@@ -14,20 +17,29 @@ export interface EmbeddingsInstallOptions {
 }
 
 /**
- * `gitnexus embeddings install [--cuda] [--force]` — fetch the optional local
- * embedding stack on demand (#2370). Goes through the user's npm registry
- * config (mirrors/proxies apply); with --cuda it additionally runs
- * onnxruntime-node's postinstall to download the CUDA GPU binaries from NuGet
- * (set GLOBAL_AGENT_HTTPS_PROXY behind a proxy).
+ * `gitnexus embeddings install [--cuda] [--force]` — fetch the local
+ * embedding stack. Default npm install does not include it. Goes through the
+ * user's npm registry config (mirrors/proxies apply); with --cuda it
+ * additionally runs onnxruntime-node's postinstall to download the CUDA GPU
+ * binaries from NuGet (set GLOBAL_AGENT_HTTPS_PROXY behind a proxy).
+ * `--force` refreshes prefix overrides; it does not replace a leftover
+ * 1.6.12 package-first tree in gitnexus node_modules.
  */
 export const embeddingsInstallCommand = async (
   options: EmbeddingsInstallOptions = {},
 ): Promise<void> => {
+  const runtimeBlocker = getLocalEmbeddingRuntimeBlocker();
+  if (runtimeBlocker) {
+    cliError(`${runtimeBlocker}\n`, { recoveryHint: 'local-embedding-unsupported' });
+    process.exitCode = 1;
+    return;
+  }
+
   const resolved = resolveEmbeddingRuntime();
   if (resolved?.source === 'package' && !options.force) {
     cliInfo(
-      'The embedding stack is already installed with gitnexus itself — nothing to do.\n' +
-        '(Use --force to install a copy into the runtime prefix anyway.)',
+      'The embedding stack already resolves from this gitnexus install (leftover package-first tree) — nothing to do.\n' +
+        '(Use --force to refresh prefix overrides; a clean reinstall removes leftover packages.)',
     );
     return;
   }

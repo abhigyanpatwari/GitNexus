@@ -24,6 +24,9 @@
 
 import type { NodeLabel } from '../graph/types.js';
 import type { SymbolDefinition } from './symbol-definition.js';
+// Type-only, so the `reference-site.ts` → `types.ts` import cycle is erased
+// at compile time.
+import type { CallForm } from './reference-site.js';
 
 // ─── §2.1 Type aliases ──────────────────────────────────────────────────────
 
@@ -104,7 +107,17 @@ export type CaptureMatch = Readonly<Record<string, Capture>>;
  * produced when `expandsWildcardTo` materializes a wildcard against target
  * exports — a provider must never emit it at parse time.
  */
-export type ParsedImport =
+export type ParsedImport = ParsedImportSyntax & {
+  /** Lexical location retained by extraction, independently of execution timing.
+   * Absent for legacy or synthesized imports. Binding semantics remain opt-in
+   * through FinalizeHooks.importsBindAtLexicalScope. */
+  readonly declaredAtScope?: ScopeId;
+  readonly atRange?: Range;
+  /** Per-import lexical binding override; useful when a provider also has file-wide dependencies. */
+  readonly bindsAtLexicalScope?: boolean;
+};
+
+type ParsedImportSyntax =
   /**
    * Per-name import without rename.
    *
@@ -180,14 +193,15 @@ export type ParsedImport =
        * field exists.** The natural place to decide it looks like the graph
        * bridge, by walking the scope the finalized edges hang off; that is
        * exactly what `graph-bridge/imports-to-edges.ts` once attempted, and it
-       * is dead code by construction. `finalize-algorithm.ts:295` publishes
-       * every file's finalized edges as
-       * `linkedByScope.set(file.moduleScope, …)`, so the map the bridge
-       * receives is keyed by the file's **Module** scope and by nothing else:
-       * the walk starts at a `Module` every time and answers `false` for every
-       * import in the tree. Finalize cannot recover the position either —
-       * `FinalizeFile.parsedImports` is a flat per-file `ParsedImport[]` with
-       * no scope attached. The extractor is the last stage that still knows
+       * is dead code by construction. Default finalize still publishes each
+       * file's edges under `file.moduleScope`, so a bridge walk that starts
+       * there answers `false` for every import. Resolvers that opt into
+       * `importsBindAtLexicalScope` instead key the edge by
+       * `parsed.declaredAtScope` when extraction placed the statement (Rust
+       * `use` in a function body is the example). Even then the *execution*
+       * question — does this import run at module init? — is not the same as
+       * the lexical key, and `FinalizeFile.parsedImports` is still a flat
+       * per-file list. The extractor is the last stage that still knows
        * where the statement sat (`scope-extractor.ts`, Pass 3), so it marks the
        * fact here and it rides the edge from there — see
        * {@link ImportEdge.runsOnlyWhenCalled}.
@@ -292,6 +306,10 @@ export type ParsedImport =
    */
   | {
       readonly kind: 'namespace';
+      /** The source omitted a local alias; the imported module declares its binding name. */
+      readonly implicitLocalName?: boolean;
+      /** An explicit alias binds the imported module, even when it matches the path's root. */
+      readonly explicitAlias?: boolean;
       /** Scope-visible handle (e.g. `np` in `import numpy as np`; `numpy` when unaliased). */
       readonly localName: string;
       /** Module being aliased (e.g. `numpy` in `import numpy as np`). */
@@ -368,6 +386,12 @@ export type ParsedImport =
        *  deferred — `use` does not execute
        *  (`LanguageProvider.importsExecuteWhereWritten`). */
       readonly runsOnlyWhenCalled?: boolean;
+      /**
+       * C/C++ `#include <…>` (true) versus `#include "…"`.
+       * Angle includes resolve only on header search paths. Quoted includes
+       * may still use the including file's directory and the basename index.
+       */
+      readonly isSystem?: boolean;
     }
   /**
    * Runtime-computed target — the import path is not a static literal at
@@ -505,8 +529,11 @@ export interface Callsite {
  * bounded-fixpoint linking (RFC §3.2).
  */
 export interface ImportEdge {
+  readonly atRange?: Range;
   /** How this scope sees the imported name (after alias). */
   readonly localName: string;
+  /** Namespace-import alias syntax, retained for providers whose unaliased imports bind a path prefix. */
+  readonly explicitAlias?: boolean;
   /** Exporting file; `null` only when `kind === 'dynamic-unresolved'`. */
   readonly targetFile: string | null;
   /** The name under which the target exports this symbol. */
@@ -572,6 +599,9 @@ export interface ImportEdge {
  * stamping first-class instead of reconstructing provenance from a side table.
  */
 export interface BindingRef {
+  readonly availableFrom?: SourcePosition;
+  /** Source declaration range, independent of the target definition's identity. */
+  readonly declarationRange?: Range;
   readonly def: SymbolDefinition;
   readonly origin: 'local' | 'import' | 'namespace' | 'wildcard' | 'reexport';
   /** Non-null for non-local origins; carries the `ImportEdge` that brought the name into this scope. */
@@ -595,6 +625,10 @@ export interface BindingRef {
  * re-exports, and nested modules. Generics deferred to V2 via `typeArgs`.
  */
 export interface TypeRef {
+  /** Declaration that binds this value, independent of its type's lookup anchor. */
+  readonly bindingRange?: Range;
+  readonly lookupPosition?: SourcePosition;
+  readonly lookupPurpose?: LookupPurpose;
   /**
    * The type name AFTER the language's capture-time normalization — NOT
    * necessarily what the source says. Every provider's `interpretTypeBinding`
@@ -632,6 +666,7 @@ export interface TypeRef {
     | 'parameter-annotation'
     | 'return-annotation'
     | 'self'
+    | 'decorator-unknown'
     | 'assignment-inferred'
     | 'constructor-inferred'
     | 'receiver-propagated';
@@ -641,6 +676,51 @@ export interface TypeRef {
 
 // ─── §2.2 Scope ─────────────────────────────────────────────────────────────
 
+export interface SourcePosition {
+  readonly startLine: number;
+  readonly startCol: number;
+}
+
+export type LookupPurpose = 'value' | 'type';
+
+/** Provider-owned name ownership; a claim does not require an indexed target. */
+export interface NameClaim {
+  readonly name: string;
+  readonly range: Range;
+  readonly kind: 'binding' | 'import' | 'blocked';
+  /** Proven compatible declarations may accumulate their import paths. */
+  readonly merge?: boolean;
+  /** Hoisted declarations rank before active ordered rebinding at this scope. */
+  readonly hoisted?: boolean;
+  readonly purpose?: LookupPurpose | 'both';
+  readonly availableFrom?: SourcePosition;
+  readonly inactive?: 'blocked' | 'outer' | 'module';
+  readonly redirect?: 'module' | 'enclosing-function';
+}
+
+export interface ScopeLookupPolicy {
+  /** All lexical declarations have claims; inferred assignments alone do not declare names. */
+  readonly nameClaimsComplete?: boolean;
+  /** Reference scopes already identify the evaluating environment; do not infer
+   * a nested caller from physical source containment. */
+  readonly callerScopeIsAuthoritative?: boolean;
+  /** Exact lexical self names retained when other bindings are skipped by children. */
+  readonly visibleNamesFromChildren?: readonly string[];
+  readonly parentScope?: ScopeId;
+  /** The scope's locals are not an enclosing lexical environment. */
+  readonly skipFromChildren?: boolean;
+  /** Child execution is deferred, so source order in parents cannot imply a TDZ. */
+  readonly deferParentActivation?: boolean;
+}
+
+export interface NameLookupOptions {
+  readonly skipEnclosingClasses?: boolean;
+  readonly position?: SourcePosition;
+  /** Keep source order across deferred scopes when locating the binding before a write. */
+  readonly preservePosition?: boolean;
+  readonly purpose?: LookupPurpose;
+}
+
 /**
  * The canonical lexical-scope node. Forms the spine of the SemanticModel.
  *
@@ -648,6 +728,8 @@ export interface TypeRef {
  * — deterministic, stable across reparses of the same source, interned.
  */
 export interface Scope {
+  readonly nameClaims?: readonly NameClaim[];
+  readonly lookupPolicy?: ScopeLookupPolicy;
   readonly id: ScopeId;
   readonly parent: ScopeId | null;
   readonly kind: ScopeKind;
@@ -738,7 +820,7 @@ export interface Resolution {
  * during the emit phase.
  */
 export interface Reference {
-  /** Innermost lexical scope containing `atRange`. */
+  /** Scope owning the graph source; may differ from lexical lookup for a synthesized call. */
   readonly fromScope: ScopeId;
   readonly toDef: DefId;
   /** Location of the reference in source. */
@@ -752,6 +834,20 @@ export interface Reference {
     | 'import-use'
     | 'value-ref'
     | 'macro';
+  /**
+   * Call form of the site this reference was resolved from, copied verbatim
+   * from `ReferenceSite.callForm`; set only when `kind === 'call'`. The
+   * emit phase reads it to tell a construction site (`T{…}`, `new T()`,
+   * `T { .. }` — form `'constructor'`) apart from an invocation, which in the
+   * graph are both `CALLS` edges. Optional and additive: a `Reference` built
+   * without it is emitted exactly as before.
+   */
+  readonly callForm?: CallForm;
+  /** Copied from `ReferenceSite.staticGated` for `kind === 'call'`: the site is
+   *  in a branch provably unreachable from the indexed source at compile time.
+   *  The emit phase writes it to `GraphRelationship.staticGated` as metadata;
+   *  see the contract note there. Optional and additive. */
+  readonly staticGated?: boolean;
   readonly confidence: number;
   readonly evidence: readonly ResolutionEvidence[];
 }
@@ -780,6 +876,8 @@ export type RegistryContributor = unknown;
  * RFC §4.4 for per-registry specializations.
  */
 export interface LookupParams {
+  readonly lookupPosition?: SourcePosition;
+  readonly lookupPurpose?: LookupPurpose;
   readonly acceptedKinds: readonly NodeLabel[];
   /** Class lookups: false. Method/Field lookups: true. */
   readonly useReceiverTypeBinding: boolean;

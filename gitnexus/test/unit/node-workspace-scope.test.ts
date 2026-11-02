@@ -15,7 +15,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadNodeWorkspacePackages } from '../../src/core/ingestion/import-resolvers/node-workspace-packages.js';
+import { loadNodeWorkspacePackages } from '../../src/core/ingestion/languages/typescript/workspace-packages.js';
 
 const roots: string[] = [];
 
@@ -38,6 +38,16 @@ afterAll(() => {
 });
 
 describe('workspace boundary', () => {
+  it('captures fresh rename configuration without replacing the indexing memo', async () => {
+    const root = repo({ 'package.json': pkg('original') });
+    const indexed = await loadNodeWorkspacePackages(root);
+    fs.writeFileSync(path.join(root, 'package.json'), pkg('changed'));
+    const fresh = await loadNodeWorkspacePackages(root, { fresh: true });
+    expect(fresh?.byName.has('changed')).toBe(true);
+    expect(fresh?.byName.has('original')).toBe(false);
+    expect(await loadNodeWorkspacePackages(root)).toBe(indexed);
+    expect(indexed?.byName.has('original')).toBe(true);
+  });
   it('admits a package the pnpm globs declare', async () => {
     const root = repo({
       'pnpm-workspace.yaml': 'packages:\n  - "packages/*"\n',
@@ -88,6 +98,22 @@ describe('workspace boundary', () => {
     const packages = await loadNodeWorkspacePackages(root);
 
     expect(packages?.byName.has('@repo/web')).toBe(true);
+  });
+
+  it('prunes root artifact workspaces while keeping nested source directories', async () => {
+    const root = repo({
+      'package.json': JSON.stringify({
+        name: 'root',
+        workspaces: ['generated/*', 'packages/*/generated'],
+      }),
+      'generated/apiclient/package.json': pkg('@repo/root-artifact'),
+      'packages/api/generated/package.json': pkg('@repo/generated-source'),
+    });
+
+    const packages = await loadNodeWorkspacePackages(root);
+
+    expect(packages?.byName.has('@repo/root-artifact')).toBe(false);
+    expect(packages?.byName.has('@repo/generated-source')).toBe(true);
   });
 
   it('honours a `!` exclusion', async () => {

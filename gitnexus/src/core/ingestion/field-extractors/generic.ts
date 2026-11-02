@@ -34,7 +34,7 @@ export interface FieldExtractionConfig {
   /** Default visibility when no modifier is present */
   defaultVisibility: FieldVisibility;
   /** Extract owner type name from a type declaration node. */
-  extractOwnerName?: (node: SyntaxNode) => string | undefined;
+  extractOwnerName?: (node: SyntaxNode, filePath?: string) => string | undefined;
   /** Find body nodes inside a type declaration node. */
   findBodyNodes?: (node: SyntaxNode) => SyntaxNode[];
   /**
@@ -58,6 +58,13 @@ export interface FieldExtractionConfig {
    * `normalizeType`/`resolveType` entirely — it is the untouched source text.
    */
   extractRawType?: (node: SyntaxNode) => string | undefined;
+  /**
+   * Extract the type a field's initializer constructs (`= new Config()` ->
+   * `Config`). Consulted only when `extractType` found no declared type, so it
+   * can never stand in for one. Optional — only languages whose fields can be
+   * typed by their initializer alone implement it.
+   */
+  extractInitializerType?: (node: SyntaxNode) => string | undefined;
   /**
    * Extract `'@Name'`-prefixed annotation names from a field declaration
    * node (e.g. `['@Autowired']`). Optional — only languages with
@@ -103,7 +110,8 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
     extract(node: SyntaxNode, context: FieldExtractorContext): ExtractedFields | null {
       if (!this.isTypeDeclaration(node)) return null;
 
-      const ownerFqn = config.extractOwnerName?.(node) ?? node.childForFieldName('name')?.text;
+      const ownerFqn =
+        config.extractOwnerName?.(node, context.filePath) ?? node.childForFieldName('name')?.text;
       if (!ownerFqn) return null;
 
       const fields: FieldInfo[] = [];
@@ -147,6 +155,17 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
       // Fallback: use the body field even if its type is not in bodyNodeSet
       if (result.length === 0 && bodyField) {
         result.push(bodyField);
+      }
+      // Grammars with no body wrapper at all: a config that declares NO
+      // `bodyNodeTypes` (tree-sitter-zig's struct_declaration holds its
+      // container_field children directly) uses the type-declaration node
+      // itself as the body. The downstream walk filters by `fieldNodeTypes`,
+      // so unrelated children are ignored. Deliberately NOT a fallback for
+      // configs that do declare body wrappers: for them a node without its
+      // wrapper is a bodiless declaration, and scanning it would change every
+      // such language for no field it could find.
+      if (result.length === 0 && bodyNodeSet.size === 0) {
+        result.push(node);
       }
       return result;
     }
@@ -220,16 +239,27 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
         annotations = undefined;
       }
 
+      let initializerType: string | undefined;
+      try {
+        initializerType = type === null ? config.extractInitializerType?.(node) : undefined;
+      } catch {
+        // Same group-drop rationale as the extractRawType guard above —
+        // degrade to a field without an initializer type.
+        initializerType = undefined;
+      }
+
       return {
         name,
         type,
         ...(rawDeclaredType !== undefined ? { rawDeclaredType } : {}),
+        ...(initializerType !== undefined ? { initializerType } : {}),
         ...(annotations !== undefined && annotations.length > 0 ? { annotations } : {}),
         visibility: config.extractVisibilityForName?.(node, name) ?? config.extractVisibility(node),
         isStatic: config.isStatic(node),
         isReadonly: config.isReadonly(node),
         sourceFile: context.filePath,
         line: node.startPosition.row + 1,
+        column: node.startPosition.column,
       };
     }
   }

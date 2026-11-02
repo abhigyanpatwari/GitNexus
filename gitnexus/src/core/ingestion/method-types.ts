@@ -23,7 +23,7 @@ export interface MethodInfo {
   name: string;
   receiverType: string | null;
   returnType: string | null;
-  parameters: ParameterInfo[];
+  parameters: readonly Readonly<ParameterInfo>[];
   visibility: MethodVisibility;
   isStatic: boolean;
   isAbstract: boolean;
@@ -79,7 +79,12 @@ export interface MethodExtractor {
   extractFunctionName?(
     node: SyntaxNode,
     filePath?: string,
-  ): { funcName: string | null; label: import('gitnexus-shared').NodeLabel } | null;
+  ): {
+    funcName: string | null;
+    label: import('gitnexus-shared').NodeLabel;
+    /** Source identity name; null preserves anonymous positional identity when funcName is synthetic. */
+    identityName?: string | null;
+  } | null;
 }
 
 export interface MethodExtractionConfig {
@@ -89,13 +94,19 @@ export interface MethodExtractionConfig {
   bodyNodeTypes: string[];
   extractName: (node: SyntaxNode) => string | undefined;
   extractReturnType: (node: SyntaxNode) => string | undefined;
-  extractParameters: (node: SyntaxNode) => ParameterInfo[];
+  /** The optional `filePath` (the extractor context's) is passed to
+   *  `extractParameters`, `isStatic` and `extractReceiverType` for languages
+   *  whose receiver rule depends on the file — Zig's file-struct, whose type
+   *  name is the file stem, so `fn incr(counter: *Counter)` in `Counter.zig`
+   *  is a method only when the file is known. Same optional-trailing-argument
+   *  shape as `extractOwnerName`; every other config ignores it. */
+  extractParameters: (node: SyntaxNode, filePath?: string) => readonly Readonly<ParameterInfo>[];
   extractVisibility: (node: SyntaxNode) => MethodVisibility;
-  isStatic: (node: SyntaxNode) => boolean;
+  isStatic: (node: SyntaxNode, filePath?: string) => boolean;
   isAbstract: (node: SyntaxNode, ownerNode: SyntaxNode) => boolean;
   isFinal: (node: SyntaxNode) => boolean;
   extractAnnotations?: (node: SyntaxNode) => string[];
-  extractReceiverType?: (node: SyntaxNode) => string | undefined;
+  extractReceiverType?: (node: SyntaxNode, filePath?: string) => string | undefined;
   isVirtual?: (node: SyntaxNode) => boolean;
   isOverride?: (node: SyntaxNode) => boolean;
   isAsync?: (node: SyntaxNode) => boolean;
@@ -107,7 +118,7 @@ export interface MethodExtractionConfig {
    *  When the ownerNode matches one of these types, isStatic is forced true. */
   staticOwnerTypes?: ReadonlySet<string>;
   /** Resolve the owner name from a standalone method node (e.g. Go receiver type). */
-  extractOwnerName?: (node: SyntaxNode) => string | undefined;
+  extractOwnerName?: (node: SyntaxNode, filePath?: string) => string | undefined;
   /** Extract a primary constructor from the owner node itself (e.g. C# 12 class Point(int x, int y)). */
   extractPrimaryConstructor?: (
     ownerNode: SyntaxNode,
@@ -118,5 +129,9 @@ export interface MethodExtractionConfig {
   extractFunctionName?: (
     node: SyntaxNode,
     filePath?: string,
-  ) => { funcName: string | null; label: import('gitnexus-shared').NodeLabel } | null;
+  ) => {
+    funcName: string | null;
+    label: import('gitnexus-shared').NodeLabel;
+    identityName?: string | null;
+  } | null;
 }

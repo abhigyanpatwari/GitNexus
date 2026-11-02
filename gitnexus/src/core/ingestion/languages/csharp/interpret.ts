@@ -77,10 +77,28 @@ export function interpretCsharpTypeBinding(captures: CaptureMatch): ParsedTypeBi
   const typeCap = captures['@type-binding.type'];
   if (nameCap === undefined || typeCap === undefined) return null;
 
-  // Strip nullable suffix (`User?` → `User`), single-arg generic wrapper
-  // (`List<User>` → `User`), and qualifier (`System.User` → `User`) so
-  // receiver-typed resolution treats these identically.
-  const rawType = stripQualifier(stripGeneric(stripNullable(typeCap.text.trim())));
+  // Other bindings retain their existing nullable, wrapper and qualifier
+  // normalization. Nullable field bindings keep wrappers as receiver types.
+  const withoutNullable = stripNullable(typeCap.text.trim());
+  // Qualified nullable fields need namespace-aware type lookup. The generic
+  // receiver fallback can otherwise borrow an unrelated unique tail name.
+  // Leave these unbound until the provider can establish the written owner.
+  if (captures['@type-binding.nullable-field'] !== undefined) {
+    // Comments can contain punctuation that is not part of the type.
+    const qualificationText = withoutNullable.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g, '');
+    let depth = 0;
+    for (const char of qualificationText) {
+      if (char === '<') depth++;
+      else if (char === '>') depth = Math.max(0, depth - 1);
+      // A qualifier inside a generic argument does not qualify the receiver.
+      else if (char === '.' && depth === 0) return null;
+    }
+  }
+  // A nullable wrapper field is not its element: List<User> is not User.
+  const rawType =
+    captures['@type-binding.nullable-field'] !== undefined
+      ? withoutNullable
+      : stripQualifier(stripGeneric(withoutNullable));
 
   // Anchor captures distinguish the source of the binding. Order
   // matters: more-specific anchors take precedence.

@@ -1,0 +1,84 @@
+{
+  "language": "java",
+  "description": "Rename an overload group used by a multi-step call graph without touching a local binding or another class.",
+  "categories": [
+    "overloads",
+    "call-graph",
+    "shadowing",
+    "unrelated-owner"
+  ],
+  "target": {
+    "name": "encode",
+    "kind": "Method",
+    "file": "Encoder.java",
+    "startLine": 1
+  },
+  "newName": "serialize",
+  "expect": {
+    "status": "success",
+    "edits": 4
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "entry",
+        "kind": "Method",
+        "file": "Encoder.java",
+        "startLine": 4
+      },
+      "to": {
+        "name": "middle",
+        "kind": "Method",
+        "file": "Encoder.java",
+        "startLine": 3
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "middle",
+        "kind": "Method",
+        "file": "Encoder.java",
+        "startLine": 3
+      },
+      "to": {
+        "name": "encode",
+        "kind": "Method",
+        "file": "Encoder.java",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "middle",
+        "kind": "Method",
+        "file": "Encoder.java",
+        "startLine": 3
+      },
+      "to": {
+        "name": "encode",
+        "kind": "Method",
+        "file": "Encoder.java",
+        "startLine": 2
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "entry",
+        "kind": "Method",
+        "file": "Encoder.java",
+        "startLine": 10
+      },
+      "to": {
+        "name": "encode",
+        "kind": "Method",
+        "file": "Encoder.java",
+        "startLine": 9
+      }
+    }
+  ],
+  "exactOutgoing": true
+}

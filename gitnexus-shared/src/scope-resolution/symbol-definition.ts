@@ -6,10 +6,11 @@
  * scope-resolution types that reference it can live in the shared package
  * alongside their consumers (`gitnexus/` and `gitnexus-web/`).
  *
- * Shape is unchanged from the prior local definition.
+ * Providers add optional source and semantic metadata to this shared contract.
  */
 
 import type { NodeLabel } from '../graph/types.js';
+import type { Range, SourcePosition } from './types.js';
 
 export interface ParameterTypeClass {
   /** Normalized base type, matching the coarse `parameterTypes` vocabulary when known. */
@@ -57,9 +58,16 @@ export interface TypeParameter {
 }
 
 export interface SymbolDefinition {
+  /** Exact identifier capture, when the provider supplied a source name. */
+  readonly nameRange?: Range;
+  /** Full declaration capture, retained to validate persisted graph ranges. */
+  readonly declarationRange?: Range;
   nodeId: string;
   filePath: string;
   type: NodeLabel;
+  /** Optional graph-source position (1-based line, 0-based column) for an
+   *  embedded source buffer. Lexical scope identity remains in `nodeId`. */
+  graphPosition?: SourcePosition;
   /** Canonical dot-separated qualified type name for class-like symbols
    *  (e.g. `App.Models.User`). Falls back to the simple symbol name when no
    *  package/namespace/module scope exists or no explicit qualified metadata is provided. */
@@ -111,6 +119,18 @@ export interface SymbolDefinition {
    *  source (for example an anonymous class). Consumers may use this only as a
    *  conservative priority hint; it does not change graph-node identity. */
   isSynthetic?: boolean;
+  /**
+   * Whether the producing language saw EXPORT EVIDENCE on this declaration —
+   * an `export` modifier, a later `export { name }` specifier, an `export
+   * default name`. TRI-STATE, and the absence is load-bearing: `undefined`
+   * means the language emitted no verdict (most languages, and any ECMAScript
+   * file whose export surface is a CommonJS assignment the marker cannot read),
+   * which readers MUST treat as "unknown" and fall back to their prior
+   * behavior. Only `false` says "this module does not publish the name": a
+   * `false` keeps a module-private `function foo` from being counted as a
+   * wildcard provider or bound through a barrel's `export *` closure.
+   */
+  isExported?: boolean;
   /** Links Method/Constructor/Property to owning Class/Struct/Trait nodeId */
   ownerId?: string;
   /** #1982/#1993: bridge-held enclosing-namespace path (e.g. `NS1`, `Outer.Inner`)

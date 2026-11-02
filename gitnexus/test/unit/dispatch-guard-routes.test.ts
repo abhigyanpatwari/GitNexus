@@ -118,6 +118,12 @@ describe('dispatch-guard route extraction', () => {
   });
 
   describe('what must NOT become a route', () => {
+    it('ignores comparisons against stored route metadata', () => {
+      expect(paths("function f(route) { return route.routePath === '/comparison-ghost' }")).toEqual(
+        [],
+      );
+    });
+
     it('ignores a comparison against something that is not a request path', () => {
       // `mode` is not a path expression, so `/full` is just a string.
       expect(paths(`function f() { if (mode === '/full') { return 1 } }`)).toEqual([]);
@@ -1092,6 +1098,12 @@ describe('dispatch-guard route extraction', () => {
   });
 
   describe('path expressions the rule accepts', () => {
+    it('accepts a bare routePath request-path guard', () => {
+      expect(paths("function f(routePath) { if (routePath === '/api/x') return 1 }")).toEqual([
+        '/api/x',
+      ]);
+    });
+
     it('accepts a member access ending in .pathname', () => {
       expect(
         paths(`function f(req) { if (new URL(req.url, base).pathname === '/api/x') { return 1 } }`),

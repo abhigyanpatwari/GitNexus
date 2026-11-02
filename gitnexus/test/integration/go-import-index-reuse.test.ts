@@ -26,14 +26,19 @@
 import { describe, it, expect } from 'vitest';
 import { goScopeResolver } from '../../src/core/ingestion/languages/go/scope-resolver.js';
 import { CountingSet, expectDistinctFileSetsGetOwnIndex } from '../helpers/counting-file-set.js';
+import type { GoWorkspaceConfig } from '../../src/core/ingestion/languages/go/workspace-config.js';
 
 // `resolveImportTarget` is a required member of `ScopeResolver`, so this is a
 // plain read — no optional call, and no `toBeDefined()` guarding a branch that
 // cannot be taken.
 const { resolveImportTarget } = goScopeResolver;
 
-/** The value `loadGoModulePath` produces for a repo with a `go.mod`. */
-const GO_MODULE = { modulePath: 'example.com/mod' };
+/** The value `captureGoWorkspaceConfig` produces for a repo whose only
+ *  `go.mod` is at its root. */
+const GO_MODULE: GoWorkspaceConfig = {
+  modules: [{ modulePath: 'example.com/mod', dir: '' }],
+  workFiles: [],
+};
 
 const FROM_FILE = 'main.go';
 
@@ -60,10 +65,8 @@ describe('Go import resolution — index reuse across imports (#2877)', () => {
     const resolved: (string | readonly string[] | null)[] = [];
 
     for (let i = 0; i < 200; i++) {
-      // Three shapes that between them reach every leg: the module-relative
-      // package leg, the root-package leg, and a third-party path that misses
-      // and so runs the whole GOPATH suffix cascade to completion — the case
-      // that used to cost one full workspace scan per path segment.
+      // Three module-mode shapes: the module-relative package leg, the
+      // root-package leg, and a third-party path rejected by the go.mod gate.
       resolved.push(
         resolveImportTarget('example.com/mod/internal/models', FROM_FILE, files, GO_MODULE),
       );
@@ -81,6 +84,19 @@ describe('Go import resolution — index reuse across imports (#2877)', () => {
     expect(resolved[0]).toEqual(['internal/models/user.go', 'internal/models/order.go']);
     expect(resolved[1]).toEqual(['main.go']);
     expect(resolved[2]).toBeNull();
+  });
+
+  it('rejects foreign and stdlib imports before building the package index', () => {
+    const files = buildWorkspace(300);
+
+    for (let i = 0; i < 200; i++) {
+      expect(
+        resolveImportTarget(`github.com/vendor/dep${i}/sub`, FROM_FILE, files, GO_MODULE),
+      ).toBeNull();
+      expect(resolveImportTarget('fmt', FROM_FILE, files, GO_MODULE)).toBeNull();
+    }
+
+    expect(files.scans).toBe(0);
   });
 
   it('a distinct file set gets its own index (no stale cross-run reuse)', () => {

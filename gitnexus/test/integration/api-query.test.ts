@@ -51,8 +51,8 @@ withTestLbugDB(
         });
         expect(response.status).toBe(200);
         const body = await response.json();
-        expect(Array.isArray(body.result)).toBe(true);
-        expect(body.result[0].one).toBe(1);
+        expect(body).toHaveProperty('result', expect.any(Array));
+        expect(body).toHaveProperty('result.0.one', 1);
       });
 
       it('returns 403 for a write query on read-only HTTP path', async () => {
@@ -65,7 +65,10 @@ withTestLbugDB(
         });
         expect(response.status).toBe(403);
         const body = await response.json();
-        expect(body.error).toContain('Write queries are not allowed');
+        expect(body).toHaveProperty(
+          'error',
+          expect.stringContaining('Write queries are not allowed'),
+        );
       });
 
       it('returns 400 for invalid params payload', async () => {
@@ -76,7 +79,7 @@ withTestLbugDB(
         });
         expect(response.status).toBe(400);
         const body = await response.json();
-        expect(body.error).toContain('"params"');
+        expect(body).toHaveProperty('error', expect.stringContaining('"params"'));
       });
 
       it('returns 400 when cypher is missing', async () => {
@@ -87,7 +90,7 @@ withTestLbugDB(
         });
         expect(response.status).toBe(400);
         const body = await response.json();
-        expect(body.error).toContain('Missing "cypher"');
+        expect(body).toHaveProperty('error', expect.stringContaining('Missing "cypher"'));
       });
     });
   },

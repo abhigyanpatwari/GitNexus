@@ -9,6 +9,7 @@ import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import { toZeroBasedLine } from '../../ingestion/utils/line-base.js';
 import { logger } from '../../logger.js';
 import { DATA_ROUTE_TABLE_SOURCE } from '../../ingestion/route-extractors/data-route-table.js';
+import { stripLeadingTemplatePrefix } from '../../ingestion/route-extractors/route-path.js';
 import {
   getPluginForFile,
   HTTP_SCAN_GLOB,
@@ -292,13 +293,29 @@ export function normalizeHttpPath(p: string): string {
 }
 
 /**
- * Consumer-side normalization is more aggressive:
- *   - template literals (`${x}`) → `{param}`
- *   - strip protocol + host if the URL is absolute
- *   - numeric segments → `{param}` (so `/api/orders/42` → `/api/orders/{param}`)
+ * Placeholder substituted for `${...}` before WHATWG `URL` parsing so the
+ * parser cannot percent-encode our own `{param}` markers. A genuine encoded
+ * segment like `%7Bfoo%7D` then survives as a literal, instead of being
+ * rewritten into braces and folded into `{param}`.
+ *
+ * Private-use U+E000 cannot appear in a real URL path, so a literal
+ * `__gitnexus_http_param__` segment is not rewritten into `{param}`.
  */
-function normalizeConsumerPath(url: string): string {
-  const templated = url.replace(/\$\{[^}]+\}/g, '{param}').trim();
+const CONSUMER_PARAM_SENTINEL = '\uE000';
+const CONSUMER_PARAM_SENTINEL_ENC = '%ee%80%80';
+
+function restoreConsumerParamSentinel(pathOnly: string): string {
+  return pathOnly
+    .split(CONSUMER_PARAM_SENTINEL)
+    .join('{param}')
+    .replace(new RegExp(CONSUMER_PARAM_SENTINEL_ENC, 'gi'), '{param}');
+}
+
+/** Canonicalize a consumer URL after `stripLeadingTemplatePrefix`. */
+function normalizeConsumerPath(url: string): string | null {
+  const stripped = stripLeadingTemplatePrefix(url.trim());
+  if (stripped === null) return null;
+  const templated = stripped.replace(/\$\{[^}]+\}/g, CONSUMER_PARAM_SENTINEL).trim();
   let pathOnly = templated;
   if (/^https?:\/\//i.test(templated)) {
     try {
@@ -307,6 +324,7 @@ function normalizeConsumerPath(url: string): string {
       pathOnly = templated.replace(/^https?:\/\/[^/]+/i, '');
     }
   }
+  pathOnly = restoreConsumerParamSentinel(pathOnly);
   const normalized = normalizeHttpPath(pathOnly || '/');
   const segments = normalized
     .split('/')
@@ -358,7 +376,7 @@ export class HttpRouteExtractor implements ContractExtractor {
       { plugin: HttpLanguagePlugin; input: HttpScanInput; repoContext: unknown } | null
     >();
     const projectDetections = new Map<string, HttpDetection[]>();
-    let projectScanComplete = false;
+    const completedProjectScans = new Set<NonNullable<HttpLanguagePlugin['scanProject']>>();
 
     // Per-plugin cross-file context (e.g. Python's FastAPI router →
     // include_router(prefix=...) map). Built lazily on first
@@ -373,7 +391,7 @@ export class HttpRouteExtractor implements ContractExtractor {
       if (!plugin || typeof plugin.prepareRepo !== 'function') return undefined;
       if (repoContextByPlugin.has(plugin.name)) return repoContextByPlugin.get(plugin.name);
       try {
-        const ctx = plugin.prepareRepo({
+        const ctx = await plugin.prepareRepo({
           repoPath,
           files: await getScannedFiles(),
           parser,
@@ -421,14 +439,21 @@ export class HttpRouteExtractor implements ContractExtractor {
     };
 
     const getDetections = async (rel: string): Promise<HttpDetection[]> => {
-      const cached = cachedDetections.get(rel);
+      // Graph enrichment needs composed providers too. Resolve only this
+      // project's plugin family; unrelated complete-coverage languages can
+      // still skip parsing when their graph handlers already resolved.
+      const projectScan = getPluginForFile(rel)?.scanProject;
+      if (projectScan && !completedProjectScans.has(projectScan))
+        await collectProjectDetections(await getScannedFiles(), projectScan);
+      const key = normalizeRepoRelPath(rel);
+      const cached = cachedDetections.get(key);
       if (cached) return cached;
       const scanInput = await getScanInput(rel);
       const ownDetections = scanInput
         ? scanInput.plugin.scan(scanInput.input.tree, scanInput.repoContext, rel)
         : [];
-      const detections = [...ownDetections, ...(projectDetections.get(rel) ?? [])];
-      cachedDetections.set(rel, detections);
+      const detections = [...ownDetections, ...(projectDetections.get(key) ?? [])];
+      cachedDetections.set(key, detections);
       return detections;
     };
 
@@ -441,27 +466,41 @@ export class HttpRouteExtractor implements ContractExtractor {
       return scannedFiles;
     };
 
-    const collectProjectDetections = async (files: string[]): Promise<void> => {
-      if (projectScanComplete) return;
-      projectScanComplete = true;
-      const byPlugin = new Map<HttpLanguagePlugin, HttpScanInput[]>();
+    const collectProjectDetections = async (
+      files: string[],
+      onlyScan?: NonNullable<HttpLanguagePlugin['scanProject']>,
+    ): Promise<void> => {
+      const byScan = new Map<
+        NonNullable<HttpLanguagePlugin['scanProject']>,
+        { inputs: HttpScanInput[]; repoContext: unknown }
+      >();
       for (const rel of files) {
+        const scanProject = getPluginForFile(rel)?.scanProject;
+        if (
+          !scanProject ||
+          completedProjectScans.has(scanProject) ||
+          (onlyScan && onlyScan !== scanProject)
+        )
+          continue;
         const scanInput = await getScanInput(rel);
-        if (!scanInput?.plugin.scanProject) continue;
-        const items = byPlugin.get(scanInput.plugin) ?? [];
-        items.push(scanInput.input);
-        byPlugin.set(scanInput.plugin, items);
+        if (!scanInput) continue;
+        const group = byScan.get(scanProject) ?? { inputs: [], repoContext: scanInput.repoContext };
+        group.inputs.push(scanInput.input);
+        byScan.set(scanProject, group);
       }
 
-      for (const [plugin, inputs] of byPlugin) {
-        const results = plugin.scanProject?.(inputs) ?? [];
+      // Shared function identity pools grammar variants without teaching the
+      // orchestrator which languages belong to the same project family.
+      for (const [scanProject, { inputs, repoContext }] of byScan) {
+        completedProjectScans.add(scanProject);
+        const results = scanProject(inputs, repoContext);
         for (const result of results) {
-          const existing = projectDetections.get(result.filePath) ?? [];
-          projectDetections.set(result.filePath, [...existing, ...result.detections]);
+          const key = normalizeRepoRelPath(result.filePath);
+          const existing = projectDetections.get(key) ?? [];
+          projectDetections.set(key, [...existing, ...result.detections]);
+          cachedDetections.delete(key);
         }
       }
-
-      cachedDetections.clear();
     };
 
     const files = await getScannedFiles();
@@ -584,11 +623,17 @@ export class HttpRouteExtractor implements ContractExtractor {
           if (d.strictHandlerResolution) return null;
           return resolveSymbolByNameUnique(d.handlerImport.name);
         }
-        const byName = d.strictHandlerResolution
-          ? resolveFileSymbolByNameUnique(syms, d.name)
-          : resolveSymbolByName(syms, d.name);
-        if (byName) return byName;
-        if (d.strictHandlerResolution) return null;
+        // A qualified designator (`recv.name`) does not prove the handler is
+        // declared in this file, so the file-first rung could bind an
+        // unrelated same-named local symbol: go straight to the unique
+        // repo-wide match.
+        if (!d.qualifiedHandler) {
+          const byName = d.strictHandlerResolution
+            ? resolveFileSymbolByNameUnique(syms, d.name)
+            : resolveSymbolByName(syms, d.name);
+          if (byName) return byName;
+          if (d.strictHandlerResolution) return null;
+        }
         const byGlobal = await resolveSymbolByNameUnique(d.name);
         if (byGlobal) return byGlobal;
         // A NAMED handler we could not resolve by name (neither file-scoped nor
@@ -621,6 +666,7 @@ export class HttpRouteExtractor implements ContractExtractor {
             dbExecutor,
             getDetections,
             resolveDetectionSymbol,
+            loadFileSymbols,
             coveredFiles,
           )
         : [];
@@ -690,6 +736,7 @@ export class HttpRouteExtractor implements ContractExtractor {
     db: CypherExecutor,
     getDetections: (rel: string) => Promise<HttpDetection[]>,
     resolveSymbol: (filePath: string, d: HttpDetection) => Promise<ResolvedSymbol | null>,
+    loadFileSymbols: (filePath: string) => Promise<Record<string, unknown>[]>,
     coveredFiles?: Set<string>,
   ): Promise<ExtractedContract[]> {
     const out: ExtractedContract[] = [];
@@ -749,15 +796,11 @@ export class HttpRouteExtractor implements ContractExtractor {
         if (!method) method = 'GET';
         symbolUid = handlerSymbolId;
         if (filePath) {
-          try {
-            const syms = await db(CONTAINING_QUERY, { filePath });
-            const hit = syms.find((s) => String(s.uid ?? s[0]) === handlerSymbolId);
-            if (hit) {
-              symbolName = String(hit.name ?? hit[1]) || symbolName;
-              symPath = String(hit.filePath ?? hit[2]) || filePath;
-            }
-          } catch {
-            /* keep the authoritative uid + basename fallback */
+          const syms = await loadFileSymbols(filePath);
+          const hit = syms.find((s) => String(s.uid ?? s[0]) === handlerSymbolId);
+          if (hit) {
+            symbolName = String(hit.name ?? hit[1]) || symbolName;
+            symPath = String(hit.filePath ?? hit[2]) || filePath;
           }
         }
       } else {
@@ -1001,6 +1044,12 @@ export class HttpRouteExtractor implements ContractExtractor {
       for (const d of detections) {
         if (d.role !== 'consumer') continue;
         const pathNorm = normalizeConsumerPath(d.path);
+        // A consumer url that cannot be reduced to a routable path (e.g. a
+        // leading template binding that is neither a clean prefix nor a
+        // remainder that starts with `/`) is dropped here rather than emitted
+        // as a never-matching contract — same treatment the plugins give
+        // static relative urls at scan time.
+        if (pathNorm === null) continue;
         // Resolve the function CONTAINING the fetch/axios call so the consumer
         // contract carries a real symbolUid (was always '' — the gap that left
         // cross-repo trace/impact unable to traverse HTTP links).

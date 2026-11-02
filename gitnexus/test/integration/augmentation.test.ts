@@ -21,6 +21,11 @@ const AUGMENT_SEED_DATA = [
   `CREATE (n:Function {id: 'func:login', name: 'login', filePath: 'src/auth.ts', startLine: 1, endLine: 15, isExported: true, content: 'function login authenticates user credentials', description: 'user login'})`,
   `CREATE (n:Function {id: 'func:validate', name: 'validate', filePath: 'src/auth.ts', startLine: 17, endLine: 25, isExported: true, content: 'function validate checks user input', description: 'input validation'})`,
   `CREATE (n:Function {id: 'func:hash', name: 'hash', filePath: 'src/utils.ts', startLine: 1, endLine: 8, isExported: true, content: 'function hash computes bcrypt hash', description: 'password hashing'})`,
+  ...Array.from(
+    { length: 5 },
+    (_, i) =>
+      `CREATE (n:Function {id: 'a:login-${i}', name: 'loginPartial${i}', filePath: 'src/login-partial-${i}.ts', startLine: 1, endLine: 2, isExported: true, content: 'partial login match ${i}', description: 'login partial'})`,
+  ),
 
   // Class / Method / Interface nodes
   `CREATE (n:Class {id: 'class:AuthService', name: 'AuthService', filePath: 'src/auth.ts', startLine: 30, endLine: 60, isExported: true, content: 'class AuthService handles authentication', description: 'auth service'})`,
@@ -56,6 +61,16 @@ const AUGMENT_FTS_INDEXES = [
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn(),
 }));
+
+vi.mock('../../src/storage/storage-resolver.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/storage/storage-resolver.js')>();
+  return {
+    ...actual,
+    requireRegisteredStoragePath: vi.fn(
+      async (entry: { storagePath: string }) => entry.storagePath,
+    ),
+  };
+});
 
 let augment: (pattern: string, cwd?: string) => Promise<string>;
 let augmentNoFts: (pattern: string, cwd?: string) => Promise<string>;
@@ -109,23 +124,51 @@ withTestLbugDB(
         expect(typeof result).toBe('string');
       });
 
-      // ─── Negative-safety: fallback must stay gated on !ftsAvailable ───
-      //
-      // When FTS is available but happens to return zero BM25 hits, the
-      // CONTAINS fallback must NOT fire — preserving the original early-return
-      // semantics. If anyone later loosens the gate to `symbolMatches.length
-      // === 0` alone, this test fails.
+      it('silently degrades when the registered storage path fails validation', async () => {
+        const { requireRegisteredStoragePath } =
+          await import('../../src/storage/storage-resolver.js');
+        const resolverMock = vi.mocked(requireRegisteredStoragePath);
+        resolverMock.mockRejectedValueOnce(new Error('foreign storage'));
 
-      it('does NOT fire CONTAINS fallback when FTS is available but BM25 returns empty', async () => {
+        const result = await augment('login', handle.dbPath);
+
+        expect(result).toBe('');
+      });
+
+      it('falls back to graph names when FTS is available but BM25 returns empty', async () => {
         const bm25 = await import('../../src/core/search/bm25-index.js');
         const spy = vi
           .spyOn(bm25, 'searchFTSFromLbug')
           .mockResolvedValue({ results: [], ftsAvailable: true });
         try {
-          // 'login' WOULD match a graph node via CONTAINS, but FTS is available
-          // and empty → fallback gate must hold → result must be ''.
+          // FTS health does not imply its top file results contain the symbol's
+          // definition. The graph-name fallback must recover the exact node.
           const result = await augment('login', handle.dbPath);
-          expect(result).toBe('');
+          expect(result).toContain('[GitNexus]');
+          expect(result).toMatch(/^login \(src\/auth\.ts\)$/m);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it('finds an exact-name symbol when FTS ranks only mentioning files', async () => {
+        const bm25 = await import('../../src/core/search/bm25-index.js');
+        const spy = vi.spyOn(bm25, 'searchFTSFromLbug').mockResolvedValue({
+          results: Array.from({ length: 5 }, (_, i) => ({
+            filePath: `src/caller-${i}.ts`,
+            score: 100 - i,
+            rank: i + 1,
+            nodeIds: [`file:caller-${i}`],
+          })),
+          ftsAvailable: true,
+        });
+        try {
+          // Five partial login matches have IDs that sort before func:login, so
+          // the five-row fallback only retains the exact node when exact names
+          // rank ahead of partial matches.
+          const result = await augment('login', handle.dbPath);
+          expect(result).toContain('[GitNexus]');
+          expect(result).toMatch(/^login \(src\/auth\.ts\)$/m);
         } finally {
           spy.mockRestore();
         }
@@ -164,7 +207,7 @@ withTestLbugDB(
           }
         });
 
-        it('matches CWD at root level and repo in sub-directory (repo at /src, CWD at /)', async () => {
+        it('does not attach a nested registered checkout from a parent cwd (repo at /src, CWD at /)', async () => {
           const { listRegisteredRepos } = await import('../../src/storage/repo-manager.js');
           const rootPath = path.resolve('/');
           const subDir = path.join(rootPath, 'src');
@@ -181,8 +224,7 @@ withTestLbugDB(
 
           try {
             const result = await augment('login', rootPath);
-            expect(result.length).toBeGreaterThan(0);
-            expect(result).toContain('[GitNexus]');
+            expect(result).toBe('');
           } finally {
             (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
               {
@@ -226,7 +268,7 @@ withTestLbugDB(
             }
           });
 
-          it('matches Windows sub-directory repo and drive-root CWD (repo at C:\\src, CWD at C:\\)', async () => {
+          it('does not attach a nested Windows checkout from a drive-root cwd (repo at C:\\src, CWD at C:\\)', async () => {
             const { listRegisteredRepos } = await import('../../src/storage/repo-manager.js');
 
             (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
@@ -241,7 +283,7 @@ withTestLbugDB(
 
             try {
               const result = await augment('login', 'C:\\');
-              expect(result.length).toBeGreaterThan(0);
+              expect(result).toBe('');
             } finally {
               (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
                 {

@@ -299,7 +299,13 @@ export class PdgEmitSink implements KnowledgeGraph {
     this.real.forEachRelationship(fn);
   }
   forEachRelationshipFields(
-    fn: (sourceId: string, targetId: string, type: RelationshipType, confidence: number) => void,
+    fn: (
+      sourceId: string,
+      targetId: string,
+      type: RelationshipType,
+      confidence: number,
+      reason: string,
+    ) => void,
   ): void {
     this.real.forEachRelationshipFields(fn);
   }

@@ -27,4 +27,17 @@ describe('resolveEmbeddingConfig', () => {
 
     expect(() => resolveEmbeddingConfig()).toThrow('GITNEXUS_EMBEDDING_THREADS');
   });
+
+  it('resolves the final generated input budget from env over explicit config', () => {
+    process.env.GITNEXUS_EMBEDDING_MAX_INPUT_CHARS = '2048';
+    expect(resolveEmbeddingConfig({ maxInputChars: 8192 }).maxInputChars).toBe(2048);
+  });
+
+  it.each(['1', '0', '-1', '2.5', 'Infinity', '9007199254740992'])(
+    'rejects invalid final input budget %s',
+    (value) => {
+      process.env.GITNEXUS_EMBEDDING_MAX_INPUT_CHARS = value;
+      expect(() => resolveEmbeddingConfig()).toThrow('GITNEXUS_EMBEDDING_MAX_INPUT_CHARS');
+    },
+  );
 });

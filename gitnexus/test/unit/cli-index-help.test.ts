@@ -1,10 +1,17 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command, Option } from 'commander';
-import * as ts from 'typescript';
+import * as t from '@babel/types';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  forEachChild,
+  parseTypeScript,
+  staticMemberName,
+  staticStringValue,
+} from '../helpers/parse-typescript-source.js';
 import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import { localizeCliHelp } from '../../src/cli/help-i18n.js';
 import { setCliLanguage, type SupportedCliLanguage } from '../../src/cli/i18n/index.js';
@@ -16,7 +23,11 @@ function runHelp(command: string, env: NodeJS.ProcessEnv = {}) {
 }
 
 function runHelpArgs(args: string[], env: NodeJS.ProcessEnv = {}) {
-  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...args, '--help'], {
+  return runCliArgs([...args, '--help'], env);
+}
+
+function runCliArgs(args: string[], env: NodeJS.ProcessEnv = {}) {
+  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...args], {
     cwd: repoRoot,
     encoding: 'utf8',
     env: { ...process.env, ...env },
@@ -37,6 +48,7 @@ const allHelpCommands = [
   ['list'],
   ['status'],
   ['doctor'],
+  ['update'],
   ['clean'],
   ['remove'],
   ['wiki'],
@@ -50,6 +62,7 @@ const allHelpCommands = [
   ['eval-server'],
   ['embeddings'],
   ['embeddings', 'install'],
+  ['embeddings', 'sync'],
   ['group'],
   ['group', 'create'],
   ['group', 'add'],
@@ -62,17 +75,6 @@ const allHelpCommands = [
   ['group', 'contracts'],
 ];
 
-function staticStringValue(node: ts.Node | undefined): string | undefined {
-  if (!node) return undefined;
-  if (ts.isStringLiteralLike(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
-  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    const left = staticStringValue(node.left);
-    const right = staticStringValue(node.right);
-    if (left !== undefined && right !== undefined) return `${left}${right}`;
-  }
-  return undefined;
-}
-
 function extractRegisteredHelpDescriptions(): string[] {
   const descriptions = new Set<string>();
   const sourceFiles = ['src/cli/index.ts', 'src/cli/group.ts'];
@@ -80,27 +82,30 @@ function extractRegisteredHelpDescriptions(): string[] {
   for (const relativePath of sourceFiles) {
     const filePath = path.join(repoRoot, relativePath);
     const source = fs.readFileSync(filePath, 'utf8');
-    const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true);
+    const { ast } = parseTypeScript(filePath, source);
 
-    function visit(node: ts.Node): void {
-      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
-        const method = node.expression.name.text;
-        const description =
-          method === 'description'
-            ? staticStringValue(node.arguments[0])
-            : method === 'option' || method === 'requiredOption'
-              ? staticStringValue(node.arguments[1])
-              : undefined;
+    function visit(node: t.Node): void {
+      if (
+        t.isCallExpression(node) &&
+        (t.isMemberExpression(node.callee) || t.isOptionalMemberExpression(node.callee))
+      ) {
+        const method = staticMemberName(node.callee);
+        let description: string | undefined;
+        if (method === 'description') {
+          description = staticStringValue(node.arguments[0]);
+        } else if (method === 'option' || method === 'requiredOption') {
+          description = staticStringValue(node.arguments[1]);
+        }
 
         if (description && /[A-Za-z]/.test(description)) {
           descriptions.add(description.replace(/\s+/g, ' ').trim());
         }
       }
 
-      ts.forEachChild(node, visit);
+      forEachChild(node, visit);
     }
 
-    visit(sourceFile);
+    visit(ast);
   }
 
   return [...descriptions].filter((description) => description.length > 0).sort();
@@ -185,9 +190,35 @@ describe('CLI help surface', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('环境变量：');
-    expect(result.stdout).toContain('当参数和对应环境变量同时提供时，参数优先。');
+    expect(result.stdout).toContain('GITNEXUS_STORAGE_PATH=/absolute/index');
+    expect(result.stdout).toContain('完整外部索引目录');
+    expect(result.stdout).toContain('GITNEXUS_STORAGE_ROOT=/absolute/root');
+    expect(result.stdout).toContain('外部索引根目录');
+    expect(result.stdout).toContain('GITNEXUS_CONTENT_RETENTION=full');
+    expect(result.stdout).toContain('源码文本保留策略');
+    expect(result.stdout).toContain(
+      'CLI 参数优先于 `.gitnexusrc`，后者优先于环境变量，环境变量优先于内置默认值。',
+    );
     expect(result.stdout).toContain('提示：`.gitnexusignore` 支持 `.gitignore` 风格的取反。');
     expect(result.stdout).not.toContain('Environment variables:');
+    expect(result.stdout).not.toContain('Flags override the corresponding env vars');
+    expect(result.stdout).not.toContain('当参数和对应环境变量同时提供时，参数优先。');
+  });
+
+  it('analyze help documents the external storage root layout', () => {
+    const result = runHelp('analyze');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('GITNEXUS_STORAGE_PATH=/absolute/index');
+    expect(result.stdout).toContain('Complete external index directory');
+    expect(result.stdout).toContain('GITNEXUS_STORAGE_ROOT=/absolute/root');
+    expect(result.stdout).toContain('External index root');
+    expect(result.stdout).toContain('GITNEXUS_CONTENT_RETENTION=full');
+    expect(result.stdout).toContain('Source-text retention profile');
+    expect(result.stdout).toContain('<repo-basename>-<canonical-path-hash>/');
+    expect(result.stdout).toContain(
+      'CLI flags take precedence over `.gitnexusrc`, which takes precedence over env vars, which take precedence over built-in defaults.',
+    );
     expect(result.stdout).not.toContain('Flags override the corresponding env vars');
   });
 
@@ -242,6 +273,112 @@ describe('CLI help surface', () => {
     }
   });
 
+  it('auto-sync help exposes lifecycle actions and state files', () => {
+    const result = runHelp('auto-sync');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('gitnexus auto-sync [options] [action]');
+    expect(result.stdout).toContain('Actions: init, start (default), restart, stop, status, reset');
+    expect(result.stdout).toContain('GITNEXUS_HOME/watch_config.yml');
+    expect(result.stdout).toContain('GITNEXUS_HOME/watch/watch.pid');
+    expect(result.stdout).toContain('GITNEXUS_HOME/watch/project_commit_info.txt');
+  });
+
+  it('watch is reserved and does not start auto-sync or local watch', () => {
+    const help = runHelp('watch');
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain('gitnexus watch [options] [action]');
+    expect(help.stdout).toContain('gitnexus analyze --watch');
+    expect(help.stdout).toContain('gitnexus auto-sync start');
+    expect(help.stdout).not.toContain('GITNEXUS_HOME/watch_config.yml');
+
+    const started = runCliArgs(['watch'], {});
+    expect(started.status).toBe(1);
+    expect(started.stderr).toContain('gitnexus watch');
+    expect(started.stderr).toContain('gitnexus analyze --watch');
+    expect(started.stderr).toContain('gitnexus auto-sync start');
+
+    const startAction = runCliArgs(['watch', 'start'], {});
+    expect(startAction.status).toBe(1);
+    expect(startAction.stderr).toContain('gitnexus auto-sync start');
+  });
+
+  it('auto-sync init creates the default watch_config.yml and does not overwrite it', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-init-'));
+    try {
+      const first = runCliArgs(['auto-sync', 'init'], { GITNEXUS_HOME: home });
+      const configPath = path.join(home, 'watch_config.yml');
+
+      expect(first.status).toBe(0);
+      expect(first.stdout).toContain(`Created ${configPath}`);
+      const config = fs.readFileSync(configPath, 'utf8');
+      expect(config).toContain('sync_interval_minutes: 10');
+      expect(config).toContain('analyze_failure_threshold: 3');
+      expect(config).toContain('analyze_timeout: 5m');
+      expect(config).toContain('pdg: false');
+      expect(config).toContain('omit = preserve live index mode');
+      expect(config).toContain('overwrite_local_changes: false');
+      expect(config).toContain(`local_path: ${path.join(home, 'repos')}`);
+      expect(config).not.toContain('/abs/path/to/repos');
+      expect(config).toContain('git@github.com:owner/repo.git');
+      expect(config).not.toContain('group_name:');
+
+      const second = runCliArgs(['auto-sync', 'init'], { GITNEXUS_HOME: home });
+
+      expect(second.status).toBe(1);
+      expect(second.stderr).toContain(`Config already exists: ${configPath}`);
+      expect(fs.readFileSync(configPath, 'utf8')).toBe(config);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('auto-sync reset removes only derived auto-sync state files', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-reset-'));
+    const watchDir = path.join(home, 'watch');
+    const cloneMarker = path.join(home, 'repos', 'repo', 'keep.txt');
+    try {
+      fs.mkdirSync(path.dirname(cloneMarker), { recursive: true });
+      fs.writeFileSync(cloneMarker, 'keep');
+      fs.mkdirSync(watchDir, { recursive: true });
+      fs.writeFileSync(path.join(watchDir, 'auto-sync-state.json'), '{}');
+      fs.writeFileSync(path.join(watchDir, 'project_commit_info.txt'), 'derived');
+
+      const result = runCliArgs(['auto-sync', 'reset'], { GITNEXUS_HOME: home });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Reset analysis state');
+      expect(fs.existsSync(path.join(watchDir, 'auto-sync-state.json'))).toBe(false);
+      expect(fs.existsSync(path.join(watchDir, 'project_commit_info.txt'))).toBe(false);
+      expect(fs.readFileSync(cloneMarker, 'utf8')).toBe('keep');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('auto-sync stop exits non-zero when no watch was stopped', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-stop-'));
+    try {
+      const result = runCliArgs(['auto-sync', 'stop'], { GITNEXUS_HOME: home });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Watch is not running');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('auto-sync restart starts when the watch is not running', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-restart-'));
+    try {
+      const result = runCliArgs(['auto-sync', 'restart'], { GITNEXUS_HOME: home });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Watch is not running');
+      expect(result.stderr).toContain('Missing config file');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('wiki help shows provider, review, and verbose flags', () => {
     const result = runHelp('wiki');
 
@@ -249,6 +386,7 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--provider <provider>');
     expect(result.stdout).toContain('claude');
     expect(result.stdout).toContain('codex');
+    expect(result.stdout).toContain('grok');
     expect(result.stdout).toContain('--review');
     expect(result.stdout).toContain('-v, --verbose');
     expect(result.stdout).toContain('--model <model>');

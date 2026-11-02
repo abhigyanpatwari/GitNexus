@@ -6,8 +6,8 @@
  * does its own extraction, and writes directly to the graph.
  *
  * Pipeline:
- *   1. Separate programs from copybooks
- *   2. Build copybook map (name -> content)
+ *   1. Separate programs from copybooks and JCL
+ *   2. Index file content by path for COPY expansion
  *   3. For each program: expand COPY statements, then run regex extraction
  *   4. Map CobolRegexResults to graph nodes and relationships
  *   5. Optionally process JCL files for job-step cross-references
@@ -25,16 +25,15 @@ import {
 } from './cobol/cobol-preprocessor.js';
 import { expandCopies } from './cobol/cobol-copy-expander.js';
 import { processJclFiles } from './cobol/jcl-processor.js';
+import { resolveCobolCopyTarget } from './languages/cobol/copy-target.js';
+import { COBOL_EXTENSIONS, JCL_EXTENSIONS } from './cobol/file-types.js';
+export { isCobolFile, isJclFile } from './cobol/file-types.js';
 
 import { logger } from '../logger.js';
 
 // ---------------------------------------------------------------------------
 // File detection
 // ---------------------------------------------------------------------------
-
-const COBOL_EXTENSIONS = new Set(['.cob', '.cbl', '.cobol', '.cpy', '.copybook']);
-
-const JCL_EXTENSIONS = new Set(['.jcl', '.job', '.proc']);
 
 const COPYBOOK_EXTENSIONS = new Set(['.cpy', '.copybook']);
 
@@ -64,16 +63,6 @@ export interface CobolProcessResult {
   inspects: number;
   initializes: number;
   arithmeticOps: number;
-}
-
-/** Returns true if the file is a COBOL or copybook file. */
-export function isCobolFile(filePath: string): boolean {
-  return COBOL_EXTENSIONS.has(path.extname(filePath).toLowerCase());
-}
-
-/** Returns true if the file is a JCL file. */
-export function isJclFile(filePath: string): boolean {
-  return JCL_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
 /** Returns true if the file is a COBOL copybook. */
@@ -123,38 +112,23 @@ export const processCobol = (
 
   // ── 1. Separate programs, copybooks, and JCL ───────────────────────
   const programs: CobolFile[] = [];
-  const copybooks: CobolFile[] = [];
   const jclFiles: CobolFile[] = [];
 
   for (const file of files) {
     const ext = path.extname(file.path).toLowerCase();
     if (JCL_EXTENSIONS.has(ext)) {
       jclFiles.push(file);
-    } else if (isCopybook(file.path)) {
-      copybooks.push(file);
-    } else if (COBOL_EXTENSIONS.has(ext)) {
+    } else if (COBOL_EXTENSIONS.has(ext) && !isCopybook(file.path)) {
       programs.push(file);
     }
   }
 
-  // ── 2. Build copybook map (uppercase name -> content) ──────────────
-  const copybookMap = new Map<string, { content: string; path: string }>();
-  for (const cb of copybooks) {
-    const name = path.basename(cb.path, path.extname(cb.path)).toUpperCase();
-    copybookMap.set(name, { content: cb.content, path: cb.path });
-  }
-
-  // Build reverse lookup: path -> content for O(1) readCopy
+  // Path → content for every COBOL/JCL file we ingested. Resolution picks
+  // the path (#2967 / census lockstep); this map only supplies the body.
   const copybookByPath = new Map<string, string>();
-  for (const [, entry] of copybookMap) {
-    copybookByPath.set(entry.path, entry.content);
+  for (const f of files) {
+    copybookByPath.set(f.path, f.content);
   }
-
-  // Resolve and read callbacks for expandCopies
-  const resolveCopy = (name: string): string | null => {
-    const entry = copybookMap.get(name.toUpperCase());
-    return entry ? entry.path : null;
-  };
   // Memoize preprocessed copybook content for the duration of this
   // processCobol call. A single copybook is COPYed by many programs (and at
   // many COPY sites within a program); without this cache
@@ -195,6 +169,11 @@ export const processCobol = (
 
     // Preprocess: clean patch markers
     const cleaned = preprocessCobolSource(file.content);
+
+    // Per-program so COPY EXTERNAL in src/PROG.cbl cannot land on
+    // vendor/EXTERNAL.cpy when a copybooks/ dir is present (#2967).
+    const resolveCopy = (name: string): string | null =>
+      resolveCobolCopyTarget(name, file.path, allPathSet);
 
     // Expand COPY statements
     const { expandedContent, copyResolutions } = expandCopies(
@@ -302,12 +281,15 @@ export const processCobol = (
 // Graph mapping
 // ---------------------------------------------------------------------------
 
-/** Generate a deterministic Property node ID using composite key (section:level:name). */
+/** Preserve distinct declarations with the same level/name in different groups. */
 function generatePropertyId(
   filePath: string,
-  item: { section: string; level: number; name: string },
+  item: { section: string; level: number; name: string; line: number },
 ): string {
-  return generateId('Property', `${filePath}:${item.section}:${item.level}:${item.name}`);
+  return generateId(
+    'Property',
+    `${filePath}:${item.section}:${item.level}:${item.name}@${item.line}`,
+  );
 }
 
 /**

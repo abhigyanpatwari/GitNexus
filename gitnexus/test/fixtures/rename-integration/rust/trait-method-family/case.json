@@ -1,0 +1,47 @@
+{
+  "language": "rust",
+  "description": "Rename a trait method and implementation, covering dynamic-trait and concrete dispatch while preserving an unrelated inherent method.",
+  "categories": ["polymorphism", "method-family", "trait", "homonyms"],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "model.rs",
+    "startLine": 0
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "success",
+    "edits": 4
+  },
+  "edges": [
+    {
+      "type": "METHOD_IMPLEMENTS",
+      "from": {
+        "name": "compute",
+        "kind": "Function",
+        "file": "model.rs",
+        "startLine": 2
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Function",
+        "file": "model.rs",
+        "startLine": 0
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "dispatch",
+        "kind": "Function",
+        "file": "model.rs"
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Function",
+        "file": "model.rs",
+        "startLine": 0
+      }
+    }
+  ]
+}

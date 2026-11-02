@@ -68,6 +68,14 @@ export type ReferenceKind =
 export type CallForm = 'free' | 'member' | 'constructor' | 'index';
 
 export interface ReferenceSite {
+  /** Exact identifier capture; atRange still describes the whole expression. */
+  readonly nameRange?: Range;
+  /** Graph caller for a synthesized invocation whose callable is looked up elsewhere.
+   *  Never changes lexical resolution from `inScope` (for example FastAPI Depends). */
+  readonly callerScope?: ScopeId;
+  /** Lexical lookup anchor when it differs from the reference's structural owner. */
+  readonly lookupScope?: ScopeId;
+  readonly lookupPurpose?: import('./types.js').LookupPurpose;
   /** The name being referenced (e.g., `'save'`, `'User'`, `'count'`). */
   readonly name: string;
   /**
@@ -208,6 +216,16 @@ export interface ReferenceSite {
    * else, so every other language's sites stay byte-identical.
    */
   readonly embeddedAsPointer?: boolean;
+  /**
+   * The call sits inside a branch that is provably unreachable from the
+   * indexed source at compile time — a Zig `if (CONST_FALSE)` body, or the
+   * `else` of `if (CONST_TRUE)`,
+   * where the condition folds to a comptime-known boolean. Set only when
+   * `kind === 'call'` and only by languages that compute static gating (Zig
+   * today); absent everywhere else, so every other site stays byte-identical.
+   * Threaded to `Reference.staticGated` and then `GraphRelationship.staticGated`.
+   */
+  readonly staticGated?: boolean;
 }
 
 /**

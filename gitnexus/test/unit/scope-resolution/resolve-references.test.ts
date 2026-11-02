@@ -6,6 +6,7 @@ import {
   buildQualifiedNameIndex,
   buildScopeTree,
   type BindingRef,
+  type ImportEdge,
   type Range,
   type ReferenceSite,
   type Scope,
@@ -15,6 +16,13 @@ import {
 } from 'gitnexus-shared';
 import { resolveReferenceSites } from '../../../src/core/ingestion/resolve-references.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
+import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
+import { createSemanticModel } from '../../../src/core/ingestion/model/semantic-model.js';
+import { buildGraphNodeLookup } from '../../../src/core/ingestion/scope-resolution/graph-bridge/node-lookup.js';
+import { emitReceiverBoundCalls } from '../../../src/core/ingestion/scope-resolution/passes/receiver-bound-calls.js';
+import { resolveCompoundReceiverClass } from '../../../src/core/ingestion/scope-resolution/passes/compound-receiver.js';
+import { buildWorkspaceResolutionIndex } from '../../../src/core/ingestion/scope-resolution/workspace-index.js';
+import type { SourceBindingResolution } from '../../../src/core/ingestion/scope-resolution/source-binding-resolution.js';
 
 const range = (sl = 1, sc = 0, el = 100, ec = 0): Range => ({
   startLine: sl,
@@ -79,6 +87,11 @@ function makeIndexes(
     }),
     imports: new Map(),
     bindings: new Map(),
+    workspaceFqnBindings: new Map(),
+    workspaceTypeBindings: new Map(),
+    namespaceFqnBindings: new Map(),
+    namespaceTypeBindings: new Map(),
+    accessibleNamespacesByScope: new Map(),
     bindingAugmentations: new Map(),
     referenceSites,
     sccs: [],
@@ -89,11 +102,552 @@ function makeIndexes(
       unresolvedEdges: 0,
       sccCount: 0,
       largestSccSize: 0,
+      ambiguousWildcardExports: [],
     },
   };
 }
 
 describe('resolveReferenceSites', () => {
+  it('resolves a written qualified type without falling back to an unrelated leaf', () => {
+    const definitions = ['Outer', 'Other'].map((owner) =>
+      mkDef({ nodeId: `${owner}.Target`, type: 'Class', qualifiedName: `${owner}.Target` }),
+    );
+    const module = mkScope({
+      id: 'module',
+      parent: null,
+      bindings: { Target: [{ def: definitions[1]!, origin: 'local' }] },
+    });
+    const exact: ReferenceSite = {
+      name: 'Target',
+      rawQualifiedName: 'Outer::Target',
+      kind: 'type-reference',
+      inScope: module.id,
+      atRange: range(3, 0, 3, 13),
+    };
+    const absent: ReferenceSite = {
+      ...exact,
+      rawQualifiedName: 'Missing::Target',
+      atRange: range(4, 0, 4, 15),
+    };
+    const bindings = new Map<ReferenceSite, SourceBindingResolution>();
+    const result = resolveReferenceSites({
+      scopes: makeIndexes([module], definitions, [exact, absent]),
+      ownedMembersByOwner: () => [],
+      recordSourceBinding: (site, binding) => bindings.set(site, binding),
+    });
+    expect(
+      result.referenceIndex.bySourceScope.get(module.id)?.map((reference) => reference.toDef),
+    ).toEqual([definitions[0]!.nodeId]);
+    expect(bindings.get(exact)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [definitions[0]!.nodeId],
+    });
+    expect(bindings.get(absent)).toMatchObject({ status: 'unresolved', targetDefIds: [] });
+  });
+
+  it('honors a shadowed or imported qualifier before considering a global qualified type', () => {
+    const decoy = mkDef({
+      nodeId: 'decoy.Target',
+      type: 'Class',
+      qualifiedName: 'Outer.Target',
+      filePath: 'decoy.ts',
+    });
+    const actual = mkDef({
+      nodeId: 'source.Target',
+      type: 'Class',
+      qualifiedName: 'Target',
+      filePath: 'source.ts',
+    });
+    const module = mkScope({ id: 'module', parent: null });
+    const inner: Scope = {
+      ...mkScope({ id: 'inner', parent: module.id, kind: 'Function' }),
+      lexicalNames: new Set(['Outer']),
+    };
+    const imported: ReferenceSite = {
+      name: 'Target',
+      rawQualifiedName: 'Outer.Target',
+      kind: 'type-reference',
+      inScope: module.id,
+      atRange: range(3, 0, 3, 12),
+    };
+    const shadowed: ReferenceSite = { ...imported, inScope: inner.id, atRange: range(5, 0, 5, 12) };
+    const imports = new Map<ScopeId, readonly ImportEdge[]>();
+    const indexes = {
+      ...makeIndexes([module, inner], [decoy, actual], [imported, shadowed]),
+      imports,
+    };
+    imports.set(module.id, [
+      {
+        kind: 'namespace',
+        localName: 'Outer',
+        targetExportedName: '*',
+        targetFile: actual.filePath,
+      },
+    ]);
+    const bindings = new Map<ReferenceSite, SourceBindingResolution>();
+    const result = resolveReferenceSites({
+      scopes: indexes,
+      ownedMembersByOwner: () => [],
+      recordSourceBinding: (site, binding) => bindings.set(site, binding),
+    });
+    expect(
+      result.referenceIndex.bySourceScope.get(module.id)?.map((reference) => reference.toDef),
+    ).toEqual([actual.nodeId]);
+    expect(result.referenceIndex.bySourceScope.get(inner.id)).toBeUndefined();
+    expect(bindings.get(shadowed)).toMatchObject({ status: 'blocked', targetDefIds: [] });
+  });
+
+  it('drops a type reached through a namespace import when the provider refuses that member', () => {
+    const hidden = mkDef({
+      nodeId: 'source.Hidden',
+      type: 'Class',
+      qualifiedName: 'Hidden',
+      filePath: 'source.ts',
+    });
+    const shown = mkDef({
+      nodeId: 'source.Shown',
+      type: 'Class',
+      qualifiedName: 'Shown',
+      filePath: 'source.ts',
+    });
+    const module = mkScope({ id: 'module', parent: null });
+    const hiddenSite: ReferenceSite = {
+      name: 'Hidden',
+      rawQualifiedName: 'ns.Hidden',
+      kind: 'type-reference',
+      inScope: module.id,
+      atRange: range(3, 0, 3, 9),
+    };
+    const shownSite: ReferenceSite = {
+      ...hiddenSite,
+      name: 'Shown',
+      rawQualifiedName: 'ns.Shown',
+      atRange: range(4, 0, 4, 8),
+    };
+    const resolve = (isNamespaceMemberVisible?: (def: SymbolDefinition) => boolean) => {
+      const imports = new Map<ScopeId, readonly ImportEdge[]>();
+      imports.set(module.id, [
+        { kind: 'namespace', localName: 'ns', targetExportedName: '*', targetFile: 'source.ts' },
+      ]);
+      const bindings = new Map<ReferenceSite, SourceBindingResolution>();
+      resolveReferenceSites({
+        scopes: {
+          ...makeIndexes([module], [hidden, shown], [hiddenSite, shownSite]),
+          imports,
+        },
+        ownedMembersByOwner: () => [],
+        isNamespaceMemberVisible,
+        recordSourceBinding: (site, binding) => bindings.set(site, binding),
+      });
+      return bindings;
+    };
+
+    // Default: no hook, every declaration of the namespace's target file is a member.
+    const unrestricted = resolve();
+    expect(unrestricted.get(hiddenSite)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [hidden.nodeId],
+    });
+    expect(unrestricted.get(shownSite)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [shown.nodeId],
+    });
+
+    // With a hook: the refused member resolves to nothing; its sibling is untouched.
+    const restricted = resolve((member) => member.nodeId !== hidden.nodeId);
+    expect(restricted.get(hiddenSite)).toMatchObject({ status: 'unresolved', targetDefIds: [] });
+    expect(restricted.get(shownSite)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [shown.nodeId],
+    });
+  });
+
+  it('does not mistake a nearer class qualifier for a globally spelled owner', () => {
+    const decoy = mkDef({ nodeId: 'Outer.Target', type: 'Class', qualifiedName: 'Outer.Target' });
+    const local = mkDef({ nodeId: 'Local.Outer', type: 'Class', qualifiedName: 'Local.Outer' });
+    const module = mkScope({ id: 'module', parent: null });
+    const inner = mkScope({
+      id: 'inner',
+      parent: module.id,
+      kind: 'Function',
+      bindings: { Outer: [{ def: local, origin: 'local' }] },
+    });
+    const site: ReferenceSite = {
+      name: 'Target',
+      rawQualifiedName: 'Outer::Target',
+      kind: 'type-reference',
+      inScope: inner.id,
+      atRange: range(3, 0, 3, 13),
+    };
+    const bindings = new Map<ReferenceSite, SourceBindingResolution>();
+    const result = resolveReferenceSites({
+      scopes: makeIndexes([module, inner], [decoy, local], [site]),
+      ownedMembersByOwner: () => [],
+      recordSourceBinding: (reference, binding) => bindings.set(reference, binding),
+    });
+    expect(result.referenceIndex.bySourceScope.get(inner.id)).toBeUndefined();
+    expect(bindings.get(site)).toMatchObject({ status: 'unresolved', targetDefIds: [] });
+  });
+
+  it('resolves finalized imported type bindings and preserves nearer lexical shadows', () => {
+    const definition = mkDef({
+      nodeId: 'source.Target',
+      type: 'Class',
+      qualifiedName: 'Target',
+      filePath: 'source.ts',
+    });
+    const module = mkScope({ id: 'module', parent: null });
+    const inner: Scope = {
+      ...mkScope({ id: 'inner', parent: module.id, kind: 'Function' }),
+      lexicalNames: new Set(['Alias']),
+    };
+    const imported: ReferenceSite = {
+      name: 'Alias',
+      kind: 'type-reference',
+      inScope: module.id,
+      atRange: range(3, 0, 3, 5),
+    };
+    const shadowed: ReferenceSite = { ...imported, inScope: inner.id, atRange: range(5, 0, 5, 5) };
+    const importedBindings = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>();
+    const indexes = {
+      ...makeIndexes([module, inner], [definition], [imported, shadowed]),
+      bindings: importedBindings,
+    };
+    importedBindings.set(
+      module.id,
+      new Map([
+        [
+          'Alias',
+          [
+            {
+              def: definition,
+              origin: 'import',
+              via: {
+                kind: 'alias',
+                localName: 'Alias',
+                targetExportedName: 'Target',
+                targetFile: definition.filePath,
+                targetDefId: definition.nodeId,
+              },
+            },
+          ],
+        ],
+      ]),
+    );
+    const bindings = new Map<ReferenceSite, SourceBindingResolution>();
+    const result = resolveReferenceSites({
+      scopes: indexes,
+      ownedMembersByOwner: () => [],
+      recordSourceBinding: (site, binding) => bindings.set(site, binding),
+    });
+    expect(
+      result.referenceIndex.bySourceScope.get(module.id)?.map((reference) => reference.toDef),
+    ).toEqual([definition.nodeId]);
+    expect(result.referenceIndex.bySourceScope.get(inner.id)).toBeUndefined();
+    expect(bindings.get(imported)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [definition.nodeId],
+      bindingKind: 'import-alias',
+    });
+    expect(bindings.get(shadowed)).toMatchObject({ status: 'blocked', targetDefIds: [] });
+  });
+
+  it('retains every finalized import candidate instead of promoting the ranked first match', () => {
+    const definitions = ['left', 'right'].map((name) =>
+      mkDef({
+        nodeId: `${name}.Target`,
+        type: 'Class',
+        qualifiedName: 'Target',
+        filePath: `${name}.ts`,
+      }),
+    );
+    const module = mkScope({ id: 'module', parent: null });
+    const site: ReferenceSite = {
+      name: 'Target',
+      kind: 'type-reference',
+      inScope: module.id,
+      atRange: range(3, 0, 3, 6),
+    };
+    const importedBindings = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>();
+    const indexes = {
+      ...makeIndexes([module], definitions, [site]),
+      bindings: importedBindings,
+    };
+    importedBindings.set(
+      module.id,
+      new Map([['Target', definitions.map((def) => ({ def, origin: 'import' as const }))]]),
+    );
+    const bindings = new Map<ReferenceSite, SourceBindingResolution>();
+    resolveReferenceSites({
+      scopes: indexes,
+      ownedMembersByOwner: () => [],
+      recordSourceBinding: (reference, binding) => bindings.set(reference, binding),
+    });
+    expect(bindings.get(site)).toMatchObject({
+      status: 'ambiguous',
+      candidatesComplete: true,
+      targetDefIds: definitions.map((def) => def.nodeId),
+    });
+  });
+
+  it('does not promote a global type-name fallback into an exact receiver binding', () => {
+    const owner = mkDef({
+      nodeId: 'external-owner',
+      type: 'Class',
+      qualifiedName: 'External',
+      filePath: 'unimported.ts',
+    });
+    const member = mkDef({
+      nodeId: 'external-owner.run',
+      type: 'Method',
+      qualifiedName: 'External.run',
+      ownerId: owner.nodeId,
+      filePath: owner.filePath,
+    });
+    const scope = mkScope({
+      id: 'scope:call',
+      parent: null,
+      typeBindings: { service: typeRef('External', 'scope:call') },
+    });
+    const site: ReferenceSite = {
+      name: 'run',
+      kind: 'call',
+      callForm: 'member',
+      explicitReceiver: { name: 'service' },
+      inScope: scope.id,
+      atRange: range(5, 1, 5, 14),
+      arity: 0,
+    };
+    const indexes = makeIndexes([scope], [owner, member], [site]);
+    const parsed = {
+      filePath: 'x.ts',
+      moduleScope: scope.id,
+      scopes: [scope],
+      localDefs: [],
+      parsedImports: [],
+      referenceSites: [site],
+    };
+    const model = createSemanticModel();
+    model.methods.register(owner.nodeId, 'run', member);
+    const graph = createKnowledgeGraph();
+    graph.addNode({ id: 'file', label: 'File', properties: { name: 'x.ts', filePath: 'x.ts' } });
+    graph.addNode({
+      id: member.nodeId,
+      label: 'Method',
+      properties: { name: 'run', qualifiedName: member.qualifiedName, filePath: member.filePath },
+    });
+    const bindings = new Map<ReferenceSite, SourceBindingResolution>();
+    emitReceiverBoundCalls(
+      graph,
+      indexes,
+      [parsed],
+      buildGraphNodeLookup(graph),
+      new Set(),
+      { isSuperReceiver: () => false, arityCompatibility: () => 'compatible' },
+      buildWorkspaceResolutionIndex([parsed]),
+      model,
+      { recordSourceBinding: (reference, binding) => bindings.set(reference, binding) },
+    );
+    expect(
+      graph.relationships.filter((relationship) => relationship.type === 'CALLS'),
+    ).toHaveLength(1);
+    expect(bindings.get(site)).toMatchObject({
+      status: 'unresolved',
+      targetDefIds: [member.nodeId],
+    });
+    let guesses = 0;
+    expect(
+      resolveCompoundReceiverClass(
+        'service',
+        scope.id,
+        indexes,
+        buildWorkspaceResolutionIndex([parsed]),
+        {
+          onNameFallback: () => {
+            guesses++;
+          },
+        },
+      ),
+    ).toBe(owner);
+    expect(guesses).toBe(1);
+  });
+
+  it('observes blocked lexical names and explicit same-spelling import aliases', () => {
+    const definition = mkDef({ nodeId: 'def:Payload', type: 'Class', qualifiedName: 'Payload' });
+    const module = mkScope({
+      id: 'module',
+      parent: null,
+      bindings: {
+        Payload: [
+          {
+            def: definition,
+            origin: 'import',
+            via: {
+              kind: 'alias',
+              localName: 'Payload',
+              targetExportedName: 'Payload',
+              targetFile: 'types.ts',
+              targetDefId: definition.nodeId,
+            },
+          },
+        ],
+      },
+    });
+    const inner: Scope = {
+      ...mkScope({ id: 'inner', parent: module.id, kind: 'Function' }),
+      lexicalNames: new Set(['blocked']),
+    };
+    const alias: ReferenceSite = {
+      name: 'Payload',
+      kind: 'type-reference',
+      inScope: inner.id,
+      atRange: range(5, 1, 5, 8),
+    };
+    const blocked: ReferenceSite = {
+      name: 'blocked',
+      kind: 'read',
+      inScope: inner.id,
+      atRange: range(6, 1, 6, 8),
+    };
+    const bindings = new Map<ReferenceSite, SourceBindingResolution>();
+    resolveReferenceSites({
+      scopes: makeIndexes([module, inner], [definition], [alias, blocked]),
+      ownedMembersByOwner: () => [],
+      recordSourceBinding: (site, binding) => bindings.set(site, binding),
+    });
+    expect(bindings.get(blocked)).toMatchObject({ status: 'blocked', basis: 'lexical-name-claim' });
+    expect(bindings.get(alias)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [definition.nodeId],
+      bindingKind: 'import-alias',
+      importAlias: {
+        localName: 'Payload',
+        importedName: 'Payload',
+        targetFile: 'types.ts',
+        scopeId: module.id,
+      },
+    });
+  });
+
+  it('keeps an interface written binding separate from runtime dispatch targets', () => {
+    const api = mkDef({ nodeId: 'api', type: 'Interface', qualifiedName: 'Api' });
+    const implementation = mkDef({ nodeId: 'impl', type: 'Class', qualifiedName: 'Impl' });
+    const declared = mkDef({
+      nodeId: 'api.run',
+      type: 'Method',
+      qualifiedName: 'Api.run',
+      ownerId: api.nodeId,
+    });
+    const runtime = mkDef({
+      nodeId: 'impl.run',
+      type: 'Method',
+      qualifiedName: 'Impl.run',
+      ownerId: implementation.nodeId,
+    });
+    const scope = mkScope({
+      id: 'scope:call',
+      parent: null,
+      bindings: { Api: [{ def: api, origin: 'local' }] },
+      typeBindings: { service: typeRef('Api', 'scope:call') },
+      ownedDefs: [api, implementation, declared, runtime],
+    });
+    const site: ReferenceSite = {
+      name: 'run',
+      kind: 'call',
+      callForm: 'member',
+      explicitReceiver: { name: 'service' },
+      inScope: scope.id,
+      atRange: range(5, 1, 5, 14),
+      arity: 0,
+    };
+    const indexes = makeIndexes([scope], [api, implementation, declared, runtime], [site]);
+    const parsed = {
+      filePath: 'x.ts',
+      moduleScope: scope.id,
+      scopes: [scope],
+      localDefs: [api, implementation, declared, runtime],
+      parsedImports: [],
+      referenceSites: [site],
+    };
+    const model = createSemanticModel();
+    model.methods.register(api.nodeId, 'run', declared);
+    model.methods.register(implementation.nodeId, 'run', runtime);
+    const graph = createKnowledgeGraph();
+    graph.addNode({ id: 'file', label: 'File', properties: { name: 'x.ts', filePath: 'x.ts' } });
+    for (const definition of parsed.localDefs)
+      graph.addNode({
+        id: definition.nodeId,
+        label: definition.type,
+        properties: {
+          name: definition.qualifiedName!.split('.').at(-1)!,
+          qualifiedName: definition.qualifiedName,
+          filePath: definition.filePath,
+        },
+      });
+    graph.addRelationship({
+      id: 'implements',
+      sourceId: implementation.nodeId,
+      targetId: api.nodeId,
+      type: 'IMPLEMENTS',
+      confidence: 1,
+      reason: 'test',
+    });
+    const bindings = new Map<ReferenceSite, SourceBindingResolution>();
+    emitReceiverBoundCalls(
+      graph,
+      indexes,
+      [parsed],
+      buildGraphNodeLookup(graph),
+      new Set(),
+      { isSuperReceiver: () => false, arityCompatibility: () => 'compatible' },
+      buildWorkspaceResolutionIndex([parsed]),
+      model,
+      { recordSourceBinding: (reference, binding) => bindings.set(reference, binding) },
+    );
+    expect(
+      graph.relationships
+        .filter((relationship) => relationship.type === 'CALLS')
+        .map((relationship) => relationship.targetId)
+        .sort(),
+    ).toEqual([declared.nodeId, runtime.nodeId]);
+    expect(bindings.get(site)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [declared.nodeId],
+    });
+  });
+
+  it('observes all candidates without certifying the registry tie break as a binding', () => {
+    const first = mkDef({ nodeId: 'def:first', type: 'Function', qualifiedName: 'save' });
+    const second = mkDef({ nodeId: 'def:second', type: 'Function', qualifiedName: 'save' });
+    const scope = mkScope({
+      id: 'scope:call',
+      parent: null,
+      bindings: {
+        save: [
+          { def: first, origin: 'local' },
+          { def: second, origin: 'local' },
+        ],
+      },
+    });
+    const site: ReferenceSite = {
+      name: 'save',
+      kind: 'call',
+      inScope: scope.id,
+      atRange: range(5, 2, 5, 8),
+    };
+    const bindings = new Map<ReferenceSite, { status: string; targetDefIds: readonly string[] }>();
+    const output = resolveReferenceSites({
+      scopes: makeIndexes([scope], [first, second], [site]),
+      ownedMembersByOwner: () => [],
+      recordSourceBinding: (reference, binding) => bindings.set(reference, binding),
+    });
+    expect(output.stats.referencesEmitted).toBe(1);
+    expect(bindings.get(site)).toMatchObject({
+      status: 'ambiguous',
+      targetDefIds: [first.nodeId, second.nodeId],
+    });
+  });
+
   it('uses ownedMembersByOwner to resolve a hook-provided receiver member', () => {
     const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
     const saveMethod = mkDef({

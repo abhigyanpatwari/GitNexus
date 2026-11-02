@@ -3,12 +3,36 @@ import {
   displayWidth,
   doctorCommand,
   localEmbeddingDoctorStatus,
+  leftoverBranchSlotDoctorLines,
   padDisplayEnd,
   nativeStatusLine,
   pageSizeDoctorLines,
   poolSizeDoctorLine,
 } from '../../src/cli/doctor.js';
+import type { StaleBranchSlot } from '../../src/storage/stale-branch-slots.js';
+import { setCliLanguage, t, type SupportedCliLanguage } from '../../src/cli/i18n/index.js';
 import type { NativeCheckResult } from '../../src/core/lbug/native-check.js';
+import { createTempDir } from '../helpers/test-db.js';
+
+const nativeProbeState = vi.hoisted(() => ({
+  vectorLoaded: true,
+  fts: { loaded: true } as {
+    loaded: boolean;
+    suppressed?: boolean;
+    reason?: string;
+  },
+}));
+
+vi.mock('../../src/core/lbug/native-check.js', () => ({
+  checkLbugNative: () => ({ ok: true, binaryPath: '/synthetic/lbugjs.node' }),
+  ftsAvailabilityLabel: (probe: { loaded: boolean; suppressed?: boolean }) =>
+    probe.loaded ? 'available' : probe.suppressed ? 'suppressed' : 'unavailable',
+  probeFtsExtensionLoad: async () => nativeProbeState.fts,
+  probeVectorExtensionLoad: async () =>
+    nativeProbeState.vectorLoaded
+      ? { loaded: true }
+      : { loaded: false, reason: 'synthetic VECTOR load failure' },
+}));
 
 describe('doctor output formatting', () => {
   it('keeps ASCII padding equivalent to String.padEnd', () => {
@@ -26,6 +50,100 @@ describe('doctor output formatting', () => {
 
   it('does not truncate labels that are already wider than the target width', () => {
     expect(padDisplayEnd('图存储：', 4)).toBe('图存储：');
+  });
+});
+
+describe('doctor VECTOR capability claims', () => {
+  const ENV_KEYS = [
+    'GITNEXUS_EMBEDDING_URL',
+    'GITNEXUS_EMBEDDING_MODEL',
+    'GITNEXUS_EMBEDDING_DIMS',
+  ] as const;
+  const savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+
+  const renderDoctor = async (
+    vectorLoaded: boolean,
+    language: SupportedCliLanguage = 'en',
+  ): Promise<string> => {
+    nativeProbeState.vectorLoaded = vectorLoaded;
+    setCliLanguage(language);
+    process.env.GITNEXUS_EMBEDDING_URL = 'http://127.0.0.1:9/v1';
+    process.env.GITNEXUS_EMBEDDING_MODEL = 'synthetic-doctor';
+    process.env.GITNEXUS_EMBEDDING_DIMS = '384';
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await doctorCommand();
+
+    return log.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+  };
+
+  afterEach(() => {
+    nativeProbeState.vectorLoaded = true;
+    nativeProbeState.fts = { loaded: true };
+    setCliLanguage(null);
+    vi.restoreAllMocks();
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+  });
+
+  it('reports a loaded extension without claiming a repository index exists', async () => {
+    const output = await renderDoctor(true);
+
+    expect(output).toContain('VECTOR extension: available');
+    expect(output).toContain(
+      'Semantic support: vector-index capable (repository index not checked)',
+    );
+    expect(output).not.toContain('VECTOR index:');
+    expect(output).not.toContain('Semantic mode:');
+  });
+
+  it('reports exact-scan capability when the extension cannot load', async () => {
+    const output = await renderDoctor(false);
+
+    expect(output).toContain('VECTOR extension: unavailable');
+    expect(output).toContain('Semantic support: exact-scan only (VECTOR extension unavailable)');
+  });
+
+  it('keeps the corrected capability claims localized', async () => {
+    const output = await renderDoctor(true, 'zh-CN');
+
+    expect(output).toContain('VECTOR 扩展：');
+    expect(output).toContain('语义支持：');
+    expect(output).toContain('支持向量索引（未检查仓库索引）');
+  });
+});
+
+describe('doctor FTS policy claims (U12)', () => {
+  afterEach(() => {
+    nativeProbeState.fts = { loaded: true };
+    setCliLanguage(null);
+    vi.restoreAllMocks();
+  });
+
+  it('reports suppressed-by-policy, not unavailable, when the probe is suppressed', async () => {
+    nativeProbeState.fts = {
+      loaded: false,
+      suppressed: true,
+      reason: 'suppressed by policy GITNEXUS_LBUG_EXTENSION_INSTALL=never',
+    };
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await doctorCommand();
+    const output = log.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+
+    expect(output).toMatch(/Full-text search:\s+suppressed/);
+    expect(output).toContain('suppressed by policy GITNEXUS_LBUG_EXTENSION_INSTALL=never');
+    expect(output).not.toMatch(/Full-text search:\s+unavailable/);
+  });
+
+  it('prints both serve/query and analyze extension install policies', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await doctorCommand();
+    const output = log.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+
+    expect(output).toMatch(/serve\/query=/);
+    expect(output).toMatch(/analyze=/);
   });
 });
 
@@ -48,7 +166,12 @@ describe('doctor embedding-runtime support status', () => {
       ['linux', 'x64'],
       ['win32', 'x64'],
     ] as Array<[NodeJS.Platform, NodeJS.Architecture]>) {
-      const { status, detail } = localEmbeddingDoctorStatus({ httpMode: false, platform, arch });
+      const { status, detail } = localEmbeddingDoctorStatus({
+        httpMode: false,
+        platform,
+        arch,
+        resolution: { source: 'package' },
+      });
       expect(status).toBe('✓ local embeddings supported');
       expect(detail).toBeNull();
     }
@@ -64,15 +187,16 @@ describe('doctor embedding-runtime support status', () => {
     expect(detail).toBeNull();
   });
 
-  it('flags a pruned optional embedding stack with reinstall guidance (#2370)', () => {
+  it('flags a missing local embedding stack with install guidance', () => {
     const { status, detail } = localEmbeddingDoctorStatus({
       httpMode: false,
       platform: 'linux',
       arch: 'x64',
       resolution: null,
     });
-    expect(status).toBe('✗ optional embedding stack not installed');
-    expect(detail).toContain('ONNXRUNTIME_NODE_INSTALL=skip');
+    expect(status).toBe('✗ local embedding stack not installed');
+    expect(detail).toContain('gitnexus embeddings install');
+    expect(detail).not.toContain('ONNXRUNTIME_NODE_INSTALL=skip');
   });
 
   it('reports a package-sourced stack as supported regardless of Node loadability', () => {
@@ -253,5 +377,83 @@ describe('doctor survives a malformed GITNEXUS_EMBEDDING_DIMS (#2385)', () => {
     // (isHttpMode -> readConfig -> throw on the malformed DIMS); now the presence
     // probe never throws, so `gitnexus doctor` completes and reports the backend.
     await expect(doctorCommand()).resolves.toBeUndefined();
+  });
+});
+
+describe('leftoverBranchSlotDoctorLines (#3331)', () => {
+  const slot = (overrides: Partial<StaleBranchSlot>): StaleBranchSlot => ({
+    branch: 'feature/x',
+    dir: '/tmp/branches/feature_x',
+    sizeBytes: 1024,
+    reason: 'ref-missing',
+    ...overrides,
+  });
+
+  it('returns no lines when there are no leftover slots', () => {
+    expect(leftoverBranchSlotDoctorLines([])).toEqual([]);
+  });
+
+  it('prints branch, reason, size, total, and the clean --stale reclaim line', () => {
+    const lines = leftoverBranchSlotDoctorLines([slot({ sizeBytes: 4_800_000 })]);
+    expect(lines[0]).toBe(t('doctor.orphanedBranches'));
+    expect(lines.join('\n')).toContain('feature/x');
+    expect(lines.join('\n')).toContain(t('clean.stale.reason.refMissing'));
+    expect(lines.join('\n')).toContain('4.6 MB');
+    expect(lines.join('\n')).toContain(t('doctor.orphanedBranches.reclaim'));
+    expect(lines.join('\n')).toContain('gitnexus clean --stale');
+  });
+
+  it('prints retry-git copy instead of reclaim when heads cannot be listed (#3337)', () => {
+    const lines = leftoverBranchSlotDoctorLines([
+      slot({ reason: 'heads-unavailable', sizeBytes: 2048 }),
+      slot({ branch: 'other', reason: 'ref-missing', sizeBytes: 4096 }),
+    ]);
+    expect(lines).toEqual([t('clean.stale.headsUnavailable')]);
+    expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches'));
+    expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches.reclaim'));
+  });
+
+  it('prints only listingFailed when listing-failed is mixed with ref-missing', () => {
+    const lines = leftoverBranchSlotDoctorLines([
+      slot({ reason: 'listing-failed', branch: '', dir: null, sizeBytes: 0 }),
+      slot({ reason: 'ref-missing' }),
+    ]);
+    expect(lines).toEqual([t('clean.stale.listingFailed')]);
+    expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches'));
+    expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches.reclaim'));
+  });
+
+  it('prints heading and probe-failed row without reclaim', () => {
+    const lines = leftoverBranchSlotDoctorLines([slot({ reason: 'probe-failed' })]);
+    expect(lines[0]).toBe(t('doctor.orphanedBranches'));
+    expect(lines.join('\n')).toContain('feature/x');
+    expect(lines.join('\n')).toContain(t('clean.stale.reason.probeFailed'));
+    expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches.reclaim'));
+  });
+
+  it('includes reclaim when probe-failed is mixed with ref-missing', () => {
+    const lines = leftoverBranchSlotDoctorLines([
+      slot({ reason: 'probe-failed' }),
+      slot({ branch: 'other', reason: 'ref-missing' }),
+    ]);
+    expect(lines[0]).toBe(t('doctor.orphanedBranches'));
+    expect(lines.join('\n')).toContain(t('clean.stale.reason.probeFailed'));
+    expect(lines.join('\n')).toContain(t('clean.stale.reason.refMissing'));
+    expect(lines.join('\n')).toContain(t('doctor.orphanedBranches.reclaim'));
+  });
+
+  it('does not print leftover slots when cwd is not an indexed repo', async () => {
+    const tmp = await createTempDir();
+    try {
+      vi.spyOn(process, 'cwd').mockReturnValue(tmp.dbPath);
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      await doctorCommand();
+      const output = log.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+      expect(output).toContain(t('doctor.runtime'));
+      expect(output).not.toContain(t('doctor.orphanedBranches'));
+    } finally {
+      vi.restoreAllMocks();
+      await tmp.cleanup();
+    }
   });
 });

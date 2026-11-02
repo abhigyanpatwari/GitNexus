@@ -199,6 +199,47 @@ it('injects __GITNEXUS_CONFIG__ into SPA fallback routes', async () => {
   });
 });
 
+it('injects a same-origin path when GITNEXUS_BACKEND_URL is /', async () => {
+  await withInjectionServer({ GITNEXUS_BACKEND_URL: '/' }, async (port) => {
+    const res = await rawGet(port, '/');
+    assert.equal(res.status, 200);
+    assert.ok(res.body.includes('"backendUrl":"/"'), 'Expected the root path as the backend URL');
+  });
+});
+
+it('injects a same-origin prefix without its trailing slash', async () => {
+  await withInjectionServer({ GITNEXUS_BACKEND_URL: '/gitnexus/' }, async (port) => {
+    const res = await rawGet(port, '/');
+    assert.equal(res.status, 200);
+    assert.ok(
+      res.body.includes('"backendUrl":"/gitnexus"'),
+      'Expected the prefix as the backend URL',
+    );
+  });
+});
+
+it('does not inject a protocol-relative GITNEXUS_BACKEND_URL', async () => {
+  await withInjectionServer({ GITNEXUS_BACKEND_URL: '//evil.example' }, async (port) => {
+    const res = await rawGet(port, '/');
+    assert.equal(res.status, 200);
+    assert.ok(
+      !res.body.includes('__GITNEXUS_CONFIG__'),
+      'Expected no __GITNEXUS_CONFIG__ for a protocol-relative value',
+    );
+  });
+});
+
+it('does not inject a backslash-prefixed GITNEXUS_BACKEND_URL, which a URL parser reads as a host', async () => {
+  await withInjectionServer({ GITNEXUS_BACKEND_URL: '/\\evil.example' }, async (port) => {
+    const res = await rawGet(port, '/');
+    assert.equal(res.status, 200);
+    assert.ok(
+      !res.body.includes('__GITNEXUS_CONFIG__'),
+      'Expected no __GITNEXUS_CONFIG__ for a backslash-prefixed value',
+    );
+  });
+});
+
 it('does not inject when GITNEXUS_BACKEND_URL is not set', async () => {
   await withInjectionServer({}, async (port) => {
     const res = await rawGet(port, '/');
@@ -271,6 +312,12 @@ it('does not inject config into static assets', async () => {
 const TEST_AUTH_TOKEN = 'proxy-test-token-0123456789abcdefghij';
 const TEST_BEARER = `Bearer ${TEST_AUTH_TOKEN}`;
 
+// The protocol token the upstream expects on /api/mcp. Deliberately unlike the
+// edge token, so "injected the backend credential" and "forwarded the edge one"
+// can never both satisfy an assertion.
+const TEST_MCP_TOKEN = 'backend-mcp-token-0123456789abcdefghij';
+const TEST_MCP_BEARER = `Bearer ${TEST_MCP_TOKEN}`;
+
 // rawRequest never sends credentials; apiRequest does. In a file whose subject
 // is who gets let through, no test should pass because a helper quietly
 // authenticated for it.
@@ -325,8 +372,8 @@ const respondOk = (_req, res) => {
 //
 //   upstream       request handler, replaceable mid-test via `ctx.handler`;
 //                  null points the proxy at a port nothing ever listens on
-//   listenAfterMs  bind the upstream this late, so the first attempt(s) hit
-//                  ECONNREFUSED (a single-instance restart window)
+//   listenAfterMs  bind the upstream this late after the first refused attempt
+//                  (a single-instance restart window)
 //   schemeless     drop http:// from GITNEXUS_UPSTREAM_URL, the way Render's
 //                  `fromService: { property: hostport }` yields it
 //   env            extra environment for docker-server.mjs
@@ -360,37 +407,46 @@ async function withProxy(
       })
     : null;
 
-  // A late (or never) bind needs its port reserved up front; otherwise let the
-  // OS assign one at listen time.
-  const upstreamPort =
-    server && listenAfterMs === 0
-      ? await new Promise((r) => server.listen(0, '127.0.0.1', () => r(server.address().port)))
-      : await getFreePort();
-  const bindTimer =
-    server && listenAfterMs > 0
-      ? setTimeout(() => server.listen(upstreamPort, '127.0.0.1'), listenAfterMs)
-      : null;
-
+  // Keep the upstream port bound until the proxy port is chosen. Releasing it
+  // sooner lets the OS assign both services the same port and proxy to itself.
+  const reservation = server ?? createServer();
+  const upstreamPort = await new Promise((r) =>
+    reservation.listen(0, '127.0.0.1', () => r(reservation.address().port)),
+  );
   const port = await getFreePort();
+  let bindTimer = null;
+
   const target = `127.0.0.1:${upstreamPort}`;
   const proc = spawnServerWithEnv(dir, port, {
     GITNEXUS_UPSTREAM_URL: schemeless ? target : `http://${target}`,
     GITNEXUS_SERVE_AUTH_TOKEN: TEST_AUTH_TOKEN,
+    // An ambient GITNEXUS_MCP_AUTH_TOKEN in the developer's shell would make the
+    // proxy inject one on /api/mcp, so drop it: spawn omits undefined entries,
+    // which unsets the inherited value. A test that wants injection sets it via
+    // `env` below.
+    GITNEXUS_MCP_AUTH_TOKEN: undefined,
     ...env,
   });
   proc.stderr.setEncoding('utf8');
-  proc.stderr.on('data', (chunk) => {
+  const collectStderr = (chunk) => {
     ctx.stderr += chunk;
-  });
+    // Process startup must not consume the restart window or skip the retry.
+    if (server && listenAfterMs > 0 && !bindTimer && ctx.stderr.includes('ECONNREFUSED; retry')) {
+      bindTimer = setTimeout(() => server.listen(upstreamPort, '127.0.0.1'), listenAfterMs);
+    }
+  };
+  proc.stderr.on('data', collectStderr);
   try {
     await waitForServer(port);
+    if (!server || listenAfterMs > 0) await new Promise((r) => reservation.close(r));
     await fn(port, ctx);
   } finally {
+    proc.stderr.off('data', collectStderr);
     if (bindTimer) clearTimeout(bindTimer);
     await killAndWait(proc);
-    if (server?.listening) {
-      server.closeAllConnections?.();
-      await new Promise((r) => server.close(r));
+    if (reservation.listening) {
+      reservation.closeAllConnections?.();
+      await new Promise((r) => reservation.close(r));
     }
     await rm(dir, { recursive: true, force: true });
   }
@@ -650,8 +706,8 @@ it('returns 502 when the upstream is unreachable', async () => {
 
 // -- Connection-retry across an upstream restart window ---------------------
 //
-// `listenAfterMs: 400` binds the upstream late, so the first attempt hits
-// ECONNREFUSED and must be retried — a single-instance restart. The default 3
+// `listenAfterMs: 400` binds the upstream 400ms after the first ECONNREFUSED,
+// so the request must be retried — a single-instance restart. The default 3
 // attempts (backoff 250ms, 500ms) span ~750ms, so a retry lands after the bind.
 
 it('retries a connection-refused POST and succeeds once the upstream is up', async () => {
@@ -665,6 +721,7 @@ it('retries a connection-refused POST and succeeds once the upstream is up', asy
     assert.match(res.body, /"ok":true/);
     assert.equal(ctx.calls, 1, 'upstream must run the job exactly once (no double-execute)');
     assert.equal(ctx.body, '{"repo":"x"}', 'buffered body replayed intact');
+    assert.match(ctx.stderr, /ECONNREFUSED; retry/, 'the restart gap must exercise a retry');
   });
 });
 
@@ -969,12 +1026,79 @@ it('forwards an /api/* request that carries the correct token', async () => {
 });
 
 it('strips the Authorization header instead of forwarding the edge token', async () => {
-  // The token is spent at this hop. `serve` reads no Authorization header, so
-  // forwarding would only copy a live credential into another service's logs.
+  // The edge credential is spent and stripped at this hop. Forwarding it
+  // would copy a live credential into another service's logs. With no
+  // GITNEXUS_MCP_AUTH_TOKEN configured — the default — nothing replaces it.
   await withProxy({}, async (port, ctx) => {
     const res = await apiRequest(port, '/api/mcp', { method: 'POST', body: '{}' });
     assert.equal(res.status, 200, 'the request itself must still be proxied');
     assert.equal(ctx.received.headers.authorization, undefined);
+  });
+});
+
+// -- Upstream MCP token injection (GITNEXUS_MCP_AUTH_TOKEN) -----------------
+//
+// A backend running protocol-layer MCP auth expects its own Bearer on
+// /api/mcp, and the edge credential can't serve as one. Both services are
+// configured with the same GITNEXUS_MCP_AUTH_TOKEN; this hop spends the edge
+// token and substitutes the backend one, for that route only.
+
+// Stands in for a `serve` with MCP Bearer auth enabled: only the exact backend
+// credential gets through, so a passing two-hop request proves what was sent.
+const mcpBackend = (req, res) => {
+  if (req.headers.authorization !== TEST_MCP_BEARER) {
+    res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end('{"error":"unauthorized"}');
+    return;
+  }
+  res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end('{"ok":true}');
+};
+
+it('treats a blank GITNEXUS_MCP_AUTH_TOKEN as unset and still strips', async () => {
+  const env = { GITNEXUS_MCP_AUTH_TOKEN: '   ' };
+  await withProxy({ env }, async (port, ctx) => {
+    const res = await apiRequest(port, '/api/mcp', { method: 'POST', body: '{}' });
+    assert.equal(res.status, 200);
+    assert.equal(ctx.received.headers.authorization, undefined);
+  });
+});
+
+it('replaces the edge credential with the upstream MCP token on /api/mcp', async () => {
+  const env = { GITNEXUS_MCP_AUTH_TOKEN: TEST_MCP_TOKEN };
+  await withProxy({ upstream: mcpBackend, env }, async (port, ctx) => {
+    const res = await apiRequest(port, '/api/mcp', { method: 'POST', body: '{}' });
+    assert.equal(res.status, 200, 'a backend that demands the MCP token must accept this hop');
+    assert.equal(ctx.received.headers.authorization, TEST_MCP_BEARER);
+    assert.notEqual(
+      ctx.received.headers.authorization,
+      TEST_BEARER,
+      'the edge credential must never be forwarded',
+    );
+  });
+});
+
+it('injects the upstream MCP token on /api/mcp subpaths and ignores the query string', async () => {
+  const env = { GITNEXUS_MCP_AUTH_TOKEN: TEST_MCP_TOKEN };
+  await withProxy({ upstream: mcpBackend, env }, async (port, ctx) => {
+    for (const path of ['/api/mcp/messages', '/api/mcp?session=abc']) {
+      const res = await apiRequest(port, path, { method: 'POST', body: '{}' });
+      assert.equal(res.status, 200, `${path} must reach the MCP backend authenticated`);
+      assert.equal(ctx.received.headers.authorization, TEST_MCP_BEARER, path);
+    }
+  });
+});
+
+it('leaves non-MCP routes stripped when an upstream MCP token is configured', async () => {
+  // /api/mcpfoo shares a prefix with the MCP route but is not it, and a plain
+  // API route never carries a protocol credential.
+  const env = { GITNEXUS_MCP_AUTH_TOKEN: TEST_MCP_TOKEN };
+  await withProxy({ env }, async (port, ctx) => {
+    for (const path of ['/api/mcpfoo', '/api/health']) {
+      const res = await apiRequest(port, path);
+      assert.equal(res.status, 200);
+      assert.equal(ctx.received.headers.authorization, undefined, path);
+    }
   });
 });
 

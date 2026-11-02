@@ -4,14 +4,14 @@
  * used by both chunker.ts and structural-extractor.ts.
  */
 
-import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
   createParserForLanguage,
   isLanguageAvailable,
   resolveLanguageKey,
 } from '../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
-import { getProvider } from '../ingestion/languages/index.js';
+import { getLanguageForFileContent, getProvider } from '../ingestion/languages/index.js';
+import { extractNotebookPython, isNotebookPath } from '../ingestion/ipynb-extractor.js';
 
 const parserCache = new Map<string, any>();
 
@@ -20,7 +20,10 @@ const parserCache = new Map<string, any>();
  * Returns null if language is unavailable or parsing fails.
  */
 export const ensureAndParse = async (content: string, filePath: string): Promise<any | null> => {
-  const language = getLanguageFromFilename(filePath);
+  // Same classifier as ingest. Filename-only maps `.h` → C++, so Objective-C
+  // headers (and method snippets from those headers) would parse with the
+  // wrong grammar and miss class_interface / protocol_declaration / methods.
+  const language = getLanguageForFileContent(filePath, content);
   if (!language) return null;
   if (!isLanguageAvailable(language)) return null;
 
@@ -36,9 +39,21 @@ export const ensureAndParse = async (content: string, filePath: string): Promise
   // C++ UE macros, Dart extension types) would leave embeddings looking at an
   // error-recovered tree. Resolved from `language` so the transform and the
   // parser always come from the same provider. Length-preserving, so node
-  // offsets still index `content`.
-  const parseContent = getProvider(language).preprocessSource?.(content, filePath) ?? content;
+  // offsets still index `content` except for `.ipynb`, which is replaced by
+  // concatenated code-cell Python (same as the parse worker).
+  const provider = getProvider(language);
+  if (isNotebookPath(filePath)) {
+    const body = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+    if (body.trimStart().startsWith('{')) {
+      const extracted = extractNotebookPython(content);
+      if (!extracted) return null;
+      const parseContent =
+        provider.preprocessSource?.(extracted.pythonSource, filePath) ?? extracted.pythonSource;
+      return parseSourceSafe(parserInstance, parseContent);
+    }
+  }
 
+  const parseContent = provider.preprocessSource?.(content, filePath) ?? content;
   return parseSourceSafe(parserInstance, parseContent);
 };
 
@@ -100,6 +115,9 @@ export const findDeclarationNode = (root: any): any | null => {
     'struct_item',
     'interface_declaration',
     'interface_definition',
+    'protocol_declaration', // Objective-C protocol
+    'class_interface', // Objective-C class, category, or extension
+    'class_implementation', // Objective-C implementation
     'enum_declaration',
     'enum_item',
     'type_declaration', // Go: type X struct

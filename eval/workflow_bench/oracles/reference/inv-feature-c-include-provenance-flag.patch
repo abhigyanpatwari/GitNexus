@@ -1,0 +1,155 @@
+--- a/gitnexus/src/core/ingestion/languages/c/interpret.ts
++++ b/gitnexus/src/core/ingestion/languages/c/interpret.ts
+@@ -8,10 +8,13 @@
+   const source = captures['@import.source']?.text;
+   if (source === undefined) return null;
+ 
+-  // System headers (e.g. <stdio.h>) are not resolved to local files
+-  if (captures['@import.system'] !== undefined) return null;
+-
+-  return { kind: 'wildcard', targetRaw: source };
++  // Keep provenance locally without changing immutable shared declarations.
++  const parsedImport: ParsedImport & { isSystem: boolean } = {
++    kind: 'wildcard',
++    targetRaw: source,
++    isSystem: captures['@import.system'] !== undefined,
++  };
++  return parsedImport;
+ }
+ 
+ /**
+--- a/gitnexus/src/core/ingestion/languages/c/scope-resolver.ts
++++ b/gitnexus/src/core/ingestion/languages/c/scope-resolver.ts
+@@ -81,7 +81,11 @@
+   // this process. Runs BEFORE `populateOwners`.
+   applyCaptureSideChannel: applyCStaticLinkageSideChannel,
+ 
+-  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
++  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) => {
++    const parsedImport = context?.parsedImport;
++    if (parsedImport?.kind === 'wildcard' && 'isSystem' in parsedImport && parsedImport.isSystem === true) {
++      return null;
++    }
+     // Augment allFilePaths with .h files discovered via loadResolutionConfig
+     // since the phase only passes .c files to the C resolver but #include
+     // targets .h files classified as C++ in language detection.
+--- a/gitnexus/test/unit/scope-resolution/external-import-conformance.test.ts
++++ b/gitnexus/test/unit/scope-resolution/external-import-conformance.test.ts
+@@ -38,6 +38,10 @@
+ import { describe, expect, it } from 'vitest';
+ import type { ParsedFile, ParsedImport, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+ import { SupportedLanguages } from 'gitnexus-shared';
++import { getCParser } from '../../../src/core/ingestion/languages/c/query.js';
++import { splitCInclude } from '../../../src/core/ingestion/languages/c/import-decomposer.js';
++import { interpretCImport } from '../../../src/core/ingestion/languages/c/interpret.js';
++import type { SyntaxNode } from '../../../src/core/ingestion/utils/ast-helpers.js';
+ import { SCOPE_RESOLVERS } from '../../../src/core/ingestion/scope-resolution/pipeline/registry.js';
+ import type { ComposerConfig } from '../../../src/core/ingestion/language-config.js';
+ import {
+@@ -143,6 +147,16 @@
+   };
+ }
+ 
++function parseCInclude(spelling: string): ParsedImport {
++  const tree = getCParser().parse(`#include ${spelling}\n`);
++  const node = tree.rootNode.namedChildren.find((child) => child.type === 'preproc_include');
++  if (!node) throw new Error('C conformance fixture did not parse');
++  const captures = splitCInclude(node as SyntaxNode);
++  const parsedImport = captures === null ? null : interpretCImport(captures);
++  if (parsedImport === null) throw new Error('C literal include was not retained');
++  return parsedImport;
++}
++
+ const PHP_FUNCTION_IMPORT = (targetRaw: string): ParsedImport => ({
+   kind: 'named',
+   localName: 'imported',
+@@ -345,9 +359,10 @@
+       files: ['src/stdio.h', 'include/util.h', 'src/main.c'],
+       fromFile: 'src/main.c',
+       resolutionConfig: undefined,
+-      external: 'stdio.h',
++      external: '<stdio.h>',
+       decoy: 'src/stdio.h',
+-      reachesDecoy: 'util.h',
++      reachesDecoy: '"stdio.h"',
++      parsedImport: parseCInclude,
+     },
+   ],
+   [
+@@ -418,7 +433,6 @@
+ const KNOWN_GAPS: ReadonlyMap<SupportedLanguages, string> = new Map<SupportedLanguages, string>([
+   [SupportedLanguages.Dart, '`package:http/http.dart` -> `lib/http.dart`'],
+   [SupportedLanguages.Swift, '`Foundation` -> `Sources/Foundation/Thing.swift`'],
+-  [SupportedLanguages.C, '`stdio.h` -> `src/stdio.h`'],
+   [SupportedLanguages.CPlusPlus, '`cstdio.h` -> `src/cstdio.h`'],
+ ]);
+ 
+@@ -463,14 +477,15 @@
+       : testCase.files.map(
+           testCase.parsedFile ?? ((filePath) => ({ filePath }) as unknown as ParsedFile),
+         );
++  const parsedImport = testCase.parsedImport?.(targetRaw);
+   return resolver.resolveImportTarget(
+-    targetRaw,
++    parsedImport?.targetRaw ?? targetRaw,
+     testCase.fromFile,
+     files,
+     testCase.resolutionConfig,
+     {
+       parsedFiles,
+-      parsedImport: testCase.parsedImport?.(targetRaw),
++      parsedImport,
+     },
+   );
+ }
+--- /dev/null
++++ b/gitnexus/test/unit/scope-resolution/c/c-include-provenance.test.ts
+@@ -0,0 +1,48 @@
++import { describe, expect, it } from 'vitest';
++import { getCParser } from '../../../../src/core/ingestion/languages/c/query.js';
++import { splitCInclude } from '../../../../src/core/ingestion/languages/c/import-decomposer.js';
++import { interpretCImport } from '../../../../src/core/ingestion/languages/c/interpret.js';
++import { cScopeResolver } from '../../../../src/core/ingestion/languages/c/scope-resolver.js';
++import type { SyntaxNode } from '../../../../src/core/ingestion/utils/ast-helpers.js';
++
++function parseIncludes(source: string) {
++  return getCParser().parse(source).rootNode.namedChildren
++    .filter((node) => node.type === 'preproc_include')
++    .map((node) => {
++      const captures = splitCInclude(node as SyntaxNode);
++      return captures === null ? null : interpretCImport(captures);
++    });
++}
++
++function headerIdentity(target: string): string {
++  if ((target.startsWith('<') && target.endsWith('>')) ||
++      (target.startsWith('"') && target.endsWith('"'))) return target.slice(1, -1);
++  return target;
++}
++
++describe('C literal include provenance through parsing and resolution', () => {
++  it('retains system and quoted headers, resolving only local includes', () => {
++    const imports = parseIncludes([
++      '#include <sys/net.h>',
++      '#include "api.h"',
++      '#include "../include/common.h"',
++    ].join('\n') + '\n');
++    expect(imports).toHaveLength(3);
++    expect(imports.every((item) => item !== null)).toBe(true);
++    expect(imports.map((item) => headerIdentity(item!.targetRaw)))
++      .toEqual(['sys/net.h', 'api.h', '../include/common.h']);
++    const files = new Set(['src/main.c', 'include/sys/net.h', 'src/api.h', 'include/common.h']);
++    const targets = imports.map((parsedImport) => {
++      const resolved = cScopeResolver.resolveImportTarget(
++        parsedImport!.targetRaw, 'src/main.c', files, undefined,
++        { parsedFiles: [], parsedImport: parsedImport! },
++      );
++      return resolved === null ? [] : typeof resolved === 'string' ? [resolved] : resolved;
++    });
++    expect(targets).toEqual([[], ['src/api.h'], ['include/common.h']]);
++  });
++
++  it('does not treat a computed macro as a literal header path', () => {
++    expect(parseIncludes('#include HEADER_MACRO\n')).toEqual([null]);
++  });
++});

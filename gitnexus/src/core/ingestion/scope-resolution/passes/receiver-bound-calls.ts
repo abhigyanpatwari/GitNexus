@@ -33,7 +33,8 @@
  *      interface-dispatch fan-out when the folded receiver type is an
  *      Interface (#2832) — same call Cases 0 and 4 make.
  *   8. **Case 4 (simple typeBinding)** — `typeRef.rawName` has no dot →
- *      MRO walk + `findOwnedMember`
+ *      MRO walk + `findOwnedMember`, then an opt-in concrete-subtype fan-out
+ *      when the normal member is missing
  *   9. **Case 5 (value-receiver bridge)** — receiver is a `Const`/`Variable`
  *      whose `nodeId` is referenced as an `ownerId` in `model.methods`
  *      (object-literal services). Last-resort fallback for lowercase
@@ -59,25 +60,36 @@
  * resolved to a wrong target.
  */
 
-import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  CallResultAssignmentSite,
+  ParsedFile,
+  ReferenceSite,
+  ScopeId,
+  SymbolDefinition,
+  TypeRef,
+} from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
-import type { ScopeResolver } from '../contract/scope-resolver.js';
-import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
+import type { ReceiverMemberResolution, ScopeResolver } from '../contract/scope-resolver.js';
+import { LINKABLE_LABELS, type GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
-import { collectNamespaceTargets } from '../scope/namespace-targets.js';
+import { createNamespaceTargetCache } from '../scope/namespace-target-cache.js';
 import {
   bindsTypeParameter,
   findClassBindingInScope,
   findEnclosingClassDef,
   isReceiverOwnedButUnbound,
   findExportedDef,
+  findExportedDefIncludingImportedNames,
   findOwnedMember,
   findReceiverTypeBinding,
+  lookupNameClaim,
+  hasExplicitNameClaim,
   findValueBindingInScope,
   isClassLike,
   isNamespaceNameShadowed,
+  type ClassBindingLookup,
   type DecorationStripper,
   resolveClassBindingForName,
 } from '../scope/walkers.js';
@@ -86,19 +98,28 @@ import {
   tryEmitEdgeWithExplicitTargetId,
   type CalleeIdCaptureCtx,
 } from '../graph-bridge/edges.js';
+import { constructionSiteReason } from './free-call-fallback.js';
+import { bindQualifiedCalleeResolver } from './imported-return-types.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import {
+  foldReceiverChainPosition,
+  classOfQualifiedTypeSpelling,
   resolveCompoundReceiverClass,
   resolveCompoundReceiverTyped,
+  type FoldedReceiverPosition,
 } from '../passes/compound-receiver.js';
-import { erasedTypeApplication, typeApplicationArguments } from '../../utils/template-arguments.js';
+import {
+  erasedTypeApplication,
+  stripTemplateArguments,
+  typeApplicationArguments,
+} from '../../utils/template-arguments.js';
 import {
   heritageTypeArgumentsKey,
   stepHeritageInstantiation,
   type GroundedTypeArgument,
   type HeritageTypeArguments,
 } from '../utils/generic-instantiation.js';
-import { resolveDefGraphId } from '../graph-bridge/ids.js';
+import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
 import {
   narrowOverloadCandidates,
   isOverloadAmbiguousAfterNormalization,
@@ -108,13 +129,71 @@ import type {
   ResolutionSuppressionReason,
 } from '../resolution-outcome.js';
 import { classifyReceiverShape } from '../resolution-outcome.js';
+import {
+  callSuppressionIdentities,
+  callResultBindingKey,
+  providerCallOutcome,
+  selectedCallKey,
+  type CallOutcomeContext,
+} from './provider-call-outcome.js';
 import type { ReceiverOrigin } from '../resolution-outcome.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
+import {
+  sourceBindingForDefinition,
+  type SourceBindingRecorder,
+} from '../source-binding-resolution.js';
 
 /** Subset of `ScopeResolver` consumed by this pass. Accepting the
  *  subset rather than the full provider keeps tests and partial
  *  refactors lighter — callers only need to populate what we read. */
+/** Split `text` at the dots that sit at nesting depth 0 and outside string
+ *  literals — `@import("a.zig").Outer.Inner` → three segments, not four;
+ *  `List(u8).Node` → two. The chain walk's segmenter. */
+function splitTopLevelDots(text: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let inString = false;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (inString) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '(' || ch === '[' || ch === '<') depth++;
+    else if (ch === ')' || ch === ']' || ch === '>') depth--;
+    else if (ch === '.' && depth === 0) {
+      out.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(text.slice(start));
+  return out.filter((s) => s.length > 0);
+}
+
+/** Index of the last depth-0, outside-string dot of `text`, or -1. */
+function lastTopLevelDot(text: string): number {
+  let depth = 0;
+  let inString = false;
+  let last = -1;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (inString) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '(' || ch === '[' || ch === '<') depth++;
+    else if (ch === ')' || ch === ']' || ch === '>') depth--;
+    else if (ch === '.' && depth === 0) last = i;
+  }
+  return last;
+}
+
 type ReceiverBoundProviderSubset = Pick<
   ScopeResolver,
   | 'isSuperReceiver'
@@ -123,22 +202,49 @@ type ReceiverBoundProviderSubset = Pick<
   | 'collapseMemberCallsByCallerTarget'
   | 'elementTypeOf'
   | 'hoistTypeBindingsToModule'
+  | 'hoistedTypeBindingsRequireOwner'
   | 'stripReceiverCastExpressions'
   | 'constructionSyntax'
+  | 'isTypeApplicationCall'
   | 'stripTypePreservingDecoration'
+  | 'qualifiedTypeLookupSpelling'
   | 'resolveQualifiedReceiverMember'
   | 'namespaceReceiverPaths'
+  | 'namespaceBindingIdentity'
+  | 'namespaceSkipsEnclosingClasses'
+  | 'createReceiverNamespaceResolver'
   | 'resolveReceiverMember'
+  | 'receiverMemberLookupCoversAllCalls'
+  | 'receiverCallSite'
+  | 'resolveSelectedMethodImplementation'
+  | 'suppressReceiverLookup'
+  | 'isModuleExportAssignment'
   | 'resolveThisViaEnclosingClass'
+  | 'resolveMissingReceiverMembersFromSubtypes'
+  | 'missingReceiverSubtypeCandidateCompatibility'
+  | 'arityCompatibility'
   | 'conversionRankFn'
   | 'conversionOnlyArgTypePrefixes'
   | 'constraintCompatibility'
   | 'isStaticOnly'
   | 'normalizeTypeArgument'
+  | 'markConstructionSites'
+  | 'namespaceExportsIncludeImportedNames'
+  | 'isNamespaceMemberVisible'
+  | 'isBareClassReceiverCandidate'
+  | 'importsBindAtLexicalScope'
+  | 'resolveNamespaceChains'
+  | 'resolveQualifiedCallee'
+  | 'resolveQualifiedTypeSpellings'
+  | 'splitQualifiedCallee'
 >;
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
 const BARE_TYPE_NAME_RE = /^[A-Za-z_$][\w$]*$/;
+const CALLABLE_TYPES: ReadonlySet<SymbolDefinition['type']> = new Set<SymbolDefinition['type']>([
+  'Function',
+  'Method',
+]);
 
 /**
  * A type name a built-in test may be asked about: a bare, undecorated
@@ -156,6 +262,206 @@ function isBareTypeName(rawName: string): boolean {
 }
 
 /**
+ * What {@link classifyReceiverOrigin} may consult beyond the scope indexes.
+ *
+ * Every member is optional, and a missing one can only WITHHOLD an `external`
+ * verdict — never produce one. Built once per pass by
+ * {@link buildReceiverOriginEvidence}, which the classifier unit tests call too,
+ * so the hooks a test exercises are the hooks the pass threads.
+ */
+export interface ReceiverOriginEvidence {
+  /** The language's type-preserving decoration stripper. Without it a Go
+   *  pointer receiver — `func (h *Host)` binds `h` to the literal `*Host` —
+   *  resolves to no class and the whole method body's drops were reported as
+   *  external. Same hook the three receiver-chain lookups in
+   *  `compound-receiver.ts` already receive. */
+  readonly stripTypePreservingDecoration?: DecorationStripper;
+  /** Classify qualified declared types with the same provider policy as resolution. */
+  readonly qualifiedTypeSpellings?: boolean;
+  /** `LanguageProvider.isBuiltInName`, threaded through the pass options the
+   *  same way `emitFreeCallFallback` receives it. Languages that declare no
+   *  built-in set simply never produce an `external` verdict from it, which is
+   *  the safe default. */
+  readonly isBuiltInName?: (name: string) => boolean;
+  /** `LanguageProvider.externalReceiverNames` — host globals, platform
+   *  namespaces and library types, read as evidence only where the program
+   *  binds nothing by that name. */
+  readonly externalReceiverNames?: ReadonlySet<string>;
+  /** Is every import binding `localName` in `filePath` an import of a module the
+   *  language reserves for its runtime or standard library? Answered from the
+   *  import SPECIFIERS (`LanguageProvider.isExternalModuleSpecifier`); whether
+   *  the import resolved is the classifier's to check, from the import edges. */
+  readonly importsLibraryModule?: (filePath: string, localName: string) => boolean;
+  /** `foldReceiverChainPosition` under the pass's own compound-receiver
+   *  options, minus ancestor-hoisted bindings: where a minted receiver chain
+   *  lands when every step is typed by a declaration its owner makes. */
+  readonly foldChainPosition?: (
+    chain: DecodedReceiverChain,
+    inScope: ScopeId,
+  ) => FoldedReceiverPosition | undefined;
+  /** Does the program declare anything by this simple name? A program member
+   *  can be the target of a call on a LIBRARY type wherever the language lets
+   *  code add members to a type it does not own (extension methods, trait
+   *  impls), so a type-derived verdict declines whenever the dropped member's
+   *  name is one the program declares. */
+  readonly programDeclaresName?: (name: string) => boolean;
+}
+
+/**
+ * Build the {@link ReceiverOriginEvidence} for one language run.
+ *
+ * The per-file import table and the declared-name set are built on first use,
+ * not here: both exist only to answer questions about DROPPED sites, and a run
+ * that drops nothing should not pay a walk over every import and definition.
+ */
+export function buildReceiverOriginEvidence(input: {
+  /** Complete workspace graph, including declarations from other language passes. */
+  readonly graph?: KnowledgeGraph;
+  readonly parsedFiles: readonly ParsedFile[];
+  readonly scopes: ScopeResolutionIndexes;
+  readonly index: WorkspaceResolutionIndex;
+  /** The options the pass hands `resolveCompoundReceiverClass`, so the fold
+   *  here types a subset of what the fold there types — see `foldChainPosition`
+   *  below for the one branch it leaves out. */
+  readonly foldOptions: NonNullable<Parameters<typeof foldReceiverChainPosition>[4]>;
+  readonly stripTypePreservingDecoration?: DecorationStripper;
+  readonly qualifiedTypeSpellings?: boolean;
+  readonly isBuiltInName?: (name: string) => boolean;
+  readonly externalReceiverNames?: ReadonlySet<string>;
+  readonly isExternalModuleSpecifier?: (specifier: string) => boolean;
+}): ReceiverOriginEvidence {
+  const { parsedFiles, scopes, index, foldOptions, isExternalModuleSpecifier } = input;
+  let libraryImports: ReadonlyMap<string, ReadonlyMap<string, boolean>> | undefined;
+  let declaredNames: ReadonlySet<string> | undefined;
+  return {
+    stripTypePreservingDecoration: input.stripTypePreservingDecoration,
+    qualifiedTypeSpellings: input.qualifiedTypeSpellings,
+    isBuiltInName: input.isBuiltInName,
+    externalReceiverNames: input.externalReceiverNames,
+    importsLibraryModule:
+      isExternalModuleSpecifier === undefined
+        ? undefined
+        : (filePath, localName) =>
+            (libraryImports ??= indexLibraryImports(parsedFiles, isExternalModuleSpecifier))
+              .get(filePath)
+              ?.get(localName) === true,
+    // Never through bindings hoisted onto an ancestor scope. That branch serves
+    // languages that store method return types on the module, but it answers
+    // with ANY same-named binding there — another class's member in the same
+    // file, or another file's in a shared package scope — so it can type a
+    // step against the wrong owner. Resolution tolerates that (a wrong owner
+    // that is a program class is still checked against its members); an
+    // `external` verdict built on it would not be checked at all.
+    foldChainPosition: (chain, inScope) =>
+      foldReceiverChainPosition(chain, inScope, scopes, index, {
+        ...foldOptions,
+        hoistTypeBindingsToModule: false,
+      }),
+    programDeclaresName: (name) =>
+      (declaredNames ??= indexDeclaredNames(scopes, input.graph)).has(name),
+  };
+}
+
+/**
+ * Per file, per local name: is EVERY import binding that name an import of a
+ * library module? One non-library import of the same name (a relative module,
+ * a third-party package, a dynamic import) answers `false` for all of them.
+ */
+function indexLibraryImports(
+  parsedFiles: readonly ParsedFile[],
+  isExternalModuleSpecifier: (specifier: string) => boolean,
+): ReadonlyMap<string, ReadonlyMap<string, boolean>> {
+  const byFile = new Map<string, Map<string, boolean>>();
+  for (const parsed of parsedFiles) {
+    let byName: Map<string, boolean> | undefined;
+    for (const imp of parsed.parsedImports) {
+      // Wildcard, side-effect and resolved dynamic imports bind no local name.
+      if (!('localName' in imp)) continue;
+      const library = imp.kind !== 'dynamic-unresolved' && isExternalModuleSpecifier(imp.targetRaw);
+      byName ??= new Map();
+      byName.set(imp.localName, (byName.get(imp.localName) ?? true) && library);
+    }
+    if (byName !== undefined) byFile.set(parsed.filePath, byName);
+  }
+  return byFile;
+}
+
+/** Every simple name the program declares, from the qualified-name index. */
+function indexDeclaredNames(
+  scopes: ScopeResolutionIndexes,
+  graph?: KnowledgeGraph,
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const qualifiedName of scopes.qualifiedNames.byQualifiedName.keys()) {
+    names.add(
+      qualifiedName.slice(
+        Math.max(qualifiedName.lastIndexOf('.'), qualifiedName.lastIndexOf(':')) + 1,
+      ),
+    );
+  }
+  // Scope indexes cover one language only. Interoperating files can declare
+  // the program member that a library-rooted receiver eventually reaches.
+  graph?.forEachNode((node) => {
+    if (LINKABLE_LABELS.has(node.label)) names.add(node.properties.name);
+  });
+  return names;
+}
+
+/**
+ * Does this declared type spelling name a LIBRARY type the program does not
+ * declare? Asked of the head only — `Dictionary<string, User>` is a
+ * `Dictionary`, whatever its arguments — and only after the language's own
+ * decoration stripper, so `List<Post>?` and `*Build` are read by their types.
+ */
+function namesLibraryType(
+  spelling: string,
+  declaredAtScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  evidence: ReceiverOriginEvidence,
+): boolean {
+  const strip = evidence.stripTypePreservingDecoration;
+  const head = stripTemplateArguments(strip?.(spelling) ?? spelling).trim();
+  if (!isBareTypeName(head)) return false;
+  if (evidence.isBuiltInName?.(head) !== true && evidence.externalReceiverNames?.has(head) !== true)
+    return false;
+  // The program's own type by that name wins, wherever it is declared.
+  if (scopes.qualifiedNames.has(head)) return false;
+  return resolveClassBindingForName(declaredAtScope, head, scopes, strip) === undefined;
+}
+
+/**
+ * How the program binds a receiver's base name at the site — the question
+ * base-name evidence must answer first, because a name the program binds is
+ * the program's own however familiar it looks.
+ *
+ * - `unbound` — nothing on the scope chain claims the name: a global.
+ * - `library-import` — claimed only by imports that resolved to no file in the
+ *   program and that name a library module (`import os`,
+ *   `const std = @import("std")`).
+ * - `unresolved-import` — claimed only by imports that resolved to no file, at
+ *   least one from a module the language does not reserve. Not evidence: an
+ *   unresolved third-party package and an in-program module the resolver
+ *   missed look the same here.
+ * - `bound` — anything else: a parameter, a local, a resolved import.
+ */
+function baseRooting(
+  inScope: ScopeId,
+  base: string,
+  scopes: ScopeResolutionIndexes,
+  evidence: ReceiverOriginEvidence,
+): 'unbound' | 'library-import' | 'unresolved-import' | 'bound' {
+  const claim = lookupNameClaim(inScope, base, scopes);
+  if (claim.status === 'absent') return 'unbound';
+  const owner = claim.scope;
+  if (owner === undefined || claim.bindings.length > 0) return 'bound';
+  const edges = claim.imports;
+  if (edges.length === 0 || edges.some((edge) => edge.targetFile !== null)) return 'bound';
+  return evidence.importsLibraryModule?.(owner.filePath, base) === true
+    ? 'library-import'
+    : 'unresolved-import';
+}
+
+/**
  * Is this dropped receiver rooted inside the analyzed program?
  *
  * Asks of the receiver's BASE — the leftmost name the chain hangs off — what
@@ -165,10 +471,21 @@ function isBareTypeName(rawName: string): boolean {
  * - `in-program` — the base's declared type resolves here, or the base itself is
  *   a class, a qualified name, or a value this program declares. A real edge was
  *   lost; the hedge must fire.
- * - `external` — POSITIVE evidence that the target is outside: the language
- *   itself names the base (or its bare declared type) a built-in. `console.log`,
- *   `fetch(...)`, `JSON.stringify` reach code no index contains, so there is no
- *   node an edge could have pointed at and nothing was lost.
+ * - `external` — POSITIVE evidence that the target is outside. Four kinds, each
+ *   supplied by the language provider and each void wherever the program binds
+ *   the name itself:
+ *   - the base is a name the language owns and the program binds nothing by
+ *     (`console.log`, `document.body.appendChild`, `System.out.println`);
+ *   - the base is bound only by an unresolved import of a library module
+ *     (`os.environ.setdefault`, `std.sort.pdq`);
+ *   - the base's bare declared type is a built-in (`String raw` ⇒ `raw.trim()`);
+ *   - every step of the receiver chain is typed by a program declaration and the
+ *     last one is declared as a library type (`this.data.Keys` with
+ *     `Dictionary<string, User> data`) — provided the program declares no member
+ *     by the dropped name, which in a language with extension members could be
+ *     the real target.
+ *   These reach code no index contains, so there is no node an edge could have
+ *   pointed at and nothing was lost.
  * - `unknown` — everything else. An absence of evidence is NOT evidence of
  *   externality: an unannotated parameter (`function f(svc) { svc.a().b(); }`)
  *   is recorded nowhere in the scope model at all, and calling that "external"
@@ -187,27 +504,40 @@ export function classifyReceiverOrigin(
   decoded: DecodedReceiverChain | undefined,
   inScope: string,
   receiverName: string,
+  memberName: string,
   scopes: ScopeResolutionIndexes,
-  options: {
-    /** The language's type-preserving decoration stripper. Without it a Go
-     *  pointer receiver — `func (h *Host)` binds `h` to the literal `*Host` —
-     *  resolves to no class and the whole method body's drops were reported as
-     *  external. Same hook the three receiver-chain lookups in
-     *  `compound-receiver.ts` already receive. */
-    readonly stripTypePreservingDecoration?: DecorationStripper;
-    /** `LanguageProvider.isBuiltInName`, threaded through the pass options the
-     *  same way `emitFreeCallFallback` receives it. THE only source of positive
-     *  external evidence available here; languages that declare no built-in set
-     *  simply never produce an `external` verdict, which is the safe default. */
-    readonly isBuiltInName?: (name: string) => boolean;
-  } = {},
+  evidence: ReceiverOriginEvidence = {},
 ): ReceiverOrigin {
   // The chain's base is authoritative. Without one, take the head of the
   // receiver text up to the first member/call punctuation.
   const base = decoded?.baseReceiverName ?? /^[A-Za-z_$][\w$]*/.exec(receiverName)?.[0];
   if (base === undefined || base.length === 0) return 'unknown';
-  const strip = options.stripTypePreservingDecoration;
-  const isBuiltIn = options.isBuiltInName;
+  const strip = evidence.stripTypePreservingDecoration;
+  const isBuiltIn = evidence.isBuiltInName;
+
+  // A chain the program typed all the way to a library type: every hop was a
+  // declaration the program wrote, and the last names a type it does not have.
+  // Asked first because the base of such a chain is usually in-program (`this`).
+  // The verdict says the member lives on a LIBRARY type, and a program member of
+  // the same name may have been added to that type (an extension method, a
+  // trait impl), so it holds only when the program declares no such name.
+  if (
+    decoded !== undefined &&
+    decoded.steps.length > 0 &&
+    evidence.foldChainPosition !== undefined
+  ) {
+    const position = evidence.foldChainPosition(decoded, inScope);
+    if (
+      position !== undefined &&
+      position.def === undefined &&
+      position.declaredType !== undefined &&
+      position.declaredAtScope !== undefined &&
+      namesLibraryType(position.declaredType, position.declaredAtScope, scopes, evidence) &&
+      evidence.programDeclaresName?.(memberName) === false
+    ) {
+      return 'external';
+    }
+  }
 
   // The base's declared TYPE, when it has one, is the strongest signal about
   // where the member lives: `inputs.stream()` has an in-program base bound to
@@ -218,8 +548,9 @@ export function classifyReceiverOrigin(
     // arguments, so an in-program generic base (`Box<String> b; b.open()`)
     // resolves instead of being mislabelled and dropped from the hedge.
     if (
-      resolveClassBindingForName(binding.declaredAtScope, binding.rawName, scopes, strip) !==
-      undefined
+      resolveClassBindingForName(binding.declaredAtScope, binding.rawName, scopes, strip, {
+        qualifiedTypeSpellings: evidence.qualifiedTypeSpellings,
+      }) !== undefined
     ) {
       return 'in-program';
     }
@@ -247,9 +578,19 @@ export function classifyReceiverOrigin(
   // same population.
   if (findValueBindingInScope(inScope, base, scopes) !== undefined) return 'in-program';
 
-  // Positive external evidence, and the only kind reachable from this pass.
-  if (isBuiltIn?.(base) === true) return 'external';
-
+  // Everything below is evidence about the base's NAME, which says nothing once
+  // the program has bound that name itself: a parameter declared `document: Doc`
+  // or left untyped is the program's `document`, not the host's.
+  if (binding !== undefined) return 'unknown';
+  const rooting = baseRooting(inScope, base, scopes, evidence);
+  if (rooting === 'library-import')
+    return evidence.programDeclaresName?.(memberName) === false ? 'external' : 'unknown';
+  // An import the resolver could not follow is the program naming SOMETHING —
+  // possibly a module of its own — so a familiar spelling proves nothing there.
+  if (rooting !== 'unbound') return 'unknown';
+  if (isBuiltIn?.(base) === true || evidence.externalReceiverNames?.has(base) === true) {
+    return evidence.programDeclaresName?.(memberName) === false ? 'external' : 'unknown';
+  }
   return 'unknown';
 }
 
@@ -275,6 +616,37 @@ export const MAX_INTERFACE_DISPATCH_FANOUT = (() => {
 /** Bound on the sample of over-cap interface members kept for the warning. */
 const MAX_REPORTED_SKIPPED_INTERFACES = 20;
 
+/**
+ * Keep every proven subtype target while making omitted coverage explicit.
+ * `recordUnresolved` intentionally depends on candidate coverage, not edge
+ * emission: collapse-mode dedup can make every `tryEmitEdge` return false even
+ * though the site is already known and complete.
+ */
+export function prepareSubtypeDispatchCoverage<T extends { readonly nodeId: string }>(
+  targets: readonly T[],
+  missingCandidateIds: Iterable<string>,
+  maxTargets: number,
+): {
+  readonly targets: readonly T[];
+  readonly droppedTargets: readonly T[];
+  readonly missingCandidateIds: readonly string[];
+  readonly partialCoverage: boolean;
+  readonly recordUnresolved: boolean;
+} {
+  const keptTargets = targets.slice(0, maxTargets);
+  const droppedTargets = targets.slice(maxTargets);
+  const missing = new Set(missingCandidateIds);
+  for (const target of droppedTargets) missing.add(target.nodeId);
+  const partialCoverage = missing.size > 0;
+  return {
+    targets: keptTargets,
+    droppedTargets,
+    missingCandidateIds: [...missing],
+    partialCoverage,
+    recordUnresolved: partialCoverage || targets.length === 0,
+  };
+}
+
 /** What `emitReceiverBoundCalls` reports back to the orchestrator. */
 export interface ReceiverBoundResult {
   /** CALLS/ACCESSES edges emitted by this pass. */
@@ -295,7 +667,17 @@ export function emitReceiverBoundCalls(
   index: WorkspaceResolutionIndex,
   model: SemanticModel,
   options: {
+    /** Stable pass identity for provider indexes shared with return propagation. */
+    readonly allFilePaths?: ReadonlySet<string>;
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
+    readonly recordSourceBinding?: SourceBindingRecorder;
+    /** Compile-time primaries, separate from runtime fanout in calleeIdSink. */
+    readonly selectedCalls?: Map<string, SymbolDefinition | null>;
+    /** Apply only assignments fed by this newly selected compile-time primary. */
+    readonly onSelectedCall?: (key: string, definition: SymbolDefinition | null) => void;
+    /** Full source identity to the legacy handled-site key, finalized after replay. */
+    readonly pendingCallReceivers?: Map<string, string>;
+    readonly callResultProducers?: ReadonlyMap<string, CallResultAssignmentSite>;
     /** Resolved-callee-id capture sink (#2227 U2). Threaded in under `--pdg`
      *  OR for callable-flow's direct-target index (#2437, position-filtered);
      *  `undefined` ⇒ zero overhead, byte-identity (R4). Per-file capture
@@ -309,6 +691,12 @@ export function emitReceiverBoundCalls(
      *  degrades a drop's label to `unknown` (the safe direction) and changes no
      *  edge. */
     readonly isBuiltInName?: (name: string) => boolean;
+    /** `LanguageProvider.externalReceiverNames`. Same channel and same contract
+     *  as `isBuiltInName`: read only by `classifyReceiverOrigin`, so unset means
+     *  fewer `external` labels and never a different edge. */
+    readonly externalReceiverNames?: ReadonlySet<string>;
+    /** `LanguageProvider.isExternalModuleSpecifier`. Same contract again. */
+    readonly isExternalModuleSpecifier?: (specifier: string) => boolean;
     /** The generic arguments each heritage clause instantiated its base with,
      *  from the passes that emitted those heritage edges — the inheritance
      *  pre-pass, and the language resolvers that emit their own (Rust `impl T
@@ -317,6 +705,9 @@ export function emitReceiverBoundCalls(
      *  incompatible instantiation. Absent ⇒ every heritage instantiation reads
      *  as unknown ⇒ the pre-#2912 fan-out, unchanged. */
     readonly heritageTypeArguments?: HeritageTypeArguments;
+    /** Classes whose written inheritance includes a base the graph could not
+     * prove. A later inherited member cannot be selected across that gap. */
+    readonly unresolvedInheritanceByClass?: ReadonlySet<string>;
   } = {},
 ): ReceiverBoundResult {
   let emitted = 0;
@@ -326,24 +717,306 @@ export function emitReceiverBoundCalls(
   // them resolve the same site to the same target. NEVER pre-seed
   // from the reference index — see Contract Invariant I5.
   const seen = new Set<string>();
+  const outcomeContext: CallOutcomeContext = {
+    graph,
+    scopes,
+    nodeLookup,
+    model,
+  };
+  const suppressProviderResult = (
+    result: ReceiverMemberResolution | undefined,
+    site: ReferenceSite,
+    filePath: string,
+  ): boolean => {
+    if (result === undefined || result.kind === 'resolved') return false;
+    if (site.kind === 'call') {
+      const key = selectedCallKey(filePath, site.atRange);
+      options.selectedCalls?.set(key, null);
+      options.onSelectedCall?.(key, null);
+      options.pendingCallReceivers?.delete(key);
+    }
+    options.recordSourceBinding?.(site, {
+      status:
+        result.kind === 'ambiguous'
+          ? 'ambiguous'
+          : result.kind === 'inapplicable'
+            ? 'blocked'
+            : 'unresolved',
+      targetDefIds: result.candidateIds,
+      basis: result.kind === 'ambiguous' ? 'member-lookup-ambiguous' : `overload-${result.kind}`,
+    });
+    options.recordResolutionOutcome?.(
+      providerCallOutcome(result, site, filePath, 'receiver-bound-calls', outcomeContext),
+    );
+    handledSites.add(`${filePath}:${site.atRange.startLine}:${site.atRange.startCol}`);
+    return true;
+  };
+  // Active only while a source site is being resolved; nested class/chain
+  // lookups report a name guess at the actual decision that made it.
+  let onNameFallback: (() => void) | undefined;
   const fieldFallback = provider.fieldFallbackOnMethodLookup ?? true;
   const collapse = provider.collapseMemberCallsByCallerTarget === true;
   const hoistTypeBindingsToModule = provider.hoistTypeBindingsToModule === true;
+  // Namespace-member lookup for Case 1 / Case 3: local exports only, unless
+  // the provider publishes imported names too (hub modules — see
+  // `ScopeResolver.namespaceExportsIncludeImportedNames`).
+  //
+  // A language that states which module members a qualifier can reach
+  // (`ScopeResolver.isNamespaceMemberVisible`) has the rest filtered here, so
+  // Case 1, the chain walk and Case 3 all see one answer.
+  const memberVisibleToQualifier = provider.isNamespaceMemberVisible;
+  const namespaceMemberVisible =
+    memberVisibleToQualifier === undefined
+      ? undefined
+      : (member: SymbolDefinition): boolean => memberVisibleToQualifier({ member });
+  const lookupNamespaceMember = (targetFile: string, name: string): SymbolDefinition | undefined =>
+    provider.namespaceExportsIncludeImportedNames === true
+      ? findExportedDefIncludingImportedNames(
+          targetFile,
+          name,
+          index,
+          scopes,
+          namespaceMemberVisible,
+        )
+      : findExportedDef(targetFile, name, index, namespaceMemberVisible);
+  // A class-like member `name` unique across `files`, or nothing — two
+  // same-named classes behind one handle would mint a confident wrong edge.
+  const uniqueClassAcross = (
+    files: readonly string[],
+    name: string,
+  ): SymbolDefinition | undefined => {
+    let picked: SymbolDefinition | undefined;
+    for (const file of files) {
+      const def = lookupNamespaceMember(file, name);
+      if (def === undefined || !isClassLike(def.type)) continue;
+      if (picked !== undefined && picked.nodeId !== def.nodeId) return undefined;
+      picked = def;
+    }
+    return picked;
+  };
+
+  // #3498: whether a receiver's binding is a namespace function call
+  // (`x = ns.f()`): `f` is in the program, so the result type it failed to
+  // provide is a loss, not completeness.
+  const bindsNamespaceCallable = (
+    typeRef: TypeRef,
+    namespaceTargets: ReadonlyMap<string, readonly string[]>,
+  ): boolean => {
+    const [, head, member] = TWO_PART_RECEIVER_RE.exec(typeRef.rawName) ?? [];
+    if (head === undefined || member === undefined) return false;
+    return (namespaceTargets.get(head) ?? []).some((file) => {
+      const def = lookupNamespaceMember(file, member);
+      return def !== undefined && CALLABLE_TYPES.has(def.type);
+    });
+  };
+  const resolveProviderQualifiedCallee = bindQualifiedCalleeResolver(
+    provider.resolveQualifiedCallee,
+    scopes,
+    index,
+    parsedFiles,
+    options.allFilePaths,
+  );
+  const bindsQualifiedCallable = (typeRef: TypeRef): boolean => {
+    const definition = resolveProviderQualifiedCallee?.(typeRef.rawName, typeRef.declaredAtScope);
+    return definition !== undefined && CALLABLE_TYPES.has(definition.type);
+  };
+  // A class-like def NESTED in `owner` (`A.Item` inside `A`): its qualified
+  // name is the owner's plus the segment — the identity the structure phase
+  // and `populateClassOwnedMembers` agree on — so the qualified-name index
+  // answers directly; same file as the owner, unique or nothing. Only the
+  // chain walk reads this: `findOwnedMember` knows methods and fields, and a
+  // nested type is neither.
+  const findNestedClass = (owner: SymbolDefinition, name: string): SymbolDefinition | undefined => {
+    if (owner.qualifiedName === undefined || owner.qualifiedName.length === 0) return undefined;
+    let picked: SymbolDefinition | undefined;
+    for (const id of scopes.qualifiedNames.get(`${owner.qualifiedName}.${name}`)) {
+      const def = scopes.defs.get(id);
+      if (def === undefined || !isClassLike(def.type) || def.filePath !== owner.filePath) continue;
+      if (picked !== undefined && picked.nodeId !== def.nodeId) return undefined;
+      picked = def;
+    }
+    return picked;
+  };
+  // Namespace CHAIN walk (`ScopeResolver.resolveNamespaceChains`): resolve
+  // every segment of a qualified prefix from its verified namespace root —
+  // or, failing a namespace, from a class binding in scope (`Outer.Inner`).
+  // The cursor is either "these module files" or "this class"; a hop from a
+  // module is a class-like member of it (→ class) or a namespace-import edge
+  // its module scope binds under the segment — a republished module,
+  // `pub const sub = @import("sub.zig");` (→ files); a hop from a class is a
+  // nested class-like. Anything ambiguous resolves nothing.
+  const walkChains = provider.resolveNamespaceChains === true;
+  const namespaceImportTargetsOf = (file: string, name: string): readonly string[] => {
+    const moduleScope = index.moduleScopeByFile.get(file);
+    if (moduleScope === undefined) return [];
+    const out: string[] = [];
+    for (const edge of scopes.imports.get(moduleScope.id) ?? []) {
+      if (edge.kind !== 'namespace' || edge.localName !== name || edge.targetFile === null)
+        continue;
+      if (!out.includes(edge.targetFile)) out.push(edge.targetFile);
+    }
+    return out;
+  };
+  type ChainCursor =
+    | { readonly files: readonly string[] }
+    | { readonly classDef: SymbolDefinition };
+  const resolveNamespaceChain = (
+    prefix: string,
+    inScope: ScopeId,
+    namespaceTargets: ReadonlyMap<string, readonly string[]>,
+    position?: TypeRef['lookupPosition'],
+  ): ChainCursor | undefined => {
+    const segments = splitTopLevelDots(prefix);
+    if (segments.length === 0) return undefined;
+    let cursor: ChainCursor | undefined;
+    let rest: readonly string[] = [];
+    // The LONGEST namespace key wins: a provider may bind dotted handles
+    // (`namespaceReceiverPaths`) and an inline `@import("x.zig")` handle
+    // carries a dot of its own inside the quotes.
+    for (let k = segments.length; k >= 1; k--) {
+      const key = segments.slice(0, k).join('.');
+      const files = namespaceTargets.get(key);
+      if (files === undefined) continue;
+      if (
+        isNamespaceNameShadowed(
+          key,
+          inScope,
+          scopes,
+          provider.namespaceSkipsEnclosingClasses,
+          position,
+        )
+      )
+        return undefined;
+      cursor = { files };
+      rest = segments.slice(k);
+      break;
+    }
+    if (cursor === undefined) {
+      const head = findClassBindingInScope(inScope, segments[0]!, scopes, undefined, {
+        onNameFallback,
+      });
+      if (head === undefined || !isClassLike(head.type)) return undefined;
+      cursor = { classDef: head };
+      rest = segments.slice(1);
+    }
+    for (const segment of rest) {
+      if (segment.includes('(') || segment.includes('[')) return undefined;
+      if ('files' in cursor) {
+        const asClass = uniqueClassAcross(cursor.files, segment);
+        const asModule: string[] = [];
+        for (const file of cursor.files) {
+          for (const target of namespaceImportTargetsOf(file, segment)) {
+            if (!asModule.includes(target)) asModule.push(target);
+          }
+        }
+        if (asClass !== undefined && asModule.length > 0) return undefined; // both — refuse
+        if (asClass !== undefined) cursor = { classDef: asClass };
+        else if (asModule.length > 0) cursor = { files: asModule };
+        else return undefined;
+      } else {
+        const nested = findNestedClass(cursor.classDef, segment);
+        if (nested === undefined) return undefined;
+        cursor = { classDef: nested };
+      }
+    }
+    return cursor;
+  };
+  // `ns.Type` as a receiver, where `ns` is a verified namespace of the current
+  // file and `Type` a class-like member of it — or, with the chain walk, any
+  // `a.b.c.Type` whose prefix resolves. Unique or nothing.
+  const resolveNamespaceQualifiedClass = (
+    receiverName: string,
+    inScope: ScopeId,
+    namespaceTargets: ReadonlyMap<string, readonly string[]>,
+    position?: TypeRef['lookupPosition'],
+  ): SymbolDefinition | undefined => {
+    const dot = walkChains ? lastTopLevelDot(receiverName) : receiverName.lastIndexOf('.');
+    if (dot <= 0 || dot === receiverName.length - 1) return undefined;
+    const head = receiverName.slice(0, dot);
+    const tail = receiverName.slice(dot + 1);
+    if (tail.includes('(') || tail.includes('[')) return undefined;
+    if (walkChains) {
+      const cursor = resolveNamespaceChain(head, inScope, namespaceTargets, position);
+      if (cursor === undefined) return undefined;
+      return 'classDef' in cursor
+        ? findNestedClass(cursor.classDef, tail)
+        : uniqueClassAcross(cursor.files, tail);
+    }
+    const files = namespaceTargets.get(head);
+    if (
+      files === undefined ||
+      isNamespaceNameShadowed(
+        head,
+        inScope,
+        scopes,
+        provider.namespaceSkipsEnclosingClasses,
+        position,
+      )
+    )
+      return undefined;
+    return uniqueClassAcross(files, tail);
+  };
+  // A qualified callee as the free-call head of a compound receiver
+  // (`rp::make().m()`, or `x` bound to `rp::make`): the definition the
+  // qualified CALL resolves to, so its declared return type can type the
+  // receiver. Asked without call-site arity, so an ambiguous answer is none.
+  const splitQualifiedCallee = provider.splitQualifiedCallee;
+  const resolveQualifiedReceiverMember = provider.resolveQualifiedReceiverMember;
+  const resolveQualifiedCallee =
+    resolveProviderQualifiedCallee ??
+    (splitQualifiedCallee === undefined || resolveQualifiedReceiverMember === undefined
+      ? undefined
+      : (
+          callee: string,
+          inScope: ScopeId,
+          position?: TypeRef['lookupPosition'],
+        ): SymbolDefinition | undefined => {
+          const parts = splitQualifiedCallee(callee, inScope, scopes, position);
+          if (parts === undefined) return undefined;
+          const def = resolveQualifiedReceiverMember(
+            parts.receiver,
+            parts.member,
+            inScope,
+            scopes,
+            parsedFiles,
+          );
+          return def === 'ambiguous' ? undefined : def;
+        });
   const compoundOpts = {
     fieldFallback,
     elementTypeOf: provider.elementTypeOf,
+    namespaceExportsIncludeImportedNames: provider.namespaceExportsIncludeImportedNames === true,
+    namespaceMemberVisible,
+    namespaceSkipsEnclosingClasses: provider.namespaceSkipsEnclosingClasses,
     hoistTypeBindingsToModule,
+    hoistedTypeBindingsRequireOwner: provider.hoistedTypeBindingsRequireOwner === true,
+    lookupOwnedMethods: (ownerId: string, memberName: string) =>
+      model.methods.lookupAllByOwner(ownerId, memberName),
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
     constructionSyntax: provider.constructionSyntax,
+    isTypeApplicationCall: provider.isTypeApplicationCall,
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
+    qualifiedTypeLookupSpelling: provider.qualifiedTypeLookupSpelling,
     resolveThisViaEnclosingClass: provider.resolveThisViaEnclosingClass,
+    qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+    resolveQualifiedCallee,
   };
-  // Loop-invariant: both hooks come off the pass arguments, so the options bag
-  // for `classifyReceiverOrigin` is built once here rather than per dropped site.
-  const receiverOriginOpts = {
+  // Loop-invariant: every hook comes off the pass arguments, so the evidence for
+  // `classifyReceiverOrigin` is built once here rather than per dropped site.
+  // The fold reuses `compoundOpts`, so the classifier never types a chain that
+  // resolution could not have typed.
+  const receiverOriginEvidence = buildReceiverOriginEvidence({
+    graph,
+    parsedFiles,
+    scopes,
+    index,
+    foldOptions: compoundOpts,
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
     isBuiltInName: options.isBuiltInName,
-  };
+    externalReceiverNames: options.externalReceiverNames,
+    isExternalModuleSpecifier: options.isExternalModuleSpecifier,
+    qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+  });
 
   // Maps class-like graph ids back to ALL scope definitions that resolved to
   // them. Same-file partial declarations share one graph id but keep distinct
@@ -476,6 +1149,37 @@ export function emitReceiverBoundCalls(
     return graph.getNode(graphId)?.properties.isStatic === true;
   };
 
+  const missingReceiverSubtypeDecision = (
+    typeRef: TypeRef,
+    site: ReferenceSite,
+  ): boolean | 'suppress' => {
+    const predicate = provider.resolveMissingReceiverMembersFromSubtypes;
+    if (predicate === undefined) return false;
+    const callerGraphId = resolveCallerGraphId(
+      site.callerScope ?? site.inScope,
+      scopes,
+      nodeLookup,
+      site.atRange,
+    );
+    const callerIsStatic =
+      callerGraphId === undefined ? undefined : graph.getNode(callerGraphId)?.properties.isStatic;
+    const receiverBindingGraphId = resolveCallerGraphId(
+      typeRef.declaredAtScope,
+      scopes,
+      nodeLookup,
+    );
+    const receiverBindingIsStatic =
+      receiverBindingGraphId === undefined
+        ? undefined
+        : graph.getNode(receiverBindingGraphId)?.properties.isStatic;
+    return predicate(typeRef, {
+      callerIsStatic,
+      receiverBindingIsStatic,
+      memberName: site.name,
+      callArity: site.arity,
+    });
+  };
+
   /**
    * What does this written type argument NAME, as seen from `scopeId` (#2912)?
    *
@@ -553,7 +1257,17 @@ export function emitReceiverBoundCalls(
      *  cases call this unconditionally, and the overwhelming majority of
      *  receivers are concrete classes that return at the first line. */
     receiverTypeSpelling: string | undefined,
+    callerFilePath: string,
   ): number => {
+    // A provider may select an interface declaration from a concrete receiver.
+    // Runtime fan-out follows that selected declaration's owner.
+    const concreteReceiver = ownerDef.type === 'Interface' ? undefined : ownerDef;
+    const selectedOwner =
+      primaryMemberDef.ownerId === undefined
+        ? undefined
+        : scopes.defs.get(primaryMemberDef.ownerId);
+    if (concreteReceiver !== undefined && selectedOwner?.type === 'Interface')
+      ownerDef = selectedOwner;
     if (ownerDef.type !== 'Interface') return 0;
     if (subtypesBySupertypeDefId.get(ownerDef.nodeId) === undefined) return 0;
     const receiverTypeArguments =
@@ -588,6 +1302,10 @@ export function emitReceiverBoundCalls(
       readonly typeArguments: readonly string[] | undefined;
     };
     const targetByMemberId = new Map<string, DispatchTarget>();
+    const unresolvedDispatchCandidates = new Set<string>();
+    const unresolvedDispatchOwners = new Set<string>();
+    let hasUnresolvedDispatch = false;
+    let dispatchCandidatesComplete = true;
     const bestIncomingCount = new Map<string, number>([[ownerDef.nodeId, 0]]);
     const queue: DispatchTraversal[] = [
       {
@@ -608,6 +1326,15 @@ export function emitReceiverBoundCalls(
       const superGraphId =
         current.typeArguments === undefined ? undefined : classGraphIdByDefId.get(current.typeId);
       for (const subDef of subtypesBySupertypeDefId.get(current.typeId) ?? []) {
+        // Preserve a proven concrete receiver branch when the provider selects
+        // an interface signature; sibling implementations are not its targets.
+        if (
+          concreteReceiver !== undefined &&
+          subDef.nodeId !== concreteReceiver.nodeId &&
+          !scopes.methodDispatch.mroFor(concreteReceiver.nodeId).includes(subDef.nodeId) &&
+          !scopes.methodDispatch.mroFor(subDef.nodeId).includes(concreteReceiver.nodeId)
+        )
+          continue;
         const previousIncomingCount = bestIncomingCount.get(subDef.nodeId);
         if (
           previousIncomingCount !== undefined &&
@@ -653,11 +1380,54 @@ export function emitReceiverBoundCalls(
 
         bestIncomingCount.set(subDef.nodeId, current.ancestorImplementationCount);
 
-        const implMember = pickOverload(subDef.nodeId, memberName, site, model, provider);
+        const signatureResolution = provider.resolveSelectedMethodImplementation?.(
+          primaryMemberDef,
+          subDef,
+          scopes,
+          model,
+        );
+        const implMember =
+          provider.resolveSelectedMethodImplementation === undefined
+            ? pickOverload(subDef.nodeId, memberName, site, model, provider)
+            : signatureResolution?.kind === 'resolved'
+              ? signatureResolution.definition
+              : undefined;
+        const implementationGraphId =
+          signatureResolution?.kind === 'resolved'
+            ? resolveDefGraphId(
+                signatureResolution.definition.filePath,
+                signatureResolution.definition,
+                nodeLookup,
+              )
+            : undefined;
+        const implementationUnmapped =
+          signatureResolution?.kind === 'resolved' &&
+          (implementationGraphId === undefined ||
+            graph.getNode(implementationGraphId) === undefined);
+        if (
+          signatureResolution?.kind === 'unknown' ||
+          signatureResolution?.kind === 'ambiguous' ||
+          implementationUnmapped
+        ) {
+          hasUnresolvedDispatch = true;
+          if (signatureResolution?.kind === 'resolved') {
+            unresolvedDispatchCandidates.add(signatureResolution.definition.nodeId);
+            dispatchCandidatesComplete = false;
+          } else if (signatureResolution !== undefined) {
+            for (const id of signatureResolution.candidateIds) unresolvedDispatchCandidates.add(id);
+            if (signatureResolution.candidateSetComplete === false)
+              dispatchCandidatesComplete = false;
+          }
+          const ownerGraphId = resolveDefGraphId(subDef.filePath, subDef, nodeLookup);
+          if (ownerGraphId === undefined || graph.getNode(ownerGraphId) === undefined)
+            dispatchCandidatesComplete = false;
+          else unresolvedDispatchOwners.add(ownerGraphId);
+        }
         let descendantImplementationCount = current.ancestorImplementationCount;
         if (
           implMember !== undefined &&
           implMember !== OVERLOAD_AMBIGUOUS &&
+          !implementationUnmapped &&
           implMember.isDeleted !== true &&
           implMember.nodeId !== primaryMemberDef.nodeId &&
           !isDeclarationOnly(implMember) &&
@@ -684,6 +1454,29 @@ export function emitReceiverBoundCalls(
           typeId: subDef.nodeId,
           ancestorImplementationCount: descendantImplementationCount,
           typeArguments: subtypeArguments,
+        });
+      }
+    }
+
+    if (hasUnresolvedDispatch) {
+      const outcome = providerCallOutcome(
+        {
+          kind: 'unknown',
+          candidateIds: [...unresolvedDispatchCandidates],
+          candidateSetComplete: dispatchCandidatesComplete,
+          detail: 'An implementation of the selected signature could not be established.',
+        },
+        site,
+        callerFilePath,
+        'receiver-dispatch',
+        outcomeContext,
+      );
+      if (outcome.kind === 'suppressed') {
+        options.recordResolutionOutcome?.({
+          ...outcome,
+          candidateOwnerIds: [
+            ...new Set([...(outcome.candidateOwnerIds ?? []), ...unresolvedDispatchOwners]),
+          ],
         });
       }
     }
@@ -737,48 +1530,75 @@ export function emitReceiverBoundCalls(
     return n;
   };
 
-  /**
-   * Declared type of the CLASS-LEVEL field named `fieldName` on `ownerId`, or
-   * `undefined` when the owner declares no such field, declares only an
-   * instance one, or declares one whose type was never captured.
-   *
-   * Both facts live on the graph NODE rather than on `SymbolDefinition` —
-   * `isStatic` is set by the structure phase and `declaredType` by the field
-   * extractor — which is the same place {@link isUnreachableByInstanceDispatch}
-   * reads `isStatic` from, so this introduces no new dependency.
-   *
-   * `isStatic === true` is required, not merely preferred. The receiver that
-   * asks this question resolved its head to the CLASS, so an instance field of
-   * that name is not reachable through it and answering with the instance
-   * field's type would type the receiver as something the source cannot
-   * denote. A def that resolves to no node, or a node with no captured type,
-   * answers `undefined` — the declining direction, matching how the rest of
-   * this pass treats an unresolvable lookup.
-   */
+  // Undefined means absent; null means an untyped static declaration that
+  // shadows ancestors. An annotation names a type; a constructor names a value.
   const declaredTypeOfClassLevelField = (
     ownerId: string,
     fieldName: string,
-  ): string | undefined => {
+  ): { readonly name: string; readonly purpose: 'type' | 'value' } | null | undefined => {
+    let declaresStatic = false;
     for (const candidate of model.fields.lookupAllByOwner(ownerId, fieldName)) {
       const graphId = resolveDefGraphId(candidate.filePath, candidate, nodeLookup);
       if (graphId === undefined) continue;
       const properties = graph.getNode(graphId)?.properties;
       if (properties?.isStatic !== true) continue;
-      const declaredType = properties.declaredType;
-      if (typeof declaredType !== 'string') continue;
-      const trimmed = declaredType.trim();
-      if (trimmed.length === 0) continue;
-      return trimmed;
+      declaresStatic = true;
+      for (const [fieldType, purpose] of [
+        [properties.declaredType, 'type'],
+        [properties.initializerType, 'value'],
+      ] as const) {
+        if (typeof fieldType !== 'string') continue;
+        const trimmed = fieldType.trim();
+        if (trimmed.length > 0) return { name: trimmed, purpose };
+      }
     }
-    return undefined;
+    return declaresStatic ? null : undefined;
   };
 
+  const resolveReceiverNamespace = provider.createReceiverNamespaceResolver?.(scopes, index);
   for (const parsed of parsedFiles) {
-    const namespaceTargets = collectNamespaceTargets(parsed, scopes, {
-      receiverPaths: provider.namespaceReceiverPaths,
-      moduleFileExists: (filePath) => index.moduleScopeByFile.has(filePath),
-    });
-    const fileCompoundOpts = { ...compoundOpts, namespaceTargets };
+    const namespaceCache = createNamespaceTargetCache(
+      parsed,
+      scopes,
+      {
+        receiverPaths: provider.namespaceReceiverPaths,
+        bindingIdentity: provider.namespaceBindingIdentity,
+        skipEnclosingClasses: provider.namespaceSkipsEnclosingClasses,
+        moduleFileExists: (filePath) => index.moduleScopeByFile.has(filePath),
+      },
+      provider.importsBindAtLexicalScope === true,
+    );
+    const namespaceTargetsAt = namespaceCache.at;
+    const namespaceContext = (inScope?: ScopeId, position?: TypeRef['lookupPosition']) => {
+      const namespaceTargets = namespaceTargetsAt(inScope, position);
+      return {
+        namespaceTargets,
+        fileCompoundOpts: {
+          ...compoundOpts,
+          namespaceTargets,
+          namespaceTargetsAt,
+          lookupPosition: position,
+          ...(walkChains
+            ? {
+                resolveQualifiedClass: (
+                  qualifiedName: string,
+                  scopeId: ScopeId,
+                  lookupPosition?: TypeRef['lookupPosition'],
+                ) =>
+                  resolveNamespaceQualifiedClass(
+                    qualifiedName,
+                    scopeId,
+                    lookupPosition === undefined
+                      ? namespaceTargets
+                      : namespaceTargetsAt(scopeId, lookupPosition),
+                    lookupPosition,
+                  ),
+              }
+            : {}),
+        },
+      };
+    };
+    const fileNamespaces = namespaceContext();
     // Per-file resolved-callee-id capture context (#2227 U2). Built once per
     // file; `undefined` when the sink is absent (pdg off) so the `tryEmitEdge`
     // capture is a no-op and emission stays byte-identical (R4).
@@ -787,13 +1607,189 @@ export function emitReceiverBoundCalls(
         ? { sink: options.calleeIdSink, filePath: parsed.filePath }
         : undefined;
 
-    for (const site of parsed.referenceSites) {
+    // Duplicate captures of one site share a key and a member name. Distinct
+    // calls can share only the key (`ns.make().m()` starts where `ns.make()`
+    // does), so one's resolution must not hide the other's drop (#3498).
+    const siteIdentitiesByKey = new Map<string, string | Set<string>>();
+    // Producer dependencies are local to the call's file. A source range is
+    // attempted once initially, then only when a producer it awaited resolves.
+    // This handles reverse capture order without rescanning the workspace.
+    const workQueue = options.selectedCalls === undefined ? undefined : [...parsed.referenceSites];
+    const sites = workQueue ?? parsed.referenceSites;
+    const waitingByProducer = new Map<string, Map<string, ReferenceSite>>();
+    const waitForProducer = (producerKey: string, site: ReferenceSite): void => {
+      if (options.selectedCalls === undefined || options.selectedCalls.has(producerKey)) return;
+      let waiting = waitingByProducer.get(producerKey);
+      if (waiting === undefined) waitingByProducer.set(producerKey, (waiting = new Map()));
+      waiting.set(selectedCallKey(parsed.filePath, site.atRange), site);
+    };
+    const releaseConsumers = (producerKey: string): void => {
+      const waiting = waitingByProducer.get(producerKey);
+      if (waiting === undefined) return;
+      waitingByProducer.delete(producerKey);
+      for (const site of waiting.values()) workQueue?.push(site);
+    };
+    for (const site of sites) {
       if (site.kind !== 'call' && site.kind !== 'read' && site.kind !== 'write') continue;
       if (site.explicitReceiver === undefined) continue;
+      // Primaries and terminal suppressions are stable across dependency
+      // replay. Revisit only consumers whose producer was not known yet.
+      if (
+        site.kind === 'call' &&
+        options.selectedCalls?.has(selectedCallKey(parsed.filePath, site.atRange))
+      )
+        continue;
+      // A receiver-specific decision supersedes the provisional registry
+      // answer even when it deliberately declines to emit an edge.
+      options.recordSourceBinding?.(site, {
+        status: 'unresolved',
+        targetDefIds: [],
+        basis: 'receiver',
+      });
+      let sourceBindingGrounded = true;
+      let providerSelectedMember = false;
+      onNameFallback =
+        options.recordSourceBinding === undefined
+          ? undefined
+          : () => {
+              sourceBindingGrounded = false;
+            };
+      const recordMember = (definition: SymbolDefinition): void => {
+        if (site.kind === 'call') {
+          const key = selectedCallKey(parsed.filePath, site.atRange);
+          options.selectedCalls?.set(key, definition);
+          options.onSelectedCall?.(key, definition);
+          options.pendingCallReceivers?.delete(key);
+          releaseConsumers(key);
+        }
+        if (providerSelectedMember && site.kind === 'call') {
+          options.recordResolutionOutcome?.(
+            providerCallOutcome(
+              { kind: 'resolved', definition },
+              site,
+              parsed.filePath,
+              'receiver-bound-calls',
+              outcomeContext,
+            ),
+          );
+        }
+        options.recordSourceBinding?.(
+          site,
+          sourceBindingGrounded
+            ? sourceBindingForDefinition(definition, 'receiver')
+            : {
+                status: 'unresolved',
+                targetDefIds: [definition.nodeId],
+                basis: 'receiver-name-fallback',
+              },
+        );
+      };
+
+      const namespaces = namespaceCache.requiresLexicalLookup
+        ? namespaceContext(site.inScope, site.atRange)
+        : fileNamespaces;
+      const { namespaceTargets } = namespaces;
+      const fileCompoundOpts =
+        onNameFallback === undefined
+          ? namespaces.fileCompoundOpts
+          : { ...namespaces.fileCompoundOpts, onNameFallback };
 
       const receiverName = site.explicitReceiver.name;
       const memberName = site.name;
       const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+      // A duplicate capture (or a call's own callee read) repeats the member
+      // on the same receiver; an outer call that starts where its inner one
+      // does (`a.f().f()`) has the inner call as its receiver.
+      const earlierAtKey = recordSiteMember(
+        siteIdentitiesByKey,
+        siteKey,
+        `${receiverName}.${memberName}`,
+      );
+
+      const baseName =
+        decodeReceiverChain(site.receiverChain)?.baseReceiverName ??
+        receiverName.split(/[.([\s]/, 1)[0];
+
+      if (
+        site.kind === 'call' &&
+        baseName !== undefined &&
+        options.callResultProducers !== undefined
+      ) {
+        const claim = lookupNameClaim(site.inScope, baseName, scopes, {
+          position: site.atRange,
+          purpose: 'value',
+        });
+        let currentScopeId: ScopeId | null = site.inScope;
+        let unresolvedAssignment = false;
+        let selectedProducer: SymbolDefinition | null | undefined;
+        let producerKey: string | undefined;
+        while (currentScopeId !== null) {
+          const currentScope = scopes.scopeTree.getScope(currentScopeId);
+          if (currentScope === undefined) break;
+          const assignment = options.callResultProducers.get(
+            callResultBindingKey(currentScopeId, baseName),
+          );
+          if (
+            assignment !== undefined &&
+            (assignment.callSite.startLine < site.atRange.startLine ||
+              (assignment.callSite.startLine === site.atRange.startLine &&
+                assignment.callSite.startCol <= site.atRange.startCol))
+          ) {
+            producerKey = selectedCallKey(parsed.filePath, assignment.callSite);
+            selectedProducer = options.selectedCalls?.get(producerKey);
+            unresolvedAssignment =
+              selectedProducer == null ||
+              !index.declaredReturnTypeByCallableId.has(selectedProducer.nodeId);
+            break;
+          }
+          // A nearer declaration owns the receiver even when it has no type.
+          if (claim.scope?.id === currentScopeId || currentScope.typeBindings.has(baseName)) break;
+          currentScopeId = currentScope.parent;
+        }
+        if (unresolvedAssignment) {
+          if (producerKey !== undefined) waitForProducer(producerKey, site);
+          options.pendingCallReceivers?.set(
+            selectedCallKey(parsed.filePath, site.atRange),
+            siteKey,
+          );
+          options.recordResolutionOutcome?.({
+            kind: 'suppressed',
+            reason: 'receiver-unresolved',
+            candidateIds: [],
+            phase: 'receiver-bound-calls',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+            siteKind: 'call',
+            receiverOrigin: selectedProducer == null ? 'unknown' : 'in-program',
+            receiverShape: classifyReceiverShape(decodeReceiverChain(site.receiverChain)),
+          });
+          continue;
+        }
+      }
+
+      if (provider.suppressReceiverLookup !== undefined) {
+        const baseTypeRef =
+          baseName === undefined
+            ? undefined
+            : findReceiverTypeBinding(site.inScope, baseName, scopes, {
+                position: site.atRange,
+              });
+        if (baseTypeRef !== undefined && provider.suppressReceiverLookup(baseTypeRef)) {
+          options.recordResolutionOutcome?.({
+            kind: 'suppressed',
+            reason: 'receiver-unresolved',
+            candidateIds: [],
+            phase: 'receiver-bound-calls',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+            siteKind: site.kind,
+          });
+          handledSites.add(siteKey);
+          continue;
+        }
+      }
 
       // ── owned-but-unbound receiver ───────────────────────────────
       // The language declared this scope REBINDS the receiver and gave
@@ -803,7 +1799,12 @@ export function emitReceiverBoundCalls(
       // instead of letting the receiver-blind lexical fallback in
       // `lookupCore` match the enclosing class's member by name.
       // No-op for every language that leaves `Scope.ownsReceivers` unset.
-      if (isReceiverOwnedButUnbound(site.inScope, receiverName, scopes)) {
+      if (isReceiverOwnedButUnbound(site.inScope, baseName, scopes)) {
+        options.recordSourceBinding?.(site, {
+          status: 'blocked',
+          targetDefIds: [],
+          basis: 'receiver-owned-but-unbound',
+        });
         options.recordResolutionOutcome?.({
           kind: 'suppressed',
           phase: 'receiver-bound-calls',
@@ -812,6 +1813,7 @@ export function emitReceiverBoundCalls(
           range: site.atRange,
           reason: 'receiver-owned-but-unbound',
           candidateIds: [],
+          siteKind: site.kind,
         });
         handledSites.add(siteKey);
         continue;
@@ -838,9 +1840,19 @@ export function emitReceiverBoundCalls(
             extendsOnly !== undefined
               ? extendsOnly(enclosingClass.nodeId)
               : scopes.methodDispatch.mroFor(enclosingClass.nodeId);
-          let memberDef: SymbolDefinition | undefined;
+          const baseDef = ancestors.length > 0 ? scopes.defs.get(ancestors[0]!) : undefined;
+          const languageResolution =
+            provider.receiverMemberLookupCoversAllCalls === true &&
+            site.kind === 'call' &&
+            baseDef !== undefined
+              ? provider.resolveReceiverMember?.(baseDef, memberName, site, scopes, model)
+              : undefined;
+          if (suppressProviderResult(languageResolution, site, parsed.filePath)) continue;
+          providerSelectedMember = languageResolution?.kind === 'resolved';
+          let memberDef =
+            languageResolution?.kind === 'resolved' ? languageResolution.definition : undefined;
           let ambiguousOwnerId: string | undefined;
-          for (const ownerId of ancestors) {
+          for (const ownerId of memberDef === undefined ? ancestors : []) {
             const picked =
               site.kind === 'call'
                 ? pickOverload(ownerId, memberName, site, model, provider)
@@ -863,6 +1875,8 @@ export function emitReceiverBoundCalls(
               memberName,
               model,
               provider,
+              options.recordSourceBinding,
+              outcomeContext,
             );
             handledSites.add(siteKey);
             continue;
@@ -874,6 +1888,7 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 memberDef,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
@@ -895,6 +1910,7 @@ export function emitReceiverBoundCalls(
             // superclass via its `import`/`from … import …` binding.
             // Closing that gap requires realigning the legacy tier
             // classifier and is tracked separately.
+            recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -940,20 +1956,80 @@ export function emitReceiverBoundCalls(
         receiverName.includes('(') ||
         site.receiverChain !== undefined
       ) {
-        const resolved = resolveCompoundReceiverTyped(
-          receiverName,
-          site.inScope,
-          scopes,
-          index,
-          // Group A: the receiver IS this site's expression, so the site's
-          // captured chain describes it and the structural fold applies.
-          { ...fileCompoundOpts, receiverChain: site.receiverChain },
-        );
+        const producer =
+          site.kind === 'call' ? provider.receiverCallSite?.(site, scopes) : undefined;
+        const selected =
+          producer === undefined
+            ? undefined
+            : options.selectedCalls?.get(selectedCallKey(parsed.filePath, producer.range));
+        const returned =
+          selected == null ? undefined : index.declaredReturnTypeByCallableId.get(selected.nodeId);
+        const returnedClass =
+          returned === undefined
+            ? undefined
+            : resolveClassBindingForName(
+                returned.declaredAtScope,
+                returned.declaredSpelling ?? returned.rawName,
+                scopes,
+                provider.stripTypePreservingDecoration,
+                {
+                  purpose: 'type',
+                  position: returned.lookupPosition,
+                  qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+                },
+              );
+        const resolved =
+          producer === undefined
+            ? resolveCompoundReceiverTyped(receiverName, site.inScope, scopes, index, {
+                ...fileCompoundOpts,
+                receiverChain: site.receiverChain,
+              })
+            : returnedClass === undefined
+              ? undefined
+              : {
+                  def: returnedClass,
+                  declaredSpelling: returned?.declaredSpelling ?? returned?.rawName,
+                };
+        if (producer !== undefined && resolved === undefined) {
+          // Defer without claiming the shared start-position key: the inner
+          // free call may still need that key during this pass. Finalization
+          // blocks generic fallback after the producer queue is exhausted.
+          waitForProducer(selectedCallKey(parsed.filePath, producer.range), site);
+          options.pendingCallReceivers?.set(
+            selectedCallKey(parsed.filePath, site.atRange),
+            siteKey,
+          );
+          options.recordResolutionOutcome?.({
+            kind: 'suppressed',
+            reason: 'receiver-unresolved',
+            candidateIds: [],
+            phase: 'receiver-bound-calls',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+            siteKind: 'call',
+            receiverOrigin:
+              returned !== undefined && options.isBuiltInName?.(returned.rawName) === true
+                ? 'external'
+                : selected == null
+                  ? 'unknown'
+                  : 'in-program',
+            receiverShape: classifyReceiverShape(decodeReceiverChain(site.receiverChain)),
+          });
+          continue;
+        }
         const currentClass = resolved?.def;
         compoundReceiverUnresolved = currentClass === undefined;
         if (resolved !== undefined && currentClass !== undefined) {
+          const languageResolution =
+            provider.receiverMemberLookupCoversAllCalls === true && site.kind === 'call'
+              ? provider.resolveReceiverMember?.(currentClass, memberName, site, scopes, model)
+              : undefined;
+          if (suppressProviderResult(languageResolution, site, parsed.filePath)) continue;
+          providerSelectedMember = languageResolution?.kind === 'resolved';
           const chain = [currentClass.nodeId, ...scopes.methodDispatch.mroFor(currentClass.nodeId)];
-          let memberDef: SymbolDefinition | undefined;
+          let memberDef =
+            languageResolution?.kind === 'resolved' ? languageResolution.definition : undefined;
           let ambiguousOwnerId: string | undefined;
           // Static-only filter (#1756 / U3): same shape as Case 4's
           // overload-aware chain walk (skip-and-walk-on). When
@@ -967,7 +2043,7 @@ export function emitReceiverBoundCalls(
           // reference index has no compound-receiver entry for
           // shapes like `Logger.create("a")`), so there's no wrong
           // target to suppress.
-          for (const ownerId of chain) {
+          for (const ownerId of memberDef === undefined ? chain : []) {
             const picked =
               site.kind === 'call'
                 ? pickFirstNonStaticOnly(ownerId, memberName, site, model, provider)
@@ -991,6 +2067,8 @@ export function emitReceiverBoundCalls(
               memberName,
               model,
               provider,
+              options.recordSourceBinding,
+              outcomeContext,
             );
             handledSites.add(siteKey);
             continue;
@@ -1002,11 +2080,13 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 memberDef,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
               continue;
             }
+            recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -1066,6 +2146,7 @@ export function emitReceiverBoundCalls(
               0.85,
               calleeCapture,
               resolved.declaredSpelling,
+              parsed.filePath,
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
@@ -1093,6 +2174,7 @@ export function emitReceiverBoundCalls(
       // AND `isStaticOnly`, the chain-walk below MUST adopt the
       // skip-and-walk-on filter pattern used by Cases 0, 3b, and 4.
       if (provider.resolveThisViaEnclosingClass === true && receiverName === 'this') {
+        sourceBindingGrounded = true;
         const enclosingClass = findEnclosingClassDef(site.inScope, scopes);
         if (enclosingClass !== undefined) {
           const languageResolution = provider.resolveReceiverMember?.(
@@ -1102,19 +2184,8 @@ export function emitReceiverBoundCalls(
             scopes,
             model,
           );
-          if (languageResolution?.kind === 'ambiguous') {
-            options.recordResolutionOutcome?.({
-              kind: 'suppressed',
-              phase: 'receiver-bound-calls',
-              filePath: parsed.filePath,
-              name: site.name,
-              range: site.atRange,
-              reason: 'member-lookup-ambiguous',
-              candidateIds: languageResolution.candidateIds,
-            });
-            handledSites.add(siteKey);
-            continue;
-          }
+          if (suppressProviderResult(languageResolution, site, parsed.filePath)) continue;
+          providerSelectedMember = languageResolution?.kind === 'resolved';
           if (languageResolution?.kind === 'resolved') {
             const memberDef = languageResolution.definition;
             if (
@@ -1123,6 +2194,7 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 memberDef,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
@@ -1135,6 +2207,7 @@ export function emitReceiverBoundCalls(
                   ? 'import-resolved'
                   : 'global';
             const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -1206,10 +2279,20 @@ export function emitReceiverBoundCalls(
             }
           }
           if (ambiguous) {
+            options.recordSourceBinding?.(site, {
+              status: 'ambiguous',
+              targetDefIds: [],
+              basis: 'member-lookup-ambiguous',
+            });
             handledSites.add(siteKey);
             continue;
           }
           if (hiddenByName) {
+            options.recordSourceBinding?.(site, {
+              status: 'blocked',
+              targetDefIds: [],
+              basis: 'member-name-hiding',
+            });
             handledSites.add(siteKey);
             continue;
           }
@@ -1220,6 +2303,7 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 memberDef,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
@@ -1232,6 +2316,7 @@ export function emitReceiverBoundCalls(
                   ? 'import-resolved'
                   : 'global';
             const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -1252,7 +2337,7 @@ export function emitReceiverBoundCalls(
       }
 
       // ── Case 1: namespace receiver ───────────────────────────────
-      // `namespaceTargets` is collected per FILE, so a local declaration that
+      // `namespaceTargets` contains imports, so a local declaration that
       // shadows the import must suppress it — `def f(pkg): pkg.db.query()`
       // calls a method on the PARAMETER, and resolving it through the import
       // emits a wrong edge, not a missing one. The compound-receiver
@@ -1265,15 +2350,61 @@ export function emitReceiverBoundCalls(
       // that is usually empty. Mirrors the order the compound-receiver
       // construction path already uses.
       const namespaceCandidates = namespaceTargets.get(receiverName);
-      const targetFiles =
+      let targetFiles: readonly string[] | undefined =
         namespaceCandidates !== undefined &&
-        !isNamespaceNameShadowed(receiverName, site.inScope, scopes)
+        !isNamespaceNameShadowed(
+          receiverName,
+          site.inScope,
+          scopes,
+          provider.namespaceSkipsEnclosingClasses,
+          site.atRange,
+        )
           ? namespaceCandidates
           : undefined;
+      const receiverNamespace =
+        targetFiles === undefined ? resolveReceiverNamespace?.(site, parsed) : undefined;
+      targetFiles ??= receiverNamespace?.targetFiles;
+      // Chain walk: `hub.sub.helper()` / `hub.sub.Thing{}` — the receiver is
+      // no handle of this file, but its segments reach a module (see
+      // `resolveNamespaceChain`). A prefix that ends in a CLASS is Case 2's.
+      if (targetFiles === undefined && walkChains && lastTopLevelDot(receiverName) > 0) {
+        const cursor = resolveNamespaceChain(
+          receiverName,
+          site.inScope,
+          namespaceTargets,
+          site.atRange,
+        );
+        if (cursor !== undefined && 'files' in cursor) targetFiles = cursor.files;
+      }
       if (targetFiles !== undefined && provider.resolveQualifiedReceiverMember === undefined) {
+        sourceBindingGrounded = true;
+        // Graph emission historically picks the first package-file hit. An
+        // edit needs the complete candidate set at this same namespace tier.
+        const namespaceMembers =
+          options.recordSourceBinding === undefined
+            ? undefined
+            : new Map(
+                targetFiles.map((targetFile) => [
+                  targetFile,
+                  lookupNamespaceMember(targetFile, memberName),
+                ]),
+              );
+        const namespaceCandidateIds =
+          namespaceMembers === undefined
+            ? []
+            : [
+                ...new Set(
+                  [...namespaceMembers.values()].flatMap((definition) =>
+                    definition === undefined ? [] : [definition.nodeId],
+                  ),
+                ),
+              ];
         let found = false;
         for (const targetFile of targetFiles) {
-          const memberDef = findExportedDef(targetFile, memberName, index);
+          const memberDef =
+            namespaceMembers === undefined
+              ? lookupNamespaceMember(targetFile, memberName)
+              : namespaceMembers.get(targetFile);
           if (memberDef !== undefined) {
             if (
               suppressDeletedCallTarget(
@@ -1281,19 +2412,35 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 memberDef,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
               found = true;
               break;
             }
+            if (namespaceCandidateIds.length > 1)
+              options.recordSourceBinding?.(site, {
+                status: 'ambiguous',
+                targetDefIds: namespaceCandidateIds,
+                basis: 'namespace-member',
+              });
+            else recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
               scopes,
               nodeLookup,
               site,
               memberDef,
-              memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
+              // A namespace-qualified construction site (`mod.T{…}`) resolves
+              // here like `mod.fn()` does; the provider's opt-in marker keeps
+              // it distinguishable from an invocation (see
+              // `ScopeResolver.markConstructionSites`).
+              constructionSiteReason(
+                memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
+                site,
+                provider.markConstructionSites,
+              ),
               seen,
               0.85,
               collapse,
@@ -1315,6 +2462,7 @@ export function emitReceiverBoundCalls(
       // Runs before Case 2 so namespace receivers don't accidentally match a
       // class with the same simple name.
       if (provider.resolveQualifiedReceiverMember !== undefined) {
+        sourceBindingGrounded = true;
         const memberDef = provider.resolveQualifiedReceiverMember(
           receiverName,
           memberName,
@@ -1324,6 +2472,11 @@ export function emitReceiverBoundCalls(
           site,
         );
         if (memberDef === 'ambiguous') {
+          options.recordSourceBinding?.(site, {
+            status: 'ambiguous',
+            targetDefIds: [],
+            basis: 'qualified-member-ambiguous',
+          });
           // Same-name ambiguity across inline-namespace children (#1564):
           // suppress edge emission, mark site handled.
           options.recordResolutionOutcome?.({
@@ -1345,11 +2498,13 @@ export function emitReceiverBoundCalls(
               parsed.filePath,
               site,
               memberDef,
+              options.recordSourceBinding,
             )
           ) {
             handledSites.add(siteKey);
             continue;
           }
+          recordMember(memberDef);
           const ok = tryEmitEdge(
             graph,
             scopes,
@@ -1369,12 +2524,47 @@ export function emitReceiverBoundCalls(
       }
 
       // ── Case 2: class-name receiver ──────────────────────────────
-      const classDef = findClassBindingInScope(site.inScope, receiverName, scopes);
+      // A namespace-qualified class (`stdx.PRNG.from_seed()`, `terminal
+      // .Terminal.init()`) binds nothing in the caller's scope chain; when the
+      // head names a verified namespace, the tail is looked up as that
+      // module's member — through the same lookup Case 1 / Case 3 use, so a
+      // hub module (a file made only of re-exports) answers when the provider
+      // opted in. Only a bare tail is walked here; `ns.Type.field.m()` is the
+      // compound resolver's shape.
+      sourceBindingGrounded = true;
+      const classReceiverCandidate = provider.isBareClassReceiverCandidate;
+      const classDef =
+        findClassBindingInScope(site.inScope, receiverName, scopes, undefined, {
+          onNameFallback,
+          position: site.atRange,
+          purpose: 'value',
+          classCandidateFilter:
+            classReceiverCandidate === undefined
+              ? undefined
+              : (candidate) =>
+                  classReceiverCandidate({
+                    candidate,
+                    spelling: receiverName,
+                    inScope: site.inScope,
+                    scopes,
+                  }),
+        }) ??
+        resolveNamespaceQualifiedClass(receiverName, site.inScope, namespaceTargets, site.atRange);
       if (classDef !== undefined) {
+        const languageResolution = provider.resolveReceiverMember?.(
+          classDef,
+          memberName,
+          site,
+          scopes,
+          model,
+        );
+        if (suppressProviderResult(languageResolution, site, parsed.filePath)) continue;
+        providerSelectedMember = languageResolution?.kind === 'resolved';
         const chain = [classDef.nodeId, ...scopes.methodDispatch.mroFor(classDef.nodeId)];
-        let memberDef: SymbolDefinition | undefined;
+        let memberDef: SymbolDefinition | undefined =
+          languageResolution?.kind === 'resolved' ? languageResolution.definition : undefined;
         let ambiguousOwnerId: string | undefined;
-        for (const ownerId of chain) {
+        for (const ownerId of memberDef ? [] : chain) {
           const picked =
             site.kind === 'call'
               ? pickOverload(ownerId, memberName, site, model, provider)
@@ -1409,9 +2599,52 @@ export function emitReceiverBoundCalls(
             memberName,
             model,
             provider,
+            options.recordSourceBinding,
+            outcomeContext,
           );
           handledSites.add(siteKey);
           continue;
+        }
+        // `A.Item{}` / `mod.Outer.Inner{}` — a construction whose member is a
+        // type NESTED in the class the receiver names. Neither a method nor a
+        // field, so the owner walk above cannot see it; the chain walk's
+        // nested-class lookup can (`resolveNamespaceChains`).
+        if (memberDef === undefined && walkChains && site.callForm === 'constructor') {
+          const nested = findNestedClass(classDef, memberName);
+          if (nested !== undefined) {
+            if (
+              suppressDeletedCallTarget(
+                options.recordResolutionOutcome,
+                parsed.filePath,
+                site,
+                nested,
+                options.recordSourceBinding,
+              )
+            ) {
+              handledSites.add(siteKey);
+              continue;
+            }
+            recordMember(nested);
+            const ok = tryEmitEdge(
+              graph,
+              scopes,
+              nodeLookup,
+              site,
+              nested,
+              constructionSiteReason(
+                nested.filePath !== parsed.filePath ? 'import-resolved' : 'global',
+                site,
+                provider.markConstructionSites,
+              ),
+              seen,
+              0.85,
+              collapse,
+              calleeCapture,
+            );
+            if (ok) emitted++;
+            handledSites.add(siteKey);
+            continue;
+          }
         }
         if (memberDef !== undefined) {
           if (
@@ -1420,6 +2653,7 @@ export function emitReceiverBoundCalls(
               parsed.filePath,
               site,
               memberDef,
+              options.recordSourceBinding,
             )
           ) {
             handledSites.add(siteKey);
@@ -1432,6 +2666,7 @@ export function emitReceiverBoundCalls(
                 ? 'import-resolved'
                 : 'global';
           const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+          recordMember(memberDef);
           const ok = tryEmitEdge(
             graph,
             scopes,
@@ -1451,20 +2686,51 @@ export function emitReceiverBoundCalls(
       }
 
       // ── Case 3: dotted typeBinding (`u: models.User`) ────────────
-      const typeRef = findReceiverTypeBinding(site.inScope, receiverName, scopes);
+      const typeRef = findReceiverTypeBinding(site.inScope, receiverName, scopes, {
+        position: site.atRange,
+      });
       if (typeRef !== undefined && typeRef.rawName.includes('.')) {
+        sourceBindingGrounded = true;
         const [nsName, ...classNameParts] = typeRef.rawName.split('.');
         const className = classNameParts.join('.');
-        const targetFiles3 = namespaceTargets.get(nsName);
+        // With the chain walk the dotted type is resolved as a whole
+        // (`x: mod.Outer.Inner`, `t: hub.sub.Thing`); the candidate list then
+        // has one entry or none. Without it: the historical one-hop split.
+        const chainDef3 = walkChains
+          ? resolveNamespaceQualifiedClass(
+              typeRef.rawName,
+              typeRef.declaredAtScope,
+              namespaceTargetsAt(typeRef.declaredAtScope, typeRef.lookupPosition),
+              typeRef.lookupPosition,
+            )
+          : undefined;
+        const targetFiles3 = walkChains
+          ? chainDef3 === undefined
+            ? undefined
+            : [chainDef3.filePath]
+          : namespaceTargets.get(nsName);
         if (targetFiles3 !== undefined && className.length > 0) {
           let found3 = false;
           for (const targetFile3 of targetFiles3) {
-            const classDef3 = findExportedDef(targetFile3, className, index);
+            const classDef3 = walkChains
+              ? chainDef3
+              : lookupNamespaceMember(targetFile3, className);
             if (classDef3 !== undefined) {
+              const languageResolution =
+                provider.receiverMemberLookupCoversAllCalls === true && site.kind === 'call'
+                  ? provider.resolveReceiverMember?.(classDef3, memberName, site, scopes, model)
+                  : undefined;
+              if (suppressProviderResult(languageResolution, site, parsed.filePath)) {
+                found3 = true;
+                break;
+              }
+              providerSelectedMember = languageResolution?.kind === 'resolved';
               const picked =
-                site.kind === 'call'
-                  ? pickOverload(classDef3.nodeId, memberName, site, model, provider)
-                  : findOwnedMember(classDef3.nodeId, memberName, model);
+                languageResolution?.kind === 'resolved'
+                  ? languageResolution.definition
+                  : site.kind === 'call'
+                    ? pickOverload(classDef3.nodeId, memberName, site, model, provider)
+                    : findOwnedMember(classDef3.nodeId, memberName, model);
               if (picked === OVERLOAD_AMBIGUOUS) {
                 recordReceiverOverloadSuppression(
                   options.recordResolutionOutcome,
@@ -1474,6 +2740,8 @@ export function emitReceiverBoundCalls(
                   memberName,
                   model,
                   provider,
+                  options.recordSourceBinding,
+                  outcomeContext,
                 );
                 handledSites.add(siteKey);
                 found3 = true;
@@ -1487,19 +2755,29 @@ export function emitReceiverBoundCalls(
                     parsed.filePath,
                     site,
                     memberDef,
+                    options.recordSourceBinding,
                   )
                 ) {
                   handledSites.add(siteKey);
                   found3 = true;
                   break;
                 }
+                recordMember(memberDef);
                 const ok = tryEmitEdge(
                   graph,
                   scopes,
                   nodeLookup,
                   site,
                   memberDef,
-                  memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
+                  // Same marker rule as Case 1 / Case 2: a constructor-form site
+                  // reached through a dotted type binding keeps its
+                  // ` (constructor)` suffix when the provider opted in; for
+                  // every other provider the string is unchanged.
+                  constructionSiteReason(
+                    memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
+                    site,
+                    provider.markConstructionSites,
+                  ),
                   seen,
                   // Explicit defaults so the trailing capture ctx (#2227 U2) can
                   // be threaded without changing dedup/confidence behavior.
@@ -1529,6 +2807,7 @@ export function emitReceiverBoundCalls(
           ? (typeRef.rawName.split('.', 1)[0] ?? '')
           : undefined;
       if (typeRef !== undefined && chainHead !== undefined && !namespaceTargets.has(chainHead)) {
+        sourceBindingGrounded = true;
         // Try the plain dotted-field walk first — covers property /
         // collection-accessor shapes (`.Values`, Kotlin `.size`) and
         // field chains. Fall back to call-form (`x()`) which treats
@@ -1544,7 +2823,7 @@ export function emitReceiverBoundCalls(
           typeRef.declaredAtScope,
           scopes,
           index,
-          fileCompoundOpts,
+          { ...fileCompoundOpts, lookupPosition: typeRef.lookupPosition },
         );
         if (resolved === undefined && !typeRef.rawName.includes('(')) {
           resolved = resolveCompoundReceiverTyped(
@@ -1552,13 +2831,20 @@ export function emitReceiverBoundCalls(
             typeRef.declaredAtScope,
             scopes,
             index,
-            fileCompoundOpts,
+            { ...fileCompoundOpts, lookupPosition: typeRef.lookupPosition },
           );
         }
         const ownerDef = resolved?.def;
         if (resolved !== undefined && ownerDef !== undefined) {
+          const languageResolution =
+            provider.receiverMemberLookupCoversAllCalls === true && site.kind === 'call'
+              ? provider.resolveReceiverMember?.(ownerDef, memberName, site, scopes, model)
+              : undefined;
+          if (suppressProviderResult(languageResolution, site, parsed.filePath)) continue;
+          providerSelectedMember = languageResolution?.kind === 'resolved';
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
-          let memberDef: SymbolDefinition | undefined;
+          let memberDef =
+            languageResolution?.kind === 'resolved' ? languageResolution.definition : undefined;
           let ambiguousOwnerId: string | undefined;
           // Static-only filter (#1756 / U3): mirrors Case 0's
           // overload-aware chain walk. When
@@ -1568,7 +2854,7 @@ export function emitReceiverBoundCalls(
           // by chain-typebinding receivers, not pre-emitted by
           // `emitReferencesViaLookup` for compound shapes, so no
           // handled-site marker is needed for chain-only-static).
-          for (const ownerId of chain) {
+          for (const ownerId of memberDef === undefined ? chain : []) {
             const picked =
               site.kind === 'call'
                 ? pickFirstNonStaticOnly(ownerId, memberName, site, model, provider)
@@ -1592,6 +2878,8 @@ export function emitReceiverBoundCalls(
               memberName,
               model,
               provider,
+              options.recordSourceBinding,
+              outcomeContext,
             );
             handledSites.add(siteKey);
             continue;
@@ -1603,11 +2891,13 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 memberDef,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
               continue;
             }
+            recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -1666,6 +2956,7 @@ export function emitReceiverBoundCalls(
               0.85,
               calleeCapture,
               resolved.declaredSpelling,
+              parsed.filePath,
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
@@ -1679,16 +2970,35 @@ export function emitReceiverBoundCalls(
 
       // ── Case 4: simple typeBinding (`u: U`) ──────────────────────
       if (typeRef !== undefined && !typeRef.rawName.includes('.')) {
+        sourceBindingGrounded = true;
         // A `rawName` the capture layer reduced from a type application is
         // resolved through the application it was written as, so the erasure
         // takes the GROUNDED route rather than binding whatever the workspace
         // declares under that base name — see {@link erasedTypeApplication}.
         const typeApplication = erasedTypeApplication(typeRef);
-        let ownerDef = resolveClassBindingForName(
-          site.inScope,
-          typeApplication ?? typeRef.rawName,
+        const typeLookup: ClassBindingLookup = {
+          position: typeRef.lookupPosition,
+          purpose: typeRef.lookupPurpose ?? 'type',
+          onNameFallback,
+          qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+        };
+        const qualifiedOwner = classOfQualifiedTypeSpelling(
+          typeRef,
           scopes,
+          provider.qualifiedTypeLookupSpelling,
+          typeLookup,
+          namespaceMemberVisible,
         );
+        let ownerDef =
+          qualifiedOwner === undefined
+            ? resolveClassBindingForName(
+                typeRef.declaredAtScope,
+                typeApplication ?? typeRef.rawName,
+                scopes,
+                undefined,
+                typeLookup,
+              )
+            : (qualifiedOwner ?? undefined);
         // `findClassBindingInScope(..., typeRef.rawName)` only works when
         // rawName is itself a class symbol reachable through scope bindings.
         // For languages with namespace-style imports (Go), imported types
@@ -1703,11 +3013,23 @@ export function emitReceiverBoundCalls(
         // MANUFACTURED by erasing type arguments, where the file may never
         // have named it at all. The lookup above already answered that case on
         // grounds; re-asking it here without any would undo them.
-        if (ownerDef === undefined && typeApplication === undefined) {
+        const typeClaim = lookupNameClaim(typeRef.declaredAtScope, typeRef.rawName, scopes, {
+          position: typeRef.lookupPosition,
+          purpose: typeRef.lookupPurpose ?? 'type',
+        });
+        if (
+          ownerDef === undefined &&
+          qualifiedOwner !== null &&
+          typeApplication === undefined &&
+          !hasExplicitNameClaim(typeClaim, typeRef.rawName)
+        ) {
           const qnameIds = scopes.qualifiedNames.get(typeRef.rawName);
           if (qnameIds.length === 1) {
             const qdef = scopes.defs.get(qnameIds[0]!);
-            if (qdef !== undefined && isClassLike(qdef.type)) ownerDef = qdef;
+            if (qdef !== undefined && isClassLike(qdef.type)) {
+              ownerDef = qdef;
+              sourceBindingGrounded = false;
+            }
           }
         }
         // Map for-of tuple bindings (`__MAP_TUPLE_i__:mapId`), callable
@@ -1724,7 +3046,7 @@ export function emitReceiverBoundCalls(
         // `rawName`; its callable-alias step retries the same name as a
         // construction). Asking again by a route that cannot see the grounds
         // would make the refusal decorative.
-        if (ownerDef === undefined && typeApplication === undefined) {
+        if (ownerDef === undefined && qualifiedOwner !== null && typeApplication === undefined) {
           ownerDef = resolveCompoundReceiverClass(
             receiverName,
             site.inScope,
@@ -1734,24 +3056,11 @@ export function emitReceiverBoundCalls(
             { ...fileCompoundOpts, receiverChain: site.receiverChain },
           );
         }
-        // The receiver has a declared type, that type is a type APPLICATION,
-        // and its base name could not be connected to any declaration this
-        // file can see. The site is DROPPED, and dropped deliberately, so it
-        // must be marked handled: `emitReferencesViaLookup` would otherwise
-        // re-emit the very target the grounds refused, because the pre-resolved
-        // reference index answers a name with the single workspace definition
-        // that carries it and knows nothing about erasure. That is exactly why
-        // the static-only filter above marks handled too — a refusal this pass
-        // makes is not a refusal until the fallback emitter is told.
-        //
-        // Recorded as `receiver-unresolved` rather than silently: the receiver's
-        // TYPE could not be established, which is the reason's own definition,
-        // and a consumer counting resolver gaps must see this drop rather than
-        // read the absence as a resolved site. No `receiverOrigin` — the base
-        // name resolving in the index is precisely the evidence just rejected,
-        // so claiming `in-program` from it would relaunder the fabrication as a
-        // diagnostic, and the absent field hedges (the safe direction).
-        if (ownerDef === undefined && typeApplication !== undefined) {
+        // A qualified type or type application could not resolve to a visible
+        // declaration. Mark the site handled so the fallback reference emitter
+        // cannot reconnect it by bare name. Record the unresolved receiver, but
+        // omit receiverOrigin because no declaration was established.
+        if (ownerDef === undefined && (qualifiedOwner === null || typeApplication !== undefined)) {
           options.recordResolutionOutcome?.({
             kind: 'suppressed',
             reason: 'receiver-unresolved',
@@ -1773,58 +3082,11 @@ export function emitReceiverBoundCalls(
             scopes,
             model,
           );
-          if (languageResolution?.kind === 'ambiguous') {
-            options.recordResolutionOutcome?.({
-              kind: 'suppressed',
-              phase: 'receiver-bound-calls',
-              filePath: parsed.filePath,
-              name: site.name,
-              range: site.atRange,
-              reason: 'member-lookup-ambiguous',
-              candidateIds: languageResolution.candidateIds,
-            });
-            handledSites.add(siteKey);
-            continue;
-          }
-          if (languageResolution?.kind === 'resolved') {
-            const memberDef = languageResolution.definition;
-            if (
-              suppressDeletedCallTarget(
-                options.recordResolutionOutcome,
-                parsed.filePath,
-                site,
-                memberDef,
-              )
-            ) {
-              handledSites.add(siteKey);
-              continue;
-            }
-            const reason =
-              site.kind === 'write' || site.kind === 'read'
-                ? site.kind
-                : memberDef.filePath !== parsed.filePath
-                  ? 'import-resolved'
-                  : 'global';
-            const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
-            const ok = tryEmitEdge(
-              graph,
-              scopes,
-              nodeLookup,
-              site,
-              memberDef,
-              reason,
-              seen,
-              confidence,
-              collapse,
-              calleeCapture,
-            );
-            if (ok) emitted++;
-            handledSites.add(siteKey);
-            continue;
-          }
-
+          if (suppressProviderResult(languageResolution, site, parsed.filePath)) continue;
+          providerSelectedMember = languageResolution?.kind === 'resolved';
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
-          let memberDef: SymbolDefinition | undefined;
+          let memberDef =
+            languageResolution?.kind === 'resolved' ? languageResolution.definition : undefined;
           let ambiguous = false;
           let ambiguousOwnerId: string | undefined;
           // Track whether the chain walk filtered out any static-only
@@ -1854,7 +3116,7 @@ export function emitReceiverBoundCalls(
           // such a pair unambiguously to the instance method because
           // companion members are not legal instance-dispatch
           // candidates.
-          for (const ownerId of chain) {
+          for (const ownerId of memberDef === undefined ? chain : []) {
             const picked = pickFirstNonStaticOnly(ownerId, memberName, site, model, provider);
             if (picked === OVERLOAD_AMBIGUOUS) {
               ambiguous = true;
@@ -1888,6 +3150,8 @@ export function emitReceiverBoundCalls(
               memberName,
               model,
               provider,
+              options.recordSourceBinding,
+              outcomeContext,
             );
             handledSites.add(siteKey);
             continue;
@@ -1908,6 +3172,7 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 memberDef,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
@@ -1923,6 +3188,7 @@ export function emitReceiverBoundCalls(
                   ? 'import-resolved'
                   : 'global';
             const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -1953,11 +3219,235 @@ export function emitReceiverBoundCalls(
               confidence,
               calleeCapture,
               typeApplication ?? typeRef.rawName,
+              parsed.filePath,
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
             // `emitReferencesViaLookup` doesn't re-emit from the
             // reference index.
+            handledSites.add(siteKey);
+            continue;
+          }
+
+          // Dynamic subtype dispatch for a receiver whose declared owner and
+          // ancestors do not define the member. The provider predicate keeps
+          // language syntax out of this shared pass; Python opts in only for
+          // instance `self` calls made from mixin-style base classes.
+          //
+          // Multiple concrete subtype implementations are runtime alternatives,
+          // not an overload ambiguity, so emit the same bounded fan-out used by
+          // interface dispatch. An ambiguity *within* one subtype does not erase
+          // proven targets from other subtypes; it marks the site's coverage as
+          // partial so callers cannot mistake the emitted set for completeness.
+          const subtypeDecision =
+            site.kind === 'call' ? missingReceiverSubtypeDecision(typeRef, site) : false;
+          if (subtypeDecision !== false) {
+            if (subtypeDecision === 'suppress') {
+              options.recordResolutionOutcome?.({
+                kind: 'suppressed',
+                reason: 'receiver-unresolved',
+                receiverOrigin: 'in-program',
+                candidateIds: [],
+                phase: 'receiver-bound-calls',
+                filePath: parsed.filePath,
+                name: site.name,
+                range: site.atRange,
+                siteKind: site.kind,
+              });
+              handledSites.add(siteKey);
+              continue;
+            }
+            const subtypeTargets = new Map<string, SymbolDefinition>();
+            const ambiguousCandidateIds = new Set<string>();
+            const unknownCompatibilityCandidateIds = new Set<string>();
+            const incompleteInheritanceSubtypeIds = new Set<string>();
+            const missingMemberSubtypeIds = new Set<string>();
+            const visitedSubtypeIds = new Set<string>([ownerDef.nodeId]);
+            const subtypeQueue = [ownerDef.nodeId];
+            let subtypeHead = 0;
+
+            while (subtypeHead < subtypeQueue.length) {
+              const supertypeId = subtypeQueue[subtypeHead++]!;
+              for (const subtype of subtypesBySupertypeDefId.get(supertypeId) ?? []) {
+                if (visitedSubtypeIds.has(subtype.nodeId)) continue;
+                visitedSubtypeIds.add(subtype.nodeId);
+                subtypeQueue.push(subtype.nodeId);
+
+                // Prefer a concrete override owned by this subtype. Otherwise
+                // take the first inherited provider in MRO order. Python's
+                // MRO is C3, so that first provider is the method CPython
+                // binds. A later base that also defines the name is hidden,
+                // the same way a class-body field hides a method.
+                //
+                //   class Worker(HookMixin, Helpers): ...
+                //
+                // `Helpers` is not itself a subtype of HookMixin, so the
+                // subtype closure cannot discover it. The MRO is the bridge.
+                let subtypeAmbiguous = false;
+                let picked: SymbolDefinition | undefined;
+                const effectiveOwners = [
+                  subtype.nodeId,
+                  ...scopes.methodDispatch.mroFor(subtype.nodeId),
+                ];
+                let unresolvedBaseBeforeOwner = false;
+                for (const effectiveOwnerId of effectiveOwners) {
+                  if (unresolvedBaseBeforeOwner) {
+                    incompleteInheritanceSubtypeIds.add(subtype.nodeId);
+                    break;
+                  }
+                  // A method on this owner still binds before its own bases.
+                  // If no member binds here, an unresolved base may precede
+                  // every later owner in the runtime MRO.
+                  unresolvedBaseBeforeOwner =
+                    options.unresolvedInheritanceByClass?.has(effectiveOwnerId) === true;
+                  const overloads = model.methods.lookupAllByOwner(effectiveOwnerId, memberName);
+                  const field = model.fields.lookupFieldByOwner(effectiveOwnerId, memberName);
+                  if (field !== undefined) {
+                    ambiguousCandidateIds.add(field.nodeId);
+                    for (const overload of overloads) ambiguousCandidateIds.add(overload.nodeId);
+                    subtypeAmbiguous = true;
+                    break;
+                  }
+                  if (overloads.length === 0) continue;
+                  const candidate = pickFirstNonStaticOnly(
+                    effectiveOwnerId,
+                    memberName,
+                    site,
+                    model,
+                    provider,
+                  );
+                  if (candidate === OVERLOAD_AMBIGUOUS) {
+                    for (const overload of overloads) ambiguousCandidateIds.add(overload.nodeId);
+                    subtypeAmbiguous = true;
+                    break;
+                  }
+                  if (candidate === STATIC_ONLY_FILTERED) continue;
+                  if (candidate !== undefined) {
+                    if (isDeclarationOnly(candidate)) {
+                      // An abstract declaration still binds the name for this
+                      // owner. Do not expose a concrete method hidden in a base;
+                      // concrete descendants are visited as their own subtypes.
+                      ambiguousCandidateIds.add(candidate.nodeId);
+                      subtypeAmbiguous = true;
+                      break;
+                    }
+                    if (provider.arityCompatibility(site, candidate) === 'incompatible') {
+                      // The owner bound this name. Python-style lookup cannot
+                      // skip an incompatible override and expose a hidden base.
+                      subtypeAmbiguous = true;
+                      break;
+                    }
+                    const subtypeCompatibility =
+                      provider.missingReceiverSubtypeCandidateCompatibility?.(site, candidate, {
+                        callerFilePath: parsed.filePath,
+                      });
+                    if (subtypeCompatibility === 'incompatible') {
+                      subtypeAmbiguous = true;
+                      break;
+                    }
+                    if (subtypeCompatibility === 'unknown') {
+                      unknownCompatibilityCandidateIds.add(candidate.nodeId);
+                      subtypeAmbiguous = true;
+                      break;
+                    }
+                    if (
+                      candidate.isDeleted === true ||
+                      isUnreachableByInstanceDispatch(candidate)
+                    ) {
+                      continue;
+                    }
+                    // First compatible definition in MRO order. Do not keep
+                    // scanning: a later base is not the runtime target.
+                    picked = candidate;
+                    break;
+                  }
+                }
+                if (unresolvedBaseBeforeOwner && picked === undefined && !subtypeAmbiguous) {
+                  // The final known owner can have a base absent from the
+                  // indexed MRO, leaving this subtype's target unproven.
+                  incompleteInheritanceSubtypeIds.add(subtype.nodeId);
+                }
+                if (subtypeAmbiguous) continue;
+                if (picked === undefined) {
+                  // This runtime subtype has no proven binding. Preserve
+                  // partial coverage even when a sibling supplies a target.
+                  missingMemberSubtypeIds.add(subtype.nodeId);
+                  continue;
+                }
+                subtypeTargets.set(picked.nodeId, picked);
+              }
+            }
+
+            if (ambiguousCandidateIds.size > 0) {
+              options.recordResolutionOutcome?.({
+                kind: 'suppressed',
+                phase: 'receiver-bound-calls',
+                filePath: parsed.filePath,
+                name: site.name,
+                range: site.atRange,
+                reason: 'member-lookup-ambiguous',
+                candidateIds: [...ambiguousCandidateIds],
+                ...callSuppressionIdentities([...ambiguousCandidateIds], site, outcomeContext),
+              });
+            }
+
+            const allTargets = [...subtypeTargets.values()];
+            const coverage = prepareSubtypeDispatchCoverage(
+              allTargets,
+              new Set([
+                ...ambiguousCandidateIds,
+                ...unknownCompatibilityCandidateIds,
+                ...incompleteInheritanceSubtypeIds,
+                ...missingMemberSubtypeIds,
+              ]),
+              MAX_INTERFACE_DISPATCH_FANOUT,
+            );
+            const targets = coverage.targets;
+            if (coverage.droppedTargets.length > 0) {
+              dispatchFanoutSkipped += coverage.droppedTargets.length;
+              if (dispatchFanoutSkippedNames.length < MAX_REPORTED_SKIPPED_INTERFACES) {
+                const dropped = coverage.droppedTargets
+                  .slice(0, 5)
+                  .map((target) => target.qualifiedName ?? target.nodeId);
+                const omitted = coverage.droppedTargets.length - dropped.length;
+                dispatchFanoutSkippedNames.push(
+                  `${ownerDef.qualifiedName ?? ownerDef.nodeId}.${memberName} (${allTargets.length} targets; ` +
+                    `dropped: ${dropped.join(', ')}${omitted > 0 ? `, +${omitted} more` : ''})`,
+                );
+              }
+            }
+
+            for (const target of targets) {
+              const ok = tryEmitEdge(
+                graph,
+                scopes,
+                nodeLookup,
+                site,
+                target,
+                'interface-dispatch',
+                seen,
+                0.85,
+                collapse,
+                calleeCapture,
+              );
+              if (ok) {
+                emitted++;
+              }
+            }
+
+            if (coverage.recordUnresolved) {
+              options.recordResolutionOutcome?.({
+                kind: 'suppressed',
+                reason: 'receiver-unresolved',
+                receiverOrigin: 'in-program',
+                candidateIds: coverage.missingCandidateIds,
+                phase: 'receiver-bound-calls',
+                filePath: parsed.filePath,
+                name: site.name,
+                range: site.atRange,
+                siteKind: site.kind,
+              });
+            }
             handledSites.add(siteKey);
             continue;
           }
@@ -1985,6 +3475,7 @@ export function emitReceiverBoundCalls(
       // `tryEmitEdgeWithExplicitTargetId` instead, passing `picked.nodeId`
       // directly — same dedup-key shape, collapse-flag honoring, and
       // caller resolution as `tryEmitEdge`.
+      sourceBindingGrounded = true;
       const valueDef = findValueBindingInScope(site.inScope, receiverName, scopes);
       if (valueDef !== undefined) {
         const ownerGraphId =
@@ -1999,6 +3490,8 @@ export function emitReceiverBoundCalls(
             memberName,
             model,
             provider,
+            options.recordSourceBinding,
+            outcomeContext,
           );
           handledSites.add(siteKey);
           continue;
@@ -2010,6 +3503,7 @@ export function emitReceiverBoundCalls(
               parsed.filePath,
               site,
               picked,
+              options.recordSourceBinding,
             )
           ) {
             handledSites.add(siteKey);
@@ -2035,6 +3529,7 @@ export function emitReceiverBoundCalls(
                 ? 'import-resolved'
                 : 'global';
           const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+          recordMember(picked);
           const ok = tryEmitEdgeWithExplicitTargetId(
             graph,
             scopes,
@@ -2101,6 +3596,7 @@ export function emitReceiverBoundCalls(
       // and never retarget an existing one. Contract Invariant I4 holds —
       // nothing above moved.
       if (compoundReceiverUnresolved) {
+        sourceBindingGrounded = true;
         const staticMemberReceiver = splitClassLevelMemberReceiver(
           receiverName,
           site.receiverChain,
@@ -2108,7 +3604,13 @@ export function emitReceiverBoundCalls(
         const headClass =
           staticMemberReceiver === undefined
             ? undefined
-            : findClassBindingInScope(site.inScope, staticMemberReceiver.headName, scopes);
+            : findClassBindingInScope(
+                site.inScope,
+                staticMemberReceiver.headName,
+                scopes,
+                undefined,
+                { position: site.atRange, purpose: 'value', onNameFallback },
+              );
         // The head must be the CLASS ITSELF, not a value that happens to
         // share its name — the same `currentIsClassConstant` test the text
         // cascade makes before it treats a head as a class constant. A head
@@ -2117,14 +3619,16 @@ export function emitReceiverBoundCalls(
         if (
           staticMemberReceiver !== undefined &&
           headClass !== undefined &&
-          findReceiverTypeBinding(site.inScope, staticMemberReceiver.headName, scopes) === undefined
+          findReceiverTypeBinding(site.inScope, staticMemberReceiver.headName, scopes, {
+            position: site.atRange,
+          }) === undefined
         ) {
           // MRO walk, so a class-level member declared on an ancestor is
           // reachable through a subclass name where the language allows it.
           // First owner that declares one wins, matching every other walk in
           // this pass.
           let fieldOwnerId: string | undefined;
-          let fieldDeclaredType: string | undefined;
+          let fieldDeclaredType: ReturnType<typeof declaredTypeOfClassLevelField>;
           for (const ownerId of [
             headClass.nodeId,
             ...scopes.methodDispatch.mroFor(headClass.nodeId),
@@ -2134,8 +3638,10 @@ export function emitReceiverBoundCalls(
               staticMemberReceiver.memberName,
             );
             if (declared === undefined) continue;
-            fieldOwnerId = ownerId;
-            fieldDeclaredType = declared;
+            if (declared !== null) {
+              fieldOwnerId = ownerId;
+              fieldDeclaredType = declared;
+            }
             break;
           }
           // Resolve the declared type from where it was WRITTEN — the
@@ -2146,22 +3652,34 @@ export function emitReceiverBoundCalls(
           const declaringScope =
             fieldOwnerId === undefined ? undefined : index.classScopeByDefId.get(fieldOwnerId)?.id;
           const receiverClass =
-            declaringScope === undefined || fieldDeclaredType === undefined
+            declaringScope === undefined || fieldDeclaredType == null
               ? undefined
               : resolveClassBindingForName(
                   declaringScope,
-                  fieldDeclaredType,
+                  fieldDeclaredType.name,
                   scopes,
                   provider.stripTypePreservingDecoration,
+                  {
+                    onNameFallback,
+                    purpose: fieldDeclaredType.purpose,
+                    qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+                  },
                 );
           if (receiverClass !== undefined) {
+            const languageResolution =
+              provider.receiverMemberLookupCoversAllCalls === true && site.kind === 'call'
+                ? provider.resolveReceiverMember?.(receiverClass, memberName, site, scopes, model)
+                : undefined;
+            if (suppressProviderResult(languageResolution, site, parsed.filePath)) continue;
+            providerSelectedMember = languageResolution?.kind === 'resolved';
             const chain = [
               receiverClass.nodeId,
               ...scopes.methodDispatch.mroFor(receiverClass.nodeId),
             ];
-            let memberDef: SymbolDefinition | undefined;
+            let memberDef =
+              languageResolution?.kind === 'resolved' ? languageResolution.definition : undefined;
             let ambiguousOwnerId: string | undefined;
-            for (const ownerId of chain) {
+            for (const ownerId of memberDef === undefined ? chain : []) {
               const picked = pickFirstNonStaticOnly(ownerId, memberName, site, model, provider);
               if (picked === OVERLOAD_AMBIGUOUS) {
                 ambiguousOwnerId = ownerId;
@@ -2182,6 +3700,8 @@ export function emitReceiverBoundCalls(
                 memberName,
                 model,
                 provider,
+                options.recordSourceBinding,
+                outcomeContext,
               );
               handledSites.add(siteKey);
               continue;
@@ -2193,6 +3713,7 @@ export function emitReceiverBoundCalls(
                   parsed.filePath,
                   site,
                   memberDef,
+                  options.recordSourceBinding,
                 )
               ) {
                 handledSites.add(siteKey);
@@ -2205,6 +3726,7 @@ export function emitReceiverBoundCalls(
                     ? 'import-resolved'
                     : 'global';
               const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+              recordMember(memberDef);
               const ok = tryEmitEdge(
                 graph,
                 scopes,
@@ -2233,7 +3755,8 @@ export function emitReceiverBoundCalls(
                 site,
                 confidence,
                 calleeCapture,
-                fieldDeclaredType,
+                fieldDeclaredType?.name,
+                parsed.filePath,
               );
               handledSites.add(siteKey);
               continue;
@@ -2248,7 +3771,22 @@ export function emitReceiverBoundCalls(
       // keyed by the MEMBER name, which is the only thing still known about a
       // dropped site (its callee is unknown by definition, so the drop cannot
       // be attributed to any target symbol).
-      if (compoundReceiverUnresolved && !handledSites.has(siteKey)) {
+      // Every resolving case `continue`s, so a handled key here came from an
+      // earlier site or pre-seeding; it hides this drop only when that site
+      // was a duplicate capture of this one.
+      const hiddenByEarlierSite = handledSites.has(siteKey) && earlierAtKey !== 'shared-key';
+      if (
+        !hiddenByEarlierSite &&
+        (compoundReceiverUnresolved ||
+          receiverNamespace !== undefined ||
+          // #3498: a plain receiver bound to a namespace call the analyzer
+          // could not type (`x = ns.untyped()`) is a drop too, not an exact miss.
+          (typeRef !== undefined &&
+            BARE_TYPE_NAME_RE.test(receiverName) &&
+            (bindsNamespaceCallable(typeRef, namespaceTargets) ||
+              bindsQualifiedCallable(typeRef)))) &&
+        provider.isModuleExportAssignment?.(site, scopes, parsed) !== true
+      ) {
         // Decoded once: both the shape census and the origin classifier read the
         // same chain, and this is inside the drop guard so a resolved site pays
         // nothing.
@@ -2273,15 +3811,20 @@ export function emitReceiverBoundCalls(
           receiverShape: classifyReceiverShape(decodedChain),
           // Whether anything was actually lost. An external target has no node
           // to point at, so its absence is completeness, not uncertainty — but
-          // ONLY a positive built-in match may say so. Everything the index
-          // cannot demonstrate stays `unknown` and keeps hedging.
-          receiverOrigin: classifyReceiverOrigin(
-            decodedChain,
-            site.inScope,
-            receiverName,
-            scopes,
-            receiverOriginOpts,
-          ),
+          // ONLY positive evidence from the language provider may say so.
+          // Everything the index cannot demonstrate stays `unknown` and keeps
+          // hedging.
+          receiverOrigin:
+            receiverNamespace?.callResultOrigin.isDefinite === false
+              ? 'unknown'
+              : classifyReceiverOrigin(
+                  receiverNamespace === undefined ? decodedChain : undefined,
+                  receiverNamespace?.callResultOrigin.inScope ?? site.inScope,
+                  receiverNamespace?.callResultOrigin.name ?? receiverName,
+                  site.name,
+                  scopes,
+                  receiverOriginEvidence,
+                ),
         });
       }
     }
@@ -2333,6 +3876,33 @@ function splitClassLevelMemberReceiver(
 
 /** `Holder.repo` and nothing looser — see {@link splitClassLevelMemberReceiver}. */
 const TWO_PART_RECEIVER_RE = /^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$/;
+
+/** How an earlier site in the same file relates to this one's position key. */
+export type EarlierSiteAtKey = 'new-key' | 'shared-key' | 'repeated-site';
+
+/** Record a site's identity (receiver and member) at its start `siteKey` and say
+ *  what was there before: nothing, a different call starting at the same
+ *  position, or this same site (a duplicate capture). One map entry per key;
+ *  a Set only on a collision. */
+export function recordSiteMember(
+  identitiesByKey: Map<string, string | Set<string>>,
+  siteKey: string,
+  identity: string,
+): EarlierSiteAtKey {
+  const seen = identitiesByKey.get(siteKey);
+  if (seen === undefined) {
+    identitiesByKey.set(siteKey, identity);
+    return 'new-key';
+  }
+  if (typeof seen === 'string') {
+    if (seen === identity) return 'repeated-site';
+    identitiesByKey.set(siteKey, new Set([seen, identity]));
+    return 'shared-key';
+  }
+  if (seen.has(identity)) return 'repeated-site';
+  seen.add(identity);
+  return 'shared-key';
+}
 
 /** Resolve a member by name on a class def, narrowing by argument
  *  types when multiple overloads share the name. Falls back to the
@@ -2483,8 +4053,14 @@ function suppressDeletedCallTarget(
   filePath: string,
   site: ParsedFile['referenceSites'][number],
   target: SymbolDefinition,
+  recordSourceBinding?: SourceBindingRecorder,
 ): boolean {
   if (site.kind !== 'call' || target.isDeleted !== true) return false;
+  recordSourceBinding?.(site, {
+    status: 'blocked',
+    targetDefIds: [target.nodeId],
+    basis: 'selected-callable-deleted',
+  });
   record?.({
     kind: 'suppressed',
     phase: 'receiver-bound-calls',
@@ -2505,8 +4081,10 @@ function recordReceiverOverloadSuppression(
   memberName: string,
   model: SemanticModel,
   provider: ReceiverBoundProviderSubset,
+  recordSourceBinding: SourceBindingRecorder | undefined,
+  identityContext: CallOutcomeContext,
 ): void {
-  if (record === undefined) return;
+  if (record === undefined && recordSourceBinding === undefined) return;
   const overloads = model.methods.lookupAllByOwner(ownerId, memberName);
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
     argumentTypeClasses: site.argumentTypeClasses,
@@ -2522,7 +4100,12 @@ function recordReceiverOverloadSuppression(
     : hasConversionRankingSignal(site, provider)
       ? 'conversion-rank-tied'
       : 'overload-ambiguous';
-  record({
+  recordSourceBinding?.(site, {
+    status: 'ambiguous',
+    targetDefIds: candidates.map((candidate) => candidate.nodeId),
+    basis: reason,
+  });
+  record?.({
     kind: 'suppressed',
     phase: 'receiver-bound-calls',
     filePath,
@@ -2530,6 +4113,13 @@ function recordReceiverOverloadSuppression(
     range: site.atRange,
     reason,
     candidateIds: candidates.map((d) => d.nodeId),
+    ...callSuppressionIdentities(
+      candidates.map((d) => d.nodeId),
+      site,
+      identityContext,
+      true,
+      candidates,
+    ),
   });
 }
 

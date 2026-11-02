@@ -1,0 +1,294 @@
+{
+  "_what": "Go route extraction, package-scoped symbolic resolution and import binding (#3417). Run from gitnexus: node --import tsx bench/go-route-resolution/measure.cjs --check",
+  "_method": "5 warmups, minimum of 15 samples per scale; each workload grows 4x. Parsing/model setup and identity checks are untimed. A fresh resolution context and its lazy indexes are timed in every sample. Ratio-only gates: linear_factor = (large_ms / small_ms) / 4; linear work is about 1, quadratic work about 4.",
+  "_arms": {
+    "spread": "One typed receiver and route per function.",
+    "concentrated": "One receiver declaration with growing same-type writes and registrations in one function.",
+    "lexical": "Captured writes, callable parameters, inner router shadowing and outer package handlers; exact identities include declines.",
+    "method_bucket": "Repeated type/function/method names across growing packages; type hits, absent methods, bare functions and constructors. Methods use sibling-file worker owner IDs.",
+    "import_bindings": "Implicit package clauses across eight files and explicit aliases; exact callback counts guard unnecessary target/source reads."
+  },
+  "_triage": "Verify identities and counts before considering a timing failure. Re-run without competing CPU load. Budgets retain headroom above five observed runs while rejecting the pre-optimization quadratic paths. Do not update identities or raise budgets to hide missing symbols or repeated scans. The pre-optimization implementation was also run with --check: identities passed and the concentrated/method_bucket scaling gates failed. Isolated mutations rejected null/false/0/empty-string/array baselines, missing fingerprint/count/budget fields, and an extractor returning no routes.",
+  "arms": {
+    "spread": {
+      "linear_scaling_budget": 1.8,
+      "small": {
+        "units": 96,
+        "routes": 96,
+        "named_handlers": 96,
+        "receiver_hints": 96,
+        "fingerprint": "9caeb2c583ef673e17d87e8f374c8dace551edcb8b9dd992b22da10d1ba93c8d"
+      },
+      "large": {
+        "units": 384,
+        "routes": 384,
+        "named_handlers": 384,
+        "receiver_hints": 384,
+        "fingerprint": "8cc6e9756f0603f1957eb397f8cf3027ab99fdec8b123a5e4ed1261149660469"
+      }
+    },
+    "concentrated": {
+      "linear_scaling_budget": 2.2,
+      "small": {
+        "units": 96,
+        "routes": 96,
+        "named_handlers": 96,
+        "receiver_hints": 96,
+        "fingerprint": "a479f138f41b6e01680d424412e44974feacde8b2981c6acf675efcd1ff245c7"
+      },
+      "large": {
+        "units": 384,
+        "routes": 384,
+        "named_handlers": 384,
+        "receiver_hints": 384,
+        "fingerprint": "655d462758f16beaa3ac12d5fcc64d714e431def943c3acf875473bb1576be37"
+      }
+    },
+    "lexical": {
+      "linear_scaling_budget": 1.8,
+      "small": {
+        "units": 96,
+        "routes": 288,
+        "named_handlers": 192,
+        "receiver_hints": 0,
+        "fingerprint": "ac23e05109a57a9eb4d8be1fa271af2bb76b0781f60701610d94e17a53b9828b"
+      },
+      "large": {
+        "units": 384,
+        "routes": 1152,
+        "named_handlers": 768,
+        "receiver_hints": 0,
+        "fingerprint": "3f5d49b2a00eecaa4244fa32203a9010a152ceb2f21c730c3b4cb086f4c38a89"
+      }
+    },
+    "method_bucket": {
+      "linear_scaling_budget": 1.8,
+      "small": {
+        "units": 256,
+        "sites": 1024,
+        "resolved": 768,
+        "declined": 256,
+        "fingerprint": "4b7f06062ed85991ade1412555ee3c23b3cd74aa83ab89e6218a61f94e6996c6"
+      },
+      "large": {
+        "units": 1024,
+        "sites": 4096,
+        "resolved": 3072,
+        "declined": 1024,
+        "fingerprint": "777eb3833387d15d36c029bbdbc0f3f011dfaa89377d088322d43986e2f2cace"
+      }
+    },
+    "import_bindings": {
+      "linear_scaling_budget": 1.8,
+      "small": {
+        "units": 512,
+        "imports": 1024,
+        "target_lookups": 512,
+        "source_reads": 4096,
+        "fingerprint": "aa4f723bda1bdd450cf5254f4e32bb819bac83d19c4bfa9efb546d9afa69d0c6"
+      },
+      "large": {
+        "units": 2048,
+        "imports": 4096,
+        "target_lookups": 2048,
+        "source_reads": 16384,
+        "fingerprint": "4da12f2bcf51eeb649feb1dae0a35259d196ff28011fd6bd399244601e321bdc"
+      }
+    }
+  },
+  "_measured": {
+    "date_utc": "2026-09-30",
+    "before_commit": "39c1c0fae318693bcce5254548a361a76f0da6b7",
+    "after_implementation": "The receiver memoization and per-pass package indexes in this change.",
+    "environment": {
+      "node": "v24.19.0",
+      "platform": "Linux x86_64",
+      "cpu": "AMD EPYC 9V74 80-Core Processor"
+    },
+    "comparison": "Same harness and correctness identities, serial runs on one machine; before is one run and after is five runs. Milliseconds are observations, not gates. Speedups use the median after large minimum.",
+    "results": {
+      "spread": {
+        "before": {
+          "small_min_ms": 21.189,
+          "large_min_ms": 95.47,
+          "linear_factor": 1.126
+        },
+        "after_runs": [
+          {
+            "small_min_ms": 18.894,
+            "large_min_ms": 83.253,
+            "linear_factor": 1.102
+          },
+          {
+            "small_min_ms": 19.741,
+            "large_min_ms": 80.441,
+            "linear_factor": 1.019
+          },
+          {
+            "small_min_ms": 19.006,
+            "large_min_ms": 81.562,
+            "linear_factor": 1.073
+          },
+          {
+            "small_min_ms": 19.699,
+            "large_min_ms": 88.138,
+            "linear_factor": 1.119
+          },
+          {
+            "small_min_ms": 20.602,
+            "large_min_ms": 86.424,
+            "linear_factor": 1.049
+          }
+        ],
+        "large_speedup_vs_before": 1.15
+      },
+      "concentrated": {
+        "before": {
+          "small_min_ms": 173.134,
+          "large_min_ms": 2800.987,
+          "linear_factor": 4.045
+        },
+        "after_runs": [
+          {
+            "small_min_ms": 10.03,
+            "large_min_ms": 48.801,
+            "linear_factor": 1.216
+          },
+          {
+            "small_min_ms": 10.113,
+            "large_min_ms": 56.996,
+            "linear_factor": 1.409
+          },
+          {
+            "small_min_ms": 10.135,
+            "large_min_ms": 43.464,
+            "linear_factor": 1.072
+          },
+          {
+            "small_min_ms": 10.613,
+            "large_min_ms": 60.817,
+            "linear_factor": 1.433
+          },
+          {
+            "small_min_ms": 10.574,
+            "large_min_ms": 51.15,
+            "linear_factor": 1.209
+          }
+        ],
+        "large_speedup_vs_before": 54.76
+      },
+      "lexical": {
+        "before": {
+          "small_min_ms": 47.881,
+          "large_min_ms": 228.503,
+          "linear_factor": 1.193
+        },
+        "after_runs": [
+          {
+            "small_min_ms": 52.334,
+            "large_min_ms": 224.091,
+            "linear_factor": 1.07
+          },
+          {
+            "small_min_ms": 53.196,
+            "large_min_ms": 226.357,
+            "linear_factor": 1.064
+          },
+          {
+            "small_min_ms": 51.727,
+            "large_min_ms": 235.301,
+            "linear_factor": 1.137
+          },
+          {
+            "small_min_ms": 58.227,
+            "large_min_ms": 232.055,
+            "linear_factor": 0.996
+          },
+          {
+            "small_min_ms": 53.33,
+            "large_min_ms": 233.07,
+            "linear_factor": 1.093
+          }
+        ],
+        "large_speedup_vs_before": 0.98
+      },
+      "method_bucket": {
+        "before": {
+          "small_min_ms": 39.84,
+          "large_min_ms": 607.851,
+          "linear_factor": 3.814
+        },
+        "after_runs": [
+          {
+            "small_min_ms": 1.298,
+            "large_min_ms": 4.987,
+            "linear_factor": 0.961
+          },
+          {
+            "small_min_ms": 1.225,
+            "large_min_ms": 4.554,
+            "linear_factor": 0.929
+          },
+          {
+            "small_min_ms": 1.229,
+            "large_min_ms": 4.969,
+            "linear_factor": 1.011
+          },
+          {
+            "small_min_ms": 1.189,
+            "large_min_ms": 5.675,
+            "linear_factor": 1.194
+          },
+          {
+            "small_min_ms": 1.28,
+            "large_min_ms": 4.819,
+            "linear_factor": 0.941
+          }
+        ],
+        "large_speedup_vs_before": 122.32
+      },
+      "import_bindings": {
+        "before": {
+          "small_min_ms": 0.789,
+          "large_min_ms": 3.257,
+          "linear_factor": 1.032
+        },
+        "after_runs": [
+          {
+            "small_min_ms": 0.763,
+            "large_min_ms": 2.983,
+            "linear_factor": 0.978
+          },
+          {
+            "small_min_ms": 0.774,
+            "large_min_ms": 3.249,
+            "linear_factor": 1.049
+          },
+          {
+            "small_min_ms": 0.785,
+            "large_min_ms": 3.31,
+            "linear_factor": 1.054
+          },
+          {
+            "small_min_ms": 0.811,
+            "large_min_ms": 3.182,
+            "linear_factor": 0.981
+          },
+          {
+            "small_min_ms": 0.757,
+            "large_min_ms": 3.514,
+            "linear_factor": 1.161
+          }
+        ],
+        "large_speedup_vs_before": 1.0
+      }
+    },
+    "before_checkout_commit": "dbcf2921f7b46f1fdebf6ca231ebde3bd231d79f",
+    "before_tree": "8602ce55a5ecf170f7463691b74aadf657ca89ac"
+  },
+  "_verified": {
+    "performance_negative_control": "The same harness on the pre-optimization checkout passed every identity/count check and failed concentrated and method_bucket scaling gates.",
+    "empty_output_negative_control": "An isolated faithful current-tree snapshot with extraction returning [] failed route counts and fingerprints in all three extraction arms.",
+    "malformed_baselines": "null, false, 0, empty string, array, missing fingerprint, missing route count, missing units, missing budget and missing arm all failed before timing."
+  }
+}

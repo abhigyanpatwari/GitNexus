@@ -72,7 +72,14 @@
       "button": "Upload a folder",
       "uploading": "Uploading…",
       "selected": "{{fileCount}} files ready ({{dropped}} skipped: .git, node_modules, build output)",
-      "empty": "No analyzable files found in that folder."
+      "selectedDrop": "{{fileCount, number}} files ready ({{skippedDirs, number}} folders and {{dropped, number}} files skipped: .git, node_modules, build output, files over 25 MB)",
+      "empty": "No analyzable files found in that folder.",
+      "dropHint": "or drop a folder here",
+      "dropActive": "Release to upload this folder",
+      "reading": "Reading folder… {{fileCount, number}} files found",
+      "dropSingleFolder": "Drop a single folder, not files or several folders.",
+      "dropTooManyFiles": "That folder holds more than {{max, number}} files. Drop a subfolder instead.",
+      "dropUnsupported": "This browser cannot read a dropped folder. Use the “Upload a folder” button instead."
     }
   }
 }

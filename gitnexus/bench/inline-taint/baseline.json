@@ -1,0 +1,46 @@
+{
+  "inline": {
+    "scaling_budget": 2,
+    "small": {
+      "functions": 96,
+      "fingerprint": "616f56191848b238238ff190561092a37a0f9648c4e7e7d0a61e9033a71d4885"
+    },
+    "large": {
+      "functions": 384,
+      "fingerprint": "4321c065614a223eb03dff54632e6133eebc5146edade30a1be963acbb9e5904"
+    }
+  },
+  "returned": {
+    "scaling_budget": 2,
+    "small": {
+      "functions": 192,
+      "fingerprint": "e353d4c8e19a8984e775527bbbeef2f3e7742f28aa6936a3b36eeae9de0ddd97"
+    },
+    "large": {
+      "functions": 768,
+      "fingerprint": "e3b3bbe4e022a9e68a5d91c65eb236a9723a9de624e9ec20a42fd6bd07fb31f3"
+    }
+  },
+  "visibility": {
+    "scaling_budget": 2,
+    "small": {
+      "functions": 96,
+      "fingerprint": "ff8ce299442d36317b3b0050435ad0c4fc967ae8c0d2b4af7a8569ea72a3c7fa"
+    },
+    "large": {
+      "functions": 384,
+      "fingerprint": "2b0074f92355d2ded979153b2769d0f426b53aed794c52cd1b92319e5fad753c"
+    }
+  },
+  "named": {
+    "scaling_budget": 2,
+    "small": {
+      "functions": 96,
+      "fingerprint": "e4c4dd74c3426ce3494c8a973577246f8682af0cb89759bbd3823def9e2694ef"
+    },
+    "large": {
+      "functions": 384,
+      "fingerprint": "4c9bb0e4112c8fcc51a4f175de25d2cc8cc0fd293e66241f9cc77449fb8e0daa"
+    }
+  }
+}

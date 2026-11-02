@@ -3,32 +3,40 @@ import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'git
 /**
  * Interpret a C++ import capture into a ParsedImport.
  *
- * C++ has three import forms:
- *   1. #include "file.h"  → wildcard import (all symbols from header)
- *   2. using namespace X; → wildcard import (all symbols from namespace X)
- *   3. using X::name;     → named import (single symbol from namespace X)
+ * Header includes become wildcard file imports. Namespace using captures
+ * are resolved separately against exact namespace members and their lexical
+ * declaration positions by populateCppUsingBindings.
  *
- * System headers (#include <...>) are not resolved to local files.
+ * Angle `#include <...>` sets `isSystem`. The resolver searches header
+ * paths for that form and does not use the basename index.
  */
 export function interpretCppImport(captures: CaptureMatch): ParsedImport | null {
+  // Namespace using facts are linked by populateCppUsingBindings. They are
+  // not file imports: suffix-matching a namespace against a header is wrong.
+  if (
+    captures['@import.using-decl'] !== undefined ||
+    captures['@import.using-namespace'] !== undefined
+  )
+    return null;
   const source = captures['@import.source']?.text;
   if (source === undefined) return null;
 
-  // System headers are not resolved to local files
-  if (captures['@import.system'] !== undefined) return null;
-
+  const isSystem = captures['@import.system'] !== undefined;
   const kind = captures['@import.kind']?.text;
 
   if (kind === 'named') {
-    // using X::name — named import
+    // Compatibility for synthetic named-import captures without a using marker.
     const importedName = captures['@import.name']?.text;
     if (importedName === undefined) return null;
     return { kind: 'named', targetRaw: source, localName: importedName, importedName };
   }
 
-  // #include or using namespace — wildcard import
-  return { kind: 'wildcard', targetRaw: source };
+  // #include — wildcard file import
+  return { kind: 'wildcard', targetRaw: source, isSystem };
 }
+
+/** Placeholder type specifiers: the declared type is deduced, never named. */
+const CPP_PLACEHOLDER_TYPES: ReadonlySet<string> = new Set(['auto', 'decltype(auto)']);
 
 /**
  * Interpret a C++ type-binding capture into a ParsedTypeBinding.
@@ -46,6 +54,12 @@ export function interpretCppTypeBinding(captures: CaptureMatch): ParsedTypeBindi
   const name = captures['@type-binding.name']?.text;
   const type = captures['@type-binding.type']?.text;
   if (name === undefined || type === undefined) return null;
+  // `auto` names no type: the deduced type is whatever the initializer yields,
+  // which the specific rules (constructor, alias, member access, qualified
+  // callee) capture directly. What reaches here as `auto` is a leftover —
+  // `auto n = 5;`, `[](auto v)` — and binding it records the literal type name
+  // `auto`, which types nothing and hides the variable from every other route.
+  if (CPP_PLACEHOLDER_TYPES.has(type.trim())) return null;
 
   let source: TypeRef['source'] = 'annotation';
 
@@ -80,17 +94,24 @@ export function interpretCppTypeBinding(captures: CaptureMatch): ParsedTypeBindi
   // A member field's type is captured AS WRITTEN, qualifier and all
   // (`ns::Repo<User>`), because the query matches the outer
   // `qualified_identifier` — one depth-agnostic pattern per declarator shape
-  // instead of one per qualifier depth. The qualifier is dropped HERE; see the
-  // "Field type, QUALIFIED" block in query.ts for why the qualified spelling
-  // resolves to nothing and the tail resolves like the bare one.
+  // instead of one per qualifier depth.
   //
-  // FIELDS ONLY. `@type-binding.parameter` and `@type-binding.assignment` also
-  // capture qualified spellings (their patterns use `type: (_)`), and reducing
-  // THOSE would newly bind every qualified local and parameter in the workspace
-  // — a far wider change than the member-field miss this closes, and not one
-  // anything here has measured.
+  // A NON-GENERIC qualified member (`a::Config cfg;`) keeps its qualifier, like
+  // a qualified local or parameter: the resolver matches the qualifier against
+  // the candidate's namespace (`ScopeResolver.resolveQualifiedTypeSpellings`).
+  // Its tail bound the NEAREST `Config` — inside a `namespace b` that declares
+  // one, `cfg.m()` reached `b::Config::m`, a confident wrong edge.
+  //
+  // A GENERIC qualified member is still reduced to its tail, here, because the
+  // template-argument match that picks a specialization (`Repo<User>` over the
+  // primary `Repo<T>`) keys on the bare base name; the qualified route is
+  // argument-blind and would refuse wherever a specialization exists. See the
+  // "Field type, QUALIFIED" block in query.ts. That keeps the tail hazard for
+  // generic members, and only for them.
   const effectiveType =
-    captures['@type-binding.field'] === undefined ? type : cppQualifiedTail(type);
+    captures['@type-binding.field'] !== undefined && type.includes('<')
+      ? cppQualifiedTail(type)
+      : type;
   // The reduced spelling is also the AS-WRITTEN one, and saying so is load
   // bearing. `collectTypeBindings` derives `TypeRef.declaredSpelling` from
   // `@type-binding.type` whenever that text differs from `rawTypeName`, and it

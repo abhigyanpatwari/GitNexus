@@ -48,6 +48,37 @@ jobs:
     permissions:
       contents: read
 
+  # ── Advisory duplicate-test scan ─────────────────────────────────
+  # Comment-only: ci-report.yml renders this JSON into the sticky PR
+  # comment. Kept out of `ci-status.needs` and marked continue-on-error,
+  # so neither a finding nor a scanner crash can block a merge.
+  # fetch-depth 2: HEAD is the PR merge commit, HEAD^1 the base tip.
+  test-dupes:
+    name: Duplicate test scan
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          lifecycle-scripts: 'false'
+      - name: Scan lines this PR changes
+        run: npm run test:dupes -- --base HEAD^1 --json ../test-dupes/test-dupes.json
+        working-directory: gitnexus
+      - name: Upload scan result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-dupes
+          path: test-dupes/
+          retention-days: 1
+          if-no-files-found: ignore
+
   # ── Save PR metadata for the reporting workflow ─────────────────
   # The ci-report.yml workflow (triggered by workflow_run) needs the
   # PR number and job results to post a comment.  We save them as an
@@ -85,7 +116,7 @@ jobs:
           cp pr-meta/e2e_result      pr-meta/e2e-result
 
       - name: Upload PR metadata
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pr-meta
           path: pr-meta/

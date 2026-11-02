@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from . import runtime_mounts
 from .proposer_sandbox import (
     DEPENDENCY_MOUNT_BASENAME,
     SANDBOX_WORKSPACE,
@@ -31,24 +32,20 @@ from .proposer_sandbox import (
     ReadOnlyMount,
     SandboxError,
     _prepare_clone_target,
-    _real_directory,
+    real_directory,
 )
 
-# The shipped index is roughly 428 MiB.  These are containment limits rather
-# than expected-size assertions: they admit normal growth while preventing a
-# task declaration from turning snapshot preparation into an unbounded walk.
+# These are containment limits rather than expected-size assertions: they
+# prevent a task declaration from turning snapshot preparation into an
+# unbounded walk.
 MAX_TASK_ASSET_ENTRIES = 100_000
 MAX_TASK_ASSET_PATH_BYTES = 4_096
 MAX_TASK_ASSET_BYTES = 2 * 1024 * 1024 * 1024
 
-# The largest known real sandbox_copy asset in this harness is the shipped
-# index above (~428 MiB estimated, ~290 MiB measured); budget comfortably
-# above that so it can still materialize via buffered copy on a filesystem
-# that cannot reflink (ext4 CI runners, 9p-backed dev mounts), while staying
-# well below MAX_TASK_ASSET_BYTES so a genuinely oversized or malformed
-# declaration still fails closed instead of silently paying for a slow full
-# copy.
-MAX_BUFFERED_FALLBACK_BYTES = 512 * 1024 * 1024
+# Every accepted snapshot must also be materializable on filesystems without
+# reflinks. Use the existing hard capture ceiling, so buffered copies stay
+# bounded without imposing a filesystem-dependent acceptance limit.
+MAX_BUFFERED_FALLBACK_BYTES = MAX_TASK_ASSET_BYTES
 COPY_CHUNK_BYTES = 1024 * 1024
 
 # linux/fs.h: #define FICLONE _IOW(0x94, 9, int)
@@ -63,6 +60,10 @@ _REFLINK_UNAVAILABLE = {
 
 DEPENDENCY_CONTENT_BINDING_FIELD = "sandbox_dependency_content_digest"
 DEPENDENCY_MANIFEST_BINDING_FIELD = "sandbox_dependency_manifest_digest"
+# Review corpus patches are harness-owned. The task repo (`~/GitNexus`) is the
+# subject checkout and often a different worktree or branch, so these paths
+# must be read from the package that defined the benchmark.
+HARNESS_SANDBOX_COPY_PREFIXES = (PurePosixPath("eval/workflow_bench/review_cases"),)
 
 
 @dataclass(frozen=True)
@@ -125,8 +126,8 @@ class TaskAssetSnapshot:
     def materialize(self, clone: Path) -> None:
         """Replace every declared ``sandbox_copy`` root with its exact snapshot tree."""
 
-        clone = _real_directory(clone, label="asset-staging clone")
-        snapshot_root = _real_directory(self.root / "sandbox-copy", label="task asset snapshot")
+        clone = real_directory(clone, label="asset-staging clone")
+        snapshot_root = real_directory(self.root / "sandbox-copy", label="task asset snapshot")
         staging = Path(tempfile.mkdtemp(prefix=".wfbench-assets-", dir=clone.parent))
         fallback_bytes = 0
         try:
@@ -155,8 +156,8 @@ class TaskAssetSnapshot:
     def dependency_mounts(self, clone: Path) -> list[ReadOnlyMount]:
         """Mount only immutable captured dependency roots into an arm clone."""
 
-        clone = _real_directory(clone, label="dependency clone")
-        snapshot_root = _real_directory(self.root, label="task asset snapshot")
+        clone = real_directory(clone, label="dependency clone")
+        snapshot_root = real_directory(self.root, label="task asset snapshot")
         mounts: list[ReadOnlyMount] = []
         for dependency in self.dependencies:
             source = snapshot_root / Path(*dependency.snapshot_path.parts)
@@ -191,7 +192,7 @@ class TaskAssetCache:
         self.root = root.expanduser().absolute()
         self.root.mkdir(mode=0o700, parents=True, exist_ok=False)
         self._by_definition: dict[
-            tuple[str, str, tuple[str, ...], tuple[tuple[str, str], ...]],
+            tuple[str, str, tuple[str, ...], tuple[tuple[str, str], ...], str],
             TaskAssetSnapshot,
         ] = {}
         self._closed = False
@@ -214,11 +215,18 @@ class TaskAssetCache:
 
         if self._closed:
             raise SandboxError("task asset cache is already closed")
-        repo_identity = _real_directory(repo, label="task asset repository")
+        repo_identity = real_directory(repo, label="task asset repository")
         declarations, relative_paths = _sandbox_copy_declarations(task)
         dependency_declarations = _sandbox_dependency_declarations(task)
         dependency_identity = tuple((declaration.source, declaration.target) for declaration in dependency_declarations)
-        definition = (str(repo_identity), resolved_sha, declarations, dependency_identity)
+        harness_identity = _harness_sandbox_copy_identity(relative_paths)
+        definition = (
+            str(repo_identity),
+            resolved_sha,
+            declarations,
+            dependency_identity,
+            harness_identity,
+        )
         existing = self._by_definition.get(definition)
         if existing is not None:
             if expected_dependency_binding is not None:
@@ -238,9 +246,22 @@ class TaskAssetCache:
                 repo_identity,
                 os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
             )
+            harness_fd: int | None = None
             try:
                 for relative in relative_paths:
-                    descriptor = _open_relative(repo_fd, relative)
+                    if _is_harness_sandbox_copy(relative):
+                        if harness_fd is None:
+                            harness_root = _harness_sandbox_copy_root()
+                            harness_fd = os.open(
+                                harness_root,
+                                os.O_RDONLY
+                                | os.O_DIRECTORY
+                                | getattr(os, "O_CLOEXEC", 0)
+                                | getattr(os, "O_NOFOLLOW", 0),
+                            )
+                        descriptor = _open_relative(harness_fd, relative)
+                    else:
+                        descriptor = _open_relative(repo_fd, relative)
                     try:
                         builder.copy_descriptor(descriptor, relative)
                     finally:
@@ -299,6 +320,8 @@ class TaskAssetCache:
                     )
             finally:
                 os.close(repo_fd)
+                if harness_fd is not None:
+                    os.close(harness_fd)
 
             entries = builder.finished_entries()
             manifest_digest = _manifest_digest(entries)
@@ -317,6 +340,7 @@ class TaskAssetCache:
                 manifest_digest=manifest_digest,
                 dependency_content_digest=dependency_content_digest,
                 dependency_manifest_digest=dependency_manifest_digest,
+                harness_identity=harness_identity,
             )
             destination = self.root / digest
             if destination.exists():
@@ -535,6 +559,22 @@ class _SnapshotBuilder:
 
     def finished_entries(self) -> tuple[AssetManifestEntry, ...]:
         return tuple(sorted(self.entries.values(), key=lambda entry: entry.path.as_posix()))
+
+
+def _is_harness_sandbox_copy(relative: PurePosixPath) -> bool:
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        return False
+    return any(relative == prefix or prefix in relative.parents for prefix in HARNESS_SANDBOX_COPY_PREFIXES)
+
+
+def _harness_sandbox_copy_root() -> Path:
+    return real_directory(runtime_mounts.HARNESS_ROOT, label="harness sandbox_copy root")
+
+
+def _harness_sandbox_copy_identity(relative_paths: tuple[PurePosixPath, ...]) -> str:
+    if not any(_is_harness_sandbox_copy(relative) for relative in relative_paths):
+        return ""
+    return str(_harness_sandbox_copy_root())
 
 
 def _sandbox_copy_declarations(
@@ -969,15 +1009,17 @@ def _snapshot_digest(
     manifest_digest: str,
     dependency_content_digest: str,
     dependency_manifest_digest: str,
+    harness_identity: str = "",
 ) -> str:
     payload = {
         "declarations": declarations,
         "dependency_content_digest": dependency_content_digest,
         "dependency_manifest_digest": dependency_manifest_digest,
+        "harness_identity": harness_identity,
         "manifest_digest": manifest_digest,
         "repo_identity": str(repo_identity),
         "resolved_sha": resolved_sha,
-        "schema_version": 2,
+        "schema_version": 3,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -1068,7 +1110,7 @@ def stage_task_assets(
     for containment tests and external callers.
     """
 
-    repo_identity = _real_directory(repo, label="task asset repository")
+    repo_identity = real_directory(repo, label="task asset repository")
     declarations, _ = _sandbox_copy_declarations(task)
     if snapshot is not None:
         if snapshot.repo_identity != repo_identity or snapshot.declarations != declarations:

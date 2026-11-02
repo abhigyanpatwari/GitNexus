@@ -1,0 +1,20 @@
+{
+  "language": "dart",
+  "description": "Refuse the built-in identifier import as a Dart type name while preserving source bytes.",
+  "categories": [
+    "identifier-rules",
+    "reserved-words"
+  ],
+  "target": {
+    "name": "Payload",
+    "kind": "Class",
+    "file": "payload.dart",
+    "startLine": 0
+  },
+  "newName": "import",
+  "expect": {
+    "status": "error",
+    "code": "invalid_name",
+    "planningStatus": "blocked"
+  }
+}

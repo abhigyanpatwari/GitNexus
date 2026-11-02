@@ -4,8 +4,9 @@
  * The SSE complete event may carry `repoPath` (the analyzed path). RepoAnalyzer
  * must pass that IDENTITY to onComplete — so the post-analyze reconnect targets
  * the exact repo even when basenames collide — while the done screen keeps
- * rendering the display NAME and never shows an absolute path. Old servers
- * omit repoPath; the name fallback must be preserved.
+ * rendering the display NAME and never shows an absolute path. Current servers
+ * omit repoPath and send an opaque repoId, resolved against /api/repos; with
+ * neither, the name fallback must be preserved.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
@@ -13,6 +14,7 @@ import { RepoAnalyzer } from '../../src/components/RepoAnalyzer';
 import { i18nReady } from '../../src/i18n';
 import {
   cancelAnalyze,
+  fetchRepos,
   streamAnalyzeProgress,
   uploadFolder,
 } from '../../src/services/backend-client';
@@ -31,13 +33,14 @@ vi.mock('../../src/services/backend-client', () => ({
   },
   startAnalyze: vi.fn(),
   cancelAnalyze: vi.fn(),
+  fetchRepos: vi.fn(),
   streamAnalyzeProgress: vi.fn(),
   uploadFolder: vi.fn(),
 }));
 
 const JOB = { jobId: 'job-1', status: 'queued' };
 
-type CompleteData = { repoName?: string; repoPath?: string };
+type CompleteData = { repoName?: string; repoPath?: string; repoId?: string };
 
 beforeEach(async () => {
   await i18nReady;
@@ -64,7 +67,7 @@ async function startTrackedJob() {
 
   vi.useFakeTimers();
   const onDone = vi.fn<(repoIdentity: string) => void>();
-  render(<RepoAnalyzer variant="onboarding" onComplete={onDone} />);
+  const { unmount } = render(<RepoAnalyzer variant="onboarding" onComplete={onDone} />);
   fireEvent.click(screen.getByRole('tab', { name: 'Local Folder' }));
   fireEvent.change(screen.getByTestId('folder-upload-input'), {
     target: { files: [new File(['x'], 'a.ts')] },
@@ -73,7 +76,7 @@ async function startTrackedJob() {
   await act(async () => {});
   expect(streamAnalyzeProgress).toHaveBeenCalledTimes(1);
 
-  return { onDone, complete: (data: CompleteData) => sseComplete?.(data) };
+  return { onDone, unmount, complete: (data: CompleteData) => sseComplete?.(data) };
 }
 
 describe('analyze completion identity', () => {
@@ -90,7 +93,7 @@ describe('analyze completion identity', () => {
 
     // onComplete fires after the ~1200ms done-screen dwell, with the identity.
     expect(onDone).not.toHaveBeenCalled();
-    act(() => {
+    await act(async () => {
       vi.advanceTimersByTime(1200);
     });
     expect(onDone).toHaveBeenCalledTimes(1);
@@ -105,10 +108,64 @@ describe('analyze completion identity', () => {
     });
 
     expect(screen.getByText('reels')).toBeInTheDocument();
-    act(() => {
+    await act(async () => {
       vi.advanceTimersByTime(1200);
     });
     expect(onDone).toHaveBeenCalledTimes(1);
     expect(onDone).toHaveBeenCalledWith('reels');
+  });
+
+  it('resolves repoId to the exact /api/repos entry when names collide', async () => {
+    vi.mocked(fetchRepos).mockResolvedValue([
+      { id: 'id-a', name: 'reels', path: '/ws/a/reels', indexedAt: '' },
+      { id: 'id-b', name: 'reels', path: '/ws/b/reels', indexedAt: '' },
+    ]);
+    const { onDone, complete } = await startTrackedJob();
+
+    act(() => {
+      complete({ repoName: 'reels', repoId: 'id-b' });
+    });
+    expect(screen.getByText('reels')).toBeInTheDocument();
+    expect(screen.queryByText('/ws/b/reels')).toBeNull();
+
+    await act(async () => {
+      vi.advanceTimersByTime(1200);
+    });
+    expect(onDone).toHaveBeenCalledWith('/ws/b/reels');
+  });
+
+  it('falls back to the display name when repoId matches no entry', async () => {
+    vi.mocked(fetchRepos).mockResolvedValue([]);
+    const { onDone, complete } = await startTrackedJob();
+
+    act(() => {
+      complete({ repoName: 'reels', repoId: 'gone' });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(1200);
+    });
+    expect(onDone).toHaveBeenCalledWith('reels');
+  });
+
+  it('does not call onComplete when unmounted while repoId is still resolving', async () => {
+    let resolveRepos: ((repos: never[]) => void) | undefined;
+    vi.mocked(fetchRepos).mockReturnValue(
+      new Promise((resolve) => {
+        resolveRepos = resolve;
+      }),
+    );
+    const { onDone, complete, unmount } = await startTrackedJob();
+
+    act(() => {
+      complete({ repoName: 'reels', repoId: 'id-b' });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(1200);
+    });
+    unmount();
+    await act(async () => {
+      resolveRepos?.([]);
+    });
+    expect(onDone).not.toHaveBeenCalled();
   });
 });

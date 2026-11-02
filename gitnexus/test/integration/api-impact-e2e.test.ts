@@ -75,6 +75,60 @@ withTestLbugDB(
       });
     });
 
+    // #3488: files passing the URL to an unproven function make the count a floor.
+    describe('api_impact lower bound', () => {
+      it.each([
+        { route: '/api/grants', lowerBound: {} },
+        {
+          route: '/api/secure',
+          lowerBound: {
+            epistemic: 'lower-bound',
+            unverifiedConsumers: 2,
+            boundaries: [
+              "2 more files pass this route's URL to a function not proven to send HTTP requests; directConsumers is a lower bound.",
+            ],
+          },
+        },
+      ])('$route reports unverified consumers', async ({ route, lowerBound }) => {
+        const result = await backend.callTool('api_impact', { route });
+        const { epistemic, unverifiedConsumers, boundaries } = result.impactSummary;
+        expect(JSON.parse(JSON.stringify({ epistemic, unverifiedConsumers, boundaries }))).toEqual(
+          lowerBound,
+        );
+      });
+    });
+
+    // #3644: the callers of the function that sends the request, one level up.
+    describe('api_impact indirect consumers', () => {
+      it('lists the callers of the requesting function apart from the direct consumers', async () => {
+        const result = await backend.callTool('api_impact', { route: '/api/secure' });
+
+        expect(result.indirectConsumers).toEqual([
+          { name: 'App', file: 'App.tsx', via: 'fetchSecure' },
+          { name: 'Header', file: 'components/Header.tsx', via: 'fetchSecure' },
+        ]);
+        expect(result.impactSummary.indirectConsumers).toBe(2);
+        // useMulti calls fetchSecure too, but it fetches the route itself.
+        expect(result.consumers.map((c: any) => c.file)).toEqual(
+          expect.arrayContaining(['hooks/useMulti.ts', 'services/backend-client.ts']),
+        );
+      });
+
+      it('does not let indirect consumers change the risk level', async () => {
+        const result = await backend.callTool('api_impact', { route: '/api/secure' });
+
+        expect(result.impactSummary.directConsumers).toBe(2);
+        expect(result.impactSummary.riskLevel).toBe('LOW');
+      });
+
+      it('leaves the field out when no consumer edge names a requesting function', async () => {
+        const result = await backend.callTool('api_impact', { route: '/api/grants' });
+
+        expect(result).not.toHaveProperty('indirectConsumers');
+        expect(result.impactSummary).not.toHaveProperty('indirectConsumers');
+      });
+    });
+
     // ─── Test 2: Mismatch detection ────────────────────────────────────
 
     describe('mismatch detection e2e', () => {

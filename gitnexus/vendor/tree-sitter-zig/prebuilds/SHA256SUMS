@@ -1,0 +1,6 @@
+ad8b6ee26be562765ee377077a555c2225893a0c609143310d30dfbf49865fa2  ./darwin-arm64/tree-sitter-zig.node
+67e1edd9147bbf213f8b2cceccba55590b505b6d696118e53b1d38f5ad0fc0e2  ./darwin-x64/tree-sitter-zig.node
+9e77bd9cf21e71b741f71401081c958214f3b01fd73a6cfb5025ac1058ea0664  ./linux-arm64/tree-sitter-zig.node
+1e12ccf46b093e5d878e18688b8284a29a4ceb742ef1cbf398ac17d15d5ea44f  ./linux-x64/tree-sitter-zig.node
+61c56d87d58a551fd48c890b1d03a2d26326da075ca8a4104554968456df82b7  ./win32-arm64/tree-sitter-zig.node
+82dcf42dda4bc3faadaaf2bcedea0a07e78c55bfb7a315e9bbeb5427721d4406  ./win32-x64/tree-sitter-zig.node

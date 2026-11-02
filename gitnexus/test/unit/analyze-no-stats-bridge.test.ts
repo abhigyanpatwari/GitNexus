@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { runFullAnalysisMock, generateAIContextFilesMock, generateSkillFilesMock, cliErrorMock } =
   vi.hoisted(() => {
     const runFullAnalysisMock = vi.fn();
-    const generateAIContextFilesMock = vi.fn(async () => ({ files: [] as string[] }));
+    const generateAIContextFilesMock = vi.fn<
+      typeof import('../../src/cli/ai-context.js').generateAIContextFiles
+    >(async () => ({ files: [] as string[] }));
     const generateSkillFilesMock = vi.fn(async () => ({
       skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
       outputPath: '/repo/.claude/skills',
@@ -137,6 +139,37 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
     expect(opts.repairFts).toBe(true);
   });
 
+  it('maps --no-parse-cache to a cold parser run', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { parseCache: false });
+
+    const opts = runFullAnalysisMock.mock.calls[0][1];
+    expect(opts.useParseCache).toBe(false);
+    // Not folded into --force: runFullAnalysis names the bypass as its own
+    // rebuild reason (#3137), so no run announces a --force nobody passed.
+    expect(opts.force).toBeFalsy();
+  });
+
+  it('passes --skills through without folding it into --force', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { skills: true });
+
+    const opts = runFullAnalysisMock.mock.calls[0][1];
+    expect(opts.skills).toBe(true);
+    expect(opts.force).toBeFalsy();
+  });
+
+  it('reuses parser output by default', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, {});
+
+    const opts = runFullAnalysisMock.mock.calls[0][1];
+    expect(opts.useParseCache).toBe(true);
+  });
+
   it('rejects combining --repair-fts with --force', async () => {
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
 
@@ -144,8 +177,17 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
 
     expect(process.exitCode).toBe(1);
     expect(cliErrorMock).toHaveBeenCalledWith(
-      expect.stringMatching(/cannot combine `--repair-fts` with `--force`/i),
+      expect.stringMatching(/cannot combine `--repair-fts` with a full rebuild/i),
     );
+    expect(runFullAnalysisMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects combining --repair-fts with --no-parse-cache', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { repairFts: true, parseCache: false });
+
+    expect(process.exitCode).toBe(1);
     expect(runFullAnalysisMock).not.toHaveBeenCalled();
   });
 
@@ -181,6 +223,7 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
         noStats: true,
         // #2086 M6: the --pdg gate is threaded too; false here (no --pdg flag).
         hasPdg: false,
+        hasSpringActuator: false,
       });
     } finally {
       exitSpy.mockRestore();

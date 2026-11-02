@@ -42,13 +42,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Don't leave GITHUB_TOKEN in .git/config for downstream steps to read.
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: ${{ matrix.language }}
           queries: security-and-quality
@@ -71,8 +71,26 @@ jobs:
               # deliberately contain use-before-init / unused-variable shapes).
               - '**/test/fixtures/**'
               - '**/test/**/fixtures/**'
+              # Parsed-only accuracy corpus includes deliberate command injection
+              # and broken Python imports/returns. It is never executed or packed;
+              # retain security analysis of the surrounding benchmark harness.
+              - 'gitnexus/bench/tool-accuracy/fixtures/**'
+              # GET /api/grep intentionally builds RegExp from the query string
+              # (literal=1 escapes). ReDoS is handled by worker terminate() —
+              # see SECURITY.md. Inline codeql[] comments do not clear the
+              # GitHub PR CodeQL gate, so this file is excluded to avoid
+              # re-filing js/regex-injection on every push of the same line.
+              - 'gitnexus/src/server/grep-params.ts'
+              # Tests construct tmpdir fixtures and pass them into production
+              # read-only probes (openSync(..., 'r')). CodeQL models that as
+              # js/insecure-temporary-file even though nothing is created.
+              - '**/test/**'
+              # CI vendor fetch: origin is the official Ladybug repo; dest is
+              # regex-pinned and containment-checked. Inline suppressions do
+              # not clear the PR CodeQL gate (same as grep-params.ts).
+              - '.github/scripts/fetch-lbug-fts-artifacts.mjs'
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: '/language:${{ matrix.language }}'

@@ -74,6 +74,19 @@ describe('extractChangedSubgraph', () => {
     expect(sub.nodes.map((n) => n.id).sort()).toEqual(['comm-1', 'proc-1']);
   });
 
+  it('omits Community/Process when includeDerivedGraphWide is false (#3016)', () => {
+    const g = createKnowledgeGraph();
+    g.addNode(makeFileNode('a', '/repo/a.ts'));
+    g.addNode(makeWideNode('comm-1', 'Community'));
+    g.addNode(makeWideNode('proc-1', 'Process'));
+
+    const sub = extractChangedSubgraph(g, new Set(['/repo/a.ts']), {
+      includeDerivedGraphWide: false,
+    });
+
+    expect(sub.nodes.map((n) => n.id).sort()).toEqual(['a']);
+  });
+
   it('always includes Spring auto-configuration synthetic Class nodes', () => {
     const g = createKnowledgeGraph();
     g.addNode({
@@ -91,6 +104,97 @@ describe('extractChangedSubgraph', () => {
     expect(sub.nodes.map((node) => node.id)).toEqual([
       `${SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX}com.example.ExternalAutoConfiguration`,
     ]);
+  });
+
+  it('always includes Destination nodes, which carry no filePath when resolved', () => {
+    // The defect this pins: a RESOLVED destination stores `filePath: ''` so the
+    // incremental DETACH DELETE cannot cut a node shared across files — which
+    // also made the include test below (`filePath && toWriteSet.has(filePath)`)
+    // reject it. A newly added file publishing to a new topic reported
+    // `added=1`, exit 0, and put neither the destination nor the publisher's
+    // edge into the graph, so after the first index every new topic was
+    // invisible until a full rebuild.
+    const g = createKnowledgeGraph();
+    g.addNode({
+      id: 'Destination:orders.v1',
+      label: 'Destination',
+      properties: { name: 'orders.v1', filePath: '', address: 'orders.v1', broker: 'kafka' },
+    });
+    g.addNode(makeFileNode('new:publish', '/repo/new-publisher.java', 'Method'));
+    g.addRelationship(
+      makeRel('e1', 'new:publish', 'Destination:orders.v1', 'PUBLISHES_TO', 'spring-kafka:arg0[0]'),
+    );
+
+    const sub = extractChangedSubgraph(g, new Set(['/repo/new-publisher.java']));
+
+    expect(sub.nodes.map((n) => n.id).sort()).toEqual(['Destination:orders.v1', 'new:publish']);
+    expect(sub.relationships.map((r) => r.id)).toEqual(['e1']);
+  });
+
+  it('re-includes a destination whose only referrers are unchanged files', () => {
+    // The other half. `deleteAllDestinations` clears the layer before the
+    // writeback, so anything not re-included here is DELETED rather than left
+    // stale — including the edges of files outside the write set, which come
+    // back because the destination is one of their endpoints.
+    const g = createKnowledgeGraph();
+    g.addNode({
+      id: 'Destination:orders.v1',
+      label: 'Destination',
+      properties: { name: 'orders.v1', filePath: '', address: 'orders.v1', broker: 'kafka' },
+    });
+    g.addNode(makeFileNode('old:consume', '/repo/untouched.java', 'Method'));
+    g.addRelationship(
+      makeRel(
+        'e1',
+        'old:consume',
+        'Destination:orders.v1',
+        'CONSUMES_FROM',
+        'spring-KafkaListener',
+      ),
+    );
+
+    const sub = extractChangedSubgraph(g, new Set(['/repo/somewhere-else.java']));
+
+    expect(sub.nodes.map((n) => n.id)).toEqual(['Destination:orders.v1']);
+    expect(sub.relationships.map((r) => r.id)).toEqual(['e1']);
+  });
+
+  it('includes an UNRESOLVED destination too, though it does carry a filePath', () => {
+    // It would ride the ordinary per-file rule, but the delete-all removes it
+    // as well, so leaving it to that rule would drop it rather than stale it.
+    const g = createKnowledgeGraph();
+    g.addNode({
+      id: 'Destination:site-keyed',
+      label: 'Destination',
+      properties: {
+        name: '${app.topic}',
+        filePath: '/repo/untouched.java',
+        resolution: 'unresolved-config-key',
+      },
+    });
+
+    const sub = extractChangedSubgraph(g, new Set(['/repo/other.java']));
+
+    expect(sub.nodes.map((n) => n.id)).toEqual(['Destination:site-keyed']);
+  });
+
+  it('keeps Destination graph-wide even when the derived layer is preserved', () => {
+    // #3016's `includeDerivedGraphWide: false` withholds Community/Process
+    // because those are NOT delete-alled on that path. Destination is, so
+    // withholding it would drop the layer outright.
+    const g = createKnowledgeGraph();
+    g.addNode({
+      id: 'Destination:orders.v1',
+      label: 'Destination',
+      properties: { name: 'orders.v1', filePath: '', address: 'orders.v1' },
+    });
+    g.addNode(makeWideNode('community:1', 'Community'));
+
+    const sub = extractChangedSubgraph(g, new Set(['/repo/x.ts']), {
+      includeDerivedGraphWide: false,
+    });
+
+    expect(sub.nodes.map((n) => n.id)).toEqual(['Destination:orders.v1']);
   });
 
   it('includes a relationship when at least one endpoint is writable', () => {

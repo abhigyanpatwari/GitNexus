@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { TypeRef } from 'gitnexus-shared';
 import {
   synthesizeGoReceiverBinding,
   synthesizeGoTypeBindings,
@@ -7,6 +8,7 @@ import {
   normalizeGoTypeName,
 } from '../../../../src/core/ingestion/languages/go/index.js';
 import { getGoParser } from '../../../../src/core/ingestion/languages/go/query.js';
+import { goQualifiedTypeLookupSpelling } from '../../../../src/core/ingestion/languages/go/interpret.js';
 
 describe('Go receiver binding', () => {
   it('synthesizes receiver type binding for method', () => {
@@ -285,5 +287,64 @@ func main() { u := User{Base: Base{ID: 1}} }`;
     const matches = synthesizeGoTypeBindings(tree.rootNode as any);
     // Should not crash; may or may not produce bindings depending on the call
     expect(Array.isArray(matches)).toBe(true);
+  });
+});
+
+describe('goQualifiedTypeLookupSpelling', () => {
+  /** A field or parameter TypeRef as the scope extractor builds one: the
+   *  written type kept as `declaredSpelling`, `rawName` normalized from it. */
+  const writtenAs = (written: string): TypeRef => ({
+    rawName: normalizeGoTypeName(written),
+    declaredSpelling: written,
+    declaredAtScope: 'scope:test',
+    source: 'parameter-annotation',
+  });
+
+  it.each<[string, string | undefined]>([
+    ['models.User', 'models.User'],
+    ['*models.User', 'models.User'],
+    ['[]*models.User', 'models.User'],
+    ['map[string]*models.User', 'models.User'],
+    ['chan models.User', 'models.User'],
+    ['func() *models.User', 'models.User'],
+    ['models.Box[int]', 'models.Box'],
+    ['[4]models.User', 'models.User'],
+    ['*User', undefined],
+    ['[]User', undefined],
+    ['interface{ Save() }', undefined],
+    ['a.b.User', undefined],
+  ])('recovers the qualified name written as %s', (written, expected) => {
+    expect(goQualifiedTypeLookupSpelling(writtenAs(written))).toBe(expected);
+  });
+
+  // A return type keeps its qualifier in `rawName`, and a TypeRef with no
+  // written spelling had nothing normalized away.
+  it.each<[string, TypeRef]>([
+    [
+      'a return type',
+      {
+        rawName: 'models.User',
+        declaredSpelling: '*models.User',
+        declaredAtScope: 'scope:test',
+        source: 'return-annotation',
+      },
+    ],
+    [
+      'no written spelling',
+      { rawName: 'User', declaredAtScope: 'scope:test', source: 'parameter-annotation' },
+    ],
+    // A chain step replaced the type (`u *models.User` landed on a package-level
+    // `User *auth.Principal`) but kept the binding's own spelling.
+    [
+      'a spelling that does not qualify rawName',
+      {
+        rawName: 'Principal',
+        declaredSpelling: '*models.User',
+        declaredAtScope: 'scope:test',
+        source: 'parameter-annotation',
+      },
+    ],
+  ])('declines %s', (_label, typeRef) => {
+    expect(goQualifiedTypeLookupSpelling(typeRef)).toBeUndefined();
   });
 });

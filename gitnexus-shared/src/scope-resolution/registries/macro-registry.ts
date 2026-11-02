@@ -32,6 +32,7 @@ export interface MacroRegistry {
 export function buildMacroRegistry(ctx: RegistryContext): MacroRegistry {
   const params: CoreLookupParams = {
     acceptedKinds: MACRO_KINDS,
+    independentKindNamespace: true,
     useReceiverTypeBinding: false,
     ownerScopedContributor: null,
   };

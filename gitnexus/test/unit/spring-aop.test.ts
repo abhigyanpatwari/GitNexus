@@ -326,7 +326,7 @@ describe('Spring AOP persisted reason contract (#2416)', () => {
     },
   ];
 
-  it.each(reasons)('round-trips the $kind reason', (reason) => {
+  it.each(reasons)('round-trips the $kind reason for $annotation', (reason) => {
     expect(decodeSpringAopReason(encodeSpringAopReason(reason))).toEqual(reason);
   });
 

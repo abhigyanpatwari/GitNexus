@@ -8,6 +8,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { javaRenameProvider } from './java/rename.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { javaClassConfig } from '../class-extractors/configs/jvm.js';
 import { defineLanguage } from '../language-provider.js';
@@ -15,9 +16,13 @@ import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
 import { javaTypeConfig } from '../type-extractors/jvm.js';
 import { extractSpringRoutes, extractSpringTypes } from '../route-extractors/spring.js';
+import {
+  extractJavaModuleConstants,
+  foldJavaOperands,
+  isJavaConstantFile,
+  prepareJavaRouteConstants,
+} from '../route-extractors/java-const-resolver.js';
 import { javaExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { javaImportConfig } from '../import-resolvers/configs/jvm.js';
 import { JAVA_QUERIES } from '../tree-sitter-queries.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { javaCallConfig } from '../call-extractors/configs/jvm.js';
@@ -27,12 +32,17 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { javaVariableConfig } from '../variable-extractors/configs/jvm.js';
 import { createJavaCfgVisitor } from '../cfg/visitors/java.js';
 import { assertCloneable } from '../workers/clone-safety.js';
-import { collectJavaCaptureSideChannel } from './java/capture-side-channel.js';
+import {
+  collectJavaCaptureSideChannel,
+  getJavaSpringMessageProducerFacts,
+  getJavaSpringNonHttpHandlerFacts,
+} from './java/capture-side-channel.js';
 import type { SymbolDefinition } from 'gitnexus-shared';
 import {
   javaRecordMethodExtractor,
   shouldSkipJavaRecordComponentDefinition,
 } from './java/record-components.js';
+import { synthesizeLombokAccessors } from './java/lombok-synthesizer.js';
 import {
   emitJavaScopeCaptures,
   interpretJavaImport,
@@ -44,6 +54,7 @@ import {
   javaArityCompatibility,
   resolveJavaImportTarget,
 } from './java/index.js';
+import { javaRuntimeSymbolStrategy } from './java/spring-actuator.js';
 
 /**
  * Java names the platform owns, matched against a BARE IDENTIFIER — a dropped
@@ -115,6 +126,19 @@ const BUILT_INS: ReadonlySet<string> = new Set([
   'Objects',
 ]);
 
+/**
+ * The platform's reserved package root, for both program-boundary hooks:
+ * `java.util.Optional.of(...)` spelled out in full, and `import java.util.List`
+ * — an import the workspace can never resolve. The JVM refuses to define a
+ * class in a `java.*` package outside the platform ("Prohibited package name"),
+ * so nothing a program declares can live under it. `javax` is deliberately
+ * absent: that root carries no such guarantee.
+ */
+const JAVA_PLATFORM_ROOT = 'java';
+
+const isJavaPlatformModule = (specifier: string): boolean =>
+  specifier === JAVA_PLATFORM_ROOT || specifier.startsWith(`${JAVA_PLATFORM_ROOT}.`);
+
 const orderJavaSameNameTypeCandidates = ({
   callSiteFilePath,
   candidates,
@@ -158,6 +182,7 @@ const sharedPrefixLength = (left: readonly string[], right: readonly string[]): 
 };
 
 export const javaProvider = defineLanguage({
+  rename: javaRenameProvider,
   id: SupportedLanguages.Java,
   extensions: ['.java'],
   entryPointPatterns: [/^do[A-Z]/, /^create[A-Z]/, /^build[A-Z]/, /Service$/],
@@ -184,7 +209,6 @@ export const javaProvider = defineLanguage({
   treeSitterQueries: JAVA_QUERIES,
   typeConfig: javaTypeConfig,
   exportChecker: javaExportChecker,
-  importResolver: createImportResolver(javaImportConfig),
   mroStrategy: 'implements-split',
   callExtractor: createCallExtractor(javaCallConfig),
   fieldExtractor: createFieldExtractor(javaConfig),
@@ -192,10 +216,13 @@ export const javaProvider = defineLanguage({
   shouldSkipDefinitionCapture: shouldSkipJavaRecordComponentDefinition,
   variableExtractor: createVariableExtractor(javaVariableConfig),
   classExtractor: createClassExtractor(javaClassConfig),
+  runtimeSymbolStrategy: javaRuntimeSymbolStrategy,
 
   // ── Javadoc → description (issue #2270) ──
   descriptionExtractor: createLeadingDocDescriptionExtractor(),
   builtInNames: BUILT_INS,
+  externalReceiverNames: new Set([JAVA_PLATFORM_ROOT]),
+  isExternalModuleSpecifier: isJavaPlatformModule,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks ──
   emitScopeCaptures: emitJavaScopeCaptures,
@@ -216,4 +243,34 @@ export const javaProvider = defineLanguage({
   // ── Route extraction ──
   extractDecoratorRoutes: extractSpringRoutes,
   extractRouteInheritanceTypes: extractSpringTypes,
+
+  synthesizeStructureMembers: synthesizeLombokAccessors,
+
+  // ── #2980: constant harvest + qualified-ref fold for non-literal mapping
+  // paths (`@PostMapping(ApiPaths.SAVE_V1)`) — kept behind provider hooks so
+  // the shared ingestion layers stay language-agnostic. The heuristic is
+  // SYNTAX-driven (field/import shape), never a class-name pattern: constant
+  // classes are routinely named `ApiPaths`/`Routes`/`Paths`, which a
+  // `*Constants`-style gate would silently drop (review round-2 High finding).
+  extractModuleConstants: extractJavaModuleConstants,
+  // One gate, shared with the group side's `prepareRepo` pre-pass so the two
+  // subsystems cannot disagree about which files define constants (see
+  // JAVA_CONSTANT_FILE_RE — the previous divergence dropped constant
+  // INTERFACES on this side only, which cost the graph its Route nodes while
+  // the group still published the contract).
+  moduleConstantHeuristic: (content) =>
+    isJavaConstantFile(content) ||
+    // Class imports and static (including on-demand) imports can bind a
+    // constant ref. Ordinary `import a.b.*;` is not a Java type import and is
+    // not expanded by extractJavaModuleConstants, so it must not harvest.
+    /\bimport\s+(?:static\s+[\w.]+(?:\.\*)?|[\w.]+)\s*;/.test(content),
+  prepareRouteConstants: prepareJavaRouteConstants,
+  foldRoutePathOperands: foldJavaOperands,
+  // Async messaging facts for the `springDestinations` phase. Both stores are
+  // repopulated on the main thread by `applyJavaCaptureSideChannel`, so this
+  // answers for cache hits and misses alike.
+  getSpringMessagingFacts: (filePath) => ({
+    handlers: getJavaSpringNonHttpHandlerFacts(filePath),
+    producers: getJavaSpringMessageProducerFacts(filePath),
+  }),
 });

@@ -24,6 +24,10 @@ MAX_ORACLE_PATH_BYTES = 240
 MAX_ORACLE_COMMAND_BYTES = 8 * 1024
 ORACLE_ENV_VAR = "GITNEXUS_BENCH_ORACLE_ROOT"
 HIDDEN_HARNESS_PATH = PurePosixPath("eval/workflow_bench")
+# Historical PR diffs can still edit this tree. Sanitization deletes it before
+# setup, so `git apply` must skip those hunks or it fails with
+# `error: eval/workflow_bench/<file>: No such file or directory`.
+HIDDEN_HARNESS_APPLY_EXCLUDE = f"{HIDDEN_HARNESS_PATH.as_posix()}/*"
 MAX_CLONE_REFS = 1024
 MAX_CLONE_REF_BYTES = 2 * 1024 * 1024
 
@@ -238,6 +242,76 @@ def _git_checked(
         env=env,
     )
     return result.stdout_tail.strip()
+
+
+def hidden_harness_dir(clone: Path) -> Path:
+    """Checkout-relative path of the hidden benchmark harness tree."""
+
+    return clone / HIDDEN_HARNESS_PATH
+
+
+def hidden_harness_is_visible(clone: Path) -> bool:
+    """True when the hidden harness still exists as a file, directory, or symlink."""
+
+    leftover = hidden_harness_dir(clone)
+    return leftover.exists() or leftover.is_symlink()
+
+
+def require_hidden_harness_absent(clone: Path) -> None:
+    """Fail closed if setup left ``eval/workflow_bench`` visible to the model.
+
+    Review cells stage a historical patch under this tree so ``git apply`` can
+    read it. Overlaying an empty mask on the same path hides that file and
+    aborts every cell with ``can't open patch``. The runner therefore leaves
+    the staged copy visible during sandboxed setup, then requires this tree to
+    be gone before the model session starts.
+    """
+
+    if hidden_harness_is_visible(clone):
+        raise ValueError(
+            "task setup left the hidden harness visible to the model: "
+            f"{HIDDEN_HARNESS_PATH.as_posix()}"
+        )
+
+
+def with_hidden_harness_apply_exclude(setup: str) -> str:
+    """Skip hunks for the harness tree sanitization already deleted.
+
+    Review cells copy a historical PR patch back under ``eval/workflow_bench``
+    and then ``git apply`` it. That patch may still mention harness files
+    (``learnings.jsonl`` on review-pr-2718-defect). Those files are gone from
+    the parentless snapshot, and setup deletes the directory again after apply,
+    so the hunks are never model-visible.
+
+    The runner must not overlay a mask on ``eval/workflow_bench`` before that
+    ``git apply``: the staged patch lives at the same path, and a mask makes
+    ``git apply`` fail with ``can't open patch``.
+    """
+
+    if "git apply" not in setup:
+        return setup
+    flag = f"--exclude='{HIDDEN_HARNESS_APPLY_EXCLUDE}'"
+    if flag in setup or f'--exclude="{HIDDEN_HARNESS_APPLY_EXCLUDE}"' in setup:
+        return setup
+    return setup.replace("git apply ", f"git apply {flag} ", 1)
+
+
+def review_case_setup_command(patch_name: str) -> str:
+    """Apply one review-case patch, then delete the staged harness copy.
+
+    The patch is staged back under ``eval/workflow_bench`` after sanitization
+    so this command can read it inside the sandbox. The trailing ``rm -rf``
+    is what hides the tree from the model — not an empty overlay on the
+    same path, which would hide the patch from ``git apply``.
+    """
+
+    if not patch_name or "/" in patch_name or "\\" in patch_name or patch_name in {".", ".."}:
+        raise ValueError(f"review patch name must be a single path segment: {patch_name!r}")
+    patch = f"{HIDDEN_HARNESS_PATH.as_posix()}/review_cases/{patch_name}"
+    return (
+        f"git apply --exclude='{HIDDEN_HARNESS_APPLY_EXCLUDE}' {patch} "
+        f"&& rm -rf {HIDDEN_HARNESS_PATH.as_posix()}"
+    )
 
 
 def sanitize_clone_for_hidden_oracles(clone: Path) -> str:

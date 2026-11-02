@@ -1,9 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import fsSync from 'node:fs';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import {
   loadAnalyzeConfig,
+  loadAnalyzeConfigStrict,
   mergeAnalyzeOptions,
   resolveDefaultBranch,
   validateBranchName,
@@ -13,6 +16,10 @@ import {
   DEFAULT_BRANCH_FALLBACK,
 } from '../../src/cli/analyze-config.js';
 import type { AnalyzeOptions } from '../../src/cli/analyze.js';
+import {
+  MAX_REPO_CONTROL_FILE_BYTES,
+  readRepoControlFile,
+} from '../../src/config/repo-control-file.js';
 
 describe('analyze-config (.gitnexusrc support, #243)', () => {
   let dir: string;
@@ -34,6 +41,77 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     expect(loadAnalyzeConfig(dir)).toBeUndefined();
   });
 
+  it('rejects an oversized repository config before parsing', async () => {
+    await writeRc(' '.repeat(MAX_REPO_CONTROL_FILE_BYTES + 1));
+    await expect(loadAnalyzeConfigStrict(dir)).rejects.toThrow(/exceeds/);
+  });
+
+  it('keeps the read bounded if a control file grows after its size check', async () => {
+    await writeRc('{}');
+    const fstatSync = fsSync.fstatSync;
+    const stat = vi.spyOn(fsSync, 'fstatSync').mockImplementation((fd) => {
+      const opened = fstatSync(fd);
+      Object.defineProperty(opened, 'size', { value: MAX_REPO_CONTROL_FILE_BYTES + 1 });
+      return opened;
+    });
+
+    try {
+      await expect(readRepoControlFile(dir, GITNEXUS_RC_FILENAME)).rejects.toThrow(/exceeds/);
+      expect(stat).toHaveBeenCalledOnce();
+    } finally {
+      stat.mockRestore();
+    }
+  });
+
+  it('rejects a hardlinked repository config', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-rc-hardlink-'));
+    try {
+      const target = path.join(outside, 'config.json');
+      await fs.writeFile(target, JSON.stringify({ workers: '8' }));
+      await fs.link(target, path.join(dir, GITNEXUS_RC_FILENAME));
+      await expect(loadAnalyzeConfigStrict(dir)).rejects.toThrow(/hard link/);
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a FIFO before opening it for reading',
+    async () => {
+      const fifo = path.join(dir, GITNEXUS_RC_FILENAME);
+      execFileSync('mkfifo', [fifo]);
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+
+      try {
+        await expect(
+          Promise.race([
+            readRepoControlFile(dir, GITNEXUS_RC_FILENAME),
+            new Promise<never>((_resolve, reject) => {
+              timeout = setTimeout(() => reject(new Error('FIFO read did not fail promptly')), 500);
+            }),
+          ]),
+        ).rejects.toThrow(/regular file/);
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a final-file symlink for repository config',
+    async () => {
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-rc-outside-'));
+      try {
+        const target = path.join(outside, 'config.json');
+        await fs.writeFile(target, JSON.stringify({ workers: '8' }));
+        await fs.symlink(target, path.join(dir, GITNEXUS_RC_FILENAME), 'file');
+        await expect(loadAnalyzeConfigStrict(dir)).rejects.toThrow(/symbolic link/);
+      } finally {
+        await fs.rm(outside, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('throws an actionable error on invalid JSON, naming the file', async () => {
     await writeRc('{ not valid json ');
     expect(() => loadAnalyzeConfig(dir)).toThrow(GitNexusRcError);
@@ -53,6 +131,33 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
   it('fails closed on an unknown key (typo protection)', async () => {
     await writeRc(JSON.stringify({ defalutBranch: 'develop' }));
     expect(() => loadAnalyzeConfig(dir)).toThrow(/Unknown key "defalutBranch"/);
+  });
+
+  it('parses process-detection budget keys as numeric strings (#3313)', async () => {
+    await writeRc(
+      JSON.stringify({
+        maxProcesses: 40,
+        maxProcessBranching: '2',
+        maxProcessTraceDepth: 8,
+        maxEntryPointCandidates: 400,
+      }),
+    );
+    expect(loadAnalyzeConfig(dir)).toEqual({
+      maxProcesses: '40',
+      maxProcessBranching: '2',
+      maxProcessTraceDepth: '8',
+      maxEntryPointCandidates: '400',
+    });
+  });
+
+  it('lets a nested analyze block override flat process-detection keys (#3313)', async () => {
+    await writeRc(
+      JSON.stringify({
+        maxProcesses: 80,
+        analyze: { maxProcesses: 25 },
+      }),
+    );
+    expect(loadAnalyzeConfig(dir)).toEqual({ maxProcesses: '25' });
   });
 
   it('accepts embeddingBaseUrl / embeddingModel but rejects embeddingDims (CLI/env-only)', async () => {
@@ -184,6 +289,247 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     expect(() => loadAnalyzeConfig(dir)).toThrow(/at least one string/);
   });
 
+  // ── Go route aliases and handler wrappers ──────────────────────────
+
+  const CORE = 'example.com/infra/pkg';
+
+  it('normalizes goRouterAliases and goHandlerWrappers (de-duped)', async () => {
+    await writeRc(
+      JSON.stringify({
+        goRouterAliases: [
+          { importPath: ` ${CORE} `, type: 'Engine', framework: 'gin' },
+          { importPath: CORE, type: 'Engine', framework: 'gin' },
+        ],
+        goHandlerWrappers: ['common.Wrapper', 'common.WrapperWithSuccessCode', 'common.Wrapper'],
+      }),
+    );
+    expect(loadAnalyzeConfig(dir)).toEqual({
+      routeFrameworkAliases: [{ importPath: CORE, type: 'Engine', framework: 'gin' }],
+      routeHandlerWrappers: ['common.Wrapper', 'common.WrapperWithSuccessCode'],
+    });
+  });
+
+  it.each([
+    [[{ importPath: CORE, type: 'Engine', framework: 'chi' }], /"gin" or "echo"/],
+    [
+      [
+        { importPath: CORE, type: 'Engine', framework: 'gin' },
+        { importPath: CORE, type: 'Engine', framework: 'echo' },
+      ],
+      /as both "gin" and "echo"/,
+    ],
+    [[{ type: 'Engine', framework: 'gin' }], /"importPath" must be a non-empty string/],
+    [[{ importPath: CORE, type: 'Engine', framework: 'gin', extra: 1 }], /unknown field "extra"/],
+    [[{ importPath: CORE, type: '*Engine', framework: 'gin' }], /must be a Go type name/],
+    [[{ importPath: 'a b', type: 'Engine', framework: 'gin' }], /must be a Go import path/],
+    [[], /non-empty array/],
+    [['gin'], /entries must be objects/],
+  ])('rejects malformed goRouterAliases %j', async (aliases, message) => {
+    await writeRc(JSON.stringify({ goRouterAliases: aliases }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(message);
+  });
+
+  it.each(['func', 'type', 'return', '_'])('rejects unusable Go alias type %s', async (type) => {
+    await writeRc(
+      JSON.stringify({ goRouterAliases: [{ importPath: CORE, type, framework: 'gin' }] }),
+    );
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/must be a Go type name/);
+  });
+
+  it.each(['ΔEngine', 'ÉEngine٢'])('accepts Unicode Go alias type %s', async (type) => {
+    const alias = { importPath: CORE, type, framework: 'gin' };
+    await writeRc(JSON.stringify({ goRouterAliases: [alias] }));
+    expect(loadAnalyzeConfig(dir)?.routeFrameworkAliases).toEqual([alias]);
+  });
+
+  it.each(['٢Engine', 'Engine²', 'E\u0301ngine'])(
+    'rejects invalid Go identifier %s',
+    async (type) => {
+      await writeRc(
+        JSON.stringify({ goRouterAliases: [{ importPath: CORE, type, framework: 'gin' }] }),
+      );
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/must be a Go type name/);
+    },
+  );
+
+  it('rejects more router aliases than the cap instead of truncating', async () => {
+    const alias = (i: number) => ({ importPath: `${CORE}${i}`, type: 'Engine', framework: 'gin' });
+    await writeRc(
+      JSON.stringify({ goRouterAliases: Array.from({ length: 100 }, (_, i) => alias(i)) }),
+    );
+    expect(loadAnalyzeConfig(dir)?.routeFrameworkAliases).toHaveLength(100);
+    await writeRc(
+      JSON.stringify({ goRouterAliases: Array.from({ length: 101 }, (_, i) => alias(i)) }),
+    );
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/declares 101 aliases; at most 100/);
+    await writeRc(JSON.stringify({ goRouterAliases: Array.from({ length: 101 }, () => alias(0)) }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/declares 101 aliases; at most 100/);
+  });
+
+  describe('GITNEXUS_RC out-of-repo config', () => {
+    let outside: string;
+    const saved = process.env.GITNEXUS_RC;
+
+    beforeEach(async () => {
+      outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-rc-env-'));
+    });
+
+    afterEach(async () => {
+      if (saved === undefined) delete process.env.GITNEXUS_RC;
+      else process.env.GITNEXUS_RC = saved;
+      await fs.rm(outside, { recursive: true, force: true });
+    });
+
+    const writeEnvRc = async (contents: unknown): Promise<string> => {
+      const file = path.join(outside, 'service.json');
+      await fs.writeFile(file, JSON.stringify(contents));
+      process.env.GITNEXUS_RC = file;
+      return file;
+    };
+
+    it('applies the file when the repository has no .gitnexusrc', async () => {
+      await writeEnvRc({ goHandlerWrappers: ['common.Wrapper'] });
+      expect(loadAnalyzeConfig(dir)).toEqual({ routeHandlerWrappers: ['common.Wrapper'] });
+      await expect(loadAnalyzeConfigStrict(dir)).resolves.toEqual({
+        routeHandlerWrappers: ['common.Wrapper'],
+      });
+    });
+
+    it('overrides the repository .gitnexusrc key by key, and CLI still wins', async () => {
+      await writeRc(JSON.stringify({ defaultBranch: 'develop', skipSkills: true }));
+      await writeEnvRc({ defaultBranch: 'release' });
+      const config = loadAnalyzeConfig(dir);
+      expect(config).toEqual({ defaultBranch: 'release', skipSkills: true });
+      expect(mergeAnalyzeOptions({ skipSkills: false }, config).skipSkills).toBe(false);
+    });
+
+    it('rejects a relative path, a missing file, and invalid content', async () => {
+      process.env.GITNEXUS_RC = 'relative/rc.json';
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/must be an absolute path/);
+      process.env.GITNEXUS_RC = path.join(outside, 'missing.json');
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/Could not read GITNEXUS_RC file/);
+      await writeEnvRc({ goRouterAliases: 'gin' });
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/GITNEXUS_RC file .*non-empty array/);
+    });
+
+    it.each([
+      ['invalid JSON', '{', /not valid JSON/],
+      ['non-object', '[]', /must contain a JSON object/],
+      ['unknown key', '{"unknownOption": true}', /Unknown key/],
+      [
+        'conflicting keys',
+        '{"defaultBranch": "main", "branch": "develop"}',
+        /both configure the same option/,
+      ],
+      ['invalid value', '{"skipSkills": "yes"}', /must be a boolean/],
+      ['invalid nested block', '{"analyze": []}', /"analyze" must be a JSON object/],
+      ['invalid nested value', '{"analyze": {"goRouterAliases": "gin"}}', /non-empty array/],
+    ])('names only the external file for %s errors', async (_name, raw, reason) => {
+      const file = await writeEnvRc({});
+      await fs.writeFile(file, raw);
+      const expected = expect.objectContaining({
+        message: expect.stringContaining(`GITNEXUS_RC file "${file}"`),
+      });
+      expect(() => loadAnalyzeConfig(dir)).toThrow(expected);
+      expect(() => loadAnalyzeConfig(dir)).toThrow(reason);
+      expect(() => loadAnalyzeConfig(dir)).not.toThrow(/\.gitnexusrc/);
+      await expect(loadAnalyzeConfigStrict(dir)).rejects.toThrow(expected);
+      await expect(loadAnalyzeConfigStrict(dir)).rejects.toThrow(reason);
+      await expect(loadAnalyzeConfigStrict(dir)).rejects.not.toThrow(/\.gitnexusrc/);
+    });
+
+    it('rejects a directory and an oversized file', async () => {
+      process.env.GITNEXUS_RC = outside;
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/not a regular file/);
+      const big = path.join(outside, 'big.json');
+      await fs.writeFile(big, `{"skipSkills": true}${' '.repeat(MAX_REPO_CONTROL_FILE_BYTES)}`);
+      process.env.GITNEXUS_RC = big;
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/larger than/);
+    });
+
+    it('rejects a file that grows past the cap after fstat, without reading it all', async () => {
+      const file = await writeEnvRc({ skipSkills: true });
+      const realFstat = fsSync.fstatSync;
+      const readSpy = vi.spyOn(fsSync, 'readSync');
+      const readFileSpy = vi.spyOn(fsSync, 'readFileSync');
+      const fstatSpy = vi.spyOn(fsSync, 'fstatSync').mockImplementation(((fd: number) => {
+        const stat = realFstat(fd);
+        // The writer appends after the size check has already passed.
+        fsSync.appendFileSync(file, ' '.repeat(2 * MAX_REPO_CONTROL_FILE_BYTES));
+        return stat;
+      }) as typeof fsSync.fstatSync);
+      try {
+        expect(() => loadAnalyzeConfig(dir)).toThrow(/larger than/);
+        // Bytes pulled from the file by either read API: the bound must hold
+        // regardless of how the reader is written.
+        const bytesRead =
+          readSpy.mock.results.reduce(
+            (sum, result) => sum + (result.type === 'return' ? (result.value as number) : 0),
+            0,
+          ) +
+          readFileSpy.mock.results.reduce(
+            (sum, result) =>
+              sum + (result.type === 'return' ? Buffer.byteLength(result.value as string) : 0),
+            0,
+          );
+        expect(bytesRead).toBeLessThanOrEqual(MAX_REPO_CONTROL_FILE_BYTES + 1);
+      } finally {
+        fstatSpy.mockRestore();
+        readSpy.mockRestore();
+        readFileSpy.mockRestore();
+      }
+    });
+
+    it.skipIf(process.platform === 'win32')(
+      'rejects a FIFO promptly instead of blocking on open',
+      async () => {
+        const fifo = path.join(outside, 'rc.fifo');
+        execFileSync('mkfifo', [fifo]);
+        const script = path.join(outside, 'load.mts');
+        const configModule = path.resolve(__dirname, '../../src/cli/analyze-config.ts');
+        await fs.writeFile(
+          script,
+          `import { loadAnalyzeConfig } from ${JSON.stringify(configModule)};\n` +
+            `try { loadAnalyzeConfig(${JSON.stringify(dir)}); console.log('loaded'); }\n` +
+            `catch (error) { console.log(String((error as Error).message)); }\n`,
+        );
+        const tsx = path.resolve(__dirname, '../../node_modules/.bin/tsx');
+        const output = execFileSync(tsx, [script], {
+          env: { ...process.env, GITNEXUS_RC: fifo },
+          encoding: 'utf-8',
+          timeout: 20_000,
+        });
+        expect(output).toMatch(/not a regular file/);
+      },
+      30_000,
+    );
+
+    it('is ignored when unset or blank', async () => {
+      process.env.GITNEXUS_RC = '  ';
+      expect(loadAnalyzeConfig(dir)).toBeUndefined();
+    });
+  });
+
+  // ── Spring Actuator runtime enrichment (#2418) ────────────────────
+
+  it('normalizes a Spring Actuator snapshot path', async () => {
+    await writeRc(JSON.stringify({ springActuator: ' fixtures/actuator snapshots ' }));
+    expect(loadAnalyzeConfig(dir)).toEqual({
+      springActuator: 'fixtures/actuator snapshots',
+    });
+  });
+
+  it('rejects empty, non-string, and hidden-character Actuator paths', async () => {
+    await writeRc(JSON.stringify({ springActuator: '   ' }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/must not be empty/);
+
+    await writeRc(JSON.stringify({ springActuator: 42 }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/file or directory path/);
+
+    await writeRc('{"springActuator":"actuator\\u0007"}');
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/control or hidden/);
+  });
+
   // ── validateBranchName ─────────────────────────────────────────────
 
   it('validateBranchName trims and accepts normal branch names', () => {
@@ -199,6 +545,33 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     expect(() => validateBranchName('foo:bar', 'src')).toThrow(/not allowed in a git ref/);
     expect(() => validateBranchName('-foo', 'src')).toThrow(/must not start with "-"/);
     expect(() => validateBranchName('foo..bar', 'src')).toThrow(/must not contain ".."/);
+  });
+
+  it('validateBranchName rejects the ref shapes git check-ref-format rejects', () => {
+    // These previously passed validation and failed later in the git subprocess,
+    // which over HTTP meant a 202 and a background failure instead of a 400.
+    expect(() => validateBranchName('feature.lock', 'src')).toThrow(/must not end with "\.lock"/);
+    expect(() => validateBranchName('refs/heads.lock/x', 'src')).toThrow(
+      /must not end with "\.lock"/,
+    );
+    expect(() => validateBranchName('/feature', 'src')).toThrow(/must not start or end with "\/"/);
+    expect(() => validateBranchName('feature/', 'src')).toThrow(/must not start or end with "\/"/);
+    expect(() => validateBranchName('feature//next', 'src')).toThrow(/consecutive slashes/);
+    expect(() => validateBranchName('@', 'src')).toThrow(/single character "@"/);
+    expect(() => validateBranchName('feature@{1}', 'src')).toThrow(/must not contain "@\{"/);
+    expect(() => validateBranchName('.hidden', 'src')).toThrow(/starting with "\."/);
+    expect(() => validateBranchName('feature/.hidden', 'src')).toThrow(/starting with "\."/);
+    expect(() => validateBranchName('feature.', 'src')).toThrow(/end with "\."/);
+  });
+
+  it('validateBranchName still accepts the real branch shapes those rules must not catch', () => {
+    // A dot, a slash and an @ are all legal in the middle of a ref — the new
+    // rules must reject only what git itself would.
+    expect(validateBranchName('release/1.2.3', 'src')).toBe('release/1.2.3');
+    expect(validateBranchName('feature/lockfile-bump', 'src')).toBe('feature/lockfile-bump');
+    expect(validateBranchName('user@host', 'src')).toBe('user@host');
+    expect(validateBranchName('v1.0', 'src')).toBe('v1.0');
+    expect(validateBranchName('a/b/c', 'src')).toBe('a/b/c');
   });
 
   it('validateBranchName rejects a newline / control character', () => {
@@ -294,6 +667,20 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
   it('validateBranchName enforces the 255-char max (#1996)', () => {
     expect(validateBranchName('a'.repeat(255), 'src')).toBe('a'.repeat(255));
     expect(() => validateBranchName('a'.repeat(256), 'src')).toThrow(/too long/);
+  });
+
+  it('validateBranchName rejects HEAD (case-sensitive) and accepts head (#3199)', () => {
+    expect(() => validateBranchName('HEAD', 'src')).toThrow(GitNexusRcError);
+    expect(() => validateBranchName('HEAD', 'src')).toThrow(/must not be "HEAD"/);
+    expect(() => validateBranchName('  HEAD  ', 'src')).toThrow(GitNexusRcError);
+    expect(validateBranchName('head', 'src')).toBe('head');
+  });
+
+  it('validateBranchName rejects a force-refspec "+" prefix (#3199)', () => {
+    expect(() => validateBranchName('+main', 'src')).toThrow(GitNexusRcError);
+    expect(() => validateBranchName('+main', 'src')).toThrow(/must not start with "\+"/);
+    expect(() => validateBranchName('+develop', 'src')).toThrow(GitNexusRcError);
+    expect(() => validateBranchName('+develop', 'src')).toThrow(/must not start with "\+"/);
   });
 
   it('rejects Markdown-significant characters in a config name, allows real names (#1996)', async () => {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import lbug from '@ladybugdb/core';
 
 // Drive the REAL initLbug path (which calls evictLRU) rather than
 // initLbugWithDb (which bypasses eviction entirely). The native LadybugDB
@@ -50,6 +51,10 @@ vi.mock('../../src/core/lbug/lbug-config.js', () => ({
   toNativeSafePath: vi.fn((p: string) => p),
   isWalCorruptionError: vi.fn(() => false),
   WAL_RECOVERY_SUGGESTION: '',
+  isStorageVersionMismatchError: vi.fn(() => false),
+  throwIfStorageVersionMismatch: vi.fn(),
+  sleep: vi.fn(async () => {}),
+  STORAGE_VERSION_MISMATCH_SUGGESTION: '',
 }));
 
 vi.mock('../../src/core/lbug/sidecar-recovery.js', () => ({
@@ -67,10 +72,19 @@ vi.mock('../../src/core/lbug/sidecar-recovery.js', () => ({
     .mockResolvedValue({ moved: [], removed: [], failed: [] }),
   renameFailureMessage: vi.fn((p: string) => `rename failed for ${p}`),
   statIfExists: vi.fn().mockResolvedValue(null),
+  assertReadOnlyFtsCrashSafe: vi.fn().mockResolvedValue(undefined),
+  FtsReaderUnrepairableError: class FtsReaderUnrepairableError extends Error {
+    readonly code = 'FTS_READER_UNREPAIRABLE' as const;
+    constructor(dbPath = '') {
+      super(dbPath);
+      this.name = 'FtsReaderUnrepairableError';
+    }
+  },
 }));
 
-const { initLbug, closeLbug, isLbugReady, pinRepo, unpinRepo } =
+const { initLbug, initLbugWithDb, closeLbug, getLbugDbIdentity, isLbugReady, pinRepo, unpinRepo } =
   await import('../../src/core/lbug/pool-adapter.js');
+const { createLbugDatabase } = await import('../../src/core/lbug/lbug-config.js');
 const { initWikiDb, closeWikiDb, pinWikiDb } = await import('../../src/core/wiki/graph-queries.js');
 
 describe('pool-adapter repo pinning (issue #2189)', () => {
@@ -246,5 +260,104 @@ describe('pool-adapter repo pinning (issue #2189)', () => {
     release2();
     await init('d-extra2');
     expect(isLbugReady('d-shared')).toBe(false);
+  });
+
+  it('a pin acquired while closeOne awaits db.close() does not survive teardown', async () => {
+    vi.mocked(createLbugDatabase).mockImplementationOnce(() => ({
+      init: vi.fn().mockResolvedValue(undefined),
+      initSync: vi.fn(),
+      closeSync: vi.fn(),
+      close: vi.fn().mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }),
+    }));
+
+    await init('late-pin');
+    const closing = closeLbug('late-pin');
+    await Promise.resolve();
+    pinRepo('late-pin');
+    await closing;
+    expect(isLbugReady('late-pin')).toBe(false);
+
+    await init('late-pin');
+    for (let i = 1; i <= 5; i++) await init(`late-fresh-${i}`);
+    expect(isLbugReady('late-pin')).toBe(false);
+  });
+
+  it('initLbugWithDb waits for an in-flight closeOne before registering', async () => {
+    vi.mocked(createLbugDatabase).mockImplementationOnce(() => ({
+      init: vi.fn().mockResolvedValue(undefined),
+      initSync: vi.fn(),
+      closeSync: vi.fn(),
+      close: vi.fn().mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }),
+    }));
+
+    await init('injected-overlap');
+    const closing = closeLbug('injected-overlap');
+    await Promise.resolve();
+    const injected = {
+      init: vi.fn().mockResolvedValue(undefined),
+      initSync: vi.fn(),
+      closeSync: vi.fn(),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const injecting = initLbugWithDb(
+      'injected-overlap',
+      injected as never,
+      dbPathFor('injected-overlap'),
+    );
+    await closing;
+    await injecting;
+    expect(isLbugReady('injected-overlap')).toBe(true);
+  });
+
+  it('defers shared-handle refresh without connection churn until the other consumer releases it', async () => {
+    const dbPath = dbPathFor('shared-refresh');
+    await initLbug('refresh-reader', dbPath);
+    await initLbug('refresh-holder', dbPath);
+    const openedIdentity = getLbugDbIdentity('refresh-reader');
+    const database = vi.mocked(createLbugDatabase).mock.results.at(-1)?.value;
+    expect(database).toBeDefined();
+    const connectionCount = vi.mocked(lbug.Connection).mock.calls.length;
+    const connections = vi.mocked(lbug.Connection).mock.results.map(({ value }) => value);
+    const closeCounts = connections.map((conn) => conn.close.mock.calls.length);
+
+    // Real file stat changes on every OS; the mocked native handle remains on
+    // the opened generation without relying on POSIX replacement semantics.
+    writeFileSync(dbPath, 'new generation');
+    for (let i = 0; i < 3; i++) {
+      expect(await initLbug('refresh-reader', dbPath)).toBe(false);
+      expect(getLbugDbIdentity('refresh-reader')).toEqual(openedIdentity);
+      expect(isLbugReady('refresh-holder')).toBe(true);
+    }
+    expect(vi.mocked(lbug.Connection).mock.calls).toHaveLength(connectionCount);
+    expect(connections.map((conn) => conn.close.mock.calls.length)).toEqual(closeCounts);
+    expect(database.close).not.toHaveBeenCalled();
+
+    await closeLbug('refresh-holder');
+    expect(database.close).not.toHaveBeenCalled();
+    expect(await initLbug('refresh-reader', dbPath)).toBe(true);
+    expect(database.close).toHaveBeenCalledTimes(1);
+    expect(getLbugDbIdentity('refresh-reader')).not.toEqual(openedIdentity);
+    expect(await initLbug('refresh-reader', dbPath)).toBe(false);
+  });
+
+  it('keeps externally owned databases untracked and open across file changes', async () => {
+    const dbPath = dbPathFor('external-refresh');
+    const externalDb = {
+      init: vi.fn(),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    await initLbugWithDb('external-reader', externalDb as never, dbPath);
+    await initLbug('external-holder', dbPath);
+    writeFileSync(dbPath, 'new generation');
+    expect(await initLbug('external-reader', dbPath)).toBe(false);
+    expect(getLbugDbIdentity('external-reader')).toBeNull();
+    expect(getLbugDbIdentity('external-holder')).toBeNull();
+    await closeLbug('external-holder');
+    await closeLbug('external-reader');
+    expect(externalDb.close).not.toHaveBeenCalled();
   });
 });

@@ -3,11 +3,15 @@
 import json
 import os
 import stat
+import shlex
+import subprocess
 from pathlib import Path, PurePosixPath
 
 import pytest
+import yaml
 
 from workflow_bench import evolve, promotion_apply
+from workflow_bench import evolution, runner
 from workflow_bench.evolution import (
     CANDIDATE_SKILLS,
     MAX_CANDIDATE_OVERLAY_BYTES,
@@ -36,6 +40,120 @@ def _git(repo: Path, *arguments: str) -> str:
     )
 
 
+@pytest.mark.parametrize(
+    "arms", [["candidate_review"], ["candidate_workflow"], ["candidate_review", "candidate_workflow"]]
+)
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        None,
+        "aborted",
+        "metric",
+        "verdict",
+        "nan",
+        "huge-int",
+        "runs",
+        "task",
+        "duplicate-task",
+        "exclusions",
+        "old-schema",
+    ],
+)
+def test_produced_promotion_round_trips_to_transactional_apply(tmp_path, arms, tamper):
+    from tests.test_evolve import bound_task_fixture, promotion_fixture
+
+    overlay = tmp_path / "overlay"
+    repo = tmp_path / "repo"
+    for arm in arms:
+        skill = "gitnexus-review" if arm == "candidate_review" else "gitnexus-plan"
+        relative = PurePosixPath(f".claude/skills/{skill}/SKILL.md")
+        (overlay / relative).parent.mkdir(parents=True, exist_ok=True)
+        (overlay / relative).write_text("candidate")
+        for target in mirror_targets(relative):
+            (repo / target).parent.mkdir(parents=True, exist_ok=True)
+            (repo / target).write_text("incumbent")
+    frozen = tmp_path / "frozen"
+    digest = freeze_overlay(overlay, frozen)
+    bases = destination_base_digests(frozen, repo_root=repo)
+    paired = {}
+    for arm in arms:
+        for name, candidate in ((evolution.CANDIDATE_ARMS[arm], False), (arm, True)):
+            paired[name] = runner.aggregate(
+                [
+                    {
+                        "resolved": True,
+                        "cost_usd": 0.8 if candidate else 1.0,
+                        "review_weighted_f1": 1.0 if candidate else 0.5,
+                        "review_blocker_recall": 1.0,
+                        "review_false_positives": 0,
+                        "review_verdict_correct": True,
+                        "review_clean_control": False,
+                        "review_clean_pass": False,
+                    }
+                    for _ in range(3)
+                ]
+            )
+    policy = evolution.promotion_policy(arms)
+    promotion = {
+        **promotion_fixture(),
+        **evolution.promotion_evidence(
+            {"task-a": paired},
+            policy=policy,
+            model="bench-model",
+            complete=True,
+        ),
+        "required_candidate_arms": arms,
+        "candidate_overlay_digest": digest,
+        "target_base_digests": bases,
+        "selected_tasks": [bound_task_fixture()],
+    }
+    promotion = json.loads(json.dumps(promotion))
+    decision = promotion["decisions"][0]
+    row = decision["tasks"][0]
+    if tamper == "aborted":
+        promotion["run_status"] = "aborted"
+    elif tamper == "metric":
+        decision["metric"] = "fabricated"
+    elif tamper == "verdict":
+        decision["decision"] = "keep_incumbent"
+    elif tamper == "nan":
+        row["candidate"][policy[arms[0]]["metric"]] = float("nan")
+    elif tamper == "huge-int":
+        row["candidate"][policy[arms[0]]["metric"]] = 10**1000
+    elif tamper == "runs":
+        row["candidate"]["valid_runs"] = 1
+    elif tamper == "task":
+        row["task"] = "unselected"
+    elif tamper == "duplicate-task":
+        decision["tasks"].append(dict(row))
+    elif tamper == "exclusions":
+        row["candidate"]["excluded_runs"] = 1
+    elif tamper == "old-schema":
+        promotion["schema_version"] = 5
+
+    def validate():
+        return evolve.validate_promotion_for_apply(
+            promotion,
+            overlay_digest=digest,
+            benchmark_model="bench-model",
+            proposer_model="proposer-model",
+            effort="xhigh",
+            selected_tasks=[bound_task_fixture()],
+            target_base_digests=bases,
+            required_candidate_arms=arms,
+            policy=policy,
+        )
+
+    if tamper:
+        with pytest.raises(ValueError):
+            validate()
+        assert all((repo / path).read_text() == "incumbent" for path in bases)
+    else:
+        assert all(decision["decision"] == "promote" for decision in validate())
+        written = apply_promoted_overlay(frozen, repo_root=repo, expected_target_bases=bases)
+        assert all((repo / path).read_text() == "candidate" for path in written)
+
+
 def test_evolve_reexports_public_promotion_helpers():
     assert evolve.mirror_targets is mirror_targets
     assert evolve.freeze_overlay is freeze_overlay
@@ -50,6 +168,44 @@ def test_mirror_targets_cover_canonical_and_shipped_copies():
         PurePosixPath("gitnexus/skills/gitnexus-plan/SKILL.md"),
         PurePosixPath("gitnexus-claude-plugin/skills/gitnexus-plan/SKILL.md"),
     ]
+
+
+def test_review_mirror_targets_include_cursor_distribution():
+    targets = mirror_targets(PurePosixPath(".claude/skills/gitnexus-review/SKILL.md"))
+    assert targets == [
+        PurePosixPath(".claude/skills/gitnexus-review/SKILL.md"),
+        PurePosixPath("gitnexus/skills/gitnexus-review/SKILL.md"),
+        PurePosixPath("gitnexus-claude-plugin/skills/gitnexus-review/SKILL.md"),
+        PurePosixPath("gitnexus-cursor-integration/skills/gitnexus-review/SKILL.md"),
+    ]
+
+
+def test_workflow_stages_every_review_mirror_and_rejects_unrelated_changes(tmp_path):
+    overlay = tmp_path / "overlay"
+    relative = PurePosixPath(".claude/skills/gitnexus-review/SKILL.md")
+    (overlay / relative).parent.mkdir(parents=True)
+    (overlay / relative).write_text("candidate")
+    repo = tmp_path / "repo"
+    targets = mirror_targets(relative)
+    for path in targets:
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text("incumbent")
+    (repo / "unrelated.txt").write_text("before")
+    _git(repo, "init", "-q")
+    _git(repo, "add", ".")
+    _git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "base")
+    apply_promoted_overlay(overlay, repo_root=repo)
+    workflow_path = Path(__file__).resolve().parents[2] / ".github/workflows/gitnexus-skill-evolution.yml"
+    steps = yaml.safe_load(workflow_path.read_text())["jobs"]["evolve"]["steps"]
+    publish = next(step["run"] for step in steps if step.get("name") == "Open the promotion PR")
+    staging = next(line for line in publish.splitlines() if line.startswith("git add "))
+    _git(repo, *shlex.split(staging)[1:])
+    assert _git(repo, "diff", "--cached", "--name-only").splitlines() == sorted(map(str, targets))
+    assert {(repo / path).read_text() for path in targets} == {"candidate"}
+    (repo / "unrelated.txt").write_text("after")
+    guard = next(step["run"] for step in steps if step.get("name") == "Detect and bound the applied promotion")
+    guarded = subprocess.run(["bash", "-c", guard], cwd=repo, capture_output=True, text=True)
+    assert guarded.returncode == 1 and "outside the skill trees: unrelated.txt" in guarded.stdout
 
 
 def test_apply_promoted_overlay_writes_all_mirrors(tmp_path):
@@ -492,14 +648,7 @@ def test_committed_destination_bases_ignore_and_reject_live_target_edits(tmp_pat
     assert dirty.read_text() == "user edit"
 
 
-def test_mirror_roots_cover_every_candidate_skill_and_omit_none_that_ships_to_cursor():
-    # promotion_apply.mirror_targets writes canonical + MIRROR_SKILL_ROOTS, which
-    # today omits the Cursor tree. That is only safe because no candidate skill is
-    # cursor-shipped. If a future edit adds a cursor-shipped skill (e.g.
-    # gitnexus-review) to CANDIDATE_SKILLS, apply_promoted_overlay would rewrite
-    # the other trees and silently skip Cursor — the PR #2488 asymmetric-sync bug
-    # class. Pin the invariant to the filesystem, the source of truth the TS drift
-    # guard already enforces.
+def test_mirror_roots_cover_every_candidate_skill_including_cursor_review():
     repo_root = Path(__file__).resolve().parents[2]
     cursor_root = repo_root / "gitnexus-cursor-integration" / "skills"
     for skill in sorted(CANDIDATE_SKILLS):
@@ -507,10 +656,9 @@ def test_mirror_roots_cover_every_candidate_skill_and_omit_none_that_ships_to_cu
         assert canonical.is_dir(), f"candidate skill {skill} has no canonical .claude/skills dir"
         for target in mirror_targets(PurePosixPath(".claude", "skills", skill, "SKILL.md")):
             assert (repo_root / target).is_file(), f"candidate skill mirror missing on disk: {target}"
-        assert not (cursor_root / skill).exists(), (
-            f"candidate skill {skill} ships to Cursor, but MIRROR_SKILL_ROOTS does not cover "
-            "gitnexus-cursor-integration/skills — promotion would sync it asymmetrically"
-        )
+        if (cursor_root / skill).exists():
+            expected = PurePosixPath("gitnexus-cursor-integration/skills", skill, "SKILL.md")
+            assert expected in mirror_targets(PurePosixPath(".claude", "skills", skill, "SKILL.md"))
 
 
 def test_committed_destination_bases_reject_overlay_adding_uncommitted_target(tmp_path):

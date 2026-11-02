@@ -1,0 +1,19 @@
+.{
+    .name = "app",
+    .version = "0.1.0",
+    .dependencies = .{
+        .core = .{
+            .path = "../core",
+        },
+        // ABSOLUTE, so it points outside the repository whichever package
+        // declares it. It sits in a NESTED package on purpose: that is the
+        // branch where the package prefix used to hide it. `packages/app/` +
+        // `/src` reads as the relative, in-repo `packages/app/src` — a real
+        // directory in this fixture — so the absolute dep silently became the
+        // package's own source tree instead of being rejected.
+        .escapes = .{
+            .path = "/src",
+        },
+    },
+    .paths = .{""},
+}

@@ -9,50 +9,62 @@ permissions:
 jobs:
   format:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Same root npm ci as lint. A cold install already took 4m19s here and
+    # canceled prettier at the 5-minute job cap; lint needed 7m41s the same run.
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: package-lock.json
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npx prettier --check .
 
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: package-lock.json
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npx eslint .
 
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # tsc --noEmit reads source + gitnexus-shared/dist. Skip prepare/postinstall
+      # so a cold shared install cannot eat the 10-minute budget on a second tsc.
       - uses: ./.github/actions/setup-gitnexus
+        with:
+          lifecycle-scripts: 'false'
       - run: npx tsc --noEmit
+        working-directory: gitnexus
+      - name: Typecheck tests
+        run: npm run typecheck:tests
         working-directory: gitnexus
 
   typecheck-web:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Cold gitnexus-web npm ci is several minutes (mermaid/langchain/playwright).
+    # A 10-minute cancel prevents setup-node from saving the cache, so the next
+    # run is cold again.
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus-web
@@ -68,6 +80,7 @@ jobs:
   #   3. The concurrency group key starts with `${{ github.workflow }}` or
   #      the literal `CI-` prefix (the documented ci.yml exception for
   #      reusable-workflow-safe grouping).
+  #      The two EC2 workflows share an explicit resource lock through cleanup.
   # Reusability is detected by parsing each workflow's `on:` block, not an
   # allowlist, so new reusable workflows never produce false positives.
   workflow-convention:
@@ -75,7 +88,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Validate workflow concurrency convention

@@ -19,6 +19,7 @@ import { dirname, resolve } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
+import { isHeuristicEdgeReason } from '../graph/edge-reasons.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -28,12 +29,9 @@ const _require = createRequire(import.meta.url);
 /** Graphology Graph instance type (AbstractGraph from graphology-types avoids CJS/ESM interop namespace issue) */
 type GraphInstance = AbstractGraph<Attributes, Attributes, Attributes>;
 
-const leiden: LeidenModule = _require(leidenPath);
-
-/** Vendored Leiden algorithm module shape */
-interface LeidenModule {
-  detailed: (graph: GraphInstance, options: Record<string, unknown>) => LeidenDetailedResult;
-}
+// The Leiden worker loads its own copy; this load keeps a missing vendor/ asset
+// failing at import time and keeps it visible to dockerfile-runtime-asset-parity.
+_require(leidenPath);
 
 /** Result returned by leiden.detailed() */
 interface LeidenDetailedResult {
@@ -109,15 +107,6 @@ interface IcebugWorkerFailure {
  * incremental-indexing equivalence test (incremental ≡ full rebuild).
  */
 const LEIDEN_SEED = 0xc0de;
-function createSeededRng(seed: number): () => number {
-  let s = seed >>> 0;
-  return () => {
-    s = (s + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 const COMMUNITY_ENGINE_ENV = 'GITNEXUS_COMMUNITY_ENGINE';
 /**
@@ -130,6 +119,18 @@ const DEFAULT_COMMUNITY_ENGINE: CommunityEngine = 'graphology';
 const LEIDEN_TIMEOUT_MS = 60_000;
 const ICEBUG_TIMEOUT_MS = 60_000;
 const MIN_CONFIDENCE_LARGE = 0.5;
+
+/**
+ * Whether a large graph's projection may include this edge.
+ *
+ * The confidence floor alone lets every global-name-fallback edge through — it
+ * is emitted at exactly `MIN_CONFIDENCE_LARGE`, so `confidence <` never
+ * excludes it. Clustering on unique-name guesses fuses unrelated areas into one
+ * community, which is precisely the noise the large-graph floor exists to
+ * remove, so the reason is checked too — see `graph/edge-reasons.ts`.
+ */
+const isLargeGraphEligible = (confidence: number, reason: string): boolean =>
+  confidence >= MIN_CONFIDENCE_LARGE && !isHeuristicEdgeReason(reason);
 
 export const resolveCommunityDetectionEngine = (
   raw = process.env[COMMUNITY_ENGINE_ENV],
@@ -163,7 +164,10 @@ export interface CommunityMembership {
 
 export interface CommunityDetectionResult {
   communities: CommunityNode[];
+  /** Assignments to retained communities, safe to emit as MEMBER_OF edges. */
   memberships: CommunityMembership[];
+  /** All Leiden assignments, including filtered singletons. Optional for legacy producers. */
+  rawMemberships?: CommunityMembership[];
   stats: {
     totalCommunities: number;
     modularity: number;
@@ -222,6 +226,7 @@ export const processCommunities = async (
     return {
       communities: [],
       memberships: [],
+      rawMemberships: [],
       stats: {
         totalCommunities: 0,
         modularity: 0,
@@ -254,13 +259,16 @@ export const processCommunities = async (
 
   onProgress?.('Creating membership edges...', 80);
 
-  // Step 4: Create membership mappings
+  // Step 4: Preserve all assignments for skill generation, but only emit
+  // memberships for retained communities with a corresponding graph node.
+  const retainedCommunityIds = new Set(communityNodes.map((community) => community.id));
   const memberships: CommunityMembership[] = [];
+  const rawMemberships: CommunityMembership[] = [];
   Object.entries(details.communities).forEach(([nodeId, communityNum]) => {
-    memberships.push({
-      nodeId,
-      communityId: `comm_${communityNum}`,
-    });
+    const communityId = `comm_${communityNum}`;
+    const membership = { nodeId, communityId };
+    rawMemberships.push(membership);
+    if (retainedCommunityIds.has(communityId)) memberships.push(membership);
   });
 
   onProgress?.('Community detection complete!', 100);
@@ -268,6 +276,7 @@ export const processCommunities = async (
   return {
     communities: communityNodes,
     memberships,
+    rawMemberships,
     stats: {
       totalCommunities: details.count,
       modularity: details.modularity,
@@ -300,11 +309,16 @@ export const buildCommunityProjection = (knowledgeGraph: KnowledgeGraph): Commun
   const connectedNodes = new Set<string>();
   const nodeDegree = new Map<string, number>();
 
-  // Field-wise scan (#2680): this walks every edge and reads only these four,
+  // Field-wise scan (#2680): this walks every edge and reads only these five,
   // so taking objects would allocate one per edge for nothing.
-  knowledgeGraph.forEachRelationshipFields((sourceId, targetId, type, confidence) => {
+  knowledgeGraph.forEachRelationshipFields((sourceId, targetId, type, confidence, reason) => {
     if (!isClusteringRelationship(type) || sourceId === targetId) return;
-    if (isLarge && confidence < MIN_CONFIDENCE_LARGE) return;
+    // A name-guessed edge must not join two nodes into a community at ANY graph
+    // size — the rationale in `graph/edge-reasons.ts` is about what the edge
+    // claims, not about how many symbols surround it. Process tracing applies
+    // the same reason gate unconditionally (`process-processor.ts`).
+    if (isHeuristicEdgeReason(reason)) return;
+    if (isLarge && !isLargeGraphEligible(confidence, reason)) return;
 
     connectedNodes.add(sourceId);
     connectedNodes.add(targetId);
@@ -340,9 +354,10 @@ export const buildCommunityProjection = (knowledgeGraph: KnowledgeGraph): Commun
   const seenEdges = new Set<string>();
   const edges: Array<readonly [number, number]> = [];
 
-  knowledgeGraph.forEachRelationshipFields((sourceId, targetId, type, confidence) => {
+  knowledgeGraph.forEachRelationshipFields((sourceId, targetId, type, confidence, reason) => {
     if (!isClusteringRelationship(type) || sourceId === targetId) return;
-    if (isLarge && confidence < MIN_CONFIDENCE_LARGE) return;
+    if (isHeuristicEdgeReason(reason)) return;
+    if (isLarge && !isLargeGraphEligible(confidence, reason)) return;
 
     const sourceIndex = nodeIndexById.get(sourceId);
     const targetIndex = nodeIndexById.get(targetId);
@@ -447,28 +462,101 @@ const runCommunityEngine = async (
       35,
     );
     const fallback = await runGraphologyLeiden(graph, projection.isLarge, engineRequested);
-    return { ...fallback, fallbackReason };
+    return {
+      ...fallback,
+      fallbackReason: fallback.fallbackReason
+        ? `${fallbackReason}; ${fallback.fallbackReason}`
+        : fallbackReason,
+    };
   }
 };
 
-const runGraphologyLeiden = async (
+/**
+ * Runs the vendored Leiden in a worker so LEIDEN_TIMEOUT_MS can actually fire.
+ * leiden.detailed is synchronous and, on some graphs, never returns
+ * (graphology/graphology#557); a timer on the main thread cannot interrupt it.
+ * The worker is pure JS, so terminate() is safe (unlike the icebug N-API worker).
+ */
+const GRAPHOLOGY_WORKER_SOURCE = `
+const { parentPort, workerData } = require('node:worker_threads');
+try {
+  const Graph = require(workerData.graphologyPath);
+  const leiden = require(workerData.leidenPath);
+  const graph = Graph.from(workerData.graph);
+  const rng = (() => {
+    let s = workerData.seed >>> 0;
+    return () => {
+      s = (s + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  })();
+  const d = leiden.detailed(graph, {
+    resolution: workerData.resolution,
+    maxIterations: workerData.maxIterations,
+    rng,
+  });
+  parentPort.postMessage({
+    ok: true,
+    communities: d.communities,
+    count: d.count,
+    modularity: d.modularity,
+  });
+} catch (error) {
+  parentPort.postMessage({ ok: false, error: error instanceof Error ? error.message : String(error) });
+}
+`;
+
+export const runGraphologyLeiden = async (
   graph: GraphInstance,
   isLarge: boolean,
   engineRequested: CommunityDetectionEngine,
+  timeoutMs: number = LEIDEN_TIMEOUT_MS,
 ): Promise<CommunityEngineResult> => {
   try {
-    const details = await Promise.race([
-      Promise.resolve(
-        leiden.detailed(graph, {
+    const details = await new Promise<LeidenDetailedResult>((resolve, reject) => {
+      const worker = new Worker(GRAPHOLOGY_WORKER_SOURCE, {
+        eval: true,
+        workerData: {
+          graphologyPath: _require.resolve('graphology'),
+          leidenPath,
+          graph: graph.export(),
+          seed: LEIDEN_SEED,
           resolution: isLarge ? 2.0 : 1.0,
           maxIterations: isLarge ? 3 : 0,
-          rng: createSeededRng(LEIDEN_SEED),
-        }),
-      ),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Leiden timeout')), LEIDEN_TIMEOUT_MS),
-      ),
-    ]);
+        },
+      });
+      let settled = false;
+      const timeout = setTimeout(() => {
+        settled = true;
+        void worker.terminate();
+        reject(new Error('Leiden timeout'));
+      }, timeoutMs);
+      worker.once('message', (message) => {
+        settled = true;
+        clearTimeout(timeout);
+        if (message.ok === true) {
+          resolve({
+            communities: message.communities,
+            count: message.count,
+            modularity: message.modularity,
+          });
+        } else {
+          reject(new Error(message.error));
+        }
+      });
+      worker.once('error', (error) => {
+        settled = true;
+        clearTimeout(timeout);
+        reject(error);
+      });
+      worker.once('exit', (code) => {
+        if (settled) return;
+        clearTimeout(timeout);
+        reject(new Error(`Graphology Leiden worker exited with code ${code}`));
+      });
+    });
     return { ...details, engine: 'graphology', engineRequested };
   } catch (e: any) {
     if (e.message !== 'Leiden timeout') {

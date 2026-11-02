@@ -19,14 +19,14 @@
  *
  * False-positive suppression:
  * - Skips calls whose receiver is a known non-tree-sitter library (`JSON`,
- *   `URL`, `marked`, `Number`).
+ *   `URL`, `marked`, `Number`, `path`).
  * - Skips calls whose first argument is a string-literal (grammar-load smoke
  *   tests like `_testParser.parse('service X { rpc Y (R) returns (R); }')`).
  * - Skips test files (`.test.ts`/`.test.tsx`/`.spec.ts`).
  * - Skips the `safe-parse.ts` helper itself.
  */
 
-const SKIPPED_RECEIVERS = new Set(['JSON', 'URL', 'marked', 'Number', 'Math']);
+const SKIPPED_RECEIVERS = new Set(['JSON', 'URL', 'marked', 'Number', 'Math', 'path']);
 
 export default {
   meta: {
@@ -74,7 +74,7 @@ export default {
         // Receiver-text-shape skip: anything matching well-known JS APIs that
         // happen to have a `.parse(<expr>)` shape but aren't tree-sitter.
         if (
-          /^(JSON|URL|marked|Number|Math|Date|globalThis\.JSON)\b/.test(receiverText) ||
+          /^(JSON|URL|marked|Number|Math|Date|path|globalThis\.JSON)\b/.test(receiverText) ||
           /\bjson\.parse\b/i.test(receiverText)
         ) {
           return;

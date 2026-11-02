@@ -27,6 +27,32 @@ def test_prebuilt_graph_and_harness_assets_are_rejected(task):
         sanitized_graph.validate_no_prebuilt_graph_assets(task)
 
 
+def test_review_case_patches_are_allowed_sandbox_copy():
+    sanitized_graph.validate_no_prebuilt_graph_assets(
+        {"sandbox_copy": ["eval/workflow_bench/review_cases/pr-2718.patch"]}
+    )
+
+
+@pytest.mark.parametrize(
+    "task",
+    [
+        {"sandbox_copy": ["eval/workflow_bench"]},
+        {"sandbox_copy": ["eval/workflow_bench/evolve.py"]},
+        {
+            "sandbox_dependencies": [
+                {
+                    "source": "eval/workflow_bench/review_cases/pr-2718.patch",
+                    "target": "patch",
+                }
+            ]
+        },
+    ],
+)
+def test_non_corpus_harness_paths_stay_rejected(task):
+    with pytest.raises(SandboxError, match="prebuilt graph or harness"):
+        sanitized_graph.validate_no_prebuilt_graph_assets(task)
+
+
 def test_graph_environment_is_offline_deterministic_and_ignores_target_gitignore():
     env = sanitized_graph._graph_environment()
 
@@ -34,6 +60,10 @@ def test_graph_environment_is_offline_deterministic_and_ignores_target_gitignore
     assert env["GITNEXUS_NO_GITIGNORE"] == "1"
     assert env["GITNEXUS_WORKER_POOL_SIZE"] == "1"
     assert env["GITNEXUS_PARSE_CHUNK_CONCURRENCY"] == "1"
+    assert env["GITNEXUS_WORKER_READY_TIMEOUT_MS"] == str(
+        sanitized_graph.GRAPH_WORKER_READY_TIMEOUT_MS
+    )
+    assert int(env["GITNEXUS_WORKER_READY_TIMEOUT_MS"]) >= 60_000
     assert "ANTHROPIC_API_KEY" not in env
 
 
@@ -180,6 +210,22 @@ def test_prepare_sanitized_graph_builds_once_from_parentless_tree_and_caches_onl
     assert snapshot.sanitized_head == sanitized_head
     assert snapshot.digest == "graph-digest"
     assert removed == [seed]
+
+
+def test_prepare_sanitized_graph_requires_head_when_given_a_template(tmp_path: Path):
+    with pytest.raises(SandboxError, match="sanitized HEAD"):
+        sanitized_graph.prepare_sanitized_graph(
+            {},
+            repo=tmp_path,
+            resolved_sha="b" * 40,
+            parent=tmp_path,
+            cache=SimpleNamespace(),  # type: ignore[arg-type]
+            claude_bin="claude",
+            bwrap_bin="bwrap",
+            runtime_mounts=(),
+            clone_template=tmp_path,
+            sanitized_head=None,
+        )
 
 
 def test_graph_snapshot_rejects_arm_sanitization_identity_drift(tmp_path: Path):

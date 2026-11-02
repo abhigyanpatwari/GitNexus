@@ -1,0 +1,36 @@
+{
+  "language": "php",
+  "description": "Rename a case-sensitive public property through three typed receiver hops, preserving differently cased properties and variables.",
+  "categories": [
+    "public-field",
+    "deep-chain",
+    "read-write",
+    "case-sensitive-property"
+  ],
+  "target": {
+    "name": "score",
+    "kind": "Property",
+    "file": "model.php",
+    "startLine": 2
+  },
+  "newName": "points",
+  "expect": {
+    "status": "success",
+    "edits": 4
+  },
+  "edges": [
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "update",
+        "kind": "Function",
+        "file": "model.php"
+      },
+      "to": {
+        "name": "score",
+        "kind": "Property",
+        "file": "model.php"
+      }
+    }
+  ]
+}

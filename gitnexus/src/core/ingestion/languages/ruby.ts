@@ -8,20 +8,23 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { rubyRenameProvider } from './ruby/rename.js';
+import { collectRubyMemberDispatch } from './ruby/member-dispatch.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
-import { rubyClassConfig } from '../class-extractors/configs/ruby.js';
+import {
+  rubyClassConfig,
+  rubyFactoryBindingName,
+  rubyFactoryType,
+} from '../class-extractors/configs/ruby.js';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createLeadingDocDescriptionExtractor, type SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as rubyConfig } from '../type-extractors/ruby.js';
 import { routeRubyCall } from '../call-routing.js';
 import { rubyExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { rubyImportConfig } from '../import-resolvers/configs/ruby.js';
 import { RUBY_QUERIES } from '../tree-sitter-queries.js';
-import { createFieldExtractor } from '../field-extractors/generic.js';
-import { rubyConfig as rubyFieldConfig } from '../field-extractors/configs/ruby.js';
+import { rubyFieldExtractor } from './ruby/field-extractor.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { rubyMethodConfig } from '../method-extractors/configs/ruby.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
@@ -142,6 +145,9 @@ const BUILT_INS: ReadonlySet<string> = new Set([
  * All other container types are returned as-is.
  */
 const rubyResolveEnclosingOwner = (node: SyntaxNode): SyntaxNode | null => {
+  if (node.type === 'do_block' || node.type === 'block') {
+    return rubyFactoryType(node) === undefined ? null : node;
+  }
   if (node.type === 'singleton_class') {
     let ancestor = node.parent;
     while (ancestor) {
@@ -155,7 +161,23 @@ const rubyResolveEnclosingOwner = (node: SyntaxNode): SyntaxNode | null => {
   return node; // use as-is for all other container types
 };
 
+const rubyClassExtractor = createClassExtractor(rubyClassConfig);
+
+const rubyResolveContainerTypeOwner = (
+  node: SyntaxNode,
+): { readonly name: string; readonly label: NodeLabel } | null => {
+  const name = rubyFactoryBindingName(node);
+  const label = rubyFactoryType(node);
+  if (name === undefined || label === undefined) return null;
+  const qualifiedName =
+    label === 'Trait'
+      ? rubyClassExtractor.qualifyScopeName?.(node, name)
+      : rubyClassExtractor.extractQualifiedName(node, name);
+  return { name: qualifiedName ?? name, label };
+};
+
 export const rubyProvider = defineLanguage({
+  rename: rubyRenameProvider,
   id: SupportedLanguages.Ruby,
   extensions: ['.rb', '.rake', '.gemspec'],
   entryPointPatterns: [/^call$/, /^perform$/, /^execute$/],
@@ -183,20 +205,23 @@ export const rubyProvider = defineLanguage({
       patterns: ['Sinatra::Base', 'Sinatra::Application'],
     },
   ] satisfies AstFrameworkPatternConfig[],
-  treeSitterQueries: RUBY_QUERIES,
+  treeSitterQueries: `${RUBY_QUERIES}
+    (method name: (setter) @name) @definition.method
+    (singleton_method name: (setter) @name) @definition.method
+  `,
   typeConfig: rubyConfig,
   exportChecker: rubyExportChecker,
-  importResolver: createImportResolver(rubyImportConfig),
   callRouter: routeRubyCall,
   callExtractor: createCallExtractor(rubyCallConfig),
   resolveEnclosingOwner: rubyResolveEnclosingOwner,
-  fieldExtractor: createFieldExtractor(rubyFieldConfig),
+  resolveContainerTypeOwner: rubyResolveContainerTypeOwner,
+  fieldExtractor: rubyFieldExtractor,
   methodExtractor: createMethodExtractor({
     ...rubyMethodConfig,
     extractFunctionName: rubyExtractFunctionName,
   }),
   variableExtractor: createVariableExtractor(rubyVariableConfig),
-  classExtractor: createClassExtractor(rubyClassConfig),
+  classExtractor: rubyClassExtractor,
   // ── Leading `#` comments (RDoc/YARD) → description (issue #2270). Magic
   //    comments and the shebang are not documentation. ──
   descriptionExtractor: createLeadingDocDescriptionExtractor({
@@ -220,6 +245,7 @@ export const rubyProvider = defineLanguage({
   builtInNames: BUILT_INS,
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────
   emitScopeCaptures: emitRubyScopeCaptures,
+  collectCaptureSideChannel: collectRubyMemberDispatch,
   cfgVisitor: createRubyCfgVisitor(),
   interpretImport: interpretRubyImport,
   interpretTypeBinding: interpretRubyTypeBinding,

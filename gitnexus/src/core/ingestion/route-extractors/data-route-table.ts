@@ -116,7 +116,14 @@ function decodeJavaScriptStringLiteral(raw: string): string | null {
   return decoded;
 }
 
-function plainString(node: SyntaxNode): string | null {
+/**
+ * A `string`/`template_string` node's decoded value, or `null` when it is not a
+ * readable literal (an interpolated template, an unterminated escape). Shared
+ * with the NestJS extractor so both agree on what a readable literal is —
+ * notably that escapes must be DECODED, not dropped, because tree-sitter splits
+ * a literal around every `escape_sequence`.
+ */
+export function plainString(node: SyntaxNode): string | null {
   if (node.type === 'string') return decodeJavaScriptStringLiteral(node.text);
   if (
     node.type === 'template_string' &&
@@ -129,7 +136,12 @@ function plainString(node: SyntaxNode): string | null {
   return null;
 }
 
-function propertyName(node: SyntaxNode): string | null {
+/**
+ * A property key's name, for the spellings that carry one — `{ path: … }` and
+ * `{ 'path': … }`. A computed key (`{ [KEY]: … }`) has none. Shared with the
+ * NestJS extractor, which reads `@Controller({ path: … })` the same way.
+ */
+export function propertyName(node: SyntaxNode): string | null {
   if (node.type === 'identifier' || node.type === 'property_identifier') return node.text;
   if (node.type === 'string') return plainString(node);
   return null;

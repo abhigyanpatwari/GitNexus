@@ -37,7 +37,8 @@ describe('processParsing — worker-pool error propagation (U20)', () => {
     const graph = createKnowledgeGraph();
     const workerPool: WorkerPool = {
       size: 1,
-      dispatch: vi.fn(async () => {
+      dispatch: vi.fn(async () => []),
+      dispatchGroups: vi.fn(async () => {
         throw new Error('replacement worker failed');
       }),
       terminate: vi.fn(async () => undefined),
@@ -63,7 +64,8 @@ describe('processParsing — worker-pool error propagation (U20)', () => {
     const graph = createKnowledgeGraph();
     const workerPool: WorkerPool = {
       size: 1,
-      dispatch: vi.fn(async () => {
+      dispatch: vi.fn(async () => []),
+      dispatchGroups: vi.fn(async () => {
         throw new WorkerPoolDispatchError(
           'Worker pool circuit breaker tripped: 2 consecutive failures on slot 0',
           ['src/poison.ts'],
@@ -114,6 +116,7 @@ describe('processParsing — worker-pool error propagation (U20)', () => {
     const workerPool: WorkerPool = {
       size: 1,
       dispatch: vi.fn(async () => []),
+      dispatchGroups: vi.fn(async () => []),
       terminate: vi.fn(async () => undefined),
       getQuarantinedPaths: () => ['src/poison.ts'],
     };

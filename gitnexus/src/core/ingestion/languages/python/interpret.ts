@@ -54,6 +54,7 @@ export function interpretPythonImport(captures: CaptureMatch): ParsedImport | nu
       return {
         kind: 'namespace',
         localName: aliasCap.text,
+        explicitAlias: true,
         importedName: sourceCap.text,
         targetRaw: sourceCap.text,
       };
@@ -128,7 +129,8 @@ export function interpretPythonTypeBinding(captures: CaptureMatch): ParsedTypeBi
   // the variable-annotation and constructor-inferred forms from the
   // classic parameter annotation.
   let source: TypeRef['source'] = 'parameter-annotation';
-  if (captures['@type-binding.self'] !== undefined) source = 'self';
+  if (captures['@type-binding.uncertain-receiver'] !== undefined) source = 'decorator-unknown';
+  else if (captures['@type-binding.self'] !== undefined) source = 'self';
   // `cls` is a self-like receiver; share the source label so downstream
   // `Registry.lookup` Step 2 treats them identically.
   else if (captures['@type-binding.cls'] !== undefined) source = 'self';

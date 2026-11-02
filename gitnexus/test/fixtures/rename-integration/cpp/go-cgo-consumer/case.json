@@ -1,0 +1,21 @@
+{
+  "language": "cpp",
+  "description": "Refuse a C++ extern \"C\" function that an indexed Go cgo caller names, until the Go binding is proven.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "api.cpp"
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_boundary",
+    "planningStatus": "unsupported"
+  }
+}

@@ -24,6 +24,12 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { definitionIdPosition } from '../scope-resolution/utils/definition-id.js';
 
 const LOCAL_IDENTITY_SUFFIX = /@\d+:\d+$/;
+// Parsed-file definitions are finalized before worker graph extraction. Index
+// once per immutable array; weak keys release the index with its parse result.
+const definitionsByName = new WeakMap<
+  readonly SymbolDefinition[],
+  Map<string, SymbolDefinition[]>
+>();
 
 function simpleDefinitionName(def: SymbolDefinition): string | undefined {
   const qualifiedName = def.qualifiedName;
@@ -43,12 +49,12 @@ function containsPosition(node: SyntaxNode, row: number, column: number): boolea
 }
 
 /**
- * Zero-based start row that keys the graph-to-scope position join for a bound
- * callable (#2735).
+ * Zero-based start position that keys the graph-to-scope join for a bound
+ * callable (#2735/#3041).
  *
  * Graph-node queries may anchor on an outer binding wrapper while the scope
- * channel anchors on the inner callable. The join is line-only, so a multi-line
- * binding needs the graph node's `startLine` to follow the semantic definition.
+ * channel anchors on the inner callable. A bound graph node therefore follows
+ * the semantic definition's line and column rather than the outer wrapper.
  *
  * `ParsedFile.localDefs` is the language-agnostic source of that position.
  * Matching uses only the canonical label, name, and source range; shared worker
@@ -58,21 +64,35 @@ function containsPosition(node: SyntaxNode, row: number, column: number): boolea
  * Missing or ambiguous semantic matches retain the wrapper row, preserving the
  * existing fail-closed behavior.
  */
-export function boundCallableStartRow(
+export function boundCallableStartPosition(
   definitionNode: SyntaxNode,
   nodeName: string,
   nodeLabel: NodeLabel,
   localDefs: readonly SymbolDefinition[] | undefined,
   nameNode?: SyntaxNode | null,
-): number {
-  if (localDefs === undefined) return definitionNode.startPosition.row;
+): { readonly row: number; readonly column: number } {
+  if (localDefs === undefined) return definitionNode.startPosition;
+
+  let index = definitionsByName.get(localDefs);
+  if (index === undefined) {
+    index = new Map();
+    for (const def of localDefs) {
+      for (const name of new Set([simpleDefinitionName(def), def.qualifiedName])) {
+        if (name === undefined) continue;
+        const key = `${def.type}\0${name}`;
+        const matches = index.get(key) ?? [];
+        matches.push(def);
+        index.set(key, matches);
+      }
+    }
+    definitionsByName.set(localDefs, index);
+  }
 
   const origin = nameNode?.startPosition ?? definitionNode.startPosition;
-  let best: { row: number; distance: number } | undefined;
+  let best: { row: number; column: number; distance: number } | undefined;
   let tied = false;
 
-  for (const def of localDefs) {
-    if (def.type !== nodeLabel || simpleDefinitionName(def) !== nodeName) continue;
+  for (const def of index.get(`${nodeLabel}\0${nodeName}`) ?? []) {
     const position = definitionIdPosition(def.nodeId, def.filePath);
     if (position === undefined) continue;
 
@@ -82,14 +102,29 @@ export function boundCallableStartRow(
     const distance =
       Math.abs(row - origin.row) * 1_000_000 + Math.abs(position.column - origin.column);
     if (best === undefined || distance < best.distance) {
-      best = { row, distance };
+      best = { row, column: position.column, distance };
       tied = false;
-    } else if (distance === best.distance && row !== best.row) {
+    } else if (
+      distance === best.distance &&
+      (row !== best.row || position.column !== best.column)
+    ) {
       tied = true;
     }
   }
 
-  return best !== undefined && !tied ? best.row : definitionNode.startPosition.row;
+  return best !== undefined && !tied
+    ? { row: best.row, column: best.column }
+    : definitionNode.startPosition;
+}
+
+export function boundCallableStartRow(
+  definitionNode: SyntaxNode,
+  nodeName: string,
+  nodeLabel: NodeLabel,
+  localDefs: readonly SymbolDefinition[] | undefined,
+  nameNode?: SyntaxNode | null,
+): number {
+  return boundCallableStartPosition(definitionNode, nodeName, nodeLabel, localDefs, nameNode).row;
 }
 /**
  * A function-local callable's own name segment: its name plus its declaration
@@ -114,8 +149,13 @@ export function boundCallableStartRow(
  * bare/class-qualified ids, which is what keeps this off the symbols other
  * files, saved queries and stored references actually address.
  */
+export const positionQualifiedCallableName = (
+  name: string,
+  position: { readonly row: number; readonly column: number },
+): string => `${name}@${position.row}:${position.column}`;
+
 export const localIdentity = (node: SyntaxNode, name: string): string =>
-  `${name}@${node.startPosition.row}:${node.startPosition.column}`;
+  positionQualifiedCallableName(name, node.startPosition);
 
 /**
  * The qualified name of a callable nested inside another callable — THE single

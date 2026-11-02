@@ -1,8 +1,29 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
 describe('parser-loader', () => {
+  it('keeps reporting C# grammar initialization failures on repeated calls', async () => {
+    vi.resetModules();
+    const loader = await import('../../src/core/tree-sitter/parser-loader.js');
+    const failure = new Error('C# grammar failed to load');
+    const loadGrammar = vi.spyOn(loader, 'getLanguageGrammar').mockImplementation(() => {
+      throw failure;
+    });
+    try {
+      const { getCsharpParser } =
+        await import('../../src/core/ingestion/languages/csharp/query.js');
+      expect(() => getCsharpParser()).toThrow(failure);
+      expect(() => getCsharpParser()).toThrow(failure);
+      loadGrammar.mockRestore();
+      const parser = getCsharpParser();
+      expect(parser.parse('class Recovered {}').rootNode.hasError).toBe(false);
+      expect(getCsharpParser()).toBe(parser);
+    } finally {
+      loadGrammar.mockRestore();
+    }
+  });
+
   describe('loadParser', () => {
     it('returns a Parser instance', async () => {
       const parser = await loadParser();

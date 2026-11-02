@@ -1,11 +1,13 @@
 import { t } from './i18n/index.js';
 import { formatSymbolLine } from './format-symbol.js';
+import { formatPathForTerminal } from './format-path.js';
 
 type DetectChangesSummary = {
   changed_files?: number;
   changed_count?: number;
   affected_count?: number;
   risk_level?: string;
+  message?: string;
 };
 
 type ChangedSymbol = {
@@ -31,6 +33,7 @@ type DetectChangesResult = {
   summary?: DetectChangesSummary;
   changed_symbols?: ChangedSymbol[];
   affected_processes?: AffectedProcess[];
+  unmapped_files?: string[];
 };
 
 export function formatDetectChangesResult(result: unknown): string {
@@ -46,6 +49,13 @@ export function formatDetectChangesResult(result: unknown): string {
   // Both lead the output — a caveat printed after the summary is read too late.
   const notes: string[] = [];
   if (payload.partial) notes.push(t('tool.detectChanges.partial'));
+  if (payload.unmapped_files?.length) {
+    notes.push(
+      t('tool.detectChanges.unmappedSource', {
+        files: payload.unmapped_files.map(formatPathForTerminal).join(', '),
+      }),
+    );
+  }
   // The plain truncation note reassures that the counts are whole. That is only
   // true when the run did NOT also degrade — `changed_count` sums the batches
   // that succeeded — so the two flags together get a different sentence.
@@ -55,6 +65,29 @@ export function formatDetectChangesResult(result: unknown): string {
     );
 
   if ((summary.changed_count ?? 0) === 0) {
+    // Parse-fail payloads set `partial` and an honest `message` (#2915/#3131).
+    // Production *clean* trees also set English `message: 'No changes detected.'`
+    // — that must go through `t('tool.detectChanges.noChanges')` or zh-CN never
+    // fires. Only pass the backend string through on a degraded/parse-fail run.
+    if (
+      payload.partial &&
+      typeof summary.message === 'string' &&
+      summary.message.trim().length > 0
+    ) {
+      return [...notes, summary.message.trim()].join('\n');
+    }
+    // Confirmed no-overlap: files parsed, mapping succeeded, zero symbols.
+    // `queryDegraded` is `partial: true` with the same counts and no message —
+    // do not call that a confirmed mapping (#3131 honesty).
+    if (!payload.partial && (summary.changed_files ?? 0) > 0) {
+      return [
+        ...notes,
+        t('tool.detectChanges.noOverlappingSymbols', { files: summary.changed_files }),
+      ].join('\n');
+    }
+    if (payload.partial) {
+      return notes.join('\n');
+    }
     return [...notes, t('tool.detectChanges.noChanges')].join('\n');
   }
 

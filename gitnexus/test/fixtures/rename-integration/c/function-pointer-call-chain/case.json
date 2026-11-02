@@ -1,0 +1,43 @@
+{
+  "language": "c",
+  "description": "Rename direct calls and a function-pointer initializer while retaining the callback variable; exercise a call graph without inventing class polymorphism in C.",
+  "categories": ["call-graph", "callable-value", "function-pointer"],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "callback.c"
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "outer",
+        "kind": "Function",
+        "file": "callback.c"
+      },
+      "to": {
+        "name": "direct",
+        "kind": "Function",
+        "file": "callback.c"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "through_pointer",
+        "kind": "Function",
+        "file": "callback.c"
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Function",
+        "file": "callback.c"
+      }
+    }
+  ]
+}

@@ -3,6 +3,8 @@
     "name": "GitNexus",
     "nexusAI": "Nexus AI"
   },
+  "updateBanner": "GitNexus {{latest}} 已发布 — 此服务器运行 {{installed}}。",
+  "updateBannerDismiss": "关闭更新通知",
   "actions": {
     "cancel": "取消",
     "dismiss": "关闭",

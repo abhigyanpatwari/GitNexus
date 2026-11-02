@@ -5,6 +5,7 @@ import {
   getLanguageGrammar,
 } from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { isOptionalGrammarRequired } from '../helpers/optional-grammar.js';
 
 /**
  * ABI load-smoke (#1922). For EVERY entry in `parser-loader.ts` SOURCES,
@@ -72,6 +73,12 @@ const SMOKE_CASES: Record<string, SmokeCase> = {
     snippet: 'int main() { return 0; }\n',
     rootType: 'translation_unit',
   },
+  [SupportedLanguages.ObjectiveC]: {
+    language: SupportedLanguages.ObjectiveC,
+    snippet:
+      '@interface ObjcSmoke\n- (void)run;\n@end\n@implementation ObjcSmoke\n- (void)run {}\n@end\n',
+    rootType: 'translation_unit',
+  },
   [SupportedLanguages.Go]: {
     language: SupportedLanguages.Go,
     snippet: 'package main\nfunc main() {}\n',
@@ -117,6 +124,11 @@ const SMOKE_CASES: Record<string, SmokeCase> = {
     snippet: 'fun main() {}\n',
     rootType: 'source_file',
   },
+  [SupportedLanguages.Zig]: {
+    language: SupportedLanguages.Zig,
+    snippet: 'pub fn main() void {}\n',
+    rootType: 'source_file',
+  },
 };
 
 describe('parser-loader ABI load-smoke (#1922)', () => {
@@ -134,6 +146,10 @@ describe('parser-loader ABI load-smoke (#1922)', () => {
     expect(sources.some((s) => s.key === SupportedLanguages.Swift)).toBe(true);
   });
 
+  it('includes Objective-C in the smoke matrix', () => {
+    expect(sources.some((s) => s.key === SupportedLanguages.ObjectiveC)).toBe(true);
+  });
+
   for (const { key, optional } of sources) {
     const testCase = SMOKE_CASES[key];
     if (!testCase) continue; // covered by the "every entry" assertion above
@@ -143,7 +159,10 @@ describe('parser-loader ABI load-smoke (#1922)', () => {
       try {
         grammar = getLanguageGrammar(testCase.language, testCase.filePath);
       } catch (err) {
-        if (optional) {
+        // GITNEXUS_REQUIRE_<LANG>=1 revokes the optional exemption: a job that
+        // sets it runs on a platform the grammar publishes a prebuild for, so a
+        // load failure there is a real regression, not an absent binding.
+        if (optional && !isOptionalGrammarRequired(key)) {
           // Optional/vendored grammar absent on this platform — the loader
           // reported it cleanly (the only acceptable failure mode). Never a
           // hard crash; the throw above proves a clean JS-level error.

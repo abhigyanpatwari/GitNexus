@@ -1,29 +1,43 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, rm } from 'fs/promises';
+import { mkdtemp, rm, readdir, writeFile, readFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
 import {
-  PARSE_CACHE_VERSION,
+  emptyParseCache,
+  PARSE_CACHE_BUCKET_COUNT,
   computeChunkHash,
   fileContentHash,
+  packParseCacheChunks,
+  parseCacheBucketId,
   loadParseCache,
   loadParseCacheChunk,
   persistParseCacheChunk,
   saveParseCache,
   pruneCache,
   slimParseWorkerResultsForCache,
+  getColdParseRebuildDir,
+  createColdParseRebuildDir,
   type ParseCache,
 } from '../../src/storage/parse-cache.js';
+import { TEST_PARSE_IDENTITY } from '../helpers/cache-identity.js';
+import { writeV8CacheFile } from '../../src/storage/v8-sidecar.js';
+import {
+  getDurableParsedFileDir,
+  durableChunkHasShards,
+  loadParsedFilesForPaths,
+  loadDurableParsedFileIndex,
+  persistDurableParsedFileShardSync,
+  pruneAndSaveDurableParsedFileStore,
+} from '../../src/storage/parsedfile-store.js';
+import type { ParsedFile } from 'gitnexus-shared';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
 
 const minimalResult = (overrides: Partial<ParseWorkerResult> = {}): ParseWorkerResult => ({
   nodes: [],
   relationships: [],
   symbols: [],
-  imports: [],
   calls: [],
   assignments: [],
-  heritage: [],
   routes: [],
   fetchCalls: [],
   fetchWrapperDefs: [],
@@ -47,8 +61,8 @@ describe('computeChunkHash', () => {
       { filePath: 'b.ts', contentHash: 'h-b' },
       { filePath: 'c.ts', contentHash: 'h-c' },
     ];
-    const h1 = computeChunkHash(entries);
-    const h2 = computeChunkHash(entries);
+    const h1 = computeChunkHash(entries, TEST_PARSE_IDENTITY);
+    const h2 = computeChunkHash(entries, TEST_PARSE_IDENTITY);
     expect(h1).toBe(h2);
     expect(h1).toMatch(/^[a-f0-9]{64}$/);
   });
@@ -62,7 +76,9 @@ describe('computeChunkHash', () => {
       { filePath: 'b.ts', contentHash: 'h-b' },
       { filePath: 'a.ts', contentHash: 'h-a' },
     ];
-    expect(computeChunkHash(order1)).toBe(computeChunkHash(order2));
+    expect(computeChunkHash(order1, TEST_PARSE_IDENTITY)).toBe(
+      computeChunkHash(order2, TEST_PARSE_IDENTITY),
+    );
   });
 
   it('changes when any file content changes', () => {
@@ -74,7 +90,9 @@ describe('computeChunkHash', () => {
       { filePath: 'a.ts', contentHash: 'h-a' },
       { filePath: 'b.ts', contentHash: 'h-b-NEW' }, // b.ts content changed
     ];
-    expect(computeChunkHash(before)).not.toBe(computeChunkHash(after));
+    expect(computeChunkHash(before, TEST_PARSE_IDENTITY)).not.toBe(
+      computeChunkHash(after, TEST_PARSE_IDENTITY),
+    );
   });
 
   it('changes when chunk membership changes (file added or removed)', () => {
@@ -83,7 +101,9 @@ describe('computeChunkHash', () => {
       { filePath: 'b.ts', contentHash: 'h-b' },
     ];
     const bigger = [...small, { filePath: 'c.ts', contentHash: 'h-c' }];
-    expect(computeChunkHash(small)).not.toBe(computeChunkHash(bigger));
+    expect(computeChunkHash(small, TEST_PARSE_IDENTITY)).not.toBe(
+      computeChunkHash(bigger, TEST_PARSE_IDENTITY),
+    );
   });
 });
 
@@ -100,149 +120,59 @@ describe('fileContentHash', () => {
   });
 });
 
-describe('PARSE_CACHE_VERSION', () => {
-  // 35 -> 36 for the bound-callable start-line join (#2735), 36 -> 37 for
-  // Java/Kotlin Spring AOP capture side-channels (#2416), 37 -> 38 for the Swift
-  // conditional-directive parse-semantics change (#2771), 38 -> 39 for
-  // receiver-chain wire format v2: every persisted chain string changed prefix
-  // and a v2 decoder refuses v1 by design, so a stale cache replays chains this
-  // build silently discards. 39 -> 40 for inference-typed field captures in six
-  // languages (#2807) — all parse-time emission, so a warm cache replays the
-  // pre-fix capture set for byte-unchanged files and the new receiver edges
-  // never appear.
-  //
-  // This pin has now earned its keep EIGHT times, and twice it caught an EXACT
-  // clash rather than a near-miss: main took 37 for #2416 while this branch
-  // already used 37, and then took 38 for #2771 after this branch had moved to
-  // 38. Both times two incompatible schemas claimed one number. Note when the
-  // second clash was caught — after review, while the branch sat waiting to
-  // merge — which is precisely the window in which `main` allocates. Re-check
-  // against origin/main immediately before merge, not at review time.
-  // Moved 42 -> 43 for #2813's `@reference.embedded-pointer` capture, which is
-  // parse-time emission and so cannot be served from a v42 warm cache.
-  // Moved 43 -> 44 for #2842's TypeScript heritage capture (interface and
-  // abstract-class `@reference.inherits`), which is parse-time emission and so
-  // cannot be served from a v43 warm cache.
-  // Moved 44 -> 45 for #2837 (Go struct/interface captures re-anchored from
-  // `type_declaration` to `type_spec`). This branch first took 44 and COLLIDED
-  // with #2842 above, which merged first — the ninth entry in the ledger and the
-  // third EXACT clash. Note what this pin could and could not do: it cannot
-  // detect the tie (both branches asserted `toBe(44)`, which passes when main is
-  // already 44); only the merge-time diff against origin/main surfaced it. What
-  // the pin DOES do is fail loudly the moment the constant and this expectation
-  // drift apart, which is what forces the re-check to happen at all.
-  // Moved 45 -> 46 for the JavaScript bare-identifier read captures, the
-  // object-literal `@definition.property` rule and the TypeScript shape-member
-  // captures (A1/A2/A4/A5) — all parse-time, so a v45 warm cache serves entries
-  // carrying neither the new reference sites nor the new Property nodes.
-  //
-  // This branch first took 45 and COLLIDED with #2837 above, which merged
-  // first: the TENTH ledger entry and the FOURTH exact clash, and the second in
-  // a row. Same lesson as the note above — the pin cannot detect the tie, since
-  // both sides asserted `toBe(45)` and that passes while main is already 45.
-  // Only the merge-time diff against origin/main surfaces it.
-  //
-  // Moved 46 -> 47 for method-level Spring `@RequestMapping` routes (#2857):
-  // cached ParseWorkerResults otherwise replay the pre-fix empty route set.
-  // That PR read this branch's claim on 46 and took 47 rather than colliding —
-  // the FIFTH clash, and the first the ledger's convention actually prevented.
-  // It only moved the collision up one step, though: this branch's own 47 and
-  // everything above it had to be renumbered +1 at merge time. Capture sets
-  // unchanged; only the numbers moved.
-  //
-  // Moved 51 -> 52 for dispatch-guard routes (R3-7): the JS/TS providers now
-  // implement `extractDecoratorRoutes`, and decorator routes are worker output
-  // carried in the cache. A v50 warm cache replays a worker result whose
-  // `decoratorRoutes` predates the extractor, so `route_map` keeps answering
-  // empty — the exact symptom the change fixes, disguised as "it does not work".
-  // Moved 52 -> 53 for the same-file constant folding that followed, because a
-  // build stamped 50 (now 52) had already been used to analyze without it.
-  //
-  //
-  // Moved 47 -> 48 for #2833's three parse-time changes: C++
-  // `field_declaration` captures for `template_type` and qualified generic
-  // member types (those members had NO type binding before), a Python interpret
-  // change that reduces `Repo[User]` to `Repo` in `TypeRef.rawName`, and the new
-  // `SymbolDefinition.typeParameters` field read from a
-  // `@declaration.type-parameters` capture in six languages. All three are
-  // serialized into the cached ParsedFile, so an older warm cache replays
-  // pre-fix bindings and the fix is a silent no-op on incremental analyze while
-  // every cold-run test still passes.
-  //
-  // 48, not 46, because this branch collided TWICE: it staged 46 and then 47,
-  // both free when written, and by merge time #2856 claimed 46 and #2857 took 47
-  // and merged first. This assertion is exactly what CANNOT detect that — the
-  // branch asserted `toBe(47)` and so did #2857, and both passed. What this pin
-  // does do is fail loudly the moment the constant and this expectation drift
-  // apart, which is what forces the merge-time diff against origin/main to
-  // happen at all.
-  // Moved 53 -> 54 for W2-8: type parameters are captured on generic functions
-  // and aliases, not just class-likes, so the shadowing guard has data to read.
-  // Moved 54 -> 55 for W2-9: the dispatch-guard verb walk tracks boolean polarity,
-  // so a ternary can no longer report the verb it excludes. Routes are emitted at
-  // parse time, so a warm cache would replay the inverted verb indefinitely.
-  // Moved 55 -> 56 for R3-8 part 1: the verb walk returns every method a guard
-  // serves, so a multi-method guard emits several routes where it emitted one.
-  // Moved 56 -> 57 for R3-8 part 2: `.match()` dispatch, bound-match test sites,
-  // named regex consts, and capturing segment wildcards in `regexToRoutePath`.
-  // Moved 57 -> 58 for #2897: fetch sites are captured without a literal URL.
-  // Moved 58 -> 59 for the #2899 review follow-up: the dispatch-guard walk keys
-  // match bindings on (enclosing function, name) instead of the bare identifier,
-  // and a ternary conjunction INTERSECTS its operands instead of taking the first
-  // non-empty set. Both strictly remove routes, so a warm cache would keep
-  // serving a fabricated verbed route that evicts the true one.
-  // Moved 59 -> 60 for #2864's `ParsedImport.reexportsName` and the
-  // `@import.publishes` capture gating it — a serialized ParsedFile field AND a
-  // capture change, the first being the easy-to-miss half. 60 was staged while
-  // main was 53, chosen above every in-flight MAXIMUM rather than at main + 1;
-  // #2899 then cascaded main to 59, and 60 survived only because of that choice.
-  // Moved 60 -> 62 for the cycle-checker fix's two optional `ParsedImport`
-  // fields, `typeOnly` and `runsOnlyWhenCalled`. Neither is a capture, but
-  // `parsedfile-store.ts` serializes the whole ParsedFile generically, so both
-  // are part of the cached shape — the same half of #2864 that was easy to miss.
-  // A warm cache would replay untagged imports, the strict `=== true` reads
-  // would take the untagged path, and `check --cycles` would keep reporting the
-  // erased and deferred imports the branch exists to stop reporting: a silent
-  // no-op on incremental analyze while every cold-run test passes.
-  // Main subsequently advanced through 63. Values above it must remain distinct
-  // from both published branch heads and every active in-flight claim.
-  // Moved 63 -> 64 for Java enum and annotated heritage captures (#2918),
-  // then 64 -> 66 for the synthetic-declaration sidecar, both now on main.
-  // Moved 66 -> 67 for #2917's implicit Java record-component accessor
-  // definitions and scope declarations. This branch staged 65 before #2918's 66
-  // landed; 67 is the next free value above every in-flight claim (main 66,
-  // #2939's 64), re-checked against the claims rather than against main alone.
-  // Moved 67 -> 68 for #2912's `ReferenceSite.typeArguments` — heritage generic
-  // arguments derived at extraction time, so a warm cache replays `inherits`
-  // sites without them and instantiation-aware dispatch degrades silently to
-  // the pre-fix fan-out. This branch staged 64 above the claims live at the
-  // time (61, 62, 63); all three landed and cascaded main to 67, so 68 is the
-  // next free value above every claim at merge — the rule, re-applied.
-  // Version 69 added #2969's JS/TS data-route-table decoratorRoutes. Version 70
-  // adds Spring non-HTTP handler side-channel facts (#2417 / #2891), so it is
-  // the next free value after both cache payload changes.
-  it('pins SCHEMA_BUMP to 70 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(70);
-    // The PREVIOUS version must fail the reuse gate, not merely differ from the
-    // current one — a hardcoded number outside the conflict hunk rebases cleanly
-    // while being wrong, which is exactly how the 37/38 exact clashes landed.
-    // Every nearby historical or in-flight value is rejected, including 69,
-    // which carried the route-table payload before this merge.
-    for (const taken of [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69]) {
-      expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
-    }
+describe('packParseCacheChunks (#3088)', () => {
+  const files = [
+    { path: 'src/a.ts', size: 100, language: 'typescript' },
+    { path: 'src/b.ts', size: 100, language: 'typescript' },
+    { path: 'pkg/c.py', size: 100, language: 'python' },
+  ];
+  const budget = 2 * 1024 * 1024;
+  const packKey = (chunk: string[]): string =>
+    `${files.find((f) => f.path === chunk[0])?.language ?? 'typescript'}\0${parseCacheBucketId(chunk[0])}`;
+
+  it('is independent of scan order', () => {
+    expect(packParseCacheChunks(files, budget)).toEqual(
+      packParseCacheChunks([...files].reverse(), budget),
+    );
   });
 
-  it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {
-    // Looks like "1+1.6.4" — schema bump prefix + actual gitnexus version
-    expect(PARSE_CACHE_VERSION).toMatch(/^\d+\+\d+\.\d+\.\d+/);
+  it('add/delete only rewrites packs in the affected (language, bucket)', () => {
+    const a = packParseCacheChunks(files, budget);
+    const added = { path: 'AAA.ts', size: 150_000, language: 'typescript' };
+    const withNew = packParseCacheChunks([...files, added], budget);
+    const addedKey = packKey([added.path]);
+    const untouched = (packs: string[][]) =>
+      packs.filter((c) => packKey(c) !== addedKey).map((c) => c.join('|'));
+    expect(untouched(withNew).sort()).toEqual(untouched(a).sort());
+    expect(withNew.some((c) => c.includes(added.path))).toBe(true);
+
+    const withoutB = packParseCacheChunks(
+      files.filter((f) => f.path !== 'src/b.ts'),
+      budget,
+    );
+    const removedKey = packKey(['src/b.ts']);
+    const leftover = (packs: string[][]) =>
+      packs.filter((c) => packKey(c) !== removedKey).map((c) => c.join('|'));
+    expect(leftover(withoutB).sort()).toEqual(leftover(a).sort());
+    expect(withoutB.every((c) => !c.includes('src/b.ts'))).toBe(true);
+  });
+
+  it('parseCacheBucketId uses the full sha256 digest, not an IEEE-754 prefix', () => {
+    const path = 'src/foo.ts';
+    const hex = fileContentHash(path);
+    const full = Number(BigInt(`0x${hex}`) % BigInt(PARSE_CACHE_BUCKET_COUNT));
+    const truncated = Number.parseInt(hex.slice(0, 8), 16) % PARSE_CACHE_BUCKET_COUNT;
+    expect(parseCacheBucketId(path)).toBe(full);
+    expect(parseCacheBucketId(path)).toBeGreaterThanOrEqual(0);
+    expect(parseCacheBucketId(path)).toBeLessThan(PARSE_CACHE_BUCKET_COUNT);
+    expect(full).not.toBe(truncated);
   });
 });
 
 describe('pruneCache', () => {
   it('drops entries whose hashes are not in the used-set', () => {
     const cache: ParseCache = {
-      version: PARSE_CACHE_VERSION,
+      identity: TEST_PARSE_IDENTITY,
       entries: new Map<string, ParseWorkerResult[]>([
         ['hash-A', [minimalResult()]],
         ['hash-B', [minimalResult()]],
@@ -257,7 +187,7 @@ describe('pruneCache', () => {
 
   it('returns 0 when every entry is in use', () => {
     const cache: ParseCache = {
-      version: PARSE_CACHE_VERSION,
+      identity: TEST_PARSE_IDENTITY,
       entries: new Map<string, ParseWorkerResult[]>([
         ['hash-A', [minimalResult()]],
         ['hash-B', [minimalResult()]],
@@ -270,7 +200,7 @@ describe('pruneCache', () => {
 
   it('drops onDiskKeys entries not in the used-set and counts them', () => {
     const cache: ParseCache = {
-      version: PARSE_CACHE_VERSION,
+      identity: TEST_PARSE_IDENTITY,
       entries: new Map<string, ParseWorkerResult[]>(),
       usedKeys: new Set<string>(['disk-A']),
       onDiskKeys: new Set<string>(['disk-A', 'disk-B', 'disk-C']),
@@ -281,21 +211,131 @@ describe('pruneCache', () => {
   });
 });
 
+describe('cache identity boundaries', () => {
+  const entries = [{ filePath: 'src/a.ts', contentHash: fileContentHash('export const a = 1;') }];
+  const key = computeChunkHash(entries, TEST_PARSE_IDENTITY);
+  const parsedFile: ParsedFile = {
+    filePath: 'src/a.ts',
+    moduleScope: '',
+    scopes: [],
+    parsedImports: [],
+    localDefs: [],
+    referenceSites: [],
+  };
+
+  it('reuses both stores only under the matching base identity', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-paired-identity-'));
+    try {
+      const cache = emptyParseCache(TEST_PARSE_IDENTITY);
+      cache.entries.set(key, [minimalResult({ fileCount: 1 })]);
+      cache.usedKeys.add(key);
+      const saved = await saveParseCache(dir, cache);
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, key, 1, 0, [parsedFile]);
+      await pruneAndSaveDurableParsedFileStore(durable, cache.identity.base, new Set(saved));
+
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
+      expect((await loadParseCacheChunk(loaded, key))?.[0]?.fileCount).toBe(1);
+      const coverage = await loadDurableParsedFileIndex(durable, loaded.identity.base);
+      expect(coverage.get(key)).toEqual(new Set(['src/a.ts']));
+      expect(await durableChunkHasShards(dir, key, coverage.get(key)!)).toBe(true);
+      expect((await loadParsedFilesForPaths(dir, new Set(['src/a.ts']))).get('src/a.ts')).toEqual(
+        parsedFile,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['numeric legacy', 143],
+    ['release-based legacy', '143+1.6.12'],
+    ['foreign', 'c'.repeat(64)],
+    ['malformed', { base: TEST_PARSE_IDENTITY.base }],
+  ])(
+    'misses both stores with %s identity metadata even when shards are valid',
+    async (_label, version) => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'gnx-foreign-identity-'));
+      try {
+        const cache = emptyParseCache(TEST_PARSE_IDENTITY);
+        cache.entries.set(key, [minimalResult({ fileCount: 1 })]);
+        cache.usedKeys.add(key);
+        await saveParseCache(dir, cache);
+        const durable = getDurableParsedFileDir(dir);
+        persistDurableParsedFileShardSync(durable, key, 1, 0, [parsedFile]);
+        await pruneAndSaveDurableParsedFileStore(durable, TEST_PARSE_IDENTITY.base, new Set([key]));
+        // Establish the readable generation before changing only its metadata.
+        expect(await loadDurableParsedFileIndex(durable, TEST_PARSE_IDENTITY.base)).toEqual(
+          new Map([[key, new Set(['src/a.ts'])]]),
+        );
+        await writeFile(
+          path.join(dir, 'parse-cache', 'index.json'),
+          JSON.stringify({ version, keys: [key] }),
+        );
+        await writeFile(
+          path.join(durable, 'index.json'),
+          JSON.stringify({ version, entries: { [key]: ['src/a.ts'] } }),
+        );
+
+        const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
+        expect(loaded.onDiskKeys?.size).toBe(0);
+        expect(await loadParseCacheChunk(loaded, key)).toBeUndefined();
+        expect(await loadDurableParsedFileIndex(durable, TEST_PARSE_IDENTITY.base)).toEqual(
+          new Map(),
+        );
+        // A sibling branch listing an old hash cannot admit a foreign shard.
+        loaded.usedKeys.add(key);
+        expect(await saveParseCache(dir, loaded)).toEqual([]);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('puts identical source under different physical keys for different base identities', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-identity-address-'));
+    try {
+      const otherIdentity = { ...TEST_PARSE_IDENTITY, base: 'c'.repeat(64) };
+      const otherKey = computeChunkHash(entries, otherIdentity);
+      expect(otherKey).not.toBe(key);
+      const first = emptyParseCache(TEST_PARSE_IDENTITY, { writeStoragePath: dir });
+      const second = emptyParseCache(otherIdentity, { writeStoragePath: dir });
+      await persistParseCacheChunk(first, key, [minimalResult({ fileCount: 1 })]);
+      await persistParseCacheChunk(second, otherKey, [minimalResult({ fileCount: 2 })]);
+      expect((await readdir(path.join(dir, 'parse-cache'))).sort()).toEqual(
+        [`${key}.v8`, `${otherKey}.v8`].sort(),
+      );
+      expect((await loadParseCacheChunk(first, key))?.[0]?.fileCount).toBe(1);
+      expect((await loadParseCacheChunk(second, otherKey))?.[0]?.fileCount).toBe(2);
+      expect(await loadParseCacheChunk(first, otherKey)).toBeUndefined();
+      expect(await loadParseCacheChunk(second, key)).toBeUndefined();
+
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, key, 1, 0, [parsedFile]);
+      persistDurableParsedFileShardSync(durable, otherKey, 1, 0, [parsedFile]);
+      expect((await readdir(durable)).sort()).toEqual([key, otherKey].sort());
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('loadParseCache / saveParseCache (round-trip)', () => {
   it('round-trips an empty cache', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
     try {
       const fs = await import('fs/promises');
       const cache: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: TEST_PARSE_IDENTITY,
         entries: new Map(),
         usedKeys: new Set(),
       };
       await saveParseCache(dir, cache);
       await expect(fs.access(path.join(dir, 'parse-cache', 'index.json'))).resolves.toBeUndefined();
       await expect(fs.access(path.join(dir, 'parse-cache.json'))).rejects.toThrow();
-      const loaded = await loadParseCache(dir);
-      expect(loaded.version).toBe(PARSE_CACHE_VERSION);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
+      expect(loaded.identity).toEqual(TEST_PARSE_IDENTITY);
       expect(loaded.entries.size).toBe(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -305,7 +345,7 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
   it('returns an empty cache when the file is missing', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
     try {
-      const loaded = await loadParseCache(dir);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
       expect(loaded.entries.size).toBe(0);
       expect(loaded.usedKeys.size).toBe(0);
     } finally {
@@ -323,7 +363,7 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
         JSON.stringify({ version: 'foreign-99', entries: { h: [] } }),
         'utf-8',
       );
-      const loaded = await loadParseCache(dir);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
       expect(loaded.entries.size).toBe(0); // mismatch → empty
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -335,28 +375,28 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
     try {
       const fs = await import('fs/promises');
       await fs.writeFile(path.join(dir, 'parse-cache.json'), '{not-json', 'utf-8');
-      const loaded = await loadParseCache(dir);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
       expect(loaded.entries.size).toBe(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 
-  it('loads a legacy single-file cache for backwards compatibility', async () => {
+  it('loads a single-file representation bearing the current identity', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
     try {
       const fs = await import('fs/promises');
       await fs.writeFile(
         path.join(dir, 'parse-cache.json'),
         JSON.stringify({
-          version: PARSE_CACHE_VERSION,
+          version: TEST_PARSE_IDENTITY.base,
           entries: {
             legacyChunk: [minimalResult({ fileCount: 7 })],
           },
         }),
         'utf-8',
       );
-      const loaded = await loadParseCache(dir);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
       expect(loaded.entries.size).toBe(1);
       expect(loaded.entries.get('legacyChunk')?.[0]?.fileCount).toBe(7);
     } finally {
@@ -376,19 +416,17 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       await fs.writeFile(
         path.join(cacheDir, 'index.json'),
         JSON.stringify({
-          version: PARSE_CACHE_VERSION,
+          version: TEST_PARSE_IDENTITY.base,
           keys: [goodKey, missingKey, badKey],
         }),
         'utf-8',
       );
-      await fs.writeFile(
-        path.join(cacheDir, `${goodKey}.json`),
-        JSON.stringify([minimalResult({ fileCount: 3 })]),
-        'utf-8',
-      );
-      await fs.writeFile(path.join(cacheDir, `${badKey}.json`), '{not-json', 'utf-8');
+      await writeV8CacheFile(path.join(cacheDir, `${goodKey}.v8`), [
+        minimalResult({ fileCount: 3 }),
+      ]);
+      await fs.writeFile(path.join(cacheDir, `${badKey}.v8`), '{not-json', 'utf-8');
 
-      const loaded = await loadParseCache(dir);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
       expect(loaded.entries.size).toBe(0);
       expect(loaded.onDiskKeys?.size).toBe(3);
       const chunk = await loadParseCacheChunk(loaded, goodKey);
@@ -434,15 +472,15 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
 
       const chunkKey = 'd'.repeat(64);
       const cache: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: TEST_PARSE_IDENTITY,
         entries: new Map<string, ParseWorkerResult[]>([[chunkKey, [fake]]]),
         usedKeys: new Set([chunkKey]),
       };
       await saveParseCache(dir, cache);
       const persisted = await fs.readdir(path.join(dir, 'parse-cache'));
       expect(persisted).toContain('index.json');
-      expect(persisted).toContain(`${chunkKey}.json`);
-      const loaded = await loadParseCache(dir);
+      expect(persisted).toContain(`${chunkKey}.v8`);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
       const reloaded = (await loadParseCacheChunk(loaded, chunkKey))?.[0];
       expect(reloaded).toBeDefined();
       const scope = (reloaded as ParseWorkerResult).parsedFiles[0]?.scopes[0] as unknown as {
@@ -469,17 +507,15 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       await fs.writeFile(
         path.join(cacheDir, 'index.json'),
         JSON.stringify({
-          version: PARSE_CACHE_VERSION,
+          version: TEST_PARSE_IDENTITY.base,
           keys: ['../evil', '/absolute', 'G'.repeat(64), safeKey],
         }),
         'utf-8',
       );
-      await fs.writeFile(
-        path.join(cacheDir, `${safeKey}.json`),
-        JSON.stringify([minimalResult({ fileCount: 9 })]),
-        'utf-8',
-      );
-      const loaded = await loadParseCache(dir);
+      await writeV8CacheFile(path.join(cacheDir, `${safeKey}.v8`), [
+        minimalResult({ fileCount: 9 }),
+      ]);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
       expect(loaded.onDiskKeys?.size).toBe(1);
       const chunk = await loadParseCacheChunk(loaded, safeKey);
       expect(chunk?.[0]?.fileCount).toBe(9);
@@ -496,7 +532,7 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       const k2 = '2'.repeat(64);
       const k3 = '3'.repeat(64);
       const cache: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: TEST_PARSE_IDENTITY,
         entries: new Map<string, ParseWorkerResult[]>([
           [k1, [minimalResult({ fileCount: 1 })]],
           [k2, [minimalResult({ fileCount: 2 })]],
@@ -508,8 +544,8 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       const cacheDir = path.join(dir, 'parse-cache');
       const names = await fs.readdir(cacheDir);
       expect(names).toContain('index.json');
-      expect(names.filter((n) => n.endsWith('.json') && n !== 'index.json').length).toBe(3);
-      const loaded = await loadParseCache(dir);
+      expect(names.filter((n) => n.endsWith('.v8')).length).toBe(3);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
       expect(loaded.onDiskKeys?.size).toBe(3);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -530,12 +566,12 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       await fs.writeFile(
         path.join(dir, 'parse-cache.json'),
         JSON.stringify({
-          version: PARSE_CACHE_VERSION,
+          version: TEST_PARSE_IDENTITY.base,
           entries: { legacyChunk: [minimalResult({ fileCount: 42 })] },
         }),
         'utf-8',
       );
-      const loaded = await loadParseCache(dir);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
       expect(loaded.entries.size).toBe(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -549,19 +585,19 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       const k1 = '4'.repeat(64);
       const k2 = '5'.repeat(64);
       await saveParseCache(dir, {
-        version: PARSE_CACHE_VERSION,
+        identity: TEST_PARSE_IDENTITY,
         entries: new Map([[k1, [minimalResult()]]]),
         usedKeys: new Set([k1]),
       });
       await saveParseCache(dir, {
-        version: PARSE_CACHE_VERSION,
+        identity: TEST_PARSE_IDENTITY,
         entries: new Map([[k2, [minimalResult({ fileCount: 99 })]]]),
         usedKeys: new Set([k2]),
       });
       const names = await fs.readdir(path.join(dir, 'parse-cache'));
-      expect(names).not.toContain(`${k1}.json`);
-      expect(names).toContain(`${k2}.json`);
-      const loaded = await loadParseCache(dir);
+      expect(names).not.toContain(`${k1}.v8`);
+      expect(names).toContain(`${k2}.v8`);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
       expect(loaded.onDiskKeys?.size).toBe(1);
       const chunk = await loadParseCacheChunk(loaded, k2);
       expect(chunk?.[0]?.fileCount).toBe(99);
@@ -577,19 +613,19 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       await fs.writeFile(
         path.join(dir, 'parse-cache.json'),
         JSON.stringify({
-          version: PARSE_CACHE_VERSION,
+          version: TEST_PARSE_IDENTITY.base,
           entries: { oldLegacy: [minimalResult({ fileCount: 5 })] },
         }),
         'utf-8',
       );
       const k = '6'.repeat(64);
       await saveParseCache(dir, {
-        version: PARSE_CACHE_VERSION,
+        identity: TEST_PARSE_IDENTITY,
         entries: new Map([[k, [minimalResult({ fileCount: 6 })]]]),
         usedKeys: new Set([k]),
       });
       await expect(fs.access(path.join(dir, 'parse-cache.json'))).rejects.toThrow();
-      const loaded = await loadParseCache(dir);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
       const chunk = await loadParseCacheChunk(loaded, k);
       expect(chunk?.[0]?.fileCount).toBe(6);
       expect(loaded.onDiskKeys?.has(k)).toBe(true);
@@ -615,12 +651,14 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
           referenceSites: [],
         },
       ],
+      scopeExtractionFailures: ['a.c'],
     });
     const slim = slimParseWorkerResultsForCache([raw])[0];
     expect(slim.calls).toEqual([]);
     expect(slim.assignments).toEqual([]);
     expect(slim.constructorBindings).toEqual([]);
     expect(slim.parsedFiles).toEqual([]);
+    expect(slim.scopeExtractionFailures).toEqual(['a.c']);
     expect(slim.fileCount).toBe(raw.fileCount);
   });
 
@@ -641,20 +679,38 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
     expect(slim.nodes).toHaveLength(1);
   });
 
+  it('round-trips scope extraction failures through a persisted cache shard', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
+    try {
+      const key = 'e'.repeat(64);
+      await saveParseCache(dir, {
+        identity: TEST_PARSE_IDENTITY,
+        entries: new Map([[key, [minimalResult({ scopeExtractionFailures: ['src/broken.ts'] })]]]),
+        usedKeys: new Set([key]),
+      });
+
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
+      const replayed = await loadParseCacheChunk(loaded, key);
+      expect(replayed?.[0]?.scopeExtractionFailures).toEqual(['src/broken.ts']);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('persistParseCacheChunk writes to disk without retaining in-memory entries', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
     try {
       const key = '7'.repeat(64);
       const cache: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: TEST_PARSE_IDENTITY,
         entries: new Map(),
         usedKeys: new Set(),
-        storagePath: dir,
+        writeStoragePath: dir,
         onDiskKeys: new Set(),
       };
       await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 11 })]);
       expect(cache.entries.has(key)).toBe(false);
-      expect(cache.onDiskKeys?.has(key)).toBe(true);
+      expect(cache.stagedKeys?.has(key)).toBe(true);
       const chunk = await loadParseCacheChunk(cache, key);
       expect(chunk?.[0]?.fileCount).toBe(11);
     } finally {
@@ -668,12 +724,12 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       const realKey = 'a'.repeat(64);
       const phantomKey = 'b'.repeat(64); // in usedKeys but has no entry and no on-disk shard
       const cache: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: TEST_PARSE_IDENTITY,
         entries: new Map([[realKey, [minimalResult({ fileCount: 3 })]]]),
         usedKeys: new Set([realKey, phantomKey]),
       };
       await saveParseCache(dir, cache);
-      const loaded = await loadParseCache(dir);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
       expect(loaded.onDiskKeys?.has(realKey)).toBe(true);
       // The phantom key was never written, so it must not appear in the index.
       expect(loaded.onDiskKeys?.has(phantomKey)).toBe(false);
@@ -689,10 +745,10 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
     try {
       const key = 'c'.repeat(64);
       const cache: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: TEST_PARSE_IDENTITY,
         entries: new Map(),
         usedKeys: new Set([key]),
-        storagePath: dir,
+        writeStoragePath: dir,
         onDiskKeys: new Set(),
       };
       // persist writes the shard to the live dir and evicts it from `entries`,
@@ -700,9 +756,250 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 42 })]);
       expect(cache.entries.has(key)).toBe(false);
       await saveParseCache(dir, cache);
-      const loaded = await loadParseCache(dir);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
       expect(loaded.onDiskKeys?.has(key)).toBe(true);
       expect((await loadParseCacheChunk(loaded, key))?.[0]?.fileCount).toBe(42);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('recreates a memoized shard directory after a long-lived process replaces it', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
+    try {
+      const firstKey = 'd'.repeat(64);
+      const secondKey = 'e'.repeat(64);
+      const cache: ParseCache = {
+        identity: TEST_PARSE_IDENTITY,
+        entries: new Map(),
+        usedKeys: new Set([firstKey]),
+        writeStoragePath: dir,
+        onDiskKeys: new Set(),
+      };
+
+      await persistParseCacheChunk(cache, firstKey, [minimalResult({ fileCount: 1 })]);
+      await rm(path.join(dir, 'parse-cache'), { recursive: true, force: true });
+
+      cache.usedKeys = new Set([secondKey]);
+      await persistParseCacheChunk(cache, secondKey, [minimalResult({ fileCount: 2 })]);
+      await saveParseCache(dir, cache);
+
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
+      expect((await loadParseCacheChunk(loaded, secondKey))?.[0]?.fileCount).toBe(2);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes a V8 shard and loads it with Map-preserving semantics', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-v8-'));
+    try {
+      const innerMap = new Map<string, string>([
+        ['k1', 'v1'],
+        ['k2', 'v2'],
+      ]);
+      const innerSet = new Set<string>(['s1', 's2']);
+      // Exercise opaque structured-clone data without relying on a removed
+      // worker field (ParsedFiles intentionally live in a separate store).
+      const fake = {
+        ...minimalResult({ fileCount: 9 }),
+        serializationProbe: { typeBindings: innerMap, extras: innerSet },
+      };
+      const key = 'f'.repeat(64);
+      const cache: ParseCache = {
+        identity: TEST_PARSE_IDENTITY,
+        entries: new Map(),
+        usedKeys: new Set([key]),
+        writeStoragePath: dir,
+        onDiskKeys: new Set(),
+      };
+      await persistParseCacheChunk(cache, key, [fake]);
+      const names = await readdir(path.join(dir, 'parse-cache'));
+      expect(names).toEqual(expect.arrayContaining([`${key}.v8`]));
+      expect(names.some((n) => n.endsWith('.json') && n !== 'index.json')).toBe(false);
+      const loaded = await loadParseCacheChunk(cache, key);
+      expect(loaded?.[0]?.fileCount).toBe(9);
+      const restored = loaded?.[0];
+      if (!restored || !('serializationProbe' in restored)) {
+        throw new Error('Missing serialized probe');
+      }
+      const smuggled = restored.serializationProbe;
+      if (
+        typeof smuggled !== 'object' ||
+        smuggled === null ||
+        !('typeBindings' in smuggled) ||
+        !('extras' in smuggled)
+      ) {
+        throw new Error('Invalid serialized probe');
+      }
+      expect(smuggled.typeBindings).toBeInstanceOf(Map);
+      expect(smuggled.extras).toBeInstanceOf(Set);
+      if (!(smuggled.typeBindings instanceof Map) || !(smuggled.extras instanceof Set)) {
+        throw new Error('Structured-clone collections were not preserved');
+      }
+      expect([...smuggled.typeBindings]).toEqual([
+        ['k1', 'v1'],
+        ['k2', 'v2'],
+      ]);
+      expect([...smuggled.extras].sort()).toEqual(['s1', 's2']);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('treats a corrupt parse-cache V8 shard as a miss', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-v8-fb-'));
+    try {
+      const key = 'a'.repeat(64);
+      const cache: ParseCache = {
+        identity: TEST_PARSE_IDENTITY,
+        entries: new Map(),
+        usedKeys: new Set([key]),
+        writeStoragePath: dir,
+        onDiskKeys: new Set(),
+      };
+      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 4 })]);
+      await writeFile(path.join(dir, 'parse-cache', `${key}.v8`), Buffer.from([1, 2, 3]));
+      const loaded = await loadParseCacheChunk(cache, key);
+      expect(loaded).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('saveParseCache copies an existing V8 shard', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-v8-copy-'));
+    try {
+      const key = 'c'.repeat(64);
+      const cache: ParseCache = {
+        identity: TEST_PARSE_IDENTITY,
+        entries: new Map(),
+        usedKeys: new Set([key]),
+        writeStoragePath: dir,
+        onDiskKeys: new Set(),
+      };
+      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 42 })]);
+      const liveV8 = await readFile(path.join(dir, 'parse-cache', `${key}.v8`));
+      await saveParseCache(dir, cache);
+      expect(await readdir(path.join(dir, 'parse-cache'))).toEqual(
+        expect.arrayContaining([`${key}.v8`, 'index.json']),
+      );
+      expect(await readFile(path.join(dir, 'parse-cache', `${key}.v8`))).toEqual(liveV8);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
+      expect((await loadParseCacheChunk(loaded, key))?.[0]?.fileCount).toBe(42);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('misses when the V8 shard is absent', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-v8-legacy-'));
+    try {
+      const key = 'b'.repeat(64);
+      const cache: ParseCache = {
+        identity: TEST_PARSE_IDENTITY,
+        entries: new Map(),
+        usedKeys: new Set([key]),
+        writeStoragePath: dir,
+        onDiskKeys: new Set(),
+      };
+      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 7 })]);
+      await rm(path.join(dir, 'parse-cache', `${key}.v8`), { force: true });
+      const loaded = await loadParseCacheChunk(cache, key);
+      expect(loaded).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists cold-rebuild shards under staging without touching the live parse-cache dir', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-stage-'));
+    try {
+      const liveKey = 'a'.repeat(64);
+      const stagedKey = 'b'.repeat(64);
+      await saveParseCache(dir, {
+        identity: TEST_PARSE_IDENTITY,
+        entries: new Map([[liveKey, [minimalResult({ fileCount: 1 })]]]),
+        usedKeys: new Set([liveKey]),
+      });
+      const staging = getColdParseRebuildDir(dir);
+      const cache = await loadParseCache(dir, TEST_PARSE_IDENTITY, staging);
+      cache.usedKeys = new Set([liveKey, stagedKey]);
+      await persistParseCacheChunk(cache, stagedKey, [minimalResult({ fileCount: 99 })]);
+      const liveNames = await readdir(path.join(dir, 'parse-cache'));
+      expect(liveNames).toContain(`${liveKey}.v8`);
+      expect(liveNames).not.toContain(`${stagedKey}.v8`);
+      const stagedNames = await readdir(path.join(staging, 'parse-cache'));
+      expect(stagedNames).toContain(`${stagedKey}.v8`);
+
+      const saved = await saveParseCache(dir, cache);
+      expect(saved.sort()).toEqual([liveKey, stagedKey].sort());
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
+      expect((await loadParseCacheChunk(loaded, liveKey))?.[0]?.fileCount).toBe(1);
+      expect((await loadParseCacheChunk(loaded, stagedKey))?.[0]?.fileCount).toBe(99);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers a staged shard over a same-hash live shard when publishing', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-pref-'));
+    try {
+      const key = 'c'.repeat(64);
+      await saveParseCache(dir, {
+        identity: TEST_PARSE_IDENTITY,
+        entries: new Map([[key, [minimalResult({ fileCount: 1 })]]]),
+        usedKeys: new Set([key]),
+      });
+      const staging = getColdParseRebuildDir(dir);
+      const cache = await loadParseCache(dir, TEST_PARSE_IDENTITY, staging);
+      cache.usedKeys.add(key);
+      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 7 })]);
+      expect((await loadParseCacheChunk(cache, key))?.[0]?.fileCount).toBe(7);
+      await saveParseCache(dir, cache);
+      const loaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, getColdParseRebuildDir(dir));
+      expect((await loadParseCacheChunk(loaded, key))?.[0]?.fileCount).toBe(7);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not fall back to a live shard when its staged repair disappears', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-missing-repair-'));
+    try {
+      const key = 'd'.repeat(64);
+      const original = emptyParseCache(TEST_PARSE_IDENTITY);
+      original.entries.set(key, [minimalResult({ fileCount: 1 })]);
+      original.usedKeys.add(key);
+      await saveParseCache(dir, original);
+      const staging = getColdParseRebuildDir(dir);
+      const cache = await loadParseCache(dir, TEST_PARSE_IDENTITY, staging);
+      expect((await loadParseCacheChunk(cache, key))?.[0]?.fileCount).toBe(1);
+      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 7 })]);
+      cache.usedKeys.add(key);
+      await rm(path.join(staging, 'parse-cache', `${key}.v8`));
+
+      expect(await loadParseCacheChunk(cache, key)).toBeUndefined();
+      expect(await readFile(path.join(dir, 'parse-cache', `${key}.v8`))).not.toHaveLength(0);
+      expect(await saveParseCache(dir, cache)).toEqual([]);
+      const reloaded = await loadParseCache(dir, TEST_PARSE_IDENTITY, staging);
+      expect(await loadParseCacheChunk(reloaded, key)).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('createColdParseRebuildDir isolates run children beneath each locked slot staging root', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-uniq-'));
+    try {
+      const a = await createColdParseRebuildDir(path.join(dir, 'slot-a'));
+      const nextA = await createColdParseRebuildDir(path.join(dir, 'slot-a'));
+      const b = await createColdParseRebuildDir(path.join(dir, 'slot-b'));
+      expect(a).not.toBe(nextA);
+      expect(a).not.toBe(b);
+      expect(path.dirname(a)).toBe(getColdParseRebuildDir(path.join(dir, 'slot-a')));
+      expect(path.dirname(nextA)).toBe(path.dirname(a));
+      expect(path.dirname(b)).toBe(getColdParseRebuildDir(path.join(dir, 'slot-b')));
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
 import os
 import re
 import stat
+import sys
+import threading
 import time
+from collections import deque
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .process_control import run_managed
+from .session_budget import session_budget
+from .session_diagnostics import EventClock, diagnose_session
 from .proposer_sandbox import (
     SANDBOX_GITNEXUS,
     SANDBOX_GITNEXUS_REGISTRY,
@@ -22,6 +28,7 @@ from .proposer_sandbox import (
     SANDBOX_TMP,
     SANDBOX_WORKSPACE,
     SandboxError,
+    mcp_sandbox_prefix,
     redact_text,
 )
 
@@ -31,11 +38,272 @@ USAGE_FIELDS = (
     "cache_read_input_tokens",
     "output_tokens",
 )
-MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
+# A successful 142-turn release session exceeded 8 MiB (#3500, run
+# 40181565589). Keep capture, redacted artifacts, and reuse bounded together,
+# with headroom for verbose tool results in the three concurrent paid cells.
+MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024
+# Wall-clock ceiling for one headless session, shared by the runner and the
+# evolution loop so both CLIs kill a session at the same point. 3600s was too
+# tight for the `workflow` arm: run 29907431284 lost two investigation-task
+# incumbent runs to SIGTERM at the ceiling while a Bash verification step was
+# still going, and the promotion gate demands zero excluded runs in both paired
+# arms — so a single ceiling hit costs the whole generation. Successful
+# `workflow` rows in that run finished in ~1600-2600s across both sessions, so
+# this leaves real headroom over observed work rather than over the timeout.
+SESSION_TIMEOUT_SECONDS = 5400
 # Provenance tag stamped on every parent-captured transcript artifact. The
 # evidence preflight (evolve._transcript_artifact_metadata) validates against
 # this exact value, so producer and consumer stay pinned to one schema.
 PARENT_EVENT_STREAM_SOURCE = "parent-captured-stream-json"
+# Progress reporting only. A session can work quietly for many minutes, so the
+# reporter also speaks up on its own to distinguish "thinking" from "wedged".
+PROGRESS_HEARTBEAT_SECONDS = 60.0
+MAX_PROGRESS_LINE_BYTES = 1024 * 1024
+MAX_PROGRESS_PENDING = 256
+MAX_PROGRESS_TOOL_ID_CHARS = 256
+MAX_TOOL_PREVIEW_CHARS = 800
+_SAFE_TOOL_NAME = re.compile(r"[A-Za-z0-9._:-]{1,64}")
+_GHA_WORKFLOW_COMMAND = re.compile(r"(^|[\n\r])::")
+_GHA_HASH_COMMAND = re.compile(r"##\[")
+_GHA_COMPILER_ANNOTATION = re.compile(r"\((\d+),(\d+)\):\s+error\b", re.IGNORECASE)
+
+
+def neutralize_ci_log_text(text: str) -> str:
+    """Stop GitHub Actions from promoting tool output into check annotations.
+
+    Run 33962002890 logged in-sandbox ``tsc`` failures as
+    ``file.ts(line,col): error TS2307``, which Actions parsed as workflow
+    annotations on ``.github``. The same parser treats ``::error::`` and
+    ``##[error]`` as commands. Progress previews are evidence, not CI
+    signaling, so rewrite those forms before they hit the job log.
+    """
+
+    text = _GHA_WORKFLOW_COMMAND.sub(r"\1[:]", text)
+    text = _GHA_HASH_COMMAND.sub("# [", text)
+    return _GHA_COMPILER_ANNOTATION.sub(r"(\1,\2): compiler-error", text)
+
+
+def _safe_tool_name(value: Any) -> str:
+    """A tool name is an identifier; anything else is treated as content."""
+
+    match = _SAFE_TOOL_NAME.fullmatch(value.strip()) if isinstance(value, str) else None
+    return match.group(0) if match else "tool"
+
+
+def _debuggable_tool(name: str) -> bool:
+    return name in {"Read", "Bash", "Grep", "Glob"} or name.startswith("mcp__")
+
+
+def _tool_preview(value: Any, secrets: Sequence[str]) -> str:
+    """Render one bounded, redacted, single-line tool payload preview."""
+
+    try:
+        raw = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        raw = json.dumps(str(value), ensure_ascii=False)
+    redacted = redact_text(raw, secrets)
+    if len(redacted) <= MAX_TOOL_PREVIEW_CHARS:
+        return redacted
+    omitted = len(redacted) - MAX_TOOL_PREVIEW_CHARS
+    return f"{redacted[:MAX_TOOL_PREVIEW_CHARS]}…[truncated {omitted} chars]"
+
+
+def _tool_result_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            block["text"]
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+        )
+    return ""
+
+
+def _mcp_result_has_semantic_error(content: Any) -> bool:
+    """Recognize GitNexus error envelopes that MCP transported successfully."""
+
+    text = _tool_result_text(content).strip()
+    if not text:
+        return False
+    payload = text.split("\n\n---", 1)[0].strip()
+    try:
+        decoded = json.loads(payload)
+    except (json.JSONDecodeError, ValueError):
+        return bool(re.match(r"^error\s*:", payload, re.IGNORECASE))
+    return isinstance(decoded, dict) and isinstance(decoded.get("error"), str)
+
+
+def _tool_result_log_status(name: str, block: dict[str, Any]) -> str:
+    if block.get("is_error") is True:
+        return "error"
+    if name.startswith("mcp__") and _mcp_result_has_semantic_error(block.get("content")):
+        return "semantic-error"
+    return "ok"
+
+
+class SessionProgress:
+    """Report session metadata and bounded, redacted tool I/O previews.
+
+    A session's stdout is evidence: it is redacted before anything is written
+    out, so raw events and model prose are never streamed to the log. Turn
+    counts, tool activity, API retries, and quiet time distinguish work from
+    a wedged session. Tool arguments and results are content, not metadata.
+    """
+
+    def __init__(
+        self,
+        label: str,
+        *,
+        stream: Any = None,
+        heartbeat_s: float = PROGRESS_HEARTBEAT_SECONDS,
+        secrets: Sequence[str] = (),
+    ) -> None:
+        self.label = label
+        self.heartbeat_s = heartbeat_s
+        self._secrets = tuple(secret for secret in secrets if secret)
+        # stdout, not stderr: the benchmark sweep runs as a child of the
+        # evolution loop, which echoes only the child's stdout as it arrives
+        # (run_managed(echo_stdout=True)). Its stderr surfaces as a bounded
+        # tail after the fact, which is exactly the blind spot this closes.
+        self._stream = stream if stream is not None else sys.stdout
+        self._lock = threading.Lock()
+        self._buffer = bytearray()
+        self._started = time.monotonic()
+        self._last_spoke = self._started
+        self._events = 0
+        self._turns = 0
+        self._tools = 0
+        self._pending_tools: dict[str, str] = {}
+        self._last_activity = "starting"
+        self._pending_messages: deque[str] = deque(maxlen=MAX_PROGRESS_PENDING)
+        self._timer: threading.Thread | None = None
+        self._done = threading.Event()
+
+    def __enter__(self) -> SessionProgress:
+        self._say(f"started (heartbeat every {self.heartbeat_s:g}s)")
+        self._emit_pending()
+        self._timer = threading.Thread(target=self._heartbeat, daemon=True)
+        self._timer.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._done.set()
+        timer, self._timer = self._timer, None
+        if timer is not None:
+            timer.join(timeout=2)
+        self._emit_pending()
+
+    def _elapsed(self) -> str:
+        seconds = int(time.monotonic() - self._started)
+        return f"{seconds // 60}m{seconds % 60:02d}s"
+
+    def _say(self, message: str) -> None:
+        # Queue only: the stdout drain thread calls observe() and must not
+        # block on a full log pipe (process_control.stdout_observer contract).
+        self._pending_messages.append(
+            neutralize_ci_log_text(f"[{self.label} {self._elapsed()}] {message}")
+        )
+        self._last_spoke = time.monotonic()
+
+    def _emit_pending(self) -> None:
+        with self._lock:
+            messages = list(self._pending_messages)
+            self._pending_messages.clear()
+        for message in messages:
+            try:
+                print(message, file=self._stream, flush=True)
+            except (OSError, ValueError):
+                return
+
+    def _heartbeat(self) -> None:
+        tick = min(1.0, max(self.heartbeat_s / 2, 0.01))
+        while not self._done.wait(tick):
+            with self._lock:
+                quiet = time.monotonic() - self._last_spoke
+                if quiet >= self.heartbeat_s:
+                    self._say(
+                        f"still running · {self._events} events · {self._turns} turns · "
+                        f"{self._tools} tool calls · last: {self._last_activity}"
+                    )
+            self._emit_pending()
+
+    def observe(self, chunk: bytes) -> None:
+        """Consume one stdout chunk. Never raises; never blocks on I/O."""
+
+        with self._lock:
+            self._buffer.extend(chunk)
+            # Bound the partial line: a single enormous event must not grow the
+            # buffer without limit just because it has no newline yet.
+            if len(self._buffer) > MAX_PROGRESS_LINE_BYTES:
+                del self._buffer[:-MAX_PROGRESS_LINE_BYTES]
+            while (newline := self._buffer.find(b"\n")) >= 0:
+                line = bytes(self._buffer[:newline])
+                del self._buffer[: newline + 1]
+                self._observe_line(line)
+
+    def _observe_line(self, line: bytes) -> None:
+        if not line.strip():
+            return
+        try:
+            event = json.loads(line.decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, ValueError):
+            return
+        if not isinstance(event, dict):
+            return
+        self._events += 1
+        kind = event.get("type")
+        if kind == "assistant":
+            self._turns += 1
+            uses = [
+                block for block in _event_content(event) if isinstance(block, dict) and block.get("type") == "tool_use"
+            ]
+            names = [_safe_tool_name(block.get("name")) for block in uses]
+            if names:
+                self._tools += len(names)
+                self._last_activity = ", ".join(names[:4])
+                self._say(f"turn {self._turns} · {self._last_activity}")
+                for block, name in zip(uses, names, strict=True):
+                    tool_id = block.get("id")
+                    if isinstance(tool_id, str) and len(tool_id) <= MAX_PROGRESS_TOOL_ID_CHARS:
+                        self._pending_tools.pop(tool_id, None)
+                        self._pending_tools[tool_id] = name
+                        if len(self._pending_tools) > MAX_PROGRESS_PENDING:
+                            del self._pending_tools[next(iter(self._pending_tools))]
+                    if _debuggable_tool(name):
+                        self._say(f"tool {name} input={_tool_preview(block.get('input'), self._secrets)}")
+            else:
+                self._last_activity = "model reply"
+        elif kind == "user":
+            for block in _event_content(event):
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                tool_id = block.get("tool_use_id")
+                name = self._pending_tools.pop(tool_id, "tool") if isinstance(tool_id, str) else "tool"
+                if not _debuggable_tool(name):
+                    continue
+                status = _tool_result_log_status(name, block)
+                self._last_activity = f"{name} result {status}"
+                self._say(f"tool {name} result={status} output={_tool_preview(block.get('content'), self._secrets)}")
+        elif kind == "system" and event.get("subtype") == "api_retry":
+            # The signature of the gateway wedging: say it loudly and at once.
+            attempt = event.get("attempt")
+            limit = event.get("max_retries")
+            delay = event.get("retry_delay_ms")
+            wait = f" in {float(delay) / 1000:.0f}s" if isinstance(delay, (int, float)) else ""
+            self._last_activity = f"API retry {attempt}/{limit}"
+            self._say(f"API retry {attempt}/{limit}{wait} — no response from the model endpoint")
+        elif kind == "system" and event.get("subtype") == "init":
+            self._last_activity = "session init"
+            self._say("session initialized")
+        elif kind == "result":
+            cost = event.get("total_cost_usd")
+            self._last_activity = "result"
+            self._say(
+                f"finished · {event.get('num_turns', 0)} turns · "
+                f"{'error' if event.get('is_error') else 'ok'}"
+                + (f" · ${float(cost):.2f}" if isinstance(cost, (int, float)) else "")
+            )
 
 
 def measured_cost(raw: Any) -> float | None:
@@ -51,6 +319,16 @@ def measured_cost(raw: Any) -> float | None:
     if not math.isfinite(raw) or raw < 0:
         return None
     return float(raw)
+
+
+def _na(value: Any) -> Any:
+    """Render an unmeasured metric as ``n/a`` instead of a misleading number.
+
+    Lives next to ``measured_cost`` because it renders exactly what that
+    returns: every caller reporting a cost has to distinguish "never measured"
+    from a real 0.0.
+    """
+    return "n/a" if value is None else value
 
 
 SANDBOX_GITNEXUS_ENTRYPOINT = f"{SANDBOX_GITNEXUS}/dist/cli/index.js"
@@ -78,6 +356,8 @@ GITNEXUS_READ_ONLY_TOOLS = (
     "mcp__gitnexus__list_repos",
     "mcp__gitnexus__query",
     "mcp__gitnexus__context",
+    "mcp__gitnexus__grep",
+    "mcp__gitnexus__read_file",
     "mcp__gitnexus__check",
     "mcp__gitnexus__impact",
     "mcp__gitnexus__explain",
@@ -93,29 +373,33 @@ GITNEXUS_MUTATING_TOOLS = ("mcp__gitnexus__rename",)
 BUILTIN_AGENT_TOOLS = ("Read", "Grep", "Glob", "Edit", "Write", "Bash", "Skill")
 
 
-def sandbox_mcp_config() -> str:
-    """Credential-free MCP configuration using only the pinned harness runtime."""
+def sandbox_mcp_config(*, unsafe_host: bool = False) -> str:
+    """Launch the pinned MCP runtime behind its own read-only boundary.
+
+    The explicitly unsafe diagnostic backend retains its credential-free host
+    launch; it cannot establish nested namespaces or produce release evidence.
+    """
 
     entrypoint = PurePosixPath(SANDBOX_GITNEXUS_ENTRYPOINT)
     workspace = PurePosixPath(SANDBOX_WORKSPACE)
     if not entrypoint.is_absolute() or entrypoint == workspace or workspace in entrypoint.parents:
         raise SandboxError(f"GitNexus MCP executable must stay outside {SANDBOX_WORKSPACE}")
 
+    prefix = mcp_sandbox_prefix() if not unsafe_host else [
+        "/usr/bin/env", "-i",
+        f"HOME={SANDBOX_HOME}", f"TMPDIR={SANDBOX_TMP}",
+        f"GITNEXUS_HOME={SANDBOX_GITNEXUS_REGISTRY}",
+        f"GITNEXUS_MCP_ALLOWED_REPOS={SANDBOX_WORKSPACE}",
+        f"GITNEXUS_MCP_DEFAULT_REPO={SANDBOX_WORKSPACE}",
+        "PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "GIT_TERMINAL_PROMPT=0",
+    ]
     config = {
         "mcpServers": {
             "gitnexus": {
                 "type": "stdio",
-                "command": "/usr/bin/env",
+                "command": prefix[0],
                 "args": [
-                    "-i",
-                    f"HOME={SANDBOX_HOME}",
-                    f"TMPDIR={SANDBOX_TMP}",
-                    f"GITNEXUS_HOME={SANDBOX_GITNEXUS_REGISTRY}",
-                    f"GITNEXUS_MCP_ALLOWED_REPOS={SANDBOX_WORKSPACE}",
-                    f"GITNEXUS_MCP_DEFAULT_REPO={SANDBOX_WORKSPACE}",
-                    "PATH=/usr/local/bin:/usr/bin:/bin",
-                    "LANG=C.UTF-8",
-                    "GIT_TERMINAL_PROMPT=0",
+                    *prefix[1:],
                     SANDBOX_NODE,
                     SANDBOX_GITNEXUS_ENTRYPOINT,
                     "mcp",
@@ -126,12 +410,18 @@ def sandbox_mcp_config() -> str:
     return json.dumps(config, sort_keys=True, separators=(",", ":"))
 
 
-def allowed_agent_tools(*, implementation: bool, include_mcp: bool = True) -> list[str]:
-    tools = [*BUILTIN_AGENT_TOOLS]
+def allowed_agent_tools(
+    *,
+    implementation: bool,
+    include_mcp: bool = True,
+    allow_edit: bool = True,
+) -> list[str]:
+    # Retain the caller parameter for compatibility; all MCP phases are
+    # read-only so only the agent's own tools can author credited changes.
+    del implementation
+    tools = [tool for tool in BUILTIN_AGENT_TOOLS if allow_edit or tool != "Edit"]
     if include_mcp:
         tools.extend(GITNEXUS_READ_ONLY_TOOLS)
-    if include_mcp and implementation:
-        tools.extend(GITNEXUS_MUTATING_TOOLS)
     return tools
 
 
@@ -226,7 +516,13 @@ def _persist_parent_event_stream(
 
 
 def _normalized_skill_identifier(value: Any) -> str | None:
-    """Return the exact identifier token accepted by the Skill tool."""
+    """Return the exact identifier token accepted by the Skill tool.
+
+    Plugin skills are requested as ``plugin:skill`` (observed in review
+    evolution: ``compound-engineering:ce-code-review``). Compare on the
+    skill token after the last colon so a successful plugin-qualified
+    invocation still counts as the expected skill.
+    """
 
     if not isinstance(value, str):
         return None
@@ -236,6 +532,8 @@ def _normalized_skill_identifier(value: Any) -> str | None:
     token = stripped.split(maxsplit=1)[0]
     if token.startswith("/"):
         token = token[1:]
+    if ":" in token:
+        token = token.rsplit(":", 1)[-1]
     return token or None
 
 
@@ -328,6 +626,85 @@ def skill_was_invoked_events(events: Sequence[dict[str, Any]], skill_name: str) 
     return successful
 
 
+def _session_result(events: list[dict[str, Any]], duration_s: float) -> tuple[dict[str, Any], int]:
+    """Reduce proven background continuations, retaining one session's full accounting.
+
+    Claude Code 2.1.214 emits a result per foreground turn, including a turn
+    started by a background task notification. Usage/turns are per-turn; cost
+    is cumulative. The real-CLI canary pins these different scopes.
+    """
+    indexes = [index for index, event in enumerate(events) if event.get("type") == "result"]
+    if not indexes:
+        raise ValueError("expected a final result event, observed 0")
+    final_index = indexes[-1]
+    if any(event.get("type") != "system" for event in events[final_index + 1 :]):
+        raise ValueError("final result event is not the last event in the captured stream")
+    final = events[final_index]
+    if len(indexes) == 1:
+        return final, final_index
+
+    session_id = final.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError("background continuation has no session identity")
+    total_usage = dict.fromkeys(USAGE_FIELDS, 0)
+    turns = 0
+    cost = 0.0
+    result_ids: set[str] = set()
+    pending_notifications: deque[int] = deque()
+    previous_index = -1
+    for index in indexes:
+        result = events[index]
+        uuid = result.get("uuid")
+        if result.get("session_id") != session_id:
+            raise ValueError("background continuation changed session identity")
+        if not isinstance(uuid, str) or not uuid or uuid in result_ids:
+            raise ValueError("background continuation has a missing or repeated result id")
+        result_ids.add(uuid)
+        if result.get("subtype") != "success" or result.get("is_error") is not False:
+            raise ValueError("background continuation contains an unsuccessful result")
+        usage = result.get("usage")
+        if not isinstance(usage, dict) or any(
+            type(usage.get(field)) is not int or usage[field] < 0 for field in USAGE_FIELDS
+        ):
+            raise ValueError("background continuation has incomplete or invalid usage")
+        count = result.get("num_turns")
+        if type(count) is not int or count < 1:
+            raise ValueError("background continuation has invalid turn count")
+        next_cost = measured_cost(result.get("total_cost_usd"))
+        if next_cost is None or next_cost < cost:
+            raise ValueError("background continuation has missing or decreasing cumulative cost")
+        segment = events[previous_index + 1 : index]
+        if any(event.get("session_id", session_id) != session_id for event in segment):
+            raise ValueError("background continuation changed session identity")
+        pending_notifications.extend(
+            previous_index + 1 + i
+            for i, event in enumerate(segment)
+            if event.get("type") == "system" and event.get("subtype") == "task_notification"
+        )
+        if previous_index >= 0:
+            # The CLI can announce completion before the preceding result.
+            # Consume each pending notification only once, before a fresh turn.
+            init = next(
+                (i for i, e in enumerate(segment) if e.get("type") == "system" and e.get("subtype") == "init"), None
+            )
+            if (
+                not pending_notifications
+                or init is None
+                or pending_notifications[0] >= previous_index + 1 + init
+                or not any(e.get("type") == "assistant" for e in segment[init + 1 :])
+            ):
+                raise ValueError("additional result lacks a background completion turn")
+            pending_notifications.popleft()
+        for field in USAGE_FIELDS:
+            total_usage[field] += usage[field]
+        turns += count
+        cost = next_cost
+        previous_index = index
+    # Per-turn duration_ms excludes time waiting for background work. Use the
+    # trusted parent's elapsed time for the whole process, including that wait.
+    return {**final, "usage": total_usage, "num_turns": turns, "duration_ms": duration_s * 1000}, final_index
+
+
 def run_claude(
     prompt: str,
     cwd: Path,
@@ -336,12 +713,12 @@ def run_claude(
     timeout: int,
     disallowed_tools: list[str] | None = None,
     model: str | None = None,
+    effort: str | None = None,
     env: dict[str, str] | None = None,
     permission_mode: str | None = None,
     expected_skill: str | None = None,
     command_prefix: list[str] | None = None,
     require_pid_namespace: bool = False,
-    bare: bool = False,
     settings_json: str | None = None,
     strict_mcp_config: bool = False,
     allowed_tools: list[str] | None = None,
@@ -354,6 +731,8 @@ def run_claude(
     transcript_output_prefix: str | None = None,
     transcript_secrets: tuple[str, ...] = (),
     plugin_dirs: Sequence[str] = (),
+    progress_label: str | None = None,
+    max_budget_usd: float | None = None,
 ) -> dict[str, Any]:
     """Run one headless session and return its usage record."""
 
@@ -361,6 +740,7 @@ def run_claude(
     # every file under the sandbox HOME is writable by agent tools and cannot
     # serve as trusted evidence.
     del transcript_projects, transcript_cwd, transcript_wait_seconds
+    max_budget_usd = session_budget(max_budget_usd)
 
     cmd = [
         claude_bin,
@@ -371,8 +751,6 @@ def run_claude(
         "stream-json",
         "--verbose",
     ]
-    if bare:
-        cmd.append("--bare")
     for plugin_dir in plugin_dirs:
         cmd += ["--plugin-dir", plugin_dir]
     if settings_json is not None:
@@ -380,13 +758,11 @@ def run_claude(
     if strict_mcp_config:
         cmd += ["--strict-mcp-config", "--mcp-config", mcp_config_json or '{"mcpServers":{}}']
     if allowed_tools:
-        # --bare's own hard-coded Bash/Edit/Read ceiling already scopes bare
-        # sessions; outside --bare the built-in toolset defaults to
-        # everything (subagents, WebFetch, Task, ...), so --tools is needed
-        # to actually restrict it — --allowedTools only pre-approves within
-        # whatever set is available, it does not narrow that set.
-        if not bare:
-            cmd += ["--tools", *allowed_tools]
+        # The built-in toolset defaults to everything (subagents, WebFetch,
+        # Task, ...), so --tools is needed to actually restrict it --
+        # --allowedTools only pre-approves within whatever set is available,
+        # it does not narrow that set.
+        cmd += ["--tools", *allowed_tools]
         cmd += ["--allowedTools", *allowed_tools]
     if disable_slash_commands:
         cmd.append("--disable-slash-commands")
@@ -394,37 +770,69 @@ def run_claude(
         cmd += ["--permission-mode", permission_mode]
     if model:
         cmd += ["--model", model]
+    if effort:
+        cmd += ["--effort", effort]
+    if max_budget_usd is not None:
+        cmd += ["--max-budget-usd", str(max_budget_usd)]
     for tool in disallowed_tools or []:
         cmd += ["--disallowedTools", tool]
     managed_cmd = [*(command_prefix or []), *cmd]
     started = time.monotonic()
-    proc = run_managed(
-        managed_cmd,
-        cwd=None if command_prefix else cwd,
-        timeout=timeout,
-        env=env,
-        require_pid_namespace=require_pid_namespace,
-        stdin_data=prompt.encode(),
-        capture_stdout_bytes=MAX_TRANSCRIPT_BYTES,
-    )
+    event_clock = EventClock()
+    with contextlib.ExitStack() as progress_stack:
+        progress = (
+            progress_stack.enter_context(
+                SessionProgress(
+                    progress_label,
+                    secrets=transcript_secrets,
+                )
+            )
+            if progress_label
+            else None
+        )
+        def observe(chunk: bytes) -> None:
+            event_clock.observe(chunk)
+            if progress is not None:
+                progress.observe(chunk)
+
+        proc = run_managed(
+            managed_cmd,
+            cwd=None if command_prefix else cwd,
+            timeout=timeout,
+            env=env,
+            require_pid_namespace=require_pid_namespace,
+            stdin_data=prompt.encode(),
+            capture_stdout_bytes=MAX_TRANSCRIPT_BYTES,
+            stdout_observer=observe,
+        )
     wall_s = time.monotonic() - started
     event_stream_error: str | None = None
     events: list[dict[str, Any]] = []
+    event_offsets: list[float] | None = None
     try:
         if proc.stdout_capture is None:
             raise ValueError("parent process did not capture Claude stdout")
         if proc.stdout_capture_overflow:
             raise ValueError(f"parent-captured event stream exceeds {MAX_TRANSCRIPT_BYTES} bytes")
         events = _parse_parent_event_stream(proc.stdout_capture)
-        result_events = [event for event in events if event.get("type") == "result"]
-        if len(result_events) != 1:
-            raise ValueError(f"expected exactly one final result event, observed {len(result_events)}")
-        data = result_events[0]
-        if events[-1] is not data:
-            raise ValueError("final result event is not the last event in the captured stream")
+        event_offsets = event_clock.finish(len(events))
+        data, result_index = _session_result(events, proc.duration_s)
+        # A session that used a background task drains its bookkeeping after
+        # the final result event (`background_tasks_changed`, `task_updated`,
+        # `task_notification` — all `type: "system"`), so the result is last
+        # only among the events that carry evidence. `system` events hold no
+        # tool_use/tool_result/usage payload and so cannot forge skill or cost
+        # evidence; any other event after the result still fails closed.
+        # Nothing after the result is evidence. Cut the window here so that is
+        # a property of what the evidence readers below can see, rather than an
+        # assumption that a `system` event never carries a tool_use block.
+        events = events[: result_index + 1]
+        if event_offsets is not None:
+            event_offsets = event_offsets[: result_index + 1]
     except (UnicodeError, ValueError) as exc:
         event_stream_error = str(exc)
         data = {}
+        event_offsets = None
     usage = data.get("usage") or {}
     subtype = data.get("subtype")
     well_formed = all(field in usage for field in USAGE_FIELDS)
@@ -435,9 +843,15 @@ def run_claude(
         or str(subtype).startswith("error")
         or not well_formed
     )
+    tool_use_counts: dict[str, int] = {}
+    for event in events:
+        for block in _event_content(event):
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                name = _safe_tool_name(block.get("name"))
+                tool_use_counts[name] = tool_use_counts.get(name, 0) + 1
     record = {
         "ok": not session_error,
-        "error_kind": "session-error" if session_error else None,
+        "error_kind": "cancelled" if proc.state == "cancelled" else ("session-error" if session_error else None),
         "error_detail": (
             {
                 "subtype": subtype,
@@ -463,6 +877,10 @@ def run_claude(
         "cost_usd": measured_cost(data.get("total_cost_usd")),
         "duration_s": round(data.get("duration_ms", wall_s * 1000) / 1000, 1),
         "transcript_missing": False,
+        "tool_use_counts": tool_use_counts,
+        "gitnexus_tool_uses": sum(count for name, count in tool_use_counts.items() if name.startswith("mcp__gitnexus")),
+        "session_diagnostics": [diagnose_session(events, event_offsets, wall_s)],
+        "max_budget_usd": max_budget_usd,
         **{field: usage.get(field, 0) for field in USAGE_FIELDS},
     }
     needs_evidence = expected_skill is not None or transcript_output_dir is not None
@@ -551,5 +969,14 @@ def sum_sessions(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     total["evidence_diagnostics"] = [
         diagnostic for session in sessions for diagnostic in session.get("evidence_diagnostics", [])
+    ]
+    total["gitnexus_tool_uses"] = sum(session.get("gitnexus_tool_uses", 0) for session in sessions)
+    tool_use_counts: dict[str, int] = {}
+    for session in sessions:
+        for name, count in session.get("tool_use_counts", {}).items():
+            tool_use_counts[name] = tool_use_counts.get(name, 0) + int(count)
+    total["tool_use_counts"] = tool_use_counts
+    total["session_diagnostics"] = [
+        diagnostic for session in sessions for diagnostic in session.get("session_diagnostics", [])
     ]
     return total

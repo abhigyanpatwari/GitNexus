@@ -14,6 +14,7 @@ import {
   isLbugReady,
 } from '../../src/mcp/core/lbug-adapter.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+import { execFile } from 'node:child_process';
 
 const POOL_SEED_DATA = [
   `CREATE (f:File {id: 'file:index.ts', name: 'index.ts', filePath: 'src/index.ts', content: ''})`,
@@ -23,6 +24,35 @@ const POOL_SEED_DATA = [
     WHERE a.id = 'func:main' AND b.id = 'func:helper'
     CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, reason: 'direct', step: 0}]->(b)`,
 ];
+
+describe('pooled query memory guard process boundary', () => {
+  it('exits with a synchronous diagnostic before a read above its memory budget', async () => {
+    const adapterUrl = new URL('../../src/core/lbug/pool-adapter.ts', import.meta.url).href;
+    const source = `
+      import lbug from '@ladybugdb/core';
+      import { initLbugWithDb, executeParameterized } from ${JSON.stringify(adapterUrl)};
+      const db = new lbug.Database(':memory:', 64 * 1024 * 1024);
+      await initLbugWithDb('guard-process', db);
+      process.env.GITNEXUS_QUERY_MAX_RSS_MB = '1';
+      await executeParameterized('guard-process', 'RETURN $privateValue AS n', { privateValue: 'never-log-this-value' });
+      process.exit(99);
+    `;
+    const result = await new Promise<{ code: number | string | undefined; stderr: string }>(
+      (resolve) => {
+        execFile(
+          process.execPath,
+          ['--import', 'tsx', '--input-type=module', '-e', source],
+          { timeout: 20_000, env: { ...process.env, GITNEXUS_QUERY_TRACE: '0' } },
+          (error, _stdout, stderr) => resolve({ code: error?.code, stderr }),
+        );
+      },
+    );
+    expect(result.code).toBe(70);
+    expect(result.stderr).toContain('GitNexus stopped: process memory reached');
+    expect(result.stderr).toContain('RETURN $privateValue AS n');
+    expect(result.stderr).not.toContain('never-log-this-value');
+  }, 30_000);
+});
 
 // ─── Pool lifecycle tests — test the pool adapter API directly ───────
 
@@ -341,7 +371,7 @@ withTestLbugDB(
         }
       });
 
-      it('QUERY_VECTOR_INDEX works through the pool once the pre-warm loads VECTOR', async (ctx) => {
+      it('QUERY_VECTOR_INDEX works through the pool after its lazy query preflight', async (ctx) => {
         const core = await import('../../src/core/lbug/lbug-adapter.js');
         const { batchInsertEmbeddings } =
           await import('../../src/core/embeddings/embedding-pipeline.js');
@@ -376,12 +406,12 @@ withTestLbugDB(
         // loads are per-Database, so a shared/injected Database would inherit
         // the VECTOR load from createVectorIndex above and pass even without
         // the pre-warm fix. A fresh Database has nothing loaded — only the
-        // pool's own pre-warm can make the vector lane legal.
+        // pool's own lazy query preflight can make the vector lane legal.
         await core.closeLbug();
 
         // The regression: through the POOL, the vector lane must work without
-        // any caller loading the extension. Pre-fix this rejects with
-        // "Catalog exception: function QUERY_VECTOR_INDEX is not defined".
+        // any caller loading the extension. The query-specific preflight loads
+        // VECTOR here while exact reads remain untouched.
         await initLbug('vec-repo', handle.dbPath);
         const vec = `CAST([${embedding.join(',')}] AS FLOAT[${EMBEDDING_DIMS}])`;
         const rows = (await executeQuery(

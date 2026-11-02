@@ -187,6 +187,125 @@ describe('filesystem-walker', () => {
     });
   });
 
+  describe('ambiguous source-directory names (#3039)', () => {
+    let sourceDir: string;
+
+    beforeAll(async () => {
+      sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-source-names-'));
+      await fs.mkdir(path.join(sourceDir, 'apps', 'client', 'src', 'shared', 'env'), {
+        recursive: true,
+      });
+      await fs.mkdir(path.join(sourceDir, 'packages', 'ai', 'src', 'generated'), {
+        recursive: true,
+      });
+      await fs.mkdir(path.join(sourceDir, 'build-cache', 'generated'), { recursive: true });
+      await fs.mkdir(path.join(sourceDir, 'env'), { recursive: true });
+      await fs.mkdir(path.join(sourceDir, 'generated'), { recursive: true });
+      await fs.mkdir(path.join(sourceDir, 'backend', 'env', 'Scripts'), { recursive: true });
+      await fs.mkdir(path.join(sourceDir, 'backend', 'env', 'include'), { recursive: true });
+      await fs.mkdir(path.join(sourceDir, 'backend', 'env', 'share'), { recursive: true });
+
+      await fs.writeFile(
+        path.join(sourceDir, 'apps', 'client', 'src', 'shared', 'env', 'getAppEnv.ts'),
+        'export const getAppEnv = () => "test";\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'packages', 'ai', 'src', 'generated', 'bundle.ts'),
+        'export const bundled = true;\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'apps', 'client', 'src', 'vite-env.d.ts'),
+        'declare const APP_ENV: string;\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'apps', 'client', 'src', 'service.ts'),
+        'export class UserService {}\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'apps', 'client', 'src', 'service.d.ts'),
+        'export declare class UserService {}\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'apps', 'client', 'src', 'legacy.js'),
+        'export class LegacyService {}\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'apps', 'client', 'src', 'legacy.d.ts'),
+        'export declare class LegacyService {}\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'build-cache', 'generated', 'ignored.ts'),
+        'export const ignored = true;\n',
+      );
+      await fs.writeFile(path.join(sourceDir, '.gitignore'), 'build-cache/generated/\n');
+      await fs.writeFile(path.join(sourceDir, 'env', 'pyvenv.cfg'), 'home = python\n');
+      await fs.writeFile(path.join(sourceDir, 'env', 'settings.py'), 'VALUE = 1\n');
+      await fs.writeFile(path.join(sourceDir, 'backend', 'env', 'pyvenv.cfg'), 'home = python\n');
+      await fs.writeFile(
+        path.join(sourceDir, 'backend', 'env', 'Scripts', 'activate_this.py'),
+        'VALUE = 1\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'backend', 'env', 'include', 'header.py'),
+        'VALUE = 1\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'backend', 'env', 'share', 'manual.py'),
+        'VALUE = 1\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'generated', 'client.ts'),
+        'export const generatedClient = true;\n',
+      );
+    });
+
+    afterAll(async () => {
+      await fs.rm(sourceDir, { recursive: true, force: true });
+    });
+
+    it('discovers nested env/generated and .d.ts source while pruning root artifacts', async () => {
+      const files = await walkRepositoryPaths(sourceDir);
+      const paths = files.map((file) => file.path);
+
+      expect(paths).toContain('apps/client/src/shared/env/getAppEnv.ts');
+      expect(paths).toContain('packages/ai/src/generated/bundle.ts');
+      expect(paths).toContain('apps/client/src/vite-env.d.ts');
+      expect(paths).toContain('apps/client/src/service.ts');
+      expect(paths).not.toContain('apps/client/src/service.d.ts');
+      expect(paths).toContain('apps/client/src/legacy.js');
+      expect(paths).toContain('apps/client/src/legacy.d.ts');
+      expect(paths).not.toContain('build-cache/generated/ignored.ts');
+      expect(paths).not.toContain('env/settings.py');
+      expect(paths).not.toContain('backend/env/Scripts/activate_this.py');
+      expect(paths).not.toContain('backend/env/include/header.py');
+      expect(paths).not.toContain('backend/env/share/manual.py');
+      expect(paths).not.toContain('generated/client.ts');
+    });
+
+    it('preserves case variants that were not hardcoded ignore names', async () => {
+      const caseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-source-case-'));
+      try {
+        await fs.mkdir(path.join(caseDir, 'Generated'), { recursive: true });
+        await fs.mkdir(path.join(caseDir, 'Env'), { recursive: true });
+        await fs.writeFile(
+          path.join(caseDir, 'Generated', 'client.cs'),
+          'public class GeneratedClient {}\n',
+        );
+        await fs.writeFile(
+          path.join(caseDir, 'Env', 'settings.ts'),
+          'export const environment = "test";\n',
+        );
+
+        const paths = (await walkRepositoryPaths(caseDir)).map((file) => file.path);
+
+        expect(paths).toContain('Generated/client.cs');
+        expect(paths).toContain('Env/settings.ts');
+      } finally {
+        await fs.rm(caseDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('.gitnexusignore support', () => {
     let nexusignoreDir: string;
 
@@ -360,6 +479,212 @@ describe('filesystem-walker', () => {
     });
   });
 
+  describe('opt-in dot directories (GITNEXUS_INCLUDE_DOT_DIRS)', () => {
+    let dotDir: string;
+
+    beforeAll(async () => {
+      dotDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-dotdirs-'));
+      const write = async (rel: string, content: string) => {
+        await fs.mkdir(path.dirname(path.join(dotDir, rel)), { recursive: true });
+        await fs.writeFile(path.join(dotDir, rel), content);
+      };
+      await write('src/index.ts', 'export const main = () => {}');
+      await write('.scallywag/root.ts', 'export const root = 1;');
+      await write('pkg/.scallywag/unit.ts', 'export const unit = 1;');
+      await write('pkg/.scallywag/nested/testing.ts', 'export const testing = 1;');
+      await write('pkg/.scallywag/.env.local', 'SECRET=1');
+      await write('pkg/.scallywag/.cache/blob.ts', 'export const cached = 1;');
+      await write('pkg/.scallywag/generated/out.ts', 'export const generated = 1;');
+      await write('pkg/.other/hidden.ts', 'export const other = 1;');
+      await write('.git/HEAD', 'ref: refs/heads/main');
+      await write('.gitnexusignore', 'pkg/.scallywag/generated/\n');
+    });
+
+    afterAll(async () => {
+      await fs.rm(dotDir, { recursive: true, force: true });
+    });
+
+    const walkPaths = async (includeDotDirs?: readonly string[]) =>
+      (await walkRepositoryPaths(dotDir, undefined, { includeDotDirs })).map((f) => f.path);
+
+    it('skips dot directories by default', async () => {
+      const original = process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      try {
+        expect(await walkPaths()).toEqual(['src/index.ts']);
+      } finally {
+        if (original !== undefined) process.env.GITNEXUS_INCLUDE_DOT_DIRS = original;
+      }
+    });
+
+    it('indexes a listed dot directory at any depth, keeping hidden files and other dot dirs out', async () => {
+      expect(await walkPaths(['.scallywag'])).toEqual([
+        '.scallywag/root.ts',
+        'pkg/.scallywag/nested/testing.ts',
+        'pkg/.scallywag/unit.ts',
+        'src/index.ts',
+      ]);
+    });
+
+    it('reads the list from GITNEXUS_INCLUDE_DOT_DIRS when no option is passed', async () => {
+      const original = process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      process.env.GITNEXUS_INCLUDE_DOT_DIRS = '.other';
+      try {
+        expect(await walkPaths()).toEqual(['pkg/.other/hidden.ts', 'src/index.ts']);
+      } finally {
+        if (original === undefined) {
+          delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+        } else {
+          process.env.GITNEXUS_INCLUDE_DOT_DIRS = original;
+        }
+      }
+    });
+
+    it('keeps a listed directory on the built-in ignore list out until .gitnexusignore negates it', async () => {
+      const ghDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-dotdirs-github-'));
+      try {
+        await fs.mkdir(path.join(ghDir, '.github', 'scripts'), { recursive: true });
+        await fs.writeFile(path.join(ghDir, '.github', 'scripts', 'queue.mjs'), 'export {};');
+        await fs.writeFile(path.join(ghDir, 'index.ts'), 'export {};');
+        const walk = async () =>
+          (await walkRepositoryPaths(ghDir, undefined, { includeDotDirs: ['.github'] })).map(
+            (f) => f.path,
+          );
+
+        expect(await walk()).toEqual(['index.ts']);
+        await fs.writeFile(path.join(ghDir, '.gitnexusignore'), '!.github/\n');
+        expect(await walk()).toEqual(['.github/scripts/queue.mjs', 'index.ts']);
+      } finally {
+        await fs.rm(ghDir, { recursive: true, force: true });
+      }
+    });
+
+    it('treats a listed dot directory absent from the repo as empty, even in strict enumeration', async () => {
+      const discovered: string[] = [];
+      const paths = (
+        await walkRepositoryPaths(dotDir, undefined, {
+          includeDotDirs: ['.absent', '.scallywag'],
+          onPathsDiscovered: async (found) => {
+            discovered.push(...found);
+          },
+        })
+      ).map((f) => f.path);
+
+      expect(paths).toEqual([
+        '.scallywag/root.ts',
+        'pkg/.scallywag/nested/testing.ts',
+        'pkg/.scallywag/unit.ts',
+        'src/index.ts',
+      ]);
+      expect(discovered.length).toBeGreaterThan(0);
+    });
+
+    it('never indexes .git even when listed', async () => {
+      const cap = _captureLogger();
+      try {
+        expect(await walkPaths(['.git'])).toEqual(['src/index.ts']);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('keeps credentials out even when ignore rules explicitly unignore them', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-dotdirs-credentials-'));
+      const blocked = [
+        '.GIT/private.ts',
+        '.aws/credentials',
+        '.ssh/id_rsa',
+        '.docker/config.json',
+        '.config/gcloud/application_default_credentials.json',
+        '.config/gh/hosts.yml',
+        '.source/credentials.json',
+        '.source/private.KEY',
+        '.source/secrets.yaml',
+        '.source/.env',
+        '.source/.npmrc',
+        '.source/.other/hidden.ts',
+      ];
+      const cap = _captureLogger();
+      try {
+        for (const rel of [...blocked, '.source/code.ts', '.config/tool/source.ts']) {
+          await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });
+          await fs.writeFile(path.join(root, rel), 'SYNTHETIC_TEST_ONLY');
+        }
+        await fs.writeFile(path.join(root, '.gitnexusignore'), '!**\n');
+        const discovered: string[] = [];
+        const files = await walkRepositoryPaths(root, undefined, {
+          includeDotDirs: ['.GIT', '.aws', '.ssh', '.docker', '.config', '.source'],
+          onPathsDiscovered: async (paths) => {
+            discovered.push(...paths);
+          },
+        });
+        const expected = ['.config/tool/source.ts', '.source/code.ts'];
+        expect(files.map((file) => file.path)).toEqual(expected);
+        expect([...discovered].sort()).toEqual(expected);
+      } finally {
+        cap.restore();
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('does not follow opted-in directory links or file aliases to hidden secrets', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-dotdirs-links-'));
+      const external = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-dotdirs-external-'));
+      try {
+        await fs.mkdir(path.join(root, '.source'));
+        await fs.writeFile(path.join(root, '.source', 'code.ts'), 'export const safe = 1;');
+        await fs.writeFile(path.join(root, '.source', '.env'), 'SYNTHETIC_TEST_ONLY');
+        await fs.writeFile(path.join(external, 'private.ts'), 'SYNTHETIC_TEST_ONLY');
+        await fs.symlink(
+          external,
+          path.join(root, '.linked'),
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
+        await fs.symlink(
+          external,
+          path.join(root, '.source', 'nested'),
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
+        // File symlinks require privileges on Windows; directory junctions above do not.
+        if (process.platform !== 'win32') {
+          await fs.symlink(
+            path.join(root, '.source', '.env'),
+            path.join(root, '.source', 'alias.ts'),
+          );
+        }
+        const discovered: string[] = [];
+        const files = await walkRepositoryPaths(root, undefined, {
+          includeDotDirs: ['.linked', '.source'],
+          onPathsDiscovered: async (paths) => {
+            discovered.push(...paths);
+          },
+        });
+        expect(files.map((file) => file.path)).toEqual(['.source/code.ts']);
+        expect(discovered).toEqual(['.source/code.ts']);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+        await fs.rm(external, { recursive: true, force: true });
+      }
+    });
+
+    it('treats a listed name that is a file as no directory, including nested names', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-dotdirs-file-'));
+      try {
+        await fs.mkdir(path.join(root, 'pkg'));
+        await fs.writeFile(path.join(root, '.source'), 'SYNTHETIC_TEST_ONLY');
+        await fs.writeFile(path.join(root, 'pkg', '.source'), 'SYNTHETIC_TEST_ONLY');
+        await fs.writeFile(path.join(root, 'index.ts'), 'export {};');
+        const files = await walkRepositoryPaths(root, undefined, {
+          includeDotDirs: ['.source'],
+          onPathsDiscovered: async () => {},
+        });
+        expect(files.map((file) => file.path)).toEqual(['index.ts']);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('readFileContents', () => {
     it('reads file contents by relative paths', async () => {
       const contents = await readFileContents(tmpDir, ['src/index.ts', 'src/utils.ts']);
@@ -394,6 +719,7 @@ describe('filesystem-walker', () => {
   describe('large file skip threshold (#991)', () => {
     let sizeDir: string;
     const BIG_FILE = 'src/big.ts';
+    const BIG_DECLARATION = 'src/big.d.ts';
     const BIG_FILE_BYTES = 600 * 1024;
     const ORIGINAL_ENV = process.env.GITNEXUS_MAX_FILE_SIZE;
     let cap: ReturnType<typeof _captureLogger>;
@@ -403,6 +729,10 @@ describe('filesystem-walker', () => {
       await fs.mkdir(path.join(sizeDir, 'src'), { recursive: true });
       await fs.writeFile(path.join(sizeDir, 'src', 'small.ts'), 'export const x = 1;');
       await fs.writeFile(path.join(sizeDir, BIG_FILE), 'x'.repeat(BIG_FILE_BYTES));
+      await fs.writeFile(
+        path.join(sizeDir, BIG_DECLARATION),
+        'export declare const generatedTypes: string;\n',
+      );
     });
 
     afterAll(async () => {
@@ -429,6 +759,7 @@ describe('filesystem-walker', () => {
       const paths = files.map((f) => f.path.replace(/\\/g, '/'));
       expect(paths).toContain('src/small.ts');
       expect(paths).not.toContain(BIG_FILE);
+      expect(paths).toContain(BIG_DECLARATION);
     });
 
     it('includes the 600KB file when GITNEXUS_MAX_FILE_SIZE=1024', async () => {
@@ -436,6 +767,7 @@ describe('filesystem-walker', () => {
       const files = await walkRepositoryPaths(sizeDir);
       const paths = files.map((f) => f.path.replace(/\\/g, '/'));
       expect(paths).toContain(BIG_FILE);
+      expect(paths).not.toContain(BIG_DECLARATION);
     });
 
     it('falls back to default and warns once on invalid GITNEXUS_MAX_FILE_SIZE', async () => {

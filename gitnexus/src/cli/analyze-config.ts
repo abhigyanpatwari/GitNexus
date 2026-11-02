@@ -30,15 +30,21 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { MAX_REPO_CONTROL_FILE_BYTES, readRepoControlFile } from '../config/repo-control-file.js';
+import { logger } from '../core/logger.js';
+import { normalizeRouterAliases } from '../core/ingestion/languages/go/route-config.js';
+import {
+  InvalidBranchError,
+  sanitizeDetectedBranch,
+  validateBranchName as validateBranchNameCore,
+} from '../core/git-ref.js';
+export { sanitizeDetectedBranch };
 import type { AnalyzeOptions } from './analyze-options.js';
 
 export const GITNEXUS_RC_FILENAME = '.gitnexusrc';
 
 /** Final fallback when no branch is configured or detectable. */
 export const DEFAULT_BRANCH_FALLBACK = 'main';
-
-/** Git refs longer than this are almost certainly a mistake / injection attempt. */
-const BRANCH_MAX_LENGTH = 255;
 
 /**
  * Thrown for any `.gitnexusrc` problem (missing-file is NOT an error — it
@@ -59,7 +65,9 @@ type ValueKind =
   | 'string-array'
   | 'numeric-string'
   | 'embeddings'
-  | 'branch';
+  | 'branch'
+  | 'path'
+  | 'router-aliases';
 
 interface KeySpec {
   /** The `AnalyzeOptions` field this config key normalizes into. */
@@ -97,6 +105,10 @@ const KEY_SPECS: Record<string, KeySpec> = {
   workerTimeout: { target: 'workerTimeout', kind: 'numeric-string' },
   walCheckpointThreshold: { target: 'walCheckpointThreshold', kind: 'numeric-string' },
   workers: { target: 'workers', kind: 'numeric-string' },
+  maxProcesses: { target: 'maxProcesses', kind: 'numeric-string' },
+  maxProcessBranching: { target: 'maxProcessBranching', kind: 'numeric-string' },
+  maxProcessTraceDepth: { target: 'maxProcessTraceDepth', kind: 'numeric-string' },
+  maxEntryPointCandidates: { target: 'maxEntryPointCandidates', kind: 'numeric-string' },
   embeddingThreads: { target: 'embeddingThreads', kind: 'numeric-string' },
   embeddingBatchSize: { target: 'embeddingBatchSize', kind: 'numeric-string' },
   embeddingSubBatchSize: { target: 'embeddingSubBatchSize', kind: 'numeric-string' },
@@ -107,6 +119,16 @@ const KEY_SPECS: Record<string, KeySpec> = {
   // built-in convention set, is otherwise invisible to route_map consumers.
   // Listing it here adds it to the cross-file consumer scan.
   fetchWrappers: { target: 'fetchWrappers', kind: 'string-array' },
+  // Go router types reached through an in-house wrapper package that are the
+  // gin/echo engine (`type Engine = gin.Engine`). The indexer cannot read the
+  // dependency's source, so the equivalence is declared, never guessed.
+  goRouterAliases: { target: 'routeFrameworkAliases', kind: 'router-aliases' },
+  // Go functions that wrap a route handler (`common.Wrapper(api.CreateJob)`);
+  // the wrapped first argument becomes the route's handler.
+  goHandlerWrappers: { target: 'routeHandlerWrappers', kind: 'string-array' },
+  // Explicit local Actuator snapshot input (#2418). The path itself is safe in
+  // project config; payload contents are never copied into the graph wholesale.
+  springActuator: { target: 'springActuator', kind: 'path' },
   // Auth token AND dims are intentionally CLI/env-only — no embeddingAuthToken
   // or embeddingDims key here:
   //   - the token keeps secrets out of a committed .gitnexusrc;
@@ -152,63 +174,27 @@ const assertNoHiddenChars = (value: string, source: string): void => {
 
 /**
  * Validate a user-supplied branch name (from CLI or `.gitnexusrc`). Returns the
- * trimmed name or throws {@link GitNexusRcError}. Conservative but accepts the
- * shapes real branches use (`feature/foo-bar`, `release/1.2`, `develop`).
+ * trimmed name or throws {@link GitNexusRcError}. Rules live in
+ * `core/git-ref.ts`; this wrapper keeps the CLI / `.gitnexusrc` error type.
  */
 export function validateBranchName(value: string, source: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new GitNexusRcError(`${source}: branch name must not be empty.`);
-  }
-  if (trimmed.length > BRANCH_MAX_LENGTH) {
-    throw new GitNexusRcError(`${source}: branch name is too long (max ${BRANCH_MAX_LENGTH}).`);
-  }
-  assertNoHiddenChars(trimmed, source);
-  if (/\s/.test(trimmed)) {
-    throw new GitNexusRcError(`${source}: branch name must not contain whitespace.`);
-  }
-  // git ref-name rules (subset): reject characters git itself forbids in refs.
-  if (/[~^:?*[\\]/.test(trimmed)) {
-    throw new GitNexusRcError(
-      `${source}: branch name contains characters not allowed in a git ref (~ ^ : ? * [ \\).`,
-    );
-  }
-  if (trimmed.startsWith('-')) {
-    throw new GitNexusRcError(`${source}: branch name must not start with "-".`);
-  }
-  if (trimmed.includes('..')) {
-    throw new GitNexusRcError(`${source}: branch name must not contain "..".`);
-  }
-  // Git permits a backtick in a ref, but the branch is embedded inside a
-  // Markdown inline-code span in the generated AGENTS.md/CLAUDE.md regression
-  // example, where a backtick would close the span early and let the rest of
-  // the template render as instruction text. Reject it at this single
-  // chokepoint so all three tiers (CLI flag, .gitnexusrc, auto-detect via
-  // sanitizeDetectedBranch) are covered (#1996 tri-review P1).
-  if (trimmed.includes('`')) {
-    throw new GitNexusRcError(
-      `${source}: branch name must not contain a backtick (it would break the generated Markdown).`,
-    );
-  }
-  return trimmed;
-}
-
-/**
- * Best-effort validation for an auto-detected branch (from git). Never throws —
- * returns `undefined` for anything unusable so the resolver falls back to the
- * next precedence tier.
- */
-export function sanitizeDetectedBranch(value: string | null | undefined): string | undefined {
-  if (!value) return undefined;
   try {
-    return validateBranchName(value, 'detected branch');
-  } catch {
-    return undefined;
+    return validateBranchNameCore(value, source);
+  } catch (err) {
+    if (err instanceof InvalidBranchError) {
+      throw new GitNexusRcError(err.message);
+    }
+    throw err;
   }
 }
 
-const normalizeValue = (kind: ValueKind, value: unknown, key: string): unknown => {
-  const source = `${GITNEXUS_RC_FILENAME} "${key}"`;
+const normalizeValue = (
+  kind: ValueKind,
+  value: unknown,
+  key: string,
+  configSource: string,
+): unknown => {
+  const source = `${configSource} "${key}"`;
   switch (kind) {
     case 'boolean':
       if (typeof value !== 'boolean') {
@@ -225,6 +211,17 @@ const normalizeValue = (kind: ValueKind, value: unknown, key: string): unknown =
         throw new GitNexusRcError(`${source} must be a string branch name.`);
       }
       return validateBranchName(value, source);
+    case 'path': {
+      if (typeof value !== 'string') {
+        throw new GitNexusRcError(`${source} must be a file or directory path.`);
+      }
+      const trimmed = value.trim();
+      if (!trimmed) {
+        throw new GitNexusRcError(`${source} must not be empty.`);
+      }
+      assertNoHiddenChars(trimmed, source);
+      return trimmed;
+    }
     case 'string': {
       if (typeof value !== 'string') {
         throw new GitNexusRcError(`${source} must be a string.`);
@@ -319,6 +316,12 @@ const normalizeValue = (kind: ValueKind, value: unknown, key: string): unknown =
         `${source} must be a boolean or a non-negative integer (node cap; 0 disables the cap).`,
       );
     }
+    case 'router-aliases':
+      try {
+        return normalizeRouterAliases(value, source);
+      } catch (error) {
+        throw new GitNexusRcError((error as Error).message);
+      }
     default:
       // Exhaustive — kept for forward-compat if a new kind is added.
       throw new GitNexusRcError(`${source}: unsupported config value kind.`);
@@ -332,7 +335,7 @@ const normalizeValue = (kind: ValueKind, value: unknown, key: string): unknown =
  */
 const normalizeLevel = (
   obj: Record<string, unknown>,
-  { allowNestedKey }: { allowNestedKey: boolean },
+  { allowNestedKey, source }: { allowNestedKey: boolean; source: string },
 ): Partial<AnalyzeOptions> => {
   const out: Partial<AnalyzeOptions> = {};
   const setBy = new Map<keyof AnalyzeOptions, string>();
@@ -344,19 +347,17 @@ const normalizeLevel = (
     // truthy) and would slip past `if (!spec)`, hitting the wrong error branch
     // instead of the documented "Unknown key" message (#1996 tri-review P3).
     if (!Object.hasOwn(KEY_SPECS, key)) {
-      throw new GitNexusRcError(
-        `Unknown key "${key}" in ${GITNEXUS_RC_FILENAME}. ${ALLOWED_KEYS_HINT}`,
-      );
+      throw new GitNexusRcError(`Unknown key "${key}" in ${source}. ${ALLOWED_KEYS_HINT}`);
     }
     const spec = KEY_SPECS[key];
     const prev = setBy.get(spec.target);
     if (prev && prev !== key) {
       throw new GitNexusRcError(
-        `${GITNEXUS_RC_FILENAME}: "${prev}" and "${key}" both configure the same option; set only one.`,
+        `${source}: "${prev}" and "${key}" both configure the same option; set only one.`,
       );
     }
     setBy.set(spec.target, key);
-    (out as Record<string, unknown>)[spec.target] = normalizeValue(spec.kind, value, key);
+    (out as Record<string, unknown>)[spec.target] = normalizeValue(spec.kind, value, key, source);
   }
 
   return out;
@@ -370,14 +371,98 @@ const normalizeLevel = (
  */
 export function loadAnalyzeConfig(repoRoot: string): Partial<AnalyzeOptions> | undefined {
   const filePath = path.join(repoRoot, GITNEXUS_RC_FILENAME);
-
   let raw: string;
   try {
     raw = fs.readFileSync(filePath, 'utf-8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined;
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return withEnvConfig(undefined);
     throw new GitNexusRcError(`Could not read ${GITNEXUS_RC_FILENAME}: ${(err as Error).message}`);
   }
+
+  return withEnvConfig(parseAnalyzeConfig(raw));
+}
+
+/** Load `.gitnexusrc` through the strict bounded reader used by watch mode. */
+export async function loadAnalyzeConfigStrict(
+  repoRoot: string,
+): Promise<Partial<AnalyzeOptions> | undefined> {
+  let raw: string | null;
+  try {
+    raw = await readRepoControlFile(repoRoot, GITNEXUS_RC_FILENAME);
+  } catch (err) {
+    throw new GitNexusRcError(`Could not read ${GITNEXUS_RC_FILENAME}: ${(err as Error).message}`);
+  }
+  return withEnvConfig(raw === null ? undefined : parseAnalyzeConfig(raw));
+}
+
+/** Environment variable naming an analyze config file kept outside the repository. */
+export const GITNEXUS_RC_ENV = 'GITNEXUS_RC';
+
+/**
+ * Read an explicitly named config file through one descriptor, never by path
+ * after the check, so it cannot be swapped between the check and the read.
+ *
+ * O_NONBLOCK makes opening a FIFO return at once instead of blocking in
+ * open(2) until a writer appears; fstat then rejects it. It changes nothing
+ * for a regular file (same reasoning as `readNestedGitignore`). The read stops
+ * one byte past the limit, so a file that grows after fstat is rejected
+ * before it is decoded rather than read to EOF.
+ */
+function readBoundedConfigFile(filePath: string): string {
+  const fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0));
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) throw new Error('not a regular file');
+    const tooLarge = () => new Error(`larger than ${MAX_REPO_CONTROL_FILE_BYTES} bytes`);
+    if (stat.size > MAX_REPO_CONTROL_FILE_BYTES) throw tooLarge();
+    const buffer = Buffer.alloc(MAX_REPO_CONTROL_FILE_BYTES + 1);
+    let length = 0;
+    for (;;) {
+      const read = fs.readSync(fd, buffer, length, buffer.length - length, null);
+      if (read === 0) break;
+      length += read;
+      if (length > MAX_REPO_CONTROL_FILE_BYTES) throw tooLarge();
+    }
+    return buffer.toString('utf-8', 0, length);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Layer the `GITNEXUS_RC` file over the repository's `.gitnexusrc`, key by key.
+ * It lets a checkout carry analyze config without a tracked or untracked file
+ * in the working tree. Being an explicit request, a relative path, a missing
+ * file, or an oversized file is an error rather than a silent no-op.
+ */
+function withEnvConfig(
+  repoConfig: Partial<AnalyzeOptions> | undefined,
+): Partial<AnalyzeOptions> | undefined {
+  const envPath = process.env[GITNEXUS_RC_ENV]?.trim();
+  if (!envPath) return repoConfig;
+  const label = `${GITNEXUS_RC_ENV} file "${envPath}"`;
+  if (!path.isAbsolute(envPath)) {
+    throw new GitNexusRcError(`${GITNEXUS_RC_ENV} must be an absolute path (got "${envPath}").`);
+  }
+  let raw: string;
+  try {
+    raw = readBoundedConfigFile(envPath);
+  } catch (err) {
+    throw new GitNexusRcError(`Could not read ${label}: ${(err as Error).message}`);
+  }
+  const envConfig = parseAnalyzeConfig(raw, label);
+  logger.debug(
+    { file: envPath, keys: Object.keys(envConfig), repoKeys: Object.keys(repoConfig ?? {}) },
+    'analyze config: applied GITNEXUS_RC over .gitnexusrc',
+  );
+  return { ...repoConfig, ...envConfig };
+}
+
+function parseAnalyzeConfig(
+  rawInput: string,
+  source = GITNEXUS_RC_FILENAME,
+): Partial<AnalyzeOptions> {
+  let raw = rawInput;
 
   // Strip a leading UTF-8 BOM: Node's 'utf-8' decode keeps it, and JSON.parse
   // then fails with a confusing "Unexpected token" on an otherwise-valid file
@@ -390,25 +475,28 @@ export function loadAnalyzeConfig(repoRoot: string): Partial<AnalyzeOptions> | u
     parsed = JSON.parse(raw);
   } catch (err) {
     throw new GitNexusRcError(
-      `${GITNEXUS_RC_FILENAME} is not valid JSON: ${(err as Error).message}. ` +
+      `${source} is not valid JSON: ${(err as Error).message}. ` +
         `Expected a JSON object such as {"defaultBranch": "develop", "skipContextFiles": true}.`,
     );
   }
 
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new GitNexusRcError(`${GITNEXUS_RC_FILENAME} must contain a JSON object.`);
+    throw new GitNexusRcError(`${source} must contain a JSON object.`);
   }
 
   const obj = parsed as Record<string, unknown>;
-  const flat = normalizeLevel(obj, { allowNestedKey: true });
+  const flat = normalizeLevel(obj, { allowNestedKey: true, source });
 
   let nested: Partial<AnalyzeOptions> = {};
   if (Object.prototype.hasOwnProperty.call(obj, NESTED_KEY)) {
     const nestedRaw = obj[NESTED_KEY];
     if (nestedRaw === null || typeof nestedRaw !== 'object' || Array.isArray(nestedRaw)) {
-      throw new GitNexusRcError(`${GITNEXUS_RC_FILENAME} "${NESTED_KEY}" must be a JSON object.`);
+      throw new GitNexusRcError(`${source} "${NESTED_KEY}" must be a JSON object.`);
     }
-    nested = normalizeLevel(nestedRaw as Record<string, unknown>, { allowNestedKey: false });
+    nested = normalizeLevel(nestedRaw as Record<string, unknown>, {
+      allowNestedKey: false,
+      source,
+    });
   }
 
   // Nested `analyze` block overrides flat top-level keys for the same option.

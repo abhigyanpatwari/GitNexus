@@ -1,8 +1,19 @@
-import type { BindingRef, ParsedFile, ScopeId, TypeRef } from 'gitnexus-shared';
+import type {
+  BindingRef,
+  ParsedFile,
+  ReferenceSite,
+  ScopeId,
+  SymbolDefinition,
+  TypeRef,
+} from 'gitnexus-shared';
 import { logger } from '../../../logger.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
-import { isClassLike } from '../../scope-resolution/scope/walkers.js';
+import {
+  isClassLike,
+  resolveSameNamespaceInheritanceBase,
+} from '../../scope-resolution/scope/walkers.js';
 import type { JvmPackageFact } from './package-facts.js';
+import { isJvmSourceVisible } from './source-visibility.js';
 
 /** Packages larger than this get no implicit sibling visibility at all — every
  *  file in them is marked incomplete. `GITNEXUS_MAX_INJECTED_SIBLINGS` bounds
@@ -32,6 +43,15 @@ export interface JvmPackageSiblingVisibility {
     },
   ) => void;
   readonly isVisibilityIncomplete: (filePath: string) => boolean;
+  /** `ScopeResolver.resolveImplicitInheritanceBase`: an unqualified base bound
+   *  by the same-package rule, which the sibling bindings above only provide
+   *  after the inheritance pre-pass has run. */
+  readonly resolveImplicitInheritanceBase: (
+    baseName: string,
+    derivingClass: SymbolDefinition,
+    scopes: ScopeResolutionIndexes,
+    site?: ReferenceSite,
+  ) => SymbolDefinition | undefined;
 }
 
 interface PackageBucket {
@@ -109,7 +129,9 @@ export function createJvmPackageSiblingVisibility(
         const moduleScopeId = parsed.scopes.find((scope) => scope.kind === 'Module')?.id;
         for (const scope of parsed.scopes) {
           if (scope.kind !== 'Class' || scope.parent !== moduleScopeId) continue;
-          const def = scope.ownedDefs.find((candidate) => isClassLike(candidate.type));
+          const def = scope.ownedDefs.find(
+            (candidate) => isClassLike(candidate.type) || candidate.type === 'Annotation',
+          );
           if (def !== undefined) classDefs.push({ def, filePath: parsed.filePath });
         }
       }
@@ -223,9 +245,88 @@ export function createJvmPackageSiblingVisibility(
     }
   }
 
+  // A file whose package is unknown matches nothing, so it can neither claim a
+  // base nor be offered one. Top-level types only: `qualifiedNames` keys a
+  // nested type by its dotted `Outer.Inner` path, never by the bare name.
+  const packageOf = (def: SymbolDefinition): string | undefined => {
+    const fact = options.getPackageFact(def.filePath);
+    return fact?.status === 'known' ? fact.packageName : undefined;
+  };
+
+  // Scope indexes are immutable for this inheritance pass. Hydrate each file's
+  // module children once; local and nested classes are not package siblings.
+  const topLevelIds = new WeakMap<ScopeResolutionIndexes, Map<string, ReadonlySet<string>>>();
+  const isPackageClass = (def: SymbolDefinition, scopes: ScopeResolutionIndexes): boolean => {
+    let files = topLevelIds.get(scopes);
+    if (files === undefined) topLevelIds.set(scopes, (files = new Map()));
+    let ids = files.get(def.filePath);
+    if (ids === undefined) {
+      const found = new Set<string>();
+      const module = scopes.moduleScopes.get(def.filePath);
+      if (module !== undefined) {
+        for (const childId of scopes.scopeTree.getChildren(module)) {
+          const child = scopes.scopeTree.getScope(childId);
+          if (child?.kind !== 'Class') continue;
+          for (const candidate of child.ownedDefs) {
+            if (isClassLike(candidate.type) || candidate.type === 'Annotation')
+              found.add(candidate.nodeId);
+          }
+        }
+      }
+      files.set(def.filePath, (ids = found));
+    }
+    return ids.has(def.nodeId);
+  };
+
+  // The pre-MRO pass cannot rule out an inherited member type in an
+  // enclosing class. Refuse the package fallback until that higher-priority
+  // lookup is known, rather than manufacturing an unrelated package edge.
+  const heritageScopes = new WeakMap<ScopeResolutionIndexes, ReadonlySet<ScopeId>>();
+  const hasInheritedEnclosingClass = (site: ReferenceSite, scopes: ScopeResolutionIndexes) => {
+    let inherited = heritageScopes.get(scopes);
+    if (inherited === undefined) {
+      inherited = new Set(
+        scopes.referenceSites.filter((ref) => ref.kind === 'inherits').map((ref) => ref.inScope),
+      );
+      heritageScopes.set(scopes, inherited);
+    }
+    let cursor = scopes.scopeTree.getScope(site.inScope)?.parent ?? null;
+    while (cursor !== null) {
+      const scope = scopes.scopeTree.getScope(cursor);
+      if (scope?.kind === 'Class' && inherited.has(cursor)) return true;
+      cursor = scope?.parent ?? null;
+    }
+    return false;
+  };
+
   return {
     populateNamespaceSiblings,
     isVisibilityIncomplete: (filePath) => incompleteFiles.has(filePath),
+    resolveImplicitInheritanceBase: (baseName, derivingClass, scopes, site) => {
+      // An explicit typealias/non-class import can resolve without producing a
+      // class binding. Its claim still takes precedence over package siblings.
+      const moduleScope = scopes.moduleScopes.get(derivingClass.filePath);
+      if (
+        moduleScope !== undefined &&
+        scopes.imports.get(moduleScope)?.some((edge) => edge.localName === baseName)
+      )
+        return undefined;
+      if (site !== undefined && hasInheritedEnclosingClass(site, scopes)) return undefined;
+      return resolveSameNamespaceInheritanceBase(
+        baseName,
+        derivingClass,
+        scopes,
+        packageOf,
+        (def) =>
+          isPackageClass(def, scopes) &&
+          isJvmSourceVisible(derivingClass.filePath, def.filePath) &&
+          // Omitted arguments may be raw or constructor-inferred. Explicit
+          // arguments must match before proximity ranks same-package bases.
+          (site?.typeArguments === undefined ||
+            site.typeArguments.length === 0 ||
+            (def.typeParameters?.length ?? 0) === site.typeArguments.length),
+      );
+    },
   };
 }
 

@@ -1,6 +1,6 @@
 [
   {
-    "type": "block_lit",
+    "type": "array_lit",
     "named": true,
     "fields": {},
     "children": {
@@ -10,9 +10,28 @@
         {
           "type": "constant",
           "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "block_lit",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "array_lit",
+          "named": true
         },
         {
-          "type": "full_ident",
+          "type": "constant",
+          "named": true
+        },
+        {
+          "type": "extension_name",
           "named": true
         },
         {
@@ -224,13 +243,43 @@
     }
   },
   {
+    "type": "extension_name",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "full_ident",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "full_ident",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "extensions",
     "named": true,
     "fields": {},
     "children": {
-      "multiple": false,
+      "multiple": true,
       "required": true,
       "types": [
+        {
+          "type": "field_options",
+          "named": true
+        },
         {
           "type": "ranges",
           "named": true
@@ -343,6 +392,10 @@
       "types": [
         {
           "type": "field_number",
+          "named": true
+        },
+        {
+          "type": "field_options",
           "named": true
         },
         {
@@ -545,6 +598,10 @@
       "types": [
         {
           "type": "empty_statement",
+          "named": true
+        },
+        {
+          "type": "group",
           "named": true
         },
         {
@@ -838,6 +895,10 @@
         {
           "type": "escape_sequence",
           "named": true
+        },
+        {
+          "type": "string_content",
+          "named": true
         }
       ]
     }
@@ -845,7 +906,18 @@
   {
     "type": "syntax",
     "named": true,
-    "fields": {}
+    "fields": {
+      "version": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      }
+    }
   },
   {
     "type": "type",
@@ -864,14 +936,6 @@
   },
   {
     "type": "\"",
-    "named": false
-  },
-  {
-    "type": "\"proto2\"",
-    "named": false
-  },
-  {
-    "type": "\"proto3\"",
     "named": false
   },
   {
@@ -900,6 +964,10 @@
   },
   {
     "type": ".",
+    "named": false
+  },
+  {
+    "type": "/",
     "named": false
   },
   {
@@ -940,7 +1008,8 @@
   },
   {
     "type": "comment",
-    "named": true
+    "named": true,
+    "extra": true
   },
   {
     "type": "decimal_lit",
@@ -1109,6 +1178,10 @@
   {
     "type": "string",
     "named": false
+  },
+  {
+    "type": "string_content",
+    "named": true
   },
   {
     "type": "syntax",

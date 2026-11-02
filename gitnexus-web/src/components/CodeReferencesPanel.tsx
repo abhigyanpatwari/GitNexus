@@ -16,7 +16,12 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useAppState } from '../hooks/useAppState';
 import { type GraphNode, getSyntaxLanguageFromFilename } from 'gitnexus-shared';
 import { NODE_COLORS } from '../lib/constants';
-import { readFile, type ReadFileResult } from '../services/backend-client';
+import { BackendError, readFile, type ReadFileResult } from '../services/backend-client';
+import {
+  selectedNodeDisplayLine,
+  selectedNodeFileRange,
+  selectedNodeLineHighlighted,
+} from './code-panel-lines';
 import { useTranslation } from 'react-i18next';
 
 const getSyntaxLanguage = (filePath: string | undefined): string => {
@@ -44,6 +49,41 @@ const customTheme = {
 
 export interface CodeReferencesPanelProps {
   onFocusNode: (nodeId: string) => void;
+}
+
+/** A fetched code excerpt for one AI citation card. Line numbers are 0-based file offsets. */
+interface CitationSnippet {
+  content: string;
+  start: number;
+  end: number;
+  /** Highlight range relative to `start`. */
+  highlightStart: number;
+  highlightEnd: number;
+  totalLines: number;
+}
+const CITATION_CONTEXT_LINES = 5;
+/** Max lines to fetch when a citation has no start/end range. */
+const RANGELESS_CITATION_LINES = 80;
+/** Cap simultaneous `/api/file` reads when a reply cites many files. */
+const CITATION_SNIPPET_CONCURRENCY = 4;
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await worker(items[currentIndex]);
+    }
+  });
+  await Promise.all(runners);
+  return results;
 }
 
 export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) => {
@@ -180,19 +220,103 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     };
   }, [codeReferenceFocus, aiReferences]);
 
+  // Per-citation snippets, fetched from the server around each reference's
+  // (0-based) line range. Keyed by reference id; a failed read stays absent so
+  // the card falls back to the "code not available" notice.
+  const [citationSnippets, setCitationSnippets] = useState<Map<string, CitationSnippet>>(
+    () => new Map(),
+  );
+  // Ids already requested (loaded or failed) — a failed read is not retried.
+  const requestedSnippetIds = useRef<Set<string>>(new Set());
+
+  const snippetRepoKey = currentRepo || projectName || undefined;
+  const snippetRepoKeyRef = useRef<string | undefined>(undefined);
+  // Live citation ids at apply time — in-flight batches must not resurrect
+  // excerpts after clearAICodeReferences() mints a fresh list.
+  const liveCitationIdsRef = useRef<Set<string>>(new Set());
+  liveCitationIdsRef.current = new Set(aiReferences.map((ref) => ref.id));
+
+  useEffect(() => {
+    if (snippetRepoKeyRef.current !== snippetRepoKey) {
+      snippetRepoKeyRef.current = snippetRepoKey;
+      requestedSnippetIds.current.clear();
+      setCitationSnippets(new Map());
+    }
+
+    const liveIds = liveCitationIdsRef.current;
+    for (const id of [...requestedSnippetIds.current]) {
+      if (!liveIds.has(id)) requestedSnippetIds.current.delete(id);
+    }
+    setCitationSnippets((prev) => {
+      if (prev.size === 0) return prev;
+      let removed = false;
+      const next = new Map<string, CitationSnippet>();
+      for (const [id, snippet] of prev) {
+        if (liveIds.has(id)) next.set(id, snippet);
+        else removed = true;
+      }
+      return removed ? next : prev;
+    });
+
+    const pending = aiReferences.filter((ref) => !requestedSnippetIds.current.has(ref.id));
+    if (pending.length === 0) return;
+    for (const ref of pending) requestedSnippetIds.current.add(ref.id);
+
+    mapWithConcurrency(pending, CITATION_SNIPPET_CONCURRENCY, async (ref) => {
+      const hasRange = typeof ref.startLine === 'number';
+      // Range-less citations must not download/highlight the entire file.
+      const refStart = hasRange ? (ref.startLine as number) : 0;
+      const refEnd = hasRange
+        ? (ref.endLine ?? refStart)
+        : Math.max(0, RANGELESS_CITATION_LINES - 1);
+      const options = hasRange
+        ? selectedNodeFileRange(refStart, refEnd, CITATION_CONTEXT_LINES)
+        : { startLine: 0, endLine: refEnd };
+      try {
+        const result = await readFile(ref.filePath, { ...options, repo: snippetRepoKey });
+        const start = result.startLine ?? 0;
+        const lineCount = result.content.split('\n').length;
+        const snippet: CitationSnippet = {
+          content: result.content,
+          start,
+          end: result.endLine ?? start + lineCount - 1,
+          highlightStart: hasRange ? refStart - start : 0,
+          highlightEnd: hasRange ? refEnd - start : 0,
+          totalLines: result.totalLines,
+        };
+        return [ref.id, snippet] as const;
+      } catch {
+        return null;
+      }
+    }).then((entries) => {
+      // Repo switch already cleared the set and started a replacement batch.
+      if (snippetRepoKeyRef.current !== snippetRepoKey) return;
+      const loaded = entries.filter((e): e is readonly [string, CitationSnippet] => e !== null);
+      if (loaded.length === 0) return;
+      setCitationSnippets((prev) => {
+        const next = new Map(prev);
+        for (const [id, snippet] of loaded) {
+          if (liveCitationIdsRef.current.has(id)) next.set(id, snippet);
+        }
+        return next;
+      });
+    });
+  }, [aiReferences, snippetRepoKey]);
+
   const refsWithSnippets = useMemo(() => {
     return aiReferences.map((ref) => {
+      const snippet = citationSnippets.get(ref.id);
       return {
         ref,
-        content: null as string | null,
-        start: 0,
-        end: 0,
-        highlightStart: 0,
-        highlightEnd: 0,
-        totalLines: 0,
+        content: snippet?.content ?? null,
+        start: snippet?.start ?? 0,
+        end: snippet?.end ?? 0,
+        highlightStart: snippet?.highlightStart ?? 0,
+        highlightEnd: snippet?.highlightEnd ?? 0,
+        totalLines: snippet?.totalLines ?? 0,
       };
     });
-  }, [aiReferences]);
+  }, [aiReferences, citationSnippets]);
 
   const selectedFilePath = selectedNode?.properties?.filePath;
   const selectedIsFile = selectedNode?.label === 'File' && !!selectedFilePath;
@@ -205,6 +329,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
   const CONTEXT_LINES = 50; // lines of context above and below the symbol
 
   const [fileResult, setFileResult] = useState<ReadFileResult | null>(null);
+  const [sourceUnavailable, setSourceUnavailable] = useState(false);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
   const selectedViewerRef = useRef<HTMLDivElement>(null);
 
@@ -214,24 +339,22 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
   useEffect(() => {
     if (!selectedFilePath) {
       setFileResult(null);
+      setSourceUnavailable(false);
       return;
     }
 
     let cancelled = false;
     setIsLoadingFile(true);
     setFileResult(null);
+    setSourceUnavailable(false);
 
-    // Determine read range: full file for File nodes, buffered for symbols
+    // Determine read range: full file for File nodes, buffered for symbols.
+    // Graph node lines are 0-based (#2377); /api/file ranges are 0-indexed.
     const startLine = selectedNode?.properties?.startLine as number | undefined;
     const endLine = selectedNode?.properties?.endLine as number | undefined;
     const isWholeFile = selectedIsFile || startLine === undefined;
 
-    const options = isWholeFile
-      ? {}
-      : {
-          startLine: Math.max(0, startLine - CONTEXT_LINES),
-          endLine: (endLine ?? startLine) + CONTEXT_LINES,
-        };
+    const options = isWholeFile ? {} : selectedNodeFileRange(startLine, endLine, CONTEXT_LINES);
 
     // Prefer the repo path identity over the display name — duplicate display
     // names would otherwise resolve to the wrong repository's file (#2420).
@@ -242,9 +365,12 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
           setIsLoadingFile(false);
         }
       })
-      .catch(() => {
+      .catch((error) => {
         if (!cancelled) {
           setFileResult(null);
+          setSourceUnavailable(
+            error instanceof BackendError && error.code === 'source_unavailable',
+          );
           setIsLoadingFile(false);
         }
       });
@@ -261,9 +387,10 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     currentRepo,
   ]);
 
-  // Scroll to the selected node's startLine after content loads
+  // Scroll to the selected node's startLine after content loads.
+  // GraphNode startLine is 0-based; displayed gutters are 1-based.
   useEffect(() => {
-    if (!selectedFileContent || !selectedNode?.properties?.startLine) return;
+    if (!selectedFileContent || typeof selectedNode?.properties?.startLine !== 'number') return;
     const startLine = selectedNode.properties.startLine as number;
 
     // Double rAF: wait for SyntaxHighlighter to fully render before scrolling
@@ -273,15 +400,23 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
         if (cancelled) return;
         const container = selectedViewerRef.current;
         if (!container) return;
+        // Index into the rendered lines: the viewer starts at `fileStartLine`
+        // (0-based), so the symbol's 0-based file line minus that offset.
+        const renderedIndex = Math.max(0, startLine - fileStartLine);
         const lineEl =
-          (container.querySelector(`[data-line-number="${startLine + 1}"]`) as HTMLElement) ??
-          (container.querySelectorAll('.linenumber')[startLine] as HTMLElement);
+          (container.querySelector(
+            `[data-line-number="${selectedNodeDisplayLine(startLine)}"]`,
+          ) as HTMLElement) ??
+          (container.querySelectorAll('.linenumber')[renderedIndex] as HTMLElement);
         if (lineEl) {
           lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         } else {
           // Fallback: estimate scroll position based on line height
           const lineHeight = 20.8; // 13px font * 1.6 line-height
-          container.scrollTop = Math.max(0, startLine * lineHeight - container.clientHeight / 3);
+          container.scrollTop = Math.max(
+            0,
+            renderedIndex * lineHeight - container.clientHeight / 3,
+          );
         }
       });
       rafIds.push(innerRaf);
@@ -291,7 +426,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
       cancelled = true;
       rafIds.forEach((id) => cancelAnimationFrame(id));
     };
-  }, [selectedFileContent, selectedNode?.properties?.startLine]);
+  }, [selectedFileContent, selectedNode?.properties?.startLine, fileStartLine]);
 
   if (isCollapsed) {
     return (
@@ -404,12 +539,12 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                     userSelect: 'none',
                   }}
                   lineProps={(lineNumber) => {
+                    // `lineNumber` is 1-based (startingLineNumber); node lines are 0-based.
                     const symStart = selectedNode?.properties?.startLine;
                     const symEnd = selectedNode?.properties?.endLine ?? symStart;
                     const isHighlighted =
                       typeof symStart === 'number' &&
-                      lineNumber >= symStart + 1 &&
-                      lineNumber <= (symEnd ?? symStart) + 1;
+                      selectedNodeLineHighlighted(lineNumber, symStart, symEnd);
                     return {
                       style: {
                         display: 'block',
@@ -426,11 +561,11 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 </SyntaxHighlighter>
               ) : (
                 <div className="px-3 py-3 text-sm text-text-muted">
-                  {selectedIsFile ? (
-                    <>{t('graph:codePanel.codeNotAvailable', { path: selectedFilePath })}</>
-                  ) : (
-                    <>{t('graph:codePanel.selectFile')}</>
-                  )}
+                  {sourceUnavailable
+                    ? t('graph:codePanel.sourceUnavailable')
+                    : selectedIsFile
+                      ? t('graph:codePanel.codeNotAvailable', { path: selectedFilePath })
+                      : t('graph:codePanel.selectFile')}
                 </div>
               )}
             </div>

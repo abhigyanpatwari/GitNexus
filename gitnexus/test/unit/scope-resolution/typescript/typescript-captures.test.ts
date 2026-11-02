@@ -709,6 +709,34 @@ describe('emitTsScopeCaptures — #1876 array-method-callback narrowing', () => 
   });
 });
 
+describe('emitTsScopeCaptures — curried pair HOC wrappers (tRPC withAuth)', () => {
+  const declWithName = (src: string, tag: string, name: string): boolean =>
+    emitTsScopeCaptures(src, 'test.ts').some(
+      (m) => m[tag] !== undefined && m['@declaration.name']?.text === name,
+    );
+
+  it('names create: publicProcedure.mutation(withAuth(async () => {}))', () => {
+    const src = 'const r = { create: publicProcedure.mutation(withAuth(async () => {})) };';
+    expect(declWithName(src, '@declaration.function', 'create')).toBe(true);
+  });
+
+  it('names identifier-callee create: mutation(withAuth(function () {}))', () => {
+    const src = 'const r = { create: mutation(withAuth(function () { return null; })) };';
+    expect(declWithName(src, '@declaration.function', 'create')).toBe(true);
+  });
+
+  it('names quoted-key create: publicProcedure.query(withAuth(async () => {}))', () => {
+    const src = "const r = { 'create': publicProcedure.query(withAuth(async () => {})) };";
+    expect(declWithName(src, '@declaration.function', 'create')).toBe(true);
+  });
+
+  it('does not name variable-level nested HOC memo(forwardRef(...)) as Function', () => {
+    const src = 'const Wrapped = memo(forwardRef(() => null));';
+    expect(declWithName(src, '@declaration.function', 'Wrapped')).toBe(false);
+    expect(declWithName(src, '@declaration.variable', 'Wrapped')).toBe(true);
+  });
+});
+
 describe('emitTsScopeCaptures — value-position references (#2437)', () => {
   it('captures a longhand pair value identifier as @reference.value-ref with its key', () => {
     const match = findMatch(
@@ -745,5 +773,50 @@ describe('emitTsScopeCaptures — value-position references (#2437)', () => {
         (t) => t.includes('@reference.value-ref'),
       ),
     ).toBe(0);
+  });
+});
+
+describe('emitTsScopeCaptures — callable-flow direct-callee-name under `await f<T>(...)` (#1432)', () => {
+  // tree-sitter-typescript parses `await f<T>(x)` as
+  // `call_expression(function: await_expression(f), type_arguments, arguments)`
+  // — the await wraps the CALLEE, not the call. Since #1432 the shared reader
+  // names a callee only for a direct designator; without unwrapping the await
+  // that gate dropped `f`, so a callback passed to an awaited generic call
+  // could no longer be joined to `f`'s formal by name (the un-awaited
+  // spelling `f<T>(x)` kept it). A member callee (`svc.verify<T>(x)`) must
+  // stay nameless either way: naming it fanned the argument out to every
+  // same-named callable in the repo.
+  const src = `
+async function verifyToken<T>(token: string, onDone: () => void): Promise<T> { onDone(); return {} as T; }
+const svc = { verify<T>(token: string, onDone: () => void): Promise<T> { onDone(); return Promise.resolve({} as T); } };
+export async function run(token: string) {
+  const a = await verifyToken<string>(token, () => {});
+  const b = await svc.verify<string>(token, () => {});
+  return [a, b];
+}
+`;
+  const argumentFacts = () =>
+    emitTsScopeCaptures(src, 'test.ts')
+      .filter((m) => m['@callable-flow.argument'] !== undefined)
+      .map((m) => ({
+        call: m['@callable-flow.argument']!.text,
+        source: m['@callable-flow.source']!.text,
+        directCallee: m['@callable-flow.direct-callee-name']?.text,
+      }));
+
+  it('an awaited generic DIRECT call keeps its direct-callee-name', () => {
+    expect(argumentFacts()).toContainEqual({
+      call: 'await verifyToken<string>(token, () => {})',
+      source: '<anonymous>',
+      directCallee: 'verifyToken',
+    });
+  });
+
+  it('an awaited generic MEMBER call has no direct-callee-name', () => {
+    expect(argumentFacts()).toContainEqual({
+      call: 'await svc.verify<string>(token, () => {})',
+      source: '<anonymous>',
+      directCallee: undefined,
+    });
   });
 });

@@ -31,6 +31,22 @@ describe('filterRepoFiles', () => {
     expect(r.droppedCount).toBe(4);
   });
 
+  it('excludes emitted _next output, including the Capacitor/Cordova copy', () => {
+    // `.next` was listed but `_next` was not, so a mobile-wrapped Next.js app
+    // uploaded its whole minified bundle against the server's caps for files
+    // the analyzer then discards anyway (#3007).
+    const input = [
+      f('repo/android/app/src/main/assets/public/_next/static/chunks/main.js'),
+      f('repo/ios/App/App/public/_next/static/chunks/framework.js'),
+      f('repo/_next/static/chunks/x.js'),
+      f('repo/src/index.ts'),
+      f('repo/src/_nextgen/index.ts'),
+    ];
+    const r = filterRepoFiles(input);
+    expect(r.manifest).toEqual(['repo/src/index.ts', 'repo/src/_nextgen/index.ts']);
+    expect(r.droppedCount).toBe(3);
+  });
+
   it('drops files over the per-file size cap', () => {
     const input = [f('repo/big.bin', MAX_FILE_BYTES + 1), f('repo/small.ts', 10)];
     const r = filterRepoFiles(input);

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { LocalBackend, RepoListing } from './local/local-backend.js';
+import type { LocalBackend, McpToolCallContext, RepoListing } from './local/local-backend.js';
 import { parseListReposPagination } from './local/local-backend.js';
 import { scrubGroupDescription } from './read-only-policy.js';
 import { LIST_REPOS_DEFAULT_LIMIT, LIST_REPOS_MAX_LIMIT } from './tools.js';
@@ -179,9 +179,46 @@ export class McpRepositoryPolicy {
       });
   }
 
-  async requiresExplicitRepo(backend: LocalBackend): Promise<boolean> {
-    if (this.defaultRepo) return false;
-    return (await this.listAllowedRepos(backend)).length > 1;
+  async toolSchemaRepoRequirements(backend: LocalBackend): Promise<{
+    readOnlyRequiresRepo: boolean;
+    mutatingRequiresRepo: boolean;
+  }> {
+    if (this.defaultRepo) {
+      return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
+    }
+
+    // Runtime selection is based on the configured allowlist, not on which
+    // entries happen to remain visible in a later registry refresh. Keep the
+    // advertised schema aligned with repoForArgs() when that listing shrinks.
+    if (this.restricted) {
+      const requiresRepo = this.allowed.length > 1;
+      return {
+        readOnlyRequiresRepo: requiresRepo,
+        mutatingRequiresRepo: requiresRepo,
+      };
+    }
+
+    // Validated registry cardinality only — no listRepos() staleness git.
+    // The 0–1 arm stays a cheap countRepos() (no refreshRepos / kuzu cleanup).
+    const repoCount = await backend.countRepos();
+    if (repoCount <= 1) {
+      return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
+    }
+    try {
+      // countRepos() does not refresh the backend; this cwd probe must.
+      await backend.selectToolRepository(undefined, undefined, {
+        allowCwdDefault: true,
+        refreshRegistry: true,
+      });
+    } catch {
+      return { readOnlyRequiresRepo: true, mutatingRequiresRepo: true };
+    }
+    // The probe just refreshed. If that snapshot is now a singleton, match the
+    // <=1 arm rather than advertising a split mutating-only schema.
+    if (backend.cachedRepoCount() <= 1) {
+      return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
+    }
+    return { readOnlyRequiresRepo: false, mutatingRequiresRepo: true };
   }
 
   private async listReposPage(
@@ -221,13 +258,14 @@ export class McpRepositoryPolicy {
     backend: LocalBackend,
     method: string,
     params: Record<string, unknown> | undefined,
+    ...context: [McpToolCallContext?]
   ): Promise<unknown> {
-    if (!this.configured) return backend.callTool(method, params);
+    if (!this.configured) return backend.callTool(method, params, ...context);
     if (method === 'list_repos') return this.listReposPage(backend, params);
     if (this.restricted && method.startsWith('group_')) {
       throw new Error('Group tools are unavailable when an MCP repository allowlist is set.');
     }
-    return backend.callTool(method, this.normalizeToolArgs(params));
+    return backend.callTool(method, this.normalizeToolArgs(params), ...context);
   }
 
   private async resolveRepo(
@@ -238,6 +276,22 @@ export class McpRepositoryPolicy {
     if (!this.configured) return backend.resolveRepo(repo, branch);
     if (!this.restricted) return backend.resolveRepo(repo ?? this.defaultRepo?.path, branch);
     const selected = this.repoForArgs(repo === undefined ? undefined : { repo });
+    return backend.resolveRepo(selected?.path, branch);
+  }
+
+  private async selectToolRepository(
+    backend: LocalBackend,
+    repo?: string,
+    branch?: string,
+    options?: Parameters<LocalBackend['selectToolRepository']>[2],
+  ): Promise<Awaited<ReturnType<LocalBackend['selectToolRepository']>>> {
+    if (!this.configured) return backend.selectToolRepository(repo, branch, options);
+    if (!this.restricted) {
+      return backend.selectToolRepository(repo ?? this.defaultRepo?.path, branch, options);
+    }
+    const selected = this.repoForArgs(repo === undefined ? undefined : { repo });
+    // Restricted policies never allow cwd to select outside the configured
+    // set; once policy supplies an explicit path, the public resolver is enough.
     return backend.resolveRepo(selected?.path, branch);
   }
 
@@ -280,18 +334,31 @@ export class McpRepositoryPolicy {
   }
 
   toolForMcp(tool: GitNexusTool): GitNexusTool {
-    if (!this.restricted) return tool;
+    const defaultRepo =
+      this.defaultRepo ??
+      (this.restricted && this.allowed.length === 1 ? this.allowed[0] : undefined);
+    if (!this.restricted && !defaultRepo) return tool;
     const properties = { ...tool.inputSchema.properties };
     const repo = properties.repo;
     if (repo && typeof repo === 'object') {
+      const description = this.restricted
+        ? 'Allowed indexed repository name or path. Group-mode values are unavailable.'
+        : repo.description;
       properties.repo = {
         ...repo,
-        description: 'Allowed indexed repository name or path. Group-mode values are unavailable.',
+        description: defaultRepo
+          ? `${description} Default repository: ${JSON.stringify(defaultRepo.name)}.`
+          : description,
+        ...(defaultRepo ? { default: defaultRepo.path } : {}),
       };
     }
-    delete properties.subgroup;
-    delete properties.crossDepth;
-    const description = scrubGroupDescription(tool.description);
+    if (this.restricted) {
+      delete properties.subgroup;
+      delete properties.crossDepth;
+    }
+    const description = this.restricted
+      ? scrubGroupDescription(tool.description)
+      : tool.description;
     return { ...tool, description, inputSchema: { ...tool.inputSchema, properties } };
   }
 
@@ -300,12 +367,22 @@ export class McpRepositoryPolicy {
     return new Proxy(backend, {
       get(target, property, receiver) {
         if (property === 'callTool') {
-          return (method: string, params: Record<string, unknown> | undefined) =>
-            policy.callTool(target, method, params);
+          return (
+            method: string,
+            params: Record<string, unknown> | undefined,
+            ...context: [McpToolCallContext?]
+          ) => policy.callTool(target, method, params, ...context);
         }
         if (property === 'listRepos') return () => policy.listAllowedRepos(target);
         if (property === 'resolveRepo') {
           return (repo?: string, branch?: string) => policy.resolveRepo(target, repo, branch);
+        }
+        if (property === 'selectToolRepository') {
+          return (
+            repo?: string,
+            branch?: string,
+            options?: Parameters<LocalBackend['selectToolRepository']>[2],
+          ) => policy.selectToolRepository(target, repo, branch, options);
         }
         if (property === 'getContext' && policy.restricted) {
           return (repoId?: string) => {

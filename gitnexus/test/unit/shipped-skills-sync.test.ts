@@ -114,14 +114,31 @@ describe.each(STANDARD_SKILL_NAMES)('standard skill distribution for %s', (name)
 });
 
 describe('intended standard-skill improvements stay in every applicable copy', () => {
+  it('ships byte-identical refactoring guidance in every distribution', () => {
+    const canonical = fs.readFileSync(
+      path.join(REPO_ROOT, '.claude', 'skills', 'gitnexus-refactoring', 'SKILL.md'),
+    );
+    const copies = standardSkillCopies('gitnexus-refactoring');
+    expect(copies).toHaveLength(4);
+    for (const file of copies) {
+      expect(fs.readFileSync(file).equals(canonical), file).toBe(true);
+    }
+  });
+
   it('documents the PDG analyze flag in every CLI copy', () => {
     for (const file of standardSkillCopies('gitnexus-cli')) {
       expect(fs.readFileSync(file, 'utf-8')).toContain('`--pdg`');
     }
   });
 
-  // These copies are NOT byte-compared (only the engineering FAMILY above is),
-  // so a runner added to resolve-analyze-cmd.cjs can silently miss them. The
+  it('documents the AsyncAPI analyze flag in every CLI copy', () => {
+    for (const file of standardSkillCopies('gitnexus-cli')) {
+      expect(fs.readFileSync(file, 'utf-8')).toContain('`--asyncapi-spec <path>`');
+    }
+  });
+
+  // These CLI copies are not byte-compared, so a runner added to
+  // resolve-analyze-cmd.cjs can silently miss them. The
   // audience that most needs bunx documented — a bun-only machine with no npm,
   // npx or pnpm — is exactly the one an npx/pnpm-only bootstrap line strands.
   it('documents the bunx runner and bootstrap in every CLI copy', () => {
@@ -152,9 +169,8 @@ describe('intended standard-skill improvements stay in every applicable copy', (
   // This assertion exists because its absence let real drift ship: the canonical
   // `.claude/` copy lost the UNKNOWN block while the plugin mirror kept it, and
   // this suite passed 54/54 with the two copies contradicting each other. The
-  // byte-identical check above covers only the plan/work/review/lfg family, and
-  // the fragment lists are the only guard the standard skills get — so a fragment
-  // that is not listed is a fragment nothing protects.
+  // byte-identical checks do not cover impact-analysis, so a fragment
+  // that is not listed here is a fragment nothing protects.
   it('keeps the UNKNOWN-risk guidance in every impact-analysis copy', () => {
     const required = [
       '| **Zero callers found**         | **UNKNOWN** |',
@@ -165,6 +181,21 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     // Guard the guard: an empty copy list would make every loop below vacuous.
     expect(copies.length).toBeGreaterThan(1);
     for (const file of copies) {
+      const content = fs.readFileSync(file, 'utf-8');
+      for (const fragment of required) expect(content).toContain(fragment);
+    }
+  });
+
+  it('keeps the cross-surface risk-scale guidance in every impact-analysis copy', () => {
+    const required = [
+      '`riskSharedAxes`',
+      'MCP File walks',
+      'web Graph-RAG expands File targets',
+      'Within single-repo mode',
+      'Within group mode',
+      'overlays resolved',
+    ];
+    for (const file of standardSkillCopies('gitnexus-impact-analysis')) {
       const content = fs.readFileSync(file, 'utf-8');
       for (const fragment of required) expect(content).toContain(fragment);
     }
@@ -228,29 +259,126 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     }
   });
 
-  // #2899: the "Inline staleness signal" section was deleted from the
-  // canonical `.claude/` copy by an unrelated commit while the plugin mirror
-  // kept it — the same silent-deletion shape as the UNKNOWN-risk guard above,
-  // just for a hand-authored section instead of the machine-managed block.
-  // Scoped to canonical + plugin only: at the time of writing the npm mirror
-  // (gitnexus/skills/gitnexus-guide.md) already lacks this section as
-  // pre-existing, unrelated drift, so folding it into the loop above would
-  // fail on that unrelated copy instead of guarding this regression.
-  it('keeps the inline-staleness-signal section in the canonical and plugin guide copies', () => {
-    for (const file of [
-      path.join(REPO_ROOT, '.claude', 'skills', 'gitnexus-guide', 'SKILL.md'),
-      path.join(REPO_ROOT, 'gitnexus-claude-plugin', 'skills', 'gitnexus-guide', 'SKILL.md'),
-    ]) {
+  // #2899 / #3291: every gitnexus-guide distribution documents the with-ref
+  // hot-tool field. A copy that drops the section (or stays on the pre-#3291
+  // "absent when current" contract) ships a silent disagreement about identity.
+  it('keeps the inline-staleness-signal section in every gitnexus-guide copy', () => {
+    for (const file of standardSkillCopies('gitnexus-guide')) {
       const content = fs.readFileSync(file, 'utf-8');
       expect(content).toContain('### Inline staleness signal');
       expect(content).toContain('commitsBehind');
+      // #3256: the field gained `status`, and the `diverged` arm carries no
+      // count — the reason an agent has to read `status` before the number.
+      // #3291: it also gained the indexed ref, and is now emitted for every
+      // status rather than suppressed when the index is current — without the
+      // ref, `current` cannot distinguish an index of the default branch from
+      // one of a feature branch.
+      expect(content).toContain(
+        '{ status, branch?, lastCommit, indexedAt, measuredAgainst, commitsBehind?, hint? }',
+      );
+      expect(content).toContain('"status": "diverged"');
+      expect(content).toContain('"measuredAgainst": "HEAD"');
     }
   });
 
-  it("uses the rename API's text_search vocabulary in every refactoring copy", () => {
+  // Same reasoning as the UNKNOWN guard above: most of these skills are not
+  // byte-compared, so an edit to one copy alone can silently ship four
+  // distributions that disagree about whether identity is required. The
+  // fragments are matched against whitespace-normalized text because the
+  // copies wrap the same sentences at different columns.
+  const IDENTITY_CONTRACT_SKILLS = [
+    'gitnexus-impact-analysis',
+    'gitnexus-refactoring',
+    'gitnexus-debugging',
+    'gitnexus-exploring',
+  ] as const;
+
+  const normalize = (text: string): string => text.replace(/\s+/g, ' ');
+
+  it.each(IDENTITY_CONTRACT_SKILLS)(
+    'keeps the repository-identity contract in every %s copy',
+    (name) => {
+      const required = [
+        'list_repos {}',
+        '`offset: pagination.nextOffset`',
+        '`hasMore` is false',
+
+        'an omitted `repo` normally errors',
+        'stop and ask',
+
+        'repo: "my-app"',
+
+        'bind repo; explicit repo when >1 indexed, ask if ambiguous',
+
+        'Re-analyze only for `behind` or `diverged`',
+      ];
+      const copies = standardSkillCopies(name);
+      expect(copies.length).toBeGreaterThan(1);
+      for (const file of copies) {
+        const content = normalize(fs.readFileSync(file, 'utf-8'));
+        for (const fragment of required) expect(content).toContain(normalize(fragment));
+      }
+    },
+  );
+
+  // Every `code` a failed rename can carry, as thrown in src/mcp/local/rename/*
+  // and gitnexus-shared/src/rename/*, plus the statuses an agent must recover from.
+  const RENAME_RECOVERY_KEYS = [
+    'stale_graph',
+    'source_changed',
+    'unsupported_*',
+    'ambiguous_reference',
+    'incomplete_semantics',
+    'name_collision',
+    'invalid_name',
+    'invalid_argument',
+    'no_locations',
+    'overlapping_edits',
+    'invalid_edit',
+    'duplicate_file',
+    'missing_snapshot',
+    'outside_repository',
+    'source-unavailable',
+    'rename_failed',
+    'write_failed',
+    'application_status: "partial"',
+  ];
+
+  it('documents a recovery step for every rename failure code in every refactoring copy', () => {
     for (const file of standardSkillCopies('gitnexus-refactoring')) {
       const content = fs.readFileSync(file, 'utf-8');
-      expect(content).toContain('text_search');
+      const table = content.slice(content.indexOf('| Result | Next step |'));
+      for (const key of RENAME_RECOVERY_KEYS) expect(table, `${file}: ${key}`).toContain(key);
+    }
+  });
+
+  it('teaches one rename tool with dry_run, not a separate rename_preview, in every copy', () => {
+    for (const name of ['gitnexus-refactoring', 'gitnexus-guide'] as const) {
+      for (const file of standardSkillCopies(name)) {
+        const content = fs.readFileSync(file, 'utf-8');
+        expect(content, file).not.toContain('rename_preview');
+        expect(content, file).toContain('dry_run');
+        expect(content, file).toContain('plan_token');
+      }
+    }
+    for (const file of standardSkillCopies('gitnexus-refactoring')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      expect(content).toContain(
+        'rename({symbol_name: "oldName", new_name: "newName", dry_run: true})',
+      );
+      expect(content).toContain(
+        'rename({..., dry_run: false, plan_token: "<token from preview>"})',
+      );
+    }
+  });
+
+  it('teaches graph-backed semantic preview in every refactoring copy', () => {
+    for (const file of standardSkillCopies('gitnexus-refactoring')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      expect(content).toContain('gitnexus-semantic');
+      expect(content).not.toContain('tsconfig_path');
+      expect(content).toContain('confidence: "semantic"');
+      expect(content).not.toContain('graph (safe)');
       expect(content).not.toContain('ast_search');
     }
   });
@@ -277,6 +405,10 @@ function extractManagedBlock(file: string): string {
   return match![1];
 }
 
+function alwaysDoSection(block: string): string {
+  return block.slice(block.indexOf('## Always Do'), block.indexOf('## Never Do'));
+}
+
 // The `risk: UNKNOWN` Always-Do bullet and its Never-Do clause were hand-added
 // INSIDE the machine-managed region instead of living in the template, so a
 // real analyze run silently deleted them on regeneration — twice (#2856's
@@ -293,6 +425,10 @@ describe('root AGENTS.md / CLAUDE.md managed block keeps the risk: UNKNOWN polic
   const REQUIRED_FRAGMENTS = [
     'MUST treat `risk: UNKNOWN` as unresolved, not as low.',
     'never read `UNKNOWN` as an all-clear',
+    'never use `riskSharedAxes` to waive a HIGH/CRITICAL `risk` warning',
+    'Compare File/symbol',
+    'MCP File omits axes',
+    'Graph-RAG expands File',
   ];
 
   it.each(['AGENTS.md', 'CLAUDE.md'])('%s managed block documents the policy', (file) => {
@@ -301,17 +437,32 @@ describe('root AGENTS.md / CLAUDE.md managed block keeps the risk: UNKNOWN polic
   });
 
   it.each(['AGENTS.md', 'CLAUDE.md'])(
+    '%s Always-Do pins the read-path MUST as its own bullet (#3076)',
+    (file) => {
+      const alwaysDo = alwaysDoSection(extractManagedBlock(file));
+      expect(alwaysDo).toMatch(/^- \*\*MUST use `query\(\{search_query: "concept"\}\)`/m);
+      expect(alwaysDo).toContain('Graph first');
+      expect(alwaysDo).toContain('text search only for empty/');
+      expect(alwaysDo).not.toMatch(/Explore\s+with/);
+      expect(alwaysDo).not.toMatch(/Use\s+`context\(\{name:/);
+      expect(alwaysDo).not.toMatch(/^- [^\n]*Explore/m);
+    },
+  );
+
+  it.each(['AGENTS.md', 'CLAUDE.md'])(
     "%s managed block's Always Do / Never Do bullet counts do not drop below the known floor",
     (file) => {
       const block = extractManagedBlock(file);
-      const alwaysDoSection = block.slice(
-        block.indexOf('## Always Do'),
-        block.indexOf('## Never Do'),
-      );
+      const alwaysDo = alwaysDoSection(block);
       const neverDoSection = block.slice(block.indexOf('## Never Do'));
-      // 7 Always-Do bullets are unconditional; an 8th (pdg_query) only
-      // appears when the index was built with --pdg, so the floor is 7, not 8.
-      expect((alwaysDoSection.match(/^- /gm) || []).length).toBeGreaterThanOrEqual(7);
+      const ungated = (alwaysDo.match(/^- .+/gm) ?? []).filter(
+        (line) => !line.includes('pdg_query'),
+      );
+      // Six Always-Do bullets are not hasPdg-gated after #3076. pdg_query is
+      // extra when the committed block was generated with --pdg. Counting
+      // ungated bullets (not total >= 6) fails if the read-path MUST leaves
+      // Always-Do while pdg_query keeps the old slack.
+      expect(ungated).toHaveLength(6);
       // Never Do never varies with hasPdg — exactly 4 today, so 4 is the floor.
       expect((neverDoSection.match(/^- NEVER /gm) || []).length).toBeGreaterThanOrEqual(4);
     },
@@ -339,6 +490,18 @@ describe('root AGENTS.md / CLAUDE.md managed block keeps the degraded-detect_cha
   it.each(['AGENTS.md', 'CLAUDE.md'])('%s managed block documents the policy', (file) => {
     const block = extractManagedBlock(file);
     for (const fragment of REQUIRED_FRAGMENTS) expect(block).toContain(fragment);
+  });
+});
+
+// The checked-in blocks must agree with what src/cli/ai-context.ts generates for the
+// one public rename tool: preview with dry_run:true first, then apply with dry_run:false.
+describe('root AGENTS.md / CLAUDE.md managed block teaches the single rename tool', () => {
+  it.each(['AGENTS.md', 'CLAUDE.md'])('%s managed block previews before applying', (file) => {
+    const block = extractManagedBlock(file);
+    expect(block).toContain(
+      'use `rename` with `dry_run: true` first, review the graph-backed semantic spans and coverage, then apply with `dry_run: false`',
+    );
+    expect(block).not.toContain('rename_preview');
   });
 });
 

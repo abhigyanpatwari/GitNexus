@@ -21,6 +21,7 @@ export {
   type ScopeResolutionOutput,
 } from '../scope-resolution/pipeline/phase.js';
 export { springConfigPhase, type SpringConfigOutput } from './spring-config.js';
+export { springDestinationsPhase, type SpringDestinationsOutput } from './spring-destinations.js';
 export {
   springAutoConfigurationPhase,
   type SpringAutoConfigurationOutput,

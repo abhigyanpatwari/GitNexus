@@ -79,6 +79,9 @@ const PHP_SCOPE_QUERY = `
 (enum_case
   name: (name) @declaration.name) @declaration.const
 
+(const_declaration
+  (const_element (name) @declaration.name)) @declaration.const
+
 ;; ── Declarations — methods / functions / constructors ─────────────────────
 
 (method_declaration
@@ -204,6 +207,22 @@ const PHP_SCOPE_QUERY = `
   right: (function_call_expression
     function: (name) @type-binding.type)) @type-binding.alias
 
+;; ── Type bindings — $u = qualified factory() (free call return alias) ────
+;; qualified_name / relative_name callee. The whole callee path is kept, its
+;; leading separator included (the marker tells interpret.ts not to strip
+;; it): only the provider can read the path against the file's use table
+;; and namespace (#3498).
+
+(assignment_expression
+  left: (variable_name) @type-binding.name
+  right: (function_call_expression
+    function: (qualified_name) @type-binding.type @type-binding.qualified-callee)) @type-binding.alias
+
+(assignment_expression
+  left: (variable_name) @type-binding.name
+  right: (function_call_expression
+    function: (relative_name) @type-binding.type @type-binding.qualified-callee)) @type-binding.alias
+
 ;; ── Type bindings — $u = $svc->getUser() (method call return alias) ───────
 
 (assignment_expression
@@ -245,6 +264,19 @@ const PHP_SCOPE_QUERY = `
 
 (function_call_expression
   function: (name) @reference.name) @reference.call.free
+
+;; ── References — qualified free calls (qualified_name / relative_name) ───
+;; The written path is both the site's name and its qualified name, so only
+;; the provider's resolveQualifiedFreeCall, reading it by PHP's name rules,
+;; can resolve it (#3498). Fail closed: a path it refuses (a builtin, an
+;; uninstalled package, a name declared twice) matches no simple-name lookup,
+;; so its tail never binds a same-named function in another namespace.
+
+(function_call_expression
+  function: (qualified_name) @reference.name @reference.qualified-name) @reference.call.free
+
+(function_call_expression
+  function: (relative_name) @reference.name @reference.qualified-name) @reference.call.free
 
 ;; ── References — member calls: $obj->method() ────────────────────────────
 ;;

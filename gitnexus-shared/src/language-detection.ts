@@ -29,9 +29,10 @@ const RUBY_EXTENSIONLESS_FILES = new Set([
 const EXTENSION_MAP: Record<SupportedLanguages, readonly string[]> = {
   [SupportedLanguages.JavaScript]: ['.js', '.jsx', '.mjs', '.cjs'],
   [SupportedLanguages.TypeScript]: ['.ts', '.tsx', '.mts', '.cts'],
-  [SupportedLanguages.Python]: ['.py'],
+  [SupportedLanguages.Python]: ['.py', '.ipynb'],
   [SupportedLanguages.Java]: ['.java'],
   [SupportedLanguages.C]: ['.c'],
+  [SupportedLanguages.ObjectiveC]: ['.m', '.mm'],
   [SupportedLanguages.CPlusPlus]: [
     '.cpp',
     '.cc',
@@ -53,6 +54,7 @@ const EXTENSION_MAP: Record<SupportedLanguages, readonly string[]> = {
   [SupportedLanguages.Dart]: ['.dart'],
   [SupportedLanguages.Vue]: ['.vue'],
   [SupportedLanguages.Cobol]: ['.cbl', '.cob', '.cpy', '.cobol'],
+  [SupportedLanguages.Zig]: ['.zig'],
 } satisfies Record<SupportedLanguages, readonly string[]>; // Ensure exhaustiveness
 
 /** Pre-built reverse lookup: extension → language (built once at module load). */
@@ -73,6 +75,10 @@ for (const [lang, exts] of Object.entries(EXTENSION_MAP) as [
  */
 export const isBladeTemplateFilename = (filePath: string): boolean =>
   filePath.replace(/\\/g, '/').toLowerCase().endsWith('.blade.php');
+
+/** Jupyter notebooks: ingested as Python; on-disk bytes are JSON. */
+export const isNotebookFilename = (filePath: string): boolean =>
+  filePath.replace(/\\/g, '/').toLowerCase().endsWith('.ipynb');
 
 /**
  * Map file extension to SupportedLanguage enum.
@@ -110,6 +116,7 @@ const SYNTAX_MAP: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Python]: 'python',
   [SupportedLanguages.Java]: 'java',
   [SupportedLanguages.C]: 'c',
+  [SupportedLanguages.ObjectiveC]: 'objectivec',
   [SupportedLanguages.CPlusPlus]: 'cpp',
   [SupportedLanguages.CSharp]: 'csharp',
   [SupportedLanguages.Go]: 'go',
@@ -121,6 +128,7 @@ const SYNTAX_MAP: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Dart]: 'dart',
   [SupportedLanguages.Vue]: 'typescript',
   [SupportedLanguages.Cobol]: 'cobol',
+  [SupportedLanguages.Zig]: 'zig',
 } satisfies Record<SupportedLanguages, string>; // Ensure exhaustiveness
 
 /** Non-code file extensions → Prism-compatible syntax identifiers */
@@ -159,6 +167,7 @@ const AUXILIARY_BASENAME_MAP: Record<string, string> = {
  */
 export const getSyntaxLanguageFromFilename = (filePath: string): string => {
   if (isBladeTemplateFilename(filePath)) return 'markup';
+  if (isNotebookFilename(filePath)) return 'json';
 
   const lang = getLanguageFromFilename(filePath);
   if (lang) return SYNTAX_MAP[lang];

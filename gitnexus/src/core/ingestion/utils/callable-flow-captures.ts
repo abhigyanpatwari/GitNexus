@@ -47,6 +47,12 @@
  *   `extractAssignment` (Kotlin's `assignment`, Dart's
  *   `initialized_identifier`). Returning `undefined` falls back to the shared
  *   path, so one callback can handle the odd node and leave the rest alone.
+ * - A **fieldless or oddly-fielded** `??`/`?:`/elvis/ternary node is invisible
+ *   to the shared branch expansion, so only one operand (if any) flows.
+ *   Supply `valueAlternatives` (Kotlin's `elvis_expression`, Swift's
+ *   `nil_coalescing_expression`, Dart's `if_null_expression`, Python's
+ *   `conditional_expression`); return `[node]` to keep a statement-bodied
+ *   `if` opaque (Ruby).
  * - A binding needs a `SymbolDefinition` for the pass to attach to. Captures
  *   alone are not enough: without a `@declaration.*` for the bound name, the
  *   seed has no cell to key on.
@@ -120,6 +126,15 @@ export interface CallableFlowCaptureOptions {
     | readonly { readonly destination: SyntaxNode; readonly source: SyntaxNode }[]
     | undefined;
   readonly extractFunctionParameters?: (node: SyntaxNode) => readonly SyntaxNode[] | undefined;
+  /**
+   * Provider-owned call-argument extraction, for grammars whose call node
+   * carries its arguments as DIRECT children with no argument-list wrapper
+   * (tree-sitter-zig's `call_expression`). Without a wrapper node the shared
+   * `arguments`/`parameterListNodeTypes` lookup finds nothing, so every
+   * `argument` fact is lost. Returning `undefined` falls back to the shared
+   * path (mirrors `extractFunctionParameters`).
+   */
+  readonly extractCallArguments?: (call: SyntaxNode) => readonly SyntaxNode[] | undefined;
   readonly extractCallCallee?: (node: SyntaxNode) => SyntaxNode | undefined;
   readonly isCallNode?: (node: SyntaxNode) => boolean;
   /**
@@ -141,6 +156,20 @@ export interface CallableFlowCaptureOptions {
         readonly qualifiedName?: string;
       }
     | undefined;
+  /**
+   * Provider-owned branches of a value-selecting expression (#3354). The
+   * shared rule only knows the field shapes `left`/`operator`/`right` (with a
+   * `??`/`||`/`or` operator) and `condition`/`consequence`/`alternative`; a
+   * grammar that spells the same construct differently (fieldless children,
+   * `value`/`if_nil`, `first`/`second`, a ternary without a `condition`
+   * field) supplies the branches here. Each returned branch is expanded again,
+   * so chains work. Returning `[node]` means "recognized, but opaque": the
+   * whole expression stays one source, which is how a provider keeps the
+   * shared ternary rule off a statement-bodied `if` whose branches are
+   * statement lists, not values. `undefined` falls back to the shared rule
+   * (mirrors `extractAssignment`).
+   */
+  readonly valueAlternatives?: (node: SyntaxNode) => readonly SyntaxNode[] | undefined;
 }
 
 interface OperandSyntax {
@@ -173,11 +202,38 @@ interface FunctionInfo {
 
 interface ValueBindingIndex {
   readonly assignmentRegionIdsByName: ReadonlyMap<string, ReadonlySet<number>>;
+  /**
+   * Regions holding a store whose destination is a MEMBER path (`o->run =
+   * handler`, `self.f = target`), keyed by the member name. Only these gate a
+   * member call as a field-stored-callable invoke: a plain-name binding
+   * (`const release = deinit;` next to `self.slot.release()`) is not a store
+   * into anybody's member cell.
+   */
+  readonly memberStoreRegionIdsByName: ReadonlyMap<string, ReadonlySet<number>>;
   readonly formalByOwner: ReadonlyMap<number | undefined, ReadonlySet<string>>;
   readonly signatureByNameAndRegion: ReadonlyMap<
     string,
     ReadonlyMap<number, CallableCaptureSignature>
   >;
+  /**
+   * Every node id a visibility walk can stop at: the region ids of the three
+   * maps above plus the formal owners. Any other ancestor fails every check,
+   * so the walks jump from anchor to anchor instead of visiting it.
+   */
+  readonly anchorIds: ReadonlySet<number>;
+  /**
+   * Nearest anchor at-or-above a node, memoized for the whole file. Each
+   * alternative of a long `a || b || …` chain starts its walk at a leaf as
+   * deep as the chain is long; without the memo every leaf re-walked the same
+   * spine to the root, so the chain cost grew quadratically in its length.
+   */
+  readonly nearestAnchorById: Map<number, SyntaxNode | null>;
+  /**
+   * Parent of every named node, recorded by the one DFS. tree-sitter's
+   * `parent` is not a pointer read: it re-descends from the root, so it costs
+   * the node's depth, and a leaf of a long chain is as deep as the chain.
+   */
+  readonly parentById: ReadonlyMap<number, SyntaxNode>;
 }
 
 /**
@@ -186,20 +242,33 @@ interface ValueBindingIndex {
  * One explicit DFS supplies all phases below. Query-backed emitters may still
  * perform their existing query walk; this helper never reparses and remains
  * linear in AST size (the scope-capture benchmark guards the scaling ratio).
+ * That includes a value-selecting source: `valueAlternatives` expands a
+ * chain iteratively into disjoint leaves, and each leaf's visibility walk
+ * reuses the memoized anchor spine instead of re-walking to the root (the
+ * `typescript-deep-chain` benchmark case guards that one).
  */
 export function synthesizeCallableFlowCaptures(
   root: SyntaxNode,
   options: CallableFlowCaptureOptions,
 ): readonly CaptureMatch[] {
-  const nodes = collectNodes(root);
+  const parentById = new Map<number, SyntaxNode>();
+  const nodes = collectNodes(root, parentById);
   const functions = collectFunctions(nodes, options);
   const knownCallableNames = new Set(functions.map((fn) => fn.name));
   const assignments = collectAssignments(nodes, options);
-  const valueBindings = buildValueBindingIndex(nodes, assignments, functions, options);
+  const valueBindings = buildValueBindingIndex(nodes, parentById, assignments, functions, options);
 
   const out: CaptureMatch[] = [];
   for (const assignment of assignments) {
-    emitAssignmentFact(assignment, knownCallableNames, valueBindings, options, out);
+    for (const source of valueAlternatives(assignment.source, options)) {
+      emitAssignmentFact(
+        { ...assignment, source },
+        knownCallableNames,
+        valueBindings,
+        options,
+        out,
+      );
+    }
   }
   for (const fn of functions) emitFormalFacts(fn, options, out);
   for (const node of nodes) {
@@ -215,7 +284,9 @@ export function synthesizeCallableFlowCaptures(
   return out;
 }
 
-function collectNodes(root: SyntaxNode): SyntaxNode[] {
+/** Every named node in document order; also records each one's parent into
+ *  `parentById` (see `ValueBindingIndex.parentById`). */
+function collectNodes(root: SyntaxNode, parentById: Map<number, SyntaxNode>): SyntaxNode[] {
   const out: SyntaxNode[] = [];
   const stack: SyntaxNode[] = [root];
   while (stack.length > 0) {
@@ -224,7 +295,9 @@ function collectNodes(root: SyntaxNode): SyntaxNode[] {
     const children = node.namedChildren;
     for (let i = children.length - 1; i >= 0; i--) {
       const child = children[i];
-      if (child !== null) stack.push(child);
+      if (child === null) continue;
+      parentById.set(child.id, node);
+      stack.push(child);
     }
   }
   return out;
@@ -308,11 +381,13 @@ function collectAssignments(
 
 function buildValueBindingIndex(
   nodes: readonly SyntaxNode[],
+  parentById: ReadonlyMap<number, SyntaxNode>,
   assignments: readonly AssignmentParts[],
   functions: readonly FunctionInfo[],
   options: CallableFlowCaptureOptions,
 ): ValueBindingIndex {
   const assignmentRegionIdsByName = new Map<string, Set<number>>();
+  const memberStoreRegionIdsByName = new Map<string, Set<number>>();
   const formalByOwner = new Map<number | undefined, Set<string>>();
   const signatureByNameAndRegion = new Map<string, Map<number, CallableCaptureSignature>>();
   const add = (
@@ -338,19 +413,27 @@ function buildValueBindingIndex(
     // it (#2522 review, M3 ops-vtable pattern).
     const terminal = terminalIdentifier(assignment.destination, options);
     if (terminal !== undefined) destinationNames.add(terminal.text);
-    for (const name of destinationNames) {
-      const region = nearestLexicalRegion(assignment.container, options);
-      let regionIds = assignmentRegionIdsByName.get(name);
+    // A destination whose binding identifier and terminal identifier are two
+    // different nodes spans a member path (`o->run`, `self.slot.f`); a bare
+    // name or a declarator (`void (*fp)(int)`) resolves both to the same leaf.
+    const memberStoreName =
+      terminal !== undefined && terminal.id !== destination?.node.id ? terminal.text : undefined;
+    const region = nearestLexicalRegion(assignment.container, options);
+    const functionOwner =
+      options.functionScopedValueBindings === true
+        ? nearestFunctionOwner(assignment.container, options)
+        : undefined;
+    const record = (index: Map<string, Set<number>>, name: string): void => {
+      let regionIds = index.get(name);
       if (regionIds === undefined) {
         regionIds = new Set();
-        assignmentRegionIdsByName.set(name, regionIds);
+        index.set(name, regionIds);
       }
       regionIds.add(region.id);
-      if (options.functionScopedValueBindings === true) {
-        const functionOwner = nearestFunctionOwner(assignment.container, options);
-        if (functionOwner !== undefined) regionIds.add(functionOwner.id);
-      }
-    }
+      if (functionOwner !== undefined) regionIds.add(functionOwner.id);
+    };
+    for (const name of destinationNames) record(assignmentRegionIdsByName, name);
+    if (memberStoreName !== undefined) record(memberStoreRegionIdsByName, memberStoreName);
   }
   for (const fn of functions) {
     for (const parameter of fn.parameters) {
@@ -386,7 +469,54 @@ function buildValueBindingIndex(
       if (functionOwner !== undefined) byRegion.set(functionOwner.id, signature);
     }
   }
-  return { assignmentRegionIdsByName, formalByOwner, signatureByNameAndRegion };
+  const anchorIds = new Set<number>();
+  for (const index of [assignmentRegionIdsByName, memberStoreRegionIdsByName]) {
+    for (const regionIds of index.values()) for (const id of regionIds) anchorIds.add(id);
+  }
+  for (const byRegion of signatureByNameAndRegion.values()) {
+    for (const id of byRegion.keys()) anchorIds.add(id);
+  }
+  for (const owner of formalByOwner.keys()) if (owner !== undefined) anchorIds.add(owner);
+  return {
+    assignmentRegionIdsByName,
+    memberStoreRegionIdsByName,
+    formalByOwner,
+    signatureByNameAndRegion,
+    anchorIds,
+    parentById,
+    nearestAnchorById: new Map(),
+  };
+}
+
+/** A node the DFS did not reach (none in practice) falls back to tree-sitter. */
+function parentOf(node: SyntaxNode, bindings: ValueBindingIndex): SyntaxNode | null {
+  return bindings.parentById.get(node.id) ?? node.parent;
+}
+
+/**
+ * The nearest anchor at-or-above `start` (see `ValueBindingIndex.anchorIds`),
+ * or null when none is. Every node visited on the way is memoized, so across
+ * one file each node's `parent` is taken at most once by these walks.
+ */
+function nearestAnchor(start: SyntaxNode | null, bindings: ValueBindingIndex): SyntaxNode | null {
+  const visited: number[] = [];
+  let node = start;
+  let found: SyntaxNode | null = null;
+  while (node !== null) {
+    const cached = bindings.nearestAnchorById.get(node.id);
+    if (cached !== undefined) {
+      found = cached;
+      break;
+    }
+    visited.push(node.id);
+    if (bindings.anchorIds.has(node.id)) {
+      found = node;
+      break;
+    }
+    node = parentOf(node, bindings);
+  }
+  for (const id of visited) bindings.nearestAnchorById.set(id, found);
+  return found;
 }
 
 /** True when a pointer/parenthesized declarator sits between the declaration
@@ -450,8 +580,11 @@ function isVisibleValueBinding(
   ) {
     return true;
   }
-  let node: SyntaxNode | null = input;
-  while (node !== null) {
+  for (
+    let node = nearestAnchor(input, bindings);
+    node !== null;
+    node = nearestAnchor(parentOf(node, bindings), bindings)
+  ) {
     if (assignmentRegionIds?.has(node.id) === true) return true;
     if (
       options.functionNodeTypes.has(node.type) &&
@@ -459,7 +592,6 @@ function isVisibleValueBinding(
     ) {
       return true;
     }
-    node = node.parent;
   }
   if (bindings.formalByOwner.get(undefined)?.has(name) === true) return true;
   // A declared callable-typed binding (file-scope `void (*fp)(int);`) is a
@@ -467,6 +599,36 @@ function isVisibleValueBinding(
   // live in OTHER functions (the init/register callback pattern), so
   // assignment regions alone under-approximate visibility and the cross-
   // function call emitted no invoke fact at all (#2522 review, H1).
+  return visibleCallableSignature(input, name, bindings, options) !== undefined;
+}
+
+/**
+ * Member-call gate: the member's name-cell was written by a visible MEMBER
+ * store, or is a declared callable-typed binding (C struct field
+ * `void (*cb)(int);`, whose stores may live in other functions). Plain-name
+ * bindings and formals are deliberately NOT consulted — `x.f()` reads the
+ * member `f` of `x`, not a same-named local, and gating on the local minted an
+ * invoke through the wrong cell (a Zig `pub const release = deinit;` alias
+ * turned `self.slot.release()` into a `deinit → deinit` self-loop).
+ */
+function isVisibleMemberStore(
+  input: SyntaxNode,
+  name: string,
+  bindings: ValueBindingIndex,
+  options: CallableFlowCaptureOptions,
+): boolean {
+  const regionIds = bindings.memberStoreRegionIdsByName.get(name);
+  if (regionIds !== undefined) {
+    const providerOwner = options.lexicalFunctionOwner?.(input);
+    if (providerOwner !== undefined && regionIds.has(providerOwner.id)) return true;
+    for (
+      let node = nearestAnchor(input, bindings);
+      node !== null;
+      node = nearestAnchor(parentOf(node, bindings), bindings)
+    ) {
+      if (regionIds.has(node.id)) return true;
+    }
+  }
   return visibleCallableSignature(input, name, bindings, options) !== undefined;
 }
 
@@ -483,11 +645,13 @@ function visibleCallableSignature(
     const signature = byRegion.get(providerOwner.id);
     if (signature !== undefined) return signature;
   }
-  let node: SyntaxNode | null = input;
-  while (node !== null) {
+  for (
+    let node = nearestAnchor(input, bindings);
+    node !== null;
+    node = nearestAnchor(parentOf(node, bindings), bindings)
+  ) {
     const signature = byRegion.get(node.id);
     if (signature !== undefined) return signature;
-    node = node.parent;
   }
   return undefined;
 }
@@ -526,6 +690,115 @@ function assignmentParts(
   }
   if (destination === null || source === null) return [];
   return [{ container: node, destination, source }];
+}
+
+/** Operators whose result is one of their operands, not a computed value. */
+const VALUE_SELECTING_OPERATORS = new Set(['??', '||', 'or']);
+
+/**
+ * Operators that yield their left operand when it is falsy and their right
+ * operand otherwise. A falsy value is never a callable, so only the RIGHT
+ * operand can be the callable that is later invoked. Where `&&` / `and`
+ * yields a boolean instead (Java, C#, Go, Rust, C, C++, PHP, Zig), the
+ * destination is not callable, so the flow never meets an invoke.
+ */
+const RIGHT_SELECTING_OPERATORS = new Set(['&&', 'and']);
+
+/**
+ * The operands a value-selecting expression can evaluate to (#3354):
+ * `a ?? b`, `a || b`, `a or b`, and `c ? a : b` each yield one of their
+ * branches, so each branch flows into the destination. `a && b` / `a and b`
+ * can only yield a callable through `b`, so `x and f or g` reaches `f` and `g`.
+ * Anything else is its own single alternative, which leaves every other
+ * source shape untouched. A branch that is itself an operator expression
+ * (`x.kind === f || g`) yields a computed value, so it contributes nothing.
+ * `options.valueAlternatives` is consulted first for grammars whose shape the
+ * field-based rule below cannot see.
+ */
+function valueAlternatives(
+  node: SyntaxNode,
+  options: CallableFlowCaptureOptions,
+): readonly SyntaxNode[] {
+  // Explicit stack, not recursion: `a || b || …` nests one level per operand,
+  // so a generated keyword table thousands of operands long overflowed the
+  // call stack (and re-copied every partial result at each level).
+  const out: SyntaxNode[] = [];
+  const pending: SyntaxNode[] = [node];
+  for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
+    const branches = valueBranches(current, options);
+    if (branches === undefined) {
+      // An operator branch is opaque, as the whole compound source was before
+      // the fan-out: emitted alone, `x.kind === Handlers.run` becomes a seed
+      // whose qualified text slices to receiver `Handlers`, member `run`.
+      if (current === node || !isBinaryOperatorExpression(unwrapParentheses(current))) {
+        out.push(current);
+      }
+      continue;
+    }
+    // Reverse push keeps the left-to-right branch order on output.
+    for (let i = branches.length - 1; i >= 0; i--) {
+      const branch = branches[i];
+      if (branch !== undefined) pending.push(branch);
+    }
+  }
+  return out;
+}
+
+/** One level of `valueAlternatives`: the branches `node` selects between, or
+ *  undefined when it is opaque (its own single alternative). */
+function valueBranches(
+  node: SyntaxNode,
+  options: CallableFlowCaptureOptions,
+): readonly SyntaxNode[] | undefined {
+  const inner = unwrapParentheses(node);
+  const provided = options.valueAlternatives?.(inner);
+  if (provided !== undefined) {
+    return provided.length === 1 && provided[0]?.id === inner.id ? undefined : provided;
+  }
+  const consequence = inner.childForFieldName('consequence');
+  const alternative = inner.childForFieldName('alternative');
+  if (consequence !== null && alternative !== null && inner.childForFieldName('condition')) {
+    return [consequence, alternative];
+  }
+  const left = inner.childForFieldName('left');
+  const right = inner.childForFieldName('right');
+  const operator = inner.childForFieldName('operator')?.type;
+  if (left === null || right === null || !operator) return undefined;
+  if (VALUE_SELECTING_OPERATORS.has(operator)) return [left, right];
+  if (RIGHT_SELECTING_OPERATORS.has(operator)) return [right];
+  return undefined;
+}
+
+function unwrapParentheses(node: SyntaxNode): SyntaxNode {
+  let inner = node;
+  while (inner.type.includes('parenthesized') && inner.namedChildCount === 1) {
+    const child = inner.namedChild(0);
+    if (child === null) break;
+    inner = child;
+  }
+  return inner;
+}
+
+/**
+ * True for an expression that computes a value from two operands (`a === b`,
+ * `a + b`, `a is b`), which designates neither operand. Read from the same
+ * field vocabulary as `valueBranches` rather than grammar type names: a
+ * `left`/`right` pair, or an operator token (`operator`, Python's
+ * `operators`, Swift's `op`) that follows the expression's start. A member
+ * access that fields its `.` / `->` as `operator` (Ruby `call`, C/C++
+ * `field_expression`) also fields its member name, so it stays a designator;
+ * a unary `&f` / `*fp` leads with its operator and stays one too.
+ */
+function isBinaryOperatorExpression(node: SyntaxNode): boolean {
+  if (node.childForFieldName('left') !== null && node.childForFieldName('right') !== null) {
+    return true;
+  }
+  if (memberNameNode(node) !== null) return false;
+  const operator =
+    node.childForFieldName('operator') ??
+    node.childForFieldName('operators') ??
+    node.childForFieldName('op');
+  return operator !== null && operator.startIndex > node.startIndex;
 }
 
 function emitAssignmentFact(
@@ -700,10 +973,16 @@ function emitCallFacts(
   const callee = operandSyntax(calleeNode, options);
   const calleeIsValueBinding =
     callee !== undefined && isVisibleValueBinding(call, callee.name, valueBindings, options);
+  // A direct callee NAME exists only when the call spells its callee as a
+  // designator (`f(x)`, `ns.f(x)`). A receiver-less member (Zig's decl
+  // literal `.init(x)`, whose receiver is an inferred type) or a computed
+  // callee names nothing the solver may seed by simple name — doing so
+  // fanned each argument out to every same-named callable in the repo.
   const directCalleeName =
     member === undefined &&
     callee !== undefined &&
     callee.indirection === 0 &&
+    callee.directDesignator &&
     !calleeIsValueBinding
       ? callee.name
       : undefined;
@@ -816,7 +1095,7 @@ function emitCallFacts(
     // name-keyed field collapse matches the solver's store/load model.
     // ponytail: same-region joins only — cross-function vtable installs need
     // a field-sensitive cell model.
-    if (isVisibleValueBinding(call, member.member.name, valueBindings, options)) {
+    if (isVisibleMemberStore(call, member.member.name, valueBindings, options)) {
       emitInvoke(callSite, member.member, 'indirect', args.length, out, options, member.receiver);
     }
     return;
@@ -891,6 +1170,8 @@ function callArguments(
   call: SyntaxNode,
   options: CallableFlowCaptureOptions,
 ): readonly SyntaxNode[] {
+  const providerArguments = options.extractCallArguments?.(call);
+  if (providerArguments !== undefined) return providerArguments;
   const list =
     call.childForFieldName('arguments') ??
     call.childForFieldName('argument') ??
@@ -947,10 +1228,14 @@ function memberParts(
     node.childForFieldName('object') ??
     node.childForFieldName('argument') ??
     node.childForFieldName('receiver');
-  const memberNode =
-    node.childForFieldName('property') ??
-    node.childForFieldName('field') ??
-    node.childForFieldName('method');
+  // `member` is the field name tree-sitter grammars use when the receiver
+  // field is `object` (Zig `field_expression`). It is only read once a
+  // receiver field matched: the other grammars that expose a `member` field
+  // (C/C++ `offsetof_expression`, JS `class_body`) carry no receiver field and
+  // stay unaffected. Without it every `x.f(arg)` in such a grammar collapsed
+  // to a DIRECT call named `f` and the flow solver fanned the argument out to
+  // every same-named callable.
+  const memberNode = memberNameNode(node);
   if (receiverNode === null || memberNode === null) return undefined;
   const receiver = operandSyntax(receiverNode, options);
   const member = operandSyntax(memberNode, options);
@@ -961,6 +1246,17 @@ function memberParts(
       options.memberPointerOperators?.has(child.text) === true,
   );
   return { receiver, member, ...(operator !== undefined ? { operator: operator.text } : {}) };
+}
+
+/** The member-name child of a member access, under the field names the
+ *  grammars use for it. */
+function memberNameNode(node: SyntaxNode): SyntaxNode | null {
+  return (
+    node.childForFieldName('property') ??
+    node.childForFieldName('field') ??
+    node.childForFieldName('method') ??
+    node.childForFieldName('member')
+  );
 }
 
 function operandSyntax(
@@ -1062,7 +1358,13 @@ function wrappedExpression(node: SyntaxNode): SyntaxNode | null {
     node.childForFieldName('expression') ??
     node.childForFieldName('value');
   if (field !== null && field.id !== node.id && node.namedChildCount === 1) return field;
+  // `await` is a wrapper, not a callee: tree-sitter-typescript parses
+  // `await f<T>(x)` as `call_expression(function: await_expression(f), …)`,
+  // and `await_expression` carries its operand without a field name, so the
+  // field-based unwrap above misses it. Unwrapping keeps `f` a direct
+  // designator (`direct-callee-name`), as it is for the un-awaited spelling.
   if (
+    node.type.includes('await_expression') ||
     node.type.includes('parenthesized') ||
     node.type.includes('reference_expression') ||
     node.type.includes('pointer_expression') ||

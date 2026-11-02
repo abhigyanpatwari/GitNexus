@@ -1,14 +1,16 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import {
   loadParser,
   loadLanguage,
   isLanguageAvailable,
+  isGrammarRuntimeSkipped,
 } from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
 import Parser from 'tree-sitter';
+import { vendoredGrammarDir } from '../../src/core/tree-sitter/vendored-grammars.js';
 
 const fixturesDir = path.resolve(__dirname, '..', 'fixtures', 'sample-code');
 
@@ -680,6 +682,107 @@ describe('Tree-sitter multi-language parsing', () => {
     });
   });
 
+  describe('Zig', () => {
+    // Gate on whether the optional PACKAGE is installed, not on the loader's
+    // `isLanguageAvailable` (which is false for absent AND for
+    // installed-but-broken bindings — the loader swallows every load error
+    // for optional grammars). With the package present, a load failure (ABI
+    // mismatch, bad export) must fail this test, not silently skip it. A
+    // deliberate `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` opt-out in the environment
+    // is the one non-failure reason an installed grammar reports unavailable.
+    const zigPackageInstalled =
+      !isGrammarRuntimeSkipped(SupportedLanguages.Zig) &&
+      fs.existsSync(path.join(vendoredGrammarDir('tree-sitter-zig'), 'package.json'));
+    it.skipIf(!zigPackageInstalled)('parses functions, structs, enums, and imports', async () => {
+      expect(isLanguageAvailable(SupportedLanguages.Zig)).toBe(true);
+      await loadLanguage(SupportedLanguages.Zig);
+
+      const content = readFixture('simple.zig');
+      const provider = getProvider(SupportedLanguages.Zig);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+
+      const defTypes = defs.map((d) => d.type);
+      expect(defTypes).toContain('definition.function');
+      expect(defTypes).toContain('definition.struct');
+      expect(defTypes).toContain('definition.enum');
+
+      // `opaque {}` is a Struct-labelled container; a named `test "…"` block
+      // is a Function whose @name is the string node WITH quotes (so it never
+      // collides with a same-named fn); an anonymous `test {}` is not a def.
+      const named = defs.map((d) => `${d.type}:${d.name}`);
+      expect(named).toContain('definition.struct:Handle');
+      expect(named).toContain('definition.function:"add works"');
+      expect(named.filter((n) => n.startsWith('definition.function:')).length).toBe(
+        ['add', 'private_helper', 'init', 'distance', 'main', 'c_add', 'close', '"add works"']
+          .length,
+      );
+
+      // `const std = @import("std");` must yield an import.source capture —
+      // without this assertion a query change that drops Zig import matching
+      // would pass this test unchanged.
+      const imports: string[] = [];
+      for (const match of matches) {
+        for (const capture of match.captures) {
+          if (capture.name === 'import.source') imports.push(capture.node.text);
+        }
+      }
+      expect(imports).toEqual(['"std"']);
+    });
+
+    it('reports Zig unavailable and throws "Unsupported language" when the grammar is absent', async () => {
+      // Exercise the loader's real absent-binding branch (the `source.load()`
+      // catch in `loadGrammar`), not the `GITNEXUS_SKIP_OPTIONAL_GRAMMARS`
+      // opt-out, which is a separate code path with its own test
+      // (parser-loader-skip-optional.test.ts). Zig loads through
+      // `requireVendoredGrammar`, so stand in for that helper and report the
+      // grammar missing. A fresh module copy is needed because the loader
+      // memoizes load results.
+      //
+      // The fresh copy also re-reads `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` (parsed
+      // lazily once per module). Under `=zig` / `=all` — a supported way to
+      // run — the loader would take the opt-out branch and the absent-binding
+      // path below would never run, so the variable is cleared for this test
+      // and restored afterwards. Clearing (not skipping) keeps the branch
+      // exercised in every environment.
+      const SKIP_ENV = 'GITNEXUS_SKIP_OPTIONAL_GRAMMARS';
+      const savedSkip = process.env[SKIP_ENV];
+      delete process.env[SKIP_ENV];
+      vi.doMock('../../src/core/tree-sitter/vendored-grammars.js', async (importOriginal) => {
+        const actual =
+          await importOriginal<typeof import('../../src/core/tree-sitter/vendored-grammars.js')>();
+        return {
+          ...actual,
+          requireVendoredGrammar: (packageName: string) => {
+            if (packageName === 'tree-sitter-zig') {
+              const err = new Error(`Cannot find module '${packageName}'`) as NodeJS.ErrnoException;
+              err.code = 'MODULE_NOT_FOUND';
+              throw err;
+            }
+            return actual.requireVendoredGrammar(packageName);
+          },
+        };
+      });
+      vi.resetModules();
+      try {
+        const fresh = await import('../../src/core/tree-sitter/parser-loader.js');
+        // Not the opt-out path: the variable was cleared above.
+        expect(fresh.isGrammarRuntimeSkipped(SupportedLanguages.Zig)).toBe(false);
+        expect(fresh.isLanguageAvailable(SupportedLanguages.Zig)).toBe(false);
+        await expect(fresh.loadLanguage(SupportedLanguages.Zig)).rejects.toThrow(
+          /Unsupported language/,
+        );
+        // Optional-grammar failure is non-fatal: the other grammars still load.
+        expect(fresh.isLanguageAvailable(SupportedLanguages.TypeScript)).toBe(true);
+      } finally {
+        if (savedSkip === undefined) delete process.env[SKIP_ENV];
+        else process.env[SKIP_ENV] = savedSkip;
+        vi.doUnmock('../../src/core/tree-sitter/vendored-grammars.js');
+        vi.resetModules();
+      }
+    });
+  });
+
   describe('unhappy path', () => {
     it('returns null/undefined for unsupported file extensions', () => {
       expect(getLanguageFromFilename('archive.xyz')).toBeNull();
@@ -891,7 +994,8 @@ describe('Tree-sitter multi-language parsing', () => {
         [SupportedLanguages.CSharp, 'simple.cs'],
         [SupportedLanguages.Rust, 'simple.rs'],
         [SupportedLanguages.PHP, 'simple.php'],
-        // Dart and Swift are excluded — they are optionalDependencies that may not be installed
+        // Dart, Swift, and Zig (vendored optional grammars) are excluded —
+        // none of the three is guaranteed to be installed on every platform.
       ];
 
       for (const [lang, fixture, filePath] of langFixtures) {

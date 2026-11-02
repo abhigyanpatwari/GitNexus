@@ -74,38 +74,50 @@ describe('segmentCjkSpans', () => {
     expect(outputBytes).toBeLessThan(expectedBytes * 1.05);
   });
 
-  it('scales linearly on realistic interleaved CJK/non-CJK content, not quadratically', () => {
-    // Regression guard: an earlier implementation indexed into the growing
-    // accumulated output string once per run boundary, which forces V8 to
-    // flatten its internal rope representation on every access — O(n^2) on
-    // content that alternates CJK and non-CJK runs (ordinary source code
-    // with inline CJK comments, the feature's actual target). A single-run
-    // input (like the growth-factor test above) never exercises this path,
-    // since there is only one run boundary regardless of size.
-    const unit = '采购订单自动审批流程 // approve the request after manual review\n';
-    const build = (totalBytes: number) => unit.repeat(Math.ceil(totalBytes / unit.length));
+  it.skipIf(!process.env.GITNEXUS_BENCH)(
+    'scales linearly on realistic interleaved CJK/non-CJK content, not quadratically',
+    () => {
+      // Regression guard: an earlier implementation indexed into the growing
+      // accumulated output string once per run boundary, which forces V8 to
+      // flatten its internal rope representation on every access — O(n^2) on
+      // content that alternates CJK and non-CJK runs (ordinary source code
+      // with inline CJK comments, the feature's actual target). A single-run
+      // input (like the growth-factor test above) never exercises this path,
+      // since there is only one run boundary regardless of size.
+      const unit = '采购订单自动审批流程 // approve the request after manual review\n';
+      const build = (totalBytes: number) => unit.repeat(Math.ceil(totalBytes / unit.length));
 
-    const small = build(64 * 1024);
-    const large = build(512 * 1024); // 8x the input size
+      const small = build(64 * 1024);
+      const large = build(512 * 1024); // 8x the input size
 
-    const timeOf = (input: string) => {
-      const start = performance.now();
-      segmentCjkSpans(input);
-      return performance.now() - start;
-    };
+      const timeOf = (input: string) => {
+        const start = performance.now();
+        segmentCjkSpans(input);
+        return performance.now() - start;
+      };
 
-    // Warm up the JIT before measuring either size.
-    timeOf(small);
-    timeOf(large);
+      // run-benchmarks.ts discovers this opt-in test and runs it serially.
+      // Sample both sizes after warmup: one scheduler pause must not look like
+      // the quadratic regression this guard is intended to catch.
+      const smallSamples: number[] = [];
+      const largeSamples: number[] = [];
+      for (let sample = 0; sample < 10; sample++) {
+        const smallMs = timeOf(small);
+        const largeMs = timeOf(large);
+        if (sample >= 3) {
+          smallSamples.push(smallMs);
+          largeSamples.push(largeMs);
+        }
+      }
+      const smallMs = Math.min(...smallSamples);
+      const largeMs = Math.min(...largeSamples);
 
-    const smallMs = timeOf(small);
-    const largeMs = timeOf(large);
-
-    // Linear scaling means ~8x input takes roughly ~8x time, with headroom
-    // for noise; quadratic scaling would mean ~64x time. 20x catches the
-    // regression while tolerating CI timing variance.
-    expect(largeMs).toBeLessThan(Math.max(smallMs, 1) * 20);
-  });
+      // Linear scaling means ~8x input takes roughly ~8x time, with headroom
+      // for noise; quadratic scaling would mean ~64x time. 20x catches the
+      // regression while tolerating CI timing variance.
+      expect(largeMs).toBeLessThan(Math.max(smallMs, 1) * 20);
+    },
+  );
 });
 
 describe('containsCjkIdeograph', () => {

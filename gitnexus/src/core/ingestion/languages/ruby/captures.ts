@@ -1,4 +1,5 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import { recordRubyMemberDispatch } from './member-dispatch.js';
 import {
   findChild,
   nodeIfType,
@@ -51,6 +52,7 @@ const RUBY_CALLABLE_CAPTURE_OPTIONS = {
   // Ruby (`action = process` stores process's RETURN value) — only explicit
   // reference forms (method(:x), &:x, lambda/proc) reference the callable.
   bareNamesAreCalls: true,
+  valueAlternatives: (node: SyntaxNode) => rubyValueAlternatives(node),
   extractCallableReference: (node: SyntaxNode) => {
     if (node.type !== 'call') return undefined;
     const method = node.childForFieldName('method');
@@ -64,6 +66,40 @@ const RUBY_CALLABLE_CAPTURE_OPTIONS = {
     return name.length === 0 ? undefined : { name, anchor: symbol };
   },
 } as const;
+
+/**
+ * Branches of a statement-bodied `if` / `unless` / `elsif` (#3354). They field
+ * `condition` / `consequence` / `alternative` like a ternary, but their
+ * branches are `then` / `else` STATEMENT LISTS, so the shared ternary rule
+ * would dig an identifier out of whichever statement it found (`g = h; 0`
+ * flowed `h`, although the branch evaluates to `0`). A branch holding one
+ * statement is that statement's value. A longer branch is skipped: it adds
+ * no alternative, while the other branches still flow. Every alternative
+ * emitted is a value the conditional really evaluates to, so skipping cannot
+ * add an edge. It only drops the skipped branch's own value. The `elsif`
+ * chain is walked here, so one multi-statement `elsif` no longer hides the
+ * branches after it. When no branch is a single statement, the whole
+ * conditional stays one opaque source. The `c ? a : b` ternary
+ * (`conditional`) is left to the shared rule.
+ */
+function rubyValueAlternatives(node: SyntaxNode): readonly SyntaxNode[] | undefined {
+  if (node.type !== 'if' && node.type !== 'unless' && node.type !== 'elsif') return undefined;
+  const branches: SyntaxNode[] = [];
+  for (let link: SyntaxNode | null = node; link !== null; ) {
+    const consequence: SyntaxNode | null = link.childForFieldName('consequence');
+    const alternative: SyntaxNode | null = link.childForFieldName('alternative');
+    link = alternative?.type === 'elsif' ? alternative : null;
+    for (const branch of [consequence, link === null ? alternative : null]) {
+      if (branch === null) continue;
+      const statements = branch.namedChildren.filter(
+        (child): child is SyntaxNode => child !== null && child.type !== 'comment',
+      );
+      const [statement] = statements;
+      if (statements.length === 1 && statement !== undefined) branches.push(statement);
+    }
+  }
+  return branches.length > 0 ? branches : [node];
+}
 
 /**
  * Build the full `.`-joined qualified owner name for a heritage/attr call by
@@ -210,6 +246,30 @@ function isRubyInstanceIvarWrite(ivarNode: SyntaxNode | undefined): boolean {
   return false;
 }
 
+/** Whether an ordinary `def` has a provable lexical class/module definee. */
+function isRubyLexicalMethod(node: SyntaxNode): boolean {
+  if (node.type !== 'method') return false;
+  for (let ancestor = node.parent; ancestor !== null; ancestor = ancestor.parent) {
+    switch (ancestor.type) {
+      // Singleton bodies choose a different definee. A block's receiver can
+      // also rebind it, including through user helpers (see the ivar gate).
+      case 'singleton_method':
+      case 'singleton_class':
+      case 'do_block':
+      case 'block':
+      case 'lambda':
+      case 'begin_block':
+      case 'end_block':
+        return false;
+      case 'class':
+      case 'module':
+      case 'program':
+        return true;
+    }
+  }
+  return false;
+}
+
 export function emitRubyScopeCaptures(
   sourceText: string,
   _filePath: string,
@@ -236,6 +296,7 @@ export function emitRubyScopeCaptures(
     throw scopeExtractionError('scope query', _filePath, err);
   }
 
+  recordRubyMemberDispatch(tree.rootNode, _filePath);
   const out: CaptureMatch[] = [];
 
   for (const m of rawMatches) {
@@ -328,6 +389,17 @@ export function emitRubyScopeCaptures(
           if (nameCap !== undefined) {
             grouped['@declaration.name'] = nameCap;
           }
+        }
+
+        // Preserve AST classification across declaration.function → method
+        // reclassification. Parsing the source prefix here would confuse
+        // `def target.target` with an ordinary def and miss comments after def.
+        if (isRubyLexicalMethod(fnNode)) {
+          grouped['@declaration.lexical-method'] = syntheticCapture(
+            '@declaration.lexical-method',
+            fnNode,
+            'true',
+          );
         }
 
         const arity = computeRubyDeclarationArity(fnNode);
@@ -785,6 +857,17 @@ function decomposeRubyImport(callNode: SyntaxNode, anchor: Capture): CaptureMatc
   }
 
   if (sourcePath === '') return null;
+
+  // require_relative always resolves from this file, including a bare sibling
+  // spelling. Preserve that distinction for the provider's import resolver.
+  if (
+    methodName === 'require_relative' &&
+    !sourcePath.startsWith('./') &&
+    !sourcePath.startsWith('../') &&
+    !sourcePath.startsWith('/')
+  ) {
+    sourcePath = `./${sourcePath}`;
+  }
 
   const segments = sourcePath.replace(/\\/g, '/').split('/');
   const lastSegment = segments[segments.length - 1]!;

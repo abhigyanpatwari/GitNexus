@@ -1,0 +1,21 @@
+{
+  "language": "zig",
+  "description": "Refuse a Zig function exported with the C ABI that an indexed C caller names, until the C binding is proven.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "lib.zig"
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_boundary",
+    "planningStatus": "unsupported"
+  }
+}

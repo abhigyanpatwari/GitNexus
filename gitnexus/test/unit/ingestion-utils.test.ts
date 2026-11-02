@@ -3,6 +3,7 @@ import {
   getLanguageFromFilename,
   getSyntaxLanguageFromFilename,
   isBladeTemplateFilename,
+  isNotebookFilename,
   SupportedLanguages,
 } from 'gitnexus-shared';
 import { getProvider, getProviderForFile } from '../../src/core/ingestion/languages/index.js';
@@ -40,18 +41,22 @@ describe('getLanguageFromFilename', () => {
   });
 
   describe('JavaScript', () => {
-    it('detects .js files', () => {
-      expect(getLanguageFromFilename('index.js')).toBe(SupportedLanguages.JavaScript);
-    });
-
-    it('detects .jsx files', () => {
-      expect(getLanguageFromFilename('App.jsx')).toBe(SupportedLanguages.JavaScript);
+    it.each(['.js', '.jsx', '.mjs', '.cjs'])('detects %s files', (ext) => {
+      expect(getLanguageFromFilename(`module${ext}`)).toBe(SupportedLanguages.JavaScript);
+      expect(getProviderForFile(`src/module${ext}`)?.id).toBe(SupportedLanguages.JavaScript);
     });
   });
 
   describe('Python', () => {
     it('detects .py files', () => {
       expect(getLanguageFromFilename('main.py')).toBe(SupportedLanguages.Python);
+    });
+
+    it('detects .ipynb files as Python', () => {
+      expect(getLanguageFromFilename('analysis.ipynb')).toBe(SupportedLanguages.Python);
+      expect(getProviderForFile('notebooks/analysis.ipynb')?.id).toBe(SupportedLanguages.Python);
+      expect(isNotebookFilename('notebooks/analysis.ipynb')).toBe(true);
+      expect(getSyntaxLanguageFromFilename('analysis.ipynb')).toBe('json');
     });
   });
 
@@ -144,8 +149,14 @@ describe('getLanguageFromFilename', () => {
     });
   });
 
+  describe('Zig', () => {
+    it('detects .zig files', () => {
+      expect(getLanguageFromFilename('main.zig')).toBe(SupportedLanguages.Zig);
+    });
+  });
+
   describe('unsupported', () => {
-    it.each(['.scala', '.r', '.lua', '.zig', '.txt', '.md', '.json', '.yaml'])(
+    it.each(['.scala', '.r', '.lua', '.txt', '.md', '.json', '.yaml'])(
       'returns null for %s files',
       (ext) => {
         expect(getLanguageFromFilename(`file${ext}`)).toBeNull();

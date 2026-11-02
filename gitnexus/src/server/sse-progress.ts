@@ -14,6 +14,13 @@
 import type express from 'express';
 import { assertString, BadRequestError } from './validation.js';
 import { isTerminalJobStatus, type AnalyzeJob, type JobManager } from './analyze-job.js';
+import {
+  knownJobLocations,
+  publicJobRepoId,
+  publicJobRepoName,
+  publicOpsProgress,
+  redactPublicText,
+} from './ops-snapshot.js';
 
 /**
  * The wire payload of a terminal (`event: complete` / `event: failed`) frame.
@@ -22,11 +29,18 @@ import { isTerminalJobStatus, type AnalyzeJob, type JobManager } from './analyze
  * always carries whatever the terminal `updateJob` call just committed.
  * `undefined` fields are dropped by `JSON.stringify`, which keeps a clean run's
  * payload byte-identical to the pre-`partial` shape.
+ *
+ * `repoPath` is omitted: `/api/ops` enumerates job ids, so this unauthenticated
+ * stream must not replay the analyzed filesystem path. `repoName` is a display
+ * label and is not unique; reconnect by matching `repoId` against the `id` on
+ * `GET /api/repos` entries. Progress text and `error` use the same
+ * public redaction as `/api/ops` / poll — raw clone URLs and home-directory
+ * paths stay off the wire.
  */
 const terminalPayload = (job: AnalyzeJob | undefined) => ({
-  repoName: job?.repoName,
-  repoPath: job?.repoPath,
-  error: job?.error,
+  repoName: job ? publicJobRepoName(job) : undefined,
+  repoId: job ? publicJobRepoId(job) : undefined,
+  error: job?.error ? redactPublicText(job.error, knownJobLocations(job)) : undefined,
   // Lets a client tell a partial embedding run ("retry these N nodes") from a
   // total failure ("nothing worked") without a new `status` member (#2790).
   partial: job?.partial,
@@ -36,9 +50,11 @@ const terminalPayload = (job: AnalyzeJob | undefined) => ({
  * Mount an SSE progress endpoint for a JobManager.
  * Handles: initial state, terminal events, heartbeat, event IDs, client disconnect.
  *
- * Terminal payloads carry `repoPath` (the analyzed path) alongside the display
- * `repoName` so clients can reconnect by path identity — with duplicate
- * basenames, a name-only reconnect resolves to the first same-named sibling.
+ * Terminal payloads carry the display `repoName` and the opaque `repoId`,
+ * never a path. The analyzed filesystem
+ * path used to ride this event for duplicate-basename reconnect (#2420), but
+ * `/api/ops` lists job ids and this stream is unauthenticated — emitting
+ * `repoPath` leaked operator home directories. Clients reconnect by `repoId`.
  * Exported for unit tests that lock the wire payload shape.
  *
  * ── The stream closes on the JOB'S STATUS, never on a phase string (#2790) ──
@@ -84,7 +100,9 @@ export const mountSSEProgress = (app: express.Express, routePath: string, jm: Jo
 
     // Send current state immediately
     eventId++;
-    res.write(`id: ${eventId}\ndata: ${JSON.stringify(job.progress)}\n\n`);
+    res.write(
+      `id: ${eventId}\ndata: ${JSON.stringify(publicOpsProgress(job.progress, knownJobLocations(job)))}\n\n`,
+    );
 
     // If already terminal, send event and close
     if (isTerminalJobStatus(job.status)) {
@@ -121,7 +139,9 @@ export const mountSSEProgress = (app: express.Express, routePath: string, jm: Jo
           res.end();
           unsubscribe();
         } else {
-          res.write(`id: ${eventId}\ndata: ${JSON.stringify(progress)}\n\n`);
+          res.write(
+            `id: ${eventId}\ndata: ${JSON.stringify(publicOpsProgress(progress, knownJobLocations(eventJob)))}\n\n`,
+          );
         }
       } catch {
         clearInterval(heartbeat);

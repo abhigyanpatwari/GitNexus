@@ -14,8 +14,10 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
-import { isBladeTemplateFilename } from 'gitnexus-shared';
+import type { ExtractedFetchCall } from '../workers/parse-worker.js';
+import { isTemplateRouteCandidate } from '../utils/template-file.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from '../route-extractors/nextjs.js';
+import { buildFetchWrapperIndex } from '../route-extractors/fetch-wrapper-index.js';
 import { expoFileToRouteURL } from '../route-extractors/expo.js';
 import { phpFileToRouteURL } from '../route-extractors/php.js';
 import {
@@ -28,7 +30,7 @@ import {
   compileMatcher,
   compiledMatcherMatchesRoute,
 } from '../route-extractors/middleware.js';
-import { processNextjsFetchRoutes } from '../call-processor.js';
+import { matchFetchRouteKeys, processNextjsFetchRoutes } from '../call-processor.js';
 import { reconcileDispatchGuardRoutes } from '../route-extractors/dispatch-guard.js';
 import { DATA_ROUTE_TABLE_SOURCE } from '../route-extractors/data-route-table.js';
 import {
@@ -41,6 +43,8 @@ import { readFileContents } from '../filesystem-walker.js';
 import { isDev } from '../utils/env.js';
 
 import { logger } from '../../logger.js';
+export { isTemplateRouteCandidate } from '../utils/template-file.js';
+
 const EXPO_NAV_PATTERNS = [
   /router\.(push|replace|navigate)\(\s*['"`]([^'"`]+)['"`]/g,
   /<Link\s+[^>]*href=\s*['"`]([^'"`]+)['"`]/g,
@@ -75,6 +79,56 @@ export interface TemplateFetchCall {
   filePath: string;
   fetchURL: string;
   lineNumber: number;
+}
+
+/** Route node key → files whose calls pass a URL that links to that route. */
+function filesByRouteKey(
+  calls: readonly ExtractedFetchCall[],
+  routeUrlToKeys: Map<string, string[]>,
+): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  // The match depends only on the URL, and one URL recurs across call sites.
+  const routeKeysByUrl = new Map<string, string[] | undefined>();
+  for (const call of calls) {
+    if (!routeKeysByUrl.has(call.fetchURL)) {
+      const normalized = normalizeFetchURL(call.fetchURL);
+      routeKeysByUrl.set(
+        call.fetchURL,
+        normalized ? matchFetchRouteKeys(normalized, routeUrlToKeys) : undefined,
+      );
+    }
+    for (const routeKey of routeKeysByUrl.get(call.fetchURL) ?? []) {
+      const files = out.get(routeKey) ?? new Set<string>();
+      files.add(call.filePath);
+      out.set(routeKey, files);
+    }
+  }
+  return out;
+}
+
+/**
+ * A file that passes a route's URL to a function not proven to send requests
+ * may still consume it, so `api_impact` reports its consumer count as a lower
+ * bound (#3488). Proven consumers and the route's own file are not counted.
+ */
+function markUnverifiedConsumers(
+  graph: PipelineContext['graph'],
+  routeUrlToKeys: Map<string, string[]>,
+  provenCalls: readonly ExtractedFetchCall[],
+  unprovenCalls: readonly ExtractedFetchCall[],
+): void {
+  const unproven = filesByRouteKey(unprovenCalls, routeUrlToKeys);
+  if (unproven.size === 0) return;
+  const proven = filesByRouteKey(provenCalls, routeUrlToKeys);
+  for (const [routeKey, files] of unproven) {
+    const route = graph.getNode(generateId('Route', routeKey));
+    if (!route) continue;
+    let count = 0;
+    for (const file of files) {
+      if (file !== route.properties.filePath && !proven.get(routeKey)?.has(file)) count++;
+    }
+    if (count > 0) route.properties.unverifiedConsumers = count;
+  }
 }
 
 function handlerSymbolContent(
@@ -121,17 +175,6 @@ function hasRouteParameters(routeUrl: string): boolean {
   return /\{[^}]+\}/.test(routeUrl);
 }
 
-export const isTemplateRouteCandidate = (filePath: string): boolean => {
-  const normalized = filePath.replace(/\\/g, '/').toLowerCase();
-  return (
-    normalized.endsWith('.html') ||
-    normalized.endsWith('.htm') ||
-    normalized.endsWith('.ejs') ||
-    normalized.endsWith('.hbs') ||
-    isBladeTemplateFilename(normalized)
-  );
-};
-
 export function extractTemplateStaticFetchCalls(
   filePath: string,
   content: string,
@@ -170,10 +213,6 @@ export function extractTemplateStaticFetchCalls(
   return calls;
 }
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 export const routesPhase: PipelinePhase<RoutesOutput> = {
   name: 'routes',
   deps: ['parse'],
@@ -186,15 +225,56 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       allPaths,
       allFetchCalls: parseFetchCalls,
       allFetchWrapperDefs,
+      allFetchWrapperCalls,
       allExtractedRoutes,
       allDecoratorRoutes,
       routeHandlerSymbols,
+      selectedRoutes,
     } = getPhaseOutput<ParseOutput>(deps, 'parse');
 
     // Local copy — routes phase must not mutate upstream ParseOutput
     const allFetchCalls = [...parseFetchCalls];
 
     const routeRegistry = new Map<string, RouteEntry>();
+    /**
+     * Registry keys written straight from the file list below, never through
+     * `addRoute`. `resolveRouteHandlerSymbols` walks only `extractedRoutes` and
+     * `decoratorRoutes`, so it never sees these URLs and its `claimed` set never
+     * contains them — which means a handler stamped on one of these keys was
+     * resolved for a DIFFERENT route.
+     *
+     * That is reachable, and it fabricates rather than omits (#3049). A
+     * method-agnostic route (`@All`, a Django function view, a verb-less
+     * dispatch guard) keys by URL alone via `routeNodeKey`, so it collides with
+     * a file-convention route at the same URL. It claims the key unopposed in
+     * `claim()`, then loses first-writer-wins here in `addRoute` and is dropped
+     * as a duplicate — and without this guard the surviving file-convention node
+     * would read that handler and present another application's controller
+     * method as its own. `api_impact` is documented to be run BEFORE editing a
+     * route handler, so it would answer with a handler from the wrong app.
+     *
+     * Dropping the losing route is a separate and deliberate consequence of
+     * URL-only identity; this only stops the false attribution.
+     *
+     * Membership is recorded AT the pre-seeding `set`, mirroring `claim()` in
+     * call-processor.ts, which writes `claimed` and its result map together
+     * rather than re-deriving either by rescanning. Identifying pre-seeded
+     * entries by matching `entry.source` against a list of source strings would
+     * spell them a second time, away from the sites that produce them — and a
+     * fourth pre-seeded source added later would then reopen #3049 in silence.
+     * `addRoute` deliberately does NOT record here: its routes ARE
+     * handler-resolved, so suppressing them would widen the guard into a bug of
+     * its own.
+     *
+     * Each `add` below sits inside its own `!routeRegistry.has(key)` gate, as
+     * every `routeRegistry.set` in this phase does: the map is write-once per
+     * key, so a losing candidate cannot record a key it did not claim and no
+     * later writer can take a recorded key away. Key-membership is therefore
+     * equivalent to source-matching by construction — pre-seeded routes carry no
+     * verb and `routeNodeKey(undefined, url) === url` — which is why the
+     * two-candidates-one-URL case needs no fixture to settle it.
+     */
+    const preSeededKeys = new Set<string>();
 
     // Detect Expo Router app/ roots vs Next.js app/ roots (monorepo-safe)
     const expoAppRoots = new Set<string>();
@@ -217,32 +297,33 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       }
     }
 
+    // One writer for every pre-seeded route, so recording membership cannot be
+    // forgotten. Inlining `has` / `set` / `add` at each site made the invariant
+    // a convention three call sites had to remember — and a fourth source that
+    // forgot the `add` would reopen #3049 exactly as silently as the source-set
+    // it replaced. This is the shape `claim()` in call-processor.ts uses for the
+    // same reason: one helper writes the collection and its key set together.
+    const preSeed = (url: string, entry: Omit<RouteEntry, 'url'>): boolean => {
+      if (routeRegistry.has(url)) return false;
+      routeRegistry.set(url, { ...entry, url });
+      preSeededKeys.add(url);
+      return true;
+    };
+
     for (const p of allPaths) {
       if (expoAppPaths.has(p)) {
         const expoURL = expoFileToRouteURL(p);
-        if (expoURL && !routeRegistry.has(expoURL)) {
-          routeRegistry.set(expoURL, {
-            filePath: p,
-            source: 'expo-filesystem-route',
-            url: expoURL,
-          });
+        if (expoURL && preSeed(expoURL, { filePath: p, source: 'expo-filesystem-route' })) {
           continue;
         }
       }
       const nextjsURL = nextjsFileToRouteURL(p);
-      if (nextjsURL && !routeRegistry.has(nextjsURL)) {
-        routeRegistry.set(nextjsURL, {
-          filePath: p,
-          source: 'nextjs-filesystem-route',
-          url: nextjsURL,
-        });
+      if (nextjsURL && preSeed(nextjsURL, { filePath: p, source: 'nextjs-filesystem-route' })) {
         continue;
       }
       if (p.endsWith('.php')) {
         const phpURL = phpFileToRouteURL(p);
-        if (phpURL && !routeRegistry.has(phpURL)) {
-          routeRegistry.set(phpURL, { filePath: p, source: 'php-file-route', url: phpURL });
-        }
+        if (phpURL) preSeed(phpURL, { filePath: p, source: 'php-file-route' });
       }
     }
 
@@ -264,11 +345,14 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     for (const route of allExtractedRoutes) {
       if (!route.routePath) continue;
       const routeUrl = normalizeExtractedRoutePath(route.routePath, route.prefix);
-      addRoute(routeUrl, {
-        filePath: route.filePath,
-        source: 'framework-route',
-        method: normalizeRouteMethod(route.httpMethod),
-      });
+      if (!selectedRoutes || selectedRoutes.has(route)) {
+        addRoute(routeUrl, {
+          filePath: route.filePath,
+          source: 'framework-route',
+          method: normalizeRouteMethod(route.httpMethod),
+        });
+      }
+      // Losing declarations may still provide distinct named aliases.
       if (route.routeName && !namedRouteRegistry.has(route.routeName)) {
         namedRouteRegistry.set(route.routeName, routeUrl);
       }
@@ -278,6 +362,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     // idiom, which no single file can reconcile. Framework routes are untouched;
     // their verb-less form is a declaration, not a weaker observation.
     for (const dr of reconcileDispatchGuardRoutes(allDecoratorRoutes)) {
+      if (selectedRoutes && !selectedRoutes.has(dr)) continue;
       const url = normalizeExtractedRoutePath(dr.routePath, dr.prefix ?? null);
       const method = normalizeRouteMethod(dr.httpMethod);
       const routeKey = routeNodeKey(method, url);
@@ -296,34 +381,48 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
 
     let handlerContents: Map<string, string> | undefined;
     if (routeRegistry.size > 0) {
-      const handlerPathFor = (routeKey: string, entry: RouteEntry): string => {
-        if (entry.source !== DATA_ROUTE_TABLE_SOURCE) return entry.filePath;
-        const handlerSymbolId = routeHandlerSymbols.get(routeKey);
-        const resolvedPath = handlerSymbolId
-          ? ctx.graph.getNode(handlerSymbolId)?.properties.filePath
-          : undefined;
-        return typeof resolvedPath === 'string' ? resolvedPath : entry.filePath;
-      };
-      const handlerPaths = [...routeRegistry].map(([key, entry]) => handlerPathFor(key, entry));
-      handlerContents = await readFileContents(ctx.repoPath, handlerPaths);
+      // Resolve once so content attribution, the route stamp, and the edge use
+      // the same live graph node. Pre-seeded routes never own handler symbols.
+      const routes = [...routeRegistry].map(([routeKey, entry]) => {
+        const id = preSeededKeys.has(routeKey) ? undefined : routeHandlerSymbols.get(routeKey);
+        const node = id ? ctx.graph.getNode(id) : undefined;
+        const handlerSymbol = id && node ? { id, node } : undefined;
+        const resolvedPath =
+          entry.source === DATA_ROUTE_TABLE_SOURCE
+            ? handlerSymbol?.node.properties.filePath
+            : undefined;
+        const handlerPath = typeof resolvedPath === 'string' ? resolvedPath : entry.filePath;
+        return { routeKey, entry, handlerSymbol, handlerPath };
+      });
+      handlerContents = await readFileContents(
+        ctx.repoPath,
+        routes.map(({ handlerPath }) => handlerPath),
+      );
+      const routeCountByPath = new Map<string, number>();
+      for (const { handlerPath } of routes)
+        routeCountByPath.set(handlerPath, (routeCountByPath.get(handlerPath) ?? 0) + 1);
 
-      for (const [routeKey, entry] of routeRegistry) {
+      for (const { routeKey, entry, handlerSymbol, handlerPath } of routes) {
         const { source: routeSource, method: routeMethod, url } = entry;
-        const handlerPath = handlerPathFor(routeKey, entry);
         const content = handlerContents.get(handlerPath);
-        const handlerSymbolId = routeHandlerSymbols.get(routeKey);
+        const handlerSymbolId = handlerSymbol?.id;
         const analysisContent =
           entry.source === DATA_ROUTE_TABLE_SOURCE && content
-            ? handlerSymbolContent(
-                content,
-                handlerSymbolId ? ctx.graph.getNode(handlerSymbolId) : undefined,
-              )
+            ? handlerSymbolContent(content, handlerSymbol?.node)
             : content;
 
-        const { responseKeys, errorKeys } = analysisContent
+        // A file-wide scan gives every route in a multi-route file the union of
+        // its handlers' keys (#3488). Middleware stays file-level.
+        const shapeContent =
+          content &&
+          handlerSymbol?.node.properties.filePath === handlerPath &&
+          (routeCountByPath.get(handlerPath) ?? 0) > 1
+            ? (handlerSymbolContent(content, handlerSymbol.node) ?? analysisContent)
+            : analysisContent;
+        const { responseKeys, errorKeys } = shapeContent
           ? handlerPath.endsWith('.php')
-            ? extractPHPResponseShapes(analysisContent)
-            : extractResponseShapes(analysisContent)
+            ? extractPHPResponseShapes(shapeContent)
+            : extractResponseShapes(shapeContent)
           : { responseKeys: undefined, errorKeys: undefined };
 
         const mwResult = analysisContent ? extractMiddlewareChain(analysisContent) : undefined;
@@ -353,6 +452,19 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
           confidence: 1.0,
           reason: routeSource,
         });
+
+        // Keep the file edge for existing extractor queries; add the live
+        // definition edge for explicit handler-level traversal.
+        if (handlerSymbolId) {
+          ctx.graph.addRelationship({
+            id: generateId('HANDLES_ROUTE', `${handlerSymbolId}->${routeNodeId}`),
+            sourceId: handlerSymbolId,
+            targetId: routeNodeId,
+            type: 'HANDLES_ROUTE',
+            confidence: 1.0,
+            reason: routeSource,
+          });
+        }
       }
 
       if (isDev) {
@@ -442,104 +554,49 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
           while ((match = pattern.exec(content)) !== null) {
             const url = match[2] ?? match[1];
             if (url && url.startsWith('/')) {
-              allFetchCalls.push({ filePath, fetchURL: url, lineNumber: 0 });
+              // 0-based like the AST sites, so the navigation call is attributed
+              // to the component that contains it rather than to whatever spans
+              // line 0.
+              const lineNumber = content.slice(0, match.index).split('\n').length - 1;
+              allFetchCalls.push({ filePath, fetchURL: url, lineNumber });
             }
           }
         }
       }
     }
 
-    // ── Cross-file fetch wrapper consumer extraction ──
-    // When the parse phase discovered functions that internally call fetch(),
-    // scan JS/TS consumer files for calls to those wrapper functions with
-    // URL-like string arguments and add them to allFetchCalls so
-    // processNextjsFetchRoutes can create FETCHES edges.
-    // Wrapper names come from two sources: functions the parse phase
-    // auto-detected as calling the bare global `fetch()`, plus any names the
-    // user declared in `.gitnexusrc` `fetchWrappers` (#1589/#1852 residual).
-    // Config names let an axios/custom-client wrapper — or one named outside the
-    // built-in convention — still produce route_map consumers; without them it
-    // silently falls back to `consumers: []`. Configured names alone are enough
-    // to run the scan even when nothing was auto-detected.
-    // Configured names are already validated/trimmed/de-duped/capped by
-    // analyze-config.ts — trusted as-is (#1589/#1852 review F9, dropped the
-    // redundant re-trim/re-filter). The single filter below guards only the
-    // auto-detected `functionName`s, which have no shape guarantee.
-    const configuredWrappers = ctx.options?.fetchWrappers ?? [];
-    const wrapperNames = new Set<string>(
-      [...(allFetchWrapperDefs ?? []).map((d) => d.functionName), ...configuredWrappers].filter(
-        (n): n is string => typeof n === 'string' && n.trim().length > 0,
-      ),
+    // Match AST candidates only after all wrapper definitions are known. The
+    // provider captures each call's complete callee and first argument during
+    // parsing; no source reread, reparse, or type-argument scanning is needed.
+    // Configured names also cover wrappers built on axios/custom clients.
+    const configuredWrappers = (ctx.options?.fetchWrappers ?? []).filter(
+      (n): n is string => typeof n === 'string' && n.trim().length > 0,
     );
-    if (wrapperNames.size > 0 && routeRegistry.size > 0) {
-      const jsFiles = allPaths.filter((p) => /\.[jt]sx?$/.test(p));
-      if (jsFiles.length > 0) {
-        // Reuse contents already read for handler extraction; only read the
-        // remainder (mirrors the Expo block above). Avoids a second full read of
-        // files we already have in memory.
-        const unreadJsFiles = jsFiles.filter((p) => !handlerContents?.has(p));
-        const extraContents =
-          unreadJsFiles.length > 0
-            ? await readFileContents(ctx.repoPath, unreadJsFiles)
-            : new Map<string, string>();
-        // One alternation regex over every wrapper name per file — O(files), not
-        // O(files × wrappers) (#1852 review F3). Names are escaped and grouped
-        // non-capturing so capture group 1 stays the URL. The left boundary is a
-        // negative lookbehind, not `\b`: a bare configured name like `get` must
-        // match the free call `get('/x')` but NOT a member access `client.get(`
-        // (a `.get(` on an unrelated object), and `apiFetch` must not match
-        // `myApiFetch`. Member-style wrappers are configured with the dot
-        // (`client.get`), where the `.` is part of the pattern. The `u` flag +
-        // Unicode property classes make the boundary cover non-ASCII identifier
-        // characters too — ASCII `\w` would let `caféget('/x')` match `get`
-        // (#1852 review F10).
-        const alternation = [...wrapperNames].map(escapeRegex).join('|');
-        const wrapperCallRegex = new RegExp(
-          `(?<![.\\p{L}\\p{N}_$])(?:${alternation})\\s*\\(\\s*['"\`](/[^'"\`\\s)]+)['"\`]`,
-          'gu',
-        );
-        const scanContent = (filePath: string, content: string): void => {
-          wrapperCallRegex.lastIndex = 0;
-          // 1-based line number via a running newline counter: matches arrive in
-          // ascending index, so accumulate newlines incrementally instead of
-          // re-allocating `content.substring(0, match.index).split('\n')` on
-          // every match (#1852 review F12). Output is identical.
-          let line = 1;
-          let scanned = 0;
-          let match;
-          while ((match = wrapperCallRegex.exec(content)) !== null) {
-            for (; scanned < match.index; scanned++) {
-              if (content.charCodeAt(scanned) === 10 /* '\n' */) line++;
-            }
-            allFetchCalls.push({
-              filePath,
-              fetchURL: match[1],
-              lineNumber: line,
-            });
-          }
-        };
-        for (const [filePath, content] of extraContents) scanContent(filePath, content);
-        // Also scan already-read JS/TS handler files (a handler can itself
-        // consume another route through a wrapper).
-        if (handlerContents) {
-          for (const p of jsFiles) {
-            const cached = handlerContents.get(p);
-            if (cached !== undefined) scanContent(p, cached);
-          }
-        }
+    // The index is only worth building when a candidate call can match a route.
+    const wrapperCalls = allFetchWrapperCalls ?? [];
+    const unprovenCalls: ExtractedFetchCall[] = [];
+    if (routeRegistry.size > 0 && wrapperCalls.length > 0) {
+      const wrappers = buildFetchWrapperIndex(allFetchWrapperDefs ?? [], configuredWrappers);
+      for (const call of wrapperCalls) {
+        const urls = wrappers.urlsForCall(call);
+        if (urls.length === 0 && !wrappers.isWrapperCall(call)) unprovenCalls.push(call);
+        for (const fetchURL of urls) allFetchCalls.push({ ...call, fetchURL });
       }
+    }
+
+    // url → [route node keys at that url] (one per verb). A verb-less fetch()
+    // consumer matches by URL and connects to every Route node at that URL.
+    const routeUrlToKeys = new Map<string, string[]>();
+    for (const [routeKey, entry] of routeRegistry) {
+      const existing = routeUrlToKeys.get(entry.url);
+      if (existing) existing.push(routeKey);
+      else routeUrlToKeys.set(entry.url, [routeKey]);
+    }
+    if (unprovenCalls.length > 0) {
+      markUnverifiedConsumers(ctx.graph, routeUrlToKeys, allFetchCalls, unprovenCalls);
     }
 
     if (routeRegistry.size > 0 && allFetchCalls.length > 0) {
-      // url → [route node keys at that url] (one per verb). A verb-less fetch()
-      // consumer matches by URL and connects to every Route node at that URL.
-      const routeUrlToKeys = new Map<string, string[]>();
-      for (const [routeKey, entry] of routeRegistry) {
-        const existing = routeUrlToKeys.get(entry.url);
-        if (existing) existing.push(routeKey);
-        else routeUrlToKeys.set(entry.url, [routeKey]);
-      }
-
       const consumerPaths = [...new Set(allFetchCalls.map((c) => c.filePath))];
       const consumerContents = await readFileContents(ctx.repoPath, consumerPaths);
 

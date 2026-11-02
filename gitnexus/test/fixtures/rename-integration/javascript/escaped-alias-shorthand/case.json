@@ -1,0 +1,37 @@
+{
+  "language": "javascript",
+  "description": "Rename an escaped declaration across imports and shorthand while preserving explicit aliases, labels and local binders.",
+  "categories": [
+    "cross-file",
+    "alias",
+    "call-graph",
+    "shorthand",
+    "escaped-identifier",
+    "shadowing"
+  ],
+  "target": {
+    "name": "calc\\u0075late",
+    "kind": "Function",
+    "file": "source.js"
+  },
+  "newName": "compute",
+  "expect": {
+    "status": "success",
+    "edits": 5
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "entry",
+        "kind": "Function",
+        "file": "entry.js"
+      },
+      "to": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "middle.js"
+      }
+    }
+  ]
+}

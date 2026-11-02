@@ -2,7 +2,10 @@
  * Full-Text Search via LadybugDB FTS
  *
  * Uses LadybugDB's built-in full-text search indexes for keyword-based search.
- * Always reads from the database (no cached state to drift).
+ * Reads from the database on every query it runs (no cached state to drift).
+ * The one exception is an explicit opt-out (#3091): when a caller passes an
+ * `FtsDisabledReason`, the search short-circuits to an empty, unavailable
+ * response without opening or querying the database at all.
  */
 
 // tri-review Residual-1: `classifyFtsQueryError` now lives in lbug-adapter.ts
@@ -12,10 +15,16 @@
 // that identical call itself — shared for the same reason, so the two paths
 // can no longer drift apart the way they had to be edited in lockstep before.
 import { queryFTS, classifyFtsQueryError, buildFtsQueryCypher } from '../lbug/lbug-adapter.js';
+import {
+  assertSymbolIdentity,
+  assertIdentityFields,
+  rethrowSymbolIdentityError,
+} from '../lbug/query-result-integrity.js';
 import { normalizeFtsText } from '../lbug/csv-generator.js';
 import { getExtensionCapabilities } from '../lbug/extension-loader.js';
 import { redactPaths } from './fts-indexes.js';
 import { FTS_INDEXES } from './fts-schema.js';
+import type { FtsDisabledReason } from './fts-policy.js';
 import {
   applyCjkSegmentationIfEnabled,
   MAX_CJK_SEGMENTATION_QUERY_LENGTH,
@@ -43,6 +52,8 @@ export interface FTSSearchResponse {
    * which only does so when every table failed).
    */
   nonBenignErrors?: string[];
+  /** Configured table.index names that could not be queried because their index is missing. */
+  missingIndexes?: string[];
 }
 
 /**
@@ -79,7 +90,9 @@ async function queryFTSViaExecutor(
     const rows = await executor(cypher, { query });
     return {
       rows: rows.map((row: any) => {
-        const node = row.node || row[0] || {};
+        const node = row.node ?? row[0] ?? {};
+        assertSymbolIdentity(node.nodeId ?? node.id);
+        assertIdentityFields(node.name, node.filePath);
         const score = row.score ?? row[1] ?? 0;
         return {
           filePath: node.filePath || '',
@@ -89,27 +102,36 @@ async function queryFTSViaExecutor(
       }),
     };
   } catch (e) {
+    rethrowSymbolIdentityError(e);
     const message = e instanceof Error ? e.message : String(e);
     return { benign: classifyFtsQueryError(message) === 'missing-index', message };
   }
 }
 
 /**
- * Search using LadybugDB's built-in FTS (always fresh, reads from disk)
+ * Search using LadybugDB's built-in FTS (fresh, reads from disk)
  *
  * Queries multiple node tables (File, Function, Class, Method) in parallel
  * and merges results by filePath, summing scores for the same file.
  *
+ * When `disabledReason` is set the index intentionally has no FTS (#3091), so
+ * this returns an empty `ftsAvailable: false` response immediately and never
+ * touches the database — callers render that as deliberate disablement rather
+ * than as a missing index or a failed extension load.
+ *
  * @param query - Search query string
  * @param limit - Maximum results
  * @param repoId - If provided, queries will be routed via the MCP connection pool
+ * @param disabledReason - Explicit FTS opt-out recorded for this index; short-circuits the search
  * @returns Ranked search results from FTS indexes
  */
 export const searchFTSFromLbug = async (
   query: string,
   limit: number = 20,
   repoId?: string,
+  disabledReason?: FtsDisabledReason,
 ): Promise<FTSSearchResponse> => {
+  if (disabledReason) return { results: [], ftsAvailable: false };
   // Applied once, up front, so every downstream branch searches with the
   // same text the index was built from (#2331/#2339) — index-time and
   // query-time text transforms must never diverge, since QUERY_FTS_INDEX
@@ -130,6 +152,7 @@ export const searchFTSFromLbug = async (
   const resultsByIndex: any[][] = [];
   let queriesSucceeded = 0;
   const nonBenignErrors: string[] = [];
+  const missingIndexes: string[] = [];
 
   const ftsExtension = getExtensionCapabilities().find((c) => c.name === 'fts');
   if (ftsExtension && !ftsExtension.loaded) {
@@ -159,24 +182,28 @@ export const searchFTSFromLbug = async (
       if (outcome.rows) {
         queriesSucceeded++;
         resultsByIndex.push(outcome.rows);
-      } else if (!outcome.benign) {
+      } else if (outcome.benign) {
+        missingIndexes.push(`${table}.${indexName}`);
+      } else {
         nonBenignErrors.push(redactPaths(outcome.message ?? 'Unknown FTS query error'));
       }
     }
   } else {
     // Use core lbug adapter (CLI / pipeline context) — also sequential for safety.
-    // tri-review Residual-1: `queryFTS` itself only swallows a genuinely-missing
-    // index (via the SAME classifyFtsQueryError this module re-exports); a
-    // missing-table or real query error rethrows here — track it the same way
-    // the MCP pool path does instead of a bare `catch {}` that dropped it.
+    // Opt into missing-index propagation so absent indexes cannot masquerade
+    // as successful zero-match queries. Keep core/pool classification identical.
     for (const { table, indexName } of FTS_INDEXES) {
       try {
-        const result = await queryFTS(table, indexName, searchQuery, limit, false);
+        const result = await queryFTS(table, indexName, searchQuery, limit, false, 'throw');
         queriesSucceeded++;
         resultsByIndex.push(result);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
-        nonBenignErrors.push(redactPaths(message));
+        if (classifyFtsQueryError(message) === 'missing-index') {
+          missingIndexes.push(`${table}.${indexName}`);
+        } else {
+          nonBenignErrors.push(redactPaths(message));
+        }
       }
     }
   }
@@ -188,6 +215,8 @@ export const searchFTSFromLbug = async (
 
   const addResults = (results: any[]) => {
     for (const r of results) {
+      assertSymbolIdentity(r.nodeId);
+      assertIdentityFields(r.name, r.filePath);
       if (!fileNodeScores.has(r.filePath)) fileNodeScores.set(r.filePath, []);
       fileNodeScores.get(r.filePath)!.push({ score: r.score, nodeId: r.nodeId });
     }
@@ -222,5 +251,6 @@ export const searchFTSFromLbug = async (
     })),
     ftsAvailable,
     ...(nonBenignErrors.length > 0 && { nonBenignErrors }),
+    ...(missingIndexes.length > 0 && { missingIndexes }),
   };
 };

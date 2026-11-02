@@ -16,18 +16,32 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
+from .baseline_guidance import GITNEXUS_UNAVAILABLE_NOTE, GuidanceError, ordinary_repository_guidance
 from .process_control import ManagedProcessResult, run_managed
 
 
 MAX_EVIDENCE_FILE_BYTES = 256 * 1024
 MAX_BUNDLE_BYTES = 2 * 1024 * 1024
 SANDBOX_WORKSPACE = "/workspace"
+# The review artifact lives OUTSIDE the workspace, in its own writable
+# directory. A writable FILE inside a read-only directory is not writable to
+# anything that writes atomically: the Write tool creates
+# `<target>.tmp.<n>.<hex>` beside the target and renames it, so a read-only
+# parent fails the temp create with EROFS and the artifact is never written.
+# Binding a writable directory outside /workspace lets the rename land while
+# the workspace itself stays entirely read-only.
+SANDBOX_REVIEW_OUTPUT = "/review-output"
+REVIEW_OUTPUT_DIRNAME = "review-output"
 SANDBOX_HOME = "/home/agent"
 SANDBOX_TMP = "/tmp"
 SANDBOX_CLAUDE = "/opt/claude/claude"
 SANDBOX_SHELL_PREFIX = "/opt/claude/shell-prefix"
 SANDBOX_PYTHON3 = "/opt/claude/python3"
+SANDBOX_GITNEXUS_CLI = "/opt/claude/gitnexus"
+SANDBOX_MCP_SOCKET = "/run/gitnexus-mcp.sock"
+SANDBOX_GIT_EXCLUDES = "/opt/claude/git-excludes"
 SANDBOX_NODE = "/opt/claude/node"
+SANDBOX_BWRAP = "/opt/claude/bwrap"
 SANDBOX_NODE_PREFIX = "/opt/claude/nodejs"
 # Vite transpiles a TypeScript config into <node_modules>/.vite-temp before it
 # loads anything, so a read-only dependency mount makes `vitest` die with EROFS
@@ -42,10 +56,142 @@ SANDBOX_GITNEXUS = "/opt/gitnexus"
 SANDBOX_GITNEXUS_SHARED = "/opt/gitnexus-shared"
 SANDBOX_GITNEXUS_REGISTRY = "/opt/gitnexus-registry"
 SANDBOX_USER_SKILLS = f"{SANDBOX_HOME}/.claude/skills"
+SANDBOX_EVIDENCE = "/evidence"
+
+# Claude Code's weaker nested sandbox overlays these absent root paths with
+# /dev/null devices. They are tool-created mount noise, not model-authored
+# files. Git must ignore them so provenance never mistakes those synthetic
+# devices for untracked repository content. Leading "/" anchors every pattern
+# at the repository root; tracked paths are never hidden by excludes.
+CLAUDE_SANDBOX_GIT_EXCLUDES = (
+    "/.bash_profile",
+    "/.bashrc",
+    "/.gitconfig",
+    "/.idea",
+    "/.profile",
+    "/.ripgreprc",
+    "/.vscode",
+    "/.zprofile",
+    "/.zshrc",
+    "/scripts",
+)
 
 
 class SandboxError(RuntimeError):
     """Containment could not be established without weakening the contract."""
+
+
+# Claude Code 2.1.214's subprocess scrubber and nested sandbox bind these
+# paths even when absent. Mount targets must exist before sealing the clone.
+REVIEW_RUNTIME_FILES = (
+    "bunfig.toml",
+    ".mcp.json",
+    "package.json",
+    ".npmrc",
+    ".yarnrc",
+    ".yarnrc.yml",
+    ".gitmodules",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.development.local",
+    ".env.test",
+    ".env.test.local",
+    ".env.production",
+    ".env.production.local",
+    ".git/config",
+    ".git/config.lock",
+    ".git/config.worktree",
+    ".git/config.worktree.lock",
+    ".git/info/exclude",
+    ".gitconfig",
+    ".bash_profile",
+    ".bashrc",
+    ".profile",
+    ".ripgreprc",
+    ".zprofile",
+    ".zshrc",
+)
+REVIEW_RUNTIME_DIRECTORIES = (
+    ".git/hooks",
+    ".git/info",
+    ".git/modules",
+    ".git/worktrees",
+    ".claude/commands",
+    ".claude/agents",
+    "node_modules/.bin",
+    ".github",
+    "scripts",
+    ".vscode",
+    ".idea",
+)
+
+
+def review_output_path(sandbox: SandboxSession, artifact_name: str) -> Path:
+    """Host path of the review artifact: a private directory, not the clone.
+
+    One source of truth for the location, so the mount, the parse and the
+    artifact copy cannot drift apart.
+    """
+
+    if PurePosixPath(artifact_name).name != artifact_name or "\\" in artifact_name or artifact_name in ("", ".", ".."):
+        raise SandboxError("review artifact must be a root filename")
+    return Path(sandbox.private_root) / REVIEW_OUTPUT_DIRNAME / artifact_name
+
+
+def prepare_review_workspace(sandbox: SandboxSession, artifact_name: str) -> Path:
+    """Prepare disposable mount targets; never truncate a pre-existing entry.
+
+    Creates the artifact's own directory and returns the path the agent is
+    expected to write. The file itself is deliberately NOT pre-created: the
+    agent writes it atomically (temp file beside the target, then rename), so
+    the directory is what has to be writable, and an existing empty file would
+    only be something for the write to trip over. Absence is meaningful — it is
+    how ``parse_review_output`` tells "never written" from "written badly".
+    """
+
+    output = review_output_path(sandbox, artifact_name)
+    # No agent runs while this private root is being prepared, and the
+    # exclusive create is what proves the directory is ours rather than
+    # something a previous cell left behind.
+    try:
+        output.parent.mkdir(mode=0o700, parents=False, exist_ok=False)
+    except FileExistsError as exc:
+        raise SandboxError("review artifact directory already exists") from exc
+    except OSError as exc:
+        raise SandboxError(f"review artifact directory is unavailable: {output.parent}") from exc
+
+    clone = real_directory(sandbox.clone, label="review clone")
+    if sandbox.backend != "bwrap":
+        return output
+    created: list[str] = []
+    for names, directory in ((REVIEW_RUNTIME_DIRECTORIES, True), (REVIEW_RUNTIME_FILES, False)):
+        for name in names:
+            # Record only absent entries. The no-follow traversal validates
+            # every parent before creating anything in the host filesystem.
+            missing = not os.path.lexists(clone / name)
+            _prepare_clone_target(clone, PurePosixPath(name), directory=directory, label="review runtime")
+            if missing:
+                if name == ".mcp.json":
+                    (clone / name).write_text("{}\n")
+                created.append(name)
+    common_dir = clone / ".git/commondir"
+    missing = not os.path.lexists(common_dir)
+    _prepare_clone_target(clone, PurePosixPath(".git/commondir"), directory=False, label="review runtime")
+    if missing:
+        common_dir.write_text(".\n")
+        created.append(".git/commondir")
+    # Private status presentation only; never alter the repository's ignores.
+    excludes = sandbox.private_root / "git-excludes"
+    excludes.chmod(0o600)
+    with excludes.open("a") as stream:
+        stream.write("".join(f"/{name}\n" for name in created))
+    excludes.chmod(0o400)
+    (sandbox.private_root / "review-created-paths.json").write_text(json.dumps(created))
+    return output
 
 
 @dataclass(frozen=True)
@@ -61,13 +207,73 @@ class SandboxSession:
     home: Path
     temp: Path
     bwrap_bin: Path
+    backend: str
     claude_host_bin: Path
     command_prefix: list[str]
     read_only_mounts: tuple[ReadOnlyMount, ...]
+    # Harness-authored, immutable overlays must not appear as agent work.
+    synthetic_guidance_paths: tuple[str, ...] = ()
+    # The baseline_cli shim connects to the cell's MCP socket from Bash.
+    allow_unix_sockets: bool = False
+
+    @property
+    def require_pid_namespace(self) -> bool:
+        return self.backend == "bwrap"
+
+    def host_path(self, raw: str | Path) -> str:
+        """Translate a sandbox path to its real host path in unsafe mode."""
+
+        value = str(raw)
+        if self.backend == "bwrap":
+            return value
+        node = Path(shutil.which("node") or "/usr/bin/node").resolve()
+        mappings = [
+            *(self.read_only_mounts),
+            ReadOnlyMount(node.parent.parent, SANDBOX_NODE_PREFIX),
+            ReadOnlyMount(node, SANDBOX_NODE),
+            ReadOnlyMount(self.claude_host_bin, SANDBOX_CLAUDE),
+            ReadOnlyMount(self.clone, SANDBOX_WORKSPACE),
+            ReadOnlyMount(self.home, SANDBOX_HOME),
+            ReadOnlyMount(self.temp, SANDBOX_TMP),
+            # The review artifact directory is a real mount on bwrap, so the
+            # host-unsafe backend has to translate it too. Without this the
+            # review prompt names a path that exists on neither backend.
+            ReadOnlyMount(Path(self.private_root) / REVIEW_OUTPUT_DIRNAME, SANDBOX_REVIEW_OUTPUT),
+        ]
+        for mount in sorted(mappings, key=lambda item: len(item.target), reverse=True):
+            target = mount.target.rstrip("/")
+            if value == target:
+                return str(mount.source)
+            if value.startswith(f"{target}/"):
+                return str(mount.source / value[len(target) + 1 :])
+        return value
+
+    def host_text(self, value: str) -> str:
+        if self.backend == "bwrap":
+            return value
+        targets = [
+            *(mount.target for mount in self.read_only_mounts),
+            SANDBOX_NODE_PREFIX,
+            SANDBOX_NODE,
+            SANDBOX_CLAUDE,
+            SANDBOX_WORKSPACE,
+            SANDBOX_HOME,
+            SANDBOX_TMP,
+            SANDBOX_REVIEW_OUTPUT,
+        ]
+        ordered = sorted(set(targets), key=len, reverse=True)
+        # Only translate at a path boundary. "/review-output" occurs twice in
+        # "/review-output/review-output.json" - once as the directory and once
+        # inside the filename - and rewriting the second turned the artifact path
+        # into nonsense. A target must be followed by "/", whitespace, a quote or
+        # end of string to be a path rather than a prefix of a longer name.
+        boundary = r"""(?=[/\s"']|$)"""
+        pattern = re.compile("(?:" + "|".join(re.escape(target) for target in ordered) + ")" + boundary)
+        return pattern.sub(lambda match: self.host_path(match.group(0)), value)
 
     @property
     def claude_bin(self) -> str:
-        return SANDBOX_CLAUDE
+        return self.host_path(SANDBOX_CLAUDE)
 
     @property
     def transcript_projects(self) -> Path:
@@ -75,7 +281,9 @@ class SandboxSession:
 
     @property
     def settings_json(self) -> str:
-        return build_claude_settings()
+        return build_claude_settings(
+            sandbox_enabled=self.backend == "bwrap", allow_unix_sockets=self.allow_unix_sockets
+        )
 
     def environment(
         self,
@@ -83,7 +291,17 @@ class SandboxSession:
         auth_token: str | None = None,
         base_url: str | None = None,
     ) -> dict[str, str]:
-        return build_sandbox_environment(auth_token=auth_token, base_url=base_url)
+        env = build_sandbox_environment(auth_token=auth_token, base_url=base_url)
+        if self.backend != "bwrap":
+            env = {key: self.host_text(value) for key, value in env.items()}
+            env.pop("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", None)
+            env.pop("CLAUDE_CODE_SHELL_PREFIX", None)
+            # Sandbox-only bin dirs have no single host counterpart; drop the
+            # entries that survive translation as non-existent paths.
+            env["PATH"] = ":".join(
+                entry for entry in env["PATH"].split(":") if Path(entry).is_dir()
+            )
+        return env
 
     def run(
         self,
@@ -93,11 +311,17 @@ class SandboxSession:
         env: Mapping[str, str] | None = None,
         stdin_data: bytes | None = None,
     ) -> ManagedProcessResult:
+        translated = [self.host_text(str(part)) for part in command]
         return run_managed(
-            [*self.command_prefix, *command],
+            [*self.command_prefix, *translated],
+            cwd=None if self.command_prefix else self.clone,
             timeout=timeout,
-            env=dict(env) if env is not None else build_sandbox_environment(),
-            require_pid_namespace=True,
+            env=(
+                {key: self.host_text(value) for key, value in env.items()}
+                if env is not None
+                else self.environment()
+            ),
+            require_pid_namespace=self.require_pid_namespace,
             stdin_data=stdin_data,
         )
 
@@ -108,6 +332,7 @@ class SandboxSession:
         unshare_network: bool = False,
         read_only_paths: Sequence[Path] = (),
         extra_read_only_mounts: Sequence[ReadOnlyMount] = (),
+        extra_writable_mounts: Sequence[ReadOnlyMount] = (),
     ) -> list[str]:
         """Build a stricter command boundary from this session's fixed roots.
 
@@ -117,8 +342,11 @@ class SandboxSession:
         for harness-owned, post-session evidence such as hidden oracles.
         """
 
+        if self.backend != "bwrap":
+            return []
+
         additional: list[ReadOnlyMount] = []
-        clone = _real_directory(self.clone, label="sandbox clone")
+        clone = real_directory(self.clone, label="sandbox clone")
         for raw_path in read_only_paths:
             lexical = raw_path.expanduser().absolute()
             try:
@@ -158,6 +386,25 @@ class SandboxSession:
                 raise SandboxError(f"extra read-only mount target must be absolute: {mount.target}")
             additional.append(ReadOnlyMount(source=source, target=target.as_posix()))
 
+        writable: list[ReadOnlyMount] = []
+        for mount in extra_writable_mounts:
+            source = mount.source.expanduser().absolute()
+            try:
+                metadata = source.lstat()
+                resolved = source.resolve(strict=True)
+            except OSError as exc:
+                raise SandboxError(f"writable artifact mount is unavailable: {source}") from exc
+            if (
+                resolved != source
+                or stat.S_ISLNK(metadata.st_mode)
+                or not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode))
+            ):
+                raise SandboxError(f"writable artifact mount must be real and non-symlink: {source}")
+            target = PurePosixPath(mount.target)
+            if not target.is_absolute() or ".." in target.parts:
+                raise SandboxError(f"writable artifact mount target must be absolute: {mount.target}")
+            writable.append(ReadOnlyMount(source=source, target=target.as_posix()))
+
         return _sandbox_command_prefix(
             bwrap=self.bwrap_bin,
             clone=clone,
@@ -165,6 +412,7 @@ class SandboxSession:
             temp=self.temp,
             claude_bin=self.claude_host_bin,
             mounts=(*self.read_only_mounts, *additional),
+            writable_mounts=writable,
             read_only_workspace=read_only_workspace,
             unshare_network=unshare_network,
         )
@@ -297,37 +545,57 @@ def build_sandbox_environment(
         token = auth_token.strip()
         if not token:
             raise SandboxError("model auth token must not be blank")
-        # Every benchmark/proposer invocation uses Claude's --bare mode,
-        # which intentionally ignores OAuth/keychain/AUTH_TOKEN credentials.
+        # Explicit API-key auth works for normal benchmark startup; private
+        # HOME carries no OAuth/keychain state.
         env["ANTHROPIC_API_KEY"] = token
     if base_url is not None:
         env["ANTHROPIC_BASE_URL"] = _validated_base_url(base_url)
     return env
 
 
-def build_claude_settings() -> str:
-    """Inline settings: hooks/plugins are absent and every Bash stays sandboxed."""
+def build_claude_settings(*, sandbox_enabled: bool = True, allow_unix_sockets: bool = False) -> str:
+    """Inline settings that keep every Bash sandboxed and pre-approve the tools.
 
+    Inline settings disable repository/plugin hooks even when ordinary
+    CLAUDE.md startup context is loaded. Confinement rests on the sandbox
+    policy below, ``--tools``/``--allowedTools``, and the bwrap mounts.
+
+    ``allow_unix_sockets`` lifts the Bash sandbox's AF_UNIX block for the
+    baseline_cli shim. The bwrap mounts still bound what it can reach: the
+    only harness socket in the agent namespace is the cell's MCP endpoint.
+    """
+
+    permissions = {
+        "allow": ["Read", "Grep", "Glob", "Bash"],
+    }
+    if sandbox_enabled:
+        permissions["disableBypassPermissionsMode"] = "disable"
     settings = {
+        "disableAllHooks": True,
         "sandbox": {
-            "enabled": True,
-            "failIfUnavailable": True,
-            "autoAllowBashIfSandboxed": True,
+            "enabled": sandbox_enabled,
+            "failIfUnavailable": sandbox_enabled,
+            "autoAllowBashIfSandboxed": sandbox_enabled,
             "allowUnsandboxedCommands": False,
             "enableWeakerNestedSandbox": True,
             "network": {
                 "allowedDomains": [],
                 "deniedDomains": ["*"],
-                "allowAllUnixSockets": False,
+                "allowAllUnixSockets": allow_unix_sockets,
                 "allowLocalBinding": False,
             },
             "filesystem": {
-                "allowWrite": [SANDBOX_WORKSPACE, SANDBOX_TMP, SANDBOX_HOME],
+                # SANDBOX_REVIEW_OUTPUT is the review artifact directory. The
+                # bwrap bind alone is not enough: this policy is a second,
+                # independent gate the CLI applies to its own tools, and a path
+                # missing here is unwritable however the mount is shaped.
+                "allowWrite": [SANDBOX_WORKSPACE, SANDBOX_TMP, SANDBOX_HOME, SANDBOX_REVIEW_OUTPUT],
                 "denyRead": ["/"],
                 "allowRead": [
                     SANDBOX_WORKSPACE,
                     SANDBOX_TMP,
                     SANDBOX_HOME,
+                    SANDBOX_REVIEW_OUTPUT,
                     "/usr",
                     "/bin",
                     "/lib",
@@ -336,6 +604,7 @@ def build_claude_settings() -> str:
                     SANDBOX_GITNEXUS,
                     SANDBOX_GITNEXUS_SHARED,
                     SANDBOX_GITNEXUS_REGISTRY,
+                    SANDBOX_EVIDENCE,
                 ],
             },
         },
@@ -345,20 +614,25 @@ def build_claude_settings() -> str:
             # non-default mode only emits a warning and never takes effect.
             # Under "default" a tool runs without a prompt only if it matches an
             # allow rule, so pre-approve the proposer's exact tool surface. Bash
-            # is the only writable tool under --bare (it writes the candidate
-            # overlay) and stays sandbox-confined by the sandbox.* policy above.
-            "allow": ["Read", "Grep", "Glob", "Bash"],
-            "disableBypassPermissionsMode": "disable",
+            # is the only writable tool (it writes the candidate overlay) and
+            # stays sandbox-confined by the sandbox.* policy above.
+            **permissions,
         },
-        "env": {
-            "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
-            "CLAUDE_CODE_DONT_INHERIT_ENV": "1",
-        },
+        "env": (
+            {
+                "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
+                "CLAUDE_CODE_DONT_INHERIT_ENV": "1",
+            }
+            if sandbox_enabled
+            else {"CLAUDE_CODE_DONT_INHERIT_ENV": "1"}
+        ),
     }
     return json.dumps(settings, sort_keys=True, separators=(",", ":"))
 
 
-def _runtime_mount_args() -> list[str]:
+def runtime_mount_args() -> list[str]:
+    """Read-only system/runtime binds shared by every Bubblewrap sandbox."""
+
     args: list[str] = []
     system_trees = ("/usr", "/bin", "/lib", "/lib64")
     for raw in system_trees:
@@ -426,10 +700,78 @@ def _runtime_mount_args() -> list[str]:
     return args
 
 
-def _create_shell_prefix_wrapper(private_root: Path) -> Path:
+def bwrap_base_args(*, unshare_network: bool = False, cap_drop_all: bool = False) -> list[str]:
+    """Namespace, lifetime, runtime-mount and /proc,/dev preamble shared by sandboxes.
+
+    Callers append their own filesystem binds, environment and command after
+    this preamble, so a hardening change here reaches every Bubblewrap user.
+    """
+
+    return [
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--unshare-uts",
+        *(["--unshare-net"] if unshare_network else []),
+        "--die-with-parent",
+        "--new-session",
+        *(["--cap-drop", "ALL"] if cap_drop_all else []),
+        *runtime_mount_args(),
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+    ]
+
+
+def mcp_sandbox_prefix() -> list[str]:
+    """Confine candidate MCP code inside an already-contained agent session.
+
+    Sources are paths in the outer namespace, never host paths. Only code,
+    graph and repository reads cross this boundary; agent state and writable
+    mounts stay outside it. Clear credentials before even launching Bubblewrap.
+    """
+
+    args = [
+        "/usr/bin/env", "-i", SANDBOX_BWRAP,
+        "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+        "--unshare-net", "--die-with-parent", "--new-session", "--cap-drop", "ALL",
+    ]
+    for path in ("/usr", "/bin", "/lib", "/lib64", "/etc/ssl", "/etc/hosts",
+                 "/etc/resolv.conf", "/etc/nsswitch.conf", "/etc/passwd", "/etc/group"):
+        args += ["--ro-bind-try", path, path]
+    for path in (SANDBOX_WORKSPACE, SANDBOX_GITNEXUS, SANDBOX_NODE):
+        args += ["--ro-bind", path, path]
+    # Minimal canaries and runtimes without shared packages need not supply
+    # these mounts. Missing optional paths must not weaken required binds.
+    for path in (SANDBOX_GITNEXUS_SHARED, SANDBOX_GITNEXUS_REGISTRY, SANDBOX_NODE_PREFIX):
+        args += ["--ro-bind-try", path, path]
+    args += [
+        "--proc", "/proc", "--dev", "/dev",
+        "--tmpfs", "/run", "--tmpfs", SANDBOX_TMP,
+        "--tmpfs", "/home", "--dir", SANDBOX_HOME,
+        "--clearenv",
+    ]
+    environment = {
+        "HOME": SANDBOX_HOME,
+        "TMPDIR": SANDBOX_TMP,
+        "GITNEXUS_HOME": SANDBOX_GITNEXUS_REGISTRY,
+        "GITNEXUS_MCP_ALLOWED_REPOS": SANDBOX_WORKSPACE,
+        "GITNEXUS_MCP_DEFAULT_REPO": SANDBOX_WORKSPACE,
+        "PATH": f"{SANDBOX_NODE_PREFIX}/bin:/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    for key, value in environment.items():
+        args += ["--setenv", key, value]
+    return [*args, "--chdir", SANDBOX_WORKSPACE, "--"]
+
+
+def _create_shell_prefix_wrapper(private_root: Path, *, gitnexus_available: bool = True) -> Path:
     """Create Claude's immutable clean-environment command adapter."""
 
     wrapper = private_root / "shell-prefix"
+    gitnexus_invocation = "GITNEXUS_INVOCATION=gitnexus " if gitnexus_available else ""
     wrapper.write_text(
         "#!/bin/bash\n"
         "set -eu\n"
@@ -437,6 +779,8 @@ def _create_shell_prefix_wrapper(private_root: Path) -> Path:
         "exec /usr/bin/env -i "
         f"HOME={SANDBOX_HOME} USER=agent LOGNAME=agent TMPDIR={SANDBOX_TMP} "
         f"PATH={SANDBOX_PATH} LANG=C.UTF-8 LC_ALL=C.UTF-8 TERM=dumb "
+        f"GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.excludesFile GIT_CONFIG_VALUE_0={SANDBOX_GIT_EXCLUDES} "
+        f"{gitnexus_invocation}"
         '/bin/bash -c "$1"\n'
     )
     wrapper.chmod(0o500)
@@ -461,6 +805,24 @@ def _create_python3_wrapper(private_root: Path) -> Path:
     return wrapper
 
 
+def _create_gitnexus_wrapper(private_root: Path) -> Path:
+    """Expose the already-mounted pinned CLI without npm or network access."""
+
+    wrapper = private_root / "gitnexus"
+    wrapper.write_text(f'#!/bin/bash\nset -eu\nexec {SANDBOX_NODE} {SANDBOX_GITNEXUS}/dist/cli/index.js "$@"\n')
+    wrapper.chmod(0o500)
+    return wrapper
+
+
+def _create_git_excludes(private_root: Path) -> Path:
+    """Create the immutable excludes for nested-sandbox mount artifacts."""
+
+    excludes = private_root / "git-excludes"
+    excludes.write_text("\n".join(CLAUDE_SANDBOX_GIT_EXCLUDES) + "\n")
+    excludes.chmod(0o400)
+    return excludes
+
+
 def _resolve_executable(executable: Path | str | None, default: str) -> Path:
     raw = os.fspath(executable) if executable is not None else shutil.which(default)
     if not raw:
@@ -477,26 +839,17 @@ def preflight_bubblewrap(bwrap_bin: Path | str | None = None) -> Path:
     if sys.platform != "linux":
         raise SandboxError(f"Bubblewrap containment is supported only on Linux/WSL2, not {sys.platform}")
     bwrap = _resolve_executable(bwrap_bin, "bwrap")
-    command = [
-        str(bwrap),
-        "--unshare-user",
-        "--unshare-pid",
-        "--unshare-ipc",
-        "--unshare-uts",
-        "--die-with-parent",
-        "--new-session",
-        *_runtime_mount_args(),
-        "--proc",
-        "/proc",
-        "--dev",
-        "/dev",
-        "--",
-        "/usr/bin/true",
-    ]
+    command = [str(bwrap), *bwrap_base_args(), "--", "/usr/bin/true"]
     result = run_managed(command, timeout=10, require_pid_namespace=True)
     if not result.ok:
         raise SandboxError(f"Bubblewrap namespace preflight failed: {result.detail or result.stderr_tail[-1000:]}")
     return bwrap
+
+
+def preflight_unsafe_host() -> Path:
+    """Return a harmless sentinel for the explicit non-containment backend."""
+
+    return _resolve_executable(None, "env")
 
 
 def pid_namespace_command(
@@ -539,7 +892,7 @@ def require_claude_sandbox_helpers() -> None:
     _resolve_executable(None, "socat")
 
 
-def _real_directory(path: Path, *, label: str) -> Path:
+def real_directory(path: Path, *, label: str) -> Path:
     """Return an absolute directory path without accepting any symlink hop."""
 
     lexical = path.expanduser().absolute()
@@ -556,6 +909,7 @@ def _real_directory(path: Path, *, label: str) -> Path:
     if resolved != lexical:
         raise SandboxError(f"{label} must not traverse symlinks: {lexical}")
     return lexical
+
 
 
 def _safe_repo_source(repo: Path, relative: str, *, label: str) -> tuple[Path, Path]:
@@ -652,23 +1006,13 @@ def _sandbox_command_prefix(
     temp: Path,
     claude_bin: Path,
     mounts: Sequence[ReadOnlyMount],
+    writable_mounts: Sequence[ReadOnlyMount] = (),
     read_only_workspace: bool = False,
     unshare_network: bool = False,
 ) -> list[str]:
     args = [
         str(bwrap),
-        "--unshare-user",
-        "--unshare-pid",
-        "--unshare-ipc",
-        "--unshare-uts",
-        *(["--unshare-net"] if unshare_network else []),
-        "--die-with-parent",
-        "--new-session",
-        *_runtime_mount_args(),
-        "--proc",
-        "/proc",
-        "--dev",
-        "/dev",
+        *bwrap_base_args(unshare_network=unshare_network),
         "--tmpfs",
         "/run",
         "--ro-bind" if read_only_workspace else "--bind",
@@ -700,8 +1044,178 @@ def _sandbox_command_prefix(
         # not carry it, and overlaying them would fail with EROFS.
         if PurePosixPath(mount.target).name == DEPENDENCY_MOUNT_BASENAME and (mount.source / VITE_TEMP_DIR).is_dir():
             args += ["--tmpfs", f"{mount.target}/{VITE_TEMP_DIR}"]
+    for mount in writable_mounts:
+        args += ["--bind", str(mount.source), mount.target]
     args += ["--chdir", SANDBOX_WORKSPACE, "--"]
     return args
+
+
+def _drop_host_workspace_write_bits(
+    root: Path,
+    *,
+    writable: Sequence[Path],
+) -> list[tuple[Path, int]]:
+    """Clear write bits on a host-unsafe clone except explicit artifact paths."""
+
+    root = root.expanduser().absolute()
+    try:
+        metadata = root.lstat()
+        resolved = root.resolve(strict=True)
+    except OSError as exc:
+        raise SandboxError(f"host workspace lock root is unavailable: {root}: {exc}") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode) or resolved != root:
+        raise SandboxError(f"host workspace lock root must be a real directory: {root}")
+
+    allowed: set[Path] = set()
+    for raw in writable:
+        path = raw.expanduser().absolute()
+        try:
+            metadata = path.lstat()
+            resolved = path.resolve(strict=True)
+            path.relative_to(root)
+        except (OSError, ValueError) as exc:
+            raise SandboxError(f"writable host path escapes the workspace: {raw}") from exc
+        if stat.S_ISLNK(metadata.st_mode) or resolved != path:
+            raise SandboxError(f"writable host path must be real and non-symlink: {raw}")
+        allowed.add(path)
+
+    records: list[tuple[Path, int]] = []
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        try:
+            metadata = current.lstat()
+        except OSError as exc:
+            raise SandboxError(f"host workspace lock path is unreadable: {current}: {exc}") from exc
+        records.append((current, stat.S_IMODE(metadata.st_mode)))
+        if stat.S_ISLNK(metadata.st_mode):
+            continue
+        if stat.S_ISDIR(metadata.st_mode):
+            if current in allowed:
+                # Match bwrap: a writable directory bind keeps its children writable.
+                continue
+            try:
+                children = [Path(entry.path) for entry in os.scandir(current)]
+            except OSError as exc:
+                raise SandboxError(f"host workspace lock directory is unreadable: {current}: {exc}") from exc
+            pending.extend(children)
+            os.chmod(current, 0o500)
+            continue
+        if current in allowed:
+            os.chmod(current, stat.S_IMODE(metadata.st_mode) | 0o222)
+            continue
+        if stat.S_ISREG(metadata.st_mode):
+            os.chmod(current, stat.S_IMODE(metadata.st_mode) & ~0o222)
+    return records
+
+
+def _force_rmtree(path: Path) -> None:
+    """Delete a tree even when leftover copies inherited 0555 directory modes.
+
+    Host-unsafe review sessions drop write bits on the clone. An agent that
+    ``copytree``s those directories into the private TMPDIR leaves a tree
+    ``shutil.rmtree`` cannot remove: a non-empty 0555 directory raises
+    PermissionError. Restore owner write bits, then delete.
+    """
+
+    root = Path(path)
+    if not root.exists():
+        return
+    for dirpath, _dirnames, filenames in os.walk(root, topdown=False, followlinks=False):
+        try:
+            os.chmod(
+                dirpath,
+                stat.S_IMODE(os.lstat(dirpath).st_mode) | 0o700,
+                follow_symlinks=False,
+            )
+        except OSError:
+            # Directory may already be gone or refuse chmod; rmtree still tries.
+            pass
+        for name in filenames:
+            child = os.path.join(dirpath, name)
+            try:
+                metadata = os.lstat(child)
+            except OSError:
+                continue
+            if stat.S_ISLNK(metadata.st_mode):
+                continue
+            try:
+                os.chmod(child, stat.S_IMODE(metadata.st_mode) | 0o200, follow_symlinks=False)
+            except OSError:
+                # File vanished or is immutable; skip and let rmtree report.
+                pass
+    shutil.rmtree(root)
+
+
+def _restore_host_workspace_modes(records: Sequence[tuple[Path, int]]) -> None:
+    errors: list[str] = []
+    for path, mode in reversed(records):
+        try:
+            os.chmod(path, mode)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            errors.append(f"{path}: {exc}")
+    if errors:
+        raise SandboxError("failed to restore host workspace modes: " + "; ".join(errors[:8]))
+
+
+@contextmanager
+def host_workspace_write_boundary(
+    root: Path,
+    *,
+    writable: Sequence[Path] = (),
+) -> Iterator[None]:
+    """Best-effort host analog of bwrap ``--ro-bind`` plus one writable artifact.
+
+    This is not a security boundary: a session that can ``chmod`` can undo it.
+    It is enough to stop accidental ``npm install`` / analyze writes from
+    invalidating review evidence on a host-unsafe diagnostic run.
+    """
+
+    records = _drop_host_workspace_write_bits(root, writable=writable)
+    try:
+        yield
+    finally:
+        _restore_host_workspace_modes(records)
+
+
+@contextmanager
+def sandbox_workspace_write_boundary(
+    sandbox: Any,
+    *,
+    read_only_workspace: bool,
+    writable: Sequence[Path] = (),
+) -> Iterator[None]:
+    """Apply the host-unsafe write lock only when bwrap is not the backend."""
+
+    if getattr(sandbox, "backend", "bwrap") != "host-unsafe" or not read_only_workspace:
+        yield
+        return
+    clone = Path(sandbox.clone)
+    with host_workspace_write_boundary(clone, writable=writable):
+        yield
+
+
+def baseline_gitnexus_mounts(clone: Path, private_root: Path) -> tuple[ReadOnlyMount, ...]:
+    """Hide inherited index/bootstrap bytes and graph-first startup guidance."""
+
+    empty_index = private_root / "empty-gitnexus"
+    empty_index.mkdir(mode=0o500)
+    _prepare_clone_target(clone, PurePosixPath(".gitnexus"), directory=True, label="baseline index mask")
+    mounts = [ReadOnlyMount(empty_index, f"{SANDBOX_WORKSPACE}/.gitnexus")]
+    for index, name in enumerate(("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md")):
+        if os.path.lexists(clone / name):
+            _prepare_clone_target(clone, PurePosixPath(name), directory=False, label="baseline guidance")
+            try:
+                ordinary = ordinary_repository_guidance(_evidence_bytes(clone / name, ()).decode("utf-8"))
+            except GuidanceError as error:
+                raise SandboxError(str(error)) from None
+            guidance = private_root / f"repository-guidance-{index}.md"
+            guidance.write_text(ordinary.rstrip() + "\n\n" + GITNEXUS_UNAVAILABLE_NOTE)
+            guidance.chmod(0o400)
+            mounts.append(ReadOnlyMount(guidance, f"{SANDBOX_WORKSPACE}/{name}"))
+    return tuple(mounts)
 
 
 @contextmanager
@@ -712,17 +1226,49 @@ def prepare_sandbox(
     bwrap_bin: Path | str | None = None,
     read_only_mounts: Sequence[ReadOnlyMount] = (),
     preflight: bool = True,
+    backend: str = "bwrap",
+    gitnexus_available: bool = True,
+    gitnexus_cli_available: bool = True,
+    gitnexus_cli_shim: bool = False,
 ) -> Iterator[SandboxSession]:
-    """Create private host backing dirs and one immutable Bubblewrap command."""
+    """Create private host backing dirs and one virtualized command.
+
+    ``gitnexus_cli_shim`` mounts the baseline_cli arm's MCP-forwarding
+    `gitnexus` command in place of the pinned CLI; it needs the per-cell MCP
+    socket among ``read_only_mounts`` and never exposes the runtime itself.
+    """
 
     # Validate the lexical path before resolving it. Resolving first would
     # erase the evidence that the caller supplied a symlinked clone root.
-    clone = _real_directory(clone, label="sandbox clone")
+    clone = real_directory(clone, label="sandbox clone")
+    if backend not in ("bwrap", "host-unsafe"):
+        raise SandboxError(f"unknown sandbox backend: {backend}")
+    if not gitnexus_available:
+        if backend != "bwrap":
+            raise SandboxError("baseline_nomcp requires Bubblewrap; host-unsafe cannot isolate GitNexus access")
+        forbidden = (
+            SANDBOX_GITNEXUS,
+            SANDBOX_GITNEXUS_SHARED,
+            SANDBOX_GITNEXUS_REGISTRY,
+            SANDBOX_GITNEXUS_CLI,
+            SANDBOX_MCP_SOCKET,
+            f"{SANDBOX_WORKSPACE}/.gitnexus",
+        )
+        for mount in read_only_mounts:
+            target = PurePosixPath(mount.target)
+            if not target.is_absolute() or ".." in target.parts:
+                raise SandboxError(f"baseline_nomcp mount target must be absolute without '..': {mount.target}")
+            # Linux treats a double-slash root as '/'; PurePosixPath preserves
+            # it, so normalize it before comparing namespace mount coverage.
+            target = PurePosixPath("/", *target.parts[1:])
+            if any(target.is_relative_to(path) or PurePosixPath(path).is_relative_to(target) for path in forbidden):
+                raise SandboxError(f"baseline_nomcp cannot mount GitNexus tools or graph assets: {mount.target}")
     if preflight:
-        bwrap = preflight_bubblewrap(bwrap_bin)
-        require_claude_sandbox_helpers()
+        bwrap = preflight_bubblewrap(bwrap_bin) if backend == "bwrap" else preflight_unsafe_host()
+        if backend == "bwrap":
+            require_claude_sandbox_helpers()
     else:
-        bwrap = _resolve_executable(bwrap_bin, "bwrap")
+        bwrap = _resolve_executable(bwrap_bin, "bwrap") if backend == "bwrap" else preflight_unsafe_host()
     claude = _resolve_executable(claude_bin, "claude")
     private_root = Path(tempfile.mkdtemp(prefix="wfbench-sandbox-"))
     private_root.chmod(0o700)
@@ -731,29 +1277,59 @@ def prepare_sandbox(
     for directory in (home, temp):
         directory.mkdir(mode=0o700)
         directory.chmod(0o700)
-    shell_prefix = _create_shell_prefix_wrapper(private_root)
+    cli_available = gitnexus_available and gitnexus_cli_available
+    cli_shim = gitnexus_available and gitnexus_cli_shim and not cli_available
+    shell_prefix = _create_shell_prefix_wrapper(private_root, gitnexus_available=cli_available or cli_shim)
     python3_wrapper = _create_python3_wrapper(private_root)
+    git_excludes = _create_git_excludes(private_root)
     # Claude may discover user-level skills below HOME.  Keep the rest of HOME
     # writable for normal CLI state, but overlay an immutable empty skills root
     # so a model cannot shadow the evaluated repository/plugin skill by name.
     user_skills = home / ".claude" / "skills"
     user_skills.mkdir(parents=True, mode=0o500)
     user_skills.chmod(0o500)
-    protected_mounts = (
-        *read_only_mounts,
-        ReadOnlyMount(source=user_skills, target=SANDBOX_USER_SKILLS),
-        ReadOnlyMount(source=shell_prefix, target=SANDBOX_SHELL_PREFIX),
-        ReadOnlyMount(source=python3_wrapper, target=SANDBOX_PYTHON3),
-    )
     primary: BaseException | None = None
     try:
-        command_prefix = _sandbox_command_prefix(
-            bwrap=bwrap,
-            clone=clone,
-            home=home,
-            temp=temp,
-            claude_bin=claude,
-            mounts=protected_mounts,
+        if gitnexus_available:
+            baseline_mounts: tuple[ReadOnlyMount, ...] = ()
+        else:
+
+            baseline_mounts = baseline_gitnexus_mounts(clone, private_root)
+        if cli_available:
+            cli_mounts: tuple[ReadOnlyMount, ...] = (
+                ReadOnlyMount(source=_create_gitnexus_wrapper(private_root), target=SANDBOX_GITNEXUS_CLI),
+            )
+        elif cli_shim:
+            # Imported here: cli_shim reads this module's sandbox paths.
+            from .cli_shim import create_cli_shim
+
+            cli_mounts = (ReadOnlyMount(source=create_cli_shim(private_root), target=SANDBOX_GITNEXUS_CLI),)
+        else:
+            cli_mounts = baseline_mounts
+        protected_mounts = (
+            *read_only_mounts,
+            *(
+                (ReadOnlyMount(source=bwrap, target=SANDBOX_BWRAP),)
+                if backend == "bwrap" and cli_available
+                else ()
+            ),
+            ReadOnlyMount(source=user_skills, target=SANDBOX_USER_SKILLS),
+            ReadOnlyMount(source=shell_prefix, target=SANDBOX_SHELL_PREFIX),
+            ReadOnlyMount(source=python3_wrapper, target=SANDBOX_PYTHON3),
+            *cli_mounts,
+            ReadOnlyMount(source=git_excludes, target=SANDBOX_GIT_EXCLUDES),
+        )
+        command_prefix = (
+            _sandbox_command_prefix(
+                bwrap=bwrap,
+                clone=clone,
+                home=home,
+                temp=temp,
+                claude_bin=claude,
+                mounts=protected_mounts,
+            )
+            if backend == "bwrap"
+            else []
         )
         yield SandboxSession(
             private_root=private_root,
@@ -761,16 +1337,23 @@ def prepare_sandbox(
             home=home,
             temp=temp,
             bwrap_bin=bwrap,
+            backend=backend,
             claude_host_bin=claude,
             command_prefix=command_prefix,
             read_only_mounts=protected_mounts,
+            synthetic_guidance_paths=tuple(
+                PurePosixPath(mount.target).relative_to(SANDBOX_WORKSPACE).as_posix()
+                for mount in baseline_mounts
+                if mount.target != f"{SANDBOX_WORKSPACE}/.gitnexus"
+            ),
+            allow_unix_sockets=cli_shim,
         )
     except BaseException as exc:
         primary = exc
         raise
     finally:
         try:
-            shutil.rmtree(private_root)
+            _force_rmtree(private_root)
         except OSError as cleanup:
             if primary is None:
                 raise

@@ -40,6 +40,7 @@ import {
 } from './llm-client.js';
 
 import { callCursorLLM, resolveCursorConfig } from './cursor-client.js';
+import { callGrokLLM, resolveGrokConfig } from './grok-client.js';
 import {
   callClaudeLLM,
   callCodexLLM,
@@ -84,6 +85,8 @@ export interface WikiMeta {
   lang: string;
   moduleFiles: Record<string, string[]>;
   moduleTree: ModuleTreeNode[];
+  /** Pages that must be retried even when fromCommit is still current. */
+  failedModules?: string[];
 }
 
 export interface ModuleTreeNode {
@@ -225,6 +228,13 @@ export class WikiGenerator {
       });
       return callCursorLLM(prompt, cursorConfig, systemPrompt, options);
     }
+    if (this.llmConfig.provider === 'grok') {
+      const grokConfig = resolveGrokConfig({
+        model: this.llmConfig.model,
+        requestTimeoutMs: this.llmConfig.requestTimeoutMs,
+      });
+      return callGrokLLM(prompt, grokConfig, systemPrompt, options);
+    }
     if (
       this.llmConfig.provider === 'claude' ||
       this.llmConfig.provider === 'codex' ||
@@ -252,6 +262,7 @@ export class WikiGenerator {
    * Main entry point. Runs the full pipeline or incremental update.
    */
   async run(): Promise<WikiRunResult> {
+    this.failedModules = [];
     await fs.mkdir(this.wikiDir, { recursive: true });
 
     const existingMeta = await this.loadWikiMeta();
@@ -259,7 +270,12 @@ export class WikiGenerator {
     const forceMode = this.options.force;
 
     // Up-to-date check (skip if --force)
-    if (!forceMode && existingMeta && existingMeta.fromCommit === currentCommit) {
+    if (
+      !forceMode &&
+      existingMeta &&
+      existingMeta.fromCommit === currentCommit &&
+      !existingMeta.failedModules?.length
+    ) {
       const currentLang = this.effectiveLang();
       const metaLang = existingMeta.lang ?? '';
       if (currentLang !== metaLang) {
@@ -276,6 +292,8 @@ export class WikiGenerator {
 
     // Force mode: delete snapshot to force full re-grouping
     if (forceMode) {
+      // A failure must not leave the previous wiki marked complete at this commit.
+      await fs.rm(path.join(this.wikiDir, 'meta.json'), { force: true });
       try {
         await fs.unlink(path.join(this.wikiDir, 'first_module_tree.json'));
       } catch {}
@@ -413,6 +431,11 @@ export class WikiGenerator {
 
     // Process parent modules sequentially (they depend on child docs)
     for (const node of parents) {
+      if (node.children?.some((child) => this.failedModules.includes(child.name))) {
+        this.failedModules.push(node.name);
+        reportProgress(`Failed: ${node.name}`);
+        continue;
+      }
       const pagePath = path.join(this.wikiDir, `${node.slug}.md`);
       if (await this.fileExists(pagePath)) {
         reportProgress(node.name);
@@ -444,6 +467,7 @@ export class WikiGenerator {
       lang: this.effectiveLang(),
       moduleFiles,
       moduleTree,
+      failedModules: [...this.failedModules],
     });
 
     this.onProgress('done', 100, 'Wiki generation complete');
@@ -896,9 +920,11 @@ export class WikiGenerator {
         const overviewEnd = content.indexOf('### Architecture');
         const overview =
           overviewEnd > 0 ? content.slice(0, overviewEnd).trim() : content.slice(0, 800).trim();
-        childDocs.push(`#### ${child.name}\n${overview}`);
+        childDocs.push(`#### ${child.name} (\`${child.slug}.md\`)\n${overview}`);
       } catch {
-        childDocs.push(`#### ${child.name}\n(Documentation not yet generated)`);
+        childDocs.push(
+          `#### ${child.name} (\`${child.slug}.md\`)\n(Documentation not yet generated)`,
+        );
       }
     }
 
@@ -936,9 +962,9 @@ export class WikiGenerator {
         const overviewEnd = content.indexOf('### Architecture');
         const overview =
           overviewEnd > 0 ? content.slice(0, overviewEnd).trim() : content.slice(0, 600).trim();
-        moduleSummaries.push(`#### ${node.name}\n${overview}`);
+        moduleSummaries.push(`#### ${node.name} (\`${node.slug}.md\`)\n${overview}`);
       } catch {
-        moduleSummaries.push(`#### ${node.name}\n(Documentation pending)`);
+        moduleSummaries.push(`#### ${node.name} (\`${node.slug}.md\`)\n(Documentation pending)`);
       }
     }
 
@@ -995,7 +1021,7 @@ export class WikiGenerator {
       return { ...fullResult, mode: 'incremental' };
     }
 
-    if (changedFiles.length === 0) {
+    if (changedFiles.length === 0 && !existingMeta.failedModules?.length) {
       // No file changes but commit differs (e.g. merge commit)
       await this.saveWikiMeta({
         ...existingMeta,
@@ -1009,7 +1035,7 @@ export class WikiGenerator {
     this.onProgress('incremental', 10, `${changedFiles.length} files changed`);
 
     // Determine affected modules
-    const affectedModules = new Set<string>();
+    const affectedModules = new Set(existingMeta.failedModules ?? []);
     const newFiles: string[] = [];
 
     for (const fp of changedFiles) {
@@ -1070,7 +1096,7 @@ export class WikiGenerator {
     }
 
     let incProcessed = 0;
-    pagesGenerated += await this.runParallel(affectedNodes, async (node) => {
+    const regenerateNode = async (node: ModuleTreeNode): Promise<number> => {
       try {
         if (node.children && node.children.length > 0) {
           await this.generateParentPage(node);
@@ -1090,7 +1116,18 @@ export class WikiGenerator {
         incProcessed++;
         return 0;
       }
-    });
+    };
+
+    const leaves = affectedNodes.filter((node) => !node.children?.length);
+    const parents = affectedNodes.filter((node) => node.children?.length);
+    pagesGenerated += await this.runParallel(leaves, regenerateNode);
+    for (const node of parents) {
+      if (node.children?.some((child) => this.failedModules.includes(child.name))) {
+        this.failedModules.push(node.name);
+        continue;
+      }
+      pagesGenerated += await regenerateNode(node);
+    }
 
     // Regenerate overview if any pages changed
     if (pagesGenerated > 0) {
@@ -1107,6 +1144,7 @@ export class WikiGenerator {
       generatedAt: new Date().toISOString(),
       model: this.llmConfig.model,
       lang: this.effectiveLang(),
+      failedModules: [...this.failedModules],
     });
 
     this.onProgress('done', 100, 'Incremental update complete');

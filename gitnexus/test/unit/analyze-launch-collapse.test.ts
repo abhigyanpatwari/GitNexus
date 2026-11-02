@@ -23,12 +23,18 @@ import { EventEmitter } from 'node:events';
 // `vi.mock` factories are hoisted above every top-level `const`, and this file
 // imports the module under test statically — so anything a factory closes over
 // must be hoisted with it.
-const H = vi.hoisted(() => ({
-  forkMock: vi.fn(),
-  STORAGE_PATH: '/tmp/gitnexus-test-storage',
-  REPO_PATH: '/tmp/gitnexus-test-repo',
-  METADATA_FILE: 'gitnexus.json',
-}));
+const H = vi.hoisted(() => {
+  const STORAGE_PATH = '/tmp/gitnexus-test-storage';
+  return {
+    forkMock: vi.fn(),
+    STORAGE_PATH,
+    REPO_PATH: '/tmp/gitnexus-test-repo',
+    METADATA_FILE: 'gitnexus.json',
+    // When false, the finalization gate sees no fresh index (timeout / lock-hold tests).
+    settleOk: true,
+    requireStoragePath: vi.fn(async () => STORAGE_PATH),
+  };
+});
 const { forkMock, REPO_PATH } = H;
 
 vi.mock('child_process', async () => {
@@ -36,25 +42,34 @@ vi.mock('child_process', async () => {
   return { ...actual, fork: H.forkMock };
 });
 
-// The launcher's finalization gate (`waitForSettledIndex`) probes the registry
-// and the filesystem. Pin both so the gate settles on its FIRST poll — the gate
-// itself is not under test here and its 200ms poll would otherwise put a real
-// timer between the worker message and the assertions.
+// The launcher's finalization gate (`waitForSettledIndex`) probes the
+// ownership-validated storage path. Pin the filesystem so the gate settles on
+// its FIRST poll — the gate itself is not under test here and its 200ms poll
+// would otherwise put a real timer between the worker message and the assertions.
 vi.mock('../../src/storage/repo-manager.js', () => ({
-  canonicalizePath: (p: string) => p,
-  getStoragePath: () => H.STORAGE_PATH,
   INDEX_METADATA_FILE: H.METADATA_FILE,
-  listRegisteredRepos: async () => [{ path: H.REPO_PATH, storagePath: H.STORAGE_PATH }],
-  registryPathEquals: (a: string, b: string) => a === b,
+}));
+
+vi.mock('../../src/storage/storage-resolver.js', () => ({
+  ANALYZE_STORAGE_REQUIREMENTS: { allowedStates: ['missing', 'empty', 'owned'] },
+  ANALYZE_FORCE_STORAGE_REQUIREMENTS: {
+    allowedStates: ['missing', 'empty', 'owned', 'unowned', 'foreign'],
+  },
+  requireStoragePath: H.requireStoragePath,
 }));
 
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
   return {
     ...actual,
-    // Both index files were (re)written far in the future relative to jobStartMs…
-    statSync: () => ({ mtimeMs: Number.MAX_SAFE_INTEGER }),
-    // …and no WAL/shadow/checkpoint sidecar remains.
+    statSync: () => {
+      if (!H.settleOk) {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      }
+      // Both index files were (re)written far in the future relative to jobStartMs.
+      return { mtimeMs: Number.MAX_SAFE_INTEGER };
+    },
+    // No WAL/shadow/checkpoint sidecar remains when the gate is allowed to settle.
     existsSync: () => false,
   };
 });
@@ -76,6 +91,7 @@ const completeMessage = (graphWriteCollapsed?: { expected: number; persisted: nu
   const result = {
     repoName: REPO_NAME,
     repoPath: REPO_PATH,
+    storagePath: H.STORAGE_PATH,
     stats: { files: 10, nodes: 100, edges: 500 },
     ...(graphWriteCollapsed ? { graphWriteCollapsed } : {}),
   } satisfies Partial<AnalyzeResult> as AnalyzeResult;
@@ -86,6 +102,7 @@ interface FakeChild extends EventEmitter {
   stderr: EventEmitter;
   send: Mock<(msg: unknown) => boolean>;
   kill: Mock<(signal?: NodeJS.Signals) => boolean>;
+  pid?: number;
 }
 
 const makeChild = (): FakeChild => {
@@ -109,12 +126,14 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
       jobManager,
       backend: { init: backendInit },
       acquireRepoLock: () => null,
-      releaseRepoLock: () => {},
+      releaseRepoLock: () => {
+        calls.push('releaseRepoLock');
+      },
       closeDbHandle,
     });
 
     const job = jobManager.createJob({ repoPath: REPO_PATH });
-    launch(job, REPO_PATH, {});
+    await launch(job, REPO_PATH, {});
     child.emit('message', msg);
 
     await vi.waitFor(() => expect(calls).toContain('updateJob:terminal'));
@@ -123,6 +142,8 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
 
   beforeEach(() => {
     calls = [];
+    H.settleOk = true;
+    H.requireStoragePath.mockClear();
     jobManager = new JobManager();
     child = makeChild();
     forkMock.mockImplementation(() => child);
@@ -149,10 +170,194 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     });
   });
 
+  it('forwards the Spring Actuator snapshot path to the worker', async () => {
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock: () => {},
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+
+    await launch(job, REPO_PATH, { springActuatorPath: 'runtime/actuator' });
+
+    expect(child.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({
+          springActuatorPath: 'runtime/actuator',
+        }),
+      }),
+    );
+  });
+
+  describe('route configuration', () => {
+    const launchWith = async () => {
+      const launch = createLaunchAnalysisWorker({
+        jobManager,
+        backend: { init: backendInit },
+        acquireRepoLock: () => null,
+        releaseRepoLock: () => {
+          calls.push('releaseRepoLock');
+        },
+        closeDbHandle,
+      });
+      const job = jobManager.createJob({ repoPath: REPO_PATH });
+      await launch(job, REPO_PATH, {});
+      return jobManager.getJob(job.id);
+    };
+    let rcDir: string;
+
+    beforeEach(async () => {
+      const fsp = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      const os = await vi.importActual<typeof import('node:os')>('node:os');
+      rcDir = await fsp.mkdtemp(`${os.tmpdir()}/gitnexus-launch-rc-`);
+    });
+
+    afterEach(async () => {
+      vi.unstubAllEnvs();
+      const fsp = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      await fsp.rm(rcDir, { recursive: true, force: true });
+    });
+
+    it('forwards the GITNEXUS_RC aliases and wrappers the CLI would use', async () => {
+      const fsp = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      const rc = `${rcDir}/service.json`;
+      await fsp.writeFile(
+        rc,
+        JSON.stringify({
+          goRouterAliases: [
+            { importPath: 'example.com/infra/pkg', type: 'Engine', framework: 'gin' },
+          ],
+          goHandlerWrappers: ['common.Wrapper'],
+        }),
+      );
+      vi.stubEnv('GITNEXUS_RC', rc);
+
+      await launchWith();
+
+      expect(child.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          options: expect.objectContaining({
+            routeHookConfig: {
+              routeFrameworkAliases: [
+                { importPath: 'example.com/infra/pkg', type: 'Engine', framework: 'gin' },
+              ],
+              routeHandlerWrappers: ['common.Wrapper'],
+            },
+          }),
+        }),
+      );
+    });
+
+    it('fails the job without forking a worker when the explicit config is invalid', async () => {
+      vi.stubEnv('GITNEXUS_RC', `${rcDir}/missing.json`);
+
+      const job = await launchWith();
+
+      expect(forkMock).not.toHaveBeenCalled();
+      expect(job?.status).toBe('failed');
+      expect(job?.error).toMatch(/Could not read GITNEXUS_RC file/);
+      expect(calls).toContain('releaseRepoLock');
+    });
+
+    it('preserves cancellation during storage resolution when config is invalid', async () => {
+      vi.stubEnv('GITNEXUS_RC', `${rcDir}/missing.json`);
+      const launch = createLaunchAnalysisWorker({
+        jobManager,
+        backend: { init: backendInit },
+        acquireRepoLock: () => null,
+        releaseRepoLock: () => calls.push('releaseRepoLock'),
+        closeDbHandle,
+      });
+      const queued = jobManager.createJob({ repoPath: REPO_PATH });
+      H.requireStoragePath.mockImplementationOnce(async () => {
+        jobManager.cancelJob(queued.id, 'Cancelled during storage resolution');
+        return H.STORAGE_PATH;
+      });
+
+      await launch(queued, REPO_PATH, {});
+      const job = jobManager.getJob(queued.id);
+
+      expect(job?.error).toBe('Cancelled during storage resolution');
+      expect(jobManager.hasPendingCancel(queued.id)).toBe(false);
+      expect(forkMock).not.toHaveBeenCalled();
+      expect(calls.filter((call) => call === 'releaseRepoLock')).toHaveLength(1);
+    });
+  });
+
+  it('uses the force storage set only when launch options request force', async () => {
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock: () => {},
+      closeDbHandle,
+    });
+
+    const ordinary = jobManager.createJob({ repoPath: REPO_PATH });
+    await launch(ordinary, REPO_PATH, {});
+    expect(H.requireStoragePath).toHaveBeenLastCalledWith(REPO_PATH, {
+      allowedStates: ['missing', 'empty', 'owned'],
+    });
+
+    const forced = jobManager.createJob({ repoPath: REPO_PATH });
+    await launch(forced, REPO_PATH, { force: true });
+    expect(H.requireStoragePath).toHaveBeenLastCalledWith(REPO_PATH, {
+      allowedStates: ['missing', 'empty', 'owned', 'unowned', 'foreign'],
+    });
+  });
+
+  it('forwards the index-branch selector to the worker', async () => {
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock: () => {},
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+
+    await launch(job, REPO_PATH, { branch: 'development' });
+
+    // `StartMessage.options` is typed as `AnalyzeOptions`, so this key IS
+    // `AnalyzeOptions.branch` — the field `resolveWriteTarget` reads to choose
+    // the run's storage slot. (It does not always mean a `branches/<slug>/`
+    // sub-slot: `resolveBranchPlacement` keeps the flat slot when that slot has
+    // no owner, or when its owner is already this label.) A rename breaks this
+    // test.
+    expect(child.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({ branch: 'development' }),
+      }),
+    );
+  });
+
+  it('omits branch entirely when the caller did not select one', async () => {
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock: () => {},
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+
+    await launch(job, REPO_PATH, {});
+
+    // Not merely undefined: absent. `AnalyzeOptions.branch === undefined` is the
+    // documented signal for "target the flat workspace slot", so sending the key
+    // with an undefined value must not become the way that default is expressed.
+    const sent = child.send.mock.calls.at(0)?.[0] as { options: Record<string, unknown> };
+    expect(Object.hasOwn(sent.options, 'branch')).toBe(false);
+  });
+
   afterEach(() => {
+    vi.useRealTimers();
     jobManager.dispose();
     vi.restoreAllMocks();
     forkMock.mockReset();
+    H.settleOk = true;
   });
 
   it('does not publish the index — backend.init() is never called for a collapsed run', async () => {
@@ -167,6 +372,8 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     // is not publication.
     expect(closeDbHandle).toHaveBeenCalledTimes(1);
     expect(calls.indexOf('closeDbHandle')).toBeLessThan(calls.indexOf('updateJob:failed'));
+    // Lock is held through the collapse decision and dropped afterwards, once.
+    expect(calls.indexOf('updateJob:failed')).toBeLessThan(calls.indexOf('releaseRepoLock'));
   });
 
   it('marks the collapsed run failed and still reports repoName', async () => {
@@ -196,6 +403,7 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
       'backend.init',
       'updateJob:complete',
       'updateJob:terminal',
+      'releaseRepoLock',
     ]);
   });
 
@@ -212,5 +420,217 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     expect(healthy.result.graphWriteCollapsed).toBeUndefined();
     const job = await runWorker(healthy);
     expect(job?.status).toBe('complete');
+  });
+
+  it('fails and does not publish when index finalization never becomes visible', async () => {
+    vi.useFakeTimers();
+    H.settleOk = false;
+    const releaseRepoLock = vi.fn(() => {
+      calls.push('releaseRepoLock');
+    });
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock,
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launch(job, REPO_PATH, {});
+    child.emit('message', completeMessage());
+
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+
+    // Must match FINALIZE_SETTLE_TIMEOUT_MS + one poll in analyze-launch.ts.
+    await vi.advanceTimersByTimeAsync(61_000);
+
+    const done = jobManager.getJob(job.id);
+    expect(done?.status).toBe('failed');
+    expect(done?.error).toMatch(/finalization not visible after timeout/i);
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(closeDbHandle).not.toHaveBeenCalled();
+    expect(releaseRepoLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds the write lock until settle resolves, then releases once after publish', async () => {
+    vi.useFakeTimers();
+    H.settleOk = false;
+    const releaseRepoLock = vi.fn(() => {
+      calls.push('releaseRepoLock');
+    });
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock,
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launch(job, REPO_PATH, {});
+    child.emit('message', completeMessage());
+
+    // First poll failed; the gate is sleeping. Lock must still be held.
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+
+    H.settleOk = true;
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(jobManager.getJob(job.id)?.status).toBe('complete');
+    expect(backendInit).toHaveBeenCalledTimes(1);
+    expect(releaseRepoLock).toHaveBeenCalledTimes(1);
+    expect(calls.indexOf('backend.init')).toBeLessThan(calls.indexOf('releaseRepoLock'));
+  });
+});
+
+describe('createLaunchAnalysisWorker — pending cancel', () => {
+  let jobManager: JobManager;
+  let child: FakeChild;
+  let backendInit: Mock<() => Promise<unknown>>;
+  let closeDbHandle: Mock<() => Promise<void>>;
+
+  const launchOne = async () => {
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock: () => {},
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launch(job, REPO_PATH, {});
+    return job;
+  };
+
+  beforeEach(() => {
+    H.settleOk = true;
+    jobManager = new JobManager();
+    child = makeChild();
+    forkMock.mockImplementation(() => child);
+    backendInit = vi.fn(async () => true);
+    closeDbHandle = vi.fn(async () => {});
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    jobManager.dispose();
+    vi.restoreAllMocks();
+    forkMock.mockReset();
+    H.settleOk = true;
+  });
+
+  it('keeps the caller cancel reason when the worker reports a generic cancel error', async () => {
+    const job = await launchOne();
+    expect(jobManager.cancelJob(job.id, 'Analysis timed out (30 minute limit)')).toBe(true);
+    child.emit('message', {
+      type: 'error',
+      message: 'Analysis cancelled (parent requested cancellation)',
+    });
+    const done = jobManager.getJob(job.id);
+    expect(done?.status).toBe('failed');
+    expect(done?.error).toBe('Analysis timed out (30 minute limit)');
+  });
+
+  it('does not publish after complete IPC if cancel is already pending', async () => {
+    const job = await launchOne();
+    expect(jobManager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+    child.emit('message', completeMessage());
+    await vi.waitFor(() => expect(jobManager.getJob(job.id)?.status).toBe('failed'));
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(jobManager.getJob(job.id)?.error).toBe('Cancelled by user');
+  });
+
+  it('does not publish if cancel arrives while settle is in flight', async () => {
+    vi.useFakeTimers();
+    H.settleOk = false;
+    const job = await launchOne();
+    child.emit('message', completeMessage());
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+    expect(jobManager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+    H.settleOk = true;
+    await vi.advanceTimersByTimeAsync(200);
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(jobManager.getJob(job.id)?.status).toBe('failed');
+    expect(jobManager.getJob(job.id)?.error).toBe('Cancelled by user');
+  });
+
+  it('releases the analyze slot when the worker emits error without exit', async () => {
+    const job = await launchOne();
+    child.emit('error', new Error('spawn ENOENT'));
+    expect(jobManager.getJob(job.id)?.status).toBe('failed');
+    expect(jobManager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
+
+  it('holds the repo lock until exit after complete IPC when cancel is already pending', async () => {
+    const releaseRepoLock = vi.fn();
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock,
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launch(job, REPO_PATH, {});
+
+    expect(jobManager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+    child.emit('message', completeMessage());
+
+    expect(jobManager.getJob(job.id)?.status).toBe('failed');
+    expect(jobManager.getJob(job.id)?.error).toBe('Cancelled by user');
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+    expect(() => jobManager.createJob({ repoPath: '/tmp/other' })).toThrow(/already in progress/);
+
+    child.emit('exit', 0);
+
+    expect(releaseRepoLock).toHaveBeenCalledTimes(1);
+    expect(jobManager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
+
+  it('holds the repo lock until exit after cancel error IPC', async () => {
+    const releaseRepoLock = vi.fn();
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock,
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launch(job, REPO_PATH, {});
+
+    expect(jobManager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+    child.emit('message', {
+      type: 'error',
+      message: 'Analysis cancelled (parent requested cancellation)',
+    });
+
+    expect(jobManager.getJob(job.id)?.status).toBe('failed');
+    expect(jobManager.getJob(job.id)?.error).toBe('Cancelled by user');
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+    expect(() => jobManager.createJob({ repoPath: '/tmp/other' })).toThrow(/already in progress/);
+
+    child.emit('exit', 0);
+
+    expect(releaseRepoLock).toHaveBeenCalledTimes(1);
+    expect(jobManager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
+
+  it('does not release the analyze slot on post-spawn child error until exit', async () => {
+    const job = await launchOne();
+    child.pid = 123;
+    child.emit('error', new Error('write EPIPE'));
+
+    expect(jobManager.getJob(job.id)?.status).toBe('failed');
+    expect(jobManager.getJob(job.id)?.error).toMatch(/write EPIPE/);
+    expect(() => jobManager.createJob({ repoPath: '/tmp/other' })).toThrow(/already in progress/);
+
+    child.emit('exit', 1);
+
+    expect(jobManager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
   });
 });

@@ -29,8 +29,10 @@ function hostileResult(): AnalyzeResult {
   };
   graph.self = graph; // circular — JSON.stringify throws
   return {
+    rebuildReasons: [],
     repoName: 'demo',
     repoPath: '/repos/demo',
+    storagePath: '/repos/demo/.gitnexus',
     stats: { files: 3, nodes: 1, edges: 0 },
     alreadyUpToDate: false,
     ftsSkipped: true,
@@ -48,6 +50,7 @@ describe('#2112: analyze-worker IPC projection', () => {
       alreadyUpToDate: false,
       ftsRepairedOnly: undefined,
       ftsSkipped: true,
+      storagePath: '/repos/demo/.gitnexus',
     });
     expect('pipelineResult' in projected).toBe(false);
   });
@@ -81,10 +84,19 @@ describe('#2112: analyze-worker IPC projection', () => {
         properties: { name: `n${i}`, filePath: 'x.ts' },
       });
     }
-    graph.addRelationship({ id: 'n0->n1', source: 'n0', target: 'n1', type: 'CALLS' });
+    graph.addRelationship({
+      id: 'n0->n1',
+      sourceId: 'n0',
+      targetId: 'n1',
+      type: 'CALLS',
+      confidence: 1,
+      reason: '',
+    });
     const result: AnalyzeResult = {
+      rebuildReasons: [],
       repoName: 'demo',
       repoPath: '/r',
+      storagePath: '/r/.gitnexus',
       stats: { nodes: 50, edges: 1 },
       pipelineResult: {
         graph,

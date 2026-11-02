@@ -15,6 +15,7 @@
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
+import type { Worker } from 'node:worker_threads';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -93,7 +94,10 @@ describe('worker pool — startup stderr surfacing (#1741)', () => {
     const dispatch = pool.dispatch([{ path: 'src/a.ts', content: 'x' }]);
     await expect(dispatch).rejects.toBeInstanceOf(WorkerPoolInitializationError);
 
-    const err = await dispatch.catch((e: unknown) => e as WorkerPoolInitializationError);
+    const err = await dispatch.catch((e: unknown) => e);
+    if (!(err instanceof WorkerPoolInitializationError)) {
+      throw new Error('expected worker initialization failure');
+    }
     expect(err.readinessFailures.length).toBeGreaterThan(0);
     // The real crash reason, recovered from the worker's stderr, is present.
     const joined = err.readinessFailures.join('\n');
@@ -127,7 +131,7 @@ describe('worker pool — startup self-healing (#1741)', () => {
     expect(pool.getStats().poolBroken).toBe(false);
     // R1 (clear-on-settle): the ref'd backoff timer self-cleared when it fired,
     // so no startup timer lingers after the slot's retry loop exited.
-    expect(pool.getStats().pendingStartupTimers).toBe(0);
+    expect(pool.getStats()).toHaveProperty('pendingStartupTimers', 0);
 
     await pool.terminate().catch(() => undefined);
   });
@@ -143,9 +147,10 @@ describe('worker pool — startup self-healing (#1741)', () => {
       },
     });
 
-    const err = await pool
-      .dispatch([{ path: 'a.ts', content: 'x' }])
-      .catch((e: unknown) => e as WorkerPoolInitializationError);
+    const err = await pool.dispatch([{ path: 'a.ts', content: 'x' }]).catch((e: unknown) => e);
+    if (!(err instanceof WorkerPoolInitializationError)) {
+      throw new Error('expected worker initialization failure');
+    }
 
     expect(err).toBeInstanceOf(WorkerPoolInitializationError);
     expect(err.crashClass).toBe('deterministic-startup');
@@ -193,9 +198,10 @@ describe('worker pool — startup self-healing (#1741)', () => {
       },
     });
 
-    const err = await pool
-      .dispatch([{ path: 'a.ts', content: 'x' }])
-      .catch((e: unknown) => e as WorkerPoolInitializationError);
+    const err = await pool.dispatch([{ path: 'a.ts', content: 'x' }]).catch((e: unknown) => e);
+    if (!(err instanceof WorkerPoolInitializationError)) {
+      throw new Error('expected worker initialization failure');
+    }
 
     expect(err).toBeInstanceOf(WorkerPoolInitializationError);
     expect(err.crashClass).toBe('transient-exhausted');
@@ -217,9 +223,10 @@ describe('worker pool — startup self-healing (#1741)', () => {
       },
     });
 
-    const err = await pool
-      .dispatch([{ path: 'a.ts', content: 'x' }])
-      .catch((e: unknown) => e as WorkerPoolInitializationError);
+    const err = await pool.dispatch([{ path: 'a.ts', content: 'x' }]).catch((e: unknown) => e);
+    if (!(err instanceof WorkerPoolInitializationError)) {
+      throw new Error('expected worker initialization failure');
+    }
 
     expect(err.crashClass).toBe('deterministic-startup');
     expect(calls).toBe(2); // attempt 0 + one respawn that reproduced
@@ -246,7 +253,7 @@ describe('worker pool — startup self-healing (#1741)', () => {
     await pool.terminate();
     expect(pool.getStats().terminated).toBe(true);
     // No ref'd backoff timer left pinning the loop after terminate.
-    expect(pool.getStats().pendingStartupTimers).toBe(0);
+    expect(pool.getStats()).toHaveProperty('pendingStartupTimers', 0);
     expect(pool.getStats().activeSlots).toBe(0);
 
     // No worker is spawned after terminate — the woken loop sees `terminated` and gives up.
