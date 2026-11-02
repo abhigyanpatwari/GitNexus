@@ -10,7 +10,7 @@ import {
 import fs from 'fs/promises';
 import { readdir } from 'node:fs';
 import path from 'path';
-import { glob } from 'glob';
+import { glob, globIterate } from 'glob';
 import { createIgnoreFilter } from '../../config/ignore-service.js';
 import { mapConcurrent } from '../../lib/utils.js';
 
@@ -252,6 +252,33 @@ export const walkRepositoryPaths = async (
   }
 
   return deduplicatedEntries;
+};
+
+/**
+ * Count the paths `walkRepositoryPaths` would scan, with the same patterns and
+ * ignore rules, and stop as soon as the count passes `limit`. Nothing is
+ * stat-ed, so large files, non-regular entries and declaration siblings are
+ * not subtracted: the result is an upper bound on what analyze indexes. Used
+ * to refuse an expensive rebuild before it starts (#3524).
+ */
+export const countScanCandidates = async (
+  repoPath: string,
+  limit: number,
+  options: Pick<WalkRepositoryOptions, 'includeDotDirs'> = {},
+): Promise<number> => {
+  await assertWalkRootIsDirectory(repoPath);
+  const ignoreFilter = await createIgnoreFilter(repoPath);
+  const includeDotDirs = normalizeIncludeDotDirs(options.includeDotDirs ?? getIncludeDotDirs());
+  let count = 0;
+  for await (const _ of globIterate(indexableGlobPatterns(includeDotDirs), {
+    cwd: repoPath,
+    nodir: true,
+    dot: false,
+    ignore: includeDotDirs.length > 0 ? dotDirectoryIgnoreFilter(ignoreFilter) : ignoreFilter,
+  })) {
+    if (++count > limit) break;
+  }
+  return count;
 };
 
 /**

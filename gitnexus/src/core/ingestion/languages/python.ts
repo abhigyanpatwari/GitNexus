@@ -47,6 +47,7 @@ import { pythonDecoratorRouteHandlerName } from '../route-extractors/python-deco
 import { assertCloneable } from '../workers/clone-safety.js';
 import { collectPythonCaptureSideChannel } from './python/module-accessors.js';
 import { pythonRenameProvider } from './python/rename.js';
+import { synthesizePythonInstanceFields } from './python/instance-fields.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -242,6 +243,7 @@ export const pythonProvider = defineLanguage({
   mroStrategy: 'c3',
   callExtractor: createCallExtractor(pythonCallConfig),
   fieldExtractor: createFieldExtractor(pythonFieldConfig),
+  synthesizeStructureMembers: synthesizePythonInstanceFields,
   methodExtractor: createMethodExtractor(pythonMethodConfig),
   variableExtractor: createVariableExtractor(pythonVariableConfig),
   classExtractor: createClassExtractor(pythonClassConfig),

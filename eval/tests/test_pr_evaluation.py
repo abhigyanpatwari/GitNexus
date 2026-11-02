@@ -73,6 +73,23 @@ def test_pr_comparison_rejects_readable_runtime_cells(evidence):
     assert not report["complete"] and not report["improved"]
 
 
+def test_pr_summary_preserves_safe_diagnostics_in_complete_and_partial_reports(evidence):
+    from tests.test_session_diagnostics import result, use
+    from workflow_bench.session_diagnostics import diagnose_session
+
+    diagnostic = diagnose_session([use(args={"query": "SECRET"}), result("SECRET")], [1, 2], 3)
+    evidence[1][0]["session_diagnostics"] = [diagnostic]
+    evidence[1][0]["cell_phase_seconds"] = {"clone": 2, "SECRET": 9}
+    report = compare(evidence)
+    assert report["per_run"][0]["cell_phase_seconds"] == {"clone": 2}
+    assert "SECRET" not in json.dumps(report)
+    assert "Tool diagnostics: baseline" in pr_evaluation.render_markdown(report)
+    evidence[1].pop()
+    partial = compare(evidence)
+    assert not partial["complete"]
+    assert "Tool diagnostics: baseline" in pr_evaluation.render_markdown(partial)
+
+
 def test_comparison_measures_only_new_mcp_cells_and_preserves_historical_cost(evidence):
     before = deepcopy(evidence)
     report = compare(evidence)

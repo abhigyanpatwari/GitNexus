@@ -24,7 +24,13 @@ export default defineConfig({
     // caller's `atomicIncremental: true`, so an exported `=0` would silently
     // turn off every staging test. Empty is neither '0' nor '1', i.e. unset;
     // a test that needs a value stubs it.
-    env: { GITNEXUS_MEMORY: 'off', GITNEXUS_LANG: 'en', GITNEXUS_ATOMIC_INCREMENTAL: '' },
+    // Config tests supply their own files; never read a developer's GITNEXUS_RC.
+    env: {
+      GITNEXUS_MEMORY: 'off',
+      GITNEXUS_LANG: 'en',
+      GITNEXUS_ATOMIC_INCREMENTAL: '',
+      GITNEXUS_RC: '',
+    },
     // N-API destructors can crash worker forks on macOS during process exit.
     // This is independent of the QueryResult lifetime fix in @ladybugdb/core 0.15.2 —
     // it's a vitest forks + native addon interaction where destructors run in
@@ -72,6 +78,8 @@ export default defineConfig({
         test: {
           name: 'lbug-db',
           include: [
+            'test/integration/analyze-dirty-snapshot.test.ts',
+            'test/integration/dangling-owner-edges.test.ts',
             'test/integration/class-expression-owners.test.ts',
             'test/integration/rename-provider-*.test.ts',
             'test/integration/pdg-explicit-owner.test.ts',
@@ -83,8 +91,10 @@ export default defineConfig({
             'test/integration/incremental-worktree-context.test.ts',
             'test/integration/incremental-method-integrity.test.ts',
             'test/integration/go-incremental-method-owners.test.ts',
+            'test/integration/server-route-hook-config.test.ts',
             'test/integration/query-symbol-integrity.test.ts',
             'test/integration/mcp-index-generation.test.ts',
+            'test/integration/mcp-refresh-index-e2e.test.ts',
             'test/integration/fts-repair-warm-session.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
@@ -113,10 +123,12 @@ export default defineConfig({
             'test/integration/api-impact-e2e.test.ts',
             'test/integration/shape-check-regression.test.ts',
             'test/integration/java-class-impact.test.ts',
+            'test/integration/java-overload-impact-persistence.test.ts',
             'test/integration/class-impact-all-languages.test.ts',
             'test/integration/lbug-orphan-sidecar-recovery.test.ts',
             'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
             'test/integration/lbug-checkpoint-accounting.test.ts',
+            'test/integration/lbug-rel-copy-page-padding.test.ts',
             'test/integration/lbug-incremental-search.test.ts',
             'test/integration/lbug-readonly-init.test.ts',
             // Shared sibling store (#3352): each file runs real analyses and opens
@@ -183,6 +195,8 @@ export default defineConfig({
           sequence: { groupOrder: 3 },
           include: ['test/**/*.test.ts'],
           exclude: [
+            'test/integration/analyze-dirty-snapshot.test.ts',
+            'test/integration/dangling-owner-edges.test.ts',
             'test/integration/class-expression-owners.test.ts',
             'test/integration/rename-provider-*.test.ts',
             'test/integration/pdg-explicit-owner.test.ts',
@@ -194,8 +208,10 @@ export default defineConfig({
             'test/integration/incremental-worktree-context.test.ts',
             'test/integration/incremental-method-integrity.test.ts',
             'test/integration/go-incremental-method-owners.test.ts',
+            'test/integration/server-route-hook-config.test.ts',
             'test/integration/query-symbol-integrity.test.ts',
             'test/integration/mcp-index-generation.test.ts',
+            'test/integration/mcp-refresh-index-e2e.test.ts',
             'test/integration/fts-repair-warm-session.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
@@ -222,10 +238,12 @@ export default defineConfig({
             'test/integration/api-impact-e2e.test.ts',
             'test/integration/shape-check-regression.test.ts',
             'test/integration/java-class-impact.test.ts',
+            'test/integration/java-overload-impact-persistence.test.ts',
             'test/integration/class-impact-all-languages.test.ts',
             'test/integration/lbug-orphan-sidecar-recovery.test.ts',
             'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
             'test/integration/lbug-checkpoint-accounting.test.ts',
+            'test/integration/lbug-rel-copy-page-padding.test.ts',
             'test/integration/lbug-incremental-search.test.ts',
             'test/integration/lbug-readonly-init.test.ts',
             'test/integration/analyze-wal-checkpoint-failure.test.ts',

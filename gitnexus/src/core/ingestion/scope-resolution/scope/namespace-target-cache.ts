@@ -19,6 +19,7 @@ export function createNamespaceTargetCache(
   const scopeIds = new Set<ScopeId>();
   const importNames = new Set<string>();
   const accessibleNamespaces = new Set<string>();
+  let hasNamespaceImports = false;
   const tree = scopes.scopeTree;
   let complete = typeof tree?.getChildren === 'function';
   let requiresLexicalLookup = importsBindAtLexicalScope;
@@ -49,7 +50,11 @@ export function createNamespaceTargetCache(
     collectBindings(scope.bindings);
     collectBindings(scopes.bindings?.get(id));
     collectBindings(scopes.bindingAugmentations?.get(id));
-    for (const edge of scopes.imports?.get(id) ?? scope.imports) importNames.add(edge.localName);
+    for (const edge of scopes.imports?.get(id) ?? scope.imports) {
+      importNames.add(edge.localName);
+      if (edge.kind === 'namespace' && edge.targetFile !== null && edge.linkStatus !== 'unresolved')
+        hasNamespaceImports = true;
+    }
     for (const namespace of scopes.accessibleNamespacesByScope?.get(id) ?? []) {
       accessibleNamespaces.add(namespace);
     }
@@ -74,8 +79,12 @@ export function createNamespaceTargetCache(
     (point, i) => i === 0 || compare(point, boundaries[i - 1]!) !== 0,
   );
   const byScope = new Map<ScopeId, Map<number | string, Map<string, string[]>>>();
+  const emptyTargets = new Map<string, string[]>();
 
   const at = (inScope = parsed.moduleScope, position?: SourcePosition): Map<string, string[]> => {
+    // A complete walk can prove every lexical snapshot is empty. Keep the
+    // position-sensitive receiver lookup policy, but avoid rebuilding maps.
+    if (complete && !hasNamespaceImports && scopeIds.has(inScope)) return emptyTargets;
     let bucket: number | string = -1; // An unspecified position sees every activation.
     if (position !== undefined) {
       if (!complete || !scopeIds.has(inScope)) {

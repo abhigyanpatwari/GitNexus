@@ -164,6 +164,8 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
+  'test/integration/java-overload-impact-persistence.test.ts',
+  'test/integration/dangling-owner-edges.test.ts',
   'test/integration/impact-private-type-file-seed.test.ts',
   'test/integration/impact-private-type-source.test.ts',
   // Inline-handler findings must survive native persistence and cold explain
@@ -193,6 +195,9 @@ const LBUG_NATIVE = [
   'test/integration/rename-provider-zig.test.ts',
   'test/integration/pdg-explicit-owner.test.ts',
   'test/integration/skip-fts.test.ts',
+  // Dirty snapshot freshness depends on native FTS, Git paths and file reads.
+  'test/integration/analyze-dirty-snapshot.test.ts',
+  'test/integration/incremental-worktree-context.test.ts',
   'test/integration/lbug-core-adapter.test.ts',
   // Native COPY, cached vectors and cold shared-store readers vary by platform.
   'test/integration/embedding-identity-integrity.test.ts',
@@ -208,12 +213,15 @@ const LBUG_NATIVE = [
   'test/integration/lbug-orphan-sidecar-recovery.test.ts',
   'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
   'test/integration/lbug-checkpoint-accounting.test.ts',
+  'test/integration/lbug-rel-copy-page-padding.test.ts',
   'test/integration/lbug-incremental-search.test.ts',
   // Retained identities and reader metadata must agree on every native platform.
   'test/integration/incremental-method-integrity.test.ts',
   'test/integration/go-incremental-method-owners.test.ts',
   'test/integration/query-symbol-integrity.test.ts',
   'test/integration/mcp-index-generation.test.ts',
+  // A real refresh worker must preserve active readers or report native contention.
+  'test/integration/mcp-refresh-index-e2e.test.ts',
   'test/integration/fts-repair-warm-session.test.ts',
   'test/unit/lbug-pool-pinning.test.ts',
   'test/unit/hybrid-search.test.ts',
@@ -270,8 +278,10 @@ const LBUG_NATIVE = [
 // process spawning, which behaves differently across platforms (shell
 // quoting, path resolution, signal handling)
 const SPAWN_CLI = [
+  'test/integration/resolvers/java-javac-overloads.test.ts',
   // Real shard/blob/JSON roundtrip: path identities and child invocation vary by OS.
   'test/unit/shard-timings-roundtrip.test.ts',
+  'test/unit/run-cross-platform.test.ts',
   'test/integration/cli-e2e.test.ts',
   'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',
@@ -351,6 +361,7 @@ const WORKER_THREADS = [
   'test/integration/cfg/adonis-taint.test.ts',
   'test/integration/function-local-identity.test.ts',
   'test/integration/java-imported-return-types.test.ts',
+  'test/integration/resolvers/java-overload-jls.test.ts',
   'test/unit/community-processor.test.ts',
   'test/integration/worker-pool.test.ts',
   'test/integration/class-expression-owners.test.ts',
@@ -397,6 +408,8 @@ const FILESYSTEM = [
   'test/integration/filesystem-walker.test.ts',
   'test/integration/analyze-directory-symlinks.test.ts',
   'test/integration/watch-filesystem.test.ts',
+  'test/unit/watch-external-config.test.ts',
+  'test/integration/server-route-hook-config.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
   'test/integration/ignore-and-skip-e2e.test.ts',
   // Pins that the bridge pairing verdict is measured before the database is

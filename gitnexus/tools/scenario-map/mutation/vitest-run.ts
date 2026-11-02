@@ -38,6 +38,7 @@ import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { INSTRUMENTER_CONSTANTS } from '@stryker-mutator/api/core';
 import type { CliOptions, TestModule, TestProject, Vitest } from 'vitest/node';
+import type { PluginOption } from 'vite';
 import type { VitestSelection } from '../../mutation/driver/stryker-config.js';
 import {
   classifyRun,
@@ -99,6 +100,8 @@ export interface VitestRunOptions {
    * (the value-flow trace hook, U11); with any, setup files run in list order.
    */
   setupFiles?: readonly string[];
+  /** Instrumentation applied only to this prepared run. */
+  plugins?: PluginOption[];
   /** Called with the project before the run: provides the extra setup files' context. */
   provide?: (project: Pick<TestProject, 'provide'>) => void;
   /** Upper bound of the instance's worker processes (the CLI's `--concurrency`). */
@@ -144,7 +147,7 @@ export type VitestSession = Pick<
 /** `vitest/node`'s `createVitest`, narrowed to {@link VitestSession}; unit tests inject a fake. */
 export type CreateVitest = (
   options: CliOptions,
-  viteOverrides: { cacheDir: string },
+  viteOverrides: { cacheDir: string; plugins?: PluginOption[] },
 ) => Promise<VitestSession>;
 
 const loadCreateVitest = async (): Promise<CreateVitest> =>
@@ -426,7 +429,7 @@ export async function runVitest(
         projects: [projectName],
         maxWorkers: options.maxWorkers,
       }),
-      { cacheDir: path.join(options.workDir, 'vite-cache') },
+      { cacheDir: path.join(options.workDir, 'vite-cache'), plugins: options.plugins },
     );
     try {
       const projects = vitest.projects.filter((candidate) => candidate.name === projectName);

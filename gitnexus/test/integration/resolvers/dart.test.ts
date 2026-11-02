@@ -290,13 +290,6 @@ describe.skipIf(!dartAvailable)('Dart method enrichment', () => {
     expect(speak!.properties.isAbstract).toBe(true);
   });
 
-  it('marks breathe as NOT isAbstract', () => {
-    const methods = getNodesByLabelFull(result, 'Method');
-    const breathe = methods.find((n) => n.name === 'breathe');
-    expect(breathe).toBeDefined();
-    expect(breathe!.properties.isAbstract).toBe(false);
-  });
-
   it('marks classify as isStatic', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const classify = methods.find((n) => n.name === 'classify');

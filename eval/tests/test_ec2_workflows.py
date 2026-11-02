@@ -322,6 +322,12 @@ def test_shared_lifecycle_jobs_stay_identical_across_both_ec2_workflows():
     renamed = {"watch-evaluate-pickup": "watch-evolve-pickup", "evaluate": "evolve"}
     for job in ("start-runner", "check-runner", "runner-ready", "stop-runner"):
         expected = {key: value for key, value in evaluation[job].items() if key != "name"}
+        if job == "start-runner":
+            guard, *lifecycle = expected["steps"]
+            assert guard["name"] == "Validate diagnostic trial authorization scope"
+            assert "uses" not in guard and "secrets." not in json.dumps(guard)
+            # Input rejection precedes EC2 startup; compare every lifecycle step.
+            expected["steps"] = lifecycle
         if job != "stop-runner":
             preview = "(github.event_name == 'pull_request_target' && inputs.candidate_pr != '') ||\n "
             assert expected["if"].count(preview) == 1

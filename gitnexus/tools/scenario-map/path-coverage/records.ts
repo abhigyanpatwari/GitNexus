@@ -27,12 +27,13 @@
  *    stack frame outside the hook.
  *
  * Self-contained on purpose: this module runs inside every window, so it imports only `node:`
- * builtins and the hook can leave exactly two files out of the provenance it records.
+ * builtins and type-only declarations; the hook excludes its own modules from provenance.
  */
 import { renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import type { CapturedFixture } from './fixture-capture.js';
 
 /** provide/inject key of the hook's context (run-coverage.ts provides it). */
 export const COVERAGE_KEY = 'gitnexusScenarioCoverage';
@@ -96,6 +97,8 @@ export interface RawWindow {
   scripts: number[];
   natives: string[];
   spawns: SpawnEvent[];
+  /** Content-addressed input snapshots observed in this window. Older records omit them. */
+  fixtures?: string[];
 }
 
 /** A window that ended when a test's first attempt started, and the suites that started in it. */
@@ -133,6 +136,7 @@ export interface RawCoverageRecord {
   /** Load window, windows that start no suite, and the tail. */
   unattributed: RawWindow;
   tests: RawTestCoverage[];
+  fixtureSnapshots?: Record<string, CapturedFixture>;
 }
 
 /** Longest spawn target kept; a Worker with `eval: true` passes its whole source. */
@@ -187,6 +191,7 @@ export interface WindowDelta {
   scripts: Set<number>;
   natives: Set<string>;
   spawns: SpawnEvent[];
+  fixtures?: string[];
 }
 
 const emptyWindow = (): WindowDelta => ({
@@ -201,6 +206,9 @@ function mergeInto(target: WindowDelta, delta: WindowDelta): void {
   for (const script of delta.scripts) target.scripts.add(script);
   for (const native of delta.natives) target.natives.add(native);
   target.spawns.push(...delta.spawns);
+  if (delta.fixtures !== undefined) {
+    target.fixtures = [...new Set([...(target.fixtures ?? []), ...delta.fixtures])];
+  }
 }
 
 const ascending = (a: number, b: number): number => a - b;
@@ -210,6 +218,7 @@ const toRaw = (window: WindowDelta): RawWindow => ({
   scripts: [...window.scripts].sort(ascending),
   natives: [...window.natives].sort(),
   spawns: [...window.spawns],
+  ...(window.fixtures === undefined ? {} : { fixtures: [...window.fixtures] }),
 });
 
 /** Interns the scripts and block keys of one test file's windows. */

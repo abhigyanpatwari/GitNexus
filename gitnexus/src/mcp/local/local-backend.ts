@@ -38,6 +38,7 @@ import {
   SYMBOL_IDENTITY_RECOVERY_SUGGESTION,
   SymbolIdentityError,
   assertSymbolIdentity,
+  assertSymbolFilePath,
   queryRowValue,
   assertIdentityFields,
   assertQueryIdentity,
@@ -131,6 +132,7 @@ import {
   isFullSourceAvailable,
 } from '../../core/content-retention.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
+import { MCP_REFRESH_TOOL, resolveMcpRefreshLimits } from '../refresh-policy.js';
 import {
   stalenessPayload,
   type IndexedRef,
@@ -170,6 +172,10 @@ import {
   lookupUnresolvedCallCount,
 } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { UnresolvedReceiverSummary } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
+import {
+  probeOverloadBoundaries,
+  type OverloadBoundary,
+} from '../../core/ingestion/scope-resolution/unresolved-overloads.js';
 import type { UndecidedSatisfactionSummary } from '../../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { scopeExtractionFailureTotal } from '../../core/ingestion/scope-resolution/scope-extraction-failures.js';
 import { lookupCount } from '../../core/ingestion/scope-resolution/summary-maps.js';
@@ -222,6 +228,16 @@ const CANDIDATE_WINDOW = 20;
  * hub walks stay in the tens of thousands.
  */
 export const IMPACT_FRONTIER_ROW_CAP = 100_000;
+
+/** The binder error from an index whose CodeRelation table predates `staticGated`. */
+export function isMissingStaticGatedError(error: unknown): boolean {
+  return error instanceof Error && /Cannot find property staticGated for r\b/i.test(error.message);
+}
+
+/** The impact frontier query with `staticGated` read as NULL, for older indexes. */
+export function withoutStaticGatedColumn(query: string): string {
+  return query.replace('r.staticGated AS staticGated', 'NULL AS staticGated');
+}
 
 /**
  * Concurrent BFS walks when `query()` attaches per-process `chain`. Each walk
@@ -394,6 +410,8 @@ function assertResponseIdentities(value: unknown): void {
   if (Array.isArray(value)) {
     for (const item of value) assertResponseIdentities(item);
   } else if (value !== null && typeof value === 'object') {
+    const row = value as Record<string, unknown>;
+    assertSymbolFilePath(row.id ?? row.uid, row.filePath);
     for (const [key, field] of Object.entries(value)) {
       if (key === 'seedBlocks' || key === 'reachableBlocks' || key === 'intraReachableBlocks') {
         if (!Array.isArray(field)) throw new SymbolIdentityError();
@@ -817,6 +835,12 @@ export interface EpistemicCauses {
    */
   readonly receiverTyping: number;
   /**
+   * Unique call sites whose overload or implementation targets were unresolved.
+   * Counted once across all queried candidates. A partial/unverified receipt
+   * can report zero with a boundary note; zero alone does not prove completeness.
+   */
+  readonly overloadResolution?: number;
+  /**
    * Symbols on or beyond a dispatch boundary that the traversal could not
    * attribute statically: implementations plus interface-level consumers.
    *
@@ -898,6 +922,36 @@ export interface EpistemicCauses {
    * branch on `epistemic` first and read the causes as explanation.
    */
   readonly callableValueReferences: number;
+}
+
+type EpistemicBoundary = {
+  epistemic: 'exact' | 'lower-bound';
+  boundaries?: string[];
+  causes?: EpistemicCauses;
+  unresolved?: string;
+  anchorLanguages?: readonly string[];
+};
+
+function mergeOverloadBoundary(
+  existing: EpistemicBoundary,
+  overloads: OverloadBoundary,
+): EpistemicBoundary {
+  if (overloads.notes.length === 0) return existing;
+  return {
+    ...existing,
+    epistemic: 'lower-bound',
+    boundaries: [...(existing.boundaries ?? []), ...overloads.notes],
+    causes: {
+      scopeExtractionFiles: 0,
+      receiverTyping: 0,
+      dispatchBoundary: 0,
+      externalBoundary: 0,
+      undecidedSatisfaction: 0,
+      callableValueReferences: 0,
+      ...existing.causes,
+      overloadResolution: overloads.sites,
+    },
+  };
 }
 
 function epistemicFrom(dropped: {
@@ -1201,6 +1255,18 @@ async function callableValueReferenceBoundaries(
         `from this result — actual impact may be higher.`,
     ],
   };
+}
+
+/** Per-call extras the MCP server hands to {@link LocalBackend.callTool}. */
+export interface McpToolCallContext {
+  /** `refresh_index` progress, as the analyze worker reports it (percent 0-100). */
+  onProgress?: (percent: number, message: string) => void;
+}
+
+/** An error's message as one sentence, so further sentences can follow it. */
+function asSentence(err: unknown): string {
+  const message = (err instanceof Error ? err.message : String(err)).trim();
+  return /[.!?]$/u.test(message) ? message : `${message}.`;
 }
 
 interface RepoHandle {
@@ -3113,7 +3179,7 @@ export class LocalBackend {
     return entry.value;
   }
 
-  async callTool(method: string, params: any): Promise<any> {
+  async callTool(method: string, params: any, context: McpToolCallContext = {}): Promise<any> {
     if (method === 'list_repos') {
       // Paginated tool surface (#2119). `listRepos()` is unchanged for internal
       // callers; the tool wraps it in { repositories, pagination } and forwards
@@ -3164,7 +3230,12 @@ export class LocalBackend {
     const repo = await this.selectToolRepository(
       p.repo as string | undefined,
       p.branch as string | undefined,
-      { allowCwdDefault: method !== 'rename' || p.dry_run === undefined || p.dry_run === true },
+      {
+        allowCwdDefault:
+          method === MCP_REFRESH_TOOL
+            ? false
+            : method !== 'rename' || p.dry_run === undefined || p.dry_run === true,
+      },
     );
 
     switch (method) {
@@ -3212,9 +3283,157 @@ export class LocalBackend {
         return this.withToolStaleness(repo, await this.readFile(repo, p));
       case 'grep':
         return this.withToolStaleness(repo, await this.grep(repo, p));
+      case MCP_REFRESH_TOOL:
+        return this.refreshIndex(repo, p, context);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
+  }
+
+  /** Indexes with a `refresh_index` run in flight, keyed by storage slot (#3524). */
+  private readonly refreshesInFlight = new Set<string>();
+
+  /**
+   * `refresh_index` (#3524): rebuild one registered index through the same
+   * forked worker and options auto-sync uses, so nothing in the repository is
+   * written and the analysis runs outside this process. The worker takes the
+   * index lock and publishes the way `analyze` does (atomic swap on POSIX; see
+   * run-analyze). The server only dispatches here when the local operator
+   * enabled the tool; see refresh-policy.ts.
+   */
+  private async refreshIndex(
+    repo: RepoHandle,
+    params: Record<string, unknown>,
+    context: McpToolCallContext,
+  ): Promise<unknown> {
+    if (params.dry_run !== undefined && typeof params.dry_run !== 'boolean') {
+      return { error: 'Parameter "dry_run" must be a boolean.' };
+    }
+    const { maxFiles, timeoutMs } = resolveMcpRefreshLimits();
+    const [{ runAutoSyncAnalysis }, { embeddingsFromGitnexusRc }, { countScanCandidates }] =
+      await Promise.all([
+        import('../../core/auto-sync/analysis-worker-launch.js'),
+        import('../../core/gitnexus-rc-embeddings.js'),
+        import('../../core/ingestion/filesystem-walker.js'),
+      ]);
+    let rcEmbeddings: Awaited<ReturnType<typeof embeddingsFromGitnexusRc>>;
+    // The working tree, not the last index, decides the rebuild's size: a stale
+    // index is exactly the one that may have fallen far behind it. Counting
+    // stops one past the limit, so a huge tree costs no more than a small one.
+    let treeFiles: number | undefined;
+    try {
+      rcEmbeddings = await embeddingsFromGitnexusRc(repo.repoPath);
+      if (maxFiles > 0) treeFiles = await countScanCandidates(repo.repoPath, maxFiles);
+    } catch (err) {
+      return { error: `Cannot refresh ${repo.name}: ${asSentence(err)}` };
+    }
+    const previous = await this.refreshSnapshot(repo);
+    const lastIndexedFiles = repo.stats?.files ?? null;
+    const refusal =
+      treeFiles !== undefined && treeFiles > maxFiles
+        ? `${repo.name} has more than ${maxFiles} files in its working tree${
+            lastIndexedFiles === null ? '' : ` (${lastIndexedFiles} at its last index)`
+          }, over this server's refresh limit of ${maxFiles} (GITNEXUS_MCP_REFRESH_MAX_FILES). Run \`gitnexus analyze\` in the repository instead.`
+        : undefined;
+    const running = this.refreshesInFlight.has(repo.storagePath);
+
+    if (params.dry_run === true) {
+      return {
+        status: 'dry_run',
+        repo: repo.name,
+        ...previous,
+        // Exact up to the limit; past it, only "more than maxFiles" is known.
+        estimatedFiles: treeFiles === undefined || refusal ? null : treeFiles,
+        lastIndexedFiles,
+        maxFiles,
+        // `.gitnexusrc` can ask for embeddings, which the file limit does not bound.
+        embeddings: rcEmbeddings.embeddings === true,
+        wouldRefresh: refusal === undefined && !running,
+        ...(refusal ? { refusal } : {}),
+        ...(running ? { inProgress: true } : {}),
+      };
+    }
+    if (running) {
+      return { error: `A refresh of ${repo.name} is already running; wait for it to finish.` };
+    }
+    if (refusal) return { error: refusal };
+
+    // No abort signal is passed: the worker never interrupts an analysis it has
+    // started (analyze-worker.ts), so a cancelled call would only free this slot
+    // while the rebuild runs on. Holding it keeps "already running" and
+    // `inProgress` true until the worker is done.
+    this.refreshesInFlight.add(repo.storagePath);
+    const startedAt = Date.now();
+    let analysis: Awaited<ReturnType<typeof runAutoSyncAnalysis>>;
+    let workerExited: Promise<void> | undefined;
+    try {
+      analysis = await runAutoSyncAnalysis(
+        repo.repoPath,
+        {
+          skipAgentsMd: true,
+          skipSkills: true,
+          preserveExistingPdg: true,
+          atomicIncremental: true,
+          ...rcEmbeddings,
+        },
+        timeoutMs,
+        undefined,
+        undefined,
+        undefined,
+        context.onProgress,
+      );
+    } catch (err) {
+      const failure = err as {
+        abandonedWorker?: boolean;
+        workerExited?: Promise<void>;
+      } | null;
+      // The request can time out before its worker releases the index lock.
+      if (failure?.abandonedWorker) workerExited = failure.workerExited;
+      const leftRunning =
+        failure?.abandonedWorker === true
+          ? ' Its worker keeps running until the analysis finishes; another refresh is refused until it exits.'
+          : '';
+      return {
+        error: `Refresh of ${repo.name} failed: ${asSentence(err)}${leftRunning} Run \`gitnexus analyze\` in the repository for the full log.`,
+      };
+    } finally {
+      const releaseSlot = () => this.refreshesInFlight.delete(repo.storagePath);
+      if (workerExited) void workerExited.then(releaseSlot);
+      else releaseSlot();
+    }
+
+    await this.refreshRepos();
+    // Same verdict as `gitnexus analyze` and `serve`: most edges are missing,
+    // so this is a failure, not a refresh.
+    if (analysis.graphWriteCollapsed) {
+      const { expected, persisted } = analysis.graphWriteCollapsed;
+      return {
+        error: `${repo.name} was indexed INCOMPLETELY: only ${persisted} of ${expected} expected relationships are readable, so queries will answer with missing edges. Run \`gitnexus analyze --force\` in the repository; if it recurs, check disk space and run \`gitnexus doctor\`.`,
+      };
+    }
+    const refreshed = this.resolveRepoFromCache(repo.repoPath) ?? repo;
+    return {
+      status: 'refreshed',
+      repo: refreshed.name,
+      previous,
+      ...(await this.refreshSnapshot(refreshed)),
+      stats: refreshed.stats ?? {},
+      durationMs: Date.now() - startedAt,
+    };
+  }
+
+  private async refreshSnapshot(repo: RepoHandle) {
+    const info = await checkStalenessAsync(repo.repoPath, repo.lastCommit).catch(() => undefined);
+    return {
+      indexedAt: repo.indexedAt,
+      lastCommit: repo.lastCommit,
+      // `stalenessPayload` omits `current`; this result always states it, and a
+      // check that could not run is `unknown`, never `current`.
+      staleness:
+        info === undefined
+          ? { status: 'unknown' }
+          : (stalenessPayload(info, { includeUnknown: true }) ?? { status: 'current' }),
+    };
   }
 
   // ─── Tool Implementations ────────────────────────────────────────
@@ -5659,46 +5878,6 @@ export class LocalBackend {
     const aopMetadataPromise = querySpringAopMetadata(repo.lbugPath, symId, epistemicSymType);
     void aopMetadataPromise.catch(() => undefined);
 
-    // R3-1. A `Property` whose name the analyzer declined to link — because
-    // every definition of it lives in another language — otherwise returns an
-    // incoming list byte-identical to a genuinely unread field. Those demand
-    // opposite actions ("look in the other language / grep" vs "delete it"), so
-    // the difference has to travel with the answer.
-    //
-    // The graph cannot answer this: the unlinked reads mint no edge and no
-    // node, so the only record is the analyze pass that declined them. Hence the
-    // meta read — bounded to Property lookups, since `ensureInitialized`
-    // deliberately avoids a per-call `loadMeta` on the hot path.
-    let crossLanguageAnchor: {
-      unresolved?: string;
-      anchorLanguages?: readonly string[];
-    } = {};
-    {
-      try {
-        // Keyed on the NAME, not on the resolved label. Gating on
-        // `=== 'Property'` was tried and is wrong: the label is not always
-        // populated on this path (it reads `''` for a plain Property node), so
-        // the gate silently suppressed the whole feature. The meta list only
-        // ever contains property names, so matching the name IS the type check.
-        const hit = (await this.crossLanguagePropertiesFor(repo)).get(
-          (sym.name || sym[1]) as string,
-        );
-        if (hit) {
-          crossLanguageAnchor = {
-            unresolved:
-              `property reads of this name were NOT linked: every definition of it is ` +
-              `${hit.join('/')}, and name inference does not cross languages. ` +
-              `An empty or short incoming list here is not evidence the field is unused — ` +
-              `confirm with a text search, or give it an anchor in the reading language.`,
-            anchorLanguages: hit,
-          };
-        }
-      } catch {
-        // A missing or unreadable meta is not worth failing a context lookup
-        // over; the answer is merely less explained, which is the status quo.
-      }
-    }
-
     let methodMetadata: Record<string, unknown> | undefined;
     if (isMethodLike) {
       try {
@@ -5773,7 +5952,6 @@ export class LocalBackend {
         ...(aopMetadata ? { aop: aopMetadata } : {}),
       },
       ...epistemic,
-      ...crossLanguageAnchor,
       incoming: categorize(incomingRows),
       outgoing: categorize(outgoingRows),
       ...(chain ? { chain } : {}),
@@ -8147,51 +8325,17 @@ export class LocalBackend {
    * `IMPACT_RELATION_CONFIDENCE` floor — "statically verifiable, but the
    * concrete binding past it is not".
    *
-   * Never throws: on query error it returns 'exact', so it can only add signal,
-   * never suppress a result.
+   * Known omissions survive a failed heritage probe. Symbol-identity errors
+   * still propagate rather than returning a misleading completeness claim.
    */
-  /**
-   * Fields the analyzer declined to link because every definition of the name
-   * lives in another language (R3-1), keyed by name.
-   *
-   * Cached per index version. The fresh stamp bound by `ensureInitialized`
-   * invalidates this derived map exactly when a re-analyze could have changed it.
-   */
-  private readonly crossLanguagePropertyCache = new Map<
-    string,
-    { indexedAt: string | undefined; byName: ReadonlyMap<string, readonly string[]> }
-  >();
-
-  private async crossLanguagePropertiesFor(
-    repo: RepoHandle,
-  ): Promise<ReadonlyMap<string, readonly string[]>> {
-    const cached = this.crossLanguagePropertyCache.get(repo.lbugPath);
-    if (cached !== undefined && cached.indexedAt === repo.indexedAt) return cached.byName;
-    const byName = new Map<string, readonly string[]>();
-    try {
-      const meta = await this.readToolMetadata(repo);
-      for (const entry of meta?.crossLanguageProperties ?? []) {
-        byName.set(entry.name, entry.languages);
-      }
-    } catch {
-      // A missing or unreadable meta is not worth failing a lookup over; the
-      // answer is merely less explained, which is the status quo.
-    }
-    this.crossLanguagePropertyCache.set(repo.lbugPath, { indexedAt: repo.indexedAt, byName });
-    return byName;
-  }
-
   private async computeEpistemicBoundary(
     repo: RepoHandle,
     symId: string,
     symType: string,
     symName: string,
     direction?: 'upstream' | 'downstream',
-  ): Promise<{
-    epistemic: 'exact' | 'lower-bound';
-    boundaries?: string[];
-    causes?: EpistemicCauses;
-  }> {
+    includeOverloads = true,
+  ): Promise<EpistemicBoundary> {
     const HERITAGE_TYPES = EPISTEMIC_HERITAGE_RELATION_TYPES;
     const CONSUMER_TYPES = EPISTEMIC_CONSUMER_RELATION_TYPES;
     // #2744 — call sites dropped for want of a receiver type. Checked BEFORE
@@ -8212,6 +8356,29 @@ export class LocalBackend {
       meta = undefined;
     }
     const receiverDrops = unresolvedReceiverBoundaries(meta?.unresolvedReceiverMembers, symName);
+    // Declined property references affect incoming completeness in BOTH tools.
+    // The stable id covers older DBs whose label probe returns an empty string;
+    // a same-named callable must not inherit a property's warning.
+    const crossLanguageProperty =
+      direction !== 'downstream' && (symType === 'Property' || symId.startsWith('Property:'))
+        ? meta?.crossLanguageProperties?.find((entry) => entry.name === symName)
+        : undefined;
+    const crossLanguageAnchor =
+      crossLanguageProperty === undefined
+        ? {}
+        : {
+            unresolved:
+              `property reads of this name were NOT linked: every definition of it is ` +
+              `${crossLanguageProperty.languages.join('/')}, and name inference does not cross languages. ` +
+              `An empty or short incoming list here is not evidence the field is unused — ` +
+              `confirm with a text search, or give it an anchor in the reading language.`,
+            anchorLanguages: crossLanguageProperty.languages,
+          };
+    // Context has both incoming and outgoing references. Impact defers this
+    // probe until its expanded frontier is known, avoiding root double-counts.
+    const overloadDrops = includeOverloads
+      ? probeOverloadBoundaries(meta?.unresolvedOverloads, new Set([symId]), direction ?? 'both')
+      : { notes: [], sites: 0 };
     const scopeExtractionDrops = scopeExtractionBoundaries(
       meta?.scopeExtractionFailures,
       meta?.scopeExtractionReceipt,
@@ -8273,6 +8440,7 @@ export class LocalBackend {
         ...scopeExtractionDrops.notes,
         ...undecidedDrops.notes,
         ...valueRefDrops.notes,
+        ...(crossLanguageAnchor.unresolved ? [crossLanguageAnchor.unresolved] : []),
         ...(convexDispatch === undefined ? [] : [convexDispatch.boundary]),
       ],
       undecided: undecidedDrops.undecided,
@@ -8283,6 +8451,7 @@ export class LocalBackend {
       scopeExtraction: scopeExtractionDrops.files,
       callableValueReferences: valueRefDrops.referrers,
     };
+    const baseEpistemic = { ...epistemicFrom(droppedBoundaries), ...crossLanguageAnchor };
     try {
       // Discover the interface / abstract supertypes on the target's boundary.
       // If the target is itself an interface, it is its own boundary node.
@@ -8304,7 +8473,9 @@ export class LocalBackend {
           });
         }
       }
-      if (boundary.size === 0) return epistemicFrom(droppedBoundaries);
+      if (boundary.size === 0) {
+        return mergeOverloadBoundary(baseEpistemic, overloadDrops);
+      }
 
       const ifaceIds = Array.from(boundary.keys());
       // Count per interface id with scalar equality. A parameterized
@@ -8370,24 +8541,30 @@ export class LocalBackend {
           );
         }
       }
-      if (boundaries.length === 0) return epistemicFrom(droppedBoundaries);
-      return {
-        epistemic: 'lower-bound',
-        boundaries: [...droppedBoundaries.notes, ...boundaries],
-        causes: {
-          scopeExtractionFiles: droppedBoundaries.scopeExtraction,
-          receiverTyping: droppedBoundaries.sites,
-          dispatchBoundary: droppedBoundaries.dispatch + dispatchBoundarySymbols,
-          externalBoundary: droppedBoundaries.external,
-          undecidedSatisfaction: droppedBoundaries.undecided,
-          callableValueReferences: droppedBoundaries.callableValueReferences,
+      if (boundaries.length === 0) {
+        return mergeOverloadBoundary(baseEpistemic, overloadDrops);
+      }
+      return mergeOverloadBoundary(
+        {
+          ...baseEpistemic,
+          epistemic: 'lower-bound',
+          boundaries: [...droppedBoundaries.notes, ...boundaries],
+          causes: {
+            scopeExtractionFiles: droppedBoundaries.scopeExtraction,
+            receiverTyping: droppedBoundaries.sites,
+            dispatchBoundary: droppedBoundaries.dispatch + dispatchBoundarySymbols,
+            externalBoundary: droppedBoundaries.external,
+            undecidedSatisfaction: droppedBoundaries.undecided,
+            callableValueReferences: droppedBoundaries.callableValueReferences,
+          },
         },
-      };
+        overloadDrops,
+      );
     } catch (error) {
       rethrowSymbolIdentityError(error);
       // Never let the heritage probe's failure suppress a drop we already know
       // about — the whole point is that silence must not read as certainty.
-      return epistemicFrom(droppedBoundaries);
+      return mergeOverloadBoundary(baseEpistemic, overloadDrops);
     }
   }
 
@@ -8491,11 +8668,7 @@ export class LocalBackend {
     // spread below is what publishes these fields, and a narrower annotation
     // erases `causes` at the type level while still shipping it at runtime —
     // so every consumer would be reading a field the compiler says is absent.
-    const epistemicPromise: Promise<{
-      epistemic?: 'exact' | 'lower-bound';
-      boundaries?: string[];
-      causes?: EpistemicCauses;
-    }> = opts.skipEpistemic
+    const epistemicPromise: Promise<Partial<EpistemicBoundary>> = opts.skipEpistemic
       ? Promise.resolve({})
       : this.computeEpistemicBoundary(
           repo,
@@ -8503,7 +8676,18 @@ export class LocalBackend {
           symType,
           (sym.name || sym[1]) as string,
           direction,
+          false,
         );
+    const checkOverloads = !opts.skipEpistemic && relationTypes.includes('CALLS');
+    // readToolMetadata is request-cached: this shares the existing probe's
+    // metadata read and needs no graph queries for individual frontier nodes.
+    const overloadMetadataPromise = checkOverloads
+      ? Promise.resolve()
+          .then(() => this.readToolMetadata(repo))
+          .then((meta) => meta?.unresolvedOverloads)
+          .catch(() => undefined)
+      : Promise.resolve(undefined);
+    const expandedOverloadIds = new Set<string>();
     const beanMetadataPromise =
       opts.skipEpistemic || summaryOnly
         ? Promise.resolve(undefined)
@@ -8520,6 +8704,7 @@ export class LocalBackend {
     const objectCallableFrontier: string[] = [];
     let traversalComplete = true;
     let traversalCappedAtDepth: number | undefined;
+    let staticGatedAvailable = true;
     // Fetch one sentinel row beyond the cap so generated object bindings
     // degrade visibly instead of allocating an unbounded seed frontier.
     const OBJECT_CALLABLE_MEMBER_CAP = 5000;
@@ -8702,6 +8887,9 @@ export class LocalBackend {
 
     for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
       const nextFrontier: string[] = [];
+      if (checkOverloads) {
+        for (const id of frontier) expandedOverloadIds.add(id);
+      }
 
       // Batch frontier nodes into a single Cypher query per depth level.
       // ids/types/confidence are bound parameters (see above) — no interpolation.
@@ -8752,11 +8940,31 @@ export class LocalBackend {
             `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`;
 
       try {
-        const fetched = await executeParameterized(repo.lbugPath, query, {
+        const queryParams = {
           frontierIds: frontier,
           relTypes: relationTypes,
           ...(safeMinConfidence > 0 ? { minConfidence: safeMinConfidence } : {}),
-        });
+        };
+        let fetched: any[];
+        try {
+          fetched = await executeParameterized(
+            repo.lbugPath,
+            staticGatedAvailable ? query : withoutStaticGatedColumn(query),
+            queryParams,
+          );
+        } catch (e) {
+          // An index built before edges carried `staticGated` has no such
+          // property, so the binder rejects every level and the walk would
+          // report no dependants at all. A missing column only means "not
+          // proven dead"; retry without it.
+          if (!staticGatedAvailable || !isMissingStaticGatedError(e)) throw e;
+          staticGatedAvailable = false;
+          fetched = await executeParameterized(
+            repo.lbugPath,
+            withoutStaticGatedColumn(query),
+            queryParams,
+          );
+        }
         const levelCapped = fetched.length > IMPACT_FRONTIER_ROW_CAP;
         const related = levelCapped ? fetched.slice(0, IMPACT_FRONTIER_ROW_CAP) : fetched;
         if (levelCapped) {
@@ -9354,11 +9562,25 @@ export class LocalBackend {
 
     // #1858 — await the epistemic boundary probe kicked off alongside the BFS
     // above. Additive: leaves impactedCount and every existing field untouched.
-    const [epistemic, beanMetadata, aopMetadata] = await Promise.all([
+    const [targetEpistemic, beanMetadata, aopMetadata, overloadSummary] = await Promise.all([
       epistemicPromise,
       beanMetadataPromise,
       aopMetadataPromise,
+      overloadMetadataPromise,
     ]);
+    const epistemic =
+      checkOverloads && targetEpistemic.epistemic !== undefined
+        ? mergeOverloadBoundary(
+            { ...targetEpistemic, epistemic: targetEpistemic.epistemic },
+            probeOverloadBoundaries(
+              overloadSummary,
+              expandedOverloadIds,
+              direction,
+              (site) => direction !== 'upstream' || includeTests || !isTestFilePath(site.filePath),
+              traversalComplete,
+            ),
+          )
+        : targetEpistemic;
 
     const base = {
       target: {

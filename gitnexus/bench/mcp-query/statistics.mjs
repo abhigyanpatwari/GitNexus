@@ -172,7 +172,7 @@ export function formatReport(report) {
 
 Base \`${report.runtimes.baseline.sha}\`; candidate \`${report.runtimes.candidate.sha}\`.
 
-${report.sessions} fresh process pairs × ${report.rounds} rounds. Real MCP stdio, one shared keyword-search index, alternating requests. No model calls.
+${report.sessions} fresh process pairs × ${report.rounds} rounds. Real MCP stdio, the same source fixture indexed by each runtime, alternating requests. No model calls.
 
 | Workload | Median ms, base → candidate | p95 ms, base → candidate | Paired change (95% interval) | Assessment |
 | --- | ---: | ---: | --- | --- |

@@ -278,6 +278,9 @@ describe('incremental graph identity before publication', () => {
         await repo.cleanup();
       }
     },
-    120_000,
+    // Windows takes the in-place recovery path for every row: five analysis
+    // calls including repair refusal, full recovery, and the final no-op.
+    // Allow slow native checkpoints to finish before the test runner times out.
+    process.platform === 'win32' ? 240_000 : 120_000,
   );
 });

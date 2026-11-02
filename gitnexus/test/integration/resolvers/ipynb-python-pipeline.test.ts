@@ -36,6 +36,33 @@ function pythonNotebook(cells: Array<{ source: string | string[]; language?: str
 }
 
 describe('Jupyter notebook Python pipeline', () => {
+  it.each(['array', 'string'] as const)(
+    'maps synthesized fields to notebook source rows (%s)',
+    async (format) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ipynb-field-'));
+      try {
+        const lines = ['class Box:\n', '    def __init__(self):\n', '        self.value = 1\n'];
+        const notebook = pythonNotebook([
+          { source: ['# preceding cell\n'] },
+          { source: format === 'array' ? lines : lines.join('') },
+          { source: ['def read(box: Box):\n', '    return box.value\n'] },
+        ]);
+        writeFixtureRepo(root, { 'fields.ipynb': notebook });
+        const result = await runPipelineFromRepo(root, () => {}, { skipGraphPhases: true });
+        const sourceRow = notebook.split('\n').findIndex((line) => line.includes('self.value = 1'));
+        expect(result.graph.getNode('Property:fields.ipynb:Box.value')).toMatchObject({
+          properties: { startLine: sourceRow, endLine: sourceRow },
+        });
+        expect(
+          getRelationships(result, 'ACCESSES').filter((edge) => edge.source === 'read'),
+        ).toEqual([expect.objectContaining({ target: 'value', targetFilePath: 'fields.ipynb' })]);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+    60000,
+  );
+
   it('keeps class methods out of notebook module bindings', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ipynb-scope-'));
     try {

@@ -87,6 +87,7 @@ Generates repository documentation from the knowledge graph using an LLM. HTTP p
 | `--concurrency <n>` | Parallel LLM calls (default: 3)           |
 | `--timeout <seconds>` | LLM request timeout in seconds (default: disabled) |
 | `--retries <n>`     | Max LLM retry attempts per request (default: 3) |
+| `--max-completion-tokens <n>` | Max completion tokens per LLM request (default: 16384). `GITNEXUS_MAX_COMPLETION_TOKENS` overrides `maxCompletionTokens` in `~/.gitnexus/config.json`; the flag overrides both. |
 | `--lang <lang>`     | Output language for generated documentation (e.g. english, chinese, spanish, japanese) |
 | `--gist`            | Publish wiki as a public GitHub Gist      |
 

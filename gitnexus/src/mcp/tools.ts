@@ -62,6 +62,14 @@ const DESTRUCTIVE_TOOL_ANNOTATIONS: ToolAnnotations = {
   openWorldHint: false,
 };
 
+/** Rebuilds GitNexus's own index; never touches the repository's files. */
+const REFRESH_TOOL_ANNOTATIONS: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
 /**
  * Pagination bounds for the `list_repos` tool. Exported so the backend
  * validation (`local-backend.ts`) and the schema below stay a single source of
@@ -338,12 +346,13 @@ Use uid, or name with file_path/kind. Ambiguous results return ranked candidates
 
 include_content returns retained source. Leave chain_depth:0 unless layered CALLS neighbours are needed. routes:[{url,method?}] and is_entry_point describe HTTP handlers and process entries. ACCESSES references carry reason "read"/"write"; CALLS can follow field and method chains.
 
-COMPLETENESS: epistemic "lower-bound" means incoming is a floor: callers were missed OR a completeness probe failed. Read boundaries to distinguish them; branch on causes, not prose. Empty callers do not establish safety.
-- scopeExtractionFiles: files missing scope edges. Run analyze --force; inspect remaining extraction warnings.
-- receiverTyping: dropped call sites with unresolved receiver types; corroborate by text search.
-- externalBoundary: calls leaving the indexed program; not a defect, compatible with epistemic "exact".
-- dispatchBoundary: symbols across DI/interface boundaries, not sites. Runtime-proxy gaps can be uncountable (0 with lower-bound).
-- undecidedSatisfaction: unjudged interface/type pairs without IMPLEMENTS edges; missing dependencies can cause this.
+COMPLETENESS: epistemic "lower-bound" means incoming is a floor (missed callers/failed probes). Read boundaries; branch on causes. Empty callers do not prove safety.
+- scopeExtractionFiles: files missing scope edges; analyze --force, inspect warnings.
+- receiverTyping: sites with unknown receiver types; corroborate by text search.
+- overloadResolution: unique unresolved overload/implementation sites matched by symbol/declaring owner. Missing/invalid/capped receipts imply lower-bound even at 0; analyze --force.
+- externalBoundary: calls outside indexed code; compatible with "exact", not a defect.
+- dispatchBoundary: DI/interface symbols, not sites. Runtime-proxy gaps may be uncountable (0 with lower-bound).
+- undecidedSatisfaction: unjudged interface/type pairs without IMPLEMENTS; check dependencies.
 - callableValueReferences: symbols holding the callable as a value via USES, without a modeled later invocation. Follow the registrations/readers. Zig registrations and JS/TS object properties are captured; bare JS/TS callback arguments are not counted. Synthesized dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
 
 Older indexes can lack captures/metadata; re-analyze before trusting zero causes or exact coverage. Use impact() before edits; read gitnexus://repo/{name}/process/{processName} for a full flow.
@@ -544,12 +553,13 @@ RESULTS: target, impactedCount, summary, affected_processes, affected_modules, b
 - staticGated:true marks a provably compile-time-unreachable edge (currently Zig); absence proves neither reachability nor coverage. Traversal/risk do not filter on it.
 - affected_routes and row routes:[{url,method?}] are callgraph-only HTTP enrichment, not risk inputs.
 
-COMPLETENESS: epistemic "lower-bound" means impactedCount is a floor: missed callers OR a failed completeness probe. Read boundaries for which; use causes for machine decisions. Ambiguous lists/group fan-out may omit this envelope.
-- scopeExtractionFiles counts files missing scope edges. Run analyze --force; inspect remaining extraction warnings.
-- receiverTyping counts dropped call sites with unresolved receiver types. Corroborate before deletion/rename.
-- externalBoundary counts calls leaving the program; not an analyzer defect or an in-graph shortfall. Compatible with epistemic "exact".
-- dispatchBoundary counts symbols beyond DI/interface boundaries, not sites. Runtime proxies can prove uncountable gaps (0 with lower-bound).
-- undecidedSatisfaction counts unjudged interface/type pairs without IMPLEMENTS edges; missing dependencies are a common fixable cause.
+COMPLETENESS: epistemic "lower-bound" makes impactedCount a floor (missed callers/failed probes). Read boundaries; branch on causes. Ambiguous/group results may omit this envelope.
+- scopeExtractionFiles: files missing scope edges; analyze --force, inspect warnings.
+- receiverTyping: sites with unknown receiver types; corroborate before deletion/rename.
+- overloadResolution: when traversing CALLS, unique unresolved overload/implementation sites in the expanded traversal before pagination. Missing/invalid/capped receipts imply lower-bound even at 0; analyze --force.
+- externalBoundary: calls outside indexed code; compatible with "exact", not a defect.
+- dispatchBoundary: DI/interface symbols, not sites. Runtime-proxy gaps may be uncountable (0 with lower-bound).
+- undecidedSatisfaction: unjudged interface/type pairs without IMPLEMENTS; check dependencies.
 - callableValueReferences counts symbols registering the callable VALUE via USES without a modeled later invocation. Follow registrations/readers; low risk/counts remain floors. Zig registrations and JS/TS object properties are captured; bare JS/TS callback arguments are not counted. Synthesized property dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
 Older indexes can lack captures/metadata; re-analyze before trusting zero causes or apparently exact coverage from an older analyzer.
 
@@ -671,8 +681,8 @@ ${HOT_READ_STALENESS_NOTE}`,
         limit: {
           type: 'integer',
           description:
-            'Max symbols returned in byDepth per depth level (default: 100). Single-repo only; ignored in group mode (@groupName). Use small values for hub symbols to avoid output truncation.',
-          default: 100,
+            'Max symbols per depth level in byDepth (default: 30; byDepthCounts stays full, page with offset). Symbols list ≤3 processes plus processCount. Single-repo callgraph only.',
+          default: 30,
           minimum: 1,
           maximum: 10000,
         },
@@ -693,7 +703,7 @@ ${HOT_READ_STALENESS_NOTE}`,
           type: 'integer',
           minimum: 1,
           description:
-            'Maximum estimated tokens in the complete formatted MCP response. Explicit request overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS.',
+            'Token budget including hints. Trims callgraph symbols; PDG/group and required content must fit or error. Overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS.',
         },
         timeoutMs: {
           type: 'number',
@@ -1120,6 +1130,45 @@ Optional caseSensitive and literal match HTTP /api/grep (default: case-insensiti
 ];
 
 /**
+ * `refresh_index` (#3524) lives outside GITNEXUS_TOOLS: it is opt-in, so it is
+ * neither part of the default catalog nor of its byte budget. The local server
+ * appends it only when refresh-policy.ts enables it.
+ */
+export const REFRESH_INDEX_TOOL: ToolDefinition = {
+  name: 'refresh_index',
+  description: `Rebuild a registered repository's index from its working tree, for agents that see a stale index but cannot run \`gitnexus analyze\`.
+
+Index-only: never writes AGENTS.md, CLAUDE.md, skills, hooks, or any repository file. Incremental where possible; keeps embeddings and PDG mode. Waits for the rebuild, then returns indexedAt, lastCommit, stats, and staleness before and after; clients that send a progress token get progress notifications. One refresh per repository at a time.
+
+WHEN TO USE: staleness.status is "behind" or "diverged". Call with dry_run:true first; repositories over the server's file limit are refused.`,
+  annotations: REFRESH_TOOL_ANNOTATIONS,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      dry_run: {
+        type: 'boolean',
+        description:
+          'Report staleness, file count, embeddings, and whether a refresh would run (default: false).',
+        default: false,
+      },
+      repo: {
+        type: 'string',
+        description:
+          'Repository name or path. Omit only when one repo is indexed or an MCP default is configured; dry runs included.',
+      },
+    },
+    required: [],
+  },
+};
+
+/** Schema for a tool name, including opt-in tools outside the default catalog. */
+export function findToolDefinition(name: string): ToolDefinition | undefined {
+  return name === REFRESH_INDEX_TOOL.name
+    ? REFRESH_INDEX_TOOL
+    : GITNEXUS_TOOLS.find((tool) => tool.name === name);
+}
+
+/**
  * Per-repo tools that accept an optional `branch` scope (#2106). Single source
  * of truth: the schema property is injected here so it cannot drift from the
  * server-side default in `local-backend.ts` (`resolveRepo(repo, branch)`).
@@ -1129,7 +1178,7 @@ Optional caseSensitive and literal match HTTP /api/grep (default: case-insensiti
  * loop below skips `branch` for `CHECKOUT_SOURCE_TOOLS` — a pin would label
  * checkout bytes with another commit.
  */
-export const CHECKOUT_SOURCE_TOOLS = new Set(['read_file', 'grep', 'rename']);
+export const CHECKOUT_SOURCE_TOOLS = new Set(['read_file', 'grep', 'rename', 'refresh_index']);
 
 export const REPO_SCOPED_TOOLS = new Set([
   'read_file',
@@ -1148,9 +1197,10 @@ export const REPO_SCOPED_TOOLS = new Set([
   'shape_check',
   'api_impact',
   'trace',
+  'refresh_index',
 ]);
 
-for (const tool of GITNEXUS_TOOLS) {
+for (const tool of [...GITNEXUS_TOOLS, REFRESH_INDEX_TOOL]) {
   // Advertises a closed schema; tools/call still fail-closes on the scrubbed key list.
   // The unpublished handler aliases in tool-arguments.ts stay off this schema on
   // purpose (#2175), and closing it strands no caller: every alias has an

@@ -27,6 +27,7 @@
  *     told an interface boundary exists where there is none, and would draw the
  *     opposite conclusion about whether the gap is reducible.
  */
+import { summarizeUnresolvedOverloads } from '../../src/core/ingestion/scope-resolution/unresolved-overloads.js';
 import { it, expect, beforeAll, vi } from 'vitest';
 import path from 'node:path';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
@@ -212,7 +213,10 @@ withTestLbugDB(
       // completeness was not recorded"), which would make the controls below
       // pass for the wrong reason and prove nothing about this probe.
       // `saveMeta` is the only writer production uses.
-      await saveMeta(path.dirname(h.dbPath), { scopeExtractionReceipt: 1 } as any);
+      await saveMeta(path.dirname(h.dbPath), {
+        scopeExtractionReceipt: 1,
+        unresolvedOverloads: summarizeUnresolvedOverloads([]),
+      } as any);
       vi.mocked(listRegisteredRepos).mockResolvedValue([
         {
           name: 'test-repo',

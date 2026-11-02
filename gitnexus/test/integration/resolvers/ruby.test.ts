@@ -1024,14 +1024,6 @@ describe('Write access tracking (Ruby)', () => {
     expect(scoreWrite!.source).toBe('update_user');
   });
 
-  it('emits ACCESSES write edge for compound assignment (operator_assignment)', () => {
-    const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter((e) => e.rel.reason === 'write');
-    const scoreWrite = writes.find((e) => e.target === 'score');
-    expect(scoreWrite).toBeDefined();
-    expect(scoreWrite!.source).toBe('update_user');
-  });
-
   it('write ACCESSES edges have confidence 1.0', () => {
     const accesses = getRelationships(result, 'ACCESSES');
     const writes = accesses.filter((e) => e.rel.reason === 'write');

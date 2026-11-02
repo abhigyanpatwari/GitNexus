@@ -1,3 +1,6 @@
+import { getLanguageFromFilename } from 'gitnexus-shared';
+import { SYMBOL_NODE_LABELS } from '../ingestion/utils/symbol-labels.js';
+
 /** Shared integrity boundary for identities returned by graph and search queries. */
 export const SYMBOL_IDENTITY_RECOVERY_SUGGESTION =
   'Run gitnexus analyze --force from the affected repository root to rebuild the index.';
@@ -38,6 +41,28 @@ export function assertIdentityFields(...values: unknown[]): void {
     ) {
       throw new SymbolIdentityError();
     }
+  }
+}
+
+/** Reject mixed rows even when both the UID and the unrelated path are printable. */
+export function assertSymbolFilePath(id: unknown, filePath: unknown): void {
+  // Older indexes may omit paths or use opaque IDs without a source-path component.
+  if (typeof id !== 'string' || typeof filePath !== 'string' || !filePath) return;
+  const separator = id.indexOf(':');
+  if (separator < 0) return;
+  const label = id.slice(0, separator);
+  const sourceLabels: ReadonlySet<string> = SYMBOL_NODE_LABELS;
+  if (label === 'File' || label === 'Folder') {
+    if (id !== `${label}:${filePath}`) throw new SymbolIdentityError();
+  } else if (sourceLabels.has(label) && id.indexOf(':', separator + 1) >= 0) {
+    // A node label does not define its ID format. Providers also emit semantic
+    // IDs (objc:class:..., spring-config:..., etc.) without a leading file path.
+    // Only compare paths when that leading component identifies a source file;
+    // opaque IDs and ambiguous colon-containing paths cannot be decoded here.
+    const leadingComponent = id.slice(separator + 1, id.indexOf(':', separator + 1));
+    if (!getLanguageFromFilename(leadingComponent)) return;
+    // Match against the supplied path rather than splitting it: filenames can contain colons.
+    if (!id.startsWith(`${label}:${filePath}:`)) throw new SymbolIdentityError();
   }
 }
 

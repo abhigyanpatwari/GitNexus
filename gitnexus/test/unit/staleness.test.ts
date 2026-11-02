@@ -123,7 +123,7 @@ describe('checkStalenessAsync', () => {
     expect(result.commitsBehind).toBe(0);
   });
 
-  it('parallel calls complete faster than sequential', async () => {
+  it('concurrent calls agree with the synchronous lookup', async () => {
     let headCommit: string;
     try {
       headCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
@@ -137,19 +137,11 @@ describe('checkStalenessAsync', () => {
     const cwd = process.cwd();
     const N = 10;
 
-    // Parallel
-    const t0 = performance.now();
-    await Promise.all(Array.from({ length: N }, () => checkStalenessAsync(cwd, headCommit)));
-    const parallelMs = performance.now() - t0;
-
-    // Sequential sync
-    const t1 = performance.now();
-    for (let i = 0; i < N; i++) checkStaleness(cwd, headCommit);
-    const sequentialMs = performance.now() - t1;
-
-    // Parallel should be meaningfully faster than sequential.
-    // Use a generous ratio to avoid flakiness on slow CI machines.
-    expect(parallelMs).toBeLessThan(sequentialMs * 1.5);
+    const expected = checkStaleness(cwd, headCommit);
+    const results = await Promise.all(
+      Array.from({ length: N }, () => checkStalenessAsync(cwd, headCommit)),
+    );
+    expect(results).toEqual(Array.from({ length: N }, () => expected));
   });
 });
 

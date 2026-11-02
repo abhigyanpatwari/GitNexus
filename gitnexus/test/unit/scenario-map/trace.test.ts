@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { TraceFixtureRoots } from '../../../tools/scenario-map/value-flow/trace-fixtures.js';
 import type { PrepareOptions, PrepareReport } from '../../../tools/mutation/prepare/prepare.js';
 import type { OutcomeClass } from '../../../tools/mutation/runner/classify-outcome.js';
 import { scriptPath } from '../../../tools/scenario-map/path-coverage/records.js';
@@ -206,6 +207,52 @@ describe('serializeValue', () => {
 
   it('names known objects by token', () => {
     expect(serializeValue([Math], new Map<object, string>([[Math, 'Math']])).text).toBe('[[Math]]');
+  });
+
+  it('compares captured repository Dirents independently of their temporary root', async () => {
+    const fs = await import('node:fs');
+    const roots = [tempDir(), tempDir()];
+    for (const root of roots) fs.writeFileSync(path.join(root, 'main.ts'), 'export const n = 1;');
+    const entries = roots.map((root) => fs.readdirSync(root, { withFileTypes: true }));
+    const names = new Map(roots.map((root) => [root.replace(/\\/g, '/'), 'fixture:0:same-bytes']));
+    expect(serializeValue(entries[0], new Map(), names)).toEqual(
+      serializeValue(entries[1], new Map(), names),
+    );
+    // Arbitrary strings and lookalike objects can be meaningful application inputs.
+    expect(serializeValue(roots[0], new Map(), names)).not.toEqual(
+      serializeValue(roots[1], new Map(), names),
+    );
+    expect(serializeValue({ parentPath: roots[0] }, new Map(), names)).not.toEqual(
+      serializeValue({ parentPath: roots[1] }, new Map(), names),
+    );
+    expect(serializeValue(entries[0])).not.toEqual(serializeValue(entries[1]));
+    names.set(roots[1].replace(/\\/g, '/'), 'fixture:0:different-bytes');
+    expect(serializeValue(entries[0], new Map(), names)).not.toEqual(
+      serializeValue(entries[1], new Map(), names),
+    );
+  });
+
+  it('keeps fixture bytes, layout, aliases, and incomplete captures visible in trace identity', () => {
+    const a = tempDir(),
+      b = tempDir();
+    for (const root of [a, b]) writeFileSync(path.join(root, 'main.ts'), 'export const n = 1;');
+    const left = new TraceFixtureRoots(),
+      right = new TraceFixtureRoots();
+    left.capture(a);
+    right.capture(b);
+    const key = (roots: TraceFixtureRoots, root: string) =>
+      roots.roots.get(root.replace(/\\/g, '/'));
+    expect(key(left, a)).toBe(key(right, b));
+    left.capture(b);
+    expect(key(left, a)).not.toBe(key(left, b));
+    writeFileSync(path.join(b, 'main.ts'), 'export const n = 2;');
+    right.capture(b);
+    expect(key(left, a)).not.toBe(key(right, b));
+    writeFileSync(path.join(b, 'huge.ts'), 'x'.repeat(200_000));
+    right.capture(b);
+    expect(key(right, b)).toBeUndefined();
+    left.clear();
+    expect(left.roots.size).toBe(0);
   });
 
   it('serialises an Intl instance by its resolved options', () => {
@@ -978,6 +1025,63 @@ async function runWith(
 }
 
 describe('runTrace', () => {
+  it('retains failed-test diagnostics while keeping an invalid run inconclusive', async () => {
+    const baseline: VitestRunResult = {
+      ...vitestResult(['killed-by-test:assertion', 'survived']),
+      status: 'killed',
+      outcome: 'killed-by-test:assertion',
+    };
+    baseline.tests[0].message = 'expected an existing index';
+    const { result } = await runWith(fakeRun([], [], { baseline }));
+    expect(result.baseline?.failures).toEqual([
+      { id: A, outcome: 'killed-by-test:assertion', message: 'expected an existing index' },
+    ]);
+    expect(result.issues.length).toBeGreaterThan(0);
+    expect(result.pairs[0].status).toBe('inconclusive');
+  });
+
+  it('runs sibling tests in both passes while comparing only the candidate tests', async () => {
+    const manifestRoot = tempDir();
+    writeTree(manifestRoot, '');
+    const sibling = `${PACKAGE_FILE}#suite setup in an earlier test`;
+    const baseline = vitestResult(['survived', 'survived']);
+    baseline.tests.push({
+      ...baseline.tests[0],
+      id: sibling,
+      taskId: 'sibling-task',
+      fullName: 'suite setup in an earlier test',
+    });
+    const fake = fakeRun([ROUND('[2]')], [ROUND('[2]')], { baseline });
+    const skipped = `${PACKAGE_FILE}#platform-specific test`;
+    const unrelated = 'test/unit/unrelated.test.ts#unrelated';
+    const manifest = buildRunManifest({
+      preparedRoot: manifestRoot,
+      mode: { kind: 'normal' },
+      tests: [A, B, sibling, skipped, unrelated],
+    });
+    const result = await runTrace(
+      {
+        repoRoot: tempDir(),
+        workDir: tempDir(),
+        manifest,
+        pairs: [{ a: A, b: B }],
+        // A candidate erroneously marked skipped must still fail closed if it does not run.
+        skippedTestIds: [skipped, A],
+        opaqueCallees: [],
+      },
+      fake.deps,
+    );
+    expect(fake.calls.map((call) => [...call.testIds].sort())).toEqual([
+      [A, B, sibling].sort(),
+      [A, B, sibling].sort(),
+    ]);
+    expect(result.tests.map((test) => test.id)).toEqual([A, B]);
+    expect(result.pairs.map((pair) => pair.status)).toEqual(['clean']);
+    expect(fake.provided.find(([key]) => key === TRACE_KEY)?.[1]).toMatchObject({
+      taskIds: ['t_0', 't_1'],
+    });
+  });
+
   it('runs a baseline and a traced run of the same tests and vetoes differing calls', async () => {
     const fake = fakeRun([ROUND('[2.4]')], [ROUND('[2.5]')]);
     const { result, workDir } = await runWith(fake, ['Array.join', 'Map.set']);

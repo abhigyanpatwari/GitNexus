@@ -12,18 +12,21 @@
  *                discarded values (every literal, row value and resolved constant), compared with
  *                the residual-difference guard (D1, ./verdict.ts `facetRelation`), and the trace
  *                run's comparison of the values reaching opaque built-ins at runtime (U11);
- *   expectation  its checks-and-context key (U5: matchers, selectors, mocks and environment); the
+ *   expectation  its assertion key (U5: matchers and selectors), gated separately on setup context; the
  *                expected values are part of the discarded values.
  *
  * Per pair, the first rule that holds ({@link FINGERPRINT_RULES}):
  *   out-of-scope        a test outside the fingerprint's scope;
  *   inconclusive        a test did not pass its Layer 1 run (`not-passing`), or ran concurrently
  *                       (`path-unattributable`);
- *   distinct            the block sets differ (`path-differs`);
+ *   possible-duplicate  equal assertions but missing/different context, or differing blocks with
+ *                       incomplete native/worker provenance, unless input values are known to differ;
+ *   distinct            the remaining block sets differ (`path-differs`);
  *   different-checks    same path and the same, resolved input with a clean trace, other checks;
  *   distinct            other checks otherwise (`checks-differ`), or another call shape;
  *   table-row           same shape, other values (`input-values-differ`), or equal static values
- *                       that differ at runtime (`runtime-values-differ`, a trace veto);
+ *                       that differ at runtime (`runtime-values-differ`, arguments or receiver);
+ *                       asymmetric sites/counts alone remain trace uncertainty;
  *   possible-duplicate  nothing known differs, but a checks key or facet is missing, an input is
  *                       unresolved (a facet, inventory or selector input, a residual difference,
  *                       an unsupported assertion or join, a path V8 does not fully show), or the
@@ -39,7 +42,7 @@ import { byText, sortedUnique } from '../util.js';
 import { facetRelation, type VerdictPairInput, type VerdictTestInput } from './verdict.js';
 
 /** Folded into the report: a rule change resurfaces every pair it reclassifies. */
-export const FINGERPRINT_ENGINE_VERSION = 1;
+export const FINGERPRINT_ENGINE_VERSION = 5;
 
 export type FingerprintVerdict =
   | 'duplicate'
@@ -66,6 +69,9 @@ export type FingerprintRule =
   | 'not-passing'
   | 'path-unattributable'
   | 'path-differs'
+  | 'path-incomplete'
+  | 'context-differs'
+  | 'context-unknown'
   | 'same-input-different-checks'
   | 'checks-differ'
   | 'input-shape-differs'
@@ -120,6 +126,9 @@ export type FingerprintTestInput = Pick<
   | 'provenance'
   | 'concurrent'
   | 'checksContext'
+  | 'checks'
+  | 'assertionEvidence'
+  | 'declarationKey'
   | 'unsupportedForms'
   | 'unresolvedSelectors'
   | 'facet'
@@ -139,6 +148,7 @@ function unresolvedOf(test: FingerprintTestInput): string[] {
     ...test.unresolvedSelectors.map((name) => `selector ${name}`),
     ...test.joinProblems.map((problem) => `join ${problem}`),
     ...test.unsupportedForms.map((form) => `assertion ${form.form} (${form.reason})`),
+    ...(test.assertionEvidence?.unresolved ?? []).map((reason) => `assertion ${reason}`),
     ...(provenance === null
       ? ['path: no provenance record']
       : [
@@ -156,6 +166,7 @@ interface Facts {
   evidence: FingerprintEvidence;
   /** Same input as far as the extraction sees: equal facet and values, nothing unresolved. */
   sameInput: boolean;
+  runtimeValuesDiffer: boolean;
 }
 
 interface Rule {
@@ -201,6 +212,45 @@ export const FINGERPRINT_RULES: readonly Rule[] = [
       ]),
   },
   {
+    verdict: 'possible-duplicate',
+    decide: (f) =>
+      when(
+        f.evidence.checks === 'same' &&
+          f.evidence.values !== 'differ' &&
+          !f.runtimeValuesDiffer &&
+          (f.a.checksContext === null || f.b.checksContext === null),
+        'context-unknown',
+        ['Assertion keys are known, but setup/import context is missing'],
+      ),
+  },
+  {
+    verdict: 'possible-duplicate',
+    decide: (f) =>
+      when(
+        f.evidence.checks === 'same' &&
+          f.a.checksContext !== f.b.checksContext &&
+          f.evidence.values !== 'differ' &&
+          !f.runtimeValuesDiffer,
+        'context-differs',
+        ['Assertions match, but setup/import contexts differ; equivalence is unproven'],
+      ),
+  },
+  {
+    verdict: 'possible-duplicate',
+    decide: (f) =>
+      when(
+        f.evidence.path === 'differs' &&
+          f.evidence.values !== 'differ' &&
+          !f.runtimeValuesDiffer &&
+          f.evidence.checks !== 'differs' &&
+          f.evidence.unresolved.some((item) => item.includes(': path: ')),
+        'path-incomplete',
+        [
+          'V8 block sets differ, but native/worker or unknown provenance prevents a complete comparison',
+        ],
+      ),
+  },
+  {
     verdict: 'distinct',
     decide: (f) => when(f.evidence.path === 'differs', 'path-differs', ['V8 block sets differ']),
   },
@@ -228,7 +278,7 @@ export const FINGERPRINT_RULES: readonly Rule[] = [
     verdict: 'table-row',
     decide: (f) =>
       when(
-        f.evidence.trace === 'veto' && f.evidence.values === 'equal',
+        f.runtimeValuesDiffer && f.evidence.values === 'equal',
         'runtime-values-differ',
         f.pair.trace?.reasons ?? [],
       ),
@@ -280,12 +330,44 @@ function factsOf(
   b: FingerprintTestInput,
 ): Facts {
   const relation = facetRelation(a.facet, b.facet);
-  const keys = [a.checksContext, b.checksContext];
-  const unresolved = sortedUnique([...unresolvedOf(a), ...unresolvedOf(b)]);
+  // Older artifacts have only the combined key. Never compare a new assertion key with one.
+  const legacy = a.checks === undefined && b.checks === undefined;
+  const keys = legacy ? [a.checksContext, b.checksContext] : [a.checks ?? null, b.checks ?? null];
+  const atomsA = a.assertionEvidence?.atoms,
+    atomsB = b.assertionEvidence?.atoms;
+  const detailed = atomsA?.length && atomsB?.length;
+  const localHelpers = (atoms: typeof atomsA) =>
+    (atoms ?? []).flatMap((atom) => atom.observed?.match(/<local:[^>]+>/g) ?? []);
+  const helperBindingsDiffer =
+    JSON.stringify(localHelpers(atomsA)) !== JSON.stringify(localHelpers(atomsB));
+  const subjectsDiffer =
+    detailed &&
+    !helperBindingsDiffer &&
+    [...atomsA, ...atomsB].every((atom) => atom.key !== null) &&
+    JSON.stringify(atomsA.map((atom) => atom.subjectShapeKey ?? atom.shapeKey)) !==
+      JSON.stringify(atomsB.map((atom) => atom.subjectShapeKey ?? atom.shapeKey));
+  const expectationsDiffer =
+    detailed &&
+    [...atomsA, ...atomsB].every((atom) => atom.expected !== null) &&
+    JSON.stringify(atomsA.map((atom) => atom.expected)) !==
+      JSON.stringify(atomsB.map((atom) => atom.expected));
+  const checksDiffer =
+    subjectsDiffer ||
+    (expectationsDiffer && !(relation.facet === 'equal' && relation.discarded === 'differ'));
+  const unresolved = sortedUnique([
+    ...unresolvedOf(a),
+    ...unresolvedOf(b),
+    ...(helperBindingsDiffer ? ['assertion binding equivalence is unresolved'] : []),
+  ]);
   const evidence: FingerprintEvidence = {
     path: pair.identicalBlocks ? 'same' : 'differs',
-    checks:
-      keys[0] === null || keys[1] === null ? 'missing' : keys[0] === keys[1] ? 'same' : 'differs',
+    checks: checksDiffer
+      ? 'differs'
+      : keys[0] === null || keys[1] === null
+        ? 'missing'
+        : keys[0] === keys[1]
+          ? 'same'
+          : 'differs',
     facet: relation.facet,
     values: relation.discarded,
     trace: pair.trace?.status ?? 'not-run',
@@ -296,6 +378,11 @@ function factsOf(
     a,
     b,
     evidence,
+    runtimeValuesDiffer:
+      pair.trace?.status === 'veto' &&
+      pair.trace.reasons.some(
+        (reason) => reason === 'args-differ' || reason === 'receiver-differs',
+      ),
     sameInput:
       relation.facet === 'equal' && relation.discarded === 'equal' && unresolved.length === 0,
   };
@@ -336,9 +423,21 @@ export function computeFingerprints(input: {
         rule: decided.rule,
         details: decided.details,
         evidence: facts.evidence,
-        keep: [a, b].flatMap((side) =>
-          side.dupeOk === null ? [] : [{ test: side.id, reason: side.dupeOk }],
-        ),
+        keep: [
+          ...[a, b].flatMap((side) =>
+            side.dupeOk === null ? [] : [{ test: side.id, reason: side.dupeOk }],
+          ),
+          ...(decided.verdict !== 'duplicate' &&
+          a.declarationKey &&
+          a.declarationKey === b.declarationKey
+            ? [
+                {
+                  test: a.id,
+                  reason: 'already parameterized: both instances share one test declaration',
+                },
+              ]
+            : []),
+        ],
       };
     });
   return {
