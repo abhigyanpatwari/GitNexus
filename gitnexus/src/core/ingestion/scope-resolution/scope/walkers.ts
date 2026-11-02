@@ -99,6 +99,7 @@ export function lookupNameClaim(
               local,
               scopes.bindings.get(scope.id)?.get(spelling) ?? EMPTY_BINDINGS,
             ) ?? EMPTY_BINDINGS;
+          if (additional.length === 0 && augmented.length === 0) return local;
           return [
             ...local,
             ...compatibleClassBindings(additional, options.classCandidateFilter),
@@ -108,24 +109,23 @@ export function lookupNameClaim(
             ),
           ];
         }
-        return [
-          ...local,
-          ...compatibleClassBindings(
-            scopes.bindings.get(scope.id)?.get(spelling) ?? EMPTY_BINDINGS,
-            options.classCandidateFilter,
-          ),
-          ...augmented,
-          ...(collectNamespaceFqnBindings(
-            scope.id,
-            spelling,
-            scopes,
-            options.classCandidateFilter,
-          ) ?? []),
-          ...compatibleClassBindings(
-            scopes.workspaceFqnBindings?.get(spelling) ?? EMPTY_BINDINGS,
-            options.classCandidateFilter,
-          ),
-        ];
+        const indexed = compatibleClassBindings(
+          scopes.bindings.get(scope.id)?.get(spelling) ?? EMPTY_BINDINGS,
+          options.classCandidateFilter,
+        );
+        const namespace =
+          collectNamespaceFqnBindings(scope.id, spelling, scopes, options.classCandidateFilter) ??
+          EMPTY_BINDINGS;
+        const workspace = compatibleClassBindings(
+          scopes.workspaceFqnBindings?.get(spelling) ?? EMPTY_BINDINGS,
+          options.classCandidateFilter,
+        );
+        if (
+          local.length + indexed.length + augmented.length + namespace.length + workspace.length ===
+          0
+        )
+          return EMPTY_BINDINGS;
+        return [...local, ...indexed, ...augmented, ...namespace, ...workspace];
       },
     },
     options,
