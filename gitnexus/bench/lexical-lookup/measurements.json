@@ -58,7 +58,7 @@
     }
   },
   "harnessSha256": "dbd428561cd614b8f0fb2dda48ad5445e214bea02a9c39f201cc2488bd7a81c8",
-  "harnessProvenance": "Checksums identify the scripts used for measurement, before repository formatting and a subsequent worker-error cleanup fix outside the timed analysis interval.",
+  "harnessProvenance": "Checksums identify the scripts used for measurement, before repository formatting, preflight/cleanup fixes and configurable CI worker/heap limits. Local resource defaults are unchanged.",
   "differential": {
     "seed": 48161,
     "comparisons": 72000,

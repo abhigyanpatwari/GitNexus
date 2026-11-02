@@ -61,22 +61,25 @@ function indexes(
 }
 
 describe('lexical name ownership', () => {
-  it('observes bindings added after a miss without changing earlier result snapshots', () => {
-    const bindings = new Map<string, BindingRef[]>();
-    const inner = scope('fn', 'module', { bindings });
-    const outer = scope('module', null);
-    const state = indexes(inner, outer);
-    const missing = lookupNameClaim(inner.id, 'helper', state);
-    expect(missing.status).toBe('absent');
-    const local: BindingRef[] = [binding];
-    bindings.set('helper', local);
-    const found = lookupNameClaim(inner.id, 'helper', state);
-    expect(found.bindings).toEqual([binding]);
-    local.push({ def: { ...target, nodeId: 'second:helper' }, origin: 'local' });
-    expect(found.bindings).toEqual([binding]);
-    expect(missing.bindings).toEqual([]);
-    expect(lookupNameClaim(inner.id, 'helper', state).bindings).toHaveLength(2);
-  });
+  it.each(['Function', 'Class'] as const)(
+    'keeps %s lookup snapshots after source bindings change',
+    (kind) => {
+      const bindings = new Map<string, BindingRef[]>();
+      const inner = scope('fn', 'module', { bindings, kind });
+      const outer = scope('module', null);
+      const state = { ...indexes(inner, outer), bindings: new Map([[inner.id, bindings]]) };
+      const missing = lookupNameClaim(inner.id, 'helper', state);
+      expect(missing.status).toBe('absent');
+      const local: BindingRef[] = [binding];
+      bindings.set('helper', local);
+      const found = lookupNameClaim(inner.id, 'helper', state);
+      expect(found.bindings).toEqual([binding]);
+      local.push({ def: { ...target, nodeId: 'second:helper' }, origin: 'local' });
+      expect(found.bindings).toEqual([binding]);
+      expect(missing.bindings).toEqual([]);
+      expect(lookupNameClaim(inner.id, 'helper', state).bindings).toHaveLength(2);
+    },
+  );
 
   it('clears deferred activation without mutating reused caller options', () => {
     const late: BindingRef = { ...binding, availableFrom: { startLine: 8, startCol: 0 } };

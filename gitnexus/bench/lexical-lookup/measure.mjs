@@ -1,6 +1,6 @@
 // Build both runtimes, then run with Node:
 // measure.mjs BASE_RUNTIME CANDIDATE_RUNTIME BASE_CORPUS CANDIDATE_CORPUS OUTPUT [fresh|persistent]
-// Corpus checkouts must be clean/disposable and at the same commit. Indexes stay in OUTPUT.
+// Corpus checkouts must be clean/disposable and at the same commit. OUTPUT must not exist.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,6 +12,10 @@ const [baselineRuntime, candidateRuntime, baseline, candidate, output] = process
   .slice(2, 7)
   .map((value) => path.resolve(value));
 const lifecycle = process.argv[7] ?? 'fresh';
+const workers = Number(process.env.GITNEXUS_LEXICAL_BENCH_WORKERS ?? 16);
+const heapMiB = Number(process.env.GITNEXUS_LEXICAL_BENCH_HEAP_MIB ?? 8192);
+assert(Number.isSafeInteger(workers) && workers > 0, 'Workers must be a positive integer');
+assert(Number.isSafeInteger(heapMiB) && heapMiB > 0, 'Heap MiB must be a positive integer');
 assert(['fresh', 'persistent'].includes(lifecycle));
 assert(
   baseline && candidate && output,
@@ -21,7 +25,7 @@ assert.notEqual(baseline, candidate);
 const isWorker = process.env.GITNEXUS_LEXICAL_BENCH_WORKER === '1';
 assert(baselineRuntime && candidateRuntime);
 let runFullAnalysis, initLbug, executeQuery, closeLbug;
-if (!isWorker) assert(!fs.existsSync(path.join(output, 'results.json')), 'Output already exists');
+if (!isWorker) assert(!fs.existsSync(output), 'Output already exists');
 const control = 'gitnexus/src/semantic-bench-control.ts';
 const source =
   'export class SemanticBenchStore { save(): void {} load(): void {} }\nexport function semanticBenchUse(s: SemanticBenchStore) { s.save(); }\n';
@@ -93,7 +97,7 @@ async function sample(repo, reuse, name) {
     {
       skipAgentsMd: true,
       skipSkills: true,
-      workerPoolSize: 16,
+      workerPoolSize: workers,
       verbose: true,
     },
     {
@@ -173,7 +177,7 @@ function worker(repo, reuse) {
   let child, pending, exited;
   const start = () => {
     child = fork(fileURLToPath(import.meta.url), process.argv.slice(2), {
-      execArgv: ['--max-old-space-size=8192', '--expose-gc'],
+      execArgv: [`--max-old-space-size=${heapMiB}`, '--expose-gc'],
       env: {
         ...process.env,
         GITNEXUS_LEXICAL_BENCH_WORKER: '1',
@@ -214,6 +218,8 @@ function worker(repo, reuse) {
             head: head(repo),
             node: process.version,
             lifecycle,
+            workers,
+            heapMiB,
             baselineRuntime,
             candidateRuntime,
             results,

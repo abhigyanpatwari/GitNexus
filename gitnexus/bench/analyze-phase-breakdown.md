@@ -134,6 +134,22 @@ The checked-in scripts were subsequently formatted, and cleanup now attempts
 both worker shutdowns and removes the control files even if a worker fails.
 These changes are outside the timed analysis interval.
 
+### CI execution
+
+`.github/workflows/ci-tests.yml` runs the differential check and both process
+lifecycles in a dedicated job. It builds the candidate and its first parent
+(the base branch on a pull-request merge checkout), then uses two clean sparse
+corpus checkouts at that parent. The CI corpus contains the ingestion and shared
+scope-resolution source trees, plus Git's cone-mode parent files. It is smaller
+than the full-repository corpus measured above; its timings are a separate series.
+
+CI sets `GITNEXUS_LEXICAL_BENCH_WORKERS=2` and
+`GITNEXUS_LEXICAL_BENCH_HEAP_MIB=4096`; the local defaults remain 16 workers and
+8192 MiB. Each lifecycle requires a new output directory and retains its raw
+results and logs in the `lexical-lookup-performance` artifact. Graph and persisted
+call mismatches fail the job. The existing first-pair speed screen reports and
+stops a non-improving run; it does not make one noisy timing pair a CI failure.
+
 ---
 
 ## Current measurements — 2026-10-31
