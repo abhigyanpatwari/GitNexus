@@ -1,6 +1,6 @@
-d09748bb5b567f9f476c90eb6937a9e5bcd0dcb89daaf81775d6a946e8de9407  ./darwin-arm64/tree-sitter-kotlin.node
-636f66c7660776d5a19ba7b856236a8c4da25386cc258dab066cb65c8114e71e  ./darwin-x64/tree-sitter-kotlin.node
+00e6e2650734eac0187c866bc614de1cf0e71ac32bcbc0d768a03ef81411157d  ./darwin-arm64/tree-sitter-kotlin.node
+f1723aba8f065783380d1521e4b5cb49fddc04450173e4a171c7b7fb5dad9127  ./darwin-x64/tree-sitter-kotlin.node
 9402e5905b951b1f6082cb1b5edebf0d480ef98385b8111e65a176a8738446bc  ./linux-arm64/tree-sitter-kotlin.node
 caa57cf546a382252720df835f96554b5e609359b517dfffa6beedcb1edb90ea  ./linux-x64/tree-sitter-kotlin.node
-546bdd11b2d6d944012c92eaf88b2b6c4ea2cd3ffa0c4938e63fd0d232f81c56  ./win32-arm64/tree-sitter-kotlin.node
-133d6ed3ddfada2009935d819e6c8d882db23ab3aa5470db47efa3e9f99f6a2c  ./win32-x64/tree-sitter-kotlin.node
+7843a26140a2d06a42f69c20907823ae97965acacc9790537eb6a8ec2ca22e23  ./win32-arm64/tree-sitter-kotlin.node
+7177915015e02e51c401e8c4604c1ab9485706a8096a4a3c46e54a6f90af172f  ./win32-x64/tree-sitter-kotlin.node
