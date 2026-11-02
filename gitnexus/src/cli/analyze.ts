@@ -43,6 +43,7 @@ import {
   snapshotSelfCommitSafety,
 } from '../storage/git.js';
 import { IndexLockTimeoutError, isIndexLockGuardTimeout } from '../storage/index-lock.js';
+import { assertContextFileTargetSafe, resolveContextFileTarget } from './context-file-target.js';
 import {
   loadAnalyzeConfig,
   mergeAnalyzeOptions,
@@ -881,10 +882,10 @@ export type { AnalyzeOptions };
  *
  * The gated block does two things in sequence: (1) generates the community
  * skill files from `--skills`, and (2) re-runs `generateAIContextFiles` so
- * AGENTS.md/CLAUDE.md can reference the freshly written skills. Both are
+ * the selected context files can reference the freshly written skills. Both are
  * suppressed together — `--index-only` drops the entire step, not just the
  * community-skill write. Name retained for the test contract; see call site
- * in `analyzeCommand` for the AGENTS.md/CLAUDE.md re-generation it also gates.
+ * in `analyzeCommand` for the context-file re-generation it also gates.
  *
  * Kept as a pure helper so the `--index-only --skills` contract is unit-tested
  * without booting the full analyze pipeline (#742 review).
@@ -1001,6 +1002,20 @@ const analyzeCommandImpl = async (
       '  Warning: no .git directory found — commit-tracking and incremental updates disabled.\n',
     );
   }
+
+  let contextFile: string | undefined;
+  if (cliOptions?.contextFile !== undefined) {
+    try {
+      const target = resolveContextFileTarget(repoPath, cliOptions.contextFile);
+      await assertContextFileTargetSafe(repoPath, target.relative);
+      contextFile = target.relative;
+    } catch (err) {
+      cliError(`  ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  const contextFiles = contextFile ? [contextFile] : ['AGENTS.md', 'CLAUDE.md'];
 
   // Validate an explicit `--default-branch` up front so its errors are
   // attributed to the flag (with a CLI-specific recovery hint) rather than to
@@ -1554,6 +1569,7 @@ const analyzeCommandImpl = async (
       verbose: options.verbose,
       skipGit: options.skipGit,
       skipAgentsMd,
+      contextFile,
       skipSkills,
       // CFG/PDG substrate opt-in (#2081 M1) — threaded to both sinks downstream.
       pdg: options.pdg === true,
@@ -1611,15 +1627,13 @@ const analyzeCommandImpl = async (
     const bootstrapArgs: [] | [AnalyzerRunnerIdentity] = runnerIdentityAtBootstrap
       ? [runnerIdentityAtBootstrap]
       : [];
-    // #2639 review round 2: snapshot which of AGENTS.md/CLAUDE.md are safe to
+    // #2639 review round 2: snapshot which selected context files are safe to
     // auto-commit BEFORE runFullAnalysis (and the --skills regeneration
     // further down) writes to them, so selfCommitContextFiles can tell a
     // pre-existing unstaged user edit apart from this run's stats refresh
     // and refuse to sweep the former into the latter's commit.
     const selfCommitSafety =
-      options.selfCommit === true
-        ? snapshotSelfCommitSafety(repoPath, ['AGENTS.md', 'CLAUDE.md'])
-        : undefined;
+      options.selfCommit === true ? snapshotSelfCommitSafety(repoPath, contextFiles) : undefined;
     const result = await runFullAnalysis(repoPath, runOptions, runCallbacks, ...bootstrapArgs);
 
     if (result.alreadyUpToDate) {
@@ -1630,13 +1644,13 @@ const analyzeCommandImpl = async (
       await assertAnalysisFinalized(repoPath, result.storagePath);
       // The fast path skips context regeneration, but a changed `.gitnexusrc`
       // defaultBranch / `--default-branch` must still take effect. Surgically
-      // refresh just the `base_ref` line in AGENTS.md/CLAUDE.md in place,
+      // refresh just the `base_ref` line in the selected context files in place,
       // preserving the rest of the block (incl. --skills community rows). No-op
       // when the value already matches, so a routine up-to-date run is silent
       // (#1996 tri-review P2).
-      // Only refresh the repo-root AGENTS.md/CLAUDE.md base_ref for the flat
+      // Only refresh the selected context files' base_ref for the flat
       // WORKSPACE index (#2106 R2, #2354). A pinned --branch sub-index's
-      // up-to-date analyze must not churn the committed AGENTS.md — this
+      // up-to-date analyze must not churn committed context files — this
       // mirrors the in-pipeline `if (!placement.branch)` gate around
       // generateAIContextFiles.
       let baseRefRefreshed: string[] = [];
@@ -1644,7 +1658,7 @@ const analyzeCommandImpl = async (
         try {
           const { refreshBaseRefLine } = await import('./ai-context.js');
           baseRefRefreshed = (
-            await refreshBaseRefLine(repoPath, resolvedDefaultBranch, { skipAgentsMd })
+            await refreshBaseRefLine(repoPath, resolvedDefaultBranch, { skipAgentsMd, contextFile })
           ).files;
         } catch {
           /* best-effort — never fail the fast path over a context refresh */
@@ -1670,10 +1684,10 @@ const analyzeCommandImpl = async (
           `  Updated regression-review target to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,
         );
       }
-      // #2639: opt-in self-commit of any AGENTS.md/CLAUDE.md churn from this
+      // #2639: opt-in self-commit of any selected context-file churn from this
       // fast path (e.g. a base_ref refresh above). Best-effort — never throws.
       if (options.selfCommit === true && selfCommitSafety) {
-        selfCommitContextFiles(repoPath, ['AGENTS.md', 'CLAUDE.md'], selfCommitSafety);
+        selfCommitContextFiles(repoPath, contextFiles, selfCommitSafety);
       }
       // Safe to return without process.exit(0) — the early-return path in
       // runFullAnalysis never opens LadybugDB, so no native handles prevent exit.
@@ -1746,9 +1760,10 @@ const analyzeCommandImpl = async (
             skillResult.skills,
             {
               skipAgentsMd,
+              contextFile,
               skipSkills,
               // Same resolved branch as the main run (#243) so the --skills
-              // re-generation of AGENTS.md/CLAUDE.md does not revert base_ref
+              // re-generation of the selected context files does not revert base_ref
               // to "main".
               defaultBranch: resolvedDefaultBranch,
               // Mirror runFullAnalysis `noStats` bridge (#1477) — same expression;
@@ -1764,12 +1779,12 @@ const analyzeCommandImpl = async (
       }
     }
 
-    // #2639: opt-in self-commit of any AGENTS.md/CLAUDE.md churn written by
+    // #2639: opt-in self-commit of any selected context-file churn written by
     // this run (the primary generateAIContextFiles call inside
     // runFullAnalysis, and/or the --skills regeneration above). Best-effort
     // — never throws, so a missing git identity etc. can't fail `analyze`.
     if (options.selfCommit === true && selfCommitSafety) {
-      selfCommitContextFiles(repoPath, ['AGENTS.md', 'CLAUDE.md'], selfCommitSafety);
+      selfCommitContextFiles(repoPath, contextFiles, selfCommitSafety);
     }
 
     const totalTime = ((Date.now() - t0) / 1000).toFixed(1);

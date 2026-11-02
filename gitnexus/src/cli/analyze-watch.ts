@@ -126,6 +126,7 @@ export async function resolveWatchOptions(
     ['--skills', cli.skills],
     ['--default-branch', cli.defaultBranch],
     ['--skip-agents-md', cli.skipAgentsMd],
+    ['--context-file', cli.contextFile],
     ['--skip-skills', cli.skipSkills],
     ['--no-stats', cli.stats === false],
     ['--self-commit', cli.selfCommit],

@@ -20,7 +20,7 @@
  * (Windows LadybugDB handle release can lag; `cleanupTempDir` retries).
  */
 
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import { writeFile, readFile, mkdir, rm } from 'fs/promises';
 import path from 'path';
 import { afterEach, beforeAll, beforeEach, describe, it, expect, vi } from 'vitest';
@@ -613,6 +613,116 @@ describe('runFullAnalysis — incremental orchestration', () => {
       await repo.cleanup();
     }
   }, 300_000);
+
+  it.each(['missing', 'prompt-only', 'generated', 'missing-alias', 'prompt-only-alias'] as const)(
+    'selects a %s custom context target on the same-commit fast path without --name',
+    async (state) => {
+      const repo = await setupMiniRepo();
+      const contextFile = '.claude/CLAUDE.md';
+      const target = path.join(repo.dbPath, contextFile);
+      const skillRow = '| custom-skill | Keep this community skill |';
+      const prompt = '# Project instructions\n';
+      const registryName = state.endsWith('-alias')
+        ? `context-${path.basename(repo.dbPath)}`
+        : undefined;
+      try {
+        const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+        const { generateGitNexusContent, refreshBaseRefLine } =
+          await import('../../src/cli/ai-context.js');
+        let initial = prompt;
+        if (state === 'generated') {
+          initial +=
+            '\n' +
+            generateGitNexusContent(
+              'ExistingName',
+              { nodes: 42 },
+              { defaultBranch: 'main' },
+            ).replace('<!-- gitnexus:end -->', `${skillRow}\n<!-- gitnexus:end -->`);
+        }
+        if (state !== 'missing' && state !== 'missing-alias') {
+          await mkdir(path.dirname(target), { recursive: true });
+          await writeFile(target, initial);
+          gitCommitAll(repo.dbPath, 'existing prompt');
+        }
+        const first = await runFullAnalysis(
+          repo.dbPath,
+          { skipAgentsMd: true, skipSkills: true, registryName },
+          { onProgress: () => {} },
+        );
+        const second = await runFullAnalysis(
+          repo.dbPath,
+          { contextFile, skipSkills: true },
+          { onProgress: () => {} },
+        );
+        expect(second.alreadyUpToDate).toBe(true);
+        expect(second.repoName).toBe(first.repoName);
+        const content = await readFile(target, 'utf-8');
+        expect(content.match(/<!-- gitnexus:start -->/g)).toHaveLength(1);
+        if (state === 'generated') {
+          expect(content).toBe(initial);
+          await refreshBaseRefLine(repo.dbPath, 'develop', { contextFile });
+          const refreshed = await readFile(target, 'utf-8');
+          expect(refreshed).toContain(skillRow);
+          expect(refreshed).toContain('fetch target branch "develop"');
+        } else {
+          expect(content).toContain(first.repoName);
+          if (state.startsWith('prompt-only')) expect(content).toContain(prompt);
+          if (registryName) expect(content).toContain(registryName);
+        }
+        await expect(readFile(path.join(repo.dbPath, 'AGENTS.md'))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+        await expect(
+          readFile(path.join(repo.dbPath, '.claude/skills/gitnexus-guide/SKILL.md')),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+      } finally {
+        await repo.cleanup();
+      }
+    },
+    300_000,
+  );
+
+  it.each(['skip-agents', 'pinned-branch'] as const)(
+    'does not create a selected context target on a %s fast path',
+    async (mode) => {
+      const repo = await setupMiniRepo();
+      try {
+        const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+        const branch = mode === 'pinned-branch' ? 'context-feature' : undefined;
+        await runFullAnalysis(
+          repo.dbPath,
+          { skipAgentsMd: true, skipSkills: true },
+          { onProgress: () => {} },
+        );
+        if (branch) {
+          execFileSync('git', ['checkout', '-b', branch], { cwd: repo.dbPath, stdio: 'pipe' });
+          await runFullAnalysis(
+            repo.dbPath,
+            { branch, skipAgentsMd: true, skipSkills: true },
+            { onProgress: () => {} },
+          );
+        }
+        const result = await runFullAnalysis(
+          repo.dbPath,
+          {
+            branch,
+            contextFile: '.claude/CLAUDE.md',
+            skipAgentsMd: mode === 'skip-agents',
+            skipSkills: true,
+          },
+          { onProgress: () => {} },
+        );
+        expect(result.alreadyUpToDate).toBe(true);
+        expect(result.isPrimaryBranch).toBe(mode !== 'pinned-branch');
+        await expect(readFile(path.join(repo.dbPath, '.claude/CLAUDE.md'))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      } finally {
+        await repo.cleanup();
+      }
+    },
+    300_000,
+  );
 
   it('useParseCache:false bypasses the alreadyUpToDate fast path without --force', async () => {
     const repo = await setupMiniRepo();

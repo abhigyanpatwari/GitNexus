@@ -46,4 +46,11 @@ describe('cli i18n', () => {
       expect(Object.keys(messages).sort(), language).toEqual(englishKeys);
     }
   });
+
+  it('qualifies self-commit no-ops across all selected context files in Chinese', () => {
+    setCliLanguage('zh-CN');
+    const help = t('help.option.analyze.selfCommit');
+    expect(help).toContain('没有上下文文件存在');
+    expect(help).toContain('没有文件变更');
+  });
 });

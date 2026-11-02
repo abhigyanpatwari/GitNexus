@@ -173,6 +173,8 @@ import {
   loadMeta,
   ensureGitNexusIgnored,
   registerRepo,
+  readRegistry,
+  findRegistryEntryByRepoPath,
   setShareOptOut,
   adoptFlatBranchLabel,
   isReadOnlyFilesystemError,
@@ -300,7 +302,7 @@ import {
   type CachedEmbeddingsSnapshot,
 } from './embeddings/embedding-restore-spill.js';
 import { assertUniqueEmbeddingKeys, EmbeddingIntegrityError } from './embeddings/embedding-keys.js';
-import { generateAIContextFiles } from '../cli/ai-context.js';
+import { contextFileNeedsGeneration, generateAIContextFiles } from '../cli/ai-context.js';
 import { formatRejectedBranchForLog, sanitizeDetectedBranch } from './git-ref.js';
 import {
   EMBEDDING_TABLE_NAME,
@@ -508,6 +510,8 @@ export interface AnalyzeOptions {
   skipGit?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
+  /** Repo-relative replacement for the default generated context files. */
+  contextFile?: string;
   /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
   noStats?: boolean;
   /** Skip installing standard GitNexus skill files directly under .claude/skills/. */
@@ -2771,6 +2775,15 @@ async function runFullAnalysisInner(
       if (((!dirty && !indexedContentChanged) || dirtySnapshotMatches) && !healUnregistered) {
         const processDetectionStamp =
           existingMeta.processDetection ?? toProcessDetectionStamp(processDetectionBudget);
+        const registeredContextName =
+          options.contextFile && !options.registryName
+            ? findRegistryEntryByRepoPath(await readRegistry(), repoPath)?.name
+            : undefined;
+        const repoName =
+          options.registryName ??
+          registeredContextName ??
+          getInferredRepoName(repoPath) ??
+          path.basename(resolveRepoIdentityRoot(repoPath));
         if (options.registryName) {
           await registerRepo(repoPath, existingMeta, {
             name: options.registryName,
@@ -2780,16 +2793,26 @@ async function runFullAnalysisInner(
             branch: placement.branch,
             storagePath,
           });
-          if (!placement.branch) {
-            try {
+        }
+        if (!placement.branch) {
+          try {
+            // A new target needs an initial block even without --name. Existing
+            // blocks stay on the CLI's surgical refresh path to preserve skill rows.
+            if (
+              options.registryName ||
+              (!options.skipAgentsMd &&
+                options.contextFile &&
+                (await contextFileNeedsGeneration(repoPath, options.contextFile)))
+            ) {
               await generateAIContextFiles(
                 repoPath,
                 storagePath,
-                options.registryName,
+                repoName,
                 existingMeta.stats ?? {},
                 undefined,
                 {
                   skipAgentsMd: options.skipAgentsMd,
+                  contextFile: options.contextFile,
                   skipSkills: options.skipSkills,
                   noStats: options.noStats,
                   defaultBranch: options.defaultBranch,
@@ -2799,9 +2822,9 @@ async function runFullAnalysisInner(
                   hasSpringActuator: existingMeta.springActuator?.enabled === true,
                 },
               );
-            } catch {
-              /* best-effort — never fail the fast path over a context refresh */
             }
+          } catch {
+            /* best-effort — never fail the fast path over a context refresh */
           }
         }
         // ── #2354: restamp the workspace label on a same-commit branch flip ──
@@ -2867,10 +2890,7 @@ async function runFullAnalysisInner(
           // `resolveRepoIdentityRoot` collapses worktree roots to the
           // canonical repo basename (#1259) but leaves arbitrary subdirs
           // and `--skip-git` paths unchanged (#1232/#1233 intent preserved).
-          repoName:
-            options.registryName ??
-            getInferredRepoName(repoPath) ??
-            path.basename(resolveRepoIdentityRoot(repoPath)),
+          repoName,
           repoPath,
           storagePath,
           stats: existingMeta.stats ?? {},
@@ -5721,6 +5741,7 @@ async function runFullAnalysisInner(
           undefined,
           {
             skipAgentsMd: options.skipAgentsMd,
+            contextFile: options.contextFile,
             skipSkills: options.skipSkills,
             noStats: options.noStats,
             defaultBranch: options.defaultBranch,

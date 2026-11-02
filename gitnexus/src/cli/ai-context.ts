@@ -15,6 +15,7 @@ import { type GeneratedSkillInfo } from './generated-skill.js';
 import { STANDARD_SKILL_CATALOG } from './standard-skills.js';
 import { isEnoent } from './editor-targets.js';
 import { logger } from '../core/logger.js';
+import { assertContextFileTargetSafe, resolveContextFileTarget } from './context-file-target.js';
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -31,6 +32,7 @@ interface RepoStats {
 
 export interface AIContextOptions {
   skipAgentsMd?: boolean;
+  contextFile?: string;
   noStats?: boolean;
   skipSkills?: boolean;
   /**
@@ -647,6 +649,24 @@ Use GitNexus tools to accomplish this task.
   };
 }
 
+/** Whether a selected target needs its initial GitNexus block on an up-to-date run. */
+export async function contextFileNeedsGeneration(
+  repoPath: string,
+  contextFile: string,
+): Promise<boolean> {
+  const { relative, absolute } = resolveContextFileTarget(repoPath, contextFile);
+  await assertContextFileTargetSafe(repoPath, relative);
+  let content: string;
+  try {
+    content = await fs.readFile(absolute, 'utf-8');
+  } catch (err) {
+    if (isEnoent(err)) return true;
+    throw err;
+  }
+  const start = findSectionMarkerIndex(content, GITNEXUS_START_MARKER);
+  return start === -1 || findSectionMarkerIndex(content, GITNEXUS_END_MARKER, start) === -1;
+}
+
 /**
  * Generate AI context files after indexing
  */
@@ -701,27 +721,22 @@ export async function generateAIContextFiles(
   const createdFiles: string[] = [];
 
   if (!options?.skipAgentsMd) {
-    // Create AGENTS.md (standard for Cursor, Windsurf, OpenCode, Cline, etc.)
-    const agentsPath = path.join(repoPath, 'AGENTS.md');
-    const agentsResult = await upsertGitNexusSection(
-      agentsPath,
-      content,
-      projectName,
-      stats,
-      options?.noStats,
-    );
-    createdFiles.push(`AGENTS.md (${agentsResult})`);
-
-    // Create CLAUDE.md (for Claude Code)
-    const claudePath = path.join(repoPath, 'CLAUDE.md');
-    const claudeResult = await upsertGitNexusSection(
-      claudePath,
-      content,
-      projectName,
-      stats,
-      options?.noStats,
-    );
-    createdFiles.push(`CLAUDE.md (${claudeResult})`);
+    const targets = options?.contextFile ? [options.contextFile] : ['AGENTS.md', 'CLAUDE.md'];
+    for (const target of targets) {
+      const { relative, absolute } = resolveContextFileTarget(repoPath, target);
+      if (options?.contextFile) {
+        await assertContextFileTargetSafe(repoPath, relative);
+        await fs.mkdir(path.dirname(absolute), { recursive: true });
+      }
+      const result = await upsertGitNexusSection(
+        absolute,
+        content,
+        projectName,
+        stats,
+        options?.noStats,
+      );
+      createdFiles.push(`${relative} (${result})`);
+    }
   } else {
     createdFiles.push('AGENTS.md (skipped via --skip-agents-md)');
     createdFiles.push('CLAUDE.md (skipped via --skip-agents-md)');
@@ -772,7 +787,7 @@ export async function generateAIContextFiles(
 
 /**
  * Refresh the regression-review target inside the GitNexus block of an
- * already-generated AGENTS.md / CLAUDE.md, in place (#1996 P2, #3509).
+ * already-generated context file, in place (#1996 P2, #3509).
  *
  * The `alreadyUpToDate` analyze fast path returns before the normal
  * {@link generateAIContextFiles} call, so a changed `.gitnexusrc` defaultBranch
@@ -790,12 +805,13 @@ export async function generateAIContextFiles(
 export async function refreshBaseRefLine(
   repoPath: string,
   defaultBranch: string,
-  options?: { skipAgentsMd?: boolean },
+  options?: { skipAgentsMd?: boolean; contextFile?: string },
 ): Promise<{ files: string[] }> {
   if (options?.skipAgentsMd) return { files: [] };
   const updated: string[] = [];
-  for (const name of ['AGENTS.md', 'CLAUDE.md']) {
-    const filePath = path.join(repoPath, name);
+  for (const target of options?.contextFile ? [options.contextFile] : ['AGENTS.md', 'CLAUDE.md']) {
+    const { relative: name, absolute: filePath } = resolveContextFileTarget(repoPath, target);
+    if (options?.contextFile) await assertContextFileTargetSafe(repoPath, name);
     if (!(await fileExists(filePath))) continue;
     let content: string;
     try {

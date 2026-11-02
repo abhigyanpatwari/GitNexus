@@ -284,14 +284,17 @@ export const en = {
   'help.option.analyze.skills':
     'Generate repo-specific skill files from detected communities (no-op when --index-only is also set).',
   'help.option.analyze.skipAgentsMd':
-    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip standard skills in .claude/skills or .agents/skills; use --skip-skills for those. Community skills from --skills are unaffected.',
-  'help.option.analyze.noStats': 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md',
+    'Skip updating the gitnexus section in the selected context file(s), including --context-file. Does not skip standard skills in .claude/skills or .agents/skills; use --skip-skills for those. Community skills from --skills are unaffected.',
+  'help.option.analyze.contextFile':
+    'Write the GitNexus context block to one repo-relative file instead of root AGENTS.md and CLAUDE.md.',
+  'help.option.analyze.noStats':
+    'Omit volatile file/symbol counts from the selected context file(s)',
   'help.option.analyze.selfCommit':
-    'Auto-commit AGENTS.md/CLAUDE.md changes after analyze (opt-in, off by default). Scoped to only those two files (never `git add -A`); no-ops if neither exists, neither changed, or the repo has no git identity configured.',
+    'Auto-commit generated context file changes after analyze (opt-in, off by default). Scoped to the selected context target(s) (never `git add -A`); no-ops if none exist, none changed, or the repo has no git identity configured.',
   'help.option.analyze.skipSkills':
     'Skip installing standard GitNexus skill files directly under .claude/skills/ and .agents/skills/. Does not suppress community skills from --skills (those use .claude/skills/gitnexus-area-*). Use --index-only to skip all AI-context file injection.',
   'help.option.analyze.indexOnly':
-    'Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills)',
+    'Pure index mode: skip all file injection (default/custom context files and skills)',
   'help.option.skipGit':
     'Treat the provided path/cwd as the index root and skip parent git-root discovery',
   'help.option.analyze.name':

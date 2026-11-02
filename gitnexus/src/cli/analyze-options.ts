@@ -44,6 +44,8 @@ export interface AnalyzeOptions {
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
+  /** Repo-relative replacement for the default AGENTS.md and CLAUDE.md context targets. */
+  contextFile?: string;
   /**
    * Build the control-flow-graph / PDG substrate (#2081 M1). Opt-in; off by
    * default. Threaded to both the worker (CFG build) and scope-resolution
@@ -63,9 +65,9 @@ export interface AnalyzeOptions {
    */
   stats?: boolean;
   /**
-   * Opt-in auto-commit of any AGENTS.md/CLAUDE.md changes this `analyze` run
-   * makes. Scoped to only those two files (never `git add -A`); no-ops
-   * silently if neither exists, neither changed, or the commit step itself
+   * Opt-in auto-commit of generated context changes this `analyze` run
+   * makes. Scoped to only the selected context target(s) (never `git add -A`); no-ops
+   * silently if no selected targets exist, none changed, or the commit step itself
    * fails (e.g. no git identity configured). See #2639.
    */
   selfCommit?: boolean;

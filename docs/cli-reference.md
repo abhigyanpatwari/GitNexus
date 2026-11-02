@@ -58,7 +58,7 @@ Watch mode accepts `--debounce`, `--workers`, `--worker-timeout`,
 `--max-file-size`, `--max-processes`, `--max-process-branching`,
 `--max-process-trace-depth`, `--max-entry-point-candidates`, `--branch`, `--pdg`, `--skip-fts`, `--name`, `--allow-duplicate-name`, and
 `--verbose`. Explicit one-shot options such as `--force`, `--repair-fts`,
-embedding flags, `--skills`, `--self-commit`, `--index-only`, and `--skip-git`
+embedding flags, `--skills`, `--context-file`, `--self-commit`, `--index-only`, and `--skip-git`
 are rejected. Unsupported defaults from `.gitnexusrc` are ignored with a
 warning rather than making an otherwise valid repository unwatchable.
 
@@ -82,6 +82,21 @@ The token may be set in the shell, `.env.local`, or `.env` in the working direct
 
 ## All analyze flags
 
+`--context-file <path>` replaces the default root `AGENTS.md` and `CLAUDE.md`
+destinations with one repository-relative file, leaving the root files unchanged.
+Missing parent directories are created; paths outside the repository or through
+symlinked components are rejected. Existing prompt text outside the GitNexus block
+is preserved. Even when the index is already up to date, a newly selected missing
+file or prompt file without a block receives one; existing generated blocks keep
+their community-skill rows during the surgical default-branch refresh.
+
+`--skip-agents-md` suppresses custom-target updates too. `--index-only` suppresses
+all context and skill injection. `--no-stats` omits volatile counts when generating
+the selected target; `--self-commit` applies only to the selected target and does
+not include pre-existing user edits. This option is CLI-only, is not a
+`.gitnexusrc` key, and cannot be combined with `--watch`. Pinned non-primary branch
+indexes do not write context files.
+
 ```bash
 gitnexus analyze --force         # Full graph + FTS rebuild (reuses unchanged parser output)
 gitnexus analyze --no-parse-cache # Full rebuild that re-parses every source file
@@ -91,6 +106,7 @@ gitnexus analyze --skills        # Generate repo-specific skill files from detec
 gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
 gitnexus analyze --embeddings [limit]  # Enable embedding generation (slower, better search)
 gitnexus analyze --skip-agents-md   # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
+gitnexus analyze --context-file .claude/CLAUDE.md  # Use one repo-relative context file instead of both root files
 gitnexus analyze --skip-skills      # Skip installing standard skill files under .claude/skills/ and .agents/skills/
 gitnexus analyze --skip-git         # Index folders that are not Git repositories
 gitnexus analyze --default-branch develop  # Branch used in the generated regression-compare example (base_ref)
