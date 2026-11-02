@@ -403,7 +403,10 @@ describe('callLLM — MiniMax request params', () => {
     expect(body.temperature).toBeUndefined();
   });
 
-  it('supports disabled thinking', async () => {
+  it.each([
+    ['MiniMax-M3.1-Flash', 'adaptive'],
+    ['MiniMax-M3', 'disabled'],
+  ])('maps disabled reasoning for %s to %s', async (model, thinkingType) => {
     const fetchSpy = createFetchSpy();
     vi.stubGlobal('fetch', fetchSpy);
 
@@ -411,7 +414,7 @@ describe('callLLM — MiniMax request params', () => {
     await callLLM('test', {
       apiKey: 'minimax-test-key',
       baseUrl: MINIMAX_OPENAI_BASE_URLS.global_en,
-      model: MINIMAX_MODEL_IDS[0],
+      model,
       maxTokens: 500,
       temperature: 0.5,
       provider: 'minimax',
@@ -420,8 +423,10 @@ describe('callLLM — MiniMax request params', () => {
 
     const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string);
-    expect(body.thinking).toEqual({ type: 'disabled' });
-    expect(body.temperature).toBe(0.5);
+    expect(body.thinking).toEqual({ type: thinkingType });
+    expect(body.temperature).toBe(thinkingType === 'disabled' ? 0.5 : undefined);
+    expect(body.reasoning_split).toBe(true);
+    expect(body.service_tier).toBeUndefined();
   });
 
   it('leaves always-on thinking implicit', async () => {
@@ -432,7 +437,7 @@ describe('callLLM — MiniMax request params', () => {
     await callLLM('test', {
       apiKey: 'minimax-test-key',
       baseUrl: MINIMAX_OPENAI_BASE_URLS.global_en,
-      model: MINIMAX_MODEL_IDS[1],
+      model: 'MiniMax-M2.7',
       maxTokens: 500,
       temperature: 0.5,
       provider: 'minimax',

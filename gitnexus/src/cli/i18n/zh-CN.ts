@@ -319,13 +319,14 @@ export const zhCN = {
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':
     'LLM 提供商：minimax、openai、openrouter、azure、custom、cursor、claude、codex、opencode 或 grok（默认：minimax）',
-  'help.option.wiki.model': 'LLM 模型或 deployment 名称（默认：MiniMax-M3）',
+  'help.option.wiki.model': 'LLM 模型或 deployment 名称（默认：MiniMax-M3.1-Flash）',
   'help.option.wiki.baseUrl':
     'LLM API base URL。Azure v1：https://{resource}.openai.azure.com/openai/v1',
   'help.option.wiki.apiKey': 'LLM API key 或 Azure api-key（保存到 ~/.gitnexus/config.json）',
   'help.option.wiki.apiVersion': 'Azure api-version 查询参数，例如 2024-10-21（仅旧版 Azure API）',
   'help.option.wiki.reasoningModel': '启用 reasoning 模式；MiniMax-M3 使用自适应 thinking',
-  'help.option.wiki.noReasoningModel': '禁用 reasoning 模式；MiniMax-M3 关闭 thinking',
+  'help.option.wiki.noReasoningModel':
+    '禁用 reasoning 模式；MiniMax-M3.1-Flash 保持自适应 thinking，MiniMax-M3 关闭 thinking',
   'help.option.wiki.concurrency': '并行 LLM 调用数（默认：3）',
   'help.option.wiki.timeout': 'LLM 请求超时时间（秒，默认：禁用）',
   'help.option.wiki.retries': '每个请求的最大 LLM 重试次数（默认：3）',

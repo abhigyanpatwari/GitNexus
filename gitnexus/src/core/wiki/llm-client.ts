@@ -26,7 +26,7 @@ export const MINIMAX_OPENAI_BASE_URLS = {
   cn_zh: 'https://api.minimaxi.com/v1',
 } as const;
 
-export const MINIMAX_MODEL_IDS = ['MiniMax-M3', 'MiniMax-M2.7'] as const;
+export const MINIMAX_MODEL_IDS = ['MiniMax-M3.1-Flash', 'MiniMax-M3'] as const;
 
 export type MiniMaxThinkingMode = 'adaptive' | 'disabled' | 'always_on';
 
@@ -83,8 +83,9 @@ export function resolveMiniMaxThinkingMode(
   model: string,
   reasoningOverride?: boolean,
 ): MiniMaxThinkingMode | undefined {
-  if (model === MINIMAX_MODEL_IDS[1]) return 'always_on';
-  if (model === MINIMAX_MODEL_IDS[0]) {
+  if (model === 'MiniMax-M3.1-Flash') return 'adaptive';
+  if (model === 'MiniMax-M2.7') return 'always_on';
+  if (model === 'MiniMax-M3') {
     return reasoningOverride === false ? 'disabled' : 'adaptive';
   }
   return undefined;

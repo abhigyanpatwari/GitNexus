@@ -225,7 +225,7 @@ it('drops reasoningContent from serialized assistant messages without tool calls
 });
 
 describe('createChatModel', () => {
-  it('configures MiniMax-M3 adaptive thinking on the China endpoint', () => {
+  it('configures MiniMax-M3.1-Flash adaptive thinking on the China endpoint', () => {
     const model = createChatModel({
       provider: 'minimax',
       apiKey: 'minimax-test-key',
@@ -241,11 +241,22 @@ describe('createChatModel', () => {
     expect(model.temperature).toBeUndefined();
   });
 
+  it('forces adaptive thinking for Flash even when disabled was saved', () => {
+    const model = createChatModel({
+      provider: 'minimax',
+      apiKey: 'minimax-test-key',
+      model: 'MiniMax-M3.1-Flash',
+      thinkingMode: 'disabled',
+    }) as any;
+    expect(model.invocationParams({}).thinking).toEqual({ type: 'adaptive' });
+    expect(model.temperature).toBeUndefined();
+  });
+
   it('supports disabled thinking for MiniMax-M3', () => {
     const model = createChatModel({
       provider: 'minimax',
       apiKey: 'minimax-test-key',
-      model: MINIMAX_MODEL_IDS[0],
+      model: 'MiniMax-M3',
       thinkingMode: 'disabled',
       temperature: 0.1,
     } as any) as any;
@@ -258,7 +269,7 @@ describe('createChatModel', () => {
     const model = createChatModel({
       provider: 'minimax',
       apiKey: 'minimax-test-key',
-      model: MINIMAX_MODEL_IDS[1],
+      model: 'MiniMax-M2.7',
       thinkingMode: 'disabled',
       temperature: 0.1,
     } as any) as any;

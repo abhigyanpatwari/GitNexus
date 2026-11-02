@@ -350,14 +350,15 @@ export const en = {
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':
     'LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax)',
-  'help.option.wiki.model': 'LLM model or deployment name (default: MiniMax-M3)',
+  'help.option.wiki.model': 'LLM model or deployment name (default: MiniMax-M3.1-Flash)',
   'help.option.wiki.baseUrl':
     'LLM API base URL. Azure v1: https://{resource}.openai.azure.com/openai/v1',
   'help.option.wiki.apiKey': 'LLM API key or Azure api-key (saved to ~/.gitnexus/config.json)',
   'help.option.wiki.apiVersion':
     'Azure api-version query param, e.g. 2024-10-21 (legacy Azure API only)',
   'help.option.wiki.reasoningModel': 'Enable reasoning mode; MiniMax-M3 uses adaptive thinking',
-  'help.option.wiki.noReasoningModel': 'Disable reasoning mode; MiniMax-M3 disables thinking',
+  'help.option.wiki.noReasoningModel':
+    'Disable reasoning mode; MiniMax-M3.1-Flash remains adaptive, MiniMax-M3 disables thinking',
   'help.option.wiki.concurrency': 'Parallel LLM calls (default: 3)',
   'help.option.wiki.timeout': 'LLM request timeout in seconds (default: disabled)',
   'help.option.wiki.retries': 'Max LLM retry attempts per request (default: 3)',
