@@ -32,6 +32,12 @@
  *   Dart        Outer.inner    Outer.inner (#2807)     Outer.inner (#2807)
  *   Swift       both links     both links  (#2807)     optional field (#2807)
  *
+ * Swift's second link (`Inner.compute`) arrived with #3498, when Swift started
+ * walking up to the Module scope for hoisted return types. Dart walks up too
+ * since #3498, but its `Outer` rows keep one link: later classes in the Dart
+ * fixture redeclare `inner`, which overwrites `Outer.inner`'s hoisted binding,
+ * and the owner-checked walk declines rather than borrow another class's type.
+ *
  * Shapes marked n/a do not exist in that language: Python and Ruby have no
  * field DECLARATIONS at all (a field is created by assignment, so only the
  * assigned column is meaningful), PHP property initializers accept only
@@ -212,6 +218,12 @@ export class StaticCtorThis {
   p = new Outer();
   static constructor() { this.p = new Alien(); }
   run(x) { return this.p.inner().compute(x); }
+}
+export class StaticReadOnly {
+  static q = new Alien();
+}
+export class StaticReader {
+  readOnly(x) { return StaticReadOnly.q.inner().compute(x); }
 }
 `;
 
@@ -1197,6 +1209,11 @@ const CASES: readonly LanguageCase[] = [
       //   `Host.p` (static twin)     Outer  ✗ WRONG      Alien  ✓ correct
       //   `Host.q` (static, no twin) — none, missed      Alien  ✓ correct
       //
+      // The `Host.q` cell has moved since, without touching the drop: the
+      // class-level receiver route types ONE hop from the static Property node's
+      // initializer type, so `Host.q.m()` now resolves `Alien.m` (the second row
+      // below). Only the twin row still pays the trade in full.
+      //
       // So the trade is NOT the "missed edge beats a wrong one" the comment on
       // `isStaticClassFieldBinding` claims, and this row is why that comment now
       // says otherwise. For a class with BOTH twins the wrong edge did not go
@@ -1216,17 +1233,22 @@ const CASES: readonly LanguageCase[] = [
         status: 'resolves',
       },
       // The static-only shape — no instance twin, so nothing at all is left in
-      // the map and the chain simply loses its type. This is the genuine MISSED
-      // edge, and the common static shape; the row above is the rarer one. A
-      // `known-gap` row rather than a positive assertion because there is no
-      // surviving target to name — the whole point is that the edge is gone. It
-      // is protected from vacuity by the `every row has a live caller node`
-      // guard, the same way this file's other known-gap rows are.
+      // the map. This was the genuine MISSED edge, and the common static shape.
+      // The class-level receiver route does not read the map: it types
+      // `StaticReadOnly.q` from the static Property NODE, which now carries the
+      // type its initializer constructs when the field declares none. So the
+      // first hop resolves to `Alien.inner` — and not to `Outer.inner`, which
+      // `Alien` shares the name with, so this cannot pass on a wrong type.
+      //
+      // `Inner.compute` is still absent, and that is the remaining gap: the
+      // second hop's receiver `StaticReadOnly.q.inner()` goes through the
+      // compound fold, which types a field step only from the class-scope map
+      // the static binding is kept out of.
       {
-        name: 'static-read-without-a-twin-loses-its-type',
+        name: 'static-read-without-a-twin-types-from-its-initializer',
         callerId: `Method:${TS_FILE}:StaticReader.readOnly#1`,
-        targets: [],
-        status: 'known-gap',
+        targets: [`Method:${TS_FILE}:Alien.inner#0`],
+        status: 'resolves',
       },
     ],
   },
@@ -1287,6 +1309,16 @@ const CASES: readonly LanguageCase[] = [
         name: 'static-constructor-this-does-not-retype-the-field',
         callerId: `Method:${JS_FILE}:StaticCtorThis.run#1`,
         targets: [`Method:${JS_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // JavaScript's half of the TypeScript static-only row: a field typed by
+      // nothing but its initializer, read through the class. JavaScript has no
+      // annotation to fall back on, so the initializer is the only evidence
+      // there is — the `Config.DEFAULT.validate()` shape.
+      {
+        name: 'static-read-without-a-twin-types-from-its-initializer',
+        callerId: `Method:${JS_FILE}:StaticReader.readOnly#1`,
+        targets: [`Method:${JS_FILE}:Alien.inner#0`],
         status: 'resolves',
       },
     ],
@@ -1875,10 +1907,21 @@ const CASES: readonly LanguageCase[] = [
       // {Alien, Alien.inner, Outer.inner}. A regression that merely breaks the
       // fixture empties the set and the row still fails — it cannot pass
       // vacuously in either direction.
+      //
+      // The witness also carries `Inner.compute#1` since #3498 (Dart sets
+      // `hoistTypeBindingsToModule`): `Alien.inner()` returns `Inner`, and
+      // `Alien` is the LAST class in this file to declare `inner`, so its
+      // binding is the one the Module scope keeps. `Outer.inner`'s binding was
+      // overwritten by that same name, so the owner-checked walk declines on
+      // `Outer` receivers and the rows above stay at `Outer.inner` alone.
       {
         name: 'loop-var-read-does-not-see-the-field',
         callerId: `Method:${DART_FILE}:LoopVarReadShadowedField.probe#1`,
-        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        targets: [
+          `Class:${DART_FILE}:Alien`,
+          `Method:${DART_FILE}:Alien.inner#0`,
+          `Method:${DART_FILE}:Inner.compute#1`,
+        ],
         status: 'resolves',
       },
       // Dart 3 patterns are the binder family this branch widened twice, so the
@@ -1887,7 +1930,11 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'pattern-read-does-not-see-the-field',
         callerId: `Method:${DART_FILE}:PatternReadShadowedField.probe#1`,
-        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        targets: [
+          `Class:${DART_FILE}:Alien`,
+          `Method:${DART_FILE}:Alien.inner#0`,
+          `Method:${DART_FILE}:Inner.compute#1`,
+        ],
         status: 'resolves',
       },
       // ONE ROW PER BINDER SHAPE, because the two rows above pin two of the
@@ -1912,7 +1959,11 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'param-read-does-not-see-the-field',
         callerId: `Method:${DART_FILE}:ParamReadShadowedField.probe#1`,
-        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        targets: [
+          `Class:${DART_FILE}:Alien`,
+          `Method:${DART_FILE}:Alien.inner#0`,
+          `Method:${DART_FILE}:Inner.compute#1`,
+        ],
         status: 'resolves',
       },
       // A local `var ze;` with NO initializer: the resolver has nothing to type
@@ -1921,7 +1972,11 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'local-read-does-not-see-the-field',
         callerId: `Method:${DART_FILE}:LocalReadShadowedField.probe#1`,
-        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        targets: [
+          `Class:${DART_FILE}:Alien`,
+          `Method:${DART_FILE}:Alien.inner#0`,
+          `Method:${DART_FILE}:Inner.compute#1`,
+        ],
         status: 'resolves',
       },
       // Deliberately a BARE `catch (zf)` rather than the `on Err catch (w)` the
@@ -1932,7 +1987,11 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'catch-read-does-not-see-the-field',
         callerId: `Method:${DART_FILE}:CatchReadShadowedField.probe#0`,
-        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        targets: [
+          `Class:${DART_FILE}:Alien`,
+          `Method:${DART_FILE}:Alien.inner#0`,
+          `Method:${DART_FILE}:Inner.compute#1`,
+        ],
         status: 'resolves',
       },
       // The closure parameter is the shape that pins WHERE the mask is emitted.
@@ -1946,7 +2005,11 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'closure-param-read-does-not-see-the-field',
         callerId: `Method:${DART_FILE}:ClosureParamReadShadowedField.probe#1`,
-        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        targets: [
+          `Class:${DART_FILE}:Alien`,
+          `Method:${DART_FILE}:Alien.inner#0`,
+          `Method:${DART_FILE}:Inner.compute#1`,
+        ],
         status: 'resolves',
       },
       // The second for-in form. `for (var zh in xs)` and the `final` form of
@@ -1958,7 +2021,11 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'loop-var-var-read-does-not-see-the-field',
         callerId: `Method:${DART_FILE}:LoopVarVarReadShadowedField.probe#1`,
-        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        targets: [
+          `Class:${DART_FILE}:Alien`,
+          `Method:${DART_FILE}:Alien.inner#0`,
+          `Method:${DART_FILE}:Inner.compute#1`,
+        ],
         status: 'resolves',
       },
       // THE COUNTERWEIGHT. `use` reads the same field by bare name and binds
@@ -2009,13 +2076,17 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'control-local',
         callerId: `Function:${SWIFT_FILE}:ControlLocal.run#1`,
-        targets: [`Class:${SWIFT_FILE}:Outer`, `Function:${SWIFT_FILE}:Outer.inner#0`],
+        targets: [
+          `Class:${SWIFT_FILE}:Outer`,
+          `Function:${SWIFT_FILE}:Inner.compute#1`,
+          `Function:${SWIFT_FILE}:Outer.inner#0`,
+        ],
         status: 'resolves',
       },
       {
         name: 'inferred-field',
         callerId: `Function:${SWIFT_FILE}:InferredField.run#1`,
-        targets: [`Function:${SWIFT_FILE}:Outer.inner#0`],
+        targets: [`Function:${SWIFT_FILE}:Inner.compute#1`, `Function:${SWIFT_FILE}:Outer.inner#0`],
         status: 'resolves',
       },
       // Swift cannot declare a stored property with neither a type nor an
@@ -2028,7 +2099,7 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'optional-assigned-field',
         callerId: `Function:${SWIFT_FILE}:OptionalAssignedField.run#1`,
-        targets: [`Function:${SWIFT_FILE}:Outer.inner#0`],
+        targets: [`Function:${SWIFT_FILE}:Inner.compute#1`, `Function:${SWIFT_FILE}:Outer.inner#0`],
         status: 'resolves',
       },
     ],

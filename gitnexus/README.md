@@ -135,6 +135,21 @@ Add to `~/.cursor/mcp.json` (global — works for all projects):
 
 ### OpenCode
 
+`gitnexus setup -c opencode` writes the MCP entry plus skills and the hooks
+plugin (`~/.config/opencode/plugins/gitnexus.js`, auto-loaded by OpenCode —
+search augmentation via the OpenCode v1 `tool.execute.after` API and a
+stale-index hint after git mutations). Restart OpenCode after setup. Verified
+with OpenCode 1.19.5; the OpenCode v2 plugin API is not covered. Bash hooks
+recognize literal commands and known options, skip ambiguous shell constructs,
+and check the current OpenCode project's index for staleness.
+
+Bash search augmentation requires `rg` or `grep` to be the first command.
+For example, `cd src && rg UserService .` runs normally but receives no graph
+augmentation. Use a direct search command or OpenCode's `grep`/`glob` tools to
+get graph context.
+
+Manual MCP configuration:
+
 Add to `~/.config/opencode/config.json`:
 
 ```json
@@ -393,6 +408,21 @@ anchors are deliberately omitted. Add common infrastructure fields such as `/hea
 `matching.exclude_links_paths` to keep those GraphQL contracts visible without cross-linking them.
 
 `--spring-actuator` is explicitly opt-in. The path may be a JSON bundle keyed by `mappings`, `beans`, `conditions`, `configprops`, and/or `env`, or a directory containing endpoint-named JSON files. Runtime mappings and beans confirm matching static nodes; conditions and configuration property keys enrich existing evidence, with conservative runtime-only nodes added when no match exists. The configured input is excluded from source scanning; only normalized repository-relative exclusions are retained for future scans, never absolute paths. Env/configprops values, origins, condition messages, and source names are never persisted or printed. Enabled runs always rebuild because runtime snapshots are external to git freshness; omitting the option later rebuilds once to remove runtime evidence. Project config can set the same path with `springActuator` in `.gitnexusrc`.
+
+Go gin/echo routes are indexed when a file imports `github.com/gin-gonic/gin` or `github.com/labstack/echo` directly. A service that registers routes through an internal wrapper package — `func InitRoute(s *core.Engine)`, where the dependency declares `type Engine = gin.Engine` — produces no routes, because the wrapper's source is usually not in the repository and the equivalence cannot be proven. Declare it in `.gitnexusrc`, together with any application adapters that wrap the real handler (`common.Wrapper(api.CreateJob)`):
+
+```json
+{
+  "goRouterAliases": [
+    { "importPath": "example.com/infra/pkg", "type": "Engine", "framework": "gin" }
+  ],
+  "goHandlerWrappers": ["common.Wrapper", "common.WrapperWithSuccessCode"]
+}
+```
+
+`framework` is `gin` or `echo` and selects the handler argument order. A wrapper entry is the callee exactly as written at the registration site; its first argument becomes the route's handler. Registrations on an undeclared wrapper type are dropped, and `analyze` logs how many were dropped per `importPath.Type` so you can see what to declare. Changing either key rebuilds Route evidence on the next `analyze` without `--force`.
+
+To keep this configuration out of the working tree, set `GITNEXUS_RC` to the absolute path of a JSON file with the same shape as `.gitnexusrc`. Its keys override the repository's `.gitnexusrc` key by key, and CLI flags still win. Hooks, MCP servers, and watch processes that re-index must see the same variable; if a later run no longer has it, `analyze` warns before removing the Routes it produced.
 
 `--asyncapi-spec` is explicitly opt-in and accepts a directory of AsyncAPI documents or a single document; the path is resolved against the repository root, so a committed `docs/asyncapi` and an absolute cache written by something else both work. Each `operations[]` entry of an **AsyncAPI 3.x** document can contribute a `Destination` node keyed by broker and address, with `action: send` emitting `PUBLISHES_TO` and `action: receive` emitting `CONSUMES_FROM`, so a document and source code that name one address on one broker land on the same node. Edges start at the document, not at a callable — a document states that the service talks to an address, not which method does — and no address a document names is ever attached to an unresolved source site.
 
@@ -855,6 +885,21 @@ npx gitnexus analyze
 ```
 
 Values above **32768 KB (32 MB)** are clamped to the tree-sitter parser ceiling; invalid values fall back to the 512 KB default with a one-time warning. When an override is active, `analyze` prints the effective threshold in its startup banner (e.g. `GITNEXUS_MAX_FILE_SIZE: effective threshold 2048KB (default 512KB)`).
+
+### Code under a dot directory is missing
+
+The walker skips hidden paths, so symbols defined under a directory such as `.scallywag/` or `.config/` never reach the graph: `impact` and `context` answer `Target not found`, and `detect_changes` reports no changed symbols for a diff that only touches them. To index specific dot directories, list their names (comma-separated) and re-run `analyze`:
+
+```bash
+export GITNEXUS_INCLUDE_DOT_DIRS=.scallywag,.config
+npx gitnexus analyze
+```
+
+Each name matches that directory at any depth (`pkg/.scallywag/` too). Hidden files and other dot directories inside it stay excluded. Ignore rules still apply (the built-in list covers `.github/`, so also add `!.github/` to `.gitnexusignore` to index it). Changing or removing the list takes effect on the next `analyze`, even on a clean checkout. The list is recorded with the index, so `status` compares against the same file set even if the variable changes later.
+
+Version-control and credential directories are refused case-insensitively, including `.git`, `.ssh`, `.aws`, `.azure`, `.kube`, `.gnupg`, and `.docker`. Inside opted-in directories, known credential files, key/certificate files, and credential stores such as `.config/gcloud/` and `.config/gh/` stay excluded even when ignore rules negate their exclusions. Symlink files and directory links under these paths are excluded, including a listed directory that is itself a symlink. These checks run before content or resolution metadata is read.
+
+This is path-based protection, not secret-content scanning. List only directories whose contents you trust to expose through GitNexus's code tools; a hardcoded secret in an otherwise allowed source file can still be indexed. Use `.gitnexusignore` for project-specific secret paths.
 
 ### Process detection reports missing flows
 

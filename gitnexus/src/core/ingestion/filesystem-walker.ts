@@ -1,9 +1,16 @@
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { DEFAULT_MAX_FILE_SIZE_BYTES, getMaxFileSizeBytes } from './utils/max-file-size.js';
+import {
+  getIncludeDotDirs,
+  indexableGlobPatterns,
+  normalizeIncludeDotDirs,
+  dotDirectoryIgnoreFilter,
+  filterDotDirectorySymlinks,
+} from './utils/include-dot-dirs.js';
 import fs from 'fs/promises';
 import { readdir } from 'node:fs';
 import path from 'path';
-import { glob } from 'glob';
+import { glob, globIterate } from 'glob';
 import { createIgnoreFilter } from '../../config/ignore-service.js';
 import { mapConcurrent } from '../../lib/utils.js';
 
@@ -73,6 +80,14 @@ export interface WalkRepositoryOptions {
    * silently drop a file that the index actually covers.
    */
   maxFileSizeBytes?: number;
+  /**
+   * Dot directories to index besides the default non-hidden file set, e.g.
+   * `['.scallywag']`. Defaults to `GITNEXUS_INCLUDE_DOT_DIRS`. `status` replays
+   * the list recorded at analyze time, for the same reason as
+   * `maxFileSizeBytes`. Hidden files and other dot directories inside a listed
+   * directory stay excluded, and ignore rules still apply.
+   */
+  includeDotDirs?: readonly string[];
 }
 
 /**
@@ -103,14 +118,25 @@ export const walkRepositoryPaths = async (
   await assertWalkRootIsDirectory(repoPath);
   const ignoreFilter = await createIgnoreFilter(repoPath);
   const maxFileSizeBytes = options.maxFileSizeBytes ?? getMaxFileSizeBytes();
+  const includeDotDirs = normalizeIncludeDotDirs(options.includeDotDirs ?? getIncludeDotDirs());
   let enumerationError: NodeJS.ErrnoException | undefined;
 
-  const filtered = (
-    await glob('**/*', {
+  const patterns = indexableGlobPatterns(includeDotDirs);
+  // A listed dot directory may be absent from this repo; glob still reads its
+  // root-level pattern, and that ENOENT means "no files", not lost metadata.
+  const optionalRoots = new Set(includeDotDirs.map((dir) => path.resolve(repoPath, dir)));
+  const isAbsentListedRoot = (directory: unknown, error: NodeJS.ErrnoException): boolean =>
+    (error.code === 'ENOENT' && optionalRoots.has(path.resolve(repoPath, String(directory)))) ||
+    // A dotfile can share a listed directory's name. Glob probes it as a
+    // directory; ENOTDIR means no matching subtree, not an unreadable one.
+    (error.code === 'ENOTDIR' && includeDotDirs.includes(path.basename(String(directory))));
+
+  const candidates = (
+    await glob(patterns, {
       cwd: repoPath,
       nodir: true,
       dot: false,
-      ignore: ignoreFilter,
+      ignore: includeDotDirs.length > 0 ? dotDirectoryIgnoreFilter(ignoreFilter) : ignoreFilter,
       // glob treats unreadable directories as empty. Required metadata must
       // not silently lose declarations, so retain the first enumeration error.
       fs:
@@ -119,7 +145,7 @@ export const walkRepositoryPaths = async (
           : {
               readdir(directory, readOptions, callback) {
                 readdir(directory, readOptions, (error, entries) => {
-                  if (error) enumerationError ??= error;
+                  if (error && !isAbsentListedRoot(directory, error)) enumerationError ??= error;
                   callback(error, entries);
                 });
               },
@@ -127,6 +153,8 @@ export const walkRepositoryPaths = async (
     })
   ).map((filePath) => filePath.replace(/\\/g, '/'));
   if (enumerationError !== undefined) throw enumerationError;
+  const filtered =
+    includeDotDirs.length > 0 ? await filterDotDirectorySymlinks(repoPath, candidates) : candidates;
   await options.onPathsDiscovered?.(filtered);
   const entries: ScannedFile[] = [];
   let processed = 0;
@@ -224,6 +252,33 @@ export const walkRepositoryPaths = async (
   }
 
   return deduplicatedEntries;
+};
+
+/**
+ * Count the paths `walkRepositoryPaths` would scan, with the same patterns and
+ * ignore rules, and stop as soon as the count passes `limit`. Nothing is
+ * stat-ed, so large files, non-regular entries and declaration siblings are
+ * not subtracted: the result is an upper bound on what analyze indexes. Used
+ * to refuse an expensive rebuild before it starts (#3524).
+ */
+export const countScanCandidates = async (
+  repoPath: string,
+  limit: number,
+  options: Pick<WalkRepositoryOptions, 'includeDotDirs'> = {},
+): Promise<number> => {
+  await assertWalkRootIsDirectory(repoPath);
+  const ignoreFilter = await createIgnoreFilter(repoPath);
+  const includeDotDirs = normalizeIncludeDotDirs(options.includeDotDirs ?? getIncludeDotDirs());
+  let count = 0;
+  for await (const _ of globIterate(indexableGlobPatterns(includeDotDirs), {
+    cwd: repoPath,
+    nodir: true,
+    dot: false,
+    ignore: includeDotDirs.length > 0 ? dotDirectoryIgnoreFilter(ignoreFilter) : ignoreFilter,
+  })) {
+    if (++count > limit) break;
+  }
+  return count;
 };
 
 /**

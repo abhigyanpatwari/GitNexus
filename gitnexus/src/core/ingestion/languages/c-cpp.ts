@@ -17,8 +17,6 @@ import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { typeConfig as cCppConfig } from '../type-extractors/c-cpp.js';
 import { cCppExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { cImportConfig, cppImportConfig } from '../import-resolvers/configs/c-cpp.js';
 import { C_QUERIES, CPP_QUERIES } from '../tree-sitter-queries.js';
 
 /**
@@ -397,7 +395,6 @@ export const cProvider = defineLanguage({
   `,
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
-  importResolver: createImportResolver(cImportConfig),
   callExtractor: createCallExtractor(cCallConfig),
   fieldExtractor: createFieldExtractor(cFieldConfig),
   methodExtractor: createMethodExtractor({
@@ -492,7 +489,6 @@ export const cppProvider = defineLanguage({
   preprocessSource: stripUeMacros,
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
-  importResolver: createImportResolver(cppImportConfig),
   mroStrategy: 'leftmost-base',
   callExtractor: createCallExtractor(cppCallConfig),
   fieldExtractor: createFieldExtractor(cppFieldConfig),

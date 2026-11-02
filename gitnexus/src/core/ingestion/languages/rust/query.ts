@@ -13,6 +13,7 @@ const RUST_SCOPE_QUERY = `
 (function_signature_item) @scope.function
 (closure_expression) @scope.function
 (block) @scope.block
+(type_item) @scope.block
 (if_expression) @scope.block
 (match_expression) @scope.block
 (match_arm) @scope.block

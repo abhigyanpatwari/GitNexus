@@ -573,7 +573,7 @@ export const streamAllCSVsToDisk = async (
     // Route nodes for API endpoint mapping
     const routeWriter = new BufferedCSVWriter(
       path.join(csvDir, 'route.csv'),
-      'id,name,filePath,responseKeys,errorKeys,middleware,method,handlerSymbolId,runtimeConfirmed,runtimeSource,runtimeStatus',
+      'id,name,filePath,responseKeys,errorKeys,middleware,method,handlerSymbolId,runtimeConfirmed,runtimeSource,runtimeStatus,unverifiedConsumers',
     );
 
     // Tool nodes for MCP tool definitions
@@ -767,6 +767,7 @@ export const streamAllCSVsToDisk = async (
               node.properties.runtimeConfirmed === true ? 'true' : 'false',
               escapeCSVField(String(node.properties.runtimeSource ?? '')),
               escapeCSVField(String(node.properties.runtimeStatus ?? '')),
+              String(node.properties.unverifiedConsumers ?? 0),
             ].join(','),
           );
           break;

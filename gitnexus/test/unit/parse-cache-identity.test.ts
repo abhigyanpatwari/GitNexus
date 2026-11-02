@@ -39,6 +39,8 @@ describe('parse cache artifact identity', () => {
     'src/core/ingestion/languages/new-provider.ts',
     'src/core/ingestion/preprocess.ts',
     'src/core/ingestion/workers/helper.ts',
+    'src/core/ingestion/taint/guard-refinement.ts',
+    'src/core/ingestion/taint/value-refinement.ts',
     'src/core/ingestion/languages/cobol/flow-source.ts',
     'node_modules/gitnexus-shared/src/index.ts',
     'node_modules/gitnexus-shared/dist/index.js',

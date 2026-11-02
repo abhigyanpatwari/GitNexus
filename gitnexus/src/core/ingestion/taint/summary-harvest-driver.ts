@@ -26,6 +26,7 @@
  * remain unresolved rather than attaching a summary to a different function.
  */
 
+import { createFunctionRefinement, type RefinementSolver } from './guard-refinement.js';
 import type { ParsedFile, ParsedImport, GraphNode } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { computeReachingDefs, type ReachingDefsSolver } from '../cfg/reaching-defs.js';
@@ -124,6 +125,7 @@ export interface FileSummaryResult {
  * `isEmitSafeCfg`-filtered (the same `wellFormed` array fed to `emitFileTaint`).
  * Pure aside from the read-only graph lookup; never throws on valid input.
  */
+
 export function harvestFileSummaries(
   fnIndex: FunctionNodeIndex,
   cfgs: readonly FunctionCfg[],
@@ -133,6 +135,7 @@ export function harvestFileSummaries(
   // U12: shared per-file memoized solver (harvest/taint bucket — no maxBlockVisits).
   solve: ReachingDefsSolver = computeReachingDefs,
   parsed?: ParsedFile,
+  refine: RefinementSolver = createFunctionRefinement,
 ): FileSummaryResult {
   const importIndex = buildTaintImportIndex(parsedImports, parsed);
   const summaries: FunctionSummary[] = [];
@@ -147,7 +150,7 @@ export function harvestFileSummaries(
     }
     const defUse = solve(cfg, { maxFacts });
     const matches = matchFunctionSites(cfg, spec, importIndex);
-    const harvested = harvestFunctionSummary(cfg, defUse, matches);
+    const harvested = harvestFunctionSummary(cfg, defUse, matches, refine(cfg));
     if (harvested.status !== 'computed') {
       gaps++;
       continue;

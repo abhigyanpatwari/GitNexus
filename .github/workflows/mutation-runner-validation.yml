@@ -1,0 +1,394 @@
+name: Mutation Runner Validation
+
+# Validates the repo-local Stryker test runner for Vitest 5 and its validation gates
+# (gitnexus/tools/mutation/, TESTING.md "Mutation testing tooling"), and the test
+# scenario map built on it (gitnexus/tools/scenario-map/).
+#
+#   pull_request     gate 2: the conformance suite, one job per profile; and the scenario-map
+#                    controls run. Runs only when the tooling (tools/mutation, tools/scenario-map,
+#                    tools/test-dupes), its fixtures (mutation-scenario-map among them), the
+#                    gitnexus package manifest or lockfile (Vitest and Stryker versions), the base
+#                    Vitest config, the gitnexus-shared package manifest (its exports drive the
+#                    mutation config's aliases) or the setup-gitnexus action (the jobs' install
+#                    path) change. The paths are workflow-level, so a scenario-map change also runs
+#                    gate 2, an accepted extra cost.
+#   workflow_dispatch  gate 2 plus gate 1 (fidelity), gate 3 (oracle), gate 4 (controls) and
+#                    the oracle cost benchmark, each selectable by an input.
+#
+# Advisory: every job is continue-on-error and none is in ci.yml's ci-status.needs. Nothing here
+# blocks a merge. Gate 3's full sample takes hours, so it never runs on pull requests.
+#
+# Gate 3 (`oracle` input):
+#   compare   one job: a fresh vitest5 runner run per frozen manifest in
+#             gitnexus/test/fixtures/mutation-oracle/, then one compare over all three, so the
+#             strata are counted across the scopes combined, as the freeze counted them. Cheap:
+#             one Stryker run per scope.
+#   refreeze  re-freezes manifests from scratch, one job per scope (`refreeze_scope`). The
+#             full three-scope sample does not fit one 6-hour job on 4 vCPU (benchmark: 6.18 h
+#             at best), so it is sharded by scope: shared about 4.5 h, schema-constants about
+#             45 min, middleware about 1 h. The new manifest is uploaded as an artifact for a
+#             maintainer to review and commit; CI never commits it. Local equivalent, from
+#             gitnexus/ (the work dir must lie outside the checkout; a freeze is resumable):
+#               npm run test:mutation:oracle:freeze -- \
+#                 --from-manifest test/fixtures/mutation-oracle/<scope>.json \
+#                 --seed <new seed> --work <dir outside the checkout>
+#
+# Gate 4 runs as one job: both profiles (A: three concurrency-1 runs in parallel, B: three
+# concurrency-3 runs in turn) took about 81 min locally under load. Split jobs would have to
+# ship every run directory, prepared copies included, to a `--compare-only` job at the same
+# absolute paths, because the staleness check hashes the prepared inputs.
+#
+# Every tool writes outside the checkout (`--out`/`--work` under $RUNNER_TEMP): a prepared copy
+# must not lie inside it. setup-gitnexus installs Node 22, the Node major recorded in the frozen
+# manifests; another major makes gate 3 report "re-freeze required". Timings were measured on a
+# loaded WSL2 machine with the checkout on a 9p mount; ubuntu-latest (4 vCPU, local disk) will
+# differ, so the timeouts leave margin.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/mutation-runner-validation.yml'
+      - 'gitnexus/tools/mutation/**'
+      - 'gitnexus/tools/scenario-map/**'
+      - 'gitnexus/tools/test-dupes/**'
+      - 'gitnexus/test/fixtures/mutation-*/**'
+      - 'gitnexus/package.json'
+      - 'gitnexus/package-lock.json'
+      - 'gitnexus/vitest.config.ts'
+      - 'gitnexus-shared/package.json'
+      - '.github/actions/setup-gitnexus/**'
+  workflow_dispatch:
+    inputs:
+      fidelity:
+        description: 'Gate 1: execution-path fidelity on the pure-JS category'
+        type: boolean
+        default: true
+      oracle:
+        description: 'Gate 3: compare the frozen manifests, re-freeze them, or skip'
+        type: choice
+        options: [compare, refreeze, skip]
+        default: compare
+      refreeze_scope:
+        description: 'Oracle scope to re-freeze (oracle = refreeze)'
+        type: choice
+        options: [all, shared, schema-constants, middleware]
+        default: all
+      seed:
+        description: 'New sample seed for a re-freeze (required when oracle = refreeze)'
+        type: string
+        required: false
+        default: ''
+      controls:
+        description: 'Gate 4: planted controls and determinism'
+        type: boolean
+        default: true
+      bench:
+        description: 'Oracle cost benchmark'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Concurrency convention: see CONTRIBUTING.md -> "GitHub Actions — Concurrency Convention".
+# A new push supersedes a PR run; manual dispatches (hours long) are never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+    working-directory: gitnexus
+
+jobs:
+  # ── Gate 2: runner conformance suite ───────────────────────────────
+  conformance:
+    name: Gate 2 conformance (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # The profile names of gitnexus/test/fixtures/mutation-conformance/expected.json.
+        profile: [concurrency-2-reuse-1, concurrency-1-reuse-unlimited]
+    steps:
+      # persist-credentials: false — the job uploads artifacts and never pushes.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Full install, as the test jobs do: tsx, Stryker and Vitest are devDependencies.
+      - uses: ./.github/actions/setup-gitnexus
+      - name: Run the conformance suite
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: npm run test:mutation:conformance -- --profile "$PROFILE" --out "$RUNNER_TEMP/mutation/conformance"
+      - name: Upload conformance results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-conformance-${{ matrix.profile }}
+          path: |
+            ${{ runner.temp }}/mutation/conformance/observed.json
+            ${{ runner.temp }}/mutation/conformance/*/*/results.json
+            ${{ runner.temp }}/mutation/conformance/*/*/stryker.log
+          retention-days: 14
+
+  # ── Gate 1: execution-path fidelity and envelope ───────────────────
+  fidelity:
+    name: Gate 1 fidelity
+    if: github.event_name == 'workflow_dispatch' && inputs.fidelity
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+      # The envelope goes to the artifact, not over the committed
+      # test/fixtures/mutation-oracle/envelope.json.
+      - name: Run gate 1
+        run: |
+          npm run test:mutation:fidelity -- \
+            --out "$RUNNER_TEMP/mutation/fidelity" \
+            --envelope "$RUNNER_TEMP/mutation/envelope/envelope.json"
+      - name: Upload gate 1 report and envelope
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-gate1
+          path: |
+            ${{ runner.temp }}/mutation/fidelity/*.json
+            ${{ runner.temp }}/mutation/envelope/envelope.json
+          retention-days: 14
+
+  # ── Gate 3: compare a fresh runner run with the frozen manifests ───
+  oracle-compare:
+    name: Gate 3 oracle compare
+    if: github.event_name == 'workflow_dispatch' && inputs.oracle == 'compare'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+      - name: Run the runner on every oracle scope and compare
+        run: |
+          work="$RUNNER_TEMP/mutation/gate3"
+          mkdir -p "$work"
+          pairs=()
+          for name in shared schema-constants middleware; do
+            manifest="test/fixtures/mutation-oracle/$name.json"
+            if [ ! -f "$manifest" ]; then
+              echo "::error::$manifest is missing; freeze it first"
+              exit 2
+            fi
+            jq '.scope' "$manifest" > "$work/$name.scope.json"
+            # Exit 1 means results with integrity flags; gate 3 reports those as differences.
+            status=0
+            npm run test:mutation:run -- --scope "$work/$name.scope.json" \
+              --out "$work/$name" --concurrency 4 || status=$?
+            if [ "$status" -gt 1 ]; then exit "$status"; fi
+            pairs+=(--scope "$manifest,$work/$name/results.json")
+          done
+          npm run test:mutation:oracle -- "${pairs[@]}" --out "$work/gate3-report.json"
+      - name: Upload gate 3 report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-gate3
+          path: |
+            ${{ runner.temp }}/mutation/gate3/gate3-report.json
+            ${{ runner.temp }}/mutation/gate3/*.scope.json
+            ${{ runner.temp }}/mutation/gate3/*/results.json
+            ${{ runner.temp }}/mutation/gate3/*/stryker.log
+          retention-days: 14
+
+  # ── Gate 3: re-freeze manifests, sharded by scope ──────────────────
+  oracle-refreeze:
+    name: Gate 3 re-freeze (${{ matrix.scope }})
+    if: github.event_name == 'workflow_dispatch' && inputs.oracle == 'refreeze'
+    runs-on: ubuntu-latest
+    # Projected: shared ~4.5 h with Stryker runs and setup; the others ~1 h. 6 h job cap.
+    timeout-minutes: ${{ matrix.scope == 'shared' && 355 || 150 }}
+    continue-on-error: true
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        scope: ${{ fromJSON(inputs.refreeze_scope == 'all' && '["shared","schema-constants","middleware"]' || format('["{0}"]', inputs.refreeze_scope)) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+      - name: Check the seed
+        env:
+          SCOPE: ${{ matrix.scope }}
+          SEED: ${{ inputs.seed }}
+        run: |
+          manifest="test/fixtures/mutation-oracle/$SCOPE.json"
+          if [ -z "$SEED" ]; then
+            echo "::error::a re-freeze needs a new sample seed (the seed input)"
+            exit 2
+          fi
+          frozen="$(jq -r '.sample.seed' "$manifest")"
+          if [ "$SEED" = "$frozen" ]; then
+            echo "::error::$manifest was frozen with seed $frozen; give a new seed"
+            exit 2
+          fi
+      # --manifest lies outside the checkout, so the manifest records the default
+      # test/fixtures/mutation-oracle/<scope>.json path, and only a freeze without problems
+      # writes it. <work>/manifest.json is written either way and lists any problems.
+      - name: Re-freeze the scope
+        env:
+          SCOPE: ${{ matrix.scope }}
+          SEED: ${{ inputs.seed }}
+        run: |
+          out="$RUNNER_TEMP/mutation/refreeze"
+          mkdir -p "$out"
+          npm run test:mutation:oracle:freeze -- \
+            --from-manifest "test/fixtures/mutation-oracle/$SCOPE.json" \
+            --seed "$SEED" --work "$out/work" --manifest "$out/$SCOPE.json"
+      - name: Upload the re-frozen manifest
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-oracle-refreeze-${{ matrix.scope }}
+          path: |
+            ${{ runner.temp }}/mutation/refreeze/${{ matrix.scope }}.json
+            ${{ runner.temp }}/mutation/refreeze/work/manifest.json
+            ${{ runner.temp }}/mutation/refreeze/work/freeze-work.json
+            ${{ runner.temp }}/mutation/refreeze/work/command/oracle-command-run.json
+            ${{ runner.temp }}/mutation/refreeze/work/*/stryker.log
+          retention-days: 30
+
+  # ── Gate 4: planted controls and determinism ───────────────────────
+  controls:
+    name: Gate 4 controls
+    if: github.event_name == 'workflow_dispatch' && inputs.controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+      - name: Run gate 4
+        run: npm run test:mutation:controls -- --work "$RUNNER_TEMP/mutation/controls"
+      - name: Upload gate 4 report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-gate4
+          path: |
+            ${{ runner.temp }}/mutation/controls/controls-report.json
+            ${{ runner.temp }}/mutation/controls/runs/*/*/results.json
+            ${{ runner.temp }}/mutation/controls/runs/*/*/stryker.log
+          retention-days: 14
+
+  # ── Oracle cost benchmark ──────────────────────────────────────────
+  bench:
+    name: Oracle cost benchmark
+    if: github.event_name == 'workflow_dispatch' && inputs.bench
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+      # Per oracle scope: the oracle's command-runner run and a vitest5 runner run, then the
+      # benchmark over all three. Concurrency 4 matches the recorded numbers.
+      - name: Run the oracle cost benchmark
+        run: |
+          work="$RUNNER_TEMP/mutation/bench"
+          mkdir -p "$work"
+          scopes=()
+          for name in shared schema-constants middleware; do
+            manifest="test/fixtures/mutation-oracle/$name.json"
+            if [ ! -f "$manifest" ]; then
+              echo "::error::$manifest is missing; freeze it first"
+              exit 2
+            fi
+            jq '.scope' "$manifest" > "$work/$name.scope.json"
+            npm run test:mutation:oracle:command -- --scope "$work/$name.scope.json" \
+              --out "$work/$name-command" --concurrency 4
+            # Exit 1 means results with integrity flags; the benchmark only reads which
+            # mutants are static and which tests cover the timed-out ones.
+            status=0
+            npm run test:mutation:run -- --scope "$work/$name.scope.json" \
+              --out "$work/$name-vitest5" --concurrency 4 || status=$?
+            if [ "$status" -gt 1 ]; then exit "$status"; fi
+            scopes+=(--scope "$work/$name-command/oracle-command-run.json,$work/$name-vitest5/results.json")
+          done
+          npm run test:mutation:bench -- "${scopes[@]}" --out "$work/report" --concurrency 4
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutation-oracle-bench
+          path: |
+            ${{ runner.temp }}/mutation/bench/report/oracle-cost.json
+            ${{ runner.temp }}/mutation/bench/report/oracle-cost.txt
+            ${{ runner.temp }}/mutation/bench/*-command/oracle-command-run.json
+            ${{ runner.temp }}/mutation/bench/*/stryker.log
+          retention-days: 14
+
+  # ── Scenario map controls ──────────────────────────────────────────
+  # The PR check of test-scenario-map.yml's pipeline (plan, value flow, one shard, merge) over the
+  # controls fixture (gitnexus/test/fixtures/mutation-scenario-map/), mutation scope `all`, then
+  # every expected.json mutation and fingerprint verdict and rule compared; exit 1 means a pair
+  # differs. build: 'true' because the value-flow stage's PDG index
+  # spawns analyze workers from dist/. About 30 min locally.
+  scenario-map-controls:
+    name: Scenario map controls
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - name: Run the scenario-map controls
+        env:
+          GITNEXUS_WORKER_READY_TIMEOUT_MS: '120000'
+        run: npm run test:scenario-map -- controls --work "$RUNNER_TEMP/scenario-map-controls"
+      - name: Upload the controls report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scenario-map-controls-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/scenario-map-controls/scenario-map-report.json
+            ${{ runner.temp }}/scenario-map-controls/scenario-map-report.md
+            ${{ runner.temp }}/scenario-map-controls/issue-body.md
+            ${{ runner.temp }}/scenario-map-controls/plan.json
+            ${{ runner.temp }}/scenario-map-controls/value-flow.json
+            ${{ runner.temp }}/scenario-map-controls/shard-0.json
+            ${{ runner.temp }}/scenario-map-controls/value-flow/pdg/analyze.log
+          retention-days: 14

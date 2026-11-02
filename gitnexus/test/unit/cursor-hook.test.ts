@@ -23,6 +23,7 @@ import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { createContext, runInContext } from 'vm';
 import { runHook as spawnHook } from '../utils/hook-test-helpers.js';
 import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 
@@ -466,7 +467,9 @@ describe('Cursor hook npx fallback host budget', () => {
 
     // budget comes from hooks.json (seconds → ms) and the elapsed hook time
     // is handed to the pure resolver, which owns the headroom arithmetic
-    expect(fnBody).toContain('resolveNpxTimeoutMs(resolveCursorHostBudgetMs(), elapsed)');
+    expect(fnBody).toContain(
+      'resolveNpxTimeoutMs(hostBudgetMs, Date.now() - CURSOR_HOOK_START_MS)',
+    );
     // the computed budget is what reaches spawnSync (not a bare +5000)
     expect(fnBody).toContain('timeout: npxTimeout');
     expect(fnBody).not.toMatch(/timeout:\s*timeout\s*\+\s*5000/);
@@ -677,6 +680,129 @@ describe('Cursor hook npx fallback budget', () => {
   });
 });
 
+describe('Cursor npx spawn deadline', () => {
+  function runFallback({
+    hostSeconds = 30,
+    elapsedMs = 0,
+    probes = [{ elapsedMs: 2500, status: 42 }],
+    platform = 'linux',
+  }: {
+    hostSeconds?: number;
+    elapsedMs?: number;
+    probes?: { elapsedMs: number; status: number }[];
+    platform?: string;
+  } = {}) {
+    let now = 0;
+    let probeIndex = 0;
+    const calls: {
+      command: string;
+      args: string[];
+      at: number;
+      options: { timeout: number; killSignal?: string };
+    }[] = [];
+    const context = createContext({
+      module: { exports: {} },
+      __dirname: path.dirname(CURSOR_HOOK),
+      Date: { now: () => now },
+      process: { platform, env: {} },
+      require: (name: string) => {
+        if (name === 'path') return path;
+        if (name === 'fs') {
+          return {
+            existsSync: () => true,
+            readFileSync: () =>
+              JSON.stringify({
+                hooks: {
+                  postToolUse: [{ command: 'node gitnexus-hook.cjs', timeout: hostSeconds }],
+                },
+              }),
+          };
+        }
+        if (name === 'child_process') {
+          return {
+            spawnSync: (
+              command: string,
+              args: string[],
+              options: { timeout: number; killSignal?: string },
+            ) => {
+              calls.push({ command, args, at: now, options });
+              if (args.includes('exit 42')) {
+                const probe = probes[probeIndex++] ?? { elapsedMs: 3000, status: 1 };
+                now += Math.min(probe.elapsedMs, options.timeout);
+                if (probe.elapsedMs > options.timeout) return { error: { code: 'ETIMEDOUT' } };
+                return { status: probe.status };
+              }
+              return { status: 0, stderr: 'context' };
+            },
+          };
+        }
+        return {};
+      },
+    });
+    // Execute the shipped module, replacing only the clock and OS boundaries.
+    // No npx process or package download is launched by this test.
+    runInContext(fs.readFileSync(CURSOR_HOOK, 'utf-8'), context);
+    now = elapsedMs;
+    const result = runInContext(
+      "runGitNexusCli(null, ['augment', '--', 'needle'], '/project', 7000)",
+      context,
+    );
+    return { calls, result };
+  }
+
+  it('subtracts guard discovery time before starting the wrapped child', () => {
+    const { calls } = runFallback();
+    expect(calls).toHaveLength(2);
+    expect(calls[1].at).toBe(2500);
+    expect(calls[1].options.timeout).toBe(24_500);
+    expect(calls[1].args).toEqual([
+      '-s',
+      'KILL',
+      '-k',
+      '1',
+      '24',
+      'npx',
+      '-y',
+      'gitnexus',
+      'augment',
+      '--',
+      'needle',
+    ]);
+  });
+
+  it('skips npx when guard discovery consumes the minimum usable window', () => {
+    const { calls, result } = runFallback({ hostSeconds: 10 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toContain('exit 42');
+    expect(result.status).toBeNull();
+  });
+
+  it('bounds all failed probes together and budgets the unwrapped fallback afterwards', () => {
+    const { calls } = runFallback({
+      probes: [
+        { elapsedMs: 2000, status: 1 },
+        { elapsedMs: 2000, status: 1 },
+      ],
+    });
+    expect(calls).toHaveLength(3);
+    expect(calls[0].options).toMatchObject({ timeout: 3000, killSignal: 'SIGKILL' });
+    expect(calls[1].options).toMatchObject({ timeout: 1000, killSignal: 'SIGKILL' });
+    expect(calls[2]).toMatchObject({ command: 'npx', at: 3000, options: { timeout: 22_000 } });
+  });
+
+  it('does no subprocess work when the hook deadline has already passed', () => {
+    const { calls, result } = runFallback({ elapsedMs: 30_000 });
+    expect(calls).toEqual([]);
+    expect(result.status).toBeNull();
+  });
+
+  it('keeps Windows on the unwrapped npx.cmd path', () => {
+    const { calls } = runFallback({ platform: 'win32' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ command: 'npx.cmd', options: { timeout: 25_000 } });
+  });
+});
+
 // ─── Behavioral: guard timeout resolution (F1 + F2) ────────────────
 // resolveUnixGuardTimeout memoizes per module instance, so each case loads
 // a FRESH copy of the hook rather than reusing the top-of-file require.
@@ -758,13 +884,66 @@ describe('Cursor hook guard timeout resolution', () => {
     // runGitNexusCli spawns with the tool request's cwd, so a relative
     // override would ENOENT there — or, slashless, silently become a PATH
     // lookup. path.resolve makes the adopted path absolute.
-    const resolved = withTimeoutPath('some/wrapper', () => freshHook().resolveUnixGuardTimeout());
-    expect(resolved).not.toBe('some/wrapper');
+    const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-guard-relative-'));
+    const stub = path.join(stubDir, 'timeout');
+    try {
+      fs.writeFileSync(stub, '#!/bin/sh\nexit 42\n', { mode: 0o755 });
+      const relative = path.relative(process.cwd(), stub);
+      const resolved = withTimeoutPath(relative, () => freshHook().resolveUnixGuardTimeout());
+      expect(resolved).toBe(stub);
+    } finally {
+      fs.rmSync(stubDir, { recursive: true, force: true });
+    }
   });
 
   it.skipIf(!isUnix)('honours the disabled sentinel', () => {
     expect(withTimeoutPath('disabled', () => freshHook().resolveUnixGuardTimeout())).toBeNull();
   });
+
+  it.skipIf(!isUnix)(
+    'returns when an override ignores SIGTERM',
+    () => {
+      const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-guard-hung-'));
+      const stub = path.join(stubDir, 'timeout');
+      const pidFile = path.join(stubDir, 'pid');
+      try {
+        fs.writeFileSync(
+          stub,
+          `#!${process.execPath}\n` +
+            `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n` +
+            "process.on('SIGTERM', () => {});\nsetInterval(() => {}, 1000);\n",
+          { mode: 0o755 },
+        );
+        const result = spawnSync(
+          process.execPath,
+          [
+            '-e',
+            `console.log(JSON.stringify(require(${JSON.stringify(CURSOR_HOOK)}).resolveUnixGuardTimeout()))`,
+          ],
+          {
+            env: { ...process.env, GITNEXUS_HOOK_TIMEOUT_PATH: stub },
+            encoding: 'utf-8',
+            timeout: 8000,
+            killSignal: 'SIGKILL',
+          },
+        );
+        expect(fs.existsSync(pidFile)).toBe(true);
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(0);
+        expect(result.stdout.trim()).toBe('null');
+      } finally {
+        if (fs.existsSync(pidFile)) {
+          try {
+            process.kill(Number(fs.readFileSync(pidFile, 'utf-8')), 'SIGKILL');
+          } catch {
+            // The resolver normally already killed the probe.
+          }
+        }
+        fs.rmSync(stubDir, { recursive: true, force: true });
+      }
+    },
+    12_000,
+  );
 
   it.skipIf(!isUnix)(
     'only ever adopts a guard that runs the command AND propagates its exit status',

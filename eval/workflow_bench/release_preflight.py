@@ -13,11 +13,13 @@ from .process_control import ManagedProcessError, cancellation_scope
 from .proposer_sandbox import SandboxError, preflight_bubblewrap, require_claude_sandbox_helpers
 from .runner_tasks import resolve_task_bindings, select_tasks
 from .runtime_mounts import trusted_gitnexus_runtime_mounts
+from .release_controls import check_task_controls
 from .sanitized_graph import prepare_sanitized_graph, validate_no_prebuilt_graph_assets
 from .task_assets import TaskAssetCache, stage_task_assets
 
 
-def preflight_release(tasks: list[dict[str, Any]], *, gitnexus_root: Path, claude_bin: Path) -> None:
+def preflight_release(tasks: list[dict[str, Any]], *, gitnexus_root: Path, claude_bin: Path,
+                      grading_controls: bool = False) -> None:
     """Exercise the real snapshot/copy path on the same temp filesystem as the runner.
 
     No provider or session code is involved. Graphs are rebuilt by the paid
@@ -49,6 +51,10 @@ def preflight_release(tasks: list[dict[str, Any]], *, gitnexus_root: Path, claud
                 clone = Path(probe)
                 graph.materialize(clone, sanitized_head=graph.sanitized_head)
                 stage_task_assets(task, repo=repo, clone=clone, snapshot=assets)
+            if grading_controls:
+                check_task_controls(task, repo=repo, sha=sha, parent=Path(directory), assets=assets,
+                                    claude_bin=claude_bin, bwrap_bin=bwrap_bin)
+                print(f"Preflight {task['id']}: negative, reference, and typecheck controls passed", flush=True)
             print(f"Preflight {task['id']}: materialization passed", flush=True)
 
 
@@ -57,6 +63,7 @@ def main() -> None:
     parser.add_argument("--tasks", required=True, type=Path)
     parser.add_argument("--gitnexus-root", required=True, type=Path)
     parser.add_argument("--claude-bin", required=True, type=Path)
+    parser.add_argument("--grading-controls", action="store_true", help="require offline controls for the release corpus")
     args = parser.parse_args()
     try:
         document = yaml.safe_load(args.tasks.read_text())
@@ -64,7 +71,8 @@ def main() -> None:
             raise ValueError("task file must contain a tasks list")
         tasks, _ = select_tasks(document["tasks"], include_expensive=True)
         with cancellation_scope(handle_signals=True):
-            preflight_release(tasks, gitnexus_root=args.gitnexus_root, claude_bin=args.claude_bin)
+            preflight_release(tasks, gitnexus_root=args.gitnexus_root, claude_bin=args.claude_bin,
+                              grading_controls=args.grading_controls)
     except (ManagedProcessError, OSError, SandboxError, RuntimeError, ValueError, yaml.YAMLError) as exc:
         parser.error(str(exc))
 

@@ -34,7 +34,6 @@ export const cobolProvider = defineLanguage({
     extractParameter: () => null,
   },
   exportChecker: () => false,
-  importResolver: () => null,
   rename: cobolRenameProvider,
 
   // Standalone source provider: program regions preserve paragraph fallthrough

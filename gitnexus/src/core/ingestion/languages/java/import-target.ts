@@ -40,7 +40,7 @@
  */
 
 import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 import { getJavaPackageFact } from './package-facts.js';
 import {
   buildJavaPackageIndex,
@@ -90,7 +90,7 @@ export function resolveJavaImportTarget(
   const parsedFiles = ctx.parsedFiles;
   if (parsedFiles === undefined || parsedFiles.length === 0) return null;
 
-  return resolveJavaModule(parsedImport.targetRaw, getJavaPackageIndex(parsedFiles));
+  return resolveJavaModule(parsedImport.targetRaw, getJavaPackageIndex(parsedFiles), ctx.fromFile);
 }
 
 /**

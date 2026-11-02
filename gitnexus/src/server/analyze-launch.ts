@@ -25,6 +25,8 @@ import {
 } from '../storage/storage-resolver.js';
 import { BRANCHES_DIR, branchSlug } from '../storage/branch-index.js';
 import { logger } from '../core/logger.js';
+import { loadAnalyzeConfig } from '../cli/analyze-config.js';
+import type { RouteHookConfig } from '../core/ingestion/language-provider.js';
 import { autoHeapCapMb } from '../core/ingestion/utils/effective-ram.js';
 import { isTerminalJobStatus, type JobManager } from './analyze-job.js';
 import type { WorkerMessage } from './analyze-worker.js';
@@ -197,6 +199,19 @@ const waitForSettledIndex = async (
   }
 };
 
+/**
+ * The route configuration a CLI `analyze` of `repoPath` would use: the
+ * repository's `.gitnexusrc` overlaid by the `GITNEXUS_RC` file. Throws
+ * `GitNexusRcError` on invalid explicit configuration.
+ */
+export function resolveLaunchRouteHookConfig(repoPath: string): RouteHookConfig {
+  const config = loadAnalyzeConfig(repoPath);
+  return {
+    routeFrameworkAliases: config?.routeFrameworkAliases,
+    routeHandlerWrappers: config?.routeHandlerWrappers,
+  };
+}
+
 export function createLaunchAnalysisWorker(deps: LaunchDeps) {
   const { jobManager, backend, acquireRepoLock, releaseRepoLock, closeDbHandle } = deps;
 
@@ -230,6 +245,30 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       lockReleased = true;
       releaseRepoLock(analyzeLockKey);
     };
+
+    // Route aliases / handler wrappers come from `.gitnexusrc` and the
+    // `GITNEXUS_RC` file the CLI reads. The worker bypasses that loader, so
+    // resolve them here: an omitted value would read as "configuration
+    // removed" and rebuild the index without the Routes they produce. An
+    // invalid explicit configuration fails the job and keeps the old index.
+    let routeHookConfig: RouteHookConfig;
+    try {
+      routeHookConfig = resolveLaunchRouteHookConfig(targetPath);
+    } catch (error) {
+      releaseLockOnce();
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn({ repoPath: targetPath, error: message }, 'analyze config rejected');
+      jobManager.updateJob(job.id, { status: 'failed', error: message });
+      return;
+    }
+    logger.debug(
+      {
+        repoPath: targetPath,
+        aliases: routeHookConfig.routeFrameworkAliases?.length ?? 0,
+        wrappers: routeHookConfig.routeHandlerWrappers?.length ?? 0,
+      },
+      'analyze launch: forwarding route configuration to the worker',
+    );
 
     jobManager.updateJob(job.id, { repoPath: targetPath, status: 'analyzing' });
 
@@ -558,6 +597,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           ...(opts.asyncApiSpecPath ? { asyncApiSpecPath: opts.asyncApiSpecPath } : {}),
           ...(opts.registryName ? { registryName: opts.registryName } : {}),
           ...(opts.branch ? { branch: opts.branch } : {}),
+          routeHookConfig,
         },
       });
     };

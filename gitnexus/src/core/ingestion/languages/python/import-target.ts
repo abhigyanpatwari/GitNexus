@@ -11,13 +11,9 @@
  */
 
 import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
-import {
-  getPythonFileIndex,
-  importerAncestors,
-  importerDirOf,
-} from '../../import-resolvers/python-file-index.js';
-import { resolvePythonImportInternal } from '../../import-resolvers/python.js';
+import { perFileSet } from '../../utils/per-file-set.js';
+import { getPythonFileIndex, importerAncestors, importerDirOf } from './import-file-index.js';
+import { resolvePythonImportInternal } from './import-helpers.js';
 
 export interface PythonResolveContext {
   readonly fromFile: string;

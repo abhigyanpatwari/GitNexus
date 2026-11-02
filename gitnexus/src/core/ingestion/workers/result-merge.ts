@@ -35,6 +35,8 @@ export const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult): 
   appendAll(target.fetchCalls, src.fetchCalls);
   appendAll(target.fetchWrapperDefs, src.fetchWrapperDefs);
   if (src.fetchWrapperCalls) appendAll((target.fetchWrapperCalls ??= []), src.fetchWrapperCalls);
+  if (src.fetchWrapperReexports)
+    appendAll((target.fetchWrapperReexports ??= []), src.fetchWrapperReexports);
   for (const file of src.routeFacts ?? [])
     (target.routeFacts ??= []).push({
       ...file,

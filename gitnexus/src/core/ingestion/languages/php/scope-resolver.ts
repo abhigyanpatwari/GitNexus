@@ -46,6 +46,7 @@ import {
   loadPhpComposerConfig,
 } from './import-target.js';
 import { populatePhpNamespaceSiblings, getPhpNamespaceForFile } from './namespace-siblings.js';
+import { resolvePhpQualifiedCallee, resolvePhpQualifiedFreeCall } from './qualified-function.js';
 
 /**
  * PHP MRO builder — extends the generic EXTENDS-only MRO with trait-use
@@ -408,6 +409,16 @@ const phpScopeResolver: ScopeResolver = {
   // function name. Same-namespace and global-namespace candidates pass
   // unchanged.
   isCallableVisibleFromCaller: phpIsCallableVisibleFromCaller,
+
+  // PHP namespaced-function callees (`rp\make()`, `\App\make()`,
+  // `namespace\make()`): expanded through the calling file's namespace and
+  // `use` table to one function by fully qualified name, for both the call's
+  // CALLS edge and its result type (#3498).
+  resolveQualifiedFreeCall: resolvePhpQualifiedFreeCall,
+  resolveQualifiedCallee: (callee, inScope, scopes, _workspace, _files, argumentsText) =>
+    argumentsText === undefined && !callee.endsWith('()')
+      ? undefined
+      : resolvePhpQualifiedCallee(callee, inScope, scopes, argumentsText),
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
 

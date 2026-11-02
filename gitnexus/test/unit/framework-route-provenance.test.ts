@@ -155,6 +155,240 @@ function handler() {} function other() {}`);
     expect(urls(`${setup} r.get('/unsafe', handler);`)).toEqual([]);
   });
 
+  // GitNexus's own server registers through helpers that receive the app and,
+  // for SSE progress, the path (#3487): one call-site hop, never two.
+  it('forwards a proven receiver and literal path through one helper call', () => {
+    const result = resolve({
+      'sse.ts': `
+      import type express from 'express';
+      export const mountSSEProgress = (app: express.Express, routePath: string, jm: unknown) => {
+        app.get(routePath, (req, res) => {});
+      };`,
+      'mcp.ts': `
+      export async function mountMCPEndpoints(app, backend) {
+        app.all('/api/mcp', handler);
+        app.use('/api/mcp', auth);
+        return () => {};
+      }`,
+      'server.ts': `
+      import express from 'express';
+      import { mountSSEProgress } from './sse';
+      import { mountMCPEndpoints } from './mcp';
+      export const registerWebUI = (app: express.Express, dir: string | null): void => {
+        app.get('/', handler);
+      };
+      const app = express();
+      const cleanup = await mountMCPEndpoints(app, backend);
+      mountSSEProgress(app, '/api/analyze/:jobId/progress', jobs);
+      mountSSEProgress(app, '/api/embed/:jobId/progress', jobs);
+      registerWebUI(app, null);`,
+    });
+    expect(
+      result.registrations
+        .map(({ route }) => `${route.httpMethod} ${route.routePath} ${route.filePath}`)
+        .sort(),
+    ).toEqual([
+      '* /api/mcp mcp.ts',
+      'GET / server.ts',
+      'GET /api/analyze/:jobId/progress sse.ts',
+      'GET /api/embed/:jobId/progress sse.ts',
+    ]);
+  });
+
+  it('follows a helper exported under another name', () => {
+    const result = resolve({
+      'routes.ts': `function mountRoutes(app) { app.get('/api/renamed', handler); }
+      export { mountRoutes as setup };`,
+      'server.ts': `import express from 'express';
+      import { setup } from './routes';
+      setup(express());`,
+    });
+    expect(
+      result.registrations.map(
+        ({ route }) => `${route.httpMethod} ${route.routePath} ${route.filePath}`,
+      ),
+    ).toEqual(['GET /api/renamed routes.ts']);
+  });
+
+  it('follows a helper called through an aliased import', () => {
+    const result = resolve({
+      'sse.ts': `export const mountSSEProgress = (app, routePath) => { app.get(routePath, handler); };`,
+      'server.ts': `import express from 'express';
+      import { mountSSEProgress as mountProgress } from './sse';
+      const app = express();
+      mountProgress(app, '/api/progress');`,
+    });
+    expect(
+      result.registrations.map(
+        ({ route }) => `${route.httpMethod} ${route.routePath} ${route.filePath}`,
+      ),
+    ).toEqual(['GET /api/progress sse.ts']);
+  });
+
+  it('declines forwarding through two hops, unproven arguments, and reassigned parameters', () => {
+    expect(
+      urls(`
+      import express from 'express';
+      function inner(app) { app.get('/two-hop', handler); }
+      function outer(app) { inner(app); }
+      outer(express());
+      function unproven(app) { app.get('/unproven', handler); }
+      unproven(storage);
+      function reassigned(app) { app = storage; app.get('/reassigned', handler); }
+      reassigned(express());
+      function runtime(app, path) { app.get(path, handler); }
+      runtime(express(), runtimePath);
+      function direct(app, path) { app.post(path, handler); }
+      direct(express(), '/direct');
+    `),
+    ).toEqual(['POST /direct']);
+  });
+
+  it('invalidates a module binding written by a constructor assignment in a closure', () => {
+    expect(
+      urls(`import express from 'express';
+      let app = express(); function replace() { app = new Map(); }
+      app.get('/let-closure', handler);`),
+    ).toEqual([]);
+  });
+
+  it.each([
+    ['a default expression', '[target = app] = values;', ['GET /retained']],
+    ['a computed key', '({ [app]: target } = values);', ['GET /retained']],
+    ['a destructured property write', '({ get: app.get } = values);', []],
+  ])('invalidates only assignment targets in %s', (_shape, write, expected) => {
+    expect(
+      urls(`import express from 'express'; const app = express(); let target;
+      ${write} app.get('/retained', handler);`),
+    ).toEqual(expected);
+  });
+
+  it.each([
+    ['parenthesized', '(app) = new Map();'],
+    ['asserted', '(app as unknown) = new Map();'],
+    ['angle-bracket asserted', '(<any>app) = new Map();'],
+    ['non-null asserted', 'app! = new Map();'],
+  ])('invalidates a wrapped assignment target: %s', (_shape, write) => {
+    expect(
+      urls(`import express from 'express'; let app = express();
+      ${write} app.get('/not-http', handler);`),
+    ).toEqual([]);
+  });
+
+  it.each([
+    ['initialized var', 'app', 'var app = storage;', []],
+    ['initialized var with another default', 'app, other = 1', 'var app = storage;', []],
+    ['uninitialized var', 'app', 'var app;', ['GET /forwarded']],
+    [
+      'nested parameter write',
+      'app',
+      'function inner(app) { app = new Map(); }',
+      ['GET /forwarded'],
+    ],
+    // A parameter expression gives the body its own variable environment, which
+    // the scope model collapses, so inference declines a parameter that a body
+    // `var` redeclares (the documented boundary); runtime would keep its value.
+    ['nested destructuring default', 'app, { value = 1 }', 'var app;', []],
+    ['computed pattern key', 'app, { [key]: value }', 'var app;', []],
+    ['rest parameter alone', 'app, ...rest', 'var app;', ['GET /forwarded']],
+    ['loop var over the parameter', 'app', 'for (var app of values) {}', []],
+    ['body function overwrites parameter', 'app', 'function app() {}', []],
+    ['body function with default', 'app, other = 1', 'function app() {}', []],
+    [
+      'nested body declaration',
+      'app, other = 1',
+      'function inner() { var app = storage; }',
+      ['GET /forwarded'],
+    ],
+  ])('uses binding identity for helper forwarding: %s', (_shape, parameters, body, expected) => {
+    expect(
+      urls(`import express from 'express';
+      function mount(${parameters}) { ${body} app.get('/forwarded', handler); }
+      mount(express());`),
+    ).toEqual(expected);
+  });
+
+  it.each([
+    {
+      shape: 'a literal mount path forwarded to a helper',
+      calls: `function mountApi(prefix) { app.use(prefix, router); }
+      mountApi('/api');`,
+      routes: ['GET /api/users'],
+    },
+    {
+      shape: 'a runtime mount path forwarded to a helper',
+      calls: `function mountApi(prefix) { app.use(prefix, router); }
+      mountApi(process.env.API_PREFIX);`,
+      routes: [],
+    },
+    {
+      shape: 'a helper whose mount path no call proves',
+      calls: 'function mountApi(prefix) { app.use(prefix, router); }',
+      routes: [],
+    },
+    {
+      shape: 'a router forwarded as the mounted child',
+      calls: `function mountApi(target, child) { target.use('/api', child); }
+      mountApi(app, router);`,
+      routes: ['GET /api/users'],
+    },
+    {
+      shape: 'a TypeScript this parameter',
+      calls: `function wire(this: void, target, prefix) { target.use(prefix, router); }
+      wire(app, '/v1');`,
+      routes: ['GET /v1/users'],
+    },
+    {
+      shape: 'an argument after a spread',
+      calls: `function wire(target, prefix) { target.use(prefix, router); }
+      wire(...targets, '/spread');`,
+      // Unproven receiver: the router keeps its standalone paths, as without
+      // any helper, rather than borrowing '/spread' from the wrong position.
+      routes: ['GET /users'],
+    },
+    {
+      shape: 'a parameter reassigned in a nested closure',
+      calls: `function wire(target) { const swap = () => { target = other; }; swap(); target.use('/api', router); }
+      wire(app);`,
+      routes: ['GET /users'],
+    },
+    {
+      shape: 'a helper forwarding only its mounted child',
+      calls: `function mountChild(child) { app.use('/api', child); }
+      mountChild(router);`,
+      routes: ['GET /api/users'],
+    },
+    {
+      shape: 'a parameter reassigned by destructuring',
+      calls: `function wire(target) { [target] = [other]; target.use('/api', router); }
+      wire(app);`,
+      routes: ['GET /users'],
+    },
+    {
+      shape: 'a write to a same-named local in a nested block',
+      calls: `function wire(target) { { let target; target = other; } target.use('/api', router); }
+      wire(app);`,
+      routes: ['GET /api/users'],
+    },
+    {
+      shape: 'a property write on another function',
+      calls: `function Button() {} Button.displayName = 'Button';
+      function mountApi(prefix) { app.use(prefix, router); }
+      mountApi('/api');`,
+      routes: ['GET /api/users'],
+    },
+  ])('composes mounts through helper parameters: $shape', ({ calls, routes }) => {
+    const result = resolve({
+      'server.ts': `import express from 'express';
+      const app = express(); const router = express.Router();
+      router.get('/users', handler);
+      ${calls}`,
+    });
+    expect(
+      composeFrameworkRoutePaths(result).map((route) => `${route.httpMethod} ${route.routePath}`),
+    ).toEqual(routes);
+  });
+
   it('does not lend later allocations to calls in a temporal dead zone', () => {
     expect(
       urls(`

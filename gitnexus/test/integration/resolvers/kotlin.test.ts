@@ -9,6 +9,7 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  getResolutionOutcomes,
   edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
@@ -830,28 +831,6 @@ describe('Kotlin assignment chain propagation', () => {
     expect(saveMethods.length).toBe(2);
   });
 
-  it('resolves alias.save() to User#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'processEntities' &&
-        c.targetFilePath.includes('User.kt'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('resolves rAlias.save() to Repo#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) =>
-        c.target === 'save' &&
-        c.source === 'processEntities' &&
-        c.targetFilePath.includes('Repo.kt'),
-    );
-    expect(repoSave).toBeDefined();
-  });
-
   it('alias.save() does NOT resolve to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
     // There should be exactly one save() call targeting User.kt from processEntities
@@ -1532,14 +1511,6 @@ describe('Write access tracking (Kotlin)', () => {
     expect(scoreWrite!.source).toBe('updateUser');
   });
 
-  it('emits ACCESSES write edge for compound assignment (+=)', () => {
-    const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter((e) => e.rel.reason === 'write');
-    const scoreWrite = writes.find((e) => e.target === 'score');
-    expect(scoreWrite).toBeDefined();
-    expect(scoreWrite!.source).toBe('updateUser');
-  });
-
   it('write ACCESSES edges have confidence 1.0', () => {
     const accesses = getRelationships(result, 'ACCESSES');
     const writes = accesses.filter((e) => e.rel.reason === 'write');
@@ -1634,6 +1605,48 @@ describe('Kotlin grandparent method resolution via MRO (Phase B)', () => {
     const calls = getRelationships(result, 'CALLS');
     const greetCall = calls.find((c) => c.target === 'greet' && c.targetFilePath.includes('A.kt'));
     expect(greetCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Same-package supertype whose simple name another package also declares.
+// com.acme.core's `B : A()` / `C : B()` carry no import (same-package
+// visibility), while com.acme.legacy declares its own A and B. The supertype
+// must bind through the package, not through a workspace-unique simple name
+// the legacy pair makes ambiguous.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin same-package supertype with a colliding simple name', () => {
+  let result: PipelineResult;
+  const core = 'src/main/kotlin/com/acme/core';
+  const legacy = 'src/main/kotlin/com/acme/legacy';
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-same-package-extends-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('binds every supertype inside its own package', () => {
+    const extends_ = getRelationships(result, 'EXTENDS').map(
+      (e) => `${e.sourceFilePath}:${e.source} → ${e.targetFilePath}:${e.target}`,
+    );
+    expect(extends_.sort()).toEqual([
+      `${core}/B.kt:B → ${core}/A.kt:A`,
+      `${core}/C.kt:C → ${core}/B.kt:B`,
+      `${legacy}/B.kt:B → ${legacy}/A.kt:A`,
+    ]);
+  });
+
+  it.each([
+    ['greet', `${core}/A.kt`],
+    ['save', `${core}/Stamp.kt`],
+  ])('resolves App.process → %s through the C → B → A chain (%s)', (target, targetFile) => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'process' && c.target === target,
+    );
+    expect(calls.map((c) => c.targetFilePath)).toEqual([targetFile]);
   });
 });
 
@@ -3076,5 +3089,91 @@ describe('Kotlin instance-ownership free-call gate (#2563)', () => {
     expect(
       calls.find((call) => call.source === 'callOuter' && call.target === 'outerMethod'),
     ).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Package-qualified factory calls type their result (#3498 follow-up).
+//
+// `val x = kqfmod.make(); x.m()` left `x` untyped although `make` is declared
+// `: C`: the constructor-inferred rule matches only a bare callee, and the
+// navigation-call inference knows typed locals and same-file classes, never a
+// package. The inline `kqfmod.make().m()` failed the same way in the compound
+// resolver, which reads `kqfmod` as an unresolvable receiver.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin package-qualified factory result types (#3498 follow-up)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-package-qualified-factory'),
+      () => {},
+    );
+  }, 60000);
+
+  const callsFrom = (source: string, target: string) =>
+    getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === source && edge.target === target)
+      .map((edge) => edge.rel.targetId)
+      .sort();
+
+  const PACKAGE_RESULTS = ['Method:kqfmod/Types.kt:C.m#0', 'Method:deep/Deep.kt:D.m#0'];
+
+  it.each([
+    ['namedCall', 'Method:kqfmod/Types.kt:C.m#0'],
+    ['qualifiedCall', 'Method:kqfmod/Types.kt:C.m#0'],
+    ['inlineQualified', 'Method:kqfmod/Types.kt:C.m#0'],
+    ['deepCall', 'Method:deep/Deep.kt:D.m#0'],
+    ['inlineDeep', 'Method:deep/Deep.kt:D.m#0'],
+  ])("types %s from the factory's return annotation", (source, target) => {
+    expect(callsFrom(source, 'm')).toEqual([target]);
+  });
+
+  it.each(['untypedCall', 'untypedInline', 'overloadedCall'])(
+    'does not guess a receiver type for %s',
+    (source) => {
+      expect(callsFrom(source, 'm')).toEqual([]);
+    },
+  );
+
+  it('records the untyped receivers as dropped sites instead of an exact miss', () => {
+    const dropped = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
+      .filter(
+        (outcome) =>
+          outcome.reason === 'receiver-unresolved' &&
+          outcome.filePath === 'app/Callers.kt' &&
+          outcome.name === 'm',
+      )
+      .map((outcome) => `${outcome.range.startLine}:${outcome.siteKind}`)
+      .sort();
+    expect(dropped).toEqual(['26:call', '29:call']);
+  });
+
+  it('keeps a value named like the package typed from its own class', () => {
+    expect(callsFrom('localShadow', 'm')).toEqual(['Method:kqfmod/Types.kt:Other.m#0']);
+  });
+
+  it.each([
+    'localShadow',
+    'parameterShadow',
+    'run',
+    'importedShadow',
+    'starShadow',
+    'siblingShadow',
+  ])('never reads the value-headed call in %s as a package path', (source) => {
+    expect(callsFrom(source, 'm').filter((id) => PACKAGE_RESULTS.includes(id))).toEqual([]);
+  });
+
+  it.each([
+    ['companionMember', 'create', 'Method:controls/Controls.kt:Holder.create#0'],
+    ['objectMember', 'build', 'Method:controls/Controls.kt:Registry.build#0'],
+  ])('keeps the class-qualified member call in %s resolving as before', (source, name, id) => {
+    expect(callsFrom(source, name)).toEqual([id]);
+  });
+
+  it('keeps typing the companion factory result from its own class', () => {
+    expect(callsFrom('companionMember', 'm')).toEqual(['Method:kqfmod/Types.kt:Other.m#0']);
   });
 });

@@ -25,7 +25,11 @@ import {
   clearKotlinClassAnnotationFacts,
 } from './capture-side-channel.js';
 import { isKotlinStaticOnly } from './owners.js';
-import { populateKotlinPackageSiblings } from './package-siblings.js';
+import {
+  resolveKotlinQualifiedCallee,
+  kotlinQualifiedTypeLookupSpelling,
+} from './qualified-callee.js';
+import { populateKotlinPackageSiblings, resolveKotlinSamePackageBase } from './package-siblings.js';
 import { attachKotlinSpringBeanCandidateMetadata } from './spring-bean-metadata.js';
 import { attachKotlinSpringAopMetadata } from './spring-aop.js';
 import { clearKotlinPackageFacts } from './package-facts.js';
@@ -145,6 +149,11 @@ export const kotlinScopeResolver: ScopeResolver = {
 
   isStaticOnly: isKotlinStaticOnly,
 
+  // `val x = com.acme.mod.make()` / `kqfmod.make().m()`: a package path names a
+  // top-level function, read from the declared package facts (#3498 follow-up).
+  resolveQualifiedCallee: resolveKotlinQualifiedCallee,
+  qualifiedTypeLookupSpelling: kotlinQualifiedTypeLookupSpelling,
+
   fieldFallbackOnMethodLookup: false,
   propagatesReturnTypesAcrossImports: true,
   collapseMemberCallsByCallerTarget: false,
@@ -152,6 +161,7 @@ export const kotlinScopeResolver: ScopeResolver = {
   freeCallsRequireInstanceOwnership: true,
   postExtractSourceTextPolicy: 'uncached-files',
   populateNamespaceSiblings: populateKotlinPackageSiblings,
+  resolveImplicitInheritanceBase: resolveKotlinSamePackageBase,
   emitPostResolutionEdges: (graph, parsedFiles, nodeLookup, indexes) => {
     attachKotlinSpringBeanCandidateMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachKotlinSpringAopMetadata(graph, parsedFiles, nodeLookup, indexes);

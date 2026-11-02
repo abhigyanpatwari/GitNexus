@@ -90,7 +90,12 @@ export function interpretDartTypeBinding(captures: CaptureMatch): ParsedTypeBind
   const typeCap = captures['@type-binding.type'];
   if (nameCap === undefined || typeCap === undefined) return null;
 
-  const rawType = normalizeDartType(typeCap.text);
+  // A call-derived `prefix.member` names a namespace function or a member
+  // call, not a library-prefixed type, so it keeps its prefix (#3498).
+  const rawType =
+    captures['@type-binding.constructor'] !== undefined && typeCap.text.includes('.')
+      ? typeCap.text
+      : normalizeDartType(typeCap.text);
   if (
     rawType === '' ||
     rawType === 'void' ||

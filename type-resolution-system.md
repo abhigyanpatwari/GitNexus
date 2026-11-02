@@ -1,492 +1,273 @@
 # Type Resolution System
 
-GitNexus's type resolution system maps variables to likely declared types across the supported languages so the ingestion pipeline can perform **receiver-constrained call resolution**.
+Type handling is active at two stages: providers extract type facts while parsing,
+and the scope-resolution pipeline uses those facts to resolve references. The
+`SemanticModel` supplies the declaration registries both stages use.
 
-When the code contains a call such as `user.save()`, the resolver tries to determine that `user` is a `User`, allowing call resolution to prefer `User#save` over unrelated methods such as `Repo#save`.
-
-This system is designed to be:
-
-- **Conservative** — it prefers missing a binding over introducing a misleading one
-- **Walk + fixpoint** — bindings are collected during a single AST walk, then a unified fixpoint loop iterates over pending assignments (copy, callResult, fieldAccess, methodCallResult) until no new bindings are produced
-- **Scope-aware** — function-local bindings are isolated from file-level bindings
-- **Per-file with cross-file seeding** — the environment is built for one file at a time, but Phase 14 seeds upstream bindings (imported types, return types) into the file scope before the fixpoint for all 13 languages
-
-It is **not** a full compiler type checker. Its job is to recover enough type information to improve call-edge accuracy during ingestion.
-
----
+This document describes the source merged at
+[`bbbc1b49e`](https://github.com/abhigyanpatwari/GitNexus/commit/bbbc1b49e3427c467b8ac83a112f7793109e279b),
+reviewed on 2026-10-23. The [roadmap](type-resolution-roadmap.md) describes planned
+work and acceptance criteria.
 
 ## Purpose in the Pipeline
 
-Type resolution sits between parsing and call resolution.
+For `svc.getUser().save()`, the analyzer needs to identify the visible `svc`, its
+`getUser` declaration, the declared return type, and the `save` member owned by
+that type. A same-named method elsewhere is insufficient evidence.
 
 ```text
-parse-worker.ts
-     │
-     ▼
-buildTypeEnv(tree, language, symbolTable?)
-     │
-     ├──► TypeEnvironment.lookup(varName, callNode)
-     │         │
-     │         ▼
-     │    call-processor.ts
-     │    - resolves receiver type for method calls
-     │    - filters candidates by receiver match
-     │    - verifies deferred constructor / initializer bindings
-     │
-     └──► discarded after file processing
+LanguageProvider + parse workers
+    ├── declarations ───────────────► SemanticModel registries
+    ├── scopes / imports / types ───► ParsedFile
+    └── TypeEnv ───────────────────► extraction hints / exported-type metadata
+
+ParsedFile + SemanticModel + per-language ScopeResolver hooks
+    │
+    ▼
+runScopeResolution
+    finalize imports/scopes → propagate types → resolve references → emit edges
+    │
+    ▼
+KnowledgeGraph → persisted index → impact / context / MCP / HTTP
 ```
 
-The `TypeEnvironment` is built once per file. `call-processor.ts` then uses `lookup()` to determine receiver types and narrow candidate symbols from the `SymbolTable`.
-
-> **Note (RFC #909 Ring 3):** `call-processor.ts` is the legacy call-resolution path. Languages in `MIGRATED_LANGUAGES` (see `gitnexus/src/core/ingestion/registry-primary-flag.ts`) route through the scope-resolution pipeline instead — see `ARCHITECTURE.md § Scope-Resolution Pipeline`. TypeEnv is still built for migrated languages in the parse worker, but receiver typing flows through `ParsedTypeBinding` + `ScopeResolutionIndexes` rather than `call-processor.ts`.
-
----
+The old call-resolution DAG and `MIGRATED_LANGUAGES` switch were removed in
+RING4-1 #942. Ordinary source-language call and member resolution uses the
+registered scope resolvers. COBOL has an explicit exception: its resolver uses
+`scopeResolutionEdgeMode: 'callable-flow-only'`; structural CALLS/IMPORTS remain
+with the COBOL processor.
 
 ## Architecture
 
-```text
-                                 ┌──────────────────────┐
-                                 │     type-env.ts      │
-                                 │                      │
-                                 │  buildTypeEnv()      │
-                                 │  - Single AST walk   │
-                                 │  - Scope tracking    │
-                                 │  - Tier orchestration│
-                                 └──────────┬───────────┘
-                                            │ dispatches to
-                    ┌───────────────────────┬┴┬────────────────────────┐
-                    │                       │ │                        │
-          ┌─────────▼──────────┐  ┌─────────▼─▼─────────┐  ┌──────────▼─────────┐
-          │   shared.ts        │  │  <language>.ts      │  │    types.ts        │
-          │                    │  │                      │  │                    │
-          │  Container table   │  │  Per-language        │  │  Extractor         │
-          │  Type helpers      │  │  extractors          │  │  interface defs    │
-          │  Generic helpers   │  │  (shared + per-lang) │  │                    │
-          └────────────────────┘  └──────────────────────┘  └────────────────────┘
-```
+| Component                | Active responsibility                                                      | Implementation                                                                                     |
+| ------------------------ | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `LanguageProvider`       | Parsing rules, capture emission, type extraction and language syntax       | [language-provider.ts](gitnexus/src/core/ingestion/language-provider.ts), `languages/<language>/`  |
+| `TypeEnvironment`        | Temporary per-file type hints used during extraction                       | [type-env.ts](gitnexus/src/core/ingestion/type-env.ts), `type-extractors/`                         |
+| `ParsedFile`             | Per-file declarations, scopes, imports, type bindings and reference sites  | [parsed-file.ts](gitnexus-shared/src/scope-resolution/parsed-file.ts)                              |
+| `SemanticModel`          | Authoritative symbol, type, method and field registries                    | [semantic-model.ts](gitnexus/src/core/ingestion/model/semantic-model.ts)                           |
+| Scope-resolution indexes | Finalized scope/import bindings, definition indexes and method dispatch    | [finalize-orchestrator.ts](gitnexus/src/core/ingestion/finalize-orchestrator.ts)                   |
+| `ScopeResolver`          | Language rules used during reference resolution and edge emission          | [scope-resolver.ts](gitnexus/src/core/ingestion/scope-resolution/contract/scope-resolver.ts)       |
+| Shared resolution passes | Receiver typing, return propagation, overload selection and graph emission | [run.ts](gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts), `scope-resolution/passes/` |
+
+`LanguageProvider` and `ScopeResolver` have different lifecycles: one runs while
+extracting a file; the other participates in workspace resolution. Keep shared
+algorithms language agnostic and provide language behavior through hooks.
 
 ### Main files
 
-| File | Purpose |
-|------|---------|
-| `type-env.ts` | Core engine. Walks the AST once, tracks scopes, collects bindings, and exposes `buildTypeEnv()` plus the `TypeEnvironment` interface. |
-| `types.ts` | TypeScript interfaces for extractor hooks such as `TypeBindingExtractor`, `ForLoopExtractor`, and `PatternBindingExtractor`. |
-| `shared.ts` | Language-agnostic helpers such as `extractSimpleTypeName`, `extractElementTypeFromString`, `resolveIterableElementType`, `CONTAINER_DESCRIPTORS`, and `TYPED_PARAMETER_TYPES`. |
-| `index.ts` | Dispatch map from `SupportedLanguages` to `LanguageTypeConfig`. |
-| `typescript.ts` | TypeScript and JavaScript extractors, including JSDoc support. |
-| `jvm.ts` | Java and Kotlin extractors. |
-| `csharp.ts` | C# extractors. |
-| `go.ts` | Go extractors, including range semantics. |
-| `rust.ts` | Rust extractors, including `if let`, match-related handling, and `Self` resolution. |
-| `python.ts` | Python extractors, including `match` / `case` handling. |
-| `php.ts` | PHP extractors, including PHPDoc support. |
-| `ruby.ts` | Ruby extractors, including YARD support. |
-| `swift.ts` | Swift extractors. Currently the most minimal configuration. |
-| `c-cpp.ts` | Shared C / C++ extractors. |
+- [parse-worker.ts](gitnexus/src/core/ingestion/workers/parse-worker.ts) builds
+  `TypeEnv`, extracts symbols and serializes per-file facts.
+- [scope-extractor.ts](gitnexus/src/core/ingestion/scope-extractor.ts) builds scope
+  and type-binding facts from provider captures.
+- [phase.ts](gitnexus/src/core/ingestion/scope-resolution/pipeline/phase.ts)
+  iterates [SCOPE_RESOLVERS](gitnexus/src/core/ingestion/scope-resolution/pipeline/registry.ts).
+- [run.ts](gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts) finalizes,
+  resolves and emits using the model and provider hooks.
+- [lookup-core.ts](gitnexus-shared/src/scope-resolution/registries/lookup-core.ts)
+  implements shared registry lookup, including receiver-owner lookup.
 
----
+The `crossFile` phase is now an accumulator-disposal boundary. It does not run
+`runCrossFileBindingPropagation` or re-parse files for legacy call resolution.
+Cross-file resolution happens through finalized imports and scope-resolution
+passes such as `propagateImportedReturnTypes`.
 
 ## Supported Languages
 
-The current type-resolution layer supports **13 languages**:
+Use [SCOPE_RESOLVERS](gitnexus/src/core/ingestion/scope-resolution/pipeline/registry.ts)
+as the registration inventory. Registration means the resolver runs; it does not
+prove that every type, receiver shape or dispatch feature is supported.
 
-- TypeScript
-- JavaScript
-- Python
-- Java
-- Kotlin
-- C#
-- Go
-- Rust
-- PHP
-- Ruby
-- Swift
-- C
-- C++
-
-Not all languages have the same level of coverage. Swift remains the most minimal. C and some C++ cases naturally benefit less from receiver typing than object-oriented languages.
-
----
+The receiver benchmark has its own language and shape inventory. Read its
+[baseline](gitnexus/bench/receiver-resolution/baseline.json) for measured cases,
+including deliberate untyped controls, unsupported shapes and N/A entries.
+Optional grammar availability must be recorded separately from resolver results.
 
 ## Design Constraints
 
-The type resolution layer is intentionally narrower than a compiler-grade type system.
-
-It does:
-
-- resolve variable types from declarations, parameters, initializers, loops, and selected pattern constructs
-- normalize common wrappers such as nullable types and generic containers
-- improve receiver matching during call resolution
-- verify some ambiguous initializer bindings against the `SymbolTable`
-
-It does not:
-
-- perform full semantic type checking
-- guarantee resolution for every ambiguous construct
-
-It now does (Phase 14):
-
-- run a unified fixpoint loop per file for copy/callResult/fieldAccess/methodCallResult chains
-- propagate inferred bindings across files for all 13 supported languages:
-  - **Named import extraction** (TS/JS/Python/Kotlin/Rust/PHP/Java/C#): per-symbol bindings extracted from import AST nodes
-  - **Wildcard import synthesis** (Go/Ruby/C/C++/Swift): namedImportMap entries synthesized from graph-exported symbols via `synthesizeWildcardImportBindings()`, enabling cross-file propagation for whole-module-import languages
-- seed imported bindings into file scope after walk, before fixpoint (local declarations always win)
-
----
+- Prefer an unresolved reference over an edge to an unrelated declaration.
+- Honor lexical shadowing, imports, declaration ownership and package visibility.
+- Keep language syntax in providers and shared resolution algorithms generic.
+- Bound propagation and chain walks; do not describe them as compiler-grade inference.
+- Record unresolved receiver outcomes so impact results can expose lower bounds.
+- Distinguish a supported fixture from general language-feature completeness.
 
 ## TypeEnvironment Model
 
-`buildTypeEnv()` returns a `TypeEnvironment` that contains:
+`buildTypeEnv()` creates a temporary environment for one parsed file. Its provider's
+`typeConfig` supplies declaration, parameter, initializer, loop and pattern hooks.
+The helper also has bounded assignment propagation and optional model/import
+lookup inputs.
 
-- scoped bindings collected from the current file
-- deferred constructor / initializer binding candidates
-- lookup helpers used by call resolution
-- pattern override data for branch-local narrowing where supported
+The production parse worker does **not** supply those optional global model or
+import-binding inputs. It supplies file/name hooks and an empty `parentMap`.
+Consequently, the helper's optional APIs and unit tests are not evidence that the
+worker performs workspace-wide inference.
 
 ### Scope model
 
-The environment is scope-aware so identical variable names in different functions do not collide.
+The local environment separates file-scope and function-scope entries. Lookup can
+also consult position-specific pattern overrides and resolve special receivers
+through AST context. This local environment is distinct from the finalized
+`Scope.typeBindings` used by workspace resolution.
 
-```text
-File scope ('')
-├── config → Config
-├── users → Map
-│
-├── processUsers@100
-│   ├── user → User
-│   └── alias → User
-│
-└── processRepos@200
-    └── repo → Repo
-```
+Correct capture ownership still matters. For example, the receiver baseline
+records a Ruby YARD parameter-binding leak between sibling functions; separate
+local maps in `TypeEnv` do not prove that a provider's scope captures are isolated.
 
 ### Scope keys
 
-- `''` for file scope
-- `functionName@startIndex` for function-local scope
+Function-local TypeEnv keys include function identity and source position;
+file-level entries use the empty-string scope. Treat these as helper data, not as
+interchangeable with `ScopeId`s in the scope-resolution indexes.
 
-These scope keys are also used later when verifying deferred bindings in call processing, so any future change to scope-key format must stay consistent across both layers.
-
----
+Only file-scope TypeEnv bindings cross the worker boundary into
+[BindingAccumulator](gitnexus/src/core/ingestion/binding-accumulator.ts). They
+support exported-type metadata enrichment. Function-local TypeEnv maps are not
+serialized as a second workspace resolver.
 
 ## Lookup Semantics
 
-`TypeEnvironment.lookup()` resolves types in this effective order:
+TypeEnv lookup supplies extraction-time hints. Authoritative reference resolution
+uses the lexical scope chain, finalized imports, `Scope.typeBindings`, member
+ownership and method dispatch. The semantic model provides declarations; the
+scope indexes provide visibility and binding context.
 
-1. special receivers
-   - `this`, `self`, `$this` → enclosing class
-   - `super`, `base`, `parent` → parent class
-2. position-indexed pattern overrides
-3. function-local scope
-4. file-level scope
+The model registries are populated during parsing. `reconcileOwnership` repairs
+provider ownership before the orchestrator narrows the model to its read-only
+interface. Scope type bindings may still be refined by ordered propagation and
+call-result passes; read-only registry access does not freeze all binding maps.
 
-Special receivers are handled as a dedicated fast path rather than ordinary lexical bindings.
-
----
+`finalizeScopeModel` returns an index bundle used directly by the orchestrator.
+The model also exposes optional `scopes` / `attachScopeIndexes` APIs, but no
+production attachment call is present in the reviewed source. Do not depend on
+`model.scopes` being populated merely because the API exists.
 
 ## Resolution Tiers
 
-Bindings are collected during the same AST walk. Higher-confidence sources win over weaker inference.
+Tier 0/1/2 names describe the TypeEnv helper and historical delivery phases. They
+are not separate current pipeline phases or a second call-resolution engine.
 
 ### Tier 0: Explicit Type Annotations
 
-Direct extraction from AST type nodes.
-
-```typescript
-// TypeScript
-const user: User = getUser()
-
-// Java
-User user = getUser()
-
-// Go
-var user User
-
-// Rust
-let user: User = get_user()
-
-// Python
-user: User = get_user()
-```
-
-`extractDeclaration()` reads the declaration type node and normalizes it through `extractSimpleTypeName()`.
-
-Parameters are handled separately by `extractParameter()` using the same normalization logic. The shared `TYPED_PARAMETER_TYPES` set controls which AST node types are treated as typed parameters.
+Provider hooks read declaration and parameter annotations. Scope capture hooks
+also emit type-binding facts for workspace resolution. Preserve qualified names
+and declaration context when a simple name would lose import or ownership proof.
 
 ### Tier 0b: For-Loop Element Type Resolution
 
-Also referred to as **Tier 1c** in Phase 6 PR and test naming.
-
-For-each style loops often introduce a variable with no explicit type. In those cases, the resolver derives the loop variable type from the iterable's container type.
-
-```csharp
-foreach (var user in users) { user.Save(); }
-
-// TypeScript
-for (const user of users) { user.save(); }
-
-// Rust
-for user in users { user.save(); }
-```
-
-This is handled by `resolveIterableElementType()` through a three-step cascade:
-
-1. **Declaration type nodes**  
-   Uses raw type annotation nodes when available, including cases such as `User[]` or `List[User]`.
-
-2. **Scope environment string**  
-   Uses `extractElementTypeFromString()` to parse a stored type string.
-
-3. **AST walk fallback**  
-   Walks upward to enclosing declarations or parameters when needed.
+The extraction helper can derive loop-variable hints from container annotations
+and provider-specific iterable rules. Workspace subscript/accessor resolution is
+separate: `ScopeResolver.elementTypeOf` supplies element types while folding a
+receiver chain. Loop support does not establish support for `repos[0].save()`.
 
 ### Tier 0c: Pattern Binding
 
-Pattern-matching constructs may introduce a new variable or temporarily narrow an existing one.
-
-```csharp
-if (obj is User user) { user.Save(); }
-
-// Java
-if (obj instanceof User user) { user.save(); }
-
-// Rust
-if let Some(user) = opt { user.save(); }
-
-// Python
-match obj:
-    case User() as user:
-        user.save()
-```
-
-Binding behavior depends on the language:
-
-- **first-writer-wins** is used by default
-- **position-indexed branch overrides** are used where branch-local narrowing must not leak between branches, most notably Kotlin
+Providers may extract pattern variables or position-specific narrowing facts.
+Support is construct-specific. Optional bindings, branch narrowing and general
+union or pattern analysis must not share a blanket supported/unsupported label.
 
 ### Tier 1: Initializer / Constructor Inference
 
-When there is no explicit annotation, the resolver can infer a type from the initializer.
-
-```typescript
-const user = new User()
-
-// C#
-var user = new User()
-
-// Kotlin
-val user = User()
-
-// Go
-user := User{}
-ptr := &User{}
-user2 := new(User)
-
-// Ruby
-user = User.new
-```
-
-Some languages can identify constructor-like syntax directly. Others need validation through the `SymbolTable`, because syntax alone cannot always distinguish `User()` from `getUser()`.
-
-In those cases the system records an unverified binding candidate and later validates it against known class / struct symbols.
+Providers identify initializer shapes and constructor candidates. A call-looking
+expression is not sufficient proof that its callee is a class. Workspace lookup
+must retain import, type-kind and ownership evidence.
 
 ### Tier 2: Assignment Chain Propagation
 
-Bindings can propagate through simple identifier assignments.
-
-```typescript
-const user: User = getUser()
-const alias = user
-const other = alias
-```
-
-This is handled after the main walk through a unified fixpoint loop over all pending assignments (copy, callResult, fieldAccess, methodCallResult). The loop iterates until no new bindings are produced (max 10 iterations), enabling arbitrary-depth mixed chains and reverse-order resolution:
-
-```typescript
-const b = a              // iteration 2: b → User (a now resolved)
-const a: User = getUser()  // iteration 1: a → User
-```
-
-Both `a` and `b` resolve correctly. The fixpoint also handles chains mixing field access and method calls:
-
-```typescript
-const user = getUser()       // callResult → User
-const addr = user.address    // fieldAccess → Address
-const city = addr.getCity()  // methodCallResult → City
-```
-
----
+TypeEnv retains a bounded pending-assignment fixpoint. The current scope pipeline
+also follows type references, propagates imported return types and applies precise
+call-result bindings from resolved callees. Document the path being changed;
+helper-level inference does not imply whole-program propagation.
 
 ## Container Type Descriptors
 
-`CONTAINER_DESCRIPTORS` defines the type-parameter semantics for common containers.
-
-That allows the resolver to distinguish key-yielding methods from value-yielding methods instead of always assuming the last generic argument.
-
-```typescript
-for (const key of map.keys()) { ... }    // key → string
-for (const val of map.values()) { ... }  // val → User
-```
-
-Unknown containers fall back to heuristics, keeping the system conservative rather than fully semantic.
+Type-extractor helpers describe known container parameters and selected accessors.
+The workspace resolver's `elementTypeOf` hook is a separate contract. Both the
+container type evidence and a supported access route are needed to type an element.
 
 ### Examples of descriptor-driven behavior
 
-- `Map<K, V>` / `Dictionary<K, V>` / similar key-value containers
-- `List<T>` / `Array<T>` / `Vec<T>` / `Set<T>` / similar single-element containers
-- method-aware yield selection such as `.keys()`, `.values()`, `.keySet()`, `.Values`
-
----
+An array's element type and a map's key/value types are different facts. A loop
+binding, `.values()` call and subscript expression may use different hooks. Test
+each supported spelling and retain unresolved controls for missing evidence.
 
 ## Comment-Based Types
 
-For less strictly typed ecosystems, the resolver can fall back to documentation-based type information.
-
-Supported comment systems:
-
-- **JSDoc** for JavaScript / TypeScript
-- **PHPDoc** for PHP
-- **YARD** for Ruby
-
-These are used conservatively and only when AST-level type information is missing or insufficient.
-
----
+JSDoc, PHPDoc and YARD can supply type facts through provider hooks. Their presence
+alone does not establish receiver resolution: capture ownership, normalization,
+container metadata and return declarations must survive into scope resolution.
+See the [typed receiver-shape baseline](gitnexus/bench/receiver-resolution/BASELINE.md)
+for supported cases and remaining gaps.
 
 ## SymbolTable Interaction
 
-Although the environment is built per file, it may consult the global `SymbolTable` in specific validation paths.
-
-This is important for languages where constructor-like syntax is ambiguous. A binding candidate such as `val user = User()` may need confirmation that `User` is a class-like symbol rather than an ordinary function.
-
-This means the system is still **per-file in binding construction**, but not completely isolated from project-wide symbol knowledge.
-
----
+`model.symbols` is the file/name-oriented symbol table; `model.types`,
+`model.methods` and `model.fields` provide type- and owner-oriented lookups.
+`WorkspaceResolutionIndex` holds derived scope and return-fact lookups needed by
+the resolver. Keep declaration registries authoritative rather than introducing
+a parallel symbol store.
 
 ## Deferred Binding Verification in Call Processing
 
-A key detail is that some initializer bindings are not fully resolved inside `TypeEnv` itself.
-
-`call-processor.ts` later verifies deferred bindings and may infer receiver types from:
-
-- validated class / struct constructor candidates
-- uniquely resolved function or method calls that expose a usable return type
-
-So return-type-aware receiver inference already exists in a constrained downstream form today. Phase 7.3 extended this by threading `ReturnTypeLookup` into `TypeEnv` via `ForLoopExtractorContext`, enabling for-loop call-expression iterables (e.g., `for (const u of getUsers())`) to resolve element types in 7 languages (TS/JS, Java, Kotlin, C#, Go, Rust, Python, PHP). Phase 9 activated simple call-result binding (`var x = f()`) across all 11 supported languages (Swift excluded). Phase 9C replaced the sequential Tier 2b/2a with a unified fixpoint loop that handles four binding kinds — `callResult`, `copy`, `fieldAccess`, and `methodCallResult` — iterating until no new bindings are produced. This enables arbitrary-depth mixed chains like `const user = getUser(); const addr = user.address; const city = addr.getCity(); city.save()`.
-
----
+Deferred verification now belongs to the scope-resolution path. The orchestrator
+uses finalized references and declared return facts to refine call-result
+bindings, and receiver passes consult owned members and dispatch indexes.
+References to `call-processor.ts` as the production resolver describe the removed
+DAG, not a route contributors should extend.
 
 ## Language Feature Matrix
 
-| Feature | TS | JS | Java | Kotlin | C# | Go | Rust | Python | PHP | Ruby | Swift | C++ | C | Dart |
-|---------|:--:|:--:|:----:|:------:|:--:|:--:|:----:|:------:|:---:|:----:|:-----:|:---:|:-:|:----:|
-| Declarations | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Parameters | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Initializer / constructor inference | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Constructor binding scan | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| For-loop element types | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes††† | Yes | Yes | Yes |
-| Pattern binding | Yes | Yes | Yes | Yes | No | Yes | Yes | No | No | No | Partial‡‡‡ | No | No | No |
-| Assignment chains | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes | Yes | Yes |
-| Field/property type resolution | Yes | No† | Yes | Yes | Yes | Yes | Yes | Yes* | Yes | YARD | No | Yes | No‡ | No |
-| Comment-based types | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No | No |
-| Return type extraction | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No | No |
-| Call-result variable binding | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes¶ | Yes††† | Yes | No | Yes |
-| Field access binding | Yes | No† | Yes | Yes | Yes | Yes | Yes | No‖ | Yes | N/A | Yes††† | Yes | No | Yes |
-| Method-call-result binding | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes¶ | Yes††† | Yes | No | Yes |
-| Write access (ACCESSES write) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes§ | Yes | Yes | Yes | No | Yes |
-| Parameter types extracted | Yes** | No | Yes | Yes | Yes | Yes | Yes | Partial†† | No | No | No | Yes | No | No |
-| Method overload disambiguation | Yes** | No | Yes | Yes | Yes | No | No | No | No | No | No | Yes | No | No |
-| Constructor-visible virtual dispatch | Yes | No | Yes | Yes‡‡ | Yes | No | No | No | No | No | No | Yes§§ | No | Yes |
-| Optional parameter arity resolution | Yes | No | No | Yes | Yes | No | No | Yes | Yes | Yes | No | Yes | No | No |
-| Cross-file binding propagation | Yes | Yes | Yes‖‖ | Yes | Yes¶¶ | Yes*** | Yes | Yes | Partial | Yes*** | Yes*** | Yes*** | Yes*** | Yes*** |
+Use source-pinned fixtures instead of the former broad Yes/No matrix:
 
-\* Python class-level annotated attributes (`address: Address`) now resolve `declaredType` correctly. The `self.x` instance attribute pattern is not yet supported.
-
-† JS field topology is captured (`field_definition` → `HAS_PROPERTY` edges) but `declaredType` is never set — JS has no AST type annotations. Disambiguation via `lookupFieldByOwner` requires `declaredType`. JSDoc `@type` support is a Phase 9 candidate.
-
-‡ C has no `@definition.property` query pattern. Struct member fields are not captured. C++ captures class/struct member fields via `field_declaration`.
-
-¶ Ruby call-result and method-call-result binding work via `call`/`method_call` nodes. Ruby uses method calls for both field access and method calls — there is no separate field access node type.
-
-‖ Python class-level annotated attributes (`address: Address`) have `declaredType`, but `self.x` instance attributes do not. Field access binding only works for class-level annotated fields.
-
-**Note on `this`/`self`/`$this` receivers:** Field access and method-call-result binding with `this`/`self`/`$this` as the receiver do not resolve in the fixpoint loop because these keywords are not stored in `scopeEnv`. They are resolved on-demand at call sites via `findEnclosingClassName()` AST walk. This is consistent across all languages and not a regression.
-
-§ PHP write access covers instance property writes (`$obj->field = value`) and static property writes (`ClassName::$field = value`). Nullsafe writes (`$obj?->field = value`) are not tracked because this is invalid PHP syntax — null-safe member access on the left-hand side of assignment is a parse error.
-
-\*\* TS: `parameterTypes` populated with `inferLiteralType` for overload disambiguation. TS overloads share one implementation body (generateId collision), but disambiguation selects the correct candidate.
-
-†† Python: parameter types extracted only with PEP 3107 type annotations (`def f(x: int)`).
-
-‡‡ Kotlin virtual dispatch supported via `detectConstructorType` hook — detects `Dog()` constructor calls (no `new` keyword) by verifying callee against `ClassNameLookup`.
-
-§§ C++ smart pointer virtual dispatch supported for `make_shared<T>()`/`make_unique<T>()` factory patterns. Raw pointer `new` also supported.
-
-‖‖ Java: `import static X.Y.method` now captured. Ambiguous static imports (same name from multiple classes) fall through to Tier 2a for arity narrowing. Non-static lowercase imports still skipped (package imports).
-
-¶¶ C#: `using static NS.Type;` now captured (last segment as class binding). Non-alias `using NS;` still unsupported — namespace imports can't be reduced to per-symbol bindings without type inference.
-
-††† Swift: `extractPendingAssignment` handles `callResult`, `methodCallResult`, `fieldAccess`, and `copy` bindings. `if let` / `guard let` optional bindings supported via `extractIfGuardBinding`. `await` / `try` expression wrappers are unwrapped before RHS analysis. For-loop element type extraction supports `[User]` array sugar and `Array<User>` generics. See `swift-ingestion-gaps.md` for remaining limitations.
-
-‡‡‡ Swift: `if let` / `guard let` optional bindings supported. `while let`, `switch` / `case` pattern matching, and tuple destructuring not yet implemented.
-
-\*\*\* Whole-module-import languages (Go, Ruby, C/C++, Swift): namedImportMap entries synthesized from graph-exported symbols via `synthesizeWildcardImportBindings()`. Not from import AST node extraction.
-
----
+| Evidence                  | What it establishes                              | What it does not establish                        |
+| ------------------------- | ------------------------------------------------ | ------------------------------------------------- |
+| Provider extraction test  | A construct emits the expected facts             | Correct cross-file ownership or dispatch          |
+| Resolver integration test | Exact targets/drops for the supplied fixture     | General language parity                           |
+| Receiver shape baseline   | Exact target or recorded gap for each fixed case | Language-wide completeness or arbitrary inference |
+| Fixed resolution corpus   | Edge/drop comparison on that corpus              | Coverage of spellings absent from the corpus      |
+| Optional-grammar skip     | The parser is unavailable in that environment    | A passing resolver case                           |
 
 ## Current Strengths
 
-The current system provides strong value for call resolution because it combines:
+The merged receiver series adds package-qualified factories, ownership and
+visibility corrections, C# nullable fields, selected Rust smart-pointer fields,
+Swift/Dart hoisted returns and additional receiver-chain spellings. The
+[delivery record](https://github.com/abhigyanpatwari/GitNexus/blob/31241bfe510752aad06462a20d2b877759d49e6e/type-resolution-roadmap.md#delivered-receiver-series) links each merged PR.
 
-- explicit annotation extraction across 13 languages
-- generic-aware loop element typing (including call-expression iterables)
-- initializer-based inference with SymbolTable validation
-- selected pattern-based narrowing
-- scope-aware lookups
-- comment-based fallbacks for dynamic ecosystems (JSDoc, PHPDoc, YARD)
-- constrained return-type-aware receiver inference in call processing
-- deep field/property chains up to 3 levels across 9 languages
-- ACCESSES edge emission for field read access (via chain walking) and field write access (via assignment capture) across 12 languages
-- mixed field+method chain resolution (e.g. `svc.getUser().address.save()`)
-- type-preserving stdlib passthrough for `unwrap()`, `clone()`, `expect()`, etc.
-- method overload disambiguation via argument literal types (Java, Kotlin, C#, C++)
-- constructor-visible virtual dispatch for same-file subclasses (Java, C#, TypeScript, C++, Kotlin)
-- optional/default parameter arity resolution — calls with omitted optional args still resolve (TS, Python, Kotlin, C#, C++, PHP, Ruby)
-- cross-file binding propagation across all 13 languages — named import extraction for languages with per-symbol imports, wildcard import synthesis for whole-module-import languages (Go, Ruby, C/C++, Swift)
-
-This is enough to materially improve call-edge precision even without implementing a full static type system.
-
----
+For the merged source, the receiver baseline records 138 call drops, 168 total
+drops, 30 reads and no writes. These are measurements, not proof that remaining
+gaps are external or that every emitted edge has the correct owner.
 
 ## Current Limitations
 
-Important gaps still remain:
+The baseline and targeted review tests retain these limits:
 
-- no general cross-file propagation of inferred bindings
-- `this`/`self`/`$this` receivers are not resolved in the fixpoint loop (resolved on-demand at call sites via AST walk instead)
-- limited branch-sensitive narrowing outside selected pattern constructs
-- limited Swift support compared with other languages (see `swift-ingestion-gaps.md`)
-- no complete destructuring-based field typing
-- no MRO/inheritance walking for field lookups (`lookupFieldByOwner` is direct-only)
-- for-loop variables bound at walk time cannot see fixpoint-resolved types (Phase 9B gap)
-- overloaded same-file methods share a graph node ID (generateId collision) — CALLS edges deduplicate to one per callee name
+- Ruby YARD parameter facts can leak between sibling functions with the same
+  parameter name; the typed shape fixtures use distinct names as a workaround.
+- Indexed receivers remain visible gaps in JavaScript, Ruby, PHP and Swift;
+  correct container metadata and `elementTypeOf` support are needed.
+- C++ explicit type arguments are read by the chain walker, but a template return
+  such as `T` is not generally substituted with the supplied concrete type.
+- Dart callable-return flow and argument-aware Swift inherited-overload selection
+  remain incomplete. Supported exact override cases do not establish label- or
+  generic-aware dispatch.
+- General type checking, union analysis and arbitrary inference remain outside
+  the conservative receiver-resolution contract.
 
----
+See the [current backlog](type-resolution-roadmap.md#current-backlog) and
+[language gap inventories](docs/languages/README.md) for scope and validation boundaries.
 
 ## Contributor Notes
 
-When modifying this system, treat the following as load-bearing invariants:
-
-1. **Conservatism matters more than recall**  
-   A missed binding is usually safer than a misleading receiver type.
-
-2. **Scope-key format is shared behavior**  
-   If scope keys change, constructor-binding verification and any downstream lookup using those keys must change in sync.
-
-3. **Tier naming may differ across code and PR discussions**  
-   For-loop element inference may appear as "Tier 0b" in documentation and "Tier 1c" in Phase 6 PR / test naming.
-
-4. **Comment-based types are fallback signals, not primary truth**  
-   They should remain lower-trust than explicit AST-derived types.
-
-5. **Return-type-aware inference already exists in constrained form**  
-   Future roadmap work should extend and generalize it rather than reintroduce it from scratch.
+1. Change parsing/capture facts in the owning `languages/<language>/` provider.
+   Change language-independent algorithms in shared scope-resolution passes.
+2. Keep `ParsedFile` as the per-file resolution artifact; reuse extracted facts
+   and cached trees rather than adding another parse representation.
+3. Run graph impact before symbol edits and change detection before commits,
+   following AGENTS.md. An empty or historical graph is not an all-clear.
+4. Test full target identities, same-name decoys, missing annotations, shadowing
+   and sibling scopes. Absence-only assertions need a supported positive control.
+5. Treat exported but unwired APIs separately from active paths. In this source,
+   `resolveTypeRef` is exported and unit-tested but has no production caller;
+   registry lookup performs receiver-owner resolution directly. Review API users
+   and behavior before consolidating or removing either implementation.

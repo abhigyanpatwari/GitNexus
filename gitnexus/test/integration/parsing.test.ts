@@ -6,7 +6,7 @@
  * PHP export detection (#20), symbol ID with startLine (#19),
  * definition node range (#22).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, assert } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
@@ -91,6 +91,52 @@ describe('parsing', () => {
         const node = mockNode('identifier', '__init__');
         expect(isNodeExported(node, '__init__', 'python')).toBe(false);
       });
+    });
+
+    describe('java', () => {
+      it('keeps sibling visibility independent when a parent check is reused', async () => {
+        const parser = await loadParser();
+        await loadLanguage(SupportedLanguages.Java);
+        const tree = parser.parse('class C { private void a() {} public void b() {} void c() {} }');
+        const methods = tree.rootNode.descendantsOfType('method_declaration');
+        for (const order of [methods, [...methods].reverse()]) {
+          expect(
+            order.map((method) => {
+              const name = method.childForFieldName('name');
+              assert(name);
+              return isNodeExported(name, name.text, 'java');
+            }),
+          ).toEqual([false, true, false]);
+        }
+      });
+
+      it('preserves public-ancestor behavior across repeated checks and separate trees', async () => {
+        const parser = await loadParser();
+        await loadLanguage(SupportedLanguages.Java);
+        for (const modifier of ['', 'public ', '']) {
+          const tree = parser.parse(
+            `${modifier}class C { private void a() {} class Inner { void b() {} } }`,
+          );
+          const methods = tree.rootNode.descendantsOfType('method_declaration');
+          expect(methods).toHaveLength(2);
+          for (const method of methods) {
+            const name = method.childForFieldName('name');
+            assert(name);
+            expect(isNodeExported(name, name.text, 'java')).toBe(modifier === 'public ');
+            expect(isNodeExported(name, name.text, 'java')).toBe(modifier === 'public ');
+          }
+        }
+      });
+
+      it.each(['method_declaration', 'constructor_declaration'])(
+        'preserves the %s text fallback',
+        (type) => {
+          const name = mockNode('identifier', 'C');
+          mockNode(type, '  public C() {}', undefined, [name]);
+          expect(isNodeExported(name, 'C', 'java')).toBe(true);
+          expect(isNodeExported(name, 'C', 'java')).toBe(true);
+        },
+      );
     });
 
     // Go

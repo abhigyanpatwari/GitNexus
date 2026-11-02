@@ -13,7 +13,7 @@ import {
   nodePackageNameOf,
   substituteStar,
   type NodeWorkspacePackages,
-} from '../../src/core/ingestion/import-resolvers/node-workspace-packages.js';
+} from '../../src/core/ingestion/languages/typescript/workspace-packages.js';
 import { resolveTsModule } from '../../src/core/ingestion/languages/typescript/module-resolution.js';
 import type { TsconfigIndex } from '../../src/core/ingestion/languages/typescript/tsconfig.js';
 

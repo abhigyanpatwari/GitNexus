@@ -38,6 +38,7 @@ SANDBOX_CLAUDE = "/opt/claude/claude"
 SANDBOX_SHELL_PREFIX = "/opt/claude/shell-prefix"
 SANDBOX_PYTHON3 = "/opt/claude/python3"
 SANDBOX_GITNEXUS_CLI = "/opt/claude/gitnexus"
+SANDBOX_MCP_SOCKET = "/run/gitnexus-mcp.sock"
 SANDBOX_GIT_EXCLUDES = "/opt/claude/git-excludes"
 SANDBOX_NODE = "/opt/claude/node"
 SANDBOX_BWRAP = "/opt/claude/bwrap"
@@ -212,6 +213,8 @@ class SandboxSession:
     read_only_mounts: tuple[ReadOnlyMount, ...]
     # Harness-authored, immutable overlays must not appear as agent work.
     synthetic_guidance_paths: tuple[str, ...] = ()
+    # The baseline_cli shim connects to the cell's MCP socket from Bash.
+    allow_unix_sockets: bool = False
 
     @property
     def require_pid_namespace(self) -> bool:
@@ -278,7 +281,9 @@ class SandboxSession:
 
     @property
     def settings_json(self) -> str:
-        return build_claude_settings(sandbox_enabled=self.backend == "bwrap")
+        return build_claude_settings(
+            sandbox_enabled=self.backend == "bwrap", allow_unix_sockets=self.allow_unix_sockets
+        )
 
     def environment(
         self,
@@ -548,12 +553,16 @@ def build_sandbox_environment(
     return env
 
 
-def build_claude_settings(*, sandbox_enabled: bool = True) -> str:
+def build_claude_settings(*, sandbox_enabled: bool = True, allow_unix_sockets: bool = False) -> str:
     """Inline settings that keep every Bash sandboxed and pre-approve the tools.
 
     Inline settings disable repository/plugin hooks even when ordinary
     CLAUDE.md startup context is loaded. Confinement rests on the sandbox
     policy below, ``--tools``/``--allowedTools``, and the bwrap mounts.
+
+    ``allow_unix_sockets`` lifts the Bash sandbox's AF_UNIX block for the
+    baseline_cli shim. The bwrap mounts still bound what it can reach: the
+    only harness socket in the agent namespace is the cell's MCP endpoint.
     """
 
     permissions = {
@@ -572,7 +581,7 @@ def build_claude_settings(*, sandbox_enabled: bool = True) -> str:
             "network": {
                 "allowedDomains": [],
                 "deniedDomains": ["*"],
-                "allowAllUnixSockets": False,
+                "allowAllUnixSockets": allow_unix_sockets,
                 "allowLocalBinding": False,
             },
             "filesystem": {
@@ -1219,8 +1228,15 @@ def prepare_sandbox(
     preflight: bool = True,
     backend: str = "bwrap",
     gitnexus_available: bool = True,
+    gitnexus_cli_available: bool = True,
+    gitnexus_cli_shim: bool = False,
 ) -> Iterator[SandboxSession]:
-    """Create private host backing dirs and one virtualized command."""
+    """Create private host backing dirs and one virtualized command.
+
+    ``gitnexus_cli_shim`` mounts the baseline_cli arm's MCP-forwarding
+    `gitnexus` command in place of the pinned CLI; it needs the per-cell MCP
+    socket among ``read_only_mounts`` and never exposes the runtime itself.
+    """
 
     # Validate the lexical path before resolving it. Resolving first would
     # erase the evidence that the caller supplied a symlinked clone root.
@@ -1235,6 +1251,7 @@ def prepare_sandbox(
             SANDBOX_GITNEXUS_SHARED,
             SANDBOX_GITNEXUS_REGISTRY,
             SANDBOX_GITNEXUS_CLI,
+            SANDBOX_MCP_SOCKET,
             f"{SANDBOX_WORKSPACE}/.gitnexus",
         )
         for mount in read_only_mounts:
@@ -1260,7 +1277,9 @@ def prepare_sandbox(
     for directory in (home, temp):
         directory.mkdir(mode=0o700)
         directory.chmod(0o700)
-    shell_prefix = _create_shell_prefix_wrapper(private_root, gitnexus_available=gitnexus_available)
+    cli_available = gitnexus_available and gitnexus_cli_available
+    cli_shim = gitnexus_available and gitnexus_cli_shim and not cli_available
+    shell_prefix = _create_shell_prefix_wrapper(private_root, gitnexus_available=cli_available or cli_shim)
     python3_wrapper = _create_python3_wrapper(private_root)
     git_excludes = _create_git_excludes(private_root)
     # Claude may discover user-level skills below HOME.  Keep the rest of HOME
@@ -1276,21 +1295,28 @@ def prepare_sandbox(
         else:
 
             baseline_mounts = baseline_gitnexus_mounts(clone, private_root)
+        if cli_available:
+            cli_mounts: tuple[ReadOnlyMount, ...] = (
+                ReadOnlyMount(source=_create_gitnexus_wrapper(private_root), target=SANDBOX_GITNEXUS_CLI),
+            )
+        elif cli_shim:
+            # Imported here: cli_shim reads this module's sandbox paths.
+            from .cli_shim import create_cli_shim
+
+            cli_mounts = (ReadOnlyMount(source=create_cli_shim(private_root), target=SANDBOX_GITNEXUS_CLI),)
+        else:
+            cli_mounts = baseline_mounts
         protected_mounts = (
             *read_only_mounts,
             *(
                 (ReadOnlyMount(source=bwrap, target=SANDBOX_BWRAP),)
-                if backend == "bwrap" and gitnexus_available
+                if backend == "bwrap" and cli_available
                 else ()
             ),
             ReadOnlyMount(source=user_skills, target=SANDBOX_USER_SKILLS),
             ReadOnlyMount(source=shell_prefix, target=SANDBOX_SHELL_PREFIX),
             ReadOnlyMount(source=python3_wrapper, target=SANDBOX_PYTHON3),
-            *(
-                (ReadOnlyMount(source=_create_gitnexus_wrapper(private_root), target=SANDBOX_GITNEXUS_CLI),)
-                if gitnexus_available
-                else baseline_mounts
-            ),
+            *cli_mounts,
             ReadOnlyMount(source=git_excludes, target=SANDBOX_GIT_EXCLUDES),
         )
         command_prefix = (
@@ -1320,6 +1346,7 @@ def prepare_sandbox(
                 for mount in baseline_mounts
                 if mount.target != f"{SANDBOX_WORKSPACE}/.gitnexus"
             ),
+            allow_unix_sockets=cli_shim,
         )
     except BaseException as exc:
         primary = exc

@@ -2,8 +2,8 @@
  * The Dart scope-capture tree-sitter query (`DART_SCOPE_QUERY`) plus lazy
  * `Parser`/`Query` singletons. Mirror of `languages/swift/query.ts`.
  *
- * Verified against tree-sitter-dart 1.0.0 (UserNobody14, commit 80e23c07,
- * ABI 14) — every node type below also appears in the legacy `DART_QUERIES`,
+ * Verified against tree-sitter-dart 1.0.0-g0038280 (UserNobody14,
+ * ABI 15) — every node type below also appears in the legacy `DART_QUERIES`,
  * which is validated against the same grammar.
  *
  * NOTE: This query intentionally covers ONLY the constructs that map cleanly
@@ -39,6 +39,7 @@ const DART_SCOPE_QUERY = `
 (class_definition) @scope.class
 (mixin_declaration) @scope.class
 (extension_declaration) @scope.class
+(extension_type_declaration) @scope.class
 (enum_declaration) @scope.class
 
 ; ── Declarations — types ─────────────────────────────────────────────────────
@@ -53,6 +54,9 @@ const DART_SCOPE_QUERY = `
   (type_parameters)? @declaration.type-parameters) @declaration.class
 (mixin_declaration (identifier) @declaration.name) @declaration.trait
 (extension_declaration name: (identifier) @declaration.name) @declaration.class
+(extension_type_declaration
+  name: (identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class
 (enum_declaration name: (identifier) @declaration.name) @declaration.enum
 
 ; ── Declarations — type aliases (old-style + new-style function typedefs) ────

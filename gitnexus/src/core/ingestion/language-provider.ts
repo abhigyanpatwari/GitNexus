@@ -35,7 +35,6 @@ import type { ExportChecker } from './export-detection.js';
 import type { FieldExtractor } from './field-extractor.js';
 import type { MethodExtractor } from './method-types.js';
 import type { VariableExtractor } from './variable-types.js';
-import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { CfgVisitor } from './cfg/types.js';
 import type { CollectedCfgs } from './cfg/collect.js';
@@ -49,12 +48,36 @@ import type {
   RepoConstants,
 } from './route-extractors/constant-resolver.js';
 import type Parser from 'tree-sitter';
-import type { FetchWrapperCall } from './route-extractors/fetch-wrapper.js';
+import type {
+  FetchWrapperCall,
+  FetchWrapperFacts,
+  FetchWrapperReexport,
+} from './route-extractors/fetch-wrapper.js';
 import type { ExtractedDecoratorRoute, ExtractedToolDef } from './workers/parse-worker.js';
 import type { SemanticModel } from './model/semantic-model.js';
 
+/**
+ * A declared router-framework equivalence: values of type `type` reached
+ * through `importPath` are the `framework`'s router root. Framework names are
+ * opaque here; the provider that owns the framework interprets them.
+ */
+export interface RouteFrameworkAlias {
+  readonly importPath: string;
+  readonly type: string;
+  readonly framework: string;
+}
+
+/** User route configuration handed to provider route hooks on the main thread. */
+export interface RouteHookConfig {
+  /** Declared router-framework aliases; empty when none are configured. */
+  readonly routeFrameworkAliases?: readonly RouteFrameworkAlias[];
+  /** Callee designators (`pkg.Wrap`) whose first argument is the real handler. */
+  readonly routeHandlerWrappers?: readonly string[];
+}
+
 /** What a provider's {@link LanguageProviderConfig.resolveRouteHandler} can see. */
 export interface RouteHandlerResolutionHookContext {
+  readonly routeHookConfig?: RouteHookConfig;
   /** The model after every file has been parsed; scope resolution has not run. */
   readonly model: SemanticModel;
   /**
@@ -350,8 +373,33 @@ interface LanguageProviderConfig {
   readonly typeConfig: LanguageTypeConfig;
   /** Export detection: is this AST node a public/exported symbol? */
   readonly exportChecker: ExportChecker;
-  /** Import resolution: resolves raw import path to file system path */
-  readonly importResolver: ImportResolverFn;
+
+  /**
+   * Does a stored `false` from `exportChecker` prove file privacy? A function
+   * can confirm this against the indexed file content; missing content must
+   * retain the fallback. The graph flag is NOT SymbolDefinition's tri-state
+   * export evidence: JS/TS export clauses and CommonJS can also store false.
+   * True for Swift `private`/`fileprivate`, a Zig declaration without
+   * `pub` (an `export fn` without `pub` is recorded true for its C linkage, so
+   * `false` never hides an FFI symbol).
+   *
+   * Absent where `false` is a narrower fact than "file-private": Java
+   * package-private, C# and Kotlin `internal`, Go lowercase (the rest of the
+   * package / assembly / module still sees it); Python and Dart `_name` (a
+   * convention, `from m import _x` works and a Dart `part` shares its
+   * library's privates); Rust (a child module reaches `super::` privates);
+   * C/C++ (`static` or an anonymous namespace in a header is visible to every
+   * file that `#include`s it).
+   *
+   * Read by consumers that drop a file-level fallback for a not-exported
+   * symbol — the owning-file seed of `impact` (#3602) — which must otherwise
+   * keep the fallback and over-approximate rather than miss a dependant. A
+   * capability on the provider rather than a language set in `mcp/`: the
+   * meaning of a stored `isExported` is a property of the language.
+   *
+   * Default: undefined, read as `false`.
+   */
+  readonly notExportedIsFilePrivate?: boolean | ((filePath: string, content: string) => boolean);
 
   // ── Calls & Imports (optional) ────────────────────────────────────
   /** Call routing for languages that express imports/heritage as calls (e.g., Ruby).
@@ -619,6 +667,7 @@ interface LanguageProviderConfig {
   readonly resolveRouteFacts?: (
     files: readonly { filePath: string; facts: unknown }[],
     context: {
+      readonly routeHookConfig?: RouteHookConfig;
       resolveImportTargets: (fromFile: string, moduleSpecifier: string) => readonly string[];
     },
   ) => ExtractedDecoratorRoute[];
@@ -627,9 +676,24 @@ interface LanguageProviderConfig {
    * are known across files. Routes selects known wrappers after parsing. */
   readonly extractFetchWrapperCalls?: (
     tree: Parser.Tree,
-    filePath: string,
+    parsedFile: ParsedFile,
     lineOffset: number,
   ) => FetchWrapperCall[];
+
+  /** Module exports that forward another module's export, so barrels resolve to definitions. */
+  readonly extractFetchWrapperReexports?: (
+    tree: Parser.Tree,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => FetchWrapperReexport[];
+
+  /** Scope-aware evidence for every callable declaration, including non-wrappers. */
+  readonly extractFetchWrapperFacts?: (
+    definition: Parser.SyntaxNode,
+    nameNode: Parser.SyntaxNode | undefined,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => FetchWrapperFacts | undefined;
 
   /**
    * Name of the function a route decorator captured by the worker's generic
@@ -853,6 +917,43 @@ interface LanguageProviderConfig {
   /** Built-in/stdlib names that should be filtered from the call graph for this language.
    *  Default: undefined (no language-specific filtering). */
   readonly builtInNames?: ReadonlySet<string>;
+
+  // ── Program boundary (receiver-origin classification only) ───────────
+  /**
+   * Values, namespaces and types the language's RUNTIME or STANDARD LIBRARY
+   * supplies without the program declaring them — `document`, `process`,
+   * `System`, `Dictionary` — matched against a bare identifier: a dropped
+   * receiver's chain base, or the head of the type a receiver chain ends at.
+   *
+   * Read ONLY by `classifyReceiverOrigin`, which labels a call it could not
+   * resolve `external` (nothing in the program could have been the target)
+   * instead of `unknown`. Kept apart from `builtInNames` on purpose: that set
+   * also filters CALLEE names out of the call graph (`parse-worker.ts`,
+   * `type-env.ts`, the free-call fallback), so `process` there would drop every
+   * call to an in-program function named `process`. Nothing here can change an
+   * edge.
+   *
+   * A name only counts where the program binds nothing by it at the site and
+   * declares no type or value by it, so a local `document` parameter or an
+   * in-program `class System` still wins. The failure is asymmetric — a wrong
+   * entry hides a real resolver gap behind `epistemic: 'exact'`, a missing one
+   * only costs a hedge — so a set should under-include. Default: undefined (no
+   * name is evidence).
+   */
+  readonly externalReceiverNames?: ReadonlySet<string>;
+  /**
+   * Does this import SPECIFIER name a module the language reserves for its
+   * runtime or standard library (Python `os`, Zig `std`, Java `java.util`)?
+   *
+   * Read ONLY by `classifyReceiverOrigin`, and only for an import that also
+   * resolved to no file in the program: a name bound by such an import is
+   * rooted outside the program however it is spelled locally
+   * (`const s = @import("std")`). Third-party packages are NOT answered here —
+   * an unresolved `fastapi` or `express` import cannot be told apart from an
+   * in-program module the resolver missed, so it stays `unknown`. Default:
+   * undefined (no import is evidence).
+   */
+  readonly isExternalModuleSpecifier?: (specifier: string) => boolean;
 
   // ══════════════════════════════════════════════════════════════════════════
   //  Scope-based resolution hooks (RFC #909 — Ring 1 #911)

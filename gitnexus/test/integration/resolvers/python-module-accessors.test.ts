@@ -103,9 +103,12 @@ def rejected_callers():
     parameterized().target()
     m = rebound()
     m.target()
-def positive_external():
+def builtin_member_collision():
     m = list()
     m.target()
+def positive_external():
+    m = list()
+    m.count(0)
 `,
       'pkg/unsupported.py': `def mixed():
     from pkg import facade
@@ -242,14 +245,16 @@ def existing():
     ).toBeUndefined();
   });
 
-  it('keeps rejected namespace proofs observable and positively external calls separate', () => {
+  it('keeps namespace failures and library member collisions uncertain, with external calls separate', () => {
     const summary = summarizeUnresolvedReceivers(
       result.resolutionOutcomes.filter((outcome) => outcome.filePath === 'pkg/rejected.py'),
     );
     expect(summary).toMatchObject({
-      counts: { target: 5 },
-      totalSites: 5,
-      externalCounts: { target: 1 },
+      // The workspace declares target(), so list().target() must keep hedging.
+      // count() has no program declaration and supplies genuine library evidence.
+      counts: { target: 6 },
+      totalSites: 6,
+      externalCounts: { count: 1 },
       externalSites: 1,
     });
     expect(

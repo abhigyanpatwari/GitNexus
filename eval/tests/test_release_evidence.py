@@ -64,6 +64,7 @@ def make_report(*, harness_sha: str = HARNESS, runtime_sha: str = RUNTIME) -> di
             task_base_sha=PINS["one"]["sha"],
             oracle_digest=PINS["one"]["oracle_digest"],
             sandbox_backend="bwrap",
+            runtime_exposure="none" if arm == "baseline_nomcp" else "stdio-only",
             ok=True,
             resolved=True,
             authored_tests_passed=True,

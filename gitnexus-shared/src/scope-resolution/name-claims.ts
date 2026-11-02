@@ -176,6 +176,14 @@ function matchesBindingClaim(range: Range | undefined, claim: NameClaim): boolea
   );
 }
 
+/** A fact inferred from an assigned value; it describes a value, never a declaration. */
+const isInferredWrite = (source: TypeRef['source']): boolean =>
+  source === 'assignment-inferred' || source === 'constructor-inferred';
+
+/** Any inferred fact, including types propagated from a receiver. */
+const isInferredFact = (source: TypeRef['source']): boolean =>
+  isInferredWrite(source) || source === 'receiver-propagated';
+
 export function lookupLexicalName(
   startScope: ScopeId,
   name: string,
@@ -185,6 +193,7 @@ export function lookupLexicalName(
   let id: ScopeId | null = startScope;
   let position = options.position;
   let forcedClaims: readonly NameClaim[] | undefined;
+  let carriedConstructor: TypeRef | undefined;
   const visited = new Set<ScopeId>();
   while (id !== null && !visited.has(id)) {
     visited.add(id);
@@ -225,7 +234,8 @@ export function lookupLexicalName(
       const skippedIds = new Set<ScopeId>();
       while (skipped !== undefined && skipped.id !== target.id && !skippedIds.has(skipped.id)) {
         skippedIds.add(skipped.id);
-        if (skipped.lookupPolicy?.deferParentActivation) position = undefined;
+        if (skipped.lookupPolicy?.deferParentActivation && !options.preservePosition)
+          position = undefined;
         skipped = skipped.parent === null ? undefined : sources.scopes.getScope(skipped.parent);
       }
       id = target.id;
@@ -271,7 +281,7 @@ export function lookupLexicalName(
     const ownType = scope.typeBindings.get(name);
     const typeFactOwnsName =
       ownType !== undefined &&
-      !(scope.lookupPolicy?.nameClaimsComplete && ownType.source === 'assignment-inferred');
+      !(scope.lookupPolicy?.nameClaimsComplete && isInferredWrite(ownType.source));
     const owns =
       selected.status === 'selected' ||
       bindings.length > 0 ||
@@ -293,16 +303,15 @@ export function lookupLexicalName(
         // Check ownership after that fact binds its value, not at the producer's
         // lookup position: a later shadowing let still reads the earlier binding
         // in its initializer, but must not lend that binding its inferred type.
-        const factClaims =
-          ownType.source === 'constructor-inferred' || ownType.source === 'assignment-inferred'
-            ? selectClaimsAtScope(scope, name, {
-                ...options,
-                position: {
-                  startLine: ownType.bindingRange.endLine,
-                  startCol: ownType.bindingRange.endCol,
-                },
-              })
-            : undefined;
+        const factClaims = isInferredWrite(ownType.source)
+          ? selectClaimsAtScope(scope, name, {
+              ...options,
+              position: {
+                startLine: ownType.bindingRange.endLine,
+                startCol: ownType.bindingRange.endCol,
+              },
+            })
+          : undefined;
         if (
           factClaims?.status !== 'selected' ||
           factClaims.claims.length !== selected.claims.length ||
@@ -312,6 +321,13 @@ export function lookupLexicalName(
         )
           typeBinding = undefined;
       }
+      // Inferred writes do not declare bindings. Preserve the nearest write's
+      // complete lookup anchor, but never replace the owner's declared type.
+      if (
+        carriedConstructor !== undefined &&
+        (typeBinding === undefined || isInferredFact(typeBinding.source))
+      )
+        typeBinding = carriedConstructor;
       const usable = bindings.filter(
         (b) => (options.purpose ?? 'value') !== 'value' || b.via?.typeOnly !== true,
       );
@@ -330,8 +346,18 @@ export function lookupLexicalName(
         claims: selected.claims,
       };
     }
-    if (scope.lookupPolicy?.deferParentActivation) position = undefined;
+    if (
+      scope.lookupPolicy?.nameClaimsComplete &&
+      !hasClaimsForName &&
+      ownType?.source === 'constructor-inferred'
+    )
+      carriedConstructor ??= ownType;
+    if (scope.lookupPolicy?.deferParentActivation && !options.preservePosition)
+      position = undefined;
     id = scope.lookupPolicy?.parentScope ?? scope.parent;
   }
-  return id === null ? ABSENT : { ...ABSENT, status: 'blocked' };
+  // A write to an undeclared name declares nothing, but it still carries the
+  // value's type to reads inside the writing scope.
+  const carried = carriedConstructor === undefined ? {} : { typeBinding: carriedConstructor };
+  return id === null ? { ...ABSENT, ...carried } : { ...ABSENT, ...carried, status: 'blocked' };
 }

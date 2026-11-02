@@ -63,7 +63,7 @@ import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { vueProvider } from '../vue.js';
 import { loadTsconfigIndex } from '../typescript/tsconfig.js';
 import { typescriptModuleExports } from '../typescript/module-exports.js';
-import { loadNodeWorkspacePackages } from '../../import-resolvers/node-workspace-packages.js';
+import { loadNodeWorkspacePackages } from '../typescript/workspace-packages.js';
 import { typescriptArityCompatibility, typescriptMergeBindings } from '../typescript/index.js';
 import { makeVueResolveImportTarget } from './import-target.js';
 import { extractVueTemplateEdgeData } from '../../vue-sfc-extractor.js';

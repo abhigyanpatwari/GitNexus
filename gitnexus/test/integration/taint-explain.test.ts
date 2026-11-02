@@ -156,6 +156,8 @@ withTestLbugDB(
         expect(vuln.pathIncomplete).toBeUndefined();
         // The intra-procedural contract caveat reaches the consumer.
         expect(result.note).toMatch(/intra-procedural/i);
+        expect(result.note).toContain('Imported and wrapper validators');
+        expect(result.note).toContain('not runtime validation');
       });
 
       it('anchorless enumerate is deterministic across calls', async () => {
@@ -530,6 +532,16 @@ withTestLbugDB(
         expect(hr!.sinkKind).toBe('command-injection');
         expect(Array.isArray(hr!.hops)).toBe(true);
         expect((hr!.hops as unknown[]).length).toBeGreaterThan(0);
+        // Lines are 1-based declaration lines, as in the editor: `handle` is
+        // declared on line 7 of source.ts and `runIt` on line 6 of sink.ts
+        // (#3491 — the graph stores 0-based startLine; before the fix these
+        // read 6 and 5, one above every intra-procedural line in the same
+        // response).
+        expect(hr!.source).toEqual({ function: 'handle', line: 7 });
+        expect(hr!.sink).toEqual({ function: 'runIt', line: 6 });
+        const hops = hr!.hops as Array<{ function: string; line: number }>;
+        expect(hops[0]).toEqual({ function: 'handle', line: 7 });
+        expect(hops.at(-1)).toEqual({ function: 'runIt', line: 6 });
       });
 
       it('symbol-anchored on the sink function surfaces the cross-function finding', async () => {

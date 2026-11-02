@@ -47,7 +47,11 @@ import {
   UNKNOWN_JVM_PACKAGE_FACT,
   type JvmPackageFact,
 } from '../jvm/package-facts.js';
-import { getCompanionScopesForFile, markCompanionScope } from './companion-scopes.js';
+import {
+  getCompanionScopesForFile,
+  getCompanionScopesWithoutSupertypesForFile,
+  markCompanionScope,
+} from './companion-scopes.js';
 import { getKotlinPackageFact, setKotlinPackageFact } from './package-facts.js';
 import type { SpringDynamicLookupFact } from '../../frameworks/spring/dynamic-lookups.js';
 import type { SpringMessageProducerFact } from '../../frameworks/spring/message-producers.js';
@@ -76,6 +80,8 @@ export interface KotlinCaptureSideChannel {
   readonly kind: 'kotlin';
   /** Companion-object scope ids recorded for this file. */
   readonly companionScopes: readonly ScopeId[];
+  /** Absent in older carriers, which cannot prove companion header visibility. */
+  readonly companionScopesWithoutSupertypes?: readonly ScopeId[];
   /** Package visibility captured from the existing Kotlin AST. */
   readonly packageFact: JvmPackageFact;
   /** Class annotation syntax collected by the existing scope traversal. */
@@ -247,6 +253,9 @@ export function collectKotlinCaptureSideChannel(
   return {
     kind: 'kotlin',
     companionScopes,
+    ...(companionScopes.length > 0
+      ? { companionScopesWithoutSupertypes: getCompanionScopesWithoutSupertypesForFile(filePath) }
+      : {}),
     packageFact: packageFact ?? UNKNOWN_JVM_PACKAGE_FACT,
     classAnnotations: annotationFacts,
     ...(aopFacts.length > 0 ? { springAopFacts: aopFacts } : {}),
@@ -290,8 +299,13 @@ export function applyKotlinCaptureSideChannel(parsed: ParsedFile): void {
     setKotlinPackageFact(parsed.filePath, UNKNOWN_JVM_PACKAGE_FACT);
     return;
   }
+  const scopesWithoutSupertypes = new Set(
+    Array.isArray(data.companionScopesWithoutSupertypes)
+      ? data.companionScopesWithoutSupertypes
+      : [],
+  );
   for (const scopeId of data.companionScopes) {
-    markCompanionScope(parsed.filePath, scopeId);
+    markCompanionScope(parsed.filePath, scopeId, scopesWithoutSupertypes.has(scopeId));
   }
   classAnnotations.set(parsed.filePath, data.classAnnotations);
   setKotlinSpringAopFacts(

@@ -716,6 +716,8 @@ export interface ScopeLookupPolicy {
 export interface NameLookupOptions {
   readonly skipEnclosingClasses?: boolean;
   readonly position?: SourcePosition;
+  /** Keep source order across deferred scopes when locating the binding before a write. */
+  readonly preservePosition?: boolean;
   readonly purpose?: LookupPurpose;
 }
 

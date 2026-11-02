@@ -15,6 +15,7 @@ import {
 } from '../../languages/python/receiver-binding.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { memoizeDeclarationFact } from '../declaration-facts.js';
 
 // ---------------------------------------------------------------------------
 // Python helpers
@@ -300,7 +301,7 @@ export const pythonMethodConfig: MethodExtractionConfig = {
   },
 
   extractReturnType: extractPythonReturnType,
-  extractParameters: extractPythonParameters,
+  extractParameters: memoizeDeclarationFact(extractPythonParameters, unwrapDecorated),
   extractVisibility: extractPythonVisibility,
 
   isStatic(node) {

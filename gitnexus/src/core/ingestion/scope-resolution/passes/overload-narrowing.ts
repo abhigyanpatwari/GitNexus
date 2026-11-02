@@ -24,6 +24,8 @@
  *      equality. An empty string in `argTypes[i]` means "unknown" and
  *      counts as a match. Mismatches disqualify. A non-empty typed
  *      result wins; otherwise return the arity-filtered candidates.
+ *      Unknown parameter slots may retain candidates whose known slots satisfy
+ *      the active exact/conversion stage; they are not exact-match evidence.
  *   4b. When the exact-type filter from step 4 returns empty AND a
  *       `conversionRankFn` is provided (via `hookCtx`), rank candidates
  *       via pairwise dominance comparison (ISO C++ [over.ics.rank]):
@@ -204,6 +206,39 @@ export function narrowOverloadCandidates(
       ) {
         result = [];
       }
+    }
+
+    // Missing parameter slots remain possible, but cannot establish an exact
+    // match and bypass conversion ranking for other viable overloads.
+    const unknownParameterMatches = candidates.filter((candidate) => {
+      const params = candidate.parameterTypes;
+      if (params === undefined || !params.slice(0, argTypes.length).includes('')) return false;
+      for (let i = 0; i < argTypes.length && i < params.length; i++) {
+        if (argTypes[i] === '' || params[i] === '') continue;
+        if (
+          exactTypeSlotMatches(
+            argTypes[i],
+            params[i],
+            hookCtx?.argumentTypeClasses?.[i],
+            candidate.parameterTypeClasses?.[i],
+          )
+        )
+          continue;
+        if (typed.length > 0) return false;
+        const rank = hookCtx?.conversionRankFn?.(
+          argTypes[i],
+          params[i],
+          hookCtx.argumentTypeClasses?.[i],
+          candidate.parameterTypeClasses?.[i],
+        );
+        if (rank === undefined || !Number.isFinite(rank)) return false;
+      }
+      return true;
+    });
+    if (unknownParameterMatches.length > 0 && result.length > 0) {
+      result = candidates.filter(
+        (candidate) => result.includes(candidate) || unknownParameterMatches.includes(candidate),
+      );
     }
   }
 

@@ -504,6 +504,29 @@ function extractFlaskMethods(callNode: Parser.SyntaxNode): string[] {
   return ['GET'];
 }
 
+/**
+ * A consumer URL argument as text. An f/t-string's interpolations become
+ * `${…}` spans, so the shared consumer normalizer treats a leading one as a
+ * host binding and later ones as path params, as it does for a JS template
+ * (#1675, #3111). Other literals go through `unquoteLiteral`.
+ */
+function pythonUrlLiteral(node: Parser.SyntaxNode): string | null {
+  const start = node.namedChildren[0];
+  if (start?.type !== 'string_start' || !/[fFtT]/.test(start.text)) {
+    return unquoteLiteral(node.text);
+  }
+  let url = '';
+  for (const part of node.namedChildren) {
+    if (part.type === 'string_content') url += part.text.replace(/([{}])\1/g, '$1');
+    if (part.type === 'interpolation') {
+      // Braces inside the expression (`{d['}']}`) would end the span early.
+      const expression = (part.childForFieldName('expression')?.text ?? '').replace(/[{}]/g, '');
+      url += `\${${expression || '_'}}`;
+    }
+  }
+  return url;
+}
+
 // Pre-scan: collect local string assignments (uri = "api/v1/endpoint/")
 function buildLocalStringMap(tree: Parser.Tree): Map<string, string> {
   const map = new Map<string, string>();
@@ -511,7 +534,7 @@ function buildLocalStringMap(tree: Parser.Tree): Map<string, string> {
     const varNode = match.captures.var_name;
     const valNode = match.captures.var_value;
     if (!varNode || !valNode) continue;
-    const val = unquoteLiteral(valNode.text);
+    const val = pythonUrlLiteral(valNode);
     if (val === null) continue;
     map.set(varNode.text, val);
   }
@@ -1381,7 +1404,7 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       const methodNode = match.captures.method;
       const pathNode = match.captures.path;
       if (!methodNode || !pathNode) continue;
-      const path = unquoteLiteral(pathNode.text);
+      const path = pythonUrlLiteral(pathNode);
       if (path === null) continue;
       out.push({
         role: 'consumer',
@@ -1399,7 +1422,7 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       const methodNode = match.captures.method;
       const pathNode = match.captures.path;
       if (!methodNode || !pathNode) continue;
-      const path = unquoteLiteral(pathNode.text);
+      const path = pythonUrlLiteral(pathNode);
       if (path === null) continue;
       out.push({
         role: 'consumer',
@@ -1418,7 +1441,7 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       const pathNode = match.captures.path;
       if (!methodNode || !pathNode) continue;
       const methodRaw = unquoteLiteral(methodNode.text);
-      const path = unquoteLiteral(pathNode.text);
+      const path = pythonUrlLiteral(pathNode);
       if (methodRaw === null || path === null) continue;
       out.push({
         role: 'consumer',
@@ -1438,7 +1461,7 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       const pathNode = match.captures.path;
       if (!clientNode || !methodNode || !pathNode) continue;
       if (!hasTrackedHttpxAsyncClient(httpxAsyncClients, clientNode)) continue;
-      const path = unquoteLiteral(pathNode.text);
+      const path = pythonUrlLiteral(pathNode);
       if (path === null) continue;
       out.push({
         role: 'consumer',
@@ -1459,7 +1482,7 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       if (!clientNode || !methodNode || !pathNode) continue;
       if (!hasTrackedHttpxAsyncClient(httpxAsyncClients, clientNode)) continue;
       const methodRaw = unquoteLiteral(methodNode.text);
-      const path = unquoteLiteral(pathNode.text);
+      const path = pythonUrlLiteral(pathNode);
       if (methodRaw === null || path === null) continue;
       out.push({
         role: 'consumer',
@@ -1480,7 +1503,7 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       const methodNode = match.captures.method;
       const pathNode = match.captures.path;
       if (!methodNode || !pathNode) continue;
-      const path = unquoteLiteral(pathNode.text);
+      const path = pythonUrlLiteral(pathNode);
       if (path === null) continue;
 
       // Deduplicate: the two pattern branches can match the same call. Key on
@@ -1518,14 +1541,17 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       seenVarDetections.add(dedupKey);
       const resolved = localStrings.get(pathVarNode.text);
       if (!resolved) continue;
-      const normalized = normalizeConsumerPath(resolved);
-      if (normalized === '/') continue;
+      // A root url is skipped, including one behind a stripped host binding.
+      if (normalizeConsumerPath(resolved.replace(/^(?:\$\{[^}]*\})+/, '')) === '/') continue;
       const httpMethod = WRAPPER_METHOD_TO_HTTP[methodNode.text.toLowerCase()] ?? 'GET';
       out.push({
         role: 'consumer',
         framework: 'python-http-wrapper',
         method: httpMethod,
-        path: normalized,
+        // Raw, like the literal sites: a leading `${…}` binding is stripped by
+        // the shared consumer normalizer, which this local one would turn into
+        // a `{param}` segment first.
+        path: resolved,
         name: null,
         line: methodNode.startPosition.row + 1,
         confidence: 0.6,

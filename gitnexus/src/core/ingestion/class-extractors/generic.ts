@@ -92,17 +92,18 @@ export function createClassExtractor(config: ClassExtractionConfig): ClassExtrac
   ]);
 
   const buildQualifiedName = (node: SyntaxNode, simpleName: string): string => {
-    let root = node;
-    while (root.parent) root = root.parent;
-
     const readScopeSegments = (scopeNode: SyntaxNode): string[] =>
       config.extractScopeSegments?.(scopeNode) ??
       extractScopeSegmentsFromNode(scopeNode, scopeNameNodeTypes);
 
     const fileScopeSegments: string[] = [];
-    for (const child of root.namedChildren ?? []) {
-      if (fileScopeSet.has(child.type)) {
-        fileScopeSegments.push(...readScopeSegments(child));
+    if (fileScopeSet.size > 0) {
+      let root = node;
+      while (root.parent) root = root.parent;
+      for (const child of root.namedChildren ?? []) {
+        if (fileScopeSet.has(child.type)) {
+          fileScopeSegments.push(...readScopeSegments(child));
+        }
       }
     }
 

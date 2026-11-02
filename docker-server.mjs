@@ -78,12 +78,26 @@ function numberFromEnv(label, fallback, min = 0) {
   return n;
 }
 
+// A root-relative value — `/`, or `/prefix` when the API is mounted under a
+// path — names no host at all: the browser resolves it against the origin that
+// served the page, so one deployment answers on every hostname a reverse proxy
+// gives it (#3593). Not a URL, so it is read before validHttpUrl would warn.
+// `//host` is protocol-relative, an origin change, and is left to the URL check;
+// so is `/\host`, since the URL parser reads a backslash as a slash.
+function sameOriginPath(value) {
+  if (typeof value !== 'string' || !/^\/(?![/\\])/.test(value)) return null;
+  // A base for `${base}/api/...`: no query, fragment, backslash, whitespace or
+  // control char.
+  if (/[?#\\\s\x00-\x1f\x7f]/.test(value)) return null;
+  return value.replace(/\/+$/, '') || '/';
+}
+
 // Falls back to RENDER_EXTERNAL_URL so a Render web service hands the browser
 // its own public origin — same-origin API calls via the proxy below, no config.
 const backendUrlVar =
   process.env.GITNEXUS_BACKEND_URL !== undefined ? 'GITNEXUS_BACKEND_URL' : 'RENDER_EXTERNAL_URL';
 const rawBackendUrl = process.env.GITNEXUS_BACKEND_URL ?? process.env.RENDER_EXTERNAL_URL ?? null;
-const backendUrl = validHttpUrl(backendUrlVar, rawBackendUrl);
+const backendUrl = sameOriginPath(rawBackendUrl) ?? validHttpUrl(backendUrlVar, rawBackendUrl);
 const configScript = backendUrl
   ? `<script>window.__GITNEXUS_CONFIG__=${jsonForScriptTag({ backendUrl })};</script>`
   : '';

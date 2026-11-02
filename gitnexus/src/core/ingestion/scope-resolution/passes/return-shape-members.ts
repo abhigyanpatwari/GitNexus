@@ -38,9 +38,11 @@
 
 import type { CallableFlowOperand, ParsedFile, Scope, ScopeId } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
+import { answeredSiteKey } from '../resolution-outcome.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId } from '../graph-bridge/ids.js';
+import { referenceEdgeKey } from '../graph-bridge/edges.js';
 import {
   findCallableBindingInScope,
   findClassBindingInScope,
@@ -328,6 +330,13 @@ export function emitReturnShapeMemberAccesses(
   propertyNameIndex: PropertyNameIndex,
   /** Sites this pass resolves, so the name fallback leaves them alone. */
   handledSink: Set<string>,
+  /**
+   * Receives the {@link answeredSiteKey} of every site this pass emitted an edge
+   * for. Narrower than `handledSink`, which also claims a site the producer's
+   * shape DISPROVED — that site is settled, but it has no edge, so a drop
+   * recorded for it must stand.
+   */
+  answeredSink?: Set<string>,
 ): ReturnShapeMemberStats {
   let emitted = 0;
   let memberNotOnShape = 0;
@@ -494,7 +503,7 @@ export function emitReturnShapeMemberAccesses(
       if (callerGraphId === undefined) continue;
       if (callerGraphId === target.id) continue;
 
-      const dedupKey = `ACCESSES:${callerGraphId}->${target.id}:${site.atRange.startLine}:${site.atRange.startCol}`;
+      const dedupKey = referenceEdgeKey('ACCESSES', callerGraphId, target.id, site);
       if (seen.has(dedupKey)) continue;
       seen.add(dedupKey);
 
@@ -509,6 +518,7 @@ export function emitReturnShapeMemberAccesses(
       });
       // Claim the site so the name fallback cannot re-answer it differently.
       handledSink.add(siteKey);
+      answeredSink?.add(answeredSiteKey(parsed.filePath, site.atRange, site.kind, site.name));
       emitted++;
     }
   }

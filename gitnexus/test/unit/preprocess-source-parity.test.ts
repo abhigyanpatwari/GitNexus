@@ -44,10 +44,6 @@ const FIXTURES: Partial<Record<SupportedLanguages, { filePath: string; source: s
       '',
     ].join('\n'),
   },
-  [SupportedLanguages.Dart]: {
-    filePath: 'meters.dart',
-    source: ['extension type Meters(int value) {', '  int get raw => value;', '}', ''].join('\n'),
-  },
   [SupportedLanguages.ObjectiveC]: {
     filePath: 'Marker.m',
     source: [

@@ -26,10 +26,13 @@
  *      instanceof narrowing passes are duplicated from `typescript/captures.ts`
  *      (they are pure AST operations with no grammar-specific logic).
  *
- * Pure given the input source text. No I/O, no globals consulted.
+ * Derives captures from its inputs and records CommonJS classification for
+ * immediate side-channel collection. Performs no I/O.
  */
 
+import { recordCommonJsModuleKind } from '../typescript/module-kind.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import { synthesizeTsJsClassIdentity } from '../typescript/class-identity.js';
 import {
   findNodeAtRange,
   nodeToCapture,
@@ -890,6 +893,8 @@ export function emitJsScopeCaptures(
     });
   }
 
+  recordCommonJsModuleKind(tree.rootNode, filePath);
+
   const rawMatches = getJsScopeQuery(grammarPath).matches(tree.rootNode);
   // Export evidence, read once per file (see `ts-js-export-marker.ts`).
   const exportEvidence = collectEsmExportEvidence(tree.rootNode, filePath);
@@ -909,6 +914,7 @@ export function emitJsScopeCaptures(
       grouped[tag] = nodeToCapture(tag, c.node);
       groupedNodes[tag] = c.node;
     }
+    synthesizeTsJsClassIdentity(grouped, groupedNodes);
     if (Object.keys(grouped).length === 0) continue;
 
     // Decompose ESM import_statement / re-export export_statement.

@@ -439,6 +439,15 @@ Codex uses the [official standalone installer](https://developers.openai.com/cod
 
 ## Troubleshooting
 
+If a native addon fails with `GLIBCXX_3.4.31 not found`, run **Dev Containers:
+Rebuild Container** after updating this checkout. The image uses Debian 13
+(Trixie) with a C++ runtime that supports the packaged tree-sitter binary, while
+keeping Node 22.23.3. Reinstalling npm packages or `g++` in an older Debian 12
+(Bookworm) container does not upgrade that system runtime. The default, native
+workspace, and UI build profiles all use this Dockerfile. If you selected a
+prebuilt image, pull an image published from this change or a later commit and
+recreate the container; a pinned older image keeps its older runtime.
+
 If `[install-deps]` prints `npm warn EBADENGINE` with Node 22.16.0, run **Dev Containers: Rebuild Container** from the Command Palette after updating this checkout. The image now pins Node 22.23.3; workspace dependencies require at least 22.22.2 on the Node 22 line. Re-running `npm install` in the old container does not update its Node runtime.
 
 | Symptom                                                                                      | Likely cause                                                                                                                           | Fix                                                                                                                                                                                                                                                                         |

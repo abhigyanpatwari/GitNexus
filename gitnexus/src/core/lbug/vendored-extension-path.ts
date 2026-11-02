@@ -130,3 +130,21 @@ export const resolveVendoredFtsPath = (opts?: {
   if (!existsSync(candidate)) return null;
   return validateVendoredExtensionPath(candidate, vendorRoot);
 };
+
+/** VECTOR builds must match the core pin; the CDN's compatibility path can drift. */
+export const resolveVendoredVectorPath = (opts?: {
+  tuple?: string;
+  vendorRoot?: string;
+}): string | null => {
+  const vendorRoot = opts?.vendorRoot ?? defaultVendorRoot();
+  const tuple = opts?.tuple ?? nodePlatformTuple();
+  const candidate = path.resolve(
+    vendorRoot,
+    'lbug-vector',
+    'prebuilds',
+    tuple,
+    'libvector.lbug_extension',
+  );
+  if (!existsSync(candidate)) return null;
+  return validateVendoredExtensionPath(candidate, vendorRoot);
+};

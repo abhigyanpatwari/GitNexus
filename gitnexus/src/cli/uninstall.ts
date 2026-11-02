@@ -197,6 +197,29 @@ async function removeHookEntries(
 }
 
 /**
+ * Remove a single file if it exists. Returns true when something was
+ * (or would be) removed. Unlike removeDir, refuses to touch directories —
+ * a plugin target must always resolve to a file.
+ */
+async function removeFile(filePath: string, dryRun: boolean): Promise<boolean> {
+  try {
+    // lstat, not stat: stat follows symlinks, so a dangling plugin symlink
+    // would throw ENOENT and be treated as absent — surviving uninstall at
+    // the auto-loaded plugins path. A symlink (dangling or not) is itself
+    // the thing to unlink; rm never dereferences it.
+    const stat = await fs.lstat(filePath);
+    if (!stat.isFile() && !stat.isSymbolicLink()) return false;
+  } catch (err) {
+    // Only "not there" is a clean no-op; anything else (EACCES, EIO, ...)
+    // must surface — the caller records it in result.errors.
+    if (isEnoent(err)) return false;
+    throw err;
+  }
+  if (!dryRun) await fs.rm(filePath, { force: true });
+  return true;
+}
+
+/**
  * Remove a directory tree if it exists. Returns true when something was
  * (or would be) removed.
  */
@@ -519,6 +542,19 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
         result.removed.push(`${hook.label} hook scripts — ${hook.scriptDir}`);
     } catch (err: any) {
       result.errors.push(`${hook.label} hooks: ${err.message}`);
+    }
+  }
+
+  // ─── Plugin-file hooks (auto-loaded, no settings entry) ─────────
+  // Only the gitnexus-owned plugin file is removed; sibling user plugins in
+  // the same directory are never touched.
+  for (const plugin of targets.plugins) {
+    try {
+      if (await removeFile(plugin.file, dryRun)) {
+        result.removed.push(`${plugin.label} hooks plugin — ${plugin.file}`);
+      }
+    } catch (err: any) {
+      result.errors.push(`${plugin.label} hooks plugin: ${err.message}`);
     }
   }
 

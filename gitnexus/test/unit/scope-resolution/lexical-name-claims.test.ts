@@ -43,12 +43,14 @@ function indexes(
   return {
     scopeTree: {
       getScope: (id: string) => [inner, outer].find((s) => s.id === id),
+      getChildren: (id: string) =>
+        [inner, outer].filter((entry) => entry.parent === id).map((entry) => entry.id),
       byId: new Map([
         [inner.id, inner],
         [outer.id, outer],
       ]),
     },
-    moduleScopes: new Map([['caller.ts', outer.id]]),
+    moduleScopes: { byFilePath: new Map([['caller.ts', outer.id]]) },
     bindings: new Map(),
     bindingAugmentations: new Map(),
     imports: new Map(),
@@ -120,25 +122,264 @@ describe('lexical name ownership', () => {
     const inner = scope('fn', 'module', { lexicalNames: new Set(['helper']) });
     expect(findCallableBindingInScope('fn', 'helper', indexes(inner))).toBeUndefined();
   });
-  it('treats inferred reassignment as a read of the outer binding only with complete claims', () => {
-    const outer = scope('module', null, { bindings: new Map([['helper', [binding]]]) });
+  it.each([
+    ['assignment-inferred', undefined],
+    ['constructor-inferred', 'other'],
+  ] as const)(
+    'treats %s reassignment as a read of the outer binding only with complete claims',
+    (source, carried) => {
+      const outer = scope('module', null, { bindings: new Map([['helper', [binding]]]) });
+      const inner = scope('fn', outer.id, {
+        nameClaims: [],
+        typeBindings: new Map([['helper', { rawName: 'other', source, declaredAtScope: 'fn' }]]),
+      });
+      expect(lexical(inner, outer, 5).scope?.id).toBe(inner.id);
+      const complete = { ...inner, lookupPolicy: { nameClaimsComplete: true } };
+      expect(lexical(complete, outer, 5).bindings).toEqual([binding]);
+      // Only a constructor fact describes the value the write stores.
+      expect(lexical(complete, outer, 5).typeBinding?.rawName).toBe(carried);
+      const parameter = {
+        ...complete,
+        typeBindings: new Map<string, TypeRef>([
+          [
+            'helper',
+            { rawName: 'Callback', source: 'parameter-annotation', declaredAtScope: 'fn' },
+          ],
+        ]),
+      };
+      expect(lexical(parameter, outer, 5).scope?.id).toBe(inner.id);
+      expect(lexical(parameter, outer, 5).typeBinding?.rawName).toBe('Callback');
+    },
+  );
+  it.each([
+    'annotation',
+    'parameter-annotation',
+    'return-annotation',
+    'self',
+    'decorator-unknown',
+  ] as const)('preserves the complete owner %s over a nested constructor fact', (source) => {
+    const declared: TypeRef = {
+      rawName: 'Declared',
+      source,
+      declaredAtScope: 'type-producer',
+      lookupPurpose: 'type',
+      lookupPosition: at(2),
+      bindingRange: at(4),
+    };
+    const outer = scope('module', null, {
+      nameClaims: [{ name: 'helper', kind: 'binding', range: at(4) }],
+      typeBindings: new Map([['helper', declared]]),
+    });
     const inner = scope('fn', outer.id, {
-      nameClaims: [],
+      lookupPolicy: { nameClaimsComplete: true },
       typeBindings: new Map([
-        ['helper', { rawName: 'other', source: 'assignment-inferred', declaredAtScope: 'fn' }],
+        [
+          'helper',
+          {
+            rawName: 'Inferred',
+            source: 'constructor-inferred',
+            declaredAtScope: 'fn',
+            lookupPurpose: 'value',
+            lookupPosition: at(5),
+            bindingRange: at(5),
+          },
+        ],
       ]),
     });
-    expect(lexical(inner, outer, 5).scope?.id).toBe(inner.id);
-    const complete = { ...inner, lookupPolicy: { nameClaimsComplete: true } };
-    expect(lexical(complete, outer, 5).bindings).toEqual([binding]);
-    const parameter = {
-      ...complete,
-      typeBindings: new Map<string, TypeRef>([
-        ['helper', { rawName: 'Callback', source: 'parameter-annotation', declaredAtScope: 'fn' }],
-      ]),
+    const selected = lexical(inner, outer, 6);
+    expect(selected.scope).toBe(outer);
+    expect(selected.typeBinding).toBe(declared);
+  });
+  it.each([
+    undefined,
+    'assignment-inferred',
+    'constructor-inferred',
+    'receiver-propagated',
+  ] as const)('carries the complete constructor fact when the owner fact is %s', (source) => {
+    const carried: TypeRef = {
+      rawName: 'User',
+      source: 'constructor-inferred',
+      declaredAtScope: 'constructor-producer',
+      lookupPurpose: 'value',
+      lookupPosition: at(7),
+      bindingRange: at(5),
     };
-    expect(lexical(parameter, outer, 5).scope?.id).toBe(inner.id);
-    expect(lexical(parameter, outer, 5).typeBinding?.rawName).toBe('Callback');
+    const outer = scope('module', null, {
+      bindings: new Map([['helper', [binding]]]),
+      typeBindings: new Map(
+        source === undefined
+          ? []
+          : [['helper', { rawName: 'Other', source, declaredAtScope: 'module' }]],
+      ),
+    });
+    const inner = scope('fn', outer.id, {
+      lookupPolicy: { nameClaimsComplete: true },
+      typeBindings: new Map([['helper', carried]]),
+    });
+    const selected = lexical(inner, outer, 8);
+    expect(selected.scope).toBe(outer);
+    expect(selected.bindings).toEqual([binding]);
+    expect(selected.typeBinding).toBe(carried);
+  });
+  it.each([
+    { innerLine: 5, outerLine: 9 },
+    { innerLine: 9, outerLine: 5 },
+  ])('carries the nearest skipped fact regardless of positions: %j', ({ innerLine, outerLine }) => {
+    const fact = (name: string, line: number): TypeRef => ({
+      rawName: name,
+      source: 'constructor-inferred',
+      declaredAtScope: name,
+      bindingRange: at(line),
+    });
+    const nearest = fact('Nearest', innerLine);
+    const owner = scope('module', null, { bindings: new Map([['helper', [binding]]]) });
+    const middle = scope('middle', owner.id, {
+      lookupPolicy: { nameClaimsComplete: true },
+      typeBindings: new Map([['helper', fact('Farther', outerLine)]]),
+    });
+    const inner = scope('fn', middle.id, {
+      lookupPolicy: { nameClaimsComplete: true },
+      typeBindings: new Map([['helper', nearest]]),
+    });
+    const selected = lookupLexicalName(inner.id, 'helper', {
+      scopes: { getScope: (id) => [inner, middle, owner].find((entry) => entry.id === id) },
+    });
+    expect(selected.scope).toBe(owner);
+    expect(selected.typeBinding).toBe(nearest);
+  });
+  it('keeps a genuinely declared constructor binding local with complete claims', () => {
+    const typeRef: TypeRef = {
+      rawName: 'Local',
+      source: 'constructor-inferred',
+      declaredAtScope: 'fn',
+      bindingRange: at(4),
+    };
+    const inner = scope('fn', 'module', {
+      lookupPolicy: { nameClaimsComplete: true },
+      nameClaims: [{ name: 'helper', kind: 'binding', range: at(4) }],
+      typeBindings: new Map([['helper', typeRef]]),
+    });
+    const selected = lexical(inner, scope('module', null), 5);
+    expect(selected.scope).toBe(inner);
+    expect(selected.typeBinding).toBe(typeRef);
+  });
+  it('filters a mismatched owner fact before choosing a carried constructor fact', () => {
+    const carried: TypeRef = {
+      rawName: 'User',
+      source: 'constructor-inferred',
+      declaredAtScope: 'fn',
+      bindingRange: at(6),
+    };
+    const outer = scope('module', null, {
+      nameClaims: [{ name: 'helper', kind: 'binding', range: at(4) }],
+      typeBindings: new Map([
+        [
+          'helper',
+          {
+            rawName: 'Other',
+            source: 'annotation',
+            declaredAtScope: 'module',
+            bindingRange: at(8),
+          },
+        ],
+      ]),
+    });
+    const inner = scope('fn', outer.id, {
+      lookupPolicy: { nameClaimsComplete: true },
+      typeBindings: new Map([['helper', carried]]),
+    });
+    expect(lexical(inner, outer, 7).typeBinding).toBe(carried);
+  });
+  it('does not carry a declaration fact from another namespace', () => {
+    const outer = scope('module', null, { bindings: new Map([['helper', [binding]]]) });
+    const inner = scope('fn', outer.id, {
+      lookupPolicy: { nameClaimsComplete: true },
+      nameClaims: [{ name: 'helper', kind: 'binding', purpose: 'type', range: at(4) }],
+      typeBindings: new Map([
+        ['helper', { rawName: 'Other', source: 'constructor-inferred', declaredAtScope: 'fn' }],
+      ]),
+    });
+    const selected = lexical(inner, outer, 6);
+    expect(selected.bindings).toEqual([binding]);
+    expect(selected.typeBinding).toBeUndefined();
+  });
+  it('does not invent a binding for a write to an absent name, but keeps its type', () => {
+    const inner = scope('fn', 'module', {
+      lookupPolicy: { nameClaimsComplete: true },
+      typeBindings: new Map([
+        ['helper', { rawName: 'User', source: 'constructor-inferred', declaredAtScope: 'fn' }],
+      ]),
+    });
+    const outer = scope('module', null);
+    const selected = lexical(inner, outer, 6);
+    expect(selected.status).toBe('absent');
+    expect(selected.bindings).toEqual([]);
+    expect(selected.typeBinding?.rawName).toBe('User');
+    // `function init() { client = new ApiClient(); client.connect(); }` keeps
+    // its receiver type although no scope declares `client`.
+    expect(findReceiverTypeBinding(inner.id, 'helper', indexes(inner, outer))?.rawName).toBe(
+      'User',
+    );
+  });
+  it('preserves source-position write identity only when explicitly requested', () => {
+    const imported: ImportEdge = {
+      localName: 'helper',
+      kind: 'named',
+      targetFile: 'outer.ts',
+      targetExportedName: 'helper',
+      atRange: at(1),
+    };
+    const importedBinding = { ...binding, via: imported };
+    const outer = scope('module', null, {
+      imports: [imported],
+      bindings: new Map([['helper', [importedBinding]]]),
+      nameClaims: [
+        { name: 'helper', kind: 'import', range: at(1), hoisted: true },
+        { name: 'helper', kind: 'blocked', range: at(5), availableFrom: at(6) },
+      ],
+    });
+    const inner = scope('fn', outer.id, {
+      lookupPolicy: { nameClaimsComplete: true, deferParentActivation: true },
+      typeBindings: new Map([
+        ['helper', { rawName: 'User', source: 'constructor-inferred', declaredAtScope: 'fn' }],
+      ]),
+    });
+    const sources = {
+      scopes: { getScope: (id: string) => [inner, outer].find((entry) => entry.id === id) },
+    };
+    const ordinary = lookupLexicalName(inner.id, 'helper', sources, { position: at(5) });
+    expect(ordinary.status).toBe('blocked');
+    expect(ordinary.bindings).toEqual([]);
+    const write = lookupLexicalName(inner.id, 'helper', sources, {
+      position: at(5),
+      preservePosition: true,
+    });
+    expect(write.scope).toBe(outer);
+    expect(write.bindings).toEqual([importedBinding]);
+  });
+  it('keeps the write position across a module redirect only when requested', () => {
+    const declared: BindingRef = { def: target, origin: 'local', declarationRange: at(6) };
+    const outer = scope('module', null, {
+      bindings: new Map([['helper', [declared]]]),
+      nameClaims: [{ name: 'helper', kind: 'binding', range: at(6), availableFrom: at(7) }],
+    });
+    const inner = scope('fn', outer.id, {
+      lookupPolicy: { deferParentActivation: true },
+      nameClaims: [
+        { name: 'helper', kind: 'binding', range: at(8), availableFrom: at(9), inactive: 'module' },
+      ],
+    });
+    const sources = {
+      scopes: { getScope: (id: string) => [inner, outer].find((entry) => entry.id === id) },
+    };
+    const deferred = lookupLexicalName(inner.id, 'helper', sources, { position: at(5) });
+    expect(deferred.status).toBe('resolved');
+    expect(deferred.bindings).toEqual([declared]);
+    const write = lookupLexicalName(inner.id, 'helper', sources, {
+      position: at(5),
+      preservePosition: true,
+    });
+    expect(write.status).toBe('blocked');
   });
   it('joins a hoisted return annotation to the selected declaration anchor', () => {
     const method: SymbolDefinition = {

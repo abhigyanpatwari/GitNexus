@@ -39,6 +39,7 @@ def rows():
             "task_base_sha": "d" * 40,
             "oracle_digest": "e" * 64,
             "sandbox_backend": "bwrap",
+            "runtime_exposure": "none" if arm == "baseline_nomcp" else "stdio-only",
             "sandbox_dependency_content_digest": "9" * 64,
             "ok": True,
             "resolved": arm == "baseline_nomcp" or run != 1,
@@ -121,6 +122,24 @@ def test_evidence_is_bound_to_revision_task_set_repetitions_and_age(change):
 def test_gate_recomputes_measurements_instead_of_trusting_totals():
     report = build_report(rows(), metadata(), now=NOW)
     report["arms"]["baseline"]["solved"] = 3
+    with pytest.raises(ValueError, match="summary"):
+        validate_report(report, runtime_sha=SHA, task_set_digest=DIGEST, now=NOW)
+
+
+@pytest.mark.parametrize("exposure", [None, "readable", "none"])
+def test_mcp_measurements_require_host_recorded_socket_isolation(exposure):
+    measured = rows()
+    for row in measured:
+        row["runtime_exposure"] = "none" if row["arm"] == "baseline_nomcp" else "stdio-only"
+    measured[1]["runtime_exposure"] = exposure
+    assert build_report(measured, metadata(), now=NOW)["complete"] is False
+
+
+def test_historical_renderer_does_not_claim_socket_isolation():
+    report = build_report(rows(), metadata(), now=NOW)
+    for row in report["per_run"]:
+        row.pop("runtime_exposure", None)
+    assert "readable compiled runtime" in render_markdown(report)
     with pytest.raises(ValueError, match="summary"):
         validate_report(report, runtime_sha=SHA, task_set_digest=DIGEST, now=NOW)
 

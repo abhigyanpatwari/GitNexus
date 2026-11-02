@@ -146,6 +146,39 @@ export function normalizeGoReturnType(text: string): string {
   return t;
 }
 
+/** `pkg.Type` and nothing else: one qualifier, both halves Go identifiers
+ *  (letters per the spec, so Unicode, not just ASCII). */
+const GO_QUALIFIED_TYPE_NAME_RE = /^[\p{L}_][\p{L}\p{Nd}_]*\.[\p{L}_][\p{L}\p{Nd}_]*$/u;
+
+/**
+ * Go's `ScopeResolver.qualifiedTypeLookupSpelling`: the `pkg.Type` a binding's
+ * written type names, or `undefined` when it names no package.
+ *
+ * `normalizeGoTypeName` cuts the qualifier at capture (`*models.User` →
+ * `User`), so `rawName` cannot tell `models.User` from `api.User`. The written
+ * spelling (`TypeRef.declaredSpelling`) still has it, and `normalizeGoReturnType`
+ * — the reduction return types already get — strips the same pointer, slice,
+ * map, channel and func wrappers while keeping it. A `rawName` that is already
+ * qualified (a return type) needs nothing from here.
+ */
+export function goQualifiedTypeLookupSpelling(typeRef: TypeRef): string | undefined {
+  const written = typeRef.declaredSpelling;
+  // No `.` in the written type means no qualifier to recover; most bindings
+  // take this exit before any wrapper stripping.
+  if (written === undefined || !written.includes('.') || typeRef.rawName.includes('.')) {
+    return undefined;
+  }
+  // `func() *models.User` leaves `*models.User` after the return is unwrapped.
+  const qualified = stripGoOuterTypePrefixes(normalizeGoReturnType(written));
+  // The spelling must name `rawName` itself, only qualified: that is the cut
+  // `normalizeGoTypeName` made. A binding whose type a chain step replaced
+  // (`u *models.User` landing on a package-level `User *auth.Principal`) keeps
+  // its own spelling but not its own `rawName`, and must not borrow either.
+  return GO_QUALIFIED_TYPE_NAME_RE.test(qualified) && qualified.endsWith(`.${typeRef.rawName}`)
+    ? qualified
+    : undefined;
+}
+
 function stripGoOuterTypePrefixes(text: string): string {
   let t = text.trim();
   let previous: string;

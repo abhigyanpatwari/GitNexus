@@ -326,31 +326,14 @@ function importedReceiverIsReassigned(
       const node = occurrence.node;
       if (!node || !receiverWrite(node)) continue;
       const scope = innermostRenameScope(other.parsed, node);
-      let written = scope
+      const written = scope
         ? lookupNameClaim(scope, occurrence.name, context.indexes, {
             position: nodeRange(node),
+            // Resolve the written binding before this write invalidates its import proof.
+            preservePosition: true,
             purpose: 'value',
           })
         : undefined;
-      // Assignment inference describes a value, not a new lexical declaration.
-      // Continue only when the provider's complete claims prove this scope
-      // declares no binding; the eventual import must still resolve by identity.
-      while (
-        written?.scope?.lookupPolicy?.nameClaimsComplete &&
-        written.claims.length === 0 &&
-        written.bindings.length === 0 &&
-        written.imports.length === 0 &&
-        (written.typeBinding?.source === 'constructor-inferred' ||
-          written.typeBinding?.source === 'assignment-inferred')
-      ) {
-        const parent = written.scope.lookupPolicy.parentScope ?? written.scope.parent;
-        if (!parent) break;
-        written = lookupNameClaim(parent, occurrence.name, context.indexes, {
-          // Resolve the binding being written, before this write's blocker.
-          position: nodeRange(node),
-          purpose: 'value',
-        });
-      }
       if (written && written.bindings.some(({ def }) => def.nodeId === declarationId)) {
         cache.set(declarationId, true);
         return true;

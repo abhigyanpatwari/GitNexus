@@ -117,7 +117,9 @@ export const EXPECTATIONS = [
     id: 'routes.helper-registration',
     issue: 3487,
     title: 'Literal route forwarded through a local helper',
-    expected: ['GET /api/progress src/server/api.ts'],
+    // Like every Express route, it belongs to the file of its `app.get` call,
+    // which is also where its handler and response keys are.
+    expected: ['GET /api/progress src/server/progress.ts'],
   },
   {
     id: 'api.template-wrapper',

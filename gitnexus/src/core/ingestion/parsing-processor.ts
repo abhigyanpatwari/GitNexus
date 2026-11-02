@@ -1,4 +1,4 @@
-import type { FetchWrapperCall } from './route-extractors/fetch-wrapper.js';
+import type { FetchWrapperCall, FetchWrapperReexport } from './route-extractors/fetch-wrapper.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import type { SymbolTableWriter } from './model/index.js';
@@ -39,6 +39,7 @@ export interface WorkerExtractedData {
   fetchCalls: ExtractedFetchCall[];
   fetchWrapperDefs: FetchWrapperDef[];
   fetchWrapperCalls: FetchWrapperCall[];
+  fetchWrapperReexports: FetchWrapperReexport[];
   decoratorRoutes: ExtractedDecoratorRoute[];
   routeFacts?: { filePath: string; facts: unknown; routePosition: number }[];
   routerIncludes: ExtractedRouterInclude[];
@@ -122,6 +123,7 @@ export const mergeChunkResults = (
   const allFetchCalls: ExtractedFetchCall[] = [];
   const allFetchWrapperDefs: FetchWrapperDef[] = [];
   const allFetchWrapperCalls: FetchWrapperCall[] = [];
+  const allFetchWrapperReexports: FetchWrapperReexport[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
   const allRouteFacts: { filePath: string; facts: unknown; routePosition: number }[] = [];
   const allRouterIncludes: ExtractedRouterInclude[] = [];
@@ -174,6 +176,7 @@ export const mergeChunkResults = (
     for (const item of result.fetchCalls) allFetchCalls.push(item);
     for (const item of result.fetchWrapperDefs ?? []) allFetchWrapperDefs.push(item);
     for (const item of result.fetchWrapperCalls ?? []) allFetchWrapperCalls.push(item);
+    for (const item of result.fetchWrapperReexports ?? []) allFetchWrapperReexports.push(item);
     for (const item of result.routeFacts ?? [])
       allRouteFacts.push({
         ...item,
@@ -203,6 +206,7 @@ export const mergeChunkResults = (
     fetchCalls: allFetchCalls,
     fetchWrapperDefs: allFetchWrapperDefs,
     fetchWrapperCalls: allFetchWrapperCalls,
+    fetchWrapperReexports: allFetchWrapperReexports,
     decoratorRoutes: allDecoratorRoutes,
     routeFacts: allRouteFacts,
     routerIncludes: allRouterIncludes,

@@ -74,3 +74,32 @@ export function isTestRouteFile(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, '/');
   return isTestFilePath(normalized) || /(^|\/)e2e(\/|$)/i.test(normalized);
 }
+
+/**
+ * Strip LEADING template interpolations from a consumer url as gateway/host
+ * bindings — the enterprise wrapper shape `` `${serviceClient}/api/v1/x` ``
+ * where `${serviceClient}` selects the gateway service, not a route segment.
+ * This is consumer-path framework semantics (mirrors how an absolute
+ * `https://host/path` url keeps only its path), so the group consumer
+ * normalizer and the graph's `normalizeFetchURL` (#3488) share it rather than
+ * any one language plugin owning it:
+ *   - `` `${c}/api/x` ``      → `/api/x`   (clean prefix; `${c}${d}/api/x` → `/api/x`)
+ *   - `` `${c}/api/x/${id}` ``→ `/api/x/${id}` (mid/tail interpolations are left for the `{param}` pass)
+ * Returns null when the stripped remainder is not a single-slash path:
+ *   - remainder without `/` — relative fragment (`${c}api/x`) or scheme/host
+ *     (`${scheme}://${host}/api/x`); whether it is a path depends on
+ *     unverifiable runtime state, so it is dropped rather than guessed at;
+ *   - remainder starting with `//` — protocol-relative (`${proto}//host/api/x`);
+ *     keeping it would later collapse to `/host/api/x`.
+ *
+ * The `?` in a query string cannot leak into the brace matching: `${...}`
+ * spans are matched by braces here (before any `{param}` replacement), and
+ * `normalizeHttpPath` splits on `?` only after the whole `${...}` span —
+ * including any `?` inside it — has been collapsed to `{param}`. So
+ * `` `${c}/api/x?id=${id}` `` reduces to `/api/x` on both orderings.
+ */
+export function stripLeadingTemplatePrefix(url: string): string | null {
+  if (!url.startsWith('${')) return url;
+  const rest = url.replace(/^(?:\$\{[^}]*\})+/, '');
+  return rest.startsWith('/') && !rest.startsWith('//') ? rest : null;
+}

@@ -35,16 +35,16 @@ the native C API, without GitNexus, its parser, or the Node binding. Applying
 rebuilding removed both failures using the same CSV input and FTS extension
 (`v0.18.1/linux_amd64`, the extension ABI used by core 0.18.3).
 
-| Observation after selective COPY | Untouched 0.18.3 | 0.18.3 + #737 only |
-| --- | --- | --- |
-| Label-free retained UID lookup | 0 rows | Correct row |
-| Label-free retained name lookup | 0 rows | Correct row |
-| Labeled primary-key control | Correct row | Correct row |
-| Function scan with blank ID/name | 1,984 rows | 0 rows |
-| Property FTS creation | `LOWER: Invalid UTF-8` | Success |
-| Property scan with blank ID/name | 1,984 rows | 0 rows |
-| Property `LOWER(content)` | `Invalid UTF-8` | Success |
-| Drop/recreate Property FTS | Missing index / orphan table | Success |
+| Observation after selective COPY | Untouched 0.18.3             | 0.18.3 + #737 only |
+| -------------------------------- | ---------------------------- | ------------------ |
+| Label-free retained UID lookup   | 0 rows                       | Correct row        |
+| Label-free retained name lookup  | 0 rows                       | Correct row        |
+| Labeled primary-key control      | Correct row                  | Correct row        |
+| Function scan with blank ID/name | 1,984 rows                   | 0 rows             |
+| Property FTS creation            | `LOWER: Invalid UTF-8`       | Success            |
+| Property scan with blank ID/name | 1,984 rows                   | 0 rows             |
+| Property `LOWER(content)`        | `Invalid UTF-8`              | Success            |
+| Drop/recreate Property FTS       | Missing index / orphan table | Success            |
 
 The Node fixtures also fail on published core 0.18.3 and pass on 0.21.1. Incorrect
 tuple counts vary with the fixture and scan shape (1,984 or 3,936 observed).
@@ -70,6 +70,7 @@ From `gitnexus/`:
 ```sh
 node bench/incremental-write-integrity/reproduce-search.cjs context
 node bench/incremental-write-integrity/reproduce-search.cjs property
+node bench/incremental-write-integrity/reproduce-search.cjs embedding
 npx vitest run test/integration/lbug-incremental-search.test.ts
 ```
 
@@ -85,6 +86,14 @@ Each workload loads 8,192 rows, checkpoints, deletes the first and last owners
   builds all three FTS columns, checks the catalog and a retained unique search
   term, exercises `LOWER` on each column, and drops/recreates the index. It uses
   the production FTS result shape (`RETURN node, score`).
+- `embedding` (#3569, #3474) uses the production `CodeEmbedding` schema
+  (`FLOAT[384]`) and the writeback's own statements, never `COPY`: exact-id
+  `DELETE` then `CREATE` for every row (the baseline in one transaction), then
+  `DELETE` by `nodeId` and re-insert for the changed owners. On 0.18.3 the
+  table scans 3,936 wrong tuples after the checkpoint, and the `{nodeId}` lookup
+  that the stale-row delete and cache readers depend on misses a retained row.
+  That is how unchanged nodes were selected for re-embedding, and how blank or
+  truncated ids reached the `CodeEmbedding` key.
 
 Both compare the complete expected tuple set before/after the write, after an
 explicit checkpoint, and after read-only reopen. The Property fixture also

@@ -9,7 +9,7 @@ import * as adapter from '../../src/core/lbug/lbug-adapter.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { SYMBOL_IDENTITY_RECOVERY_SUGGESTION } from '../../src/mcp/local/query-result-integrity.js';
-import { createMCPServer, getNextStepHint } from '../../src/mcp/server.js';
+import { createMCPServer } from '../../src/mcp/server.js';
 import { getStoragePaths } from '../../src/storage/repo-manager.js';
 import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 import { createTempDir } from '../helpers/test-db.js';
@@ -62,6 +62,14 @@ describe('query identity boundary through the real MCP server', () => {
     await fs.mkdir(path.join(repo, 'src'), { recursive: true });
     await fs.writeFile(path.join(repo, '.gitignore'), '.gitnexus/\n');
     await fs.writeFile(path.join(repo, 'src/fixture.ts'), SOURCE);
+    await fs.writeFile(
+      path.join(repo, 'src/fixture.py'),
+      'class Fixture:\n    def integrityNeedle(self):\n        return 42\n',
+    );
+    await fs.writeFile(
+      path.join(repo, 'src/fixture.swift'),
+      'struct IntegrityNeedle {\n    let value = 42\n}\n',
+    );
     initGitRepo(repo);
     execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: repo });
     commitAll(repo, 'source-derived query fixture');
@@ -87,7 +95,12 @@ describe('query identity boundary through the real MCP server', () => {
     await temp?.cleanup();
   });
 
-  async function query(mutate?: () => Promise<void>, legacy = false, target = repo): Promise<any> {
+  async function query(
+    mutate?: () => Promise<void>,
+    legacy = false,
+    target = repo,
+    includeContent = true,
+  ): Promise<any> {
     await fs.copyFile(snapshot, lbugPath);
     if (mutate) {
       await adapter.initLbug(lbugPath);
@@ -105,7 +118,7 @@ describe('query identity boundary through the real MCP server', () => {
     const args = {
       repo: target,
       [legacy ? 'query' : 'search_query']: 'integrityNeedle',
-      include_content: true,
+      include_content: includeContent,
       chain_depth: 1,
     };
     try {
@@ -114,8 +127,7 @@ describe('query identity boundary through the real MCP server', () => {
       expect(result.isError).not.toBe(true);
       const content = result.content as Array<{ type: string; text: string }>;
       const text = content.find((item) => item.type === 'text')!.text;
-      const hint = getNextStepHint('query', args);
-      return JSON.parse(hint ? text.slice(0, -hint.length) : text);
+      return JSON.parse(text);
     } finally {
       await client.close();
       await server.close();
@@ -140,7 +152,55 @@ describe('query identity boundary through the real MCP server', () => {
     expect(result.processes.length).toBeGreaterThan(0);
   });
 
+  it.each(['x'.repeat(538_895), '"\\\n😀'.repeat(30_000)])(
+    'bounds source previews in native queries without losing matches (%#)',
+    async (source) => {
+      const setSource = async () => {
+        for (const label of ['Function', 'Class', 'Method', 'Struct', 'File']) {
+          await adapter.executePrepared(`MATCH (n:${label}) SET n.content = $source`, { source });
+        }
+      };
+      const before = await query(setSource, false, repo, false);
+      const result = await query(setSource);
+      expect(result).not.toHaveProperty('error');
+      expect(result).not.toHaveProperty('partial');
+      expect(result.processes).toEqual(before.processes);
+      const rows = [...result.process_symbols, ...result.definitions];
+      expect(rows.map(({ id, process_id }) => ({ id, process_id }))).toEqual(
+        [...before.process_symbols, ...before.definitions].map(({ id, process_id }) => ({
+          id,
+          process_id,
+        })),
+      );
+      const previews = rows.filter((row) => row.content !== undefined);
+      expect(previews.some((row) => row.id === UID)).toBe(true);
+      expect(new Set(previews.map((row) => row.id)).size).toBe(previews.length);
+      expect(previews.reduce((sum, row) => sum + [...row.content].length, 0)).toBeLessThanOrEqual(
+        16_000,
+      );
+      for (const row of previews) {
+        expect(row.content.length).toBeGreaterThan(0);
+        expect(source.startsWith(row.content)).toBe(true);
+        expect(row.content).not.toContain('\uFFFD');
+        expect(row.content_truncated).toBe(true);
+      }
+      const backend = new LocalBackend();
+      try {
+        await backend.init();
+        const full = await backend.callTool('context', { repo, uid: UID, include_content: true });
+        expect(full.symbol.content).toBe(source);
+      } finally {
+        await backend.dispose();
+      }
+    },
+  );
+
   it.each([
+    [
+      'path inconsistent with the symbol UID',
+      'MATCH (n:Function {id: $uid}) SET n.filePath = $value',
+      'Sources/Unrelated.swift',
+    ],
     ['NUL symbol name', 'MATCH (n:Function {id: $uid}) SET n.name = $value', 'invalid\0name'],
     ['NUL symbol path', 'MATCH (n:Function {id: $uid}) SET n.filePath = $value', 'invalid\0path'],
     ['NUL process label', 'MATCH (p:Process) SET p.label = $value', 'invalid\0process'],
@@ -165,6 +225,35 @@ describe('query identity boundary through the real MCP server', () => {
       );
       await adapter.dropFTSIndex('Function', 'function_fts');
       await adapter.createFTSIndex('Function', 'function_fts', ['name', 'content', 'description']);
+    });
+    expect(result.error).toContain('invalid symbol identity');
+    expect(result.recoverySuggestion).toBe(SYMBOL_IDENTITY_RECOVERY_SUGGESTION);
+    expect(result).not.toHaveProperty('definitions');
+  });
+
+  it.each([
+    {
+      table: 'Method',
+      uid: 'Method:src/fixture.py:Fixture.integrityNeedle#0',
+      field: 'filePath',
+      value: 'src/fixture.swift',
+    },
+    {
+      table: 'Struct',
+      uid: 'Struct:src/fixture.swift:IntegrityNeedle',
+      field: 'name',
+      value: '\0\0\0\0',
+    },
+  ])('rejects the injected #3527 $table/$field shape', async ({ table, uid, field, value }) => {
+    const result = await query(async () => {
+      // Prove the source-derived fixture contains the target before injecting the fault.
+      expect(
+        await adapter.executePrepared(`MATCH (n:${table} {id: $uid}) RETURN n.id AS id`, { uid }),
+      ).toEqual([{ id: uid }]);
+      await adapter.executePrepared(`MATCH (n:${table} {id: $uid}) SET n.${field} = $value`, {
+        uid,
+        value,
+      });
     });
     expect(result.error).toContain('invalid symbol identity');
     expect(result.recoverySuggestion).toBe(SYMBOL_IDENTITY_RECOVERY_SUGGESTION);

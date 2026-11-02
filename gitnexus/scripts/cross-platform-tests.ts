@@ -31,6 +31,9 @@ const PLATFORM_LOGIC = [
   'test/unit/setup-codex.test.ts',
   'test/unit/setup-antigravity.test.ts',
   'test/integration/setup-uninstall-roundtrip.test.ts',
+  'test/unit/opencode-plugin.test.ts',
+  'test/integration/opencode-plugin.test.ts',
+  'test/unit/uninstall.test.ts',
   'test/unit/resolve-invocation.test.ts',
   // CLI-spawn entry-point resolution; its path-separator assertion (cli[/\\]index)
   // must exercise the Windows backslash branch, so run it on the OS matrix (#2394).
@@ -161,6 +164,10 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
+  'test/integration/java-overload-impact-persistence.test.ts',
+  'test/integration/dangling-owner-edges.test.ts',
+  'test/integration/impact-private-type-file-seed.test.ts',
+  'test/integration/impact-private-type-source.test.ts',
   // Inline-handler findings must survive native persistence and cold explain
   // readers on each OS; passing the Ubuntu-only taint suite is insufficient.
   'test/integration/taint-explain.test.ts',
@@ -188,6 +195,9 @@ const LBUG_NATIVE = [
   'test/integration/rename-provider-zig.test.ts',
   'test/integration/pdg-explicit-owner.test.ts',
   'test/integration/skip-fts.test.ts',
+  // Dirty snapshot freshness depends on native FTS, Git paths and file reads.
+  'test/integration/analyze-dirty-snapshot.test.ts',
+  'test/integration/incremental-worktree-context.test.ts',
   'test/integration/lbug-core-adapter.test.ts',
   // Native COPY, cached vectors and cold shared-store readers vary by platform.
   'test/integration/embedding-identity-integrity.test.ts',
@@ -202,12 +212,16 @@ const LBUG_NATIVE = [
   'test/integration/lbug-close-handle-release.test.ts',
   'test/integration/lbug-orphan-sidecar-recovery.test.ts',
   'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
+  'test/integration/lbug-checkpoint-accounting.test.ts',
+  'test/integration/lbug-rel-copy-page-padding.test.ts',
   'test/integration/lbug-incremental-search.test.ts',
   // Retained identities and reader metadata must agree on every native platform.
   'test/integration/incremental-method-integrity.test.ts',
   'test/integration/go-incremental-method-owners.test.ts',
   'test/integration/query-symbol-integrity.test.ts',
   'test/integration/mcp-index-generation.test.ts',
+  // A real refresh worker must preserve active readers or report native contention.
+  'test/integration/mcp-refresh-index-e2e.test.ts',
   'test/integration/fts-repair-warm-session.test.ts',
   'test/unit/lbug-pool-pinning.test.ts',
   'test/unit/hybrid-search.test.ts',
@@ -219,6 +233,7 @@ const LBUG_NATIVE = [
   'test/integration/group/cross-trace-e2e.test.ts',
   'test/integration/group/graphql-resolve-symbol.test.ts',
   'test/integration/local-backend.test.ts',
+  'test/integration/bm25-symbol-hydration.test.ts',
   'test/integration/local-backend-calltool.test.ts',
   'test/integration/search-core.test.ts',
   'test/integration/search-pool.test.ts',
@@ -263,6 +278,10 @@ const LBUG_NATIVE = [
 // process spawning, which behaves differently across platforms (shell
 // quoting, path resolution, signal handling)
 const SPAWN_CLI = [
+  'test/integration/resolvers/java-javac-overloads.test.ts',
+  // Real shard/blob/JSON roundtrip: path identities and child invocation vary by OS.
+  'test/unit/shard-timings-roundtrip.test.ts',
+  'test/unit/run-cross-platform.test.ts',
   'test/integration/cli-e2e.test.ts',
   'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',
@@ -317,9 +336,8 @@ const SPAWN_CLI = [
   // earlier attempt to register them still turned the matrix red — not from
   // their own cost, but because vitest sharded by file COUNT, so inserting any
   // file re-partitioned the list and happened to cluster `cli-e2e` (621 s) with
-  // `cli-limit-e2e` (75 s) on one shard. The split is weight-aware now
-  // (`scripts/cross-platform-shard.ts`), so a cheap file can no longer move a
-  // heavy one.
+  // `cli-limit-e2e` (75 s) on one shard. PerfSequencer now uses recorded timings
+  // through vitest-shard-balancer, shared by all shards in each workflow run.
   //
   // #2802: MCP startup must not eagerly load the analyze-only language
   // provider registry or the group contract extractors.
@@ -339,18 +357,25 @@ const WORKER_THREADS = [
   // Native callback parsing and exact caller/summary ownership (#3489).
   'test/integration/cfg/interproc-taint.test.ts',
   'test/integration/function-local-identity.test.ts',
+  'test/integration/java-imported-return-types.test.ts',
+  'test/integration/resolvers/java-overload-jls.test.ts',
   'test/unit/community-processor.test.ts',
   'test/integration/worker-pool.test.ts',
+  'test/integration/class-expression-owners.test.ts',
   'test/integration/parse-impl-quarantine-cache-skip.test.ts',
   // Real parse workers and both on-disk parse stores must retain lexical
   // local-import ownership on each platform's native grammar/runtime pair.
   'test/integration/local-import-worker-parity.test.ts',
   'test/integration/resolvers/local-import-persistence.test.ts',
+  // The same worker and store path for fetch-wrapper facts and their resolution.
+  'test/integration/resolvers/fetch-wrapper-persistence.test.ts',
 ];
 
-// Tree-sitter native addon smoke tests — verify that native grammars
-// load correctly on each platform (binary compatibility, .node loading)
+// Native addon smoke tests — verify binary compatibility and recovery on each OS.
 const NATIVE_ADDON_SMOKE = [
+  // bunx skips the native install copy; recover it before recording identity.
+  'test/unit/lbug-native-check.test.ts',
+  'test/unit/lazy-action.test.ts',
   'test/integration/tree-sitter-languages.test.ts',
   'test/integration/parsing.test.ts',
   'test/integration/pipeline.test.ts',
@@ -380,6 +405,8 @@ const FILESYSTEM = [
   'test/integration/filesystem-walker.test.ts',
   'test/integration/analyze-directory-symlinks.test.ts',
   'test/integration/watch-filesystem.test.ts',
+  'test/unit/watch-external-config.test.ts',
+  'test/integration/server-route-hook-config.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
   'test/integration/ignore-and-skip-e2e.test.ts',
   // Pins that the bridge pairing verdict is measured before the database is

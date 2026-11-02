@@ -124,6 +124,7 @@ export function collectFunctionCfgs(
   // Site anchors must match the coordinate space of scope reference captures.
   siteCoordinates: 'source' | 'parse-buffer' = 'source',
 ): CollectedCfgs {
+  visitor = visitor.forFile?.(root, filePath) ?? visitor;
   const cfgs: FunctionCfg[] = [];
   let tooManyLines = 0;
   let tooDeeplyNested = 0;

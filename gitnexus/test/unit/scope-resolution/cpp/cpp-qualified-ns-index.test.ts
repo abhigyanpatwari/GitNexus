@@ -23,6 +23,7 @@ import {
   markCppInlineNamespaceRange,
   populateCppInlineNamespaceScopes,
   resolveCppQualifiedNamespaceMember,
+  splitCppQualifiedCallee,
 } from '../../../../src/core/ingestion/languages/cpp/inline-namespaces.js';
 
 const NO_SCOPES = {} as unknown as ScopeResolutionIndexes;
@@ -329,5 +330,20 @@ describe('C++ qualified-namespace member index (#2788)', () => {
     clearCppInlineNamespaces();
     markInline(files[0], specs, []);
     expect(resolveCppQualifiedNamespaceMember('outer', 'foo', files, NO_SCOPES)).toBeUndefined();
+  });
+});
+
+describe('splitCppQualifiedCallee', () => {
+  // Keep the written namespace path so a factory result cannot borrow a
+  // same-named nested namespace from another outer namespace.
+  it.each<[string, { receiver: string; member: string } | undefined]>([
+    ['rp::make', { receiver: 'rp', member: 'make' }],
+    ['a::b::make', { receiver: 'a::b', member: 'make' }],
+    ['ns::Box<a::B>::make', { receiver: 'ns::Box<a::B>', member: 'make' }],
+    ['make', undefined],
+    ['::make', undefined],
+    ['Box<a::B>', undefined],
+  ])('%s -> %j', (callee, expected) => {
+    expect(splitCppQualifiedCallee(callee)).toEqual(expected);
   });
 });

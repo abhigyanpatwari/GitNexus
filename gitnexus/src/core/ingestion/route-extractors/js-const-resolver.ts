@@ -131,7 +131,7 @@ export interface JsRepoFacts {
  *
  * A tail lookup only ever matches keys whose last segment equals the
  * candidate's last segment, so the bucket is the entire search space — turning
- * an O(files) sweep per candidate into one map hit. `import-resolvers/utils.ts`
+ * an O(files) sweep per candidate into one map hit. `utils/suffix-index.ts`
  * already ships `buildSuffixIndex` for the same job, but it keeps only a first
  * winner per suffix; this index has to SEE a collision to refuse it (below), so
  * it keeps the whole bucket.

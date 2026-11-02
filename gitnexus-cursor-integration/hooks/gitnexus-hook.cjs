@@ -472,11 +472,12 @@ let unixGuardTimeoutCache;
  *     check, so the hook would emit NO additional_context at all — a
  *     silently dead augmentation rather than a visible failure.
  */
-function passesGuardSelfTest(guard) {
+function passesGuardSelfTest(guard, timeout) {
   try {
     const selfTest = spawnSync(guard, ['-k', '1', '1', '/bin/sh', '-c', 'exit 42'], {
       encoding: 'utf-8',
-      timeout: 3000,
+      timeout,
+      killSignal: 'SIGKILL',
       stdio: ['ignore', 'ignore', 'ignore'],
       windowsHide: true,
     });
@@ -500,17 +501,18 @@ function passesGuardSelfTest(guard) {
  * existing path is tried first, but it must pass the `-k` exit-propagation
  * self-test to be adopted. On any failure (non-existent path, directory,
  * non-executable file, wrapper without `-k`, always-exit-0 stub) resolution
- * falls through to the built-ins below, tried in order, first self-test pass
- * wins. Only when EVERY candidate fails does this fall back to the unwrapped
- * status quo. This is strictly stronger than merely checking existence: no
- * bad env value of ANY shape can silently disable orphan containment.
+ * falls through to the built-ins below while discovery time remains, tried
+ * in order, first self-test pass wins. Failed or exhausted discovery falls
+ * back to the unwrapped path.
  *
- * Memoized per hook process so the resolution — and its one self-test spawn
- * — happens at most once however many times runGitNexusCli falls through to
+ * Memoized per hook process so resolution happens at most once however many
+ * times runGitNexusCli falls through to
  * npx, and so the chosen wrapper stays stable for the process lifetime. (The
  * claude adapter memoizes module-wide so probe and adapter share one
  * self-test; this integration ships WITHOUT the probe — see main() — so the
- * memo exists purely to bound the self-test spawns.)
+ * memo exists purely to bound the self-test spawns.) All candidate probes
+ * share a three-second budget; each probe uses SIGKILL so an unresponsive
+ * override cannot keep spawnSync waiting after its timeout.
  *
  * Residual gap, same as the claude adapter: the self-test proves `-k` exit
  * propagation, not process-GROUP signalling. busybox >=1.34 passes it and is
@@ -525,6 +527,7 @@ function resolveUnixGuardTimeout() {
   const fromEnv = HOOK_ENV.GITNEXUS_HOOK_TIMEOUT_PATH;
   const trimmed = fromEnv ? String(fromEnv).trim() : '';
   if (trimmed === 'disabled') return unixGuardTimeoutCache;
+  const deadline = Date.now() + 3000;
   const candidates = [];
   // Resolve the override against THIS process's cwd — the directory the
   // existsSync check and the self-test run in — so the cached/returned path
@@ -552,7 +555,9 @@ function resolveUnixGuardTimeout() {
     }
   }
   for (const candidate of candidates) {
-    if (passesGuardSelfTest(candidate)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    if (passesGuardSelfTest(candidate, remaining)) {
       unixGuardTimeoutCache = candidate;
       break;
     }
@@ -571,8 +576,8 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
       windowsHide: true,
     });
   }
-  const elapsed = Date.now() - CURSOR_HOOK_START_MS;
-  const npxTimeout = resolveNpxTimeoutMs(resolveCursorHostBudgetMs(), elapsed);
+  const hostBudgetMs = resolveCursorHostBudgetMs();
+  let npxTimeout = resolveNpxTimeoutMs(hostBudgetMs, Date.now() - CURSOR_HOOK_START_MS);
   // Nothing usable is left of the host window, so the npx fallback is SKIPPED
   // rather than started. Starting it anyway would only hand the guard a slice
   // of an already-expired budget and let the host kill the hook mid-flight —
@@ -585,6 +590,10 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
   // "no context to emit" path and its `finally` still releases the slot.
   if (npxTimeout === null) return { status: null, signal: null, stdout: '', stderr: '' };
   const guard = resolveUnixGuardTimeout();
+  // Guard discovery spends part of the same host window. Recheck after it
+  // finishes so slow probes cannot consume the cleanup/output headroom.
+  npxTimeout = resolveNpxTimeoutMs(hostBudgetMs, Date.now() - CURSOR_HOOK_START_MS);
+  if (npxTimeout === null) return { status: null, signal: null, stdout: '', stderr: '' };
   if (guard) {
     const wrapped = spawnSync(
       guard,
@@ -660,7 +669,8 @@ function main() {
       // hook's own GITNEXUS_DEBUG (truthy) convention. NOTE: unlike the
       // claude/plugin/antigravity adapters this integration does not install
       // hook-db-lock-probe.cjs, so its augment child is not guard-wrapped
-      // yet — tracked on the #2163 follow-up list ("cursor probe").
+      // on the local-CLI path — tracked on the #2163 follow-up list
+      // ("cursor probe"). The npx fallback uses its own Unix timeout guard.
       if (process.env.GITNEXUS_DEBUG) {
         process.stderr.write('[GitNexus] augment skipped: hook slots saturated\n');
       }
@@ -694,8 +704,8 @@ if (require.main === module) main();
 
 // resolveUnixGuardTimeout / resolveNpxTimeoutMs / resolveCursorHostBudgetMs
 // are exported for the unit tests, which exercise the real resolver and
-// budget arithmetic rather than grepping this file for substrings. They are
-// pure helpers with no effect on the hook's own execution path.
+// budget arithmetic. The guard resolver reads the environment/filesystem
+// and spawns self-tests; exporting it does not invoke it.
 module.exports = {
   parseRgGrepPattern,
   tokenizeShellWords,

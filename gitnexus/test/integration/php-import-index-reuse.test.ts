@@ -7,7 +7,7 @@
  * `index` of `undefined`, dropping it onto `suffixResolve`'s linear `findIndex`
  * — a pass over every file per path-part × per extension, 98 ms per import at
  * 20k files. They now read the shared `getWorkspaceFileIndex`
- * (`import-resolvers/workspace-file-index.ts`), memoized on the `allFilePaths`
+ * (`utils/workspace-file-index.ts`), memoized on the `allFilePaths`
  * Set identity via a WeakMap, through a PHP-specific parity view that keeps the
  * three index-fed fast paths answering exactly what the scans answered (see the
  * `#2901` header in `import-target.ts` — passing the raw shared index straight

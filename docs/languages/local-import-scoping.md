@@ -18,13 +18,21 @@ Calls, constructors, receiver/type inference, inheritance, namespace lookup, and
 fallback consumers use these ownership facts rather than independently choosing a
 same-named symbol.
 
+Ownership and inferred type facts are separate. For providers that mark their
+name claims complete, an `assignment-inferred` or `constructor-inferred` fact
+does not declare a name. Lookup continues to the actual declaration, import, or
+shadowing barrier. Providers without complete claims retain their existing
+ownership rules.
+
 The [shared records](../../gitnexus-shared/src/scope-resolution/types.ts) carry
 ownership, activation positions, directive destinations, and lookup purpose as
 serializable data. They retain declaration identity and ambiguity; they contain
-no AST nodes or callbacks. `declaredAtScope` describes ownership, while
-`runsOnlyWhenCalled` describes deferred execution. A function-local Rust `use` or
-C `#include` is not deferred merely because of its position; Python and Ruby
-loading can be. The
+no AST nodes or callbacks. For imports, `declaredAtScope` records lexical location
+independently of `runsOnlyWhenCalled`, which describes deferred execution. On a
+`TypeRef`, `declaredAtScope` anchors type-name lookup where the annotation or
+inference was written; it can differ from the binding's owner. A function-local
+Rust `use` or C `#include` is not deferred merely because of its position; Python
+and Ruby loading can be. The
 [function-local import chain tests](../../gitnexus/test/unit/scope-resolution/function-local-import-chain.test.ts)
 pin that distinction.
 
@@ -88,6 +96,104 @@ namespace aliases. Computed specifiers, indirect loader/Promise chains, and
 unsupported destructuring remain unresolved; see the
 [loader regressions](../../gitnexus/test/unit/scope-resolution/typescript/local-loader-imports.test.ts).
 
+#### Receiver type precedence
+
+A constructor assignment inside a closure does not make that closure the owner
+of the assigned name. Lookup may retain the nearest constructor fact on its path
+to the owner when the owner has no type fact or only an inferred or propagated
+fact. It keeps the complete selected `TypeRef`, including the scope, position,
+and namespace in which its type name must resolve.
+
+The owner's annotation, parameter annotation, return annotation, `self`, or
+decorator fact takes precedence. For example, assigning `new Foo()` to a
+parameter annotated `Base` inside a closure leaves receiver lookup anchored to
+`Base`, including its inherited methods. Same-scope precedence and
+`METHOD_OVERRIDES` relationships retain their existing rules. A nested write is
+not promoted into an unconditional type fact for reads outside that closure.
+These are static inference rules, not control-flow narrowing or a prediction of
+the receiver's runtime class. The
+[type ownership regressions](../../gitnexus/test/unit/scope-resolution/typescript/lexical-type-ownership.test.ts)
+and [shared lookup regressions](../../gitnexus/test/unit/scope-resolution/lexical-name-claims.test.ts)
+cover declaration ownership, fact precedence, and retained lookup anchors.
+
+#### HTTP provenance
+
+Express route receivers and fetch-wrapper analysis share
+[per-file lexical bindings](../../gitnexus/src/core/ingestion/route-extractors/lexical-bindings.ts).
+They track declaration identity across closures and check identity at each use;
+an unrelated same-named declaration in a sibling scope does not invalidate a
+binding. Writes to the tracked binding do invalidate its provenance. For a
+forwarded Express parameter, an initialized `var` redeclaration or a body
+function declaration is a write, while an uninitialized `var` declaration alone
+preserves the parameter value. See the
+[route provenance regressions](../../gitnexus/test/unit/framework-route-provenance.test.ts).
+
+Automatic fetch-wrapper detection requires evidence of platform fetch. Bare
+`fetch` must be unshadowed; `globalThis.fetch`, `window.fetch`, and `self.fetch`
+require an unshadowed global root. Unresolved or blocked local names are not
+globals. An injected `fetch` parameter alone is not evidence. A default such as
+`fetch = globalThis.fetch` supplies potential platform evidence, not a guarantee
+that callers use that default. A self-referential
+`fetch = fetch` default or a locally shadowed `globalThis` does not supply it.
+Stable aliases retain this provenance by binding identity.
+
+Nested callable bodies contribute only when reachable from the function's
+evaluated code through resolved binding references. Unused self-recursive or
+mutually recursive helpers do not prove a wrapper. IIFEs, inline callbacks, and
+directly escaping anonymous functions participate; a named stored helper needs
+a reachable reference. Class heritage, computed keys, static fields, and static
+blocks participate during class evaluation. Methods and instance fields remain
+deferred until the class binding is referenced from reachable code. This is a
+conservative approximation of potential execution: reading or returning a
+function does not execute its body, and referencing a class does not establish
+that every method runs. The
+[wrapper provenance cases](../../gitnexus/test/unit/fetch-wrapper-provenance.test.ts)
+cover these boundaries.
+
+Bare wrapper calls and forwarded calls resolve declaration or import identity
+before using name fallback. Relative imports, renamed imports, tsconfig aliases,
+and workspace imports use the project module resolver. A known local
+non-wrapper, a different resolved target, or an ambiguous target blocks fallback.
+An unresolved name can fall back only when exactly one distinct definition can
+be the target, including non-wrappers, and that definition is a proven wrapper.
+For an import the resolver cannot follow, the candidates are module-level
+functions exported under the imported name; for an undeclared global, they are
+top-level functions of that name. Nested and unexported helpers are never
+candidates. This fallback is an analyzer recovery heuristic; it does not prove
+lexical identity. A function whose binding is reassigned in its file, including
+through `export { request as send }; request = other;` or a later
+`var request = …` initializer, proves no wrapper in importing files either. Explicit `fetchWrappers` configuration takes precedence
+over automatic inference, including for names shadowed by local parameters; member
+calls retain their existing matching rules. See the
+[wrapper consumer integration tests](../../gitnexus/test/integration/resolvers/fetch-wrapper-consumers.test.ts)
+and [configured wrapper tests](../../gitnexus/test/integration/resolvers/configurable-fetch-wrapper.test.ts).
+
+The scope model does not represent separate parameter and body environments.
+When formals contain expressions, including nested defaults or computed pattern
+keys, HTTP inference therefore declines an affected binding if a body `var` or
+function declaration shares a parameter's name or a binding referenced by a
+parameter expression. Declarations inside nested functions do not count as outer
+body declarations; a rest parameter alone is not a parameter expression. The
+[lexical binding tests](../../gitnexus/test/unit/route-lexical-bindings.test.ts)
+pin this conservative boundary. If scope extraction fails, scope-dependent HTTP
+facts are omitted and the existing scope-extraction failure remains visible;
+unrelated structural extraction continues. A failing HTTP hook drops only that
+file's HTTP facts. Either way the file's function names are still recorded, so
+name fallback elsewhere declines instead of treating another definition as
+unique.
+
+Barrels follow ECMAScript `ResolveExport`. A local or named export shadows
+`export *`, star exports never carry `default`, and a name that two star-exported
+modules export as different bindings is ambiguous, whether or not either is a
+wrapper. Two export names of one declaration are one binding.
+
+Some recall is given up deliberately. A helper that conditionally rebinds its
+parameter, as in `if (!app) { var app = express(); }`, loses that parameter's
+provenance: the initialized `var` is a write. A dynamic-import shim such as
+`(...args) => import('node-fetch').then(...)` is not platform fetch evidence. A
+write to the URL parameter clears URL forwarding. Calls inside recovered syntax
+are still resolved, but nothing else inside an `ERROR` node is trusted.
+
 Vue's explicit JS/JSX script requires an additional bounded semantic parse because
 the worker's structural tree uses TypeScript. That parse runs inside the real
 worker. The [parity test](../../gitnexus/test/integration/local-import-worker-parity.test.ts)
@@ -148,17 +254,29 @@ exact call-site positions are missing.
 
 ## Cache migration and verification evidence
 
-[Parse-cache schema 136](../../gitnexus/src/storage/parse-cache.ts) replaces 133,
-134, and 135. It invalidates overly broad Python/TS/JS binding barriers,
-incorrect parameter-annotation lookup ownership, and embedded Vue grammar and
-source positions. The same version gate applies to the
-[durable ParsedFile store](../../gitnexus/src/storage/parsedfile-store.ts).
-Incompatible records are rejected and rebuilt on the next analysis; unchanged
-records can then be reused. The
-[schema regression](../../gitnexus/test/unit/incremental-parse-cache.test.ts)
-explicitly rejects valid schema-133, schema-134, and schema-135 records in both stores.
-PDG-mode chunk keys also advance to `pdg:6`, so embedded-script CFGs with
-incorrect call anchors are rebuilt before the resolved-callee join.
+Parser compatibility uses
+[automatic artifact-derived identities](../../MIGRATION.md#automatic-parser-cache-identities),
+not manually assigned semantic counters. The
+[worker-result cache](../../gitnexus/src/storage/parse-cache.ts) and
+[durable ParsedFile store](../../gitnexus/src/storage/parsedfile-store.ts)
+validate the same base identity and include it in their chunk keys. PDG-enabled
+chunks also include the PDG identity and resolved function-line cap. Legacy
+numeric, missing, malformed, or foreign identities cause a cache miss and rebuild;
+compatible records remain eligible for reuse. If identity verification fails,
+analysis uses a transient store without persistent cache reads or writes.
+
+Parser contributors update no counter or generated digest. The
+[identity tests](../../gitnexus/test/unit/parse-cache-identity.test.ts),
+[input-coverage tests](../../gitnexus/test/unit/parse-cache-input-coverage.test.ts),
+and [lifecycle tests](../../gitnexus/test/integration/parse-cache-identity-lifecycle.test.ts)
+cover the compatibility gates. Source changes invalidate identity immediately,
+but compiled workers still need `npm run build` in `gitnexus/` before verification.
+
+Cached wrapper import facts retain raw specifiers and imported names. Each
+analysis resolves them against the current project configuration, including on
+warm runs, so a changed tsconfig alias does not retain a stale wrapper target.
+The [wrapper persistence tests](../../gitnexus/test/integration/resolvers/fetch-wrapper-persistence.test.ts)
+cover raw cache transport, warm reuse, and alias changes.
 
 The [real-worker parity suite](../../gitnexus/test/integration/local-import-worker-parity.test.ts)
 witnesses worker boot, dispatch, and returned ParsedFiles, then compares complete
@@ -179,13 +297,10 @@ ensures each is selected exactly once across the four Windows/macOS shards.
 Ubuntu's full suite discovers the tests normally. These are focused evidence
 boundaries, not a statement that the final full suite or every platform has passed.
 
-## Relationship to main and issue #3499
+## Related Python ownership behavior
 
-The integrated main baseline `50aa4be3` already includes #3502's nested Python
-declaration ownership fix for the original #3499 case and #3504's aliased package
-re-export fix. Their [Python integration coverage](../../gitnexus/test/integration/resolvers/python.test.ts)
+The nested declaration ownership fix in #3502 for the original #3499 case and
+the aliased package re-export fix in #3504 remain part of Python's provider rules.
+Their [Python integration coverage](../../gitnexus/test/integration/resolvers/python.test.ts)
 and [module namespace coverage](../../gitnexus/test/unit/scope-resolution/python/python-module-namespace-construction.test.ts)
-remain relevant. This branch extends that base with the lexical claims, provider
-semantics, and persistence evidence described above. Issue coverage is **Related
-#3499**; this document does not assert that all dynamic Python behavior is solved
-or make an issue-status claim.
+remain relevant. Lexical ownership does not model all dynamic Python behavior.

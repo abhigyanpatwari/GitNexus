@@ -1,4 +1,8 @@
-import type { FetchWrapperCall } from '../route-extractors/fetch-wrapper.js';
+import {
+  type FetchWrapperCall,
+  type FetchWrapperFacts,
+  type FetchWrapperReexport,
+} from '../route-extractors/fetch-wrapper.js';
 import { parentPort, threadId, workerData } from 'node:worker_threads';
 import {
   boundCallableStartPosition,
@@ -18,7 +22,7 @@ import Rust from 'tree-sitter-rust';
 import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
 import { requireVendoredGrammar } from '../../tree-sitter/vendored-grammars.js';
-import { SupportedLanguages } from 'gitnexus-shared';
+import { buildPositionIndex, SupportedLanguages, type PositionIndex } from 'gitnexus-shared';
 import { getLanguageForFileContent, getProvider } from '../languages/index.js';
 import {
   getTreeSitterBufferSize,
@@ -134,6 +138,7 @@ import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
+import { createOwnerEdgeGuard, type OwnerEdgeGuard } from './owner-edge-guard.js';
 import { defaultExportNameCollides } from '../languages/typescript/cjs-export-assignment.js';
 import {
   extractVueScript,
@@ -342,9 +347,15 @@ export interface ExtractedFetchCall {
   filePath: string;
   fetchURL: string;
   lineNumber: number;
+  /**
+   * generateId of the callable whose body holds the call, from the AST;
+   * null for a confirmed top-level call, absent when attribution is unknown
+   * (text scans or callable forms the identity walk cannot name) (#3644).
+   */
+  enclosingId?: string | null;
 }
 
-export interface FetchWrapperDef {
+export interface FetchWrapperDef extends FetchWrapperFacts {
   filePath: string;
   functionName: string;
 }
@@ -414,6 +425,18 @@ export interface ExtractedDecoratorRoute {
    * `LanguageProvider.resolveRouteHandler`; absent when nothing was inferred.
    */
   handlerReceiver?: RouteHandlerReceiver;
+  /**
+   * The handler slot held a call `callee(inner, …)` instead of a designator.
+   * `callee` is the call's designator as written (`common.Wrapper`); the inner
+   * argument's designator and receiver hint travel alongside. A provider uses
+   * it only when the user configured `callee` as a handler wrapper; otherwise
+   * the route keeps no handler, as before.
+   */
+  handlerWrapper?: {
+    callee: string;
+    handlerName: string;
+    handlerReceiver?: RouteHandlerReceiver;
+  };
   /**
    * Provenance for the `HANDLES_ROUTE` edge, overriding the default
    * `decorator-<decoratorName>`. Present when the route was extracted from a
@@ -503,6 +526,7 @@ export interface ParseWorkerResult {
   fetchWrapperDefs: FetchWrapperDef[];
   /** URL-bearing candidates, kept separate from confirmed outward-call sinks. */
   fetchWrapperCalls?: FetchWrapperCall[];
+  fetchWrapperReexports?: FetchWrapperReexport[];
   decoratorRoutes: ExtractedDecoratorRoute[];
   /** JSON-safe per-file provider facts; relationships are resolved on every run. */
   routeFacts?: { filePath: string; facts: unknown; routePosition: number }[];
@@ -662,7 +686,7 @@ const clearCaches = (): void => {
 // Keyed by class node startIndex (unique per AST node within a file).
 // ============================================================================
 
-const fieldInfoCache = new Map<number, Map<string, FieldInfo>>();
+const fieldInfoCache = new Map<number, Map<string, FieldInfo[]>>();
 
 /**
  * Walk up from a definition node to find the nearest enclosing class/struct/interface
@@ -791,14 +815,14 @@ const NOOP_SYMBOL_TABLE: SymbolTableReader = {
 
 /**
  * Get (or extract and cache) field info for a class node.
- * Returns a name→FieldInfo map, or undefined if the provider has no field extractor
+ * Returns a name→declarations map, or undefined if the provider has no field extractor
  * or the class yielded no fields.
  */
 function getFieldInfo(
   classNode: SyntaxNode,
   provider: LanguageProvider,
   context: FieldExtractorContext,
-): Map<string, FieldInfo> | undefined {
+): Map<string, FieldInfo[]> | undefined {
   if (!provider.fieldExtractor) return undefined;
 
   const cacheKey = classNode.startIndex;
@@ -808,12 +832,50 @@ function getFieldInfo(
   const result = provider.fieldExtractor.extract(classNode, context);
   if (!result?.fields?.length) return undefined;
 
-  cached = new Map<string, FieldInfo>();
+  cached = new Map<string, FieldInfo[]>();
   for (const field of result.fields) {
-    cached.set(field.name, field);
+    const declarations = cached.get(field.name);
+    if (declarations !== undefined) declarations.push(field);
+    else cached.set(field.name, [field]);
+  }
+  for (const declarations of cached.values()) {
+    if (declarations.length > 1) {
+      declarations.sort((a, b) => a.line - b.line || (a.column ?? -1) - (b.column ?? -1));
+    }
   }
   fieldInfoCache.set(cacheKey, cached);
   return cached;
+}
+
+function fieldInfoLowerBound(
+  declarations: readonly FieldInfo[],
+  line: number,
+  column: number,
+): number {
+  let lo = 0;
+  let hi = declarations.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const field = declarations[mid]!;
+    if (field.line < line || (field.line === line && (field.column ?? -1) < column)) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function selectFieldInfo(
+  declarations: readonly FieldInfo[] | undefined,
+  line: number,
+  column?: number,
+): FieldInfo | undefined {
+  if (declarations === undefined || declarations.length === 0) return undefined;
+  if (declarations.length === 1) return declarations[0];
+  const start = fieldInfoLowerBound(declarations, line, -1);
+  const end = fieldInfoLowerBound(declarations, line + 1, -1);
+  if (end - start === 1) return declarations[start];
+  if (column === undefined) return undefined;
+  const index = fieldInfoLowerBound(declarations, line, column);
+  return index < end && declarations[index]?.column === column ? declarations[index] : undefined;
 }
 
 // ============================================================================
@@ -822,6 +884,20 @@ function getFieldInfo(
 // ============================================================================
 
 const methodInfoCache = new Map<number, Map<string, MethodInfo>>();
+const methodCollisionGroups = new WeakMap<Map<string, MethodInfo>, Map<string, MethodInfo[]>>();
+
+/** Method maps are complete before publication and immutable for this file.
+ * Reuse their overload groups in both definition and enclosing-callable IDs.
+ * Weak ownership releases the groups with the per-file method cache.
+ */
+function getMethodCollisionGroups(methods: Map<string, MethodInfo>): Map<string, MethodInfo[]> {
+  let groups = methodCollisionGroups.get(methods);
+  if (!groups) {
+    groups = buildCollisionGroups(methods);
+    methodCollisionGroups.set(methods, groups);
+  }
+  return groups;
+}
 
 /**
  * Get (or extract and cache) method info for a class node.
@@ -1134,7 +1210,7 @@ const findEnclosingFunctionId = (
                   ? undefined
                   : info.parameters.length;
                 if (methodMap && arity !== undefined) {
-                  const g = buildCollisionGroups(methodMap);
+                  const g = getMethodCollisionGroups(methodMap);
                   encTypeTag =
                     typeTagForId(methodMap, funcName, arity, info, encLang, g) +
                     constTagForId(methodMap, funcName, arity, info, g);
@@ -1202,7 +1278,7 @@ const findEnclosingFunctionId = (
                 ? undefined
                 : info2.parameters.length;
               if (methodMap2 && arity2 !== undefined) {
-                const g2 = buildCollisionGroups(methodMap2);
+                const g2 = getMethodCollisionGroups(methodMap2);
                 encTypeTag2 =
                   typeTagForId(methodMap2, customResult.funcName, arity2, info2, encLang2, g2) +
                   constTagForId(methodMap2, customResult.funcName, arity2, info2, g2);
@@ -1406,23 +1482,6 @@ const processBatch = (
   return result;
 };
 
-/**
- * Walk a tree-sitter AST subtree looking for a call to the global `fetch()` function.
- * Returns `true` if found within `maxDepth` levels of nesting — keeps the check
- * lightweight so it doesn't slow down parse-worker on large function bodies.
- */
-const checkForFetchCall = (node: SyntaxNode, depth = 0, maxDepth = 5): boolean => {
-  if (depth > maxDepth) return false;
-  if (node.type === 'call_expression') {
-    const fn = node.childForFieldName('function');
-    if (fn?.type === 'identifier' && fn.text === 'fetch') return true;
-  }
-  for (let i = 0; i < node.childCount; i++) {
-    if (checkForFetchCall(node.child(i)!, depth + 1, maxDepth)) return true;
-  }
-  return false;
-};
-
 // HTTP client methods that are ONLY used by clients, not Express route registration.
 // Methods like get/post/put/delete/patch overlap with Express — those are captured by
 // provider route facts as registrations, not consumers. The fetch() global
@@ -1550,6 +1609,23 @@ const processFileGroup = (
   result: ParseWorkerResult,
   onFileProcessed?: () => void,
 ): void => {
+  const ownerEdgeGuard = createOwnerEdgeGuard(result);
+  try {
+    processFileGroupFiles(files, language, queryString, result, ownerEdgeGuard, onFileProcessed);
+  } finally {
+    // Also on a throw: processBatch keeps the partial result of a failed group.
+    ownerEdgeGuard.settle();
+  }
+};
+
+const processFileGroupFiles = (
+  files: ParseWorkerInput[],
+  language: SupportedLanguages,
+  queryString: string,
+  result: ParseWorkerResult,
+  ownerEdgeGuard: OwnerEdgeGuard,
+  onFileProcessed?: () => void,
+): void => {
   let query: Parser.Query;
   try {
     const lang = parser.getLanguage();
@@ -1569,6 +1645,8 @@ const processFileGroup = (
   }
 
   for (const file of files) {
+    // Settles the previous file, so every `continue` below still gets checked.
+    ownerEdgeGuard.open(file.path);
     // Skip files larger than the max tree-sitter buffer (32 MB)
     if (getTreeSitterContentByteLength(file.content) > TREE_SITTER_MAX_BUFFER) continue;
 
@@ -1703,6 +1781,19 @@ const processFileGroup = (
       sourceLineMap,
     );
     if (scopeExtractionFailed) (result.scopeExtractionFailures ??= []).push(file.path);
+    let requestScopeIndex: PositionIndex | undefined;
+    const requestEnclosingId = (node: SyntaxNode): string | null | undefined => {
+      const id = findEnclosingFunctionId(node, file.path, provider);
+      if (id !== null) return id;
+      if (parsedFile === undefined || scopeExtractionFailed) return undefined;
+      requestScopeIndex ??= buildPositionIndex(
+        parsedFile.scopes.filter((scope) => scope.kind === 'Function'),
+      );
+      const { row, column } = node.startPosition;
+      return requestScopeIndex.atPosition(file.path, mapRow(row) + 1, column) === undefined
+        ? null
+        : undefined;
+    };
     if (parsedFile !== undefined) {
       // Capture-time side-channel (#1983): `extractParsedFile` just ran the
       // provider's `emitScopeCaptures`, which (for C++ ADL/namespace marks,
@@ -1869,6 +1960,19 @@ const processFileGroup = (
     // patterns overlap with the same source range.
     const processedDefinitionNodes = new Set<string>();
     const variableInfoCache = new Map<number, Map<string, VariableInfo>>();
+    // HTTP facts are all or nothing per file. A throwing hook must not escape to
+    // the language-group catch, which would drop every remaining file of the
+    // group; it drops only this file's HTTP facts.
+    const wrapperDefs: FetchWrapperDef[] = [];
+    const wrapperFunctions: { name: string; node: SyntaxNode }[] = [];
+    let httpFailed = false;
+    const httpFailure = (err: unknown) => {
+      if (!httpFailed)
+        reportWarning(
+          `HTTP fact extraction failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      httpFailed = true;
+    };
 
     for (const match of matches) {
       const captureMap: Record<string, SyntaxNode> = {};
@@ -1992,10 +2096,12 @@ const processFileGroup = (
         // Measured before this: 44 of 47 fetch calls in this repo pass a
         // variable, so the sink signal was absent from 94% of them and
         // sink-terminated flows could effectively never fire.
+        const fetchEnclosingId = requestEnclosingId(captureMap['route.fetch']);
         result.fetchCalls.push({
           filePath: file.path,
           fetchURL: urlNode ? urlNode.text : '',
           lineNumber: captureMap['route.fetch'].startPosition.row + lineOffset,
+          enclosingId: fetchEnclosingId,
         });
         continue;
       }
@@ -2006,10 +2112,12 @@ const processFileGroup = (
         const method = captureMap['http_client.method']?.text;
         const url = captureMap['http_client.url'].text;
         if (method && HTTP_CLIENT_ONLY_METHODS.has(method) && url.startsWith('/')) {
+          const clientEnclosingId = requestEnclosingId(captureMap['http_client']);
           result.fetchCalls.push({
             filePath: file.path,
             fetchURL: url,
             lineNumber: captureMap['http_client'].startPosition.row + lineOffset,
+            enclosingId: clientEnclosingId,
           });
         }
         continue;
@@ -2098,7 +2206,7 @@ const processFileGroup = (
                 const propEnclosingClassId =
                   propEnclosingInfo?.qualifiedClassId ?? propEnclosingInfo?.classId ?? null;
                 // Enrich routed properties with FieldExtractor metadata
-                let routedFieldMap: Map<string, FieldInfo> | undefined;
+                let routedFieldMap: Map<string, FieldInfo[]> | undefined;
                 if (provider.fieldExtractor && typeEnv) {
                   const classNode = findEnclosingClassNode(captureMap['call']);
                   if (classNode) {
@@ -2111,7 +2219,11 @@ const processFileGroup = (
                   }
                 }
                 for (const item of routed.items) {
-                  const routedFieldInfo = routedFieldMap?.get(item.propName);
+                  const routedFieldInfo = selectFieldInfo(
+                    routedFieldMap?.get(item.propName),
+                    captureMap['call'].startPosition.row + 1,
+                    captureMap['call'].startPosition.column,
+                  );
                   const propQualifiedName = propEnclosingInfo
                     ? `${propEnclosingInfo.className}.${item.propName}`
                     : item.propName;
@@ -2795,7 +2907,7 @@ const processFileGroup = (
         const parameterTypes = methodProps.parameterTypes as string[] | undefined;
         if (parameterTypes?.length) arityTag += `~${parameterTypes.join(',')}`;
       } else if (arityTag && defMethodMap && defMethodInfo) {
-        const groups = buildCollisionGroups(defMethodMap);
+        const groups = getMethodCollisionGroups(defMethodMap);
         arityTag += typeTagForId(
           defMethodMap,
           nodeName,
@@ -2955,13 +3067,20 @@ const processFileGroup = (
               filePath: file.path,
               language,
             });
-            const info = fieldMap?.get(nodeName);
+            const info = selectFieldInfo(
+              fieldMap?.get(nodeName),
+              definitionNode.startPosition.row + 1,
+              definitionNode.startPosition.column,
+            );
             if (info) {
               declaredType = info.type ?? undefined;
               // Mutate methodProps BEFORE the `{...methodProps}` spread below —
               // rawDeclaredType is the verbatim generic type text (U1, PR #2200).
               if (info.rawDeclaredType !== undefined) {
                 methodProps.rawDeclaredType = info.rawDeclaredType;
+              }
+              if (info.initializerType !== undefined) {
+                methodProps.initializerType = info.initializerType;
               }
               // Field annotations ('@Name' strings, U2 PR #2200) — omit when empty.
               if (info.annotations !== undefined && info.annotations.length > 0) {
@@ -3153,18 +3272,30 @@ const processFileGroup = (
         });
       }
 
-      // ── Fetch wrapper detection: record functions that call fetch() internally ──
-      if (
-        nodeLabel === 'Function' &&
-        definitionNode &&
-        nameNode &&
-        (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript)
-      ) {
-        if (checkForFetchCall(definitionNode)) {
-          result.fetchWrapperDefs.push({
-            filePath: file.path,
-            functionName: nameNode.text,
-          });
+      // ── Fetch wrapper detection: functions that call fetch() or forward their URL ──
+      if (nodeLabel === 'Function' && definitionNode && provider.extractFetchWrapperFacts) {
+        wrapperFunctions.push({ name: nodeName, node: definitionNode });
+        if (parsedFile && !httpFailed) {
+          try {
+            const facts = provider.extractFetchWrapperFacts(
+              definitionNode,
+              nameNode,
+              parsedFile,
+              lineOffset,
+            );
+            if (
+              facts &&
+              (facts.seed ||
+                facts.forwardsUrl ||
+                facts.forwardsTo.length > 0 ||
+                facts.moduleScope ||
+                facts.urlReturn !== undefined ||
+                (facts.urlArguments?.length ?? 0) > 0)
+            )
+              wrapperDefs.push({ filePath: file.path, functionName: nodeName, ...facts });
+          } catch (err) {
+            httpFailure(err);
+          }
         }
       }
     }
@@ -3242,18 +3373,46 @@ const processFileGroup = (
       }
     }
 
-    if (provider.extractFetchWrapperCalls) {
-      const candidates = provider.extractFetchWrapperCalls(tree, file.path, lineOffset);
-      for (const candidate of candidates) (result.fetchWrapperCalls ??= []).push(candidate);
+    if (parsedFile && !httpFailed) {
+      try {
+        const calls = provider.extractFetchWrapperCalls?.(tree, parsedFile, lineOffset);
+        const reexports = provider.extractFetchWrapperReexports?.(tree, parsedFile, lineOffset);
+        const routeFacts = provider.extractRouteFacts?.(tree, parsedFile, lineOffset);
+        for (const call of calls ?? []) {
+          // The wrapper call is a request site too (#3644): record the callable
+          // that holds it, as the direct fetch sites do.
+          const callNode = tree.rootNode.descendantForPosition(call.callPosition);
+          const callEnclosingId = requestEnclosingId(callNode);
+          (result.fetchWrapperCalls ??= []).push({ ...call, enclosingId: callEnclosingId });
+        }
+        for (const reexport of reexports ?? [])
+          (result.fetchWrapperReexports ??= []).push(reexport);
+        if (routeFacts)
+          (result.routeFacts ??= []).push({
+            filePath: file.path,
+            facts: routeFacts,
+            routePosition,
+          });
+      } catch (err) {
+        httpFailure(err);
+      }
     }
-
-    if (parsedFile && provider.extractRouteFacts) {
-      (result.routeFacts ??= []).push({
-        filePath: file.path,
-        facts: provider.extractRouteFacts(tree, parsedFile, lineOffset),
-        routePosition,
-      });
-    }
+    if (parsedFile && !httpFailed) for (const def of wrapperDefs) result.fetchWrapperDefs.push(def);
+    else
+      // These records stand for unknown facts. With `seed` false and nothing
+      // forwarded they never prove a wrapper; they only make a name-only
+      // match, a barrel or an import that may reach this file decline.
+      for (const { name, node } of wrapperFunctions)
+        result.fetchWrapperDefs.push({
+          filePath: file.path,
+          functionName: name,
+          definitionId: `${file.path}:${node.startPosition.row + lineOffset + 1}:${node.startPosition.column}`,
+          moduleScope: true,
+          exportedNames: [name],
+          seed: false,
+          forwardsUrl: false,
+          forwardsTo: [],
+        });
 
     // Language-specific decorator route extraction via provider hook.
     // The provider's extractDecoratorRoutes walks the AST for framework-specific
@@ -3275,7 +3434,18 @@ const processFileGroup = (
     if (provider.synthesizeStructureMembers) {
       const synthetic = provider.synthesizeStructureMembers(tree, file.path, classOwnersByNodeId);
       for (const node of synthetic.nodes) {
-        result.nodes.push(node as ParsedNode);
+        result.nodes.push({
+          ...node,
+          properties: {
+            ...node.properties,
+            ...(typeof node.properties.startLine === 'number'
+              ? { startLine: mapRow(node.properties.startLine) }
+              : {}),
+            ...(typeof node.properties.endLine === 'number'
+              ? { endLine: mapRow(node.properties.endLine) }
+              : {}),
+          },
+        } as ParsedNode);
       }
       for (const sym of synthetic.symbols) {
         result.symbols.push(sym as ParsedSymbol);

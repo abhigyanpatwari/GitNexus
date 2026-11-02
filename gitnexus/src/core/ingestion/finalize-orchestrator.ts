@@ -52,6 +52,7 @@ import {
 } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from './model/scope-resolution-indexes.js';
 import { parseTruthyEnv } from './utils/env.js';
+import { isDebugHeapEnabled, logHeapProbe } from './utils/heap-probe.js';
 import { TransitionalScopeTree } from '../../storage/scope-index-store.js';
 
 // ─── Public entry point ─────────────────────────────────────────────────────
@@ -82,9 +83,9 @@ export interface FinalizeOrchestratorOptions {
  * Produce a fully materialized `ScopeResolutionIndexes` from the
  * workspace's per-file artifacts.
  *
- * Pure function (given pure hooks). No I/O, no globals consulted. The
- * pipeline calls this once per ingestion run and hands the result to
+ * The pipeline calls this once per ingestion run and hands the result to
  * `MutableSemanticModel.attachScopeIndexes`.
+ * Optional heap diagnostics use the pipeline's existing debug flags.
  */
 export function finalizeScopeModel(
   parsedFiles: readonly ParsedFile[],
@@ -92,15 +93,21 @@ export function finalizeScopeModel(
 ): ScopeResolutionIndexes {
   const hooks = withDefaultHooks(options.hooks ?? {});
   const workspaceIndex: WorkspaceIndex = options.workspaceIndex ?? undefined;
+  const onProgress = isDebugHeapEnabled()
+    ? (phase: string) => logHeapProbe(`sr-finalize-${phase}`)
+    : undefined;
 
   // ── Step 1: Shared finalize — runs SCC-aware cross-file link + binding
   // materialization. Returns linked imports + merged bindings per module
   // scope + SCC condensation + stats.
+  onProgress?.('input-start');
   const finalizeInput = {
     files: parsedFiles.map((file) => toFinalizeFile(file, options.moduleExports?.(file))),
     workspaceIndex,
+    onProgress,
   };
   const finalizeOut = finalize(finalizeInput, hooks);
+  onProgress?.('indexes-start');
 
   // ── Step 2: Workspace-wide indexes built from the per-file unions.
   // These are pure aggregations — no algorithm beyond what the builders
@@ -125,9 +132,13 @@ export function finalizeScopeModel(
   const scopeTree = parseTruthyEnv(process.env.GITNEXUS_DISK_SCOPE_INDEX)
     ? new TransitionalScopeTree(allScopes)
     : buildScopeTree(allScopes);
+  onProgress?.('scopeTree-end');
   const defs = buildDefIndex(allDefs);
+  onProgress?.('defs-end');
   const qualifiedNames = buildQualifiedNameIndex(allDefs);
+  onProgress?.('qualifiedNames-end');
   const moduleScopes = buildModuleScopeIndex(moduleEntries);
+  onProgress?.('moduleScopes-end');
 
   // ── Step 3: MethodDispatchIndex. Today we lack per-language MRO
   // strategies wired into this orchestrator (that belongs with the
@@ -159,6 +170,7 @@ export function finalizeScopeModel(
     namespaceFqnBindings: new Map(),
     namespaceTypeBindings: new Map(),
     accessibleNamespacesByScope: new Map(),
+    namespaceLookupTiersByScope: new Map(),
     referenceSites: Object.freeze([...allReferenceSites]),
     sccs: finalizeOut.sccs,
     stats: finalizeOut.stats,

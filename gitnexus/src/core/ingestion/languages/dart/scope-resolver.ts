@@ -241,6 +241,15 @@ export const dartScopeResolver: ScopeResolver = {
   fieldFallbackOnMethodLookup: false,
   propagatesReturnTypesAcrossImports: true,
 
+  // `dartBindingScopeFor` hoists every method's return-type binding out of
+  // its class body onto the Module scope (as C# does), so the text cascade
+  // must walk up there to type `svc.getUser().save()`. Those bindings are
+  // keyed by bare name, so the walk only accepts one a member of the
+  // receiver's own class declared: a same-named method of another class in
+  // the file, or an imported top-level function, must not answer.
+  hoistTypeBindingsToModule: true,
+  hoistedTypeBindingsRequireOwner: true,
+
   // No `new`: bare `Foo()` resolves to the type; with cross-file imports the
   // callee is reachable workspace-wide.
   allowGlobalFreeCallFallback: true,

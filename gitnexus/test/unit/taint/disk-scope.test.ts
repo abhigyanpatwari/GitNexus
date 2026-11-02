@@ -96,7 +96,12 @@ describe('taint emission after the disk scope seal', () => {
     expect(sinks(1)).toEqual([]);
     expect(sinks(2)).toEqual([
       { param: 0, sinkKind: 'command-injection' },
-      { param: 1, sinkKind: 'command-injection' },
+      {
+        param: 1,
+        sinkKind: 'command-injection',
+        valueEffect: { kind: 'input' },
+        inertCommandPrefixes: ['git log -1 ', 'git log -1 --format=%s ', 'git show '],
+      },
     ]);
     expect(sinks(3)).toEqual([]);
   });

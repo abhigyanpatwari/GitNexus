@@ -170,7 +170,12 @@ def test_a_request_through_the_real_gateway_records_native_usage(tmp_path, monke
         ) as gateway:
             request = urllib.request.Request(
                 gateway.base_url + "/v1/messages",
-                data=json.dumps({"model": "gpt-4.1", "max_tokens": 32, "messages": [{"role": "user", "content": "ping"}]}).encode(),
+                data=json.dumps({
+                    "model": "gpt-4.1", "max_tokens": 32,
+                    "messages": [{"role": "user", "content": "PRIVATE REQUEST"}],
+                    "tools": [{"name": "inspect_file", "description": "PRIVATE TOOL DESCRIPTION",
+                               "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}}],
+                }).encode(),
                 headers={"Content-Type": "application/json", "x-api-key": gateway.auth_token, "anthropic-version": "2023-06-01"},
             )
             with urllib.request.urlopen(request, timeout=60):
@@ -189,6 +194,11 @@ def test_a_request_through_the_real_gateway_records_native_usage(tmp_path, monke
     assert native["prompt_tokens_details"]["cache_write_tokens"] == 1_000
     assert event["provider"] == LITELLM_NORMALIZED
     assert event["call_type"] == "anthropic_messages", "the observed call type, not a Responses one"
+    metrics = event["request_metrics"]
+    assert metrics["messages_count"] == metrics["tools_count"] == 1
+    assert metrics["messages_bytes"] > 0 and metrics["tools_bytes"] > 0
+    assert metrics["duration_s"] >= 0
+    assert "PRIVATE" not in usage_log.read_text(), "numeric envelope evidence must not retain request content"
 
     usage = normalize_usage(event["provider"], native)
     assert usage.total_input_tokens == 10_000

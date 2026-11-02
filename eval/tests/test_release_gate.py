@@ -38,6 +38,7 @@ def reports():
             task_base_sha=pin["sha"],
             oracle_digest=pin["oracle_digest"],
             sandbox_backend="bwrap",
+            runtime_exposure="none" if arm == "baseline_nomcp" else "stdio-only",
             sandbox_dependency_content_digest=DEPENDENCIES,
             ok=True,
             resolved=run != 0,

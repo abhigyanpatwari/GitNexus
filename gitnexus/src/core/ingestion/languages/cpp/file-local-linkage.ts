@@ -1,5 +1,5 @@
 import type { ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 import { isCppInlineNamespaceScope } from './inline-namespaces.js';
 
 /**

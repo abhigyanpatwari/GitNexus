@@ -260,6 +260,7 @@ CREATE NODE TABLE Route (
   runtimeConfirmed BOOLEAN,
   runtimeSource STRING,
   runtimeStatus STRING,
+  unverifiedConsumers INT64,
   PRIMARY KEY (id)
 )`;
 

@@ -20,6 +20,7 @@ const SCOPE_TYPES = new Set([
   'impl_item',
   'enum_item',
   'union_item',
+  'type_item',
 ]);
 
 /** Pattern identifiers own values even when no useful target/type was indexed. */
@@ -89,6 +90,10 @@ export function collectRustNameClaims(root: SyntaxNode): ReadonlyMap<number, rea
           availableFrom: { startLine: node.endPosition.row + 1, startCol: node.endPosition.column },
           inactive: 'outer',
         });
+    } else if (node.type === 'type_parameter') {
+      const name = node.childForFieldName('name');
+      if (name !== null)
+        add(ownerOf(node.parent), [name.text], node, { purpose: 'type', hoisted: true });
     } else if (node.type === 'parameter') {
       const pattern = node.childForFieldName('pattern');
       if (pattern !== null) add(ownerOf(node.parent), patternNames(pattern), node);

@@ -6,6 +6,7 @@ import { tmpdir } from 'os';
 import path from 'path';
 import type { ParsedFile } from 'gitnexus-shared';
 import { TEST_PARSE_IDENTITY } from '../helpers/cache-identity.js';
+import { cfgsOf } from '../helpers/ts-cfg-harness.js';
 import {
   clearParsedFileStore,
   persistParsedFileChunk,
@@ -76,6 +77,27 @@ function makeStoreEntry(filePath: string, overrides: Record<string, unknown>): P
 }
 
 describe('parsedfile-store', () => {
+  it('preserves normalized guard and value facts through the disk seal', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-guard-'));
+    try {
+      const cfgs = cfgsOf(`function guarded(ref: string) {
+        if (!/^[0-9a-f]{7,40}$/.test(ref)) return;
+        consume('git show ' + ref);
+      }`);
+      expect(cfgs[0].refinementSafe).toBe(true);
+      expect(
+        cfgs[0].blocks.some((block) =>
+          block.statements?.some((statement) => statement.refinement?.predicate),
+        ),
+      ).toBe(true);
+      const file: ParsedFile = { ...makeParsedFile('guard.ts'), cfgSideChannel: cfgs };
+      await persistParsedFileChunk(dir, 'guard-facts', [file]);
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['guard.ts']));
+      expect(loaded.get('guard.ts')?.cfgSideChannel).toEqual(cfgs);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it('round-trips ParsedFiles (incl. Scope Maps) and filters by requested paths', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
     try {

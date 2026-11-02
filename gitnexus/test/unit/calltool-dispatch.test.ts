@@ -93,6 +93,7 @@ vi.mock('../../src/core/group/resolve-at-member.js', () => ({
 }));
 
 import {
+  IMPACT_FRONTIER_ROW_CAP,
   LocalBackend,
   REPO_ID_HASH_LENGTH,
   parseListReposPagination,
@@ -1935,9 +1936,10 @@ describe('LocalBackend.callTool', () => {
         .filter((q: string) => q.includes('$frontierIds'));
       expect(frontierQueries.length).toBeGreaterThan(0);
       expect(frontierQueries.filter((q: string) => /ORDER BY/.test(q))).toEqual([]);
-      // …and equally: no LIMIT was added in its place. The traversal must see
-      // every neighbour edge; only the ORDERING moved.
-      expect(frontierQueries.filter((q: string) => /LIMIT/.test(q))).toEqual([]);
+      for (const query of frontierQueries) {
+        expect(query.match(/\bLIMIT\b/gi)).toHaveLength(1);
+        expect(query.endsWith(` LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`)).toBe(true);
+      }
     });
 
     // (a) Diamond: `delta` and `epsilon` are each reached at depth 2 from BOTH
@@ -2685,6 +2687,55 @@ describe('LocalBackend.callTool', () => {
     expect(result.error).toContain('No routes found');
   });
 
+  it('api_impact lists the callers of the requesting function as indirect consumers (#3644)', async () => {
+    const routeRow = (consumerName: string, consumerFile: string, fetchReason: string) => ({
+      routeId: 'Route:/api/grants',
+      routeName: '/api/grants',
+      handlerFile: 'app/api/grants/route.ts',
+      responseKeys: ['data'],
+      errorKeys: [],
+      middleware: [],
+      runtimeConfirmed: false,
+      runtimeSource: null,
+      runtimeStatus: null,
+      consumerName,
+      consumerFile,
+      fetchReason,
+    });
+    const via = 'Function:src/services/client.ts:fetchGrants';
+    const caller = (callerName: string, callerFile: string) => ({
+      viaId: via,
+      viaName: 'fetchGrants',
+      callerName,
+      callerFile,
+    });
+    (executeParameterized as any).mockImplementation(async (_repo: string, cypher: string) => {
+      if (cypher.includes("r.type = 'CALLS'")) {
+        return [
+          caller('Header', 'src/Header.tsx'),
+          caller('App', 'src/App.tsx'),
+          // Already a direct consumer file, and the handler file: neither is indirect.
+          caller('GrantsList', 'src/GrantsList.tsx'),
+          caller('GET', 'app/api/grants/route.ts'),
+        ];
+      }
+      return [
+        routeRow('client.ts', 'src/services/client.ts', `fetch-url-match|via:${via}`),
+        routeRow('GrantsList', 'src/GrantsList.tsx', 'fetch-url-match|keys:data'),
+      ];
+    });
+
+    const result = await backend.callTool('api_impact', { route: '/api/grants' });
+
+    expect(result.indirectConsumers).toEqual([
+      { name: 'App', file: 'src/App.tsx', via: 'fetchGrants' },
+      { name: 'Header', file: 'src/Header.tsx', via: 'fetchGrants' },
+    ]);
+    expect(result.impactSummary.directConsumers).toBe(2);
+    expect(result.impactSummary.indirectConsumers).toBe(2);
+    expect(result.impactSummary.riskLevel).toBe('LOW');
+  });
+
   it('api_impact detects mismatches and bumps risk level', async () => {
     (executeParameterized as any).mockResolvedValue([
       {
@@ -2856,17 +2907,23 @@ describe('LocalBackend.callTool', () => {
     expect(result.routes[0].method).toBeNull();
   });
 
-  it('route_map falls back for legacy Route schemas and reports unconfirmed evidence', async () => {
-    vi.mocked(executeParameterized)
-      .mockRejectedValueOnce(
-        new Error('Binder exception: Cannot find property runtimeConfirmed for n.'),
-      )
-      .mockResolvedValueOnce([verbRow('GET', '/legacy', 'LegacyController.java')]);
+  it.each([
+    { missing: ['unverifiedConsumers'], calls: 3 },
+    { missing: ['unverifiedConsumers', 'runtimeConfirmed'], calls: 4 },
+  ])('route_map falls back for Route schemas without $missing', async ({ missing, calls }) => {
+    for (const property of missing) {
+      vi.mocked(executeParameterized).mockRejectedValueOnce(
+        new Error(`Binder exception: Cannot find property ${property} for n.`),
+      );
+    }
+    vi.mocked(executeParameterized).mockResolvedValueOnce([
+      verbRow('GET', '/legacy', 'LegacyController.java'),
+    ]);
 
     const result = await backend.callTool('route_map', { route: '/legacy' });
 
-    // Modern Route query, legacy retry, then the linked-flow batch.
-    expect(executeParameterized).toHaveBeenCalledTimes(3);
+    // One Route query per older schema, then the linked-flow batch.
+    expect(executeParameterized).toHaveBeenCalledTimes(calls);
     expect(result.routes[0].runtimeEvidence).toEqual({ confirmed: false });
   });
 

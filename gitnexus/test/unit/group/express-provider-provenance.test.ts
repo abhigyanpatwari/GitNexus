@@ -70,6 +70,21 @@ describe('Express group provider provenance', () => {
     expect(providers(await extractor.extract(null, root, repo()))).toEqual([]);
   });
 
+  it('uses lexical ownership for closure writes and parameter redeclarations', async () => {
+    write({
+      'server.ts': `import express from 'express';
+        let app = express(); function replace() { app = new Map(); }
+        app.get('/let-closure', handler);
+        function overwritten(app) { var app = storage; app.get('/overwritten', handler); }
+        function ambiguous(app, { value = 1 }) { var app; app.get('/ambiguous', handler); }
+        function retained(app) { var app; function nested(app) { app = new Map(); } app.get('/retained', handler); }
+        overwritten(express()); ambiguous(express()); retained(express());`,
+    });
+    expect(providers(await extractor.extract(null, root, repo()))).toEqual([
+      'http::GET::/retained',
+    ]);
+  });
+
   it('agrees with ingestion across mixed extensions, aliases and multiple mounts while preserving consumers and other providers', async () => {
     write({
       'tsconfig.json': JSON.stringify({

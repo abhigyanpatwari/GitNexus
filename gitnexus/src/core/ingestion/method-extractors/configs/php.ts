@@ -9,6 +9,7 @@ import type {
 } from '../../method-types.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { memoizeDeclarationFact } from '../declaration-facts.js';
 
 // ---------------------------------------------------------------------------
 // PHP helpers
@@ -282,7 +283,7 @@ export const phpMethodConfig: MethodExtractionConfig = {
 
   extractReturnType: extractPhpReturnType,
 
-  extractParameters: extractPhpParameters,
+  extractParameters: memoizeDeclarationFact(extractPhpParameters),
 
   extractVisibility: findPhpVisibility,
 

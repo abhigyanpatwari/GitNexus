@@ -82,6 +82,19 @@ export interface HookTarget {
   scriptDir: string;
 }
 
+/**
+ * An editor whose hooks ship as a plugin file auto-loaded from a plugins
+ * directory (no settings-file entry). Currently OpenCode only: its official
+ * plugin surface (`tool.execute.after` in `~/.config/opencode/plugins/`)
+ * needs no config edit — dropping the file in is the whole registration.
+ */
+export interface PluginFileTarget {
+  id: EditorId;
+  label: string;
+  /** Absolute path to the installed gitnexus plugin file. */
+  file: string;
+}
+
 export interface EditorTargets {
   /** JSONC-format MCP entries: Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder. */
   mcpJsonc: McpJsoncTarget[];
@@ -91,6 +104,8 @@ export interface EditorTargets {
   skills: SkillTarget[];
   /** Hook registrations + their bundled script directories. */
   hooks: HookTarget[];
+  /** Plugin-file hooks (auto-loaded, no settings entry). */
+  plugins: PluginFileTarget[];
 }
 
 /**
@@ -223,7 +238,15 @@ export function getEditorTargets(home: string = os.homedir()): EditorTargets {
     },
   ];
 
-  return { mcpJsonc, codex, skills, hooks };
+  const plugins: PluginFileTarget[] = [
+    {
+      id: 'opencode',
+      label: 'OpenCode',
+      file: path.join(home, '.config', 'opencode', 'plugins', 'gitnexus.js'),
+    },
+  ];
+
+  return { mcpJsonc, codex, skills, hooks, plugins };
 }
 
 /** Look up a single JSONC MCP target by editor id (throws if unknown). */
@@ -244,6 +267,13 @@ export function skillTarget(id: EditorId, home?: string): SkillTarget {
 export function hookTarget(id: EditorId, home?: string): HookTarget {
   const t = getEditorTargets(home).hooks.find((h) => h.id === id);
   if (!t) throw new Error(`No hook target for editor "${id}"`);
+  return t;
+}
+
+/** Look up a single plugin-file target by editor id (throws if unknown). */
+export function pluginFileTarget(id: EditorId, home?: string): PluginFileTarget {
+  const t = getEditorTargets(home).plugins.find((p) => p.id === id);
+  if (!t) throw new Error(`No plugin target for editor "${id}"`);
   return t;
 }
 

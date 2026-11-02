@@ -96,7 +96,7 @@ describe('MCP index generation freshness', () => {
     const text = (result.content as Array<{ type: string; text: string }>).find(
       (item) => item.type === 'text',
     )!.text;
-    const hint = getNextStepHint(name, args);
+    const hint = name === 'query' ? '' : getNextStepHint(name, args);
     return JSON.parse(hint ? text.slice(0, -hint.length) : text);
   }
 

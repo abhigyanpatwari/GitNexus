@@ -21,12 +21,6 @@ export interface TsconfigPaths {
   baseUrl: string;
 }
 
-/** Go module config parsed from go.mod */
-export interface GoModuleConfig {
-  /** Module path (e.g., "github.com/user/repo") */
-  modulePath: string;
-}
-
 /** PHP Composer PSR-4 autoload config */
 export interface ComposerConfig {
   /** Map of namespace prefix -> directory (e.g., "App\\" -> "app/") */
@@ -161,11 +155,7 @@ export interface CSharpProjectScan {
   readonly truncated: boolean;
 }
 
-/** Project the one-pass {@link CSharpProjectScan} into the
- *  {@link CSharpNamespaceEvidence} both import-resolution legs thread to the
- *  #1881 gate — one shape, two carriers (`ImportConfigs.csharpNamespaces` for
- *  the legacy DAG, `CsharpResolutionConfig.namespaces` for the scope resolver).
- *  Keeps the field mapping in one place so the two carriers can't drift. */
+/** Project a workspace scan into the namespace evidence used by import resolution. */
 export function csharpScanToEvidence(scan: CSharpProjectScan): CSharpNamespaceEvidence {
   return {
     declaredNamespaces: scan.declaredNamespaces,
@@ -410,26 +400,6 @@ export async function loadTsconfigPaths(repoRoot: string): Promise<TsconfigPaths
   return null;
 }
 
-/**
- * Parse go.mod to extract module path.
- */
-export async function loadGoModulePath(repoRoot: string): Promise<GoModuleConfig | null> {
-  try {
-    const goModPath = path.join(repoRoot, 'go.mod');
-    const content = await fs.readFile(goModPath, 'utf-8');
-    const match = content.match(/^module\s+(\S+)/m);
-    if (match) {
-      if (isDev) {
-        logger.info(`📦 Loaded Go module path: ${match[1]}`);
-      }
-      return { modulePath: match[1] };
-    }
-  } catch {
-    // No go.mod
-  }
-  return null;
-}
-
 /** Parse composer.json to extract PSR-4 autoload mappings (including autoload-dev). */
 export async function loadComposerConfig(repoRoot: string): Promise<ComposerConfig | null> {
   try {
@@ -466,9 +436,8 @@ const CSHARP_ROOT_NAMESPACE_RE = /<RootNamespace>\s*([^<]+)\s*<\/RootNamespace>/
 // scanner shared with the scope-resolution namespace-siblings pass
 // (`extractCsharpStructureViaScanner`), not a bare regex: a regex matches
 // `namespace` inside comments and string literals, seeding the #1881 gate
-// with phantom namespaces. Imported lazily (and memoized) so the always-on
-// `loadImportConfigs` path — every repo, every language — doesn't eagerly
-// pull tree-sitter-c-sharp in via `namespace-siblings.ts` → `query.ts`.
+// with phantom namespaces. Imported lazily (and memoized) so loading unrelated
+// configs does not pull tree-sitter-c-sharp in via namespace-siblings.ts.
 let csharpScannerFactoryPromise: Promise<() => CsharpStructureLineScanner> | undefined;
 function getCsharpStructureScannerFactory(): Promise<() => CsharpStructureLineScanner> {
   if (csharpScannerFactoryPromise === undefined) {
@@ -1925,10 +1894,7 @@ export function zigPackageFor(
  *
  * Called from `ScopeResolver.loadResolutionConfig`, which the orchestrator runs
  * once per LANGUAGE workspace pass — so the walk happens only for repos that
- * actually contain Zig. `loadImportConfigs`, which runs unconditionally for
- * every repo, keeps calling `loadZigBuildConfig` for the root package alone;
- * that is the same split TypeScript already has between the cheap
- * `loadTsconfigPaths` and the repo-walking `loadTsconfigIndex`.
+ * actually contain Zig.
  */
 export async function loadZigWorkspaceIndex(repoRoot: string): Promise<ZigWorkspaceIndex | null> {
   const dirs = await findZigPackageDirs(repoRoot);
@@ -2610,46 +2576,4 @@ export function parseZigBuildZon(raw: string): ZigBuildZonConfig | null {
     logger.info(`📦 Loaded ${pathDeps.size} Zig path-dep(s) from build.zig.zon`);
   }
   return { pathDeps };
-}
-
-// ============================================================================
-// BUNDLED CONFIG LOADER
-// ============================================================================
-
-/**
- * Bundled language-specific configs loaded once per ingestion run — the
- * result of {@link loadImportConfigs}, and every field's type is declared
- * above in this module.
- *
- * It lives here rather than in `import-resolvers/types.ts` (its consumer, via
- * `ResolveCtx`) so the dependency runs one way: the import-resolver types
- * import this bundle, and this module imports nothing from them. Homing the
- * producer's result type with the producer also keeps `import-resolvers/
- * types.ts` free of per-language names.
- */
-export interface ImportConfigs {
-  tsconfigPaths: TsconfigPaths | null;
-  goModule: GoModuleConfig | null;
-  composerConfig: ComposerConfig | null;
-  swiftPackageConfig: SwiftPackageConfig | null;
-  csharpConfigs: CSharpProjectConfig[];
-  /** In-repo namespace evidence gating C# suffix-fallback resolution (#1881). */
-  csharpNamespaces?: CSharpNamespaceEvidence;
-  /** Zig `.path` deps from build.zig.zon. Optional so call sites that
-   *  hand-build ImportConfigs (tests) don't have to supply it. */
-  zigBuildZon?: ZigBuildZonConfig | null;
-}
-
-/** Load all language-specific configs once for an ingestion run. */
-export async function loadImportConfigs(repoRoot: string): Promise<ImportConfigs> {
-  const csharpScan = await scanCSharpProject(repoRoot);
-  return {
-    tsconfigPaths: await loadTsconfigPaths(repoRoot),
-    goModule: await loadGoModulePath(repoRoot),
-    composerConfig: await loadComposerConfig(repoRoot),
-    swiftPackageConfig: await loadSwiftPackageConfig(repoRoot),
-    csharpConfigs: csharpScan.configs,
-    csharpNamespaces: csharpScanToEvidence(csharpScan),
-    zigBuildZon: await loadZigBuildConfig(repoRoot),
-  };
 }

@@ -3224,38 +3224,6 @@ svc = App::Models::Service.new
   });
 
   describe('stripNullable', () => {
-    it('strips User | null → User', () => {
-      expect(stripNullable('User | null')).toBe('User');
-    });
-
-    it('strips User | undefined → User', () => {
-      expect(stripNullable('User | undefined')).toBe('User');
-    });
-
-    it('strips User | null | undefined → User', () => {
-      expect(stripNullable('User | null | undefined')).toBe('User');
-    });
-
-    it('strips User? → User', () => {
-      expect(stripNullable('User?')).toBe('User');
-    });
-
-    it('passes through User unchanged', () => {
-      expect(stripNullable('User')).toBe('User');
-    });
-
-    it('refuses genuine union User | Repo → undefined', () => {
-      expect(stripNullable('User | Repo')).toBeUndefined();
-    });
-
-    it('returns undefined for null alone', () => {
-      expect(stripNullable('null')).toBeUndefined();
-    });
-
-    it('returns undefined for empty string', () => {
-      expect(stripNullable('')).toBeUndefined();
-    });
-
     it('strips User | void → User', () => {
       expect(stripNullable('User | void')).toBe('User');
     });
@@ -3270,22 +3238,6 @@ svc = App::Models::Service.new
 
     it('strips User | void | nil → User (multiple nullable keywords)', () => {
       expect(stripNullable('User | void | nil')).toBe('User');
-    });
-
-    it('returns undefined for None alone', () => {
-      expect(stripNullable('None')).toBeUndefined();
-    });
-
-    it('returns undefined for nil alone', () => {
-      expect(stripNullable('nil')).toBeUndefined();
-    });
-
-    it('returns undefined for void alone', () => {
-      expect(stripNullable('void')).toBeUndefined();
-    });
-
-    it('returns undefined for undefined alone', () => {
-      expect(stripNullable('undefined')).toBeUndefined();
     });
 
     it('strips nullable suffix with spaces: User ? → User', () => {

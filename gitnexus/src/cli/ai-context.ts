@@ -347,7 +347,24 @@ async function upsertGitNexusSection(
     return 'created';
   }
 
-  const existingContent = await fs.readFile(filePath, 'utf-8');
+  // The block is generated with LF. A file checked out with CRLF (Windows,
+  // `core.autocrlf`) used to get the block written in LF inside its CRLF
+  // prose, so git saw mixed endings and a dirty tree after every reindex
+  // (#3688). The file's own ending is kept: the content is normalised to LF
+  // for the marker search and the comparisons below, and written back in the
+  // ending it had.
+  const rawContent = await fs.readFile(filePath, 'utf-8');
+  const eol = detectLineEnding(rawContent);
+  const existingContent = rawContent.replace(/\r\n/g, '\n');
+  // A file the previous writer left with mixed endings (CRLF prose, LF block)
+  // compares equal once normalised, so the paths below that keep the file as
+  // it is would leave the mixed bytes in place. Such a file is written back
+  // once, in its own ending, with its text untouched.
+  const repairLineEndings = async (): Promise<'updated' | 'preserved'> => {
+    if (rawContent === toLineEnding(existingContent, eol)) return 'preserved';
+    await writeWithLineEnding(filePath, existingContent, eol);
+    return 'updated';
+  };
 
   // Check if GitNexus section already exists. Matching is restricted
   // to markers that occupy their own line so that inline prose
@@ -407,35 +424,54 @@ async function upsertGitNexusSection(
         // Count-only delta — leave the committed lean block alone (#2907). A
         // project rename, or --no-stats dropping the parenthetical, still writes.
         if (stripVolatileCounts(updatedSection) === stripVolatileCounts(existingSection)) {
-          return 'preserved';
+          return repairLineEndings();
         }
         const before = existingContent.substring(0, startIdx);
         const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
-        await fs.writeFile(filePath, (before + updatedSection + after).trim() + '\n', 'utf-8');
+        await writeWithLineEnding(filePath, (before + updatedSection + after).trim() + '\n', eol);
         return 'updated';
       }
       // Keep marker present but no stats line matched. Section is preserved
       // unchanged on disk; return a distinct status so callers/CLI output
       // don't mis-report this as 'updated' (which would imply a write).
-      return 'preserved';
+      return repairLineEndings();
     }
 
     // No keep marker — replace existing section with full verbose content,
     // unless the counts are the only thing that moved (#2907).
     if (stripVolatileCounts(existingSection) === stripVolatileCounts(content)) {
-      return 'preserved';
+      return repairLineEndings();
     }
     const before = existingContent.substring(0, startIdx);
     const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
     const newContent = before + content + after;
-    await fs.writeFile(filePath, newContent.trim() + '\n', 'utf-8');
+    await writeWithLineEnding(filePath, newContent.trim() + '\n', eol);
     return 'updated';
   }
 
   // Append new section
   const newContent = existingContent.trim() + '\n\n' + content + '\n';
-  await fs.writeFile(filePath, newContent, 'utf-8');
+  await writeWithLineEnding(filePath, newContent, eol);
   return 'appended';
+}
+
+/** The line ending of the first line break in `content`; LF when there is none. */
+function detectLineEnding(content: string): '\n' | '\r\n' {
+  const firstBreak = content.indexOf('\n');
+  return firstBreak > 0 && content[firstBreak - 1] === '\r' ? '\r\n' : '\n';
+}
+
+function toLineEnding(lfContent: string, eol: '\n' | '\r\n'): string {
+  return eol === '\n' ? lfContent : lfContent.replace(/\n/g, eol);
+}
+
+/** Write LF text in the file's own line ending. */
+async function writeWithLineEnding(
+  filePath: string,
+  lfContent: string,
+  eol: '\n' | '\r\n',
+): Promise<void> {
+  await fs.writeFile(filePath, toLineEnding(lfContent, eol), 'utf-8');
 }
 
 /**

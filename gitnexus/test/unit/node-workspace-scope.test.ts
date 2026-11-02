@@ -15,7 +15,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { loadNodeWorkspacePackages } from '../../src/core/ingestion/import-resolvers/node-workspace-packages.js';
+import { loadNodeWorkspacePackages } from '../../src/core/ingestion/languages/typescript/workspace-packages.js';
 
 const roots: string[] = [];
 

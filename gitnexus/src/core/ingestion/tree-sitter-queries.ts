@@ -23,6 +23,11 @@ ${unboundCallableQuery('definition.function')}
 (class_declaration
   name: (type_identifier) @name) @definition.class
 
+; Named class expressions own members just like declarations. Anonymous
+; expressions have no name and deliberately do not match this pattern.
+(class
+  name: (type_identifier) @name) @definition.class
+
 (abstract_class_declaration
   name: (type_identifier) @name) @definition.class
 
@@ -793,6 +798,9 @@ ${unboundCallableQuery('definition.function')}
 export const JAVASCRIPT_QUERIES = `
 ${unboundCallableQuery('definition.function')}
 (class_declaration
+  name: (identifier) @name) @definition.class
+
+(class
   name: (identifier) @name) @definition.class
 
 (function_declaration
@@ -2604,7 +2612,7 @@ export const SWIFT_QUERIES = `
 
 `;
 
-// Dart queries - works with tree-sitter-dart (UserNobody14/tree-sitter-dart, ABI 14)
+// Dart queries - works with tree-sitter-dart (UserNobody14/tree-sitter-dart, ABI 15)
 // Note: Dart grammar has function_signature/method_signature as wrappers;
 // top-level functions are (program > function_signature),
 // methods inside classes are (method_signature > function_signature).
@@ -2621,6 +2629,8 @@ export const DART_QUERIES = `
 
 ; ── Extensions ───────────────────────────────────────────────────────────────
 (extension_declaration
+  name: (identifier) @name) @definition.class
+(extension_type_declaration
   name: (identifier) @name) @definition.class
 
 ; ── Enums ────────────────────────────────────────────────────────────────────

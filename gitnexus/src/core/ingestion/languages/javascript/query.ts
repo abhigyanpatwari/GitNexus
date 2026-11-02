@@ -101,6 +101,9 @@ ${unboundCallableQuery('declaration.function')}
 (class_declaration
   name: (identifier) @declaration.name) @declaration.class
 
+(class
+  name: (identifier) @declaration.name) @declaration.class @class.expression
+
 ;; Declarations — methods (inside class bodies)
 (method_definition
   name: (property_identifier) @declaration.name) @declaration.method

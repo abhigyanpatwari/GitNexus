@@ -301,6 +301,14 @@ describe('heritageTypeArgumentsKey', () => {
 });
 
 describe('typeApplicationArguments', () => {
+  it('keeps tuple and nested tuple commas inside one type argument', () => {
+    expect(typeApplicationArguments('Base<(int, string)>')).toEqual(['(int, string)']);
+    expect(typeApplicationArguments('Base<(int, (string, bool)), byte>')).toEqual([
+      '(int, (string, bool))',
+      'byte',
+    ]);
+  });
+
   it('reads angle-bracket arguments', () => {
     expect(typeApplicationArguments('IValidator<string>')).toEqual(['string']);
   });

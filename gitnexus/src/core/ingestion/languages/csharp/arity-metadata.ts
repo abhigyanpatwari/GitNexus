@@ -19,6 +19,7 @@
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { csharpMethodConfig } from '../../method-extractors/configs/csharp.js';
+import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
 
 interface CsharpArityMetadata {
   readonly parameterCount: number | undefined;
@@ -31,13 +32,12 @@ export function computeCsharpArityMetadata(fnNode: SyntaxNode): CsharpArityMetad
 
   let hasVariadic = false;
   let optionalCount = 0;
-  const types: string[] = [];
+  let types = declarationParameterTypes(params);
   for (const p of params) {
     if (p.isVariadic) hasVariadic = true;
     else if (p.isOptional) optionalCount++;
-    if (p.type !== null) types.push(p.type);
   }
-  if (hasVariadic) types.push('params');
+  if (hasVariadic) types = [...types, 'params'];
 
   const total = params.length;
   // `params int[] args` declares one formal param but accepts any arg
