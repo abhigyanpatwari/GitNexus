@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/abhigyanpatwari-gitnexus-badge.png)](https://mseep.ai/app/abhigyanpatwari-gitnexus)
+
 # GitNexus
 
 <div align="center">
