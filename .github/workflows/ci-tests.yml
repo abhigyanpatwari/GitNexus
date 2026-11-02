@@ -968,6 +968,14 @@ jobs:
         run: node --import tsx bench/scope-capture/measure.mjs --check
         working-directory: gitnexus
 
+      - name: PL/SQL parse fingerprint + scaling guard
+        if: ${{ !cancelled() }}
+        # Build-free: asserts extractPlSqlFacts output over the plsql-* fixtures
+        # is unchanged (fingerprint) and the warmed ANTLR parse stays linear in
+        # package-body size (scaling < 1.5). Timings are reported, not gated.
+        run: node --import tsx bench/plsql-parse/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Rename output construction scaling guard
         if: ${{ !cancelled() }}
         run: node --import tsx bench/rename/measure.mjs --check

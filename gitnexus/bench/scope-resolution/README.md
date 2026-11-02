@@ -13,12 +13,12 @@ plus callers and helpers. Rust also needs a root
 module file; Objective-C has a header and implementation per entity. Java adds an
 isolated producer file and exercises transitive factory returns and repeated
 unreachable return-name lookups. Swift uses same-module visibility; COBOL exercises
-program references and procedure pointers. Other arms import the preceding file and call through its
+program references and procedure pointers; PL/SQL exercises package-qualified calls. Other arms import the preceding file and call through its
 return value. These generated sources exercise the analyzer; they are not builds
 or representative application benchmarks.
 
 Every sample runs in a fresh process through real parsing with one worker and the
-production scope-resolution pass. COBOL also runs its standalone structural parser.
+production scope-resolution pass. COBOL and PL/SQL also run their standalone structural parsers.
 Configuration files are written to a temporary workspace and loaded through the resolver's normal
 configuration hook. No production heap, file-count, or propagation limit is imposed.
 

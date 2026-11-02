@@ -505,6 +505,22 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
     },
   ],
   [
+    SupportedLanguages.PlSql,
+    {
+      files: ['db/install.sql', 'db/packages/pkg_loan.pks'],
+      fromFile: 'db/install.sql',
+      resolutionConfig: undefined,
+      // Vendor scripts live outside the repository. Resolution only probes
+      // `allFilePaths.has` for exact candidates, so there is no traversal to
+      // hoist: zero scans, like Rust.
+      missTarget: (i) => `vendor_patch_${i}.sql`,
+      hitTarget: 'packages/pkg_loan.pks',
+      parsedImport: IGNORES_CONTEXT,
+      minimumScans: 0,
+      minimumParsedFileReads: 0,
+    },
+  ],
+  [
     SupportedLanguages.Swift,
     {
       files: ['Sources/Models/User.swift', 'Sources/App/main.swift'],
