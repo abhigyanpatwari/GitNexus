@@ -19,10 +19,13 @@
             "-std=c11",
           ],
         }, { # OS == "win"
-          "cflags_c": [
-            "/std:c11",
-            "/utf-8",
-          ],
+          # cflags_c is not forwarded by the MSVS generator. The scanner's
+          # _Static_assert requires C11 even when the rest of the C compiles.
+          "msvs_settings": {
+            "VCCLCompilerTool": {
+              "AdditionalOptions": ["/std:c11", "/utf-8"],
+            },
+          },
         }],
       ],
     }
