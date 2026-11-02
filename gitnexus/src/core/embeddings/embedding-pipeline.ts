@@ -38,6 +38,7 @@ import {
 import {
   DEFAULT_VECTOR_MAX_DISTANCE,
   getVectorMaxDistance,
+  LocalEmbeddingDimensionError,
   resolveEmbeddingConfig,
 } from './config.js';
 import { rankExactEmbeddingRows, type ExactEmbeddingRow } from './exact-search.js';
@@ -106,11 +107,14 @@ export const contentHashForNode = (
     node.content,
     config,
   );
-  return createHash('sha1')
+  const hash = createHash('sha1')
     .update(EMBEDDING_TEXT_VERSION)
-    .update(`\n${config.maxInputChars ?? DEFAULT_EMBEDDING_CONFIG.maxInputChars}\n`)
-    .update(text)
-    .digest('hex');
+    .update(`\n${config.maxInputChars ?? DEFAULT_EMBEDDING_CONFIG.maxInputChars}\n`);
+  // Only a non-default model joins the hash, so default-model hashes stay unchanged.
+  if (config.modelId !== undefined && config.modelId !== DEFAULT_EMBEDDING_CONFIG.modelId) {
+    hash.update(`model:${config.modelId}\n`);
+  }
+  return hash.update(text).digest('hex');
 };
 
 const isInputRejection = (error: unknown): boolean =>
@@ -913,6 +917,11 @@ export const runEmbeddingPipeline = async (
           // keep going; the cleanup DELETE after this loop makes the drop safe.
           const droppedNodeIds = new Set(subUpdates.map((u) => u.nodeId));
           for (const nodeId of droppedNodeIds) batchFailedNodeIds.add(nodeId);
+          // A wrong vector width is configuration: every later sub-batch would fail the same way.
+          if (embedErr instanceof LocalEmbeddingDimensionError) {
+            abortError = { err: embedErr };
+            break;
+          }
           if (isInputRejection(embedErr)) {
             // Bad inputs are pending work, not evidence of an endpoint outage.
             // Do not let many rejected chunks starve later healthy nodes.

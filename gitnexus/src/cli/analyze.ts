@@ -74,6 +74,7 @@ import {
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
+import { LocalEmbeddingDimensionError } from '../core/embeddings/config.js';
 import {
   isHttpEmbeddingDimsError,
   isHttpEmbeddingError,
@@ -2066,6 +2067,14 @@ const analyzeCommandImpl = async (
       cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
         recoveryHint: 'embedding-dims-invalid',
       });
+      process.exitCode = 1;
+      return;
+    }
+
+    // A custom local model returned another width than GITNEXUS_EMBEDDING_DIMS:
+    // the message names the value to set, so no stack dump.
+    if (err instanceof LocalEmbeddingDimensionError) {
+      cliError(`  ${msg}\n`, { recoveryHint: 'embedding-dims-invalid' });
       process.exitCode = 1;
       return;
     }

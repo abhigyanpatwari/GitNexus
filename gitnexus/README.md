@@ -432,6 +432,18 @@ Like Actuator snapshots, documents are external to git freshness — replacing o
 
 > **`gitnexus uninstall`** removes the named GitNexus MCP entries, hooks, and skill directories from detected editors. This includes a URL-based MCP entry you configured yourself, even if setup preserved it. Skill directories are identified **by bundled gitnexus skill name** (e.g. `gitnexus-cli/`), so if you customized files inside an installed skill directory, back them up first. It is a dry-run preview by default and prints the exact paths it would remove; pass `--force` to apply. Per-repo indexes (`gitnexus clean --all`) and the global npm package (`npm uninstall -g gitnexus`) are left for you to remove.
 
+## Local Embedding Model
+
+Local embeddings use `Snowflake/snowflake-arctic-embed-xs` (384 dimensions). To use another Hugging Face model with ONNX weights for transformers.js, set its id and its vector size:
+
+```bash
+export GITNEXUS_EMBEDDING_MODEL_ID=Xenova/bge-base-en-v1.5
+export GITNEXUS_EMBEDDING_DIMS=768   # required unless the model returns 384-dimensional vectors
+gitnexus analyze . --embeddings
+```
+
+Set the same two variables wherever the index is queried (MCP server, `serve`, `query`), so queries are embedded with the same model. A model that returns a different vector size than `GITNEXUS_EMBEDDING_DIMS` stops the run with the size to set. Changing the model re-embeds every node on the next `analyze`; switching back to the default does too.
+
 ## Remote Embeddings
 
 Set these env vars to use a remote OpenAI-compatible `/v1/embeddings` endpoint instead of the local model:
