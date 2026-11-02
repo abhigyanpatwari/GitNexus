@@ -43,6 +43,7 @@ import { isPythonGlobalDeclaration, pythonFunctionDefinitionLabel } from './simp
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import { applyPythonLexicalBindings } from './lexical-bindings.js';
+import { pythonAttributeAccessKinds } from './attribute-references.js';
 import {
   beginPythonSubtypeDispatchCapture,
   recordPythonSimplePositionalCall,
@@ -53,6 +54,7 @@ import {
   recordPythonModuleAccessor,
   synthesizePythonCallResultAssignment,
 } from './module-accessors.js';
+import { synthesizePythonInstanceFieldCaptures } from './instance-fields.js';
 
 const PYTHON_CALLABLE_CAPTURE_OPTIONS = {
   functionNodeTypes: new Set(['function_definition', 'lambda']),
@@ -158,6 +160,20 @@ export function emitPythonScopeCaptures(
     }
     if (Object.keys(grouped).length === 0) continue;
 
+    const attribute = nodeMap['@reference.read.member'];
+    if (attribute !== undefined) {
+      const kinds = pythonAttributeAccessKinds(attribute);
+      for (const kind of kinds) {
+        const reference = { ...grouped };
+        delete reference['@reference.read.member'];
+        const tag = `@reference.${kind}.member`;
+        reference[tag] = nodeToCapture(tag, attribute);
+        synthesizeReceiverChainCapture(reference, nodeMap['@reference.receiver']);
+        out.push(reference);
+      }
+      continue;
+    }
+
     recordPythonSubtypeCallShape(grouped, nodeMap, filePath, subtypeLineMapper);
 
     const assignedNode = nodeMap['@declaration.variable'];
@@ -205,6 +221,14 @@ export function emitPythonScopeCaptures(
         synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
         out.push(grouped);
       }
+      continue;
+    }
+
+    if (grouped['@scope.class'] !== undefined) {
+      out.push(
+        grouped,
+        ...synthesizePythonInstanceFieldCaptures(nodeMap['@scope.class']!, filePath),
+      );
       continue;
     }
 

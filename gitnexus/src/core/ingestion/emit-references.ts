@@ -58,6 +58,7 @@ import type {
 import type { KnowledgeGraph } from '../graph/types.js';
 import type { ScopeResolutionIndexes } from './model/scope-resolution-indexes.js';
 import { toZeroBasedLine } from './utils/line-base.js';
+import { referenceEdgeKey } from './scope-resolution/graph-bridge/edges.js';
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
@@ -255,7 +256,7 @@ function buildRelationship(
   // Other kinds omit `step`.
   const step = ref.kind === 'read' ? 1 : ref.kind === 'write' ? 2 : undefined;
   return {
-    id: `rel:${type}:${callerId}->${targetDef.nodeId}:${ref.atRange.startLine}:${ref.atRange.startCol}`,
+    id: `rel:${referenceEdgeKey(type, callerId, targetDef.nodeId, ref)}`,
     sourceId: callerId,
     targetId: targetDef.nodeId,
     type,

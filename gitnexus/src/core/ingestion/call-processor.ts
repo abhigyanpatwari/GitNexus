@@ -22,7 +22,7 @@ import type { ParsedImport, SymbolDefinition } from 'gitnexus-shared';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import type { ExtractedRoute, ExtractedFetchCall } from './workers/parse-worker.js';
 import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
-import type { LanguageProvider } from './language-provider.js';
+import type { LanguageProvider, RouteHookConfig } from './language-provider.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import {
   isTestRouteFile,
@@ -59,6 +59,8 @@ interface RouteHandlerResolutionContext {
   ) => readonly string[];
   /** The route file's `LanguageProvider.resolveRouteHandler`, when it defines one. */
   readonly providerRouteHandler?: (filePath: string) => LanguageProvider['resolveRouteHandler'];
+  /** User route configuration forwarded to provider handler hooks. */
+  readonly routeHookConfig?: RouteHookConfig;
   readonly isExportedSymbol: (nodeId: string) => boolean;
   /** 0-based graph-node startLine for same-name tRPC handler disambiguation. */
   readonly nodeStartLine?: (nodeId: string) => number | undefined;
@@ -559,7 +561,11 @@ export function resolveRouteHandlerSymbols(
     return routeContext.resolveImportTargets(parsedImport, fromFile);
   };
 
-  const providerContext = { model, importTargetsFor };
+  const providerContext = {
+    model,
+    importTargetsFor,
+    routeHookConfig: routeContext?.routeHookConfig,
+  };
   const decoratorHandlerId = (dr: ExtractedDecoratorRoute): string | undefined => {
     if (dr.source === DATA_ROUTE_TABLE_SOURCE) return dataHandlerByRoute.get(dr);
     const providerHandler = routeContext?.providerRouteHandler?.(dr.filePath);

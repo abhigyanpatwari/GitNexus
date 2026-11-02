@@ -9,6 +9,8 @@ export type ResolutionSuppressionReason =
   | 'selected-callable-deleted'
   | 'overload-ambiguous'
   | 'overload-ambiguous-normalization'
+  | 'overload-unknown'
+  | 'overload-inapplicable'
   | 'free-call-instance-ownership'
   /** #2701 — the receiver is rebound by its own scope and has no type
    *  there (a JS/TS ordinary `function`'s `this`), so no enclosing type
@@ -41,6 +43,15 @@ export type ResolutionOutcome =
        * qualified namespace resolver returns only an `ambiguous` sentinel.
        */
       readonly candidateIds: readonly string[];
+      /** Public graph identities, kept separate from scope definition IDs. */
+      readonly candidateGraphIds?: readonly string[];
+      /** Public graph identities of the candidates' declaring types. */
+      readonly candidateOwnerIds?: readonly string[];
+      /** Public graph identity of the enclosing callable or initializer. */
+      readonly callerId?: string;
+      /** Candidate inventory and every required graph identity were proven. */
+      readonly candidateSetComplete?: boolean;
+      readonly detail?: string;
       readonly phase: string;
       readonly filePath: string;
       readonly name: string;

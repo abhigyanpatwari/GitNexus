@@ -125,6 +125,7 @@ try {
     pool,
     { LocalBackend },
     { summarizeUnresolvedReceivers },
+    { summarizeUnresolvedOverloads },
     { taintModelVersion },
   ] = await Promise.all([
     import('../../src/core/ingestion/pipeline.js'),
@@ -132,6 +133,7 @@ try {
     import('../../src/core/lbug/pool-adapter.js'),
     import('../../src/mcp/local/local-backend.js'),
     import('../../src/core/ingestion/scope-resolution/unresolved-receivers.js'),
+    import('../../src/core/ingestion/scope-resolution/unresolved-overloads.js'),
     import('../../src/core/ingestion/taint/typescript-model.js'),
   ]);
   adapter = await import('../../src/core/lbug/lbug-adapter.js');
@@ -174,6 +176,10 @@ try {
     indexedAt: '2026-10-06T00:00:00.000Z',
     scopeExtractionReceipt: 1,
     unresolvedReceiverMembers: summarizeUnresolvedReceivers(pipeline.resolutionOutcomes),
+    unresolvedOverloads: summarizeUnresolvedOverloads(
+      pipeline.resolutionOutcomes,
+      pipeline.resolutionOutcomes !== undefined,
+    ),
     pdg: { maxFunctionLines: 2000, maxEdgesPerFunction: 0, taintModelVersion },
     stats: {
       files: pipeline.totalFileCount,

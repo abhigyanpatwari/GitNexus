@@ -112,9 +112,13 @@ data; omission does not mean absence. Remove filters for a broader view. For
 impact, existing `summaryOnly`, `limit` and `offset` already provide focused views.
 Omitting these filters preserves the existing response.
 
-The `query`, `context`, and `impact` tools accept an optional positive-integer `maxTokens` argument. It bounds the complete formatted MCP response, including hints and error text, using a deterministic four-UTF-8-bytes-per-token estimate. When truncation is required, the response ends with `…` and remains valid UTF-8.
+The `query`, `context`, and `impact` tools accept an optional positive-integer `maxTokens` argument. It bounds the complete formatted MCP response, including hints and error text, using a deterministic four-UTF-8-bytes-per-token estimate. For `query` and `context`, truncation ends the response with `…` and preserves valid UTF-8.
 
-Set `GITNEXUS_MCP_DEFAULT_MAX_TOKENS` to apply the same guardrail when callers do not send `maxTokens`. An explicit tool argument takes precedence. Leaving both unset preserves the existing response byte-for-byte; this is a transport guardrail, not semantic pagination or an exact model-specific tokenizer limit.
+Set `GITNEXUS_MCP_DEFAULT_MAX_TOKENS` to apply the budget when callers do not send `maxTokens`. An explicit tool argument takes precedence. Leaving both unset disables token budgeting. The estimate is not an exact model-specific tokenizer limit.
+
+For single-repo callgraph results, `impact` removes whole symbols from the deepest levels first. Counts, risk and completeness warnings remain intact, and `pagination.trimmedForBudget.shownByDepth` records the returned counts. If metadata alone cannot fit, it returns a JSON error with MCP `isError: true`; increase `maxTokens` or narrow the request. Budgets too small for an error object return JSON `null` with `isError: true`. Group and PDG results are not paginated or trimmed by this mechanism; an oversized result also returns a budget error.
+
+Without explicit pagination, single-repo callgraph impact returns up to 30 symbols per depth. Client-supplied `offset: 0` and `summaryOnly: false` still use this default. Set `GITNEXUS_IMPACT_DEFAULT_LIMIT=0` for an unpaged result, or set `limit` and `offset` for explicit pages. Each symbol lists at most three processes; `processCount` records the full count when the list is shortened. Backend results used by the web UI and internal callers are unchanged.
 
 ## Tool Examples
 

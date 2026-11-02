@@ -28,6 +28,8 @@ import {
   summarizeUnresolvedReceivers,
 } from '../../src/core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { ResolutionOutcome } from '../../src/core/ingestion/scope-resolution/resolution-outcome.js';
+import { summarizeUnresolvedOverloads } from '../../src/core/ingestion/scope-resolution/unresolved-overloads.js';
+import * as poolAdapter from '../../src/core/lbug/pool-adapter.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
@@ -38,6 +40,23 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
 }));
 
 const SEED = [
+  ...['Overloads', 'Unrelated'].map(
+    (name) =>
+      `CREATE (:Class {id:'Class:src/Overloads.java:${name}', name:'${name}', filePath:'src/Overloads.java', startLine:1, endLine:20, content:'', description:''})`,
+  ),
+  ...['String', 'Long'].map(
+    (type) =>
+      `CREATE (:Method {id:'Method:src/Overloads.java:Overloads.choose#1~${type}', name:'choose', filePath:'src/Overloads.java', startLine:2, endLine:5, content:'', description:''})`,
+  ),
+  ...['leaf', 'invoke', 'entry'].map(
+    (name) =>
+      `CREATE (:Function {id:'Function:src/overload-${name}.ts:${name}', name:'overload${name}', filePath:'src/overload-${name}.ts', startLine:1, endLine:3, content:'', description:''})`,
+  ),
+  ...['String', 'Long'].flatMap((type) => [
+    `MATCH (owner:Class {id:'Class:src/Overloads.java:Overloads'}), (m:Method {id:'Method:src/Overloads.java:Overloads.choose#1~${type}'}) CREATE (owner)-[:CodeRelation {type:'HAS_METHOD', confidence:1, reason:'member', step:0}]->(m)`,
+    `MATCH (m:Method {id:'Method:src/Overloads.java:Overloads.choose#1~${type}'}), (leaf:Function {id:'Function:src/overload-leaf.ts:leaf'}) CREATE (m)-[:CodeRelation {type:'CALLS', confidence:1, reason:'direct', step:0}]->(leaf)`,
+  ]),
+  `MATCH (entry:Function {id:'Function:src/overload-entry.ts:entry'}), (caller:Function {id:'Function:src/overload-invoke.ts:invoke'}) CREATE (entry)-[:CodeRelation {type:'CALLS', confidence:1, reason:'direct', step:0}]->(caller)`,
   // Interface + two implementations + an interface-level consumer.
   `CREATE (iface:Interface {id: 'Interface:src/Logger.ts:Logger', name: 'Logger', filePath: 'src/Logger.ts', startLine: 1, endLine: 5, isExported: true, content: '', description: ''})`,
   `CREATE (email:Class {id: 'Class:src/EmailLogger.ts:EmailLogger', name: 'EmailLogger', filePath: 'src/EmailLogger.ts', startLine: 1, endLine: 20, isExported: true, content: '', description: ''})`,
@@ -85,7 +104,173 @@ withTestLbugDB(
       // Keep each fixture snapshot stable for every read in that test.
       vi.mocked(loadMeta).mockResolvedValue({
         scopeExtractionReceipt: 1,
+        unresolvedOverloads: summarizeUnresolvedOverloads([]),
       } as Awaited<ReturnType<typeof loadMeta>>);
+    });
+
+    describe('overload completeness', () => {
+      const candidates = [
+        'Method:src/Overloads.java:Overloads.choose#1~String',
+        'Method:src/Overloads.java:Overloads.choose#1~Long',
+      ];
+      const owner = 'Class:src/Overloads.java:Overloads';
+      const caller = 'Function:src/overload-invoke.ts:invoke';
+      const outcome: ResolutionOutcome = {
+        kind: 'suppressed',
+        phase: 'receiver-bound-calls',
+        filePath: 'src/overload-invoke.ts',
+        name: 'choose',
+        range: { startLine: 2, startCol: 0, endLine: 2, endCol: 10 },
+        reason: 'overload-unknown',
+        siteKind: 'call',
+        candidateIds: ['def:choose.String', 'def:choose.Long'],
+        candidateGraphIds: candidates,
+        candidateOwnerIds: [owner],
+        callerId: caller,
+        candidateSetComplete: true,
+      };
+      const metadata = (outcomes: readonly ResolutionOutcome[] = [outcome]) => ({
+        repoPath: '',
+        lastCommit: '',
+        indexedAt: '',
+        scopeExtractionReceipt: 1 as const,
+        unresolvedOverloads: summarizeUnresolvedOverloads(outcomes),
+      });
+      const impact = (uid: string, params: Record<string, unknown> = {}) =>
+        backend.callTool('impact', { target_uid: uid, direction: 'upstream', ...params });
+
+      it.each(['impact', 'context'] as const)(
+        'hedges zero known callers for %s using graph candidate identity',
+        async (tool) => {
+          vi.mocked(loadMeta).mockResolvedValue(metadata());
+          const result = await backend.callTool(
+            tool,
+            tool === 'impact'
+              ? { target_uid: candidates[0], direction: 'upstream' }
+              : { uid: candidates[0] },
+          );
+          expect(result).not.toHaveProperty('error');
+          expect(result).toMatchObject({
+            epistemic: 'lower-bound',
+            causes: { overloadResolution: 1 },
+          });
+          expect(
+            tool === 'impact' ? result.impactedCount : (result.incoming.calls?.length ?? 0),
+          ).toBe(0);
+        },
+      );
+
+      it('finds omissions at expanded intermediate nodes, without double-counting candidates or terminal depths', async () => {
+        vi.mocked(loadMeta).mockResolvedValue(metadata());
+        const leaf = 'Function:src/overload-leaf.ts:leaf';
+        const shallow = await impact(leaf, { maxDepth: 1 });
+        expect(shallow).toMatchObject({ epistemic: 'exact', impactedCount: 2 });
+        const deep = await impact(leaf, { maxDepth: 2 });
+        expect(deep).toMatchObject({
+          epistemic: 'lower-bound',
+          impactedCount: 2,
+          causes: { overloadResolution: 1 },
+        });
+        const paged = await impact(leaf, { maxDepth: 2, limit: 1, offset: 1 });
+        const summary = await impact(leaf, { maxDepth: 2, summaryOnly: true });
+        expect(paged.causes.overloadResolution).toBe(1);
+        expect(summary.causes.overloadResolution).toBe(1);
+        expect(summary).not.toHaveProperty('byDepth');
+      });
+
+      it('matches class declaring owners without contaminating unrelated classes in the same file', async () => {
+        vi.mocked(loadMeta).mockResolvedValue(metadata());
+        expect(await impact(owner)).toMatchObject({
+          epistemic: 'lower-bound',
+          causes: { overloadResolution: 1 },
+        });
+        expect(await impact('Class:src/Overloads.java:Unrelated')).toMatchObject({
+          epistemic: 'exact',
+        });
+      });
+
+      it('uses caller identities downstream, including reached callers within the depth bound', async () => {
+        vi.mocked(loadMeta).mockResolvedValue(metadata());
+        expect(await impact(caller, { direction: 'downstream' })).toMatchObject({
+          epistemic: 'lower-bound',
+          causes: { overloadResolution: 1 },
+        });
+        const entry = 'Function:src/overload-entry.ts:entry';
+        expect(await impact(entry, { direction: 'downstream', maxDepth: 1 })).toMatchObject({
+          epistemic: 'exact',
+        });
+        expect(await impact(entry, { direction: 'downstream', maxDepth: 2 })).toMatchObject({
+          epistemic: 'lower-bound',
+          causes: { overloadResolution: 1 },
+        });
+        expect(
+          await impact('Function:src/overload-leaf.ts:leaf', { direction: 'downstream' }),
+        ).toMatchObject({ epistemic: 'exact' });
+      });
+
+      it('does not add call omissions to a traversal excluding CALLS', async () => {
+        vi.mocked(loadMeta).mockResolvedValue(metadata());
+        expect(await impact(candidates[0], { relationTypes: ['IMPORTS'] })).toMatchObject({
+          epistemic: 'exact',
+        });
+      });
+
+      it('honors upstream test-caller filtering', async () => {
+        vi.mocked(loadMeta).mockResolvedValue(
+          metadata([{ ...outcome, filePath: 'test/Caller.java' }]),
+        );
+        expect(await impact(candidates[0])).toMatchObject({ epistemic: 'exact' });
+        expect(await impact(candidates[0], { includeTests: true })).toMatchObject({
+          epistemic: 'lower-bound',
+          causes: { overloadResolution: 1 },
+        });
+      });
+
+      it.each([
+        undefined,
+        { schemaVersion: 99 },
+        {
+          schemaVersion: 1,
+          complete: false,
+          totalSites: 1,
+          omittedSites: 1,
+          sites: [],
+        },
+      ])(
+        'keeps missing, malformed and capped coverage distinct from measured zero: %j',
+        async (summary) => {
+          vi.mocked(loadMeta).mockResolvedValue({
+            ...metadata([]),
+            unresolvedOverloads: summary,
+          } as Awaited<ReturnType<typeof loadMeta>>);
+          const result = await impact(candidates[0]);
+          expect(result).toMatchObject({
+            epistemic: 'lower-bound',
+            causes: { overloadResolution: 0 },
+          });
+          expect(result.boundaries.join(' ')).toMatch(/not recorded|partial/);
+        },
+      );
+
+      it('retains overload evidence when the heritage probe fails', async () => {
+        vi.mocked(loadMeta).mockResolvedValue(metadata());
+        const execute = poolAdapter.executeParameterized;
+        const spy = vi
+          .spyOn(poolAdapter, 'executeParameterized')
+          .mockImplementation((repo, query, params) =>
+            query.includes('RETURN DISTINCT iface.id AS id')
+              ? Promise.reject(new Error('heritage probe unavailable'))
+              : execute(repo, query, params),
+          );
+        try {
+          expect(await backend.callTool('context', { uid: candidates[0] })).toMatchObject({
+            epistemic: 'lower-bound',
+            causes: { overloadResolution: 1 },
+          });
+        } finally {
+          spy.mockRestore();
+        }
+      });
     });
 
     it('flags impact() on a concrete impl behind an interface as lower-bound', async () => {
@@ -155,6 +340,7 @@ withTestLbugDB(
           lastCommit: '',
           indexedAt: '',
           scopeExtractionReceipt: 1,
+          unresolvedOverloads: summarizeUnresolvedOverloads([]),
           unresolvedReceiverMembers: {
             counts: { anotherMember: 3 },
             totalSites: 10,
@@ -185,6 +371,7 @@ withTestLbugDB(
           lastCommit: '',
           indexedAt: '',
           scopeExtractionReceipt: 1,
+          unresolvedOverloads: summarizeUnresolvedOverloads([]),
           unresolvedReceiverMembers: {
             counts: { formatDate: 3 },
             totalSites: 10,
@@ -221,6 +408,7 @@ withTestLbugDB(
           lastCommit: '',
           indexedAt: '',
           scopeExtractionReceipt: 1,
+          unresolvedOverloads: summarizeUnresolvedOverloads([]),
           unresolvedReceiverMembers: summary,
         } as Awaited<ReturnType<typeof loadMeta>>);
 
@@ -263,6 +451,7 @@ withTestLbugDB(
           );
           vi.mocked(loadMeta).mockResolvedValue({
             scopeExtractionReceipt: 1,
+            unresolvedOverloads: summarizeUnresolvedOverloads(outcomes),
             unresolvedReceiverMembers: summary,
           } as Awaited<ReturnType<typeof loadMeta>>);
 
@@ -281,6 +470,7 @@ withTestLbugDB(
         async (omittedNames) => {
           vi.mocked(loadMeta).mockResolvedValue({
             scopeExtractionReceipt: 1,
+            unresolvedOverloads: summarizeUnresolvedOverloads([]),
             unresolvedReceiverMembers: { counts: {}, totalSites: 0, omittedNames },
           } as Awaited<ReturnType<typeof loadMeta>>);
 
@@ -297,6 +487,7 @@ withTestLbugDB(
         async (name) => {
           vi.mocked(loadMeta).mockResolvedValue({
             scopeExtractionReceipt: 1,
+            unresolvedOverloads: summarizeUnresolvedOverloads([]),
             unresolvedReceiverMembers: { counts: {}, totalSites: 3, omittedNames: 2 },
           } as Awaited<ReturnType<typeof loadMeta>>);
 
@@ -314,6 +505,7 @@ withTestLbugDB(
         async (name) => {
           vi.mocked(loadMeta).mockResolvedValue({
             scopeExtractionReceipt: 1,
+            unresolvedOverloads: summarizeUnresolvedOverloads([]),
             unresolvedReceiverMembers: JSON.parse(
               JSON.stringify({ counts: { [name]: 3 }, totalSites: 5, omittedNames: 2 }),
             ),
@@ -366,6 +558,7 @@ withTestLbugDB(
           );
           vi.mocked(loadMeta).mockResolvedValue({
             scopeExtractionReceipt: 1,
+            unresolvedOverloads: summarizeUnresolvedOverloads(analysed.resolutionOutcomes),
             unresolvedReceiverMembers: summary,
           } as Awaited<ReturnType<typeof loadMeta>>);
 
@@ -390,6 +583,7 @@ withTestLbugDB(
         lastCommit: 'abc123',
         indexedAt: new Date().toISOString(),
         scopeExtractionReceipt: 1,
+        unresolvedOverloads: summarizeUnresolvedOverloads([]),
         scopeExtractionFailures: {
           total: 2,
           paths: ['src/broken-a.ts', 'src/broken-b.ts'],
@@ -412,6 +606,7 @@ withTestLbugDB(
         lastCommit: 'abc123',
         indexedAt: new Date().toISOString(),
         scopeExtractionReceipt: 1,
+        unresolvedOverloads: summarizeUnresolvedOverloads([]),
         scopeExtractionFailures: {
           total: 1,
           paths: ['src/`break`\n\u001b[31m\u202e\u200binject.ts'],
@@ -511,6 +706,7 @@ withTestLbugDB(
         lastCommit: 'abc123',
         indexedAt: new Date().toISOString(),
         scopeExtractionReceipt: 1,
+        unresolvedOverloads: summarizeUnresolvedOverloads([]),
         scopeExtractionFailures: {
           total: 2,
           paths: ['src/broken-a.ts', 'src/broken-b.ts'],

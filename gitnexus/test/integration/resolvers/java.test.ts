@@ -658,13 +658,11 @@ describe('Java variadic call resolution', () => {
     expect(fmtCall!.targetFilePath).toBe('com/example/util/Formatter.java');
   });
 
-  it('0-arg call to format(int, String...) still resolves in legacy mode (arity rejection is registry-only)', () => {
-    // When `requiredParameterCount = 1`, `javaArityCompatibility` returns
-    // 'incompatible' for 0-arg calls, which would prevent the CALLS edge.
-    // This test documents the current resolution behavior for this shape.
+  it('rejects a 0-arg call to format(int, String...) with a required prefix', () => {
+    // JLS 15.12.2.4 still requires every fixed-prefix parameter.
     const calls = getRelationships(result, 'CALLS');
     const zeroArgFmtCall = calls.find((c) => c.target === 'format' && c.source === 'badCall');
-    expect(zeroArgFmtCall).toBeDefined();
+    expect(zeroArgFmtCall).toBeUndefined();
   });
 });
 
@@ -2905,22 +2903,12 @@ describe('Java cast receiver resolution', () => {
     );
   });
 
-  // ((String) obj).act(): `String` is a resolvable-SHAPE cast type (simple
-  // identifier) that is not locally indexed, so resolution deliberately falls
-  // back to obj's OWN declared type (Fallback). This is intentionally kept,
-  // unlike the unparseable-cast case (#2353 review F1), whose criterion is:
-  // a paren group that is type-shaped but UNPARSEABLE (generic / array / FQN)
-  // must resolve to nothing, because falling through to the pre-cast
-  // expression's declared type emits a confident wrong edge. Here the cast IS
-  // parseable — it just names a type we didn't index — so no better
-  // information exists, and upcast casts make the declared type a plausible
-  // dispatch target. Residual risk kept visible: a cross-cast to an unindexed
-  // sibling type would still emit this declared-type fallback edge.
-  it('falls back to the declared type for a cast to an unindexed simple type (String)', () => {
+  // The cast's type governs member lookup. String has no act() method;
+  // falling back to the pre-cast Fallback type invents a call javac rejects.
+  it('does not fall back to the pre-cast type for an unindexed String receiver', () => {
     const calls = getRelationships(result, 'CALLS');
     const actCall = calls.find((c) => c.target === 'act' && c.source === 'castUnindexedType');
-    expect(actCall).toBeDefined();
-    expect(actCall!.targetFilePath).toBe('models/Fallback.java');
+    expect(actCall).toBeUndefined();
   });
 });
 
@@ -3100,16 +3088,9 @@ describe('Java bare-this dispatch (Case 4 pinning)', () => {
     expect(getNodesByLabel(result, 'Interface')).toEqual(['Task']);
   });
 
-  // Characterization, not idealization: `this.greet("world")` (arity 1)
-  // inside Derived binds to Derived.greet(String, int) — Case 4's
-  // `pickFirstNonStaticOnly` short-circuits on a single-overload owner
-  // without arity narrowing, so the inherited Base.greet(String) never gets
-  // a look. The ideal Base.greet target is the deferred Case 4 arity item
-  // (docs/plans/2026-07-02-001 § Deferred). Under PR #2353's Case 0.5, the
-  // `hiddenByName` C++ name-hiding rule dropped this member site entirely
-  // and a free-call fallback edge (reason 'local-call') to the same target
-  // masked the drop.
-  it('pins this.greet("world") in Derived to Derived.greet(String,int) — arity-blind shortcut', () => {
+  // The inherited one-parameter overload participates alongside the local
+  // two-parameter declaration (JLS 15.12.2); javac selects Base.greet(String).
+  it('resolves this.greet("world") to the inherited Base.greet(String)', () => {
     const calls = getRelationships(result, 'CALLS');
     const greetEdges = [
       ...new Set(
@@ -3118,7 +3099,7 @@ describe('Java bare-this dispatch (Case 4 pinning)', () => {
           .map((c) => `${c.targetFilePath} reason=${c.rel.reason}`),
       ),
     ].sort();
-    expect(greetEdges).toEqual(['models/Derived.java reason=global']);
+    expect(greetEdges).toEqual(['models/Base.java reason=import-resolved']);
   });
 
   // Characterization, not idealization: with field `size` AND method
