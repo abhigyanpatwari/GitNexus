@@ -59,6 +59,16 @@ describe('analysis resource admission', () => {
     );
   });
 
+  it('admits explicit embedding concurrency and includes sidecar heap within the model reservation', () => {
+    const budget = resolveAnalysisResourceBudget({ ...request, embeddingThreads: 8 });
+    expect(budget.embedding.nativeThreads).toBe(8);
+    expect(budget.embedding.modelHeapMb).toBe(512);
+    expect(budget.embedding.modelHeapMb * MIB + 48 * MIB).toBeLessThan(budget.embedding.modelBytes);
+    expect(() => resolveAnalysisResourceBudget({ ...request, embeddingThreads: 25 })).toThrow(
+      'CPU allowance',
+    );
+  });
+
   it('admits the full working set of a supported 10 MiB node with a larger budget', () => {
     const budget = resolveAnalysisResourceBudget({
       ...request,
@@ -88,6 +98,12 @@ describe('analysis resource admission', () => {
     );
     expect(() => resolveAnalysisResourceBudget({ ...request, graphPoolBytes: 0 })).toThrow(
       'graph pool bytes',
+    );
+    expect(() => resolveAnalysisResourceBudget({ ...request, graphPoolBytes: MIB })).toThrow(
+      'graph pool bytes',
+    );
+    expect(() => resolveAnalysisResourceBudget({ ...request, modelMemoryMb: 128 })).toThrow(
+      'model reservation',
     );
   });
 

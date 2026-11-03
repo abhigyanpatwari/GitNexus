@@ -29,6 +29,7 @@ import { runEmbeddingJob } from './embedding-job-runner.js';
 import { publishVectorGeneration, type VectorPublicationActions } from './vector-publication.js';
 import type { EmbeddingConfig, ModelProgressCallback } from './types.js';
 import type { embedBatch } from './embedder.js';
+import type { EmbeddingSidecarReservation } from './embedding-sidecar-client.js';
 
 type GraphSource = EmbeddingManifestSource & { close(): Promise<void> };
 export interface PublishedEmbeddingJobOptions {
@@ -149,6 +150,15 @@ export async function runPublishedEmbeddingJob(
       throw new Error('Invalid embedding resource reservation');
   if (!Number.isSafeInteger(resources.nativeThreads) || resources.nativeThreads < 1)
     throw new Error('Invalid embedding CPU reservation');
+  const usesLocalRuntime = vector.provider === 'local' && !dependencies.provider;
+  if (
+    usesLocalRuntime &&
+    (!Number.isSafeInteger(resources.modelBytes) ||
+      !Number.isSafeInteger(resources.modelHeapMb) ||
+      resources.modelHeapMb < 128 ||
+      resources.modelHeapMb * 1024 * 1024 + 48 * 1024 * 1024 >= resources.modelBytes)
+  )
+    throw new Error('Local embedding runtime does not fit its resource reservation');
   const identities = embeddingJobIdentity(
     {
       generation: graph.id,
@@ -193,6 +203,21 @@ export async function runPublishedEmbeddingJob(
   } else if (previous && previous.inputIdentity !== identities.inputIdentity) {
     options.log?.('Embedding text options changed; prior vectors are not compatible.');
   }
+  const reusable =
+    previous &&
+    previous.identity !== identities.identity &&
+    previous.vectorIdentity === identities.vectorIdentity &&
+    previous.inputIdentity === identities.inputIdentity &&
+    previous.dimensions === vector.dimensions;
+  // A reuse reader shares the vector reservation; it is not a third default pool.
+  const poolBytes = Math.floor(resources.vectorPoolBytes / (reusable ? 2 : 1));
+  const storeResources = {
+    bufferPoolBytes: poolBytes,
+    threads: resources.nativeThreads,
+    batchBytes: Math.min(resources.queueBytes, 8 * 1024 * 1024),
+  };
+  if (poolBytes < 8 * 1024 * 1024 || storeResources.batchBytes < vector.dimensions * 16)
+    throw new Error('Vector writer and reuse reader do not fit their resource reservation');
   const directory = await jobDirectory(root, identities.identity);
   if (metadata.embeddingJob?.identity !== identities.identity) {
     metadata = {
@@ -209,20 +234,15 @@ export async function runPublishedEmbeddingJob(
   let source: GraphSource | undefined;
   let store: VectorStore | undefined;
   let reuse: VectorStore | undefined;
-  const reusable =
-    previous &&
-    previous.identity !== identities.identity &&
-    previous.vectorIdentity === identities.vectorIdentity &&
-    previous.inputIdentity === identities.inputIdentity &&
-    previous.dimensions === vector.dimensions;
-  // A reuse reader shares the vector reservation; it is not a third default pool.
-  const poolBytes = Math.floor(resources.vectorPoolBytes / (reusable ? 2 : 1));
-  const storeResources = {
-    bufferPoolBytes: poolBytes,
-    threads: resources.nativeThreads,
-    batchBytes: Math.min(resources.queueBytes, 8 * 1024 * 1024),
-  };
+  let runtime: EmbeddingSidecarReservation | undefined;
   try {
+    if (usesLocalRuntime) {
+      const { reserveEmbeddingSidecar } = await import('./embedding-sidecar-client.js');
+      runtime = await reserveEmbeddingSidecar(config, resources.modelHeapMb);
+    } else if (!dependencies.provider) {
+      const { drainEmbeddingSidecarForAnalysis } = await import('./embedding-sidecar-client.js');
+      await drainEmbeddingSidecarForAnalysis();
+    }
     const manifestExists = await existsOwnedFile(path.join(directory, 'manifest.json'));
     if (!manifestExists) await clearUnstartedManifest(directory);
     const getSource = async (): Promise<GraphSource> =>
@@ -258,6 +278,7 @@ export async function runPublishedEmbeddingJob(
     const provider: typeof embedBatch =
       dependencies.provider ??
       (async (texts, request) => {
+        if (runtime) return runtime.embedBatch(texts, request);
         const { embedBatch } = await import('./embedder.js');
         return embedBatch(texts, {
           ...request,
@@ -266,9 +287,7 @@ export async function runPublishedEmbeddingJob(
       });
     const initializeProvider = async () => {
       if (dependencies.initializeProvider) return dependencies.initializeProvider(config);
-      if (vector.provider !== 'local') return;
-      const { initEmbedder } = await import('./embedder.js');
-      await initEmbedder(options.onModelProgress, config);
+      await runtime?.initialize(options.onModelProgress);
     };
     const result = await runEmbeddingJob({
       directory,
@@ -334,7 +353,11 @@ export async function runPublishedEmbeddingJob(
       try {
         await reuse?.close();
       } finally {
-        await source?.close();
+        try {
+          await source?.close();
+        } finally {
+          runtime?.release();
+        }
       }
     }
   }

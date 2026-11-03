@@ -15,6 +15,7 @@ export interface AnalysisResourceRequest {
   mainHeapMb?: number;
   workers?: number;
   workerHeapMb?: number;
+  embeddingThreads?: number;
   /** Existing automatic worker policy; explicit workers still wins. */
   preferredWorkers?: number;
   /** Resume/sync can admit embeddings without reserving parser workers. */
@@ -42,6 +43,8 @@ export interface AnalysisResourceBudget {
     readonly graphPoolBytes: number;
     readonly vectorPoolBytes: number;
     readonly modelBytes: number;
+    /** Sidecar old-generation allocation, included in modelBytes with native/young space. */
+    readonly modelHeapMb: number;
     /** Combined source, expanded text, encoded request, vectors and prefetch. */
     readonly queueBytes: number;
     readonly nativeThreads: number;
@@ -66,6 +69,11 @@ export function resolveAnalysisResourceBudget(
 ): AnalysisResourceBudget {
   const memory = integer(request.effectiveMemoryBytes, 'effectiveMemoryBytes');
   const cpus = integer(request.availableCpus, 'availableCpus');
+  const embeddingThreads =
+    request.embeddingThreads === undefined
+      ? Math.min(4, cpus)
+      : integer(request.embeddingThreads, 'embedding threads');
+  if (embeddingThreads > cpus) throw new Error('Embedding threads exceed the CPU allowance');
   const availableMb = Math.floor(memory / MIB);
   const totalMb =
     request.totalMb === undefined
@@ -81,10 +89,14 @@ export function resolveAnalysisResourceBudget(
   const graphPoolBytes =
     request.graphPoolBytes === undefined
       ? bytes(Math.max(GRAPH_POOL_MB, Math.min(4096, Math.floor(totalMb * 0.15))), 'graph pool')
-      : integer(request.graphPoolBytes, 'graph pool bytes');
+      : integer(request.graphPoolBytes, 'graph pool bytes', 8 * MIB);
   // Zero is the native engine's unbounded override, never a bounded allocation.
   const graphPoolMb = Math.ceil(graphPoolBytes / MIB);
   const modelMb = integer(request.modelMemoryMb, 'model reservation', 0);
+  if (modelMb > 0 && modelMb < 512)
+    throw new Error(
+      'Local model reservation must be at least 512 MiB for heap and native allocations',
+    );
   // A supported 10 MiB source node needs its full text/AST working set. Larger
   // explicit budgets must be able to admit it without truncating its content.
   const queueMb = Math.max(16, Math.min(512, Math.floor(totalMb / 32)));
@@ -172,8 +184,9 @@ export function resolveAnalysisResourceBudget(
       graphPoolBytes,
       vectorPoolBytes: bytes(VECTOR_POOL_MB, 'vector pool'),
       modelBytes: bytes(modelMb, 'model reservation'),
+      modelHeapMb: modelMb === 0 ? 0 : Math.min(1024, Math.floor(modelMb / 4)),
       queueBytes: bytes(queueMb, 'embedding queues'),
-      nativeThreads: Math.min(4, cpus),
+      nativeThreads: embeddingThreads,
       reservedBytes: bytes(embeddingReservedMb, 'embedding reservation'),
     }),
   });

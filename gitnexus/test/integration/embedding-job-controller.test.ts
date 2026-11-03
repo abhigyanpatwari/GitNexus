@@ -96,6 +96,7 @@ async function fixture(count = 130) {
     graphPoolBytes: 16 * 1024 * 1024,
     vectorPoolBytes: 64 * 1024 * 1024,
     modelBytes: 0,
+    modelHeapMb: 0,
     queueBytes: 16 * 1024 * 1024,
     nativeThreads: 1,
     reservedBytes: 96 * 1024 * 1024,
@@ -134,6 +135,83 @@ async function fixture(count = 130) {
 }
 
 describe('published graph embedding job controller', () => {
+  it('drains an earlier local runtime before admitting an HTTP job with no model reservation', async () => {
+    const f = await fixture(3);
+    vi.stubEnv('GITNEXUS_EMBEDDING_URL', 'https://embedding.test/v1');
+    vi.stubEnv('GITNEXUS_EMBEDDING_MODEL', 'test-model');
+    vi.stubEnv('GITNEXUS_EMBEDDING_DIMS', '4');
+    const sidecar = await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    const drain = vi.spyOn(sidecar, 'drainEmbeddingSidecarForAnalysis').mockResolvedValue();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { input: string[] };
+      return new Response(
+        JSON.stringify({
+          data: body.input.map((_text, index) => ({ index, embedding: [1, 0, 0, 0] })),
+        }),
+      );
+    });
+    const result = await runPublishedEmbeddingJob(f.options(), { openSource: f.openSource });
+    expect(result.phase).toBe('ready');
+    expect(drain).toHaveBeenCalledTimes(1);
+    expect(drain.mock.invocationCallOrder[0]).toBeLessThan(
+      f.openSource.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('uses and releases the admitted local runtime, including initialization failure', async () => {
+    const f = await fixture(3);
+    const sidecar = await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    const initialize = vi.fn(async () => {});
+    const embedBatch = vi.fn(async (texts: string[]) =>
+      texts.map(() => new Float32Array([1, 0, 0, 0])),
+    );
+    const release = vi.fn();
+    const reserve = vi
+      .spyOn(sidecar, 'reserveEmbeddingSidecar')
+      .mockResolvedValue({ initialize, embedBatch, release });
+    const options = {
+      ...f.options(),
+      resources: { ...f.options().resources, modelBytes: 1024 * 1024 * 1024, modelHeapMb: 256 },
+    };
+    const dependencies = { identity: f.dependencies.identity, openSource: f.openSource };
+    await expect(
+      runPublishedEmbeddingJob(
+        { ...options, resources: { ...options.resources, modelBytes: NaN } },
+        dependencies,
+      ),
+    ).rejects.toThrow('resource reservation');
+    expect(reserve).not.toHaveBeenCalled();
+    expect((await loadMeta(f.root))?.embeddingJob).toBeUndefined();
+    initialize.mockRejectedValueOnce(new Error('model init unavailable'));
+    await expect(runPublishedEmbeddingJob(options, dependencies)).rejects.toThrow(
+      'model init unavailable',
+    );
+    expect(embedBatch).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledTimes(1);
+    expect((await loadMeta(f.root))?.embeddingJob).toBeDefined();
+    const result = await runPublishedEmbeddingJob(options, dependencies);
+    expect(result.phase).toBe('ready');
+    expect(reserve).toHaveBeenCalledWith(expect.objectContaining({ threads: 1 }), 256);
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(embedBatch.mock.calls.flatMap(([texts]) => texts)).toHaveLength(3);
+    reserve.mockClear();
+    expect((await runPublishedEmbeddingJob(options, dependencies)).alreadyComplete).toBe(true);
+    expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it('rejects a split vector pool below the native minimum before changing metadata', async () => {
+    const f = await fixture(3);
+    await f.run();
+    await f.nextGeneration();
+    const before = await loadMeta(f.root);
+    f.openSource.mockClear();
+    await expect(
+      f.run({ resources: { ...f.options().resources, vectorPoolBytes: 8 * 1024 * 1024 } }),
+    ).rejects.toThrow('reuse reader do not fit');
+    expect(await loadMeta(f.root)).toEqual(before);
+    expect(f.openSource).not.toHaveBeenCalled();
+  });
+
   it('publishes complete vectors, then takes a no-model/no-writer fast path', async () => {
     const f = await fixture();
     const result = await f.run();
