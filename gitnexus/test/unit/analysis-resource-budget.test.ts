@@ -49,6 +49,17 @@ describe('analysis resource admission', () => {
     expect(budget.embedding.reservedBytes).toBeLessThanOrEqual(1024 * MIB);
   });
 
+  it('admits the full working set of a supported 10 MiB node with a larger budget', () => {
+    const budget = resolveAnalysisResourceBudget({
+      ...request,
+      totalMb: 8192,
+      modelMemoryMb: 0,
+      includeParsing: false,
+    });
+    expect(budget.embedding.queueBytes).toBeGreaterThan(18 * 10 * MIB + MIB);
+    expect(budget.embedding.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
+  });
+
   it('rejects impossible explicit combinations before work starts', () => {
     expect(() => resolveAnalysisResourceBudget({ ...request, totalMb: 128 })).toThrow(
       'cannot admit',

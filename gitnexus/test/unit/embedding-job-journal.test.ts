@@ -209,6 +209,7 @@ describe('embedding job identity', () => {
     analyzer: 'analyzer',
     parser: 'parser',
     schema: 'schema',
+    vectorSchema: 'vectors-v2',
   };
   const vector = { provider: 'local', model: 'model', dimensions: 384 };
   const config = {

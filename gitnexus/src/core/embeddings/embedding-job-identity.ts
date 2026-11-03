@@ -9,6 +9,7 @@ export interface EmbeddingGraphIdentity {
   analyzer: string;
   parser: string;
   schema: string;
+  vectorSchema: string;
 }
 
 const digest = (value: unknown): string =>
@@ -31,6 +32,7 @@ export function embeddingJobIdentity(
     graph.analyzer,
     graph.parser,
     graph.schema,
+    graph.vectorSchema,
   ];
   if (
     source.some((value) => typeof value !== 'string' || !value) ||

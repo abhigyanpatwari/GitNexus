@@ -52,10 +52,12 @@ export async function runEmbeddingJob(
   const config = resolveEmbeddingConfig(options.config ?? {});
   const budget = new EmbeddingByteBudget(options.queueBytes);
   const dimensions = store.options.dimensions;
-  // UTF-16 text + worst-case JSON escaping/encoding + float response, JS array
-  // and native copies. The provider's runtime has a separate reservation.
+  // UTF-16 text + worst-case JSON escaping/encoding, bounded HTTP response
+  // decoding/JSON parsing, float results, JS arrays and native copies. HTTP
+  // responses are capped at 4096 + 32*dimensions bytes per row by the controller.
+  // The provider's runtime has a separate reservation.
   const rowBytes = (textChars: number, idChars: number) =>
-    16 * textChars + 32 * dimensions + 1024 + 4 * idChars;
+    16 * textChars + 512 * dimensions + 64 * 1024 + 4 * idChars;
   const minimumBatchBytes = rowBytes(config.maxInputChars, 0);
   if (minimumBatchBytes > budget.limit)
     throw new Error('Embedding input/vector batch does not fit the resource budget');
@@ -220,14 +222,16 @@ export async function runEmbeddingJob(
                 reuse.options.batchBytes,
                 store.options.batchBytes,
                 budget.limit - budget.usedBytes,
-              ) / rowBytes(0, node.id.length),
+              ) /
+                (32 * dimensions + 1024 + 4 * node.id.length),
             ),
           );
           if (copyRows < 1)
             throw new Error('Reusable vector batch does not fit the resource budget');
           for (let start = 0; start < reusable.chunks; start += copyRows) {
             const length = Math.min(copyRows, reusable.chunks - start);
-            const release = budget.reserve(length * rowBytes(0, node.id.length));
+            // Reuse has no HTTP body or JSON decoder; retain only vector copies.
+            const release = budget.reserve(length * (32 * dimensions + 1024 + 4 * node.id.length));
             try {
               const chunks = await reuse.readChunks(reusable, start, length);
               const delta = input.sourceStartLine - (reusable.sourceStartLine ?? 0);

@@ -83,7 +83,9 @@ export function resolveAnalysisResourceBudget(
   // Zero is the native engine's unbounded override, never a bounded allocation.
   const graphPoolMb = Math.ceil(graphPoolBytes / MIB);
   const modelMb = integer(request.modelMemoryMb, 'model reservation', 0);
-  const queueMb = Math.max(16, Math.min(128, Math.floor(totalMb / 32)));
+  // A supported 10 MiB source node needs its full text/AST working set. Larger
+  // explicit budgets must be able to admit it without truncating its content.
+  const queueMb = Math.max(16, Math.min(512, Math.floor(totalMb / 32)));
   const embeddingFixedMb = headroomMb + graphPoolMb + VECTOR_POOL_MB + modelMb + queueMb;
   const includeParsing = request.includeParsing !== false;
   const parseFixedMb =
