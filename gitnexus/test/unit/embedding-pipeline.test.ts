@@ -1514,6 +1514,40 @@ describe('runEmbeddingPipeline incremental filter', () => {
       expect(createdRows()).toEqual([]);
     });
 
+    it('aborts on the first local vector-width mismatch instead of waiting for the ceiling', async () => {
+      const { LocalEmbeddingDimensionError } = await import('../../src/core/embeddings/config.js');
+      const subBatchTexts: number[] = [];
+      mockEmbedderWith(
+        failingEmbedBatch(
+          [1, 2, 3, 4, 5],
+          () => new LocalEmbeddingDimensionError('Xenova/bge-base-en-v1.5', 768, 384),
+          subBatchTexts,
+        ),
+      );
+
+      const nodes = ['n1', 'n2', 'n3', 'n4', 'n5'].map((n) => makeEnumNode(n, `enum ${n} {}`));
+      const executeQuery = mockExecuteQuery(nodes);
+      const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+
+      await expect(
+        runEmbeddingPipeline(
+          executeQuery,
+          executeWithReusedStatement,
+          onProgress,
+          { chunkSize: 100, overlap: 0, subBatchSize: 1 },
+          undefined,
+          new Map(),
+        ),
+      ).rejects.toThrow('Set GITNEXUS_EMBEDDING_DIMS=768');
+
+      expect(subBatchTexts).toHaveLength(1);
+      expect(nodeIdDeletes().flatMap((c) => c.params.map((p) => p.nodeId))).toEqual([nodes[0].id]);
+      expect(createdRows()).toEqual([]);
+    });
+
     it('rethrows the FIRST error of the streak, not the generic one that tripped the ceiling', async () => {
       // Verified trace for a permanently misconfigured endpoint (#2790): the HTTP
       // client's shared circuit breaker opens after 3 rejections, so sub-batches 4
