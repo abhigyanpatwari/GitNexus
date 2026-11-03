@@ -1,0 +1,2172 @@
+{
+  "version": 1,
+  "run_id": "pipeline-3805-20261103",
+  "recorded_at": "2026-11-03T13:02:35.960Z",
+  "pr": "https://github.com/abhigyanpatwari/GitNexus/pull/3805",
+  "baseline": {
+    "head": "5175b26b82c439baca4dfc9c991eaebbff2aa52b",
+    "runtime_head": "6aeeace8e96603fb062dcc709e834042d5a6df74",
+    "path": "/home/node/gitnexus-optimize-3805-base",
+    "metrics": {
+      "persistent_ms": {
+        "samples": [23699.348667, 23813.855770999988]
+      }
+    },
+    "status": "Attribution baseline only; matched unchanged controls collected in all three acceptance sessions."
+  },
+  "corpus_sha": "4916e0d5e1f4d6d70d41c1f39cd244bca2c7b390",
+  "harness": {
+    "semantic_hashes": true,
+    "persisted_targets": true,
+    "no_op_rejection": "inherited verified harness",
+    "query_probe_pairs": 20,
+    "parity_verdicts": 16,
+    "evaluator_sha256": "2da1a07997ba163fdd182a5c2f11f73dc8d9b8ee6347785acd39f95c39a10b50",
+    "measure_sha256": "ee286f9a366819fdec8436b7119a2037a89b36e6883c2e352275455fee7143ec"
+  },
+  "approval": {
+    "timestamp": "2026-11-03T12:30:46.721Z",
+    "user_response": "1",
+    "scope": "Proceed with isolated batching prototype preserving both integrity checks, then paired benchmarks; HIGH risk expressly disclosed.",
+    "spec_sha256": "4d8e18de2d5a38686c30fe2a27f01e0bfe259522d90d0890c2f28365308b8951",
+    "caps": {
+      "max_iterations": 1,
+      "max_hours": 1,
+      "max_wall_hours": 2,
+      "plateau_iterations": 3,
+      "target_reached": false
+    },
+    "basis": "New scope authorized after concrete query proposal and risk warning; retain conservative one-hour/two-hour limits from original run, one candidate only."
+  },
+  "experiments": [
+    {
+      "iteration": 1,
+      "hypothesis": "identity-batch",
+      "opportunity": {
+        "baseline": "6aeeace8e96603fb062dcc709e834042d5a6df74 unchanged runtime at optimization branch 5175b26b8",
+        "workload": "sparse corpus real edits, fresh and repeated processes",
+        "evidence": "47,482 identity rows per edit; 2.44–2.53s native row-read cost. 20 query pairs match, 16 corruption/normalization verdicts match.",
+        "expected_benefit": "Approximately 1.5–2.5 seconds per 24-second sparse-corpus warm edit; isolated query gains 85–95%, empty-table overhead ~2 ms.",
+        "confidence": "medium",
+        "cost_and_risk": "HIGH graph impact; both full identity checks preserved; user explicitly approved isolated prototype."
+      },
+      "status": "reverted",
+      "candidatePatchSha256": "8350e17daba98dfbf3042ab233ae7b9c2b924cfcfaa2ccdd979bcb9795812a25",
+      "samples": [
+        {
+          "repeat": 1,
+          "output": "/home/node/gitnexus-optimize-3805-20261103/.context/compound-engineering/ce-optimize/pipeline-3805/candidate-r1-dxwRo6",
+          "candidatePatchSha256": "8350e17daba98dfbf3042ab233ae7b9c2b924cfcfaa2ccdd979bcb9795812a25",
+          "semantic_equal": 1,
+          "integrity_tests_passed": 1,
+          "complete_pairs": 1,
+          "max_rss_kib": 2798468,
+          "system": {
+            "node": "v22.23.3",
+            "cpus": 24,
+            "platform": "linux",
+            "arch": "x64"
+          },
+          "fresh_ms": 21638.750700999997,
+          "fresh_comparison": {
+            "baseline": {
+              "times_ms": [24087.987005, 21874.029781999998, 22182.292409],
+              "median_ms": 22182.292409,
+              "max_rss_kib": 1974252
+            },
+            "candidate": {
+              "times_ms": [21638.750700999997, 22062.45898, 20183.828691],
+              "median_ms": 21638.750700999997,
+              "max_rss_kib": 1947376
+            }
+          },
+          "persistent_ms": 20863.729464999997,
+          "persistent_comparison": {
+            "baseline": {
+              "times_ms": [22571.25487199999, 22826.685062000004, 23152.676885000023],
+              "median_ms": 22826.685062000004,
+              "max_rss_kib": 3078688
+            },
+            "candidate": {
+              "times_ms": [21256.61128099999, 20863.729464999997, 20675.81837699999],
+              "median_ms": 20863.729464999997,
+              "max_rss_kib": 2798468
+            }
+          }
+        },
+        {
+          "repeat": 2,
+          "output": "/home/node/gitnexus-optimize-3805-20261103/.context/compound-engineering/ce-optimize/pipeline-3805/candidate-r2-5gqBDt",
+          "candidatePatchSha256": "8350e17daba98dfbf3042ab233ae7b9c2b924cfcfaa2ccdd979bcb9795812a25",
+          "semantic_equal": 1,
+          "integrity_tests_passed": 1,
+          "complete_pairs": 1,
+          "max_rss_kib": 2757092,
+          "system": {
+            "node": "v22.23.3",
+            "cpus": 24,
+            "platform": "linux",
+            "arch": "x64"
+          },
+          "persistent_ms": 18742.838100000023,
+          "persistent_comparison": {
+            "baseline": {
+              "times_ms": [19851.830530000007, 19483.863863000006, 20089.047508000018],
+              "median_ms": 19851.830530000007,
+              "max_rss_kib": 3026944
+            },
+            "candidate": {
+              "times_ms": [18676.121928000008, 18742.838100000023, 18808.010473000002],
+              "median_ms": 18742.838100000023,
+              "max_rss_kib": 2757092
+            }
+          },
+          "fresh_ms": 21174.177485,
+          "fresh_comparison": {
+            "baseline": {
+              "times_ms": [23181.439275, 24952.503339, 21852.553014],
+              "median_ms": 23181.439275,
+              "max_rss_kib": 1973948
+            },
+            "candidate": {
+              "times_ms": [21174.177485, 22208.535977, 20913.614331],
+              "median_ms": 21174.177485,
+              "max_rss_kib": 1958812
+            }
+          }
+        }
+      ],
+      "outcome": "reverted",
+      "reason": "Rejected by memory constraint before third timing session: controlled peak RSS 346552 -> 709272 KiB. No runtime integration.",
+      "learnings": [
+        "Unfiltered collect preserves identities and speeds measured edits, but materially raises native RSS.",
+        "Timing and graph equality gates alone miss native memory regression; retain controlled RSS gate in next run.",
+        "Pagination scratch probe failed identity equality; grouped collect preserved identities but peak RSS remained 675416 KiB.",
+        "Existing getNextSync with cooperative yields offers a new adapter hypothesis; scratch-only, no end-to-end or merge-readiness claim."
+      ]
+    }
+  ],
+  "validation": {
+    "integrity_tests_passed": 1,
+    "targeted_tests": 33,
+    "targeted_files": 3,
+    "duration_seconds": 224.78,
+    "source_typecheck": true,
+    "test_typecheck": true,
+    "build": true,
+    "eslint": true,
+    "patchSha256": "8350e17daba98dfbf3042ab233ae7b9c2b924cfcfaa2ccdd979bcb9795812a25",
+    "native_scaling": {
+      "kind": "standalone verifier benchmark; one process per variant, candidate first; not an end-to-end decision",
+      "rows": [
+        {
+          "nodes": 16384,
+          "baselineMs": 946.272,
+          "candidateMs": 199.656,
+          "reductionPct": 78.90078117074161,
+          "identityFingerprint": "17aa2ded124af9cbd15a9fe13013410e92a478f88e63a2ad9859a05aacef8efe",
+          "nativePhases": [
+            {
+              "phase": "post-COPY",
+              "rows": 16384,
+              "missing_tuples": 0,
+              "verdict": "certified"
+            },
+            {
+              "phase": "post-checkpoint",
+              "rows": 16384,
+              "missing_tuples": 0,
+              "verdict": "certified"
+            },
+            {
+              "phase": "reopened",
+              "rows": 16384,
+              "missing_tuples": 0,
+              "verdict": "certified"
+            }
+          ]
+        },
+        {
+          "nodes": 65536,
+          "baselineMs": 3440.712,
+          "candidateMs": 339.846,
+          "reductionPct": 90.12280016461709,
+          "identityFingerprint": "a6ce82aa1d07804d16b916892dfb6ca0e6f5ce5ed606f47cb1321eb124c6ac44",
+          "nativePhases": [
+            {
+              "phase": "post-COPY",
+              "rows": 65536,
+              "missing_tuples": 0,
+              "verdict": "certified"
+            },
+            {
+              "phase": "post-checkpoint",
+              "rows": 65536,
+              "missing_tuples": 0,
+              "verdict": "certified"
+            },
+            {
+              "phase": "reopened",
+              "rows": 65536,
+              "missing_tuples": 0,
+              "verdict": "certified"
+            }
+          ]
+        }
+      ],
+      "maxRssKiB": {
+        "baseline": 786912,
+        "candidate": 1141992
+      }
+    },
+    "memory_note": "Controlled 256 MiB pool + GC probe confirms materially higher RSS: 346,552 KiB reference vs 709,272 KiB unbounded collect, while retained JS heap ~30 MB matches. Unbounded variant will not be retained without correction.",
+    "controlled_memory": {
+      "nodes": 65536,
+      "bufferPoolBytes": 268435456,
+      "baseline": {
+        "maxRssKiB": 346552,
+        "finalHeapBytes": 29889800,
+        "finalRssBytes": 350478336
+      },
+      "candidate": {
+        "maxRssKiB": 709272,
+        "finalHeapBytes": 29624704,
+        "finalRssBytes": 713641984
+      }
+    },
+    "sync_probe": {
+      "baselineMedianMs": 3395.7659784999996,
+      "syncMedianMs": 166.64818499999996,
+      "baselinePeakRssKiB": 346552,
+      "syncPeakRssKiB": 348804
+    },
+    "sync_native": {
+      "node": "v22.23.3",
+      "platform": "linux",
+      "cpu": "12th Gen Intel(R) Core(TM) i9-12900K",
+      "results": [
+        {
+          "nodes": 16384,
+          "queries": 31,
+          "min_ms": 48.796,
+          "median_ms": 50.93,
+          "fingerprint": "17aa2ded124af9cbd15a9fe13013410e92a478f88e63a2ad9859a05aacef8efe",
+          "native_phases": [
+            {
+              "phase": "post-COPY",
+              "rows": 16384,
+              "missing_tuples": 0,
+              "verdict": "certified"
+            },
+            {
+              "phase": "post-checkpoint",
+              "rows": 16384,
+              "missing_tuples": 0,
+              "verdict": "certified"
+            },
+            {
+              "phase": "reopened",
+              "rows": 16384,
+              "missing_tuples": 0,
+              "verdict": "certified"
+            }
+          ]
+        },
+        {
+          "nodes": 65536,
+          "queries": 31,
+          "min_ms": 144.698,
+          "median_ms": 146.986,
+          "fingerprint": "a6ce82aa1d07804d16b916892dfb6ca0e6f5ce5ed606f47cb1321eb124c6ac44",
+          "native_phases": [
+            {
+              "phase": "post-COPY",
+              "rows": 65536,
+              "missing_tuples": 0,
+              "verdict": "certified"
+            },
+            {
+              "phase": "post-checkpoint",
+              "rows": 65536,
+              "missing_tuples": 0,
+              "verdict": "certified"
+            },
+            {
+              "phase": "reopened",
+              "rows": 65536,
+              "missing_tuples": 0,
+              "verdict": "certified"
+            }
+          ]
+        }
+      ],
+      "normalized_scaling": 0.722,
+      "negative_controls": "missing/swapped fields rejected",
+      "native_sequences": "selective delete/COPY, checkpoint and read-only reopen checked against independent tuple oracle"
+    }
+  },
+  "final_runtime": "6aeeace8e96603fb062dcc709e834042d5a6df74",
+  "kept": 0,
+  "confirmation": "No third session: candidate rejected for memory. Final runtime unchanged, no measured final speedup.",
+  "holdout": "none",
+  "controlled_memory": {
+    "baseline": {
+      "runtime": "/home/node/gitnexus-optimize-3805-base",
+      "mode": "run",
+      "count": 65536,
+      "node": "v22.23.3",
+      "bufferPoolBytes": 268435456,
+      "iterations": [
+        {
+          "i": 0,
+          "ms": 4089.7367719999997,
+          "before": {
+            "rss": 260386816,
+            "heapTotal": 69738496,
+            "heapUsed": 32013384,
+            "external": 2296234,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 346476544,
+            "heapTotal": 90701824,
+            "heapUsed": 61664056,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 341680128,
+            "heapTotal": 73932800,
+            "heapUsed": 29839320,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 338356
+        },
+        {
+          "i": 1,
+          "ms": 3454.9370739999995,
+          "before": {
+            "rss": 341680128,
+            "heapTotal": 71573504,
+            "heapUsed": 29835792,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 352358400,
+            "heapTotal": 85254144,
+            "heapUsed": 58879184,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 348073984,
+            "heapTotal": 72097792,
+            "heapUsed": 29884856,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 344292
+        },
+        {
+          "i": 2,
+          "ms": 3117.918603,
+          "before": {
+            "rss": 348073984,
+            "heapTotal": 71311360,
+            "heapUsed": 29886456,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 353468416,
+            "heapTotal": 85254144,
+            "heapUsed": 52990136,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 349044736,
+            "heapTotal": 71573504,
+            "heapUsed": 29886752,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 345568
+        },
+        {
+          "i": 3,
+          "ms": 3336.5948829999998,
+          "before": {
+            "rss": 349044736,
+            "heapTotal": 71049216,
+            "heapUsed": 29889144,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 354869248,
+            "heapTotal": 85516288,
+            "heapUsed": 53064064,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 350478336,
+            "heapTotal": 71573504,
+            "heapUsed": 29889800,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 346552
+        }
+      ],
+      "maxRssKiB": 346552
+    },
+    "unbounded": {
+      "runtime": "/home/node/gitnexus-optimize-3805-20261103/.worktrees/optimize-pipeline-3805-exp-001",
+      "mode": "run",
+      "count": 65536,
+      "node": "v22.23.3",
+      "bufferPoolBytes": 268435456,
+      "iterations": [
+        {
+          "i": 0,
+          "ms": 434.056769,
+          "before": {
+            "rss": 263364608,
+            "heapTotal": 68689920,
+            "heapUsed": 31789080,
+            "external": 2296234,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 471498752,
+            "heapTotal": 89210880,
+            "heapUsed": 53845456,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 467496960,
+            "heapTotal": 72622080,
+            "heapUsed": 29569832,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 464748
+        },
+        {
+          "i": 1,
+          "ms": 403.32318799999996,
+          "before": {
+            "rss": 467693568,
+            "heapTotal": 70787072,
+            "heapUsed": 29566344,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 593756160,
+            "heapTotal": 85803008,
+            "heapUsed": 52890600,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 589934592,
+            "heapTotal": 71835648,
+            "heapUsed": 29633840,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 587940
+        },
+        {
+          "i": 2,
+          "ms": 403.44116099999997,
+          "before": {
+            "rss": 590131200,
+            "heapTotal": 71049216,
+            "heapUsed": 29635152,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 595083264,
+            "heapTotal": 72097792,
+            "heapUsed": 30476712,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 595083264,
+            "heapTotal": 71311360,
+            "heapUsed": 29644024,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 702336
+        },
+        {
+          "i": 3,
+          "ms": 392.525441,
+          "before": {
+            "rss": 595083264,
+            "heapTotal": 71311360,
+            "heapUsed": 29646432,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 713641984,
+            "heapTotal": 71835648,
+            "heapUsed": 30350208,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 713641984,
+            "heapTotal": 71311360,
+            "heapUsed": 29624704,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 709272
+        }
+      ],
+      "maxRssKiB": 709272
+    },
+    "grouped": {
+      "runtime": "/home/node/gitnexus-optimize-3805-20261103/.worktrees/optimize-pipeline-3805-exp-001",
+      "count": 65536,
+      "size": 4096,
+      "node": "v22.23.3",
+      "bufferPoolBytes": 268435456,
+      "iterations": [
+        {
+          "i": 0,
+          "ms": 352.41186899999997,
+          "calls": 31,
+          "before": {
+            "rss": 262131712,
+            "heapTotal": 69214208,
+            "heapUsed": 32057672,
+            "external": 2296234,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 691429376,
+            "heapTotal": 90484736,
+            "heapUsed": 60054528,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 687382528,
+            "heapTotal": 73146368,
+            "heapUsed": 29843808,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 675224
+        },
+        {
+          "i": 1,
+          "ms": 265.789795,
+          "calls": 31,
+          "before": {
+            "rss": 687497216,
+            "heapTotal": 71049216,
+            "heapUsed": 29839824,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 685588480,
+            "heapTotal": 84979712,
+            "heapUsed": 57331240,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 681504768,
+            "heapTotal": 71835648,
+            "heapUsed": 29904960,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 675416
+        },
+        {
+          "i": 2,
+          "ms": 261.050295,
+          "calls": 31,
+          "before": {
+            "rss": 681504768,
+            "heapTotal": 71049216,
+            "heapUsed": 29906280,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 686354432,
+            "heapTotal": 86290432,
+            "heapUsed": 54866712,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 682229760,
+            "heapTotal": 71573504,
+            "heapUsed": 29912712,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 675416
+        },
+        {
+          "i": 3,
+          "ms": 269.76362800000015,
+          "calls": 31,
+          "before": {
+            "rss": 682229760,
+            "heapTotal": 71311360,
+            "heapUsed": 29914912,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 666836992,
+            "heapTotal": 85241856,
+            "heapUsed": 48444008,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 662773760,
+            "heapTotal": 72359936,
+            "heapUsed": 29934744,
+            "external": 2332958,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 675416
+        }
+      ],
+      "maxRssKiB": 675416
+    },
+    "sync": {
+      "runtime": "/home/node/gitnexus-optimize-3805-base",
+      "mode": "run",
+      "count": 65536,
+      "reader": "getNextSync yielding every 1024 rows",
+      "node": "v22.23.3",
+      "bufferPoolBytes": 268435456,
+      "iterations": [
+        {
+          "i": 0,
+          "ms": 202.75530399999997,
+          "before": {
+            "rss": 261808128,
+            "heapTotal": 70000640,
+            "heapUsed": 32030808,
+            "external": 2302624,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 345788416,
+            "heapTotal": 89821184,
+            "heapUsed": 58750304,
+            "external": 2339348,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 341803008,
+            "heapTotal": 73670656,
+            "heapUsed": 29834048,
+            "external": 2339348,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 337684
+        },
+        {
+          "i": 1,
+          "ms": 165.748064,
+          "before": {
+            "rss": 342196224,
+            "heapTotal": 71835648,
+            "heapUsed": 29830576,
+            "external": 2339348,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 353484800,
+            "heapTotal": 85778432,
+            "heapUsed": 56822976,
+            "external": 2339348,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 349069312,
+            "heapTotal": 72359936,
+            "heapUsed": 29898320,
+            "external": 2339348,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 345200
+        },
+        {
+          "i": 2,
+          "ms": 167.5483059999999,
+          "before": {
+            "rss": 346517504,
+            "heapTotal": 71835648,
+            "heapUsed": 29909336,
+            "external": 2339348,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 352878592,
+            "heapTotal": 86564864,
+            "heapUsed": 61136520,
+            "external": 2339348,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 348372992,
+            "heapTotal": 72884224,
+            "heapUsed": 29909632,
+            "external": 2339348,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 348804
+        },
+        {
+          "i": 3,
+          "ms": 158.37569699999995,
+          "before": {
+            "rss": 348372992,
+            "heapTotal": 72097792,
+            "heapUsed": 29912072,
+            "external": 2339348,
+            "arrayBuffers": 24819
+          },
+          "after": {
+            "rss": 354127872,
+            "heapTotal": 85364736,
+            "heapUsed": 53818464,
+            "external": 2339348,
+            "arrayBuffers": 24819
+          },
+          "afterGc": {
+            "rss": 349782016,
+            "heapTotal": 72884224,
+            "heapUsed": 29933744,
+            "external": 2339348,
+            "arrayBuffers": 24819
+          },
+          "maxRssKiB": 348804
+        }
+      ],
+      "maxRssKiB": 348804
+    }
+  },
+  "sync_native": {
+    "node": "v22.23.3",
+    "platform": "linux",
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K",
+    "results": [
+      {
+        "nodes": 16384,
+        "queries": 31,
+        "min_ms": 48.796,
+        "median_ms": 50.93,
+        "fingerprint": "17aa2ded124af9cbd15a9fe13013410e92a478f88e63a2ad9859a05aacef8efe",
+        "native_phases": [
+          {
+            "phase": "post-COPY",
+            "rows": 16384,
+            "missing_tuples": 0,
+            "verdict": "certified"
+          },
+          {
+            "phase": "post-checkpoint",
+            "rows": 16384,
+            "missing_tuples": 0,
+            "verdict": "certified"
+          },
+          {
+            "phase": "reopened",
+            "rows": 16384,
+            "missing_tuples": 0,
+            "verdict": "certified"
+          }
+        ]
+      },
+      {
+        "nodes": 65536,
+        "queries": 31,
+        "min_ms": 144.698,
+        "median_ms": 146.986,
+        "fingerprint": "a6ce82aa1d07804d16b916892dfb6ca0e6f5ce5ed606f47cb1321eb124c6ac44",
+        "native_phases": [
+          {
+            "phase": "post-COPY",
+            "rows": 65536,
+            "missing_tuples": 0,
+            "verdict": "certified"
+          },
+          {
+            "phase": "post-checkpoint",
+            "rows": 65536,
+            "missing_tuples": 0,
+            "verdict": "certified"
+          },
+          {
+            "phase": "reopened",
+            "rows": 65536,
+            "missing_tuples": 0,
+            "verdict": "certified"
+          }
+        ]
+      }
+    ],
+    "normalized_scaling": 0.722,
+    "negative_controls": "missing/swapped fields rejected",
+    "native_sequences": "selective delete/COPY, checkpoint and read-only reopen checked against independent tuple oracle"
+  },
+  "sync_impact": {
+    "target": {
+      "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:readQueryRows",
+      "name": "readQueryRows",
+      "type": "Function",
+      "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts"
+    },
+    "direction": "upstream",
+    "impactedCount": 27,
+    "risk": "CRITICAL",
+    "riskSharedAxes": "MEDIUM",
+    "riskScale": {
+      "comparableAcrossKinds": true,
+      "unusedAxes": []
+    },
+    "epistemic": "exact",
+    "summary": {
+      "direct": 6,
+      "processes_affected": 6,
+      "modules_affected": 8
+    },
+    "byDepthCounts": {
+      "1": 6,
+      "2": 9,
+      "3": 12
+    },
+    "affected_processes": [
+      {
+        "name": "retry",
+        "type": "Function",
+        "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+        "affected_process_count": 8,
+        "total_hits": 8,
+        "earliest_broken_step": 1
+      },
+      {
+        "name": "loadCachedEmbeddings",
+        "type": "Function",
+        "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+        "affected_process_count": 7,
+        "total_hits": 7,
+        "earliest_broken_step": 1
+      },
+      {
+        "name": "handleQueryRequest",
+        "type": "Function",
+        "filePath": "gitnexus/src/server/api.ts",
+        "affected_process_count": 7,
+        "total_hits": 7,
+        "earliest_broken_step": 1
+      },
+      {
+        "name": "createServer",
+        "type": "Function",
+        "filePath": "gitnexus/src/server/api.ts",
+        "affected_process_count": 6,
+        "total_hits": 6,
+        "earliest_broken_step": 1
+      },
+      {
+        "name": "deleteNodesForFile",
+        "type": "Function",
+        "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+        "affected_process_count": 5,
+        "total_hits": 5,
+        "earliest_broken_step": 1
+      },
+      {
+        "name": "runFullAnalysisInner",
+        "type": "Function",
+        "filePath": "gitnexus/src/core/run-analyze.ts",
+        "affected_process_count": 1,
+        "total_hits": 1,
+        "earliest_broken_step": 1
+      }
+    ],
+    "affected_modules": [
+      {
+        "name": "Lbug",
+        "hits": 15,
+        "impact": "direct"
+      },
+      {
+        "name": "Search",
+        "hits": 3,
+        "impact": "indirect"
+      },
+      {
+        "name": "Server",
+        "hits": 3,
+        "impact": "indirect"
+      },
+      {
+        "name": "Cli",
+        "hits": 2,
+        "impact": "indirect"
+      },
+      {
+        "name": "Integration",
+        "hits": 1,
+        "impact": "indirect"
+      },
+      {
+        "name": "Spring",
+        "hits": 1,
+        "impact": "indirect"
+      },
+      {
+        "name": "Storage",
+        "hits": 1,
+        "impact": "indirect"
+      },
+      {
+        "name": "Unit",
+        "hits": 1,
+        "impact": "indirect"
+      }
+    ],
+    "byDepth": {
+      "1": [
+        {
+          "depth": 1,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:copyCsvWithRetry.retry@1138:6",
+          "name": "retry",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": [
+            {
+              "id": "proc_313_retry",
+              "label": "Retry → NoopWarn",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_841_retry",
+              "label": "Retry → GetPull",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_59_retry",
+              "label": "Retry → LoadOptionalMeta",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_209_retry",
+              "label": "Retry → FormatMiB",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_809_retry",
+              "label": "Retry → BucketForHit",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_128_retry",
+              "label": "Retry → ParseBufferPoolSize",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_43_retry",
+              "label": "Retry → GetOsPageSize",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_127_retry",
+              "label": "Retry → DefaultBufferPoolSize",
+              "processType": "cross_community",
+              "step": 1
+            }
+          ]
+        },
+        {
+          "depth": 1,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:deleteNodesForFile.runCount@2713:8",
+          "name": "runCount",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 1,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:executePrepared",
+          "name": "executePrepared",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 1,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:getLbugStats",
+          "name": "getLbugStats",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 1,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:loadCachedEmbeddings",
+          "name": "loadCachedEmbeddings",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": [
+            {
+              "id": "proc_449_loadcachedembeddings",
+              "label": "LoadCachedEmbeddings → AddRelationship",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_457_loadcachedembeddings",
+              "label": "LoadCachedEmbeddings → ForceGc",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_467_loadcachedembeddings",
+              "label": "LoadCachedEmbeddings → Shard",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_468_loadcachedembeddings",
+              "label": "LoadCachedEmbeddings → Shard",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_458_loadcachedembeddings",
+              "label": "LoadCachedEmbeddings → Run",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_466_loadcachedembeddings",
+              "label": "LoadCachedEmbeddings → PerfSequencer",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_459_loadcachedembeddings",
+              "label": "LoadCachedEmbeddings → Run",
+              "processType": "cross_community",
+              "step": 1
+            }
+          ]
+        },
+        {
+          "depth": 1,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:readIndexCatalogRows",
+          "name": "readIndexCatalogRows",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        }
+      ],
+      "2": [
+        {
+          "depth": 2,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:copyCsvWithRetry",
+          "name": "copyCsvWithRetry",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 2,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:deleteNodesForFile",
+          "name": "deleteNodesForFile",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": [
+            {
+              "id": "proc_271_deletenodesforfile",
+              "label": "DeleteNodesForFile → Clear",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_319_deletenodesforfile",
+              "label": "DeleteNodesForFile → ScanOrphanedJunctions",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_272_deletenodesforfile",
+              "label": "DeleteNodesForFile → CascadeClear",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_274_deletenodesforfile",
+              "label": "DeleteNodesForFile → Clear",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_273_deletenodesforfile",
+              "label": "DeleteNodesForFile → Clear",
+              "processType": "cross_community",
+              "step": 1
+            }
+          ]
+        },
+        {
+          "depth": 2,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:executeQuery",
+          "name": "executeQuery",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 2,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:ftsIndexPresenceInCatalog",
+          "name": "ftsIndexPresenceInCatalog",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 2,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:queryFTS",
+          "name": "queryFTS",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 2,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:readIndexCatalogSnapshot",
+          "name": "readIndexCatalogSnapshot",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 2,
+          "id": "Function:gitnexus/src/core/run-analyze.ts:runFullAnalysisInner",
+          "name": "runFullAnalysisInner",
+          "filePath": "gitnexus/src/core/run-analyze.ts",
+          "relationType": "CALLS",
+          "confidence": 0.85,
+          "processes": [
+            {
+              "id": "proc_213_runfullanalysisinner",
+              "label": "RunFullAnalysisInner → RefreshInterruptedEntry",
+              "processType": "cross_community",
+              "step": 1
+            }
+          ]
+        },
+        {
+          "depth": 2,
+          "id": "Function:gitnexus/src/server/api.ts:createServer",
+          "name": "createServer",
+          "filePath": "gitnexus/src/server/api.ts",
+          "relationType": "CALLS",
+          "confidence": 0.85,
+          "processes": [
+            {
+              "id": "proc_847_createserver",
+              "label": "CreateServer → GetPull",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_819_createserver",
+              "label": "CreateServer → BucketForHit",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_368_createserver",
+              "label": "CreateServer → IsTransientStorageInspection",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_805_createserver",
+              "label": "CreateServer → BucketIn",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_417_createserver",
+              "label": "CreateServer → Claim",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_416_createserver",
+              "label": "CreateServer → MapPool",
+              "processType": "cross_community",
+              "step": 1
+            }
+          ]
+        },
+        {
+          "depth": 2,
+          "id": "Function:gitnexus/src/server/api.ts:handleQueryRequest",
+          "name": "handleQueryRequest",
+          "filePath": "gitnexus/src/server/api.ts",
+          "relationType": "CALLS",
+          "confidence": 0.85,
+          "processes": [
+            {
+              "id": "proc_746_handlequeryrequest",
+              "label": "HandleQueryRequest → Realpath",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_770_handlequeryrequest",
+              "label": "HandleQueryRequest → BucketIn",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_822_handlequeryrequest",
+              "label": "HandleQueryRequest → ResolveBuildRoot",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_754_handlequeryrequest",
+              "label": "HandleQueryRequest → OptionalStat",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_779_handlequeryrequest",
+              "label": "HandleQueryRequest → BucketForHit",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_816_handlequeryrequest",
+              "label": "HandleQueryRequest → GetPull",
+              "processType": "cross_community",
+              "step": 1
+            },
+            {
+              "id": "proc_818_handlequeryrequest",
+              "label": "HandleQueryRequest → ResolveRuntimeVariant",
+              "processType": "cross_community",
+              "step": 1
+            }
+          ]
+        }
+      ],
+      "3": [
+        {
+          "depth": 3,
+          "id": "Function:gitnexus/src/cli/serve.ts:serveCommand",
+          "name": "serveCommand",
+          "filePath": "gitnexus/src/cli/serve.ts",
+          "relationType": "CALLS",
+          "confidence": 0.85,
+          "processes": []
+        },
+        {
+          "depth": 3,
+          "id": "Function:gitnexus/src/core/embedding-count.ts:measurePersistedEmbeddingCount",
+          "name": "measurePersistedEmbeddingCount",
+          "filePath": "gitnexus/src/core/embedding-count.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 3,
+          "id": "Function:gitnexus/src/core/incremental/write-reconciliation.ts:reconcileGraphNodeIdentities",
+          "name": "reconcileGraphNodeIdentities",
+          "filePath": "gitnexus/src/core/incremental/write-reconciliation.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 3,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:copyNodeCSVs",
+          "name": "copyNodeCSVs",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 3,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:dropFTSIndex",
+          "name": "dropFTSIndex",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 3,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:fetchExistingEmbeddingHashes",
+          "name": "fetchExistingEmbeddingHashes",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 3,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:loadGraphToLbug",
+          "name": "loadGraphToLbug",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 3,
+          "id": "Function:gitnexus/src/core/lbug/lbug-adapter.ts:resolveGateRows",
+          "name": "resolveGateRows",
+          "filePath": "gitnexus/src/core/lbug/lbug-adapter.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 3,
+          "id": "Function:gitnexus/src/core/run-analyze.ts:runFullAnalysis",
+          "name": "runFullAnalysis",
+          "filePath": "gitnexus/src/core/run-analyze.ts",
+          "relationType": "CALLS",
+          "confidence": 0.85,
+          "processes": []
+        },
+        {
+          "depth": 3,
+          "id": "Function:gitnexus/src/core/search/bm25-index.ts:searchFTSFromLbug",
+          "name": "searchFTSFromLbug",
+          "filePath": "gitnexus/src/core/search/bm25-index.ts",
+          "relationType": "CALLS",
+          "confidence": 0.85,
+          "processes": []
+        },
+        {
+          "depth": 3,
+          "id": "Function:gitnexus/src/core/search/fts-indexes.ts:verifySearchFTSIndexes",
+          "name": "verifySearchFTSIndexes",
+          "filePath": "gitnexus/src/core/search/fts-indexes.ts",
+          "relationType": "CALLS",
+          "confidence": 0.8,
+          "processes": []
+        },
+        {
+          "depth": 3,
+          "id": "Function:gitnexus/src/server/api.ts:buildGraph",
+          "name": "buildGraph",
+          "filePath": "gitnexus/src/server/api.ts",
+          "relationType": "CALLS",
+          "confidence": 0.85,
+          "processes": []
+        }
+      ]
+    }
+  },
+  "semantic_pairs": [
+    {
+      "repeat": 1,
+      "mode": "fresh",
+      "pair": 1,
+      "baseline": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      },
+      "candidate": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      }
+    },
+    {
+      "repeat": 1,
+      "mode": "fresh",
+      "pair": 2,
+      "baseline": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "save"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      },
+      "candidate": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "save"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      }
+    },
+    {
+      "repeat": 1,
+      "mode": "fresh",
+      "pair": 3,
+      "baseline": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      },
+      "candidate": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      }
+    },
+    {
+      "repeat": 1,
+      "mode": "persistent",
+      "pair": 1,
+      "baseline": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      },
+      "candidate": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      }
+    },
+    {
+      "repeat": 1,
+      "mode": "persistent",
+      "pair": 2,
+      "baseline": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "save"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      },
+      "candidate": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "save"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      }
+    },
+    {
+      "repeat": 1,
+      "mode": "persistent",
+      "pair": 3,
+      "baseline": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      },
+      "candidate": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      }
+    },
+    {
+      "repeat": 2,
+      "mode": "fresh",
+      "pair": 1,
+      "baseline": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      },
+      "candidate": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      }
+    },
+    {
+      "repeat": 2,
+      "mode": "fresh",
+      "pair": 2,
+      "baseline": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "save"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      },
+      "candidate": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "save"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      }
+    },
+    {
+      "repeat": 2,
+      "mode": "fresh",
+      "pair": 3,
+      "baseline": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      },
+      "candidate": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      }
+    },
+    {
+      "repeat": 2,
+      "mode": "persistent",
+      "pair": 1,
+      "baseline": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      },
+      "candidate": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      }
+    },
+    {
+      "repeat": 2,
+      "mode": "persistent",
+      "pair": 2,
+      "baseline": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "save"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      },
+      "candidate": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "save"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      }
+    },
+    {
+      "repeat": 2,
+      "mode": "persistent",
+      "pair": 3,
+      "baseline": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      },
+      "candidate": {
+        "graph": {
+          "nodes": {
+            "count": 23641,
+            "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+          },
+          "edges": {
+            "count": 64292,
+            "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+          }
+        },
+        "persistedTargets": [
+          {
+            "target": "load"
+          }
+        ],
+        "incremental": {
+          "changedFiles": 1,
+          "reparsedFiles": 8,
+          "affectedDependents": 0,
+          "deletedFiles": 0,
+          "writeMode": "incremental"
+        }
+      }
+    }
+  ],
+  "spec": {
+    "name": "pipeline-3805",
+    "description": "Reduce incremental identity-verification row transport cost while preserving both complete integrity checks.",
+    "metric": {
+      "primary": {
+        "type": "hard",
+        "name": "persistent_ms",
+        "direction": "minimize"
+      },
+      "objectives": [
+        {
+          "name": "fresh_ms",
+          "direction": "minimize",
+          "role": "required",
+          "max_regression": {
+            "type": "relative",
+            "value": 0.03
+          }
+        }
+      ],
+      "degenerate_gates": [
+        {
+          "name": "semantic_equal",
+          "check": "== 1"
+        },
+        {
+          "name": "integrity_tests_passed",
+          "check": "== 1"
+        },
+        {
+          "name": "complete_pairs",
+          "check": "== 1"
+        }
+      ],
+      "diagnostics": [
+        {
+          "name": "max_rss_kib"
+        }
+      ]
+    },
+    "measurement": {
+      "command": "node .context/compound-engineering/ce-optimize/pipeline-3805/evaluate.mjs",
+      "working_directory": ".",
+      "timeout_seconds": 1800,
+      "stability": {
+        "mode": "ladder",
+        "repeat_count": 3,
+        "aggregation": "median",
+        "noise_threshold": 5,
+        "comparison": {
+          "method": "paired",
+          "relative_threshold": 0.05
+        },
+        "ladder": {
+          "exploratory_pairs": 1,
+          "confirmation_repeats": 3,
+          "futility": {
+            "worse_factor": 1.2
+          }
+        }
+      }
+    },
+    "scope": {
+      "mutable": [
+        "gitnexus/src/core/incremental/write-reconciliation.ts",
+        "gitnexus/test/unit/write-reconciliation.test.ts",
+        "gitnexus/test/unit/incremental-write-integrity.test.ts",
+        "gitnexus/test/unit/incremental-write-benchmark-verdict.test.ts",
+        "gitnexus/bench/incremental-write-integrity/measure.cjs"
+      ],
+      "immutable": [
+        "gitnexus/bench/lexical-lookup/measure.mjs",
+        "gitnexus/package-lock.json",
+        "gitnexus/test/fixtures/",
+        ".context/compound-engineering/ce-optimize/pipeline-3805/evaluate.mjs"
+      ]
+    },
+    "execution": {
+      "mode": "serial",
+      "backend": "worktree",
+      "max_concurrent": 1
+    },
+    "parallel": {
+      "port_strategy": "none",
+      "shared_files": [],
+      "exclusive_resources": ["benchmark-machine"]
+    },
+    "dependencies": {
+      "approved": []
+    },
+    "constraints": [
+      "Keep every per-table identity row and all corruption checks at both existing publication boundaries.",
+      "No persistent caches, dependencies, native upgrades, FTS skips or reduced indexed content.",
+      "Fail closed for malformed batch responses. Preserve null, Unicode, duplicate and missing identity handling.",
+      "Pin runtimes/corpora; complete all paired samples; compare semantic hashes and persisted call targets.",
+      "Sparse-corpus selection is not a production/full-repository claim. No holdout configured.",
+      "Require three independent paired sessions, warm improvement >5%, fresh regression <=3%; inspect peak RSS and larger-table memory.",
+      "Run targeted/native integrity tests, typechecks, full npm test and graph change analysis before a keep commit."
+    ],
+    "stopping": {
+      "max_iterations": 1,
+      "max_hours": 1,
+      "max_wall_hours": 2,
+      "plateau_iterations": 3,
+      "target_reached": false
+    },
+    "max_runner_up_merges_per_batch": 0
+  },
+  "diagnostic_scripts": {
+    "memory-probe.mjs": "import fs from 'node:fs';\nimport path from 'node:path';\nimport assert from 'node:assert/strict';\nconst [runtime,storage,mode,output]=process.argv.slice(2);\nassert(runtime&&storage&&['seed','run'].includes(mode)&&output);\nprocess.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE=String(256*1024*1024);\nprocess.env.GITNEXUS_SHARED_STORE='off';\nconst {createKnowledgeGraph}=await import(path.join(runtime,'gitnexus/dist/core/graph/graph.js'));\nconst {reconcileGraphNodeIdentities}=await import(path.join(runtime,'gitnexus/dist/core/incremental/write-reconciliation.js'));\nconst adapter=await import(path.join(runtime,'gitnexus/dist/core/lbug/lbug-adapter.js'));\nconst graph=createKnowledgeGraph(),count=65536;\nfor(let i=0;i<count;i++)graph.addNode({id:`Function:src/owner${Math.floor(i/32)}.ts:fn${i}`,label:'Function',properties:{name:`fn${i}`,filePath:`src/owner${Math.floor(i/32)}.ts`,startLine:(i%32)*4,endLine:(i%32)*4+2}});\nfs.mkdirSync(storage,{recursive:true});\nconst result={runtime,mode,count,node:process.version,bufferPoolBytes:256*1024*1024,iterations:[]};\ntry{\n  await adapter.initLbug(path.join(storage,'lbug'),{skipFts:true});\n  if(mode==='seed'){\n    await adapter.loadGraphToLbug(graph,storage,storage,undefined,undefined,undefined,'none');\n    await adapter.tryFlushWAL();\n  }else{\n    for(let i=0;i<4;i++){\n      global.gc();\n      const before=process.memoryUsage(),start=performance.now();\n      assert.equal((await reconcileGraphNodeIdentities(graph,adapter.executeQuery,'memory-probe')).nodes,count);\n      const ms=performance.now()-start,after=process.memoryUsage();\n      global.gc();\n      result.iterations.push({i,ms,before,after,afterGc:process.memoryUsage(),maxRssKiB:process.resourceUsage().maxRSS});\n      fs.writeFileSync(output,JSON.stringify(result,null,2)+'\\n');\n    }\n  }\n}finally{await adapter.closeLbug();}\nresult.maxRssKiB=process.resourceUsage().maxRSS;\nfs.writeFileSync(output,JSON.stringify(result,null,2)+'\\n');\nconsole.log(JSON.stringify({mode,maxRssKiB:result.maxRssKiB,iterations:result.iterations.map(x=>({i:x.i,ms:x.ms,heapAfterGc:x.afterGc.heapUsed,rssAfterGc:x.afterGc.rss}))}));\n",
+    "sync-memory-probe.mjs": "import {createRequire} from 'node:module';\nimport {setImmediate as yieldRows} from 'node:timers/promises';\nimport fs from 'node:fs';\nimport path from 'node:path';\nimport assert from 'node:assert/strict';\nconst [runtime,storage,mode,output]=process.argv.slice(2);\nassert(runtime&&storage&&['seed','run'].includes(mode)&&output);\nprocess.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE=String(256*1024*1024);\nprocess.env.GITNEXUS_SHARED_STORE='off';\nconst {createKnowledgeGraph}=await import(path.join(runtime,'gitnexus/dist/core/graph/graph.js'));\nconst {reconcileGraphNodeIdentities}=await import(path.join(runtime,'gitnexus/dist/core/incremental/write-reconciliation.js'));\nconst adapter=await import(path.join(runtime,'gitnexus/dist/core/lbug/lbug-adapter.js'));\nconst graph=createKnowledgeGraph(),count=65536;\nfor(let i=0;i<count;i++)graph.addNode({id:`Function:src/owner${Math.floor(i/32)}.ts:fn${i}`,label:'Function',properties:{name:`fn${i}`,filePath:`src/owner${Math.floor(i/32)}.ts`,startLine:(i%32)*4,endLine:(i%32)*4+2}});\nfs.mkdirSync(storage,{recursive:true});\nconst result={runtime,mode,count,reader:'getNextSync yielding every 1024 rows',node:process.version,bufferPoolBytes:256*1024*1024,iterations:[]};\ntry{\n  await adapter.initLbug(path.join(storage,'lbug'),{skipFts:true});\n  if(mode==='seed'){\n    await adapter.loadGraphToLbug(graph,storage,storage,undefined,undefined,undefined,'none');\n    await adapter.tryFlushWAL();\n  }else{\n    const {QueryResult}=createRequire(path.join(runtime,'gitnexus/package.json'))('@ladybugdb/core');\n    QueryResult.prototype.getAll=async function(){\n      this.resetIterator(); const rows=[];\n      while(this.hasNext()){\n        for(let i=0;i<1024&&this.hasNext();i++)rows.push(this.getNextSync());\n        if(this.hasNext())await yieldRows();\n      }\n      return rows;\n    };\n    for(let i=0;i<4;i++){\n      global.gc();\n      const before=process.memoryUsage(),start=performance.now();\n      assert.equal((await reconcileGraphNodeIdentities(graph,adapter.executeQuery,'memory-probe')).nodes,count);\n      const ms=performance.now()-start,after=process.memoryUsage();\n      global.gc();\n      result.iterations.push({i,ms,before,after,afterGc:process.memoryUsage(),maxRssKiB:process.resourceUsage().maxRSS});\n      fs.writeFileSync(output,JSON.stringify(result,null,2)+'\\n');\n    }\n  }\n}finally{await adapter.closeLbug();}\nresult.maxRssKiB=process.resourceUsage().maxRSS;\nfs.writeFileSync(output,JSON.stringify(result,null,2)+'\\n');\nconsole.log(JSON.stringify({mode,maxRssKiB:result.maxRssKiB,iterations:result.iterations.map(x=>({i:x.i,ms:x.ms,heapAfterGc:x.afterGc.heapUsed,rssAfterGc:x.afterGc.rss}))}));\n",
+    "paged-memory-probe.mjs": "import fs from 'node:fs';\nimport path from 'node:path';\nimport assert from 'node:assert/strict';\nconst [runtime,storage,output]=process.argv.slice(2);\nprocess.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE=String(256*1024*1024);\nprocess.env.GITNEXUS_SHARED_STORE='off';\nconst {createKnowledgeGraph}=await import(path.join(runtime,'gitnexus/dist/core/graph/graph.js'));\nconst {reconcileGraphNodeIdentities}=await import(path.join(runtime,'gitnexus/dist/core/incremental/write-reconciliation.js'));\nconst adapter=await import(path.join(runtime,'gitnexus/dist/core/lbug/lbug-adapter.js'));\nconst graph=createKnowledgeGraph(),count=65536,size=4096;\nfor(let i=0;i<count;i++)graph.addNode({id:`Function:src/owner${Math.floor(i/32)}.ts:fn${i}`,label:'Function',properties:{name:`fn${i}`,filePath:`src/owner${Math.floor(i/32)}.ts`,startLine:(i%32)*4,endLine:(i%32)*4+2}});\nconst result={runtime,count,size,node:process.version,bufferPoolBytes:256*1024*1024,iterations:[]};\nlet calls=0;\nasync function paged(cypher){\n  const identities=[];\n  for(let offset=0;;offset+=size){\n    const q=cypher.replace(' RETURN collect(',` WITH n ORDER BY n.id SKIP ${offset} LIMIT ${size} RETURN collect(`);\n    const rows=await adapter.executeQuery(q); calls++;\n    assert.equal(rows.length,1); assert(Array.isArray(rows[0].identities)); assert(rows[0].identities.length<=size);\n    identities.push(...rows[0].identities);\n    if(rows[0].identities.length<size)break;\n  }\n  return [{identities}];\n}\ntry{\n  await adapter.initLbug(path.join(storage,'lbug'),{skipFts:true});\n  for(let i=0;i<4;i++){\n    global.gc();calls=0;\n    const before=process.memoryUsage(),start=performance.now();\n    assert.equal((await reconcileGraphNodeIdentities(graph,paged,'paged-memory-probe')).nodes,count);\n    const ms=performance.now()-start,after=process.memoryUsage();global.gc();\n    result.iterations.push({i,ms,calls,before,after,afterGc:process.memoryUsage(),maxRssKiB:process.resourceUsage().maxRSS});\n    fs.writeFileSync(output,JSON.stringify(result,null,2)+'\\n');\n  }\n}finally{await adapter.closeLbug();}\nresult.maxRssKiB=process.resourceUsage().maxRSS;\nfs.writeFileSync(output,JSON.stringify(result,null,2)+'\\n');\nconsole.log(JSON.stringify(result.iterations.map(x=>({i:x.i,ms:x.ms,calls:x.calls,rssAfterGc:x.afterGc.rss,maxRssKiB:x.maxRssKiB}))));\n",
+    "grouped-memory-probe.mjs": "import fs from 'node:fs';\nimport path from 'node:path';\nimport assert from 'node:assert/strict';\nconst [runtime,storage,output]=process.argv.slice(2);\nprocess.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE=String(256*1024*1024);\nprocess.env.GITNEXUS_SHARED_STORE='off';\nconst {createKnowledgeGraph}=await import(path.join(runtime,'gitnexus/dist/core/graph/graph.js'));\nconst {reconcileGraphNodeIdentities}=await import(path.join(runtime,'gitnexus/dist/core/incremental/write-reconciliation.js'));\nconst adapter=await import(path.join(runtime,'gitnexus/dist/core/lbug/lbug-adapter.js'));\nconst graph=createKnowledgeGraph(),count=65536,size=4096;\nfor(let i=0;i<count;i++)graph.addNode({id:`Function:src/owner${Math.floor(i/32)}.ts:fn${i}`,label:'Function',properties:{name:`fn${i}`,filePath:`src/owner${Math.floor(i/32)}.ts`,startLine:(i%32)*4,endLine:(i%32)*4+2}});\nconst result={runtime,count,size,node:process.version,bufferPoolBytes:256*1024*1024,iterations:[]};\nlet calls=0;\nasync function paged(cypher){\n  const q=cypher.replace(' RETURN collect(', ' RETURN CAST(floor(offset(id(n)) / 4096) AS INT64) AS bucket, collect(');\n  const rows=await adapter.executeQuery(q); calls++;\n  const identities=[];\n  for(const row of rows){assert(Array.isArray(row.identities));assert(row.identities.length<=size);identities.push(...row.identities);}\n  return [{identities}];\n}\ntry{\n  await adapter.initLbug(path.join(storage,'lbug'),{skipFts:true});\n  for(let i=0;i<4;i++){\n    global.gc();calls=0;\n    const before=process.memoryUsage(),start=performance.now();\n    assert.equal((await reconcileGraphNodeIdentities(graph,paged,'paged-memory-probe')).nodes,count);\n    const ms=performance.now()-start,after=process.memoryUsage();global.gc();\n    result.iterations.push({i,ms,calls,before,after,afterGc:process.memoryUsage(),maxRssKiB:process.resourceUsage().maxRSS});\n    fs.writeFileSync(output,JSON.stringify(result,null,2)+'\\n');\n  }\n}finally{await adapter.closeLbug();}\nresult.maxRssKiB=process.resourceUsage().maxRSS;\nfs.writeFileSync(output,JSON.stringify(result,null,2)+'\\n');\nconsole.log(JSON.stringify(result.iterations.map(x=>({i:x.i,ms:x.ms,calls:x.calls,rssAfterGc:x.afterGc.rss,maxRssKiB:x.maxRssKiB}))));\n",
+    "sync-preload.mjs": "import {createRequire} from 'node:module';\nimport {setImmediate as yieldRows} from 'node:timers/promises';\nconst {QueryResult}=createRequire('/home/node/gitnexus-optimize-3805-base/gitnexus/package.json')('@ladybugdb/core');\nQueryResult.prototype.getAll=async function(){\n  this.resetIterator();const rows=[];\n  while(this.hasNext()){\n    for(let i=0;i<1024&&this.hasNext();i++)rows.push(this.getNextSync());\n    if(this.hasNext())await yieldRows();\n  }\n  return rows;\n};\n"
+  }
+}
