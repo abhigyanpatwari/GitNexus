@@ -123,4 +123,140 @@ describe('analysis database resource allocations', () => {
       { bufferPoolBytes: options.bufferPoolBytes, threads: 2 },
     ]);
   });
+
+  it.each(['parser', 'embedding'] as const)(
+    'refuses %s admission while the main pool cannot close',
+    async (phase) => {
+      const { resolveAnalysisResourceBudget } =
+        await import('../../src/core/analysis-resource-budget.js');
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const { runPublishedEmbeddingJob } =
+        await import('../../src/core/embeddings/embedding-job.js');
+      const resources = resolveAnalysisResourceBudget({
+        effectiveMemoryBytes: 8 * 1024 ** 3,
+        availableCpus: 4,
+        modelMemoryMb: 0,
+      });
+      await adapter.initLbug(path.join(root, 'lbug'), {
+        skipFts: true,
+        bufferPoolBytes: 32 * 1024 * 1024,
+        threads: 1,
+      });
+      const first = await native.open.mock.results[0].value;
+      first.db.close.mockRejectedValue(new Error('main pool still allocated'));
+      await expect(adapter.closeLbug()).rejects.toThrow('main pool still allocated');
+      const loadMetadata = vi.fn(async () => null);
+      const provider = vi.fn();
+      const onProgress = vi.fn();
+      try {
+        const run =
+          phase === 'parser'
+            ? runFullAnalysis(root, { resources }, { onProgress })
+            : runPublishedEmbeddingJob(
+                {
+                  metadataDirectory: root,
+                  graphPath: path.join(root, 'lbug'),
+                  resources: resources.embedding,
+                  metadata: { loadMetadata, saveMetadata: vi.fn() },
+                },
+                { provider },
+              );
+        await expect(run).rejects.toThrow('main pool still allocated');
+        expect(loadMetadata).not.toHaveBeenCalled();
+        expect(provider).not.toHaveBeenCalled();
+        expect(onProgress).not.toHaveBeenCalled();
+        expect(native.open).toHaveBeenCalledTimes(1);
+      } finally {
+        first.db.close.mockResolvedValue();
+      }
+    },
+  );
+
+  it('waits for an active session before releasing its native handle', async () => {
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const operation = adapter.withLbugDb(
+      path.join(root, 'lbug'),
+      async () => {
+        started();
+        await wait;
+      },
+      { skipFts: true },
+    );
+    await ready;
+    const first = await native.open.mock.results[0].value;
+    let drained = false;
+    const drain = adapter.drainAnalysisNativeResources().then(() => {
+      drained = true;
+    });
+    try {
+      await Promise.resolve();
+      expect(drained).toBe(false);
+      expect(first.conn.close).not.toHaveBeenCalled();
+      expect(first.db.close).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await Promise.all([operation, drain]);
+    }
+    expect(first.conn.close).toHaveBeenCalledTimes(1);
+    expect(first.db.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reopen native storage when an idle phase has nothing to release', async () => {
+    await adapter.drainAnalysisNativeResources();
+    expect(native.open).not.toHaveBeenCalled();
+  });
+
+  it('honors cancellation during admission before reading job metadata', async () => {
+    const { resolveAnalysisResourceBudget } =
+      await import('../../src/core/analysis-resource-budget.js');
+    const { runPublishedEmbeddingJob } = await import('../../src/core/embeddings/embedding-job.js');
+    const resources = resolveAnalysisResourceBudget({
+      effectiveMemoryBytes: 8 * 1024 ** 3,
+      availableCpus: 4,
+      modelMemoryMb: 0,
+    });
+    let started!: () => void;
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const operation = adapter.withLbugDb(
+      path.join(root, 'lbug'),
+      async () => {
+        started();
+        await wait;
+      },
+      { skipFts: true },
+    );
+    await ready;
+    const cancellation = new AbortController();
+    const loadMetadata = vi.fn(async () => null);
+    const provider = vi.fn();
+    const outcome = runPublishedEmbeddingJob(
+      {
+        metadataDirectory: root,
+        graphPath: path.join(root, 'lbug'),
+        resources: resources.embedding,
+        signal: cancellation.signal,
+        metadata: { loadMetadata, saveMetadata: vi.fn() },
+      },
+      { provider },
+    ).catch((error: unknown) => error);
+    cancellation.abort();
+    release();
+    await operation;
+    expect(await outcome).toMatchObject({ name: 'AbortError' });
+    expect(loadMetadata).not.toHaveBeenCalled();
+    expect(provider).not.toHaveBeenCalled();
+  });
 });

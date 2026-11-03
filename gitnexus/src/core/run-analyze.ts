@@ -76,6 +76,7 @@ import {
   forEachQueryRow,
   executeWithReusedStatement,
   closeLbug,
+  drainAnalysisNativeResources,
   closeLbugBeforeExit,
   loadCachedEmbeddings,
   deleteNodesForFiles,
@@ -102,7 +103,6 @@ import {
   DELETE_FILES_CHUNK_SIZE,
 } from './lbug/lbug-adapter.js';
 import {
-  drainLbugResourceReleases,
   estimateBufferPool,
   setBufferPoolSizeHint,
   resolveNativeSafeStorageDir,
@@ -1448,7 +1448,7 @@ export async function runFullAnalysis(
   }
   initialiseSearchFTSStemmer();
   initialiseSearchFTSCjkSegmentation();
-  if (options.resources) await drainLbugResourceReleases();
+  if (options.resources) await drainAnalysisNativeResources();
   const contentRetention = contentRetentionFromEnvironment();
   // Scope the degraded-parse log throttle to this run (module-level counter
   // would otherwise stay saturated on a reused process).

@@ -2594,6 +2594,15 @@ export const closeLbug = async (options: { strict?: boolean } = {}): Promise<voi
   ensuredFTSIndexes.clear();
 };
 
+/** A new analysis phase may reuse the prior phase's reservation only after its
+ * native handles are gone. Wait for session work; never close an active query. */
+export const drainAnalysisNativeResources = async (): Promise<void> => {
+  await runWithSessionLock(async () => {
+    if (conn || db || nativeCloseUnverified) await closeLbug({ strict: true });
+    await drainLbugResourceReleases();
+  });
+};
+
 /**
  * Thrown by {@link wipeLbugDbFiles} when a data-bearing member of the
  * LadybugDB file family is still present after the bounded
