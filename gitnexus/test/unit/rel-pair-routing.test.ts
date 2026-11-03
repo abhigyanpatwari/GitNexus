@@ -302,6 +302,37 @@ describe('checkDeclaredPair', () => {
       're-running the analysis will fail in exactly the same place',
     ];
     expect(required.filter((needle) => !message.includes(needle))).toEqual([]);
+    expect(message).not.toContain('other files may contain the same pairs');
+  });
+
+  it('warns about unlisted files when a single pair occurs more than once', () => {
+    const undeclared = new UndeclaredPairCollector();
+    for (const file of ['Config.java', 'Other.kt']) {
+      undeclared.record(
+        'Method|Annotation',
+        'ANNOTATED_BY',
+        `Method:src/app/${file}:configure#12`,
+        `Annotation:src/app/${file}:Bean`,
+      );
+    }
+
+    let thrown: unknown;
+    try {
+      undeclared.throwIfAny();
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(UndeclaredRelationPairError);
+    const err = thrown as UndeclaredRelationPairError;
+    expect(err.pairs).toHaveLength(1);
+    expect(err.pairs[0]).toMatchObject({ pairKey: 'Method|Annotation', edges: 2 });
+    expect(err.message).toContain('Only the first edge of each pair is shown');
+    expect(err.message).toContain(
+      'other files may contain the same pairs and need to be excluded too',
+    );
+    expect(err.message).not.toContain('To finish indexing the rest');
+    expect(err.message).toContain('src/app/Config.java');
+    expect(err.message).not.toContain('Other.kt');
   });
 
   it('reports every undeclared pair of the emit in one error (#2797)', () => {
@@ -355,11 +386,14 @@ describe('checkDeclaredPair', () => {
       'src/App.vue',
       'tools/search.py',
       'Report the missing pairs',
-      'add those files (or their directories)',
+      'adding the example files (or their directories)',
+      'Only the first edge of each pair is shown',
+      'other files may contain the same pairs and need to be excluded too',
       'https://github.com/abhigyanpatwari/GitNexus/issues/new',
       're-running the analysis will fail in exactly the same place',
     ];
     expect(required.filter((needle) => !err.message.includes(needle))).toEqual([]);
+    expect(err.message).not.toContain('To finish indexing the rest');
     // The second Method→Annotation edge is counted, not listed.
     expect(err.message).not.toContain('Other.kt');
   });

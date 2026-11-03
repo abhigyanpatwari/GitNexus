@@ -287,14 +287,17 @@ export class UndeclaredRelationPairError extends Error {
         (several
           ? `  1. Report the missing pairs so they can be declared:\n` +
             `       ${UNDECLARED_PAIR_ISSUE_URL}\n` +
-            `     Include the label pairs, the relationship types, and the source files above.\n` +
-            `  2. To finish indexing the rest meanwhile, add those files (or their directories)\n` +
-            `     to .gitnexusignore and re-run.`
+            `     Include the label pairs, the relationship types, and the source files above.\n`
           : `  1. Report the missing pair so it can be declared:\n` +
             `       ${UNDECLARED_PAIR_ISSUE_URL}\n` +
-            `     Include the label pair, the relationship type, and the source file above.\n` +
-            `  2. To finish indexing the rest meanwhile, add that file (or its directory)\n` +
-            `     to .gitnexusignore and re-run.`),
+            `     Include the label pair, the relationship type, and the source file above.\n`) +
+        (pairs.some((pair) => pair.edges > 1)
+          ? `  2. To work around this, start by adding the example files (or their directories)\n` +
+            `     to .gitnexusignore and re-run. Only the first edge of each pair is shown;\n` +
+            `     other files may contain the same pairs and need to be excluded too.`
+          : `  2. To finish indexing the rest meanwhile, add ${
+              several ? 'those files (or their directories)' : 'that file (or its directory)'
+            }\n` + `     to .gitnexusignore and re-run.`),
     );
     this.name = 'UndeclaredRelationPairError';
     this.pairKey = pairKey;
