@@ -1,6 +1,10 @@
 /** Key-only manifest scans and bounded PK fetches against one immutable graph. */
 import lbug from '@ladybugdb/core';
-import { openLbugConnection, type LbugConnectionHandle } from './lbug-config.js';
+import {
+  closeLbugConnection,
+  openLbugConnection,
+  type LbugConnectionHandle,
+} from './lbug-config.js';
 import {
   EMBEDDABLE_LABELS,
   LABELS_WITH_EXPORTED,
@@ -49,8 +53,12 @@ function optionalString(value: unknown): string | undefined {
 export class EmbeddingGraphSource implements EmbeddingManifestSource {
   private active = false;
   private closed = false;
+  private closing?: Promise<void>;
   private readonly fetchStatements = new Map<string, lbug.PreparedStatement>();
-  private constructor(private readonly handle: LbugConnectionHandle) {}
+  private constructor(
+    private readonly handle: LbugConnectionHandle,
+    private readonly graphPath: string,
+  ) {}
 
   /** graphPath has already passed the publication layer's ownership validation. */
   static async open(
@@ -60,6 +68,7 @@ export class EmbeddingGraphSource implements EmbeddingManifestSource {
   ): Promise<EmbeddingGraphSource> {
     return new EmbeddingGraphSource(
       await openLbugConnection(lbug, graphPath, { readOnly: true, bufferPoolBytes, threads }),
+      graphPath,
     );
   }
 
@@ -103,8 +112,11 @@ export class EmbeddingGraphSource implements EmbeddingManifestSource {
         };
       }
     } finally {
-      result?.close();
-      this.active = false;
+      try {
+        result?.close();
+      } finally {
+        this.active = false;
+      }
     }
   }
 
@@ -162,20 +174,25 @@ export class EmbeddingGraphSource implements EmbeddingManifestSource {
       }
       return nodes;
     } finally {
-      result?.close();
-      this.active = false;
+      try {
+        result?.close();
+      } finally {
+        this.active = false;
+      }
     }
   }
 
   async close(): Promise<void> {
-    if (this.closed) return;
+    if (this.closing) return this.closing;
     if (this.active) throw new Error('Cannot close an active embedding graph read');
     this.closed = true;
     this.fetchStatements.clear();
+    this.closing = closeLbugConnection(this.handle, { strict: true, databasePath: this.graphPath });
     try {
-      await this.handle.conn.close();
-    } finally {
-      await this.handle.db.close();
+      await this.closing;
+    } catch (error) {
+      this.closing = undefined;
+      throw error;
     }
   }
 }

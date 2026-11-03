@@ -59,6 +59,7 @@ import { resolveFtsVersionPair } from './vendored-extension-path.js';
 import {
   classifyDeleteAllError,
   closeLbugConnection,
+  drainLbugResourceReleases,
   HANDLE_RELEASE_PROBE_ATTEMPTS,
   HANDLE_RELEASE_PROBE_DELAY_MS,
   isDbBusyError,
@@ -815,7 +816,11 @@ export interface LbugInitOptions {
 }
 
 export const initLbug = async (dbPath: string, options: LbugInitOptions = {}) => {
-  return runWithSessionLock(() => ensureLbugInitialized(dbPath, options));
+  return runWithSessionLock(async () => {
+    if (options.bufferPoolBytes !== undefined || options.threads !== undefined)
+      await drainLbugResourceReleases();
+    return ensureLbugInitialized(dbPath, options);
+  });
 };
 
 /**

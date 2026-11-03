@@ -2,7 +2,11 @@
 import lbug, { type LbugValue } from '@ladybugdb/core';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { openLbugConnection, type LbugConnectionHandle } from './lbug-config.js';
+import {
+  closeLbugConnection,
+  openLbugConnection,
+  type LbugConnectionHandle,
+} from './lbug-config.js';
 import { ExtensionManager } from './extension-loader.js';
 import { assertValidGraphNodeId } from '../graph/node-identity.js';
 import { embeddingJobDirectory } from '../../storage/embedding-job.js';
@@ -62,6 +66,7 @@ export class VectorStore {
   private readonly prepared = new Map<string, lbug.PreparedStatement>();
   private busy = false;
   private closed = false;
+  private closing?: Promise<void>;
   private poisoned = false;
   private sealed = false;
 
@@ -632,14 +637,19 @@ export class VectorStore {
   }
 
   async close(): Promise<void> {
-    if (this.closed) return;
+    if (this.closing) return this.closing;
     if (this.busy) throw new Error('Cannot close an active vector operation');
     this.closed = true;
     this.prepared.clear();
+    this.closing = closeLbugConnection(this.handle, {
+      strict: true,
+      databasePath: path.join(this.options.directory, 'vectors'),
+    });
     try {
-      await this.handle.conn.close();
-    } finally {
-      await this.handle.db.close();
+      await this.closing;
+    } catch (error) {
+      this.closing = undefined;
+      throw error;
     }
   }
 }

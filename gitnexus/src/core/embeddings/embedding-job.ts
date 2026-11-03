@@ -15,6 +15,7 @@ import {
 import type { AnalysisResourceBudget } from '../analysis-resource-budget.js';
 import { syncPublishedMetadata } from '../analysis-publication.js';
 import { EmbeddingGraphSource } from '../lbug/embedding-source.js';
+import { drainLbugResourceReleases } from '../lbug/lbug-config.js';
 import { VectorStore, VECTOR_STORE_SCHEMA } from '../lbug/vector-store.js';
 import { EMBEDDING_TEXT_VERSION } from './embedding-pipeline.js';
 import { embeddingJobIdentity } from './embedding-job-identity.js';
@@ -118,6 +119,9 @@ export async function runPublishedEmbeddingJob(
 ): Promise<PublishedEmbeddingJobResult> {
   const { resources, signal } = options;
   signal?.throwIfAborted();
+  // A previous failed close must finish before a model or another native pool
+  // can consume the next invocation's reservation.
+  await drainLbugResourceReleases();
   const root = await embeddingJobDirectory(options.metadataDirectory);
   let metadata = await options.metadata.loadMetadata();
   const graph = metadata?.graphGeneration;

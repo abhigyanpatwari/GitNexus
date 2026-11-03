@@ -857,6 +857,61 @@ export interface LbugConnectionHandle {
   conn: lbug.Connection;
 }
 
+interface NativeRelease {
+  db: lbug.Database;
+  conn?: lbug.Connection;
+  databasePath?: string;
+  connectionClosed: boolean;
+  databaseClosed: boolean;
+  pending?: Promise<void>;
+}
+
+// Only closing/failed handles are held strongly. A rejected close is not proof
+// that its native pool was released, including failed connection construction.
+const nativeReleases = new Map<lbug.Database, NativeRelease>();
+const reservedHandlePaths = new WeakMap<LbugConnectionHandle, string>();
+
+function releaseNativeResources(
+  handle: Pick<LbugConnectionHandle, 'db'> & Partial<Pick<LbugConnectionHandle, 'conn'>>,
+  databasePath?: string,
+): Promise<void> {
+  let release = nativeReleases.get(handle.db);
+  if (!release) {
+    release = { ...handle, databasePath, connectionClosed: !handle.conn, databaseClosed: false };
+    nativeReleases.set(handle.db, release);
+  }
+  if (release.pending) return release.pending;
+  const state = release;
+  state.pending = (async () => {
+    if (!state.connectionClosed) {
+      if (state.conn) await state.conn.close();
+      state.connectionClosed = true;
+    }
+    if (!state.databaseClosed) {
+      await state.db.close();
+      state.databaseClosed = true;
+    }
+    if (
+      process.platform === 'win32' &&
+      state.databasePath &&
+      !(await waitForWindowsHandleRelease(state.databasePath))
+    )
+      throw new Error('LadybugDB native resource reservation has not been released');
+    nativeReleases.delete(state.db);
+  })().finally(() => {
+    state.pending = undefined;
+  });
+  return state.pending;
+}
+
+/** Before admitting another analysis phase, retry only previously requested
+ * closes. Active readers/writers are never closed or interrupted here. */
+export async function drainLbugResourceReleases(): Promise<void> {
+  for (const release of nativeReleases.values()) {
+    await releaseNativeResources(release, release.databasePath);
+  }
+}
+
 /**
  * Return true when the error message indicates that a LadybugDB write
  * transaction could not proceed due to lock contention — either a file
@@ -1158,6 +1213,8 @@ export async function openLbugConnection(
     (!Number.isSafeInteger(options.threads) || options.threads < 1)
   )
     throw new Error('LadybugDB threads must be a positive integer');
+  const reserved = options.bufferPoolBytes !== undefined || options.threads !== undefined;
+  if (reserved) await drainLbugResourceReleases();
   const safePath = toNativeSafePath(databasePath);
   let db: lbug.Database | undefined;
   try {
@@ -1166,14 +1223,35 @@ export async function openLbugConnection(
       options.threads === undefined
         ? new lbugModule.Connection(db)
         : new lbugModule.Connection(db, options.threads);
-    return { db, conn };
+    const handle = { db, conn };
+    if (reserved) reservedHandlePaths.set(handle, safePath);
+    return handle;
   } catch (err) {
-    if (db) await db.close().catch(() => {});
+    if (db) {
+      if (reserved) {
+        try {
+          await releaseNativeResources({ db }, safePath);
+        } catch (releaseError) {
+          throw new AggregateError(
+            [err, releaseError],
+            'LadybugDB open failed and resource release is unverified',
+            { cause: err },
+          );
+        }
+      } else await db.close().catch(() => {});
+    }
     throw err;
   }
 }
 
-export async function closeLbugConnection(handle: LbugConnectionHandle): Promise<void> {
+export async function closeLbugConnection(
+  handle: LbugConnectionHandle,
+  options: { strict?: boolean; databasePath?: string } = {},
+): Promise<void> {
+  if (options.strict || reservedHandlePaths.has(handle) || nativeReleases.has(handle.db)) {
+    await releaseNativeResources(handle, options.databasePath ?? reservedHandlePaths.get(handle));
+    return;
+  }
   await handle.conn.close().catch(() => {});
   await handle.db.close().catch(() => {});
 }
