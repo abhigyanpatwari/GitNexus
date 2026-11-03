@@ -226,6 +226,12 @@ describe('callLLM — anthropic provider', () => {
     await expect(
       callLLM([{ type: 'video_url', video_url: { url: 'https://example.com/demo.mp4' } }], config),
     ).rejects.toThrow('does not accept video input');
+    await expect(
+      callLLM(
+        [{ type: 'image_url', image_url: { url: 'http://example.com/diagram.png' } }],
+        config,
+      ),
+    ).rejects.toThrow('accepts images as https:// URLs');
   });
 });
 

@@ -598,7 +598,7 @@ function toAnthropicContent(prompt: LLMUserContent): string | Array<Record<strin
           source: { type: 'base64', media_type: dataUrl[1], data: dataUrl[2] },
         };
       }
-      if (/^https?:\/\//i.test(part.image_url.url)) {
+      if (/^https:\/\//i.test(part.image_url.url)) {
         return { type: 'image', source: { type: 'url', url: part.image_url.url } };
       }
       throw new Error(
