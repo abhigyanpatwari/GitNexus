@@ -439,10 +439,12 @@ Local embeddings use `Snowflake/snowflake-arctic-embed-xs` (384 dimensions). To 
 ```bash
 export GITNEXUS_EMBEDDING_MODEL_ID=Xenova/bge-base-en-v1.5
 export GITNEXUS_EMBEDDING_DIMS=768   # required unless the model returns 384-dimensional vectors
-gitnexus analyze . --embeddings
+gitnexus analyze . --force --embeddings
 ```
 
-Set the same two variables wherever the index is queried (MCP server, `serve`, `query`), so queries are embedded with the same model. A model that returns a different vector size than `GITNEXUS_EMBEDDING_DIMS` stops the run with the size to set. Changing the model re-embeds every node on the next `analyze`; switching back to the default does too.
+Set the same two variables wherever the index is queried (MCP server, `serve`, `query`), and restart running servers after changing them. A server using another model of the same width cannot detect the mismatch and will return unreliable semantic results. A model that returns a different vector size than `GITNEXUS_EMBEDDING_DIMS` stops the run with the size to set. Local models use mean pooling and normalization; model-specific query prefixes and pooling settings are not configurable.
+
+When changing models, run `gitnexus analyze . --force --embeddings`. A plain `analyze`, even with `--embeddings`, can return "Already up to date" on unchanged source; without `--embeddings`, changed-source runs normally only preserve existing vectors. The forced embedding pass replaces vectors whose model changed, including switches between models of the same width. To return to the default model, unset both `GITNEXUS_EMBEDDING_MODEL_ID` and `GITNEXUS_EMBEDDING_DIMS`, then run the same command. For repositories above the default 50,000-node embedding cap, use `--embeddings 0` (no cap) or an explicit higher limit.
 
 ## Remote Embeddings
 
