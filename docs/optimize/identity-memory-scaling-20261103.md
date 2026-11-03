@@ -1,13 +1,17 @@
 # Identity-reader memory scaling: evidence and limits
 
+These measurements precede the production streaming implementation. See the
+[follow-up fix and validation](identity-reader-fix-20261103.md) for its results.
+
 The source-level live-memory bound is linear in graph nodes, stored identity
 rows, and identity-string bytes. The measured process-memory results support
 that growth rate over the tested range, but exposed a native allocation failure
 in the first cooperative-reader probe. **That probe must not be retained.**
 
 A separate direct-query routing probe passed the natural-GC soak and its own
-size sweep. It remains an isolated experiment: no production adapter change
-has been made, and memory neutrality has not been established.
+size sweep. That array-based probe remained an isolated experiment: at the end
+of this study no production adapter change had been made, and memory neutrality
+had not been established.
 
 ## Main findings
 
@@ -147,6 +151,6 @@ in a separate process before `measure`; never target a production index.
 
 The conclusion is limited to these fixtures and ranges. It is not a
 full-indexing, watch-mode, arbitrary-input, or unlimited-repetition guarantee.
-The original cooperative prepared path is rejected. The direct-query route is
-a measured next candidate, with an observed memory tradeoff still to resolve
-before any retention decision.
+The original cooperative prepared path is rejected. These probes left the
+direct-query route as a measured next candidate, with a memory tradeoff to
+resolve before retention. The follow-up report above records that work.

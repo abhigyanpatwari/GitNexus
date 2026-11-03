@@ -1,8 +1,12 @@
 # PR #3805: identity-read optimization experiment
 
+This report records the rejected batching experiment. The subsequent streaming
+implementation and its validation are tracked in the
+[identity-reader fix report](identity-reader-fix-20261103.md).
+
 The additional batching candidate was rejected because it doubled peak resident
 memory in the controlled large-table probe. No runtime change was retained.
-The runtime remains `6aeeace8e96603fb062dcc709e834042d5a6df74`; this report and
+At that decision, the runtime remained `6aeeace8e96603fb062dcc709e834042d5a6df74`; this report and
 the [measurement receipt](pipeline-3805-results.json) preserve the evidence.
 
 ## Matched baseline and candidate
@@ -103,10 +107,11 @@ about 30 minutes before wrap-up; the durable ledger records exact active time.
 No judges, subagents, new dependencies, pushes, or PR comments were used. Monetary
 cost telemetry was unavailable.
 
-No final speedup or measured zero-percent result is claimed for the unchanged
-runtime. The greater-than-5% warm target remains unmet by a retained change;
-fresh timing likewise has no new confirmed final value. The next adapter
-opportunity is supported by fresh local measurements but remains unimplemented.
+At this experiment's closure, no final speedup or measured zero-percent result
+was claimed for the unchanged runtime. The greater-than-5% warm target remained
+unmet by a retained change; fresh timing likewise had no new confirmed value.
+The adapter opportunity was measured but unimplemented. Its subsequent work is
+recorded separately in the follow-up report linked above.
 
 Resumable state is under
 `.context/compound-engineering/ce-optimize/pipeline-3805/`, including
