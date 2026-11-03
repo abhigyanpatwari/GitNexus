@@ -178,7 +178,7 @@ describe('CLI commands', () => {
       // ships source only) and loaded from vendor/ by absolute path (#2111).
       expect(optional['tree-sitter-kotlin']).toBeUndefined();
       expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
-      expect(kotlinPkg.default.version).toBe('0.4.0-g1852ea1');
+      expect(kotlinPkg.default.version).toBe('0.4.0-gd6af96d');
       // No scripts.install / dependencies inside vendor/ (#836 / #1728 hygiene).
       expect(
         (kotlinPkg.default as { scripts?: Record<string, string> }).scripts?.install,
