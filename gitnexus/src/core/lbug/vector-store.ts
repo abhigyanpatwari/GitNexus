@@ -40,6 +40,9 @@ export interface VectorStoreOptions {
   bufferPoolBytes: number;
   threads: number;
   mode: 'create' | 'resume' | 'read';
+  /** Only before a scheduling journal exists: an interrupted initial DDL
+   * transaction may leave an owned database with a verified empty catalog. */
+  recoverEmptyBootstrap?: boolean;
   /** Maximum JS vector batch retained by the caller and passed into native. */
   batchBytes: number;
 }
@@ -83,7 +86,7 @@ export class VectorStore {
       throw new Error('Invalid vector-store resource reservation or identity');
     const directory = await embeddingJobDirectory(options.directory);
     const file = path.join(directory, 'vectors');
-    for (const suffix of ['', '.wal', '.lock']) {
+    for (const suffix of ['', '.wal', '.shadow', '.lock']) {
       try {
         const stat = await fs.lstat(file + suffix);
         if (!stat.isFile() || stat.isSymbolicLink())
@@ -105,24 +108,32 @@ export class VectorStore {
     });
     const store = new VectorStore(handle, Object.freeze({ ...options, directory }));
     try {
-      if (options.mode === 'create') {
-        await store.query(
-          `CREATE NODE TABLE CodeEmbedding (id STRING, nodeId STRING, chunkIndex INT32, startLine INT64, endLine INT64, embedding FLOAT[${options.dimensions}], contentHash STRING, PRIMARY KEY(id))`,
-        );
-        await store.query(
-          'CREATE NODE TABLE EmbeddingNodeReceipt (nodeId STRING, contentHash STRING, chunks INT64, complete BOOL, sourceStartLine INT64, sourceEndLine INT64, PRIMARY KEY(nodeId))',
-        );
-        await store.query(
-          'CREATE NODE TABLE EmbeddingArtifact (id STRING, identity STRING, schema STRING, dimensions INT64, complete BOOL, indexKind STRING, PRIMARY KEY(id))',
-        );
-        await store.query(
-          "CREATE (:EmbeddingArtifact {id:'artifact', identity:$identity, schema:$schema, dimensions:$dimensions, complete:false, indexKind:'pending'})",
-          {
-            identity: options.identity,
-            schema: VECTOR_STORE_SCHEMA,
-            dimensions: options.dimensions,
-          },
-        );
+      const emptyBootstrap =
+        options.mode === 'resume' &&
+        options.recoverEmptyBootstrap === true &&
+        (await store.query('CALL show_tables() RETURN *')).length === 0;
+      if (options.mode === 'create' || emptyBootstrap) {
+        // DDL is transactional in LadybugDB. A crash must expose either the
+        // complete schema/identity or an empty catalog, never half a bootstrap.
+        await store.transaction(async () => {
+          await store.query(
+            `CREATE NODE TABLE CodeEmbedding (id STRING, nodeId STRING, chunkIndex INT32, startLine INT64, endLine INT64, embedding FLOAT[${options.dimensions}], contentHash STRING, PRIMARY KEY(id))`,
+          );
+          await store.query(
+            'CREATE NODE TABLE EmbeddingNodeReceipt (nodeId STRING, contentHash STRING, chunks INT64, complete BOOL, sourceStartLine INT64, sourceEndLine INT64, PRIMARY KEY(nodeId))',
+          );
+          await store.query(
+            'CREATE NODE TABLE EmbeddingArtifact (id STRING, identity STRING, schema STRING, dimensions INT64, complete BOOL, indexKind STRING, PRIMARY KEY(id))',
+          );
+          await store.query(
+            "CREATE (:EmbeddingArtifact {id:'artifact', identity:$identity, schema:$schema, dimensions:$dimensions, complete:false, indexKind:'pending'})",
+            {
+              identity: options.identity,
+              schema: VECTOR_STORE_SCHEMA,
+              dimensions: options.dimensions,
+            },
+          );
+        });
         await store.query('CHECKPOINT');
       } else {
         const rows = await store.query(

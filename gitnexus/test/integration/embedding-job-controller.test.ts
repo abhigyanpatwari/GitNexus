@@ -9,6 +9,9 @@ import type { EmbeddableNode } from '../../src/core/embeddings/types.js';
 import { VectorStore } from '../../src/core/lbug/vector-store.js';
 import { resolveAnalysisResourceBudget } from '../../src/core/analysis-resource-budget.js';
 import { EmbeddingJobJournal } from '../../src/storage/embedding-job-journal.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 let temporary: TestDBHandle | undefined;
 afterEach(async () => {
@@ -135,6 +138,30 @@ async function fixture(count = 130) {
 }
 
 describe('published graph embedding job controller', () => {
+  it('resumes an interrupted bootstrap without rescanning the manifest or losing the pending job', async () => {
+    const f = await fixture(3);
+    const original = VectorStore.open.bind(VectorStore);
+    const open = vi.spyOn(VectorStore, 'open').mockImplementationOnce(async (options) => {
+      await expect(
+        promisify(execFile)(process.execPath, [
+          fileURLToPath(new URL('../helpers/interrupted-vector-bootstrap.mjs', import.meta.url)),
+          JSON.stringify(options),
+        ]),
+      ).rejects.toMatchObject({ code: 73 });
+      throw new Error('interrupted bootstrap');
+    });
+    await expect(f.run()).rejects.toThrow('interrupted bootstrap');
+    expect(f.provider).not.toHaveBeenCalled();
+    const pending = (await loadMeta(f.root))?.embeddingJob;
+    expect(pending).toBeDefined();
+    f.scan.mockClear();
+    open.mockImplementation(original);
+    const result = await f.run();
+    expect(result.phase).toBe('ready');
+    expect(result.metadata.vectorGeneration?.identity).toBe(pending?.identity);
+    expect(f.scan).not.toHaveBeenCalled();
+    expect(f.provider.mock.calls.flatMap(([texts]) => texts)).toHaveLength(3);
+  });
   it('drains an earlier local runtime before admitting an HTTP job with no model reservation', async () => {
     const f = await fixture(3);
     vi.stubEnv('GITNEXUS_EMBEDDING_URL', 'https://embedding.test/v1');

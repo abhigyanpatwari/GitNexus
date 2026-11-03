@@ -56,6 +56,16 @@ const integer = (value: unknown): value is number =>
 const filename = (unit: number): string => `failed-${String(unit).padStart(16, '0')}.json`;
 const clone = <T>(value: T): T => structuredClone(value);
 
+/** Operational failures (permissions, I/O) must not be treated as lost state. */
+function damagedRecord(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code) return code === 'ENOENT' || code === 'ERR_ENCODING_INVALID_ENCODED_DATA';
+  return (
+    error instanceof SyntaxError ||
+    /checksum|Malformed|Invalid|UTF-8|receipt exceeds/i.test(String(error))
+  );
+}
+
 function validateIntent(intent: EmbeddingUnitIntent, state: EmbeddingJobState): void {
   if (
     !intent ||
@@ -215,14 +225,7 @@ export class EmbeddingJobJournal {
     try {
       value = await readEmbeddingJobRecord(canonical, 'job.json');
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code && code !== 'ENOENT' && code !== 'ERR_ENCODING_INVALID_ENCODED_DATA') throw error;
-      if (
-        !code &&
-        !(error instanceof SyntaxError) &&
-        !/checksum|Malformed|Invalid|UTF-8|receipt exceeds/i.test(String(error))
-      )
-        throw error;
+      if (!damagedRecord(error)) throw error;
     }
     if (value && typeof value === 'object') {
       const state = value as Partial<EmbeddingJobState>;
@@ -232,11 +235,22 @@ export class EmbeddingJobJournal {
         (state.manifestDigest && state.manifestDigest !== manifest.digest)
       )
         throw new Error('Embedding job identity mismatch; recovery refused');
+      let journal: EmbeddingJobJournal | undefined;
       try {
         validateState(value, identity, manifest);
-        return new EmbeddingJobJournal(canonical, value, clone(manifest));
+        journal = new EmbeddingJobJournal(canonical, value, clone(manifest));
       } catch {
         /* Matching identity but damaged accounting requires reconstruction. */
+      }
+      if (journal) {
+        try {
+          await journal.verifyFailedRecords();
+          return journal;
+        } catch (error) {
+          if (!damagedRecord(error)) throw error;
+          // Complete native node groups survive this scheduling reset. The
+          // runner verifies them before acknowledging without provider calls.
+        }
       }
     }
     const suffix = `.preserved-${randomUUID()}`;
@@ -351,6 +365,14 @@ export class EmbeddingJobJournal {
   private async readFailed(name: string): Promise<FailedUnit> {
     const record = (await readEmbeddingJobRecord(this.directory, name)) as FailedUnit;
     if (
+      record &&
+      typeof record === 'object' &&
+      ((record.version !== undefined && record.version !== 1) ||
+        (record.identity && record.identity !== this.state.identity) ||
+        (record.manifestDigest && record.manifestDigest !== this.state.manifestDigest))
+    )
+      throw new Error('Embedding failure identity mismatch; recovery refused');
+    if (
       !record ||
       record.version !== 1 ||
       record.identity !== this.state.identity ||
@@ -363,6 +385,30 @@ export class EmbeddingJobJournal {
     if (record.intent.origin !== 'failed' || name !== filename(record.intent.start.unit))
       throw new Error('Failed embedding unit identity mismatch');
     return record;
+  }
+
+  /** Constant memory; failed records are the only growing scheduling data. */
+  private async verifyFailedRecords(): Promise<void> {
+    let units = 0;
+    let nodes = 0;
+    const entries = await fs.opendir(this.directory);
+    for await (const entry of entries) {
+      if (!FAILED.test(entry.name)) continue;
+      // An active retry owns this unit even if its failure file was already
+      // removed, or a crash left the previous failed record beside it.
+      if (this.state.active && entry.name === filename(this.state.active.start.unit)) continue;
+      const record = await this.readFailed(entry.name);
+      units++;
+      nodes += record.intent.nodes;
+      if (
+        record.intent.next.unit > this.state.cursor.unit ||
+        units > this.state.failedUnits ||
+        nodes > this.state.failedNodes
+      )
+        throw new Error('Invalid failed embedding accounting');
+    }
+    if (units !== this.state.failedUnits || nodes !== this.state.failedNodes)
+      throw new Error('Invalid failed embedding accounting');
   }
 
   async *failed(): AsyncGenerator<EmbeddingUnitIntent> {

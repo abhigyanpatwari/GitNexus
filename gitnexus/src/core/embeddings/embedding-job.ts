@@ -255,13 +255,15 @@ export async function runPublishedEmbeddingJob(
       ? await loadEmbeddingWorkManifest(directory, identities.sourceIdentity)
       : await createEmbeddingWorkManifest(directory, identities.sourceIdentity, await getSource());
     const hasStore = await existsOwnedFile(path.join(directory, 'vectors'));
-    if (!hasStore && (await existsOwnedFile(path.join(directory, 'job.json'))))
+    const hasJournal = await existsOwnedFile(path.join(directory, 'job.json'));
+    if (!hasStore && hasJournal)
       throw new Error('Embedding vectors are missing for acknowledged work; artifacts retained');
     store = await VectorStore.open({
       directory,
       identity: identities.identity,
       dimensions: vector.dimensions,
       mode: hasStore ? 'resume' : 'create',
+      recoverEmptyBootstrap: !hasJournal,
       ...storeResources,
     });
     const journal = await EmbeddingJobJournal.recover(directory, identities.identity, manifest);

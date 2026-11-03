@@ -25,6 +25,9 @@ import {
   publishPreparedAnalysis,
 } from '../../src/core/analysis-publication.js';
 import { ExtensionManager } from '../../src/core/lbug/extension-loader.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 let temporary: TestDBHandle | undefined;
 let store: VectorStore;
@@ -127,6 +130,134 @@ async function runnerFixture(count: number, content = 'const value = "漢😀";'
 }
 
 describe('bounded durable embedding runner', () => {
+  it('refuses a symlinked native shadow sidecar before opening the artifact', async () => {
+    const options = await setup();
+    await store.close();
+    const target = path.join(options.directory, 'unrelated-file');
+    await fs.writeFile(target, 'retain this');
+    await fs.symlink(target, path.join(options.directory, 'vectors.shadow'));
+    await expect(VectorStore.open({ ...options, mode: 'resume' })).rejects.toThrow(
+      'owned regular file',
+    );
+    expect(await fs.readFile(target, 'utf8')).toBe('retain this');
+  });
+  it('never bootstraps over an unidentified nonempty native catalog', async () => {
+    temporary = await createTempDir();
+    const options = {
+      directory: temporary.dbPath,
+      identity: 'a'.repeat(64),
+      dimensions: 4,
+      bufferPoolBytes: 64 * 1024 * 1024,
+      threads: 1,
+      batchBytes: 64 * 1024,
+      mode: 'resume' as const,
+      recoverEmptyBootstrap: true,
+    };
+    const file = path.join(options.directory, 'vectors');
+    let handle = await openLbugConnection(lbug, file, {
+      bufferPoolBytes: options.bufferPoolBytes,
+      threads: 1,
+    });
+    const execute = async (sql: string) => {
+      const result = await handle.conn.query(sql);
+      for (const part of Array.isArray(result) ? result : [result]) part.close();
+    };
+    await execute('CREATE NODE TABLE PreviousWork (id STRING, PRIMARY KEY(id))');
+    await execute("CREATE (:PreviousWork {id:'retain-this'})");
+    await closeLbugConnection(handle);
+    await expect(VectorStore.open(options)).rejects.toThrow();
+    handle = await openLbugConnection(lbug, file, {
+      bufferPoolBytes: options.bufferPoolBytes,
+      threads: 1,
+    });
+    try {
+      const result = await handle.conn.query('MATCH (n:PreviousWork) RETURN n.id AS id');
+      const parts = Array.isArray(result) ? result : [result];
+      expect(parts[0].getNextSync()).toEqual({ id: 'retain-this' });
+      parts.forEach((part) => part.close());
+    } finally {
+      await closeLbugConnection(handle);
+    }
+  });
+  it('recovers an interrupted vector bootstrap only with explicit empty-catalog admission', async () => {
+    temporary = await createTempDir();
+    const options = {
+      directory: temporary.dbPath,
+      identity: 'a'.repeat(64),
+      dimensions: 4,
+      bufferPoolBytes: 64 * 1024 * 1024,
+      threads: 1,
+      batchBytes: 64 * 1024,
+      mode: 'create' as const,
+    };
+    await expect(
+      promisify(execFile)(process.execPath, [
+        fileURLToPath(new URL('../helpers/interrupted-vector-bootstrap.mjs', import.meta.url)),
+        JSON.stringify(options),
+      ]),
+    ).rejects.toMatchObject({ code: 73 });
+    await expect(VectorStore.open({ ...options, mode: 'resume' })).rejects.toThrow();
+    store = await VectorStore.open({ ...options, mode: 'resume', recoverEmptyBootstrap: true });
+    await store.beginNode('Function:a:test', 'hash');
+    await store.append('Function:a:test', 'hash', [chunk(0)]);
+    const receipt = await store.finishNode('Function:a:test', 'hash', 1);
+    await store.checkpointUnit([receipt]);
+    expect(await store.reusable('Function:a:test', 'hash')).toMatchObject({
+      complete: true,
+      chunks: 1,
+    });
+  });
+
+  it.each(['checksum', 'missing', 'accounting'])(
+    'recovers a damaged failed-unit %s without repeating acknowledged provider requests',
+    async (damage) => {
+      const fixture = await runnerFixture(65);
+      fixture.provider.mockImplementation(async (texts) => {
+        if (texts.some((text) => text.includes('n00064')))
+          throw new HttpEmbeddingError('bad input', { status: 400 });
+        return texts.map(() => new Float32Array([0.1, 0.2, 0.3, 0.4]));
+      });
+      expect((await fixture.run()).state).toMatchObject({
+        completedUnits: 1,
+        failedUnits: 1,
+        completedNodes: 64,
+      });
+      const failedFile = path.join(fixture.options.directory, 'failed-0000000000000001.json');
+      if (damage === 'missing') await fs.unlink(failedFile);
+      else if (damage === 'checksum') await fs.writeFile(failedFile, '{broken');
+      else {
+        const { readEmbeddingJobRecord, writeEmbeddingJobRecord } =
+          await import('../../src/storage/embedding-job.js');
+        const record = (await readEmbeddingJobRecord(
+          fixture.options.directory,
+          path.basename(failedFile),
+        )) as { intent: { nodes: number } };
+        await writeEmbeddingJobRecord(fixture.options.directory, path.basename(failedFile), {
+          ...record,
+          intent: { ...record.intent, nodes: 2 },
+        });
+      }
+      await fixture.reopen(true);
+      fixture.provider.mockClear();
+      fixture.provider.mockImplementation(async (texts) =>
+        texts.map(() => new Float32Array([0.1, 0.2, 0.3, 0.4])),
+      );
+      const result = await fixture.run();
+      expect(result.state).toMatchObject({
+        phase: 'indexing',
+        failedUnits: 0,
+        reusedNodes: 64,
+        completedNodes: 1,
+        chunks: 65,
+      });
+      expect(fixture.provider.mock.calls.flatMap(([texts]) => texts)).toHaveLength(1);
+      expect(
+        (await fs.readdir(fixture.options.directory)).some((name) =>
+          name.startsWith('job.json.preserved-'),
+        ),
+      ).toBe(true);
+    },
+  );
   it('copies compatible complete vectors into a new generation without re-embedding', async () => {
     const fixture = await runnerFixture(3, 'const value = "漢😀";'.repeat(300));
     const first = await fixture.run();

@@ -47,6 +47,49 @@ afterEach(async () => {
 });
 
 describe('durable embedding scheduling', () => {
+  it('refuses foreign failed-unit identity instead of resetting another job', async () => {
+    const journal = await job();
+    await journal.begin(unit(0));
+    await journal.fail('provider');
+    const name = 'failed-0000000000000000.json';
+    const record = (await readEmbeddingJobRecord(journal.directory, name)) as Record<
+      string,
+      unknown
+    >;
+    await writeEmbeddingJobRecord(journal.directory, name, { ...record, identity: 'f'.repeat(64) });
+    const before = await fs.readFile(path.join(journal.directory, 'job.json'), 'utf8');
+    await expect(
+      EmbeddingJobJournal.recover(journal.directory, identity, manifest),
+    ).rejects.toThrow('identity mismatch');
+    expect(await fs.readFile(path.join(journal.directory, 'job.json'), 'utf8')).toBe(before);
+    expect((await fs.readdir(journal.directory)).some((name) => name.includes('.preserved-'))).toBe(
+      false,
+    );
+  });
+
+  it('propagates failure-record access errors without resetting valid accounting', async () => {
+    const journal = await job();
+    const before = await fs.readFile(path.join(journal.directory, 'job.json'), 'utf8');
+    vi.spyOn(fs, 'opendir').mockRejectedValueOnce(
+      Object.assign(new Error('access denied'), { code: 'EACCES' }),
+    );
+    await expect(
+      EmbeddingJobJournal.recover(journal.directory, identity, manifest),
+    ).rejects.toMatchObject({ code: 'EACCES' });
+    expect(await fs.readFile(path.join(journal.directory, 'job.json'), 'utf8')).toBe(before);
+  });
+
+  it('retains an active retry whose old failed record was already removed', async () => {
+    let journal = await job();
+    await journal.begin(unit(0));
+    await journal.fail('provider');
+    await journal.begin(unit(0, 'failed'));
+    await fs.unlink(path.join(journal.directory, 'failed-0000000000000000.json'));
+    journal = await EmbeddingJobJournal.recover(journal.directory, identity, manifest);
+    expect(journal.snapshot()).toMatchObject({ failedUnits: 0, active: unit(0, 'failed') });
+    await journal.acknowledge({ reusedNodes: 2, chunks: 2 });
+    expect(journal.snapshot()).toMatchObject({ reusedUnits: 1, active: null });
+  });
   it('resumes only the active unit and keeps acknowledged counts', async () => {
     let journal = await job();
     await journal.begin(unit(0));
