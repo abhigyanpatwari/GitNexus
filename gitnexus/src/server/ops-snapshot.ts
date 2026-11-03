@@ -13,6 +13,46 @@ import {
 } from './analyze-job.js';
 import { publicRepoId } from './public-repo-id.js';
 import { escapeRegExp } from './validation.js';
+import type { EmbeddingJobProgress } from '../core/analysis-progress.js';
+
+const publicEmbeddingProgress = (
+  progress: EmbeddingJobProgress | undefined,
+): EmbeddingJobProgress | undefined => {
+  if (
+    !progress ||
+    !['preparing', 'embedding', 'indexing', 'ready', 'failed', 'unverified'].includes(
+      progress.phase,
+    )
+  )
+    return undefined;
+  const safe: EmbeddingJobProgress = { phase: progress.phase };
+  // Explicit numeric allowlist: never spread the worker/job object onto a
+  // public feed. It may also contain source paths, identities, or credentials.
+  for (const key of [
+    'totalUnits',
+    'completedUnits',
+    'reusedUnits',
+    'pendingUnits',
+    'failedUnits',
+    'totalNodes',
+    'completedNodes',
+    'reusedNodes',
+    'pendingNodes',
+    'failedNodes',
+    'chunks',
+  ] as const) {
+    const value = progress[key];
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) safe[key] = value;
+  }
+  if (
+    progress.activeUnit === null ||
+    (typeof progress.activeUnit === 'number' &&
+      Number.isSafeInteger(progress.activeUnit) &&
+      progress.activeUnit >= 0)
+  )
+    safe.activeUnit = progress.activeUnit;
+  return safe;
+};
 
 export interface OpsJobView {
   id: string;
@@ -227,11 +267,28 @@ export const redactPublicText = (text: string, known?: Array<string | undefined>
 export const publicOpsProgress = (
   progress: AnalyzeJobProgress,
   known?: Array<string | undefined>,
-): AnalyzeJobProgress => ({
-  phase: progress.phase,
-  percent: progress.percent,
-  message: redactPublicText(progress.message, known),
-});
+): AnalyzeJobProgress => {
+  const result: AnalyzeJobProgress = {
+    phase: progress.phase,
+    percent: progress.percent,
+    message: redactPublicText(progress.message, known),
+  };
+  if (
+    progress.graphPhase &&
+    ['pending', 'building', 'ready', 'failed'].includes(progress.graphPhase)
+  )
+    result.graphPhase = progress.graphPhase;
+  const embeddingProgress = publicEmbeddingProgress(progress.embeddingProgress);
+  if (embeddingProgress) result.embeddingProgress = embeddingProgress;
+  if (
+    typeof progress.modelDownloadPercent === 'number' &&
+    Number.isFinite(progress.modelDownloadPercent) &&
+    progress.modelDownloadPercent >= 0 &&
+    progress.modelDownloadPercent <= 100
+  )
+    result.modelDownloadPercent = progress.modelDownloadPercent;
+  return result;
+};
 
 export const serializeOpsJob = (
   job: AnalyzeJob,

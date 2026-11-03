@@ -12,8 +12,9 @@
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import type { ChildProcess } from 'child_process';
+import type { AnalysisPhaseProgress } from '../core/analysis-progress.js';
 
-export interface AnalyzeJobProgress {
+export interface AnalyzeJobProgress extends AnalysisPhaseProgress {
   phase: string;
   percent: number;
   message: string;

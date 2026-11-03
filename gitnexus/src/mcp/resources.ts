@@ -9,7 +9,9 @@ import type { LocalBackend } from './local/local-backend.js';
 import { checkStaleness } from './staleness.js';
 import { loadMeta } from '../storage/repo-manager.js';
 import { ANALYZER_RUNNER_IDENTITY_SCHEMA_VERSION } from '../core/analyzer-identity.js';
-import { getIndexIncompleteReasons } from '../core/index-freshness.js';
+import { getIndexIncompleteReasons, getGraphIncompleteReasons } from '../core/index-freshness.js';
+import { readEmbeddingJobProgress } from '../storage/embedding-job-progress.js';
+import { readIndexCapabilities } from '../storage/index-capabilities.js';
 import {
   checkoutIsDirectory,
   contentRetentionFromMeta,
@@ -381,6 +383,11 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push(`  source_available: ${JSON.stringify(sourceAvailable)}`);
   lines.push(`  runner_identity: ${JSON.stringify(freshMeta?.runnerIdentity ?? null)}`);
   lines.push(`  incomplete_reasons: ${JSON.stringify(incompleteReasons)}`);
+  lines.push(`  graph_incomplete_reasons: ${JSON.stringify(getGraphIncompleteReasons(freshMeta))}`);
+  const embeddingProgress = await readEmbeddingJobProgress(repo.storagePath, freshMeta);
+  if (embeddingProgress) lines.push(`  embedding_progress: ${JSON.stringify(embeddingProgress)}`);
+  const capabilities = await readIndexCapabilities(repo.storagePath, freshMeta);
+  if (capabilities) lines.push(`  capabilities: ${JSON.stringify(capabilities)}`);
   lines.push(`  spring_actuator: ${JSON.stringify(freshMeta?.springActuator ?? null)}`);
   // Surfaced beside the Actuator flag, and it matters more than that one does:
   // Actuator only annotates nodes the source pass already found, whereas

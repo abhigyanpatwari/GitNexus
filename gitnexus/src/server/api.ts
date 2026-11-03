@@ -17,6 +17,8 @@ import {
 } from '../storage/index-lock.js';
 import { ensurePrivateSharedGraph } from '../core/shared-store-analyze.js';
 import { resolveGraphPath } from '../storage/shared-store.js';
+import { readEmbeddingJobProgress } from '../storage/embedding-job-progress.js';
+import { readIndexCapabilities } from '../storage/index-capabilities.js';
 import {
   reclaimAfterSlotRemoval,
   removeCheckoutStorage,
@@ -1270,15 +1272,24 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       // Timed out waiting for an active analysis job
       if (respondIfAnalysisPending(entry, res)) return;
       const meta = await loadMeta(entry.storagePath);
-      const [staleness, availability] = await Promise.all([
+      const [staleness, availability, embeddingProgress, capabilities] = await Promise.all([
         checkStalenessAsync(entry.path, resolveLastCommit(entry, meta)),
         getSourceAvailability(entry, meta),
+        readEmbeddingJobProgress(entry.storagePath, meta),
+        readIndexCapabilities(entry.storagePath, meta),
       ]);
       res.json(
-        projectRepoDetail(entry, meta, staleness, {
-          contentRetention: availability.contentRetention ?? contentRetentionFromMeta(meta),
-          sourceAvailable: availability.available,
-        }),
+        projectRepoDetail(
+          entry,
+          meta,
+          staleness,
+          {
+            contentRetention: availability.contentRetention ?? contentRetentionFromMeta(meta),
+            sourceAvailable: availability.available,
+          },
+          embeddingProgress,
+          capabilities,
+        ),
       );
     } catch (err: any) {
       if (sendStorageRequirementHttp(err, res)) return;

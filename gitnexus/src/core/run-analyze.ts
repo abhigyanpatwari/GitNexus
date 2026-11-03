@@ -457,7 +457,12 @@ function collectSpringBeanDeclarationDriftFiles(
 // ---------------------------------------------------------------------------
 
 export interface AnalyzeCallbacks {
-  onProgress: (phase: string, percent: number, message: string) => void;
+  onProgress: (
+    phase: string,
+    percent: number,
+    message: string,
+    details?: import('./analysis-progress.js').AnalysisPhaseProgress,
+  ) => void;
   onLog?: (message: string) => void;
 }
 
