@@ -50,7 +50,6 @@ import {
   type AnalyzerRunnerIdentity,
   type RepoMeta,
 } from './repo-meta.js';
-import { LBUG_DIRECTORY } from './storage-constants.js';
 import { resolveGraphPath } from './shared-store.js';
 import {
   defaultStoragePath,
@@ -243,9 +242,9 @@ export const getStoragePaths = (
   const baseDir = branch ? path.join(storagePath, BRANCHES_DIR, branchSlug(branch)) : storagePath;
   return {
     storagePath,
-    // Branch slots are always private; a flat shared-store slot may read a
-    // commit graph (#3352).
-    lbugPath: branch ? path.join(baseDir, LBUG_DIRECTORY) : resolveGraphPath(storagePath),
+    // Private generations also work in branch slots. Only a flat shared-store
+    // slot may resolve to an immutable commit graph (#3352).
+    lbugPath: resolveGraphPath(baseDir),
     metaPath: path.join(baseDir, INDEX_METADATA_FILE), // Branch-specific metadata file
   };
 };

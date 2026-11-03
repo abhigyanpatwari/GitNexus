@@ -14,6 +14,17 @@ import {
 import { EmbeddingJobJournal } from '../../src/storage/embedding-job-journal.js';
 import { HttpEmbeddingError } from '../../src/core/embeddings/http-client.js';
 import type { EmbeddableNode } from '../../src/core/embeddings/types.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { searchVectorGeneration } from '../../src/core/embeddings/vector-generation-search.js';
+import * as readerPool from '../../src/core/lbug/pool-adapter.js';
+import type { RepoMeta } from '../../src/storage/repo-meta.js';
+import { saveMeta, loadMeta } from '../../src/storage/repo-manager.js';
+import { publishVectorGeneration } from '../../src/core/embeddings/vector-publication.js';
+import {
+  prepareAnalysisPublication,
+  publishPreparedAnalysis,
+} from '../../src/core/analysis-publication.js';
+import { ExtensionManager } from '../../src/core/lbug/extension-loader.js';
 
 let temporary: TestDBHandle | undefined;
 let store: VectorStore;
@@ -563,5 +574,330 @@ describe('separate durable vector artifacts', () => {
       'reservation',
     );
     expect((await fs.stat(path.join(options.directory, 'vectors'))).isFile()).toBe(true);
+  });
+});
+
+describe('published vector readers', () => {
+  it('publishes a native FTS graph before opening the independent vector writer', async (context) => {
+    temporary = await createTempDir();
+    vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
+    vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', String(64 * 1024 * 1024));
+    const root = temporary.dbPath;
+    const stage = path.join(root, `lbug.staging.${randomUUID()}`);
+    const graph = await openLbugConnection(lbug, stage, {
+      bufferPoolBytes: 64 * 1024 * 1024,
+      threads: 1,
+    });
+    const query = async (sql: string) => {
+      const result = await graph.conn.query(sql);
+      const rows = [];
+      for (const part of Array.isArray(result) ? result : [result]) {
+        try {
+          rows.push(...(await part.getAll()));
+        } finally {
+          await part.close();
+        }
+      }
+      return rows;
+    };
+    let prepared;
+    try {
+      const ready = await new ExtensionManager().ensure(query, 'fts', 'publication fixture', {
+        policy: 'load-only',
+      });
+      if (!ready) {
+        context.skip('Optional native FTS extension is unavailable');
+        return;
+      }
+      await query('CREATE NODE TABLE Function (id STRING, name STRING, PRIMARY KEY(id))');
+      await query("CREATE (:Function {id:'Function:source.ts:alpha', name:'alpha'})");
+      await query("CALL CREATE_FTS_INDEX('Function', 'function_fts', ['name'])");
+      await query('CHECKPOINT');
+      prepared = await prepareAnalysisPublication(
+        root,
+        stage,
+        {
+          repoPath: '/repo',
+          lastCommit: 'abc',
+          indexedAt: 'now',
+          stats: { nodes: 1 },
+          runnerIdentity: { schemaVersion: 4 } as RepoMeta['runnerIdentity'],
+        },
+        'c'.repeat(64),
+      );
+    } finally {
+      await closeLbugConnection(graph);
+    }
+    const metadata = await publishPreparedAnalysis(root, {
+      verify: async (file) => {
+        await readerPool.initLbug('verify-publication', file);
+        try {
+          expect(
+            await readerPool.executeQuery(
+              'verify-publication',
+              "CALL QUERY_FTS_INDEX('Function', 'function_fts', 'alpha') YIELD node, score RETURN node.name AS name",
+            ),
+          ).toEqual([{ name: 'alpha' }]);
+        } finally {
+          await readerPool.closeLbug('verify-publication');
+        }
+      },
+      saveMetadata: (meta) => saveMeta(root, meta),
+    });
+    expect(metadata?.graphPath).toBe(prepared.graphFile);
+    const publishedPath = path.join(root, prepared.graphFile);
+    const directory = path.join(root, 'embeddings', 'd'.repeat(64));
+    await fs.mkdir(directory, { recursive: true });
+    try {
+      await readerPool.initLbug('warm-fts', publishedPath);
+      store = await VectorStore.open({
+        directory,
+        identity: 'd'.repeat(64),
+        dimensions: 4,
+        mode: 'create',
+        bufferPoolBytes: 64 * 1024 * 1024,
+        threads: 1,
+        batchBytes: 64 * 1024,
+      });
+      await store.beginNode('Function:source.ts:alpha', 'hash');
+      await store.append('Function:source.ts:alpha', 'hash', [chunk(0)]);
+      await readerPool.initLbug('cold-fts', publishedPath);
+      for (const key of ['warm-fts', 'cold-fts']) {
+        expect(
+          await readerPool.executeQuery(
+            key,
+            "CALL QUERY_FTS_INDEX('Function', 'function_fts', 'alpha') YIELD node, score RETURN node.name AS name",
+          ),
+        ).toEqual([{ name: 'alpha' }]);
+      }
+    } finally {
+      await readerPool.closeLbug();
+    }
+  });
+
+  it('uses the native ANN lane when exact scan cannot cover the artifact', async (context) => {
+    temporary = await createTempDir();
+    vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
+    vi.stubEnv('GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT', '1');
+    const root = temporary.dbPath;
+    const probe = await openLbugConnection(lbug, path.join(root, 'extension-probe'), {
+      bufferPoolBytes: 64 * 1024 * 1024,
+      threads: 1,
+    });
+    try {
+      const loaded = await probe.conn.query('LOAD vector');
+      for (const result of Array.isArray(loaded) ? loaded : [loaded]) {
+        await result.getAll();
+        await result.close();
+      }
+    } catch {
+      context.skip('Optional native VECTOR extension is unavailable');
+      return;
+    } finally {
+      await closeLbugConnection(probe);
+    }
+    const generation = 'a'.repeat(32);
+    const identity = 'b'.repeat(64);
+    const directory = path.join(root, 'embeddings', identity);
+    await fs.mkdir(directory, { recursive: true });
+    const options: VectorStoreOptions = {
+      directory,
+      identity,
+      dimensions: 4,
+      mode: 'create',
+      bufferPoolBytes: 64 * 1024 * 1024,
+      threads: 1,
+      batchBytes: 64 * 1024,
+    };
+    store = await VectorStore.open(options);
+    await store.beginNode('Function:source.ts:alpha', 'hash');
+    await store.append('Function:source.ts:alpha', 'hash', [chunk(0), chunk(1)]);
+    await store.finishNode('Function:source.ts:alpha', 'hash', 2);
+    const kind = await store.seal(1, 2);
+    expect(kind).toBe('hnsw');
+    await store.close();
+    store = await VectorStore.open({ ...options, mode: 'read' });
+    expect(await store.seal(1, 2)).toBe('hnsw');
+    await store.close();
+    const metadata: RepoMeta = {
+      repoPath: '/repo',
+      lastCommit: 'abc',
+      indexedAt: 'now',
+      graphPath: `lbug.generation.${generation}`,
+      graphGeneration: { version: 1, id: generation, coveredContent: 'c'.repeat(64) },
+      vectorGeneration: {
+        version: 1,
+        identity,
+        graphGeneration: generation,
+        vectorIdentity: createHash('sha256')
+          .update(JSON.stringify(['local', 'fixture', 4]))
+          .digest('hex'),
+        inputIdentity: 'd'.repeat(64),
+        dimensions: 4,
+        nodes: 1,
+        chunks: 2,
+        indexKind: kind,
+      },
+    };
+    try {
+      const found = await searchVectorGeneration(
+        { metadataDirectory: root, metadata, graphPath: path.join(root, metadata.graphPath!) },
+        async () => [0.1, 0.2, 0.3, 0.4],
+        5,
+        1,
+        async () => ({ provider: 'local', model: 'fixture', dimensions: 4 }),
+      );
+      expect(found).toEqual([
+        expect.objectContaining({ nodeId: 'Function:source.ts:alpha', startLine: 1, endLine: 2 }),
+      ]);
+    } finally {
+      await readerPool.closeLbug();
+    }
+  });
+
+  it('serves warm and cold graph readers while vectors are unpublished, then searches the closed artifact concurrently', async () => {
+    temporary = await createTempDir();
+    vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'never');
+    vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', String(64 * 1024 * 1024));
+    const root = temporary.dbPath;
+    const generation = 'a'.repeat(32);
+    const identity = 'b'.repeat(64);
+    const graphPath = path.join(root, `lbug.generation.${generation}`);
+    const graph = await openLbugConnection(lbug, graphPath, {
+      bufferPoolBytes: 64 * 1024 * 1024,
+      threads: 1,
+    });
+    try {
+      for (const query of [
+        'CREATE NODE TABLE Function (id STRING, name STRING, PRIMARY KEY(id))',
+        "CREATE (:Function {id:'Function:source.ts:alpha', name:'alpha'})",
+        'CHECKPOINT',
+      ]) {
+        const result = await graph.conn.query(query);
+        for (const part of Array.isArray(result) ? result : [result]) {
+          await part.getAll();
+          await part.close();
+        }
+      }
+    } finally {
+      await closeLbugConnection(graph);
+    }
+    const directory = path.join(root, 'embeddings', identity);
+    await fs.mkdir(directory, { recursive: true });
+    store = await VectorStore.open({
+      directory,
+      identity,
+      dimensions: 4,
+      mode: 'create',
+      bufferPoolBytes: 64 * 1024 * 1024,
+      threads: 1,
+      batchBytes: 64 * 1024,
+    });
+    const metadata: RepoMeta = {
+      repoPath: '/repo',
+      lastCommit: 'abc',
+      indexedAt: 'now',
+      graphPath: path.basename(graphPath),
+      graphGeneration: { version: 1, id: generation, coveredContent: 'c'.repeat(64) },
+      embeddingJob: { version: 1, identity, graphGeneration: generation },
+    };
+    const snapshot = { metadataDirectory: root, metadata, graphPath };
+    await saveMeta(root, metadata);
+    const embed = vi.fn(async () => [0.1, 0.2, 0.3, 0.4]);
+    const vectorIdentity = { provider: 'local', model: 'fixture', dimensions: 4 };
+    const resolveIdentity = async () => vectorIdentity;
+    try {
+      await readerPool.initLbug(graphPath, graphPath);
+      await store.beginNode('Function:source.ts:alpha', 'hash');
+      await store.append('Function:source.ts:alpha', 'hash', [chunk(0), chunk(1)]);
+      expect(await searchVectorGeneration(snapshot, embed, 5, 1, resolveIdentity)).toEqual([]);
+      expect(embed).not.toHaveBeenCalled();
+      await readerPool.initLbug('cold-reader', graphPath);
+      for (const key of [graphPath, 'cold-reader']) {
+        expect(
+          await readerPool.executeQuery(key, 'MATCH (n:Function) RETURN n.name AS name'),
+        ).toEqual([{ name: 'alpha' }]);
+      }
+      const receipt = await store.finishNode('Function:source.ts:alpha', 'hash', 2);
+      await store.checkpointUnit([receipt]);
+      const indexKind = await store.seal(1, 2);
+      await store.close();
+      const publishedGeneration: NonNullable<RepoMeta['vectorGeneration']> = {
+        version: 1,
+        identity,
+        graphGeneration: generation,
+        vectorIdentity: createHash('sha256')
+          .update(JSON.stringify(['local', 'fixture', 4]))
+          .digest('hex'),
+        inputIdentity: 'd'.repeat(64),
+        dimensions: 4,
+        nodes: 1,
+        chunks: 2,
+        indexKind,
+      };
+      const resources = { bufferPoolBytes: 64 * 1024 * 1024, threads: 1, batchBytes: 64 * 1024 };
+      const actions = {
+        loadMetadata: () => loadMeta(root),
+        saveMetadata: (meta: RepoMeta) => saveMeta(root, meta),
+      };
+      await expect(
+        publishVectorGeneration(root, { ...publishedGeneration, nodes: 2 }, resources, actions),
+      ).rejects.toThrow('incomplete');
+      expect((await loadMeta(root))?.vectorGeneration).toBeUndefined();
+      const published = await publishVectorGeneration(
+        root,
+        publishedGeneration,
+        resources,
+        actions,
+      );
+      expect(published?.embeddingJob).toBeUndefined();
+      expect(published?.stats?.embeddings).toBe(2);
+      snapshot.metadata = published!;
+      const results = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          searchVectorGeneration(snapshot, embed, 5, 1, resolveIdentity),
+        ),
+      );
+      for (const result of results)
+        expect(result).toEqual([
+          expect.objectContaining({
+            nodeId: 'Function:source.ts:alpha',
+            chunkIndex: 0,
+            startLine: 1,
+            endLine: 2,
+          }),
+        ]);
+      expect(embed).toHaveBeenCalledTimes(8);
+      embed.mockClear();
+      expect(
+        await searchVectorGeneration(snapshot, embed, 5, 1, async () => ({
+          ...vectorIdentity,
+          model: 'different',
+        })),
+      ).toEqual([]);
+      expect(embed).not.toHaveBeenCalled();
+    } finally {
+      await readerPool.closeLbug();
+    }
+  });
+
+  it('keeps complete vectors retryable when exact coverage exceeds the reader limit', async () => {
+    const options = await setup();
+    vi.stubEnv('GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT', '1');
+    await store.beginNode('Function:source.ts:alpha', 'hash');
+    await store.append('Function:source.ts:alpha', 'hash', [chunk(0), chunk(1)]);
+    await store.finishNode('Function:source.ts:alpha', 'hash', 2);
+    expect(await store.seal(1, 2)).toBe('exact');
+    await store.close();
+    await expect(VectorStore.open({ ...options, mode: 'read' })).rejects.toThrow('not complete');
+    store = await VectorStore.open({ ...options, mode: 'resume' });
+    expect((await store.completedNodes(['Function:source.ts:alpha'])).size).toBe(1);
+    // Restoring a viable exact policy exercises index-only completion; no
+    // replacement or provider call is needed to publish the existing rows.
+    vi.stubEnv('GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT', '2');
+    expect(await store.seal(1, 2)).toBe('exact');
+    await store.close();
+    store = await VectorStore.open({ ...options, mode: 'read' });
+    expect((await store.completedNodes(['Function:source.ts:alpha'])).size).toBe(1);
   });
 });

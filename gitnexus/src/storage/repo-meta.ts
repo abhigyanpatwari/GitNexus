@@ -114,11 +114,32 @@ export interface RepoMeta {
   /** Complete index directory selected for this successful analysis. */
   storagePath?: string;
   /**
-   * Shared-store checkouts only (#3352): the graph this slot reads when it is
-   * not `<storagePath>/lbug` — a commit graph under the same store. Resolved
-   * and validated by `resolveGraphPath`.
+   * The graph this slot reads: an owned private generation basename, or an
+   * absolute shared commit graph under the same store (#3352). Resolved and
+   * validated by `resolveGraphPath`. Absent means legacy `<storagePath>/lbug`.
    */
   graphPath?: string;
+  /** A verified immutable graph, published independently of optional vectors. */
+  graphGeneration?: {
+    version: 1;
+    id: string;
+    /** Digest of covered content, including uncommitted source changes. */
+    coveredContent: string;
+  };
+  /** Checkout-owned durable work. Progress lives in its bounded journal. */
+  embeddingJob?: { version: 1; identity: string; graphGeneration: string };
+  /** Published only after complete coverage, native durability and index validation. */
+  vectorGeneration?: {
+    version: 1;
+    identity: string;
+    graphGeneration: string;
+    vectorIdentity: string;
+    inputIdentity: string;
+    dimensions: number;
+    nodes: number;
+    chunks: number;
+    indexKind: 'hnsw' | 'exact';
+  };
   lastCommit: string;
   indexedAt: string;
   /** Missing on legacy metadata means the upstream-compatible `full` profile. */

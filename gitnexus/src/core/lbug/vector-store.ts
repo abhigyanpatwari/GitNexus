@@ -6,6 +6,7 @@ import { openLbugConnection, type LbugConnectionHandle } from './lbug-config.js'
 import { ExtensionManager } from './extension-loader.js';
 import { assertValidGraphNodeId } from '../graph/node-identity.js';
 import { embeddingJobDirectory } from '../../storage/embedding-job.js';
+import { getExactScanLimit } from '../platform/capabilities.js';
 
 export const VECTOR_STORE_SCHEMA = 'gitnexus-vector-store-v2';
 const BLOCK_ROWS = 256;
@@ -550,6 +551,16 @@ export class VectorStore {
         );
         if (rows[0]?.kind !== 'hnsw' && rows[0]?.kind !== 'exact')
           throw new Error('Invalid vector index receipt');
+        if (rows[0].kind === 'hnsw') {
+          const manager = new ExtensionManager();
+          if (
+            !(await manager.ensure((sql) => this.query(sql), 'vector', 'vector publication', {
+              policy: 'load-only',
+            }))
+          )
+            throw new Error('Cannot verify the published vector index');
+          await this.verifyVectorIndex();
+        }
         return rows[0].kind;
       }
       const manager = new ExtensionManager();
@@ -569,6 +580,17 @@ export class VectorStore {
           if (/already exists/i.test(String(error))) kind = 'hnsw';
         }
       }
+      if (kind === 'hnsw') {
+        try {
+          await this.verifyVectorIndex();
+        } catch {
+          kind = 'exact';
+        }
+      }
+      // Large exact scans are deliberately unavailable to readers. Keep this
+      // complete work unpublished and writable so a later run can retry ANN
+      // without a single new provider request.
+      if (kind === 'exact' && totalChunks > getExactScanLimit()) return kind;
       await this.query(
         "MATCH (a:EmbeddingArtifact {id:'artifact'}) SET a.complete=true, a.indexKind=$kind",
         { kind },
@@ -582,6 +604,20 @@ export class VectorStore {
       this.sealed = true;
       return kind;
     }, !this.sealed);
+  }
+
+  private async verifyVectorIndex(): Promise<void> {
+    const sample = await this.query(
+      'MATCH (e:CodeEmbedding) RETURN e.embedding AS embedding LIMIT 1',
+    );
+    if (sample.length !== 1 || !Array.isArray(sample[0].embedding))
+      throw new Error('Vector index has no probe row');
+    const hits = await this.query(
+      "CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', $vector, 1) YIELD node AS emb, distance RETURN emb.id AS id",
+      { vector: sample[0].embedding as number[] },
+    );
+    if (hits.length !== 1 || typeof hits[0].id !== 'string')
+      throw new Error('Vector index cannot retrieve a stored row');
   }
 
   async close(): Promise<void> {
