@@ -165,9 +165,9 @@ describe('analyzeCommand local-embedding-runtime error handling', () => {
 
   it('prints a local model width mismatch as one config message, without a stack dump', async () => {
     const { LocalEmbeddingDimensionError } = await import('../../src/core/embeddings/config.js');
-    runFullAnalysisMock.mockRejectedValue(
-      new LocalEmbeddingDimensionError('Xenova/bge-base-en-v1.5', 768, 384),
-    );
+    const error = new LocalEmbeddingDimensionError('Xenova/bge-base-en-v1.5', 768, 384);
+    error.stack = 'local-dimension-error-stack-marker';
+    runFullAnalysisMock.mockRejectedValue(error);
 
     await withCapturedLogger(async (cap) => {
       const { analyzeCommand } = await import('../../src/cli/analyze.js');
@@ -176,8 +176,10 @@ describe('analyzeCommand local-embedding-runtime error handling', () => {
       expect(process.exitCode).toBe(1);
 
       const records = cap.records();
-      const dimsRecord = records.find((r) => r.recoveryHint === 'embedding-dims-invalid');
-      expect(dimsRecord?.msg).toContain('Set GITNEXUS_EMBEDDING_DIMS=768');
+      const dimsRecords = records.filter((r) => r.recoveryHint === 'embedding-dims-invalid');
+      expect(dimsRecords).toHaveLength(1);
+      expect(dimsRecords[0]?.msg).toContain('Set GITNEXUS_EMBEDDING_DIMS=768');
+      expect(JSON.stringify(records)).not.toContain(error.stack);
       expect(
         records.some((r) => typeof r.msg === 'string' && r.msg.includes('Analysis failed')),
       ).toBe(false);

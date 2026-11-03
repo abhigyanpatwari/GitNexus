@@ -1,9 +1,12 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resolveEmbeddingConfig } from '../../src/core/embeddings/config.js';
 import { DEFAULT_EMBEDDING_CONFIG } from '../../src/core/embeddings/types.js';
 
 const OLD_ENV = { ...process.env };
-delete OLD_ENV.GITNEXUS_EMBEDDING_MODEL_ID;
+
+beforeEach(() => {
+  delete process.env.GITNEXUS_EMBEDDING_MODEL_ID;
+});
 
 afterEach(() => {
   process.env = { ...OLD_ENV };
