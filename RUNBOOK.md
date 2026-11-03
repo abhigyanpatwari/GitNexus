@@ -97,8 +97,12 @@ Full-retention indexes read original source for classes and long or truncated
 snippets, after skipping unchanged nodes. This preserves indentation, tails
 beyond the FTS snippet cap, and source ranges. The source must match the indexed
 file fingerprint: if embedding sync reports missing or changed source, restore
-the checkout or run `gitnexus analyze` before retrying. Symbol/none retention
-never reads checkout content for embedding; limited retained snippets use
+the checkout or run `gitnexus analyze` before retrying. Older non-git indexes
+did not store file fingerprints. From that checkout, run `gitnexus analyze`
+once, then retry `gitnexus embeddings sync` or the server's embedding job.
+Sync cannot safely reconstruct the old snapshot's fingerprints from current
+files, so it requires reanalysis instead of reading unverified source.
+Symbol/none retention never reads checkout content for embedding; limited retained snippets use
 conservative enclosing ranges. Changed chunk policies and source-aware layouts
 refresh affected vectors once; unchanged short default inputs retain their hashes.
 Recovering source beyond the old snippet cap can increase vector counts and

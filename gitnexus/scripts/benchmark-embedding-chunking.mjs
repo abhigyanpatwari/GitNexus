@@ -36,7 +36,6 @@ const candidate = await load(candidateRoot);
 const embedder = await import(
   pathToFileURL(`${candidateRoot}/gitnexus/dist/core/embeddings/embedder.js`).href
 );
-await embedder.initEmbedder(undefined, { threads: 2, device: 'cpu' }, 'cpu');
 const lines = (n, prefix = '  ') =>
   Array.from({ length: n }, (_, i) => `${prefix}const value${i} = compute(${i});`).join('\n');
 const sources = {
@@ -70,22 +69,8 @@ const nodes = Object.fromEntries(
     },
   ]),
 );
-const fixtureRoot = sourceMode
-  ? await mkdtemp(path.join(tmpdir(), 'gitnexus-chunk-bench-'))
-  : undefined;
+let fixtureRoot;
 const fileHashes = new Map();
-if (fixtureRoot) {
-  for (const node of Object.values(nodes)) {
-    const raw = `\n${node.content}`;
-    await writeFile(path.join(fixtureRoot, node.filePath), raw);
-    fileHashes.set(node.filePath, createHash('sha256').update(raw).digest('hex'));
-    // Match ingestion's capped, normalized snippet; production rehydrates
-    // eligible nodes from the verified original file before chunking.
-    node.content = (
-      node.content.length > 5000 ? `${node.content.slice(0, 5000)}\n... [truncated]` : node.content
-    ).replace(/[\r\n\t]+/g, ' ');
-  }
-}
 const sourceContext = { repoPath: fixtureRoot, fileHashes, contentRetention: 'full' };
 async function prepare(api, original, reader) {
   const node = { ...original };
@@ -198,6 +183,23 @@ const result = {
   samples: {},
 };
 try {
+  if (sourceMode) {
+    fixtureRoot = await mkdtemp(path.join(tmpdir(), 'gitnexus-chunk-bench-'));
+    sourceContext.repoPath = fixtureRoot;
+    for (const node of Object.values(nodes)) {
+      const raw = `\n${node.content}`;
+      await writeFile(path.join(fixtureRoot, node.filePath), raw);
+      fileHashes.set(node.filePath, createHash('sha256').update(raw).digest('hex'));
+      // Match ingestion's capped, normalized snippet; production rehydrates
+      // eligible nodes from the verified original file before chunking.
+      node.content = (
+        node.content.length > 5000
+          ? `${node.content.slice(0, 5000)}\n... [truncated]`
+          : node.content
+      ).replace(/[\r\n\t]+/g, ' ');
+    }
+  }
+  await embedder.initEmbedder(undefined, { threads: 2, device: 'cpu' }, 'cpu');
   for (const cohort of [
     ...Object.keys(nodes),
     ...Object.keys(nodes).map((key) => `hash:${key}`),
@@ -232,6 +234,9 @@ try {
   }
   await writeFile(output, JSON.stringify(result, null, 2));
 } finally {
-  await embedder.disposeEmbedder();
-  if (fixtureRoot) await rm(fixtureRoot, { recursive: true, force: true });
+  try {
+    await embedder.disposeEmbedder();
+  } finally {
+    if (fixtureRoot) await rm(fixtureRoot, { recursive: true, force: true });
+  }
 }
