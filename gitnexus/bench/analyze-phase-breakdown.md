@@ -126,8 +126,15 @@ node bench/lexical-lookup/measure.mjs BASE_RUNTIME CANDIDATE_RUNTIME BASE_CORPUS
 node bench/lexical-lookup/measure.mjs BASE_RUNTIME CANDIDATE_RUNTIME BASE_CORPUS CANDIDATE_CORPUS OUTPUT_PERSISTENT persistent
 ```
 
-The timing harness stops after the first edit pair if the candidate is not
-faster. It waits for native workers to exit normally and removes only its
+By default, the timing harness stops after the first edit pair if the candidate
+is not faster. To establish a baseline, set `GITNEXUS_LEXICAL_BENCH_SCREEN=0`
+to collect all three pairs regardless of their timings. Repeat each lifecycle
+in independent sessions, setting `GITNEXUS_LEXICAL_BENCH_BASE_FIRST=0` in
+alternating sessions to reverse seed and edit ordering. Both settings accept
+only `0` or `1` and are recorded in `results.json`. Report every sample and
+the variation between sessions; a screening result alone is not a baseline.
+
+The harness waits for native workers to exit normally and removes only its
 control source file. Keep builds fixed and do not run tests concurrently.
 The receipt's harness checksums identify the versions used for measurement.
 The checked-in scripts were subsequently formatted, and cleanup now attempts
@@ -149,6 +156,46 @@ CI sets `GITNEXUS_LEXICAL_BENCH_WORKERS=2` and
 results and logs in the `lexical-lookup-performance` artifact. Graph and persisted
 call mismatches fail the job. The existing first-pair speed screen reports and
 stops a non-improving run; it does not make one noisy timing pair a CI failure.
+
+### Repeated baseline, 2026-11-03 (CI corpus)
+
+The [baseline receipt](lexical-lookup/baseline-20261103.json) records three
+independent sessions per lifecycle, each with three paired edits. Every pair
+was retained, including slower candidates. Runtime order was reversed in the
+middle session. The corpus is the sparse CI source tree at
+`4916e0d5e1f4d6d70d41c1f39cd244bca2c7b390`; baseline and candidate runtimes are
+`4916e0d5e1f4d6d70d41c1f39cd244bca2c7b390` and
+`6b487a529e14d59e51a9df9a44524e98705a6b71`. Both use Node 22.23.3,
+LadybugDB 0.22.0, two workers and a 4 GiB heap on the same shared host.
+
+These are medians of the three session medians; cold seeds are excluded:
+
+| Lifecycle | Baseline | PR candidate | Change |
+| --- | ---: | ---: | ---: |
+| Separate processes | 28.494s | 27.552s | 3.31% less time |
+| Repeated processes | 30.276s | 29.814s | 1.53% less time |
+
+The candidate's session medians have coefficients of variation of **5.02%**
+and **17.01%**, respectively. These small aggregate gains are inconclusive on
+this host. The receipt also retains every paired percentage change, graph hash,
+persisted call target and host-load reading. All 18 edit pairs matched 23,641
+source/semantic nodes and 64,292 relationships, and the seeded differential
+check passed 72,000 comparisons per session. Selection and reporting share the
+same corpus; no holdout was used. This does not establish a full-repository or
+watch-mode speedup.
+
+During measurement, the PR advanced to
+`6aeeace8e96603fb062dcc709e834042d5a6df74` by merging a Kotlin grammar update.
+The lookup implementations and lockfile are unchanged, but the newer native
+grammar and revision were not measured in that baseline. This receipt remains
+pinned to the earlier builds.
+
+The subsequent [optimization report](../../docs/optimize/lexical-3805-report.md)
+and [experiment receipt](lexical-lookup/optimization-20261103.json) compare two
+additional candidates against unchanged `6aeeace8` controls. Neither met the
+required repeatable 5% warm-process improvement with at most 3% fresh-process
+regression. The runtime remains unchanged; the retained changes make complete,
+opposite-order baseline collection reproducible.
 
 ---
 

@@ -14,8 +14,14 @@ const [baselineRuntime, candidateRuntime, baseline, candidate, output] = process
 const lifecycle = process.argv[7] ?? 'fresh';
 const workers = Number(process.env.GITNEXUS_LEXICAL_BENCH_WORKERS ?? 16);
 const heapMiB = Number(process.env.GITNEXUS_LEXICAL_BENCH_HEAP_MIB ?? 8192);
+const screenSetting = process.env.GITNEXUS_LEXICAL_BENCH_SCREEN ?? '1';
+const baseFirstSetting = process.env.GITNEXUS_LEXICAL_BENCH_BASE_FIRST ?? '1';
 assert(Number.isSafeInteger(workers) && workers > 0, 'Workers must be a positive integer');
 assert(Number.isSafeInteger(heapMiB) && heapMiB > 0, 'Heap MiB must be a positive integer');
+assert(['0', '1'].includes(screenSetting), 'Screen must be 0 or 1');
+assert(['0', '1'].includes(baseFirstSetting), 'Base first must be 0 or 1');
+const screen = screenSetting === '1';
+const baseFirst = baseFirstSetting === '1';
 assert(['fresh', 'persistent'].includes(lifecycle));
 assert(
   baseline && candidate && output,
@@ -220,6 +226,8 @@ function worker(repo, reuse) {
             lifecycle,
             workers,
             heapMiB,
+            screen,
+            baseFirst,
             baselineRuntime,
             candidateRuntime,
             results,
@@ -251,15 +259,21 @@ if (isWorker) {
       fs.mkdirSync(path.dirname(path.join(repo, control)), { recursive: true });
       fs.writeFileSync(path.join(repo, control), source);
     }
-    const beforeSeed = await beforeWorker.run('baseline-seed');
-    const afterSeed = await afterWorker.run('candidate-seed');
+    let beforeSeed, afterSeed;
+    if (baseFirst) {
+      beforeSeed = await beforeWorker.run('baseline-seed');
+      afterSeed = await afterWorker.run('candidate-seed');
+    } else {
+      afterSeed = await afterWorker.run('candidate-seed');
+      beforeSeed = await beforeWorker.run('baseline-seed');
+    }
     assert.deepEqual(afterSeed.graph, beforeSeed.graph, 'Seed semantic graphs differ');
     for (let pair = 1; pair <= 3; pair++) {
       const text = pair % 2 ? source.replace('s.save()', 's.load()') : source;
       for (const repo of [baseline, candidate]) fs.writeFileSync(path.join(repo, control), text);
       // Alternate ordering to reduce warm-up/load bias. Both indexes see a real edit.
       let before, after;
-      if (pair % 2) {
+      if (Boolean(pair % 2) === baseFirst) {
         before = await beforeWorker.run(`baseline-${pair}`);
         after = await afterWorker.run(`candidate-${pair}`);
       } else {
@@ -276,7 +290,7 @@ if (isWorker) {
         assert.equal(entry.incremental?.changedFiles, 1);
         assert.deepEqual(entry.rebuildReasons, []);
       }
-      if (pair === 1 && after.ms >= before.ms) {
+      if (screen && pair === 1 && after.ms >= before.ms) {
         console.log('SCREEN REJECTED: no end-to-end improvement; stopping after one pair.');
         break;
       }
