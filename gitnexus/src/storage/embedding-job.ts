@@ -6,6 +6,7 @@ import path from 'node:path';
 
 const MAX_RECORD_BYTES = 32 * 1024;
 const RECORD_NAMES = new Set(['manifest.json', 'job.json']);
+const FAILED_RECORD_NAME = /^failed-\d{16}\.json$/;
 
 export async function embeddingJobDirectory(directory: string): Promise<string> {
   const stat = await fs.lstat(directory);
@@ -30,7 +31,8 @@ export async function writeEmbeddingJobRecord(
   name: string,
   payload: unknown,
 ): Promise<void> {
-  if (!RECORD_NAMES.has(name)) throw new Error('Invalid embedding receipt name');
+  if (!RECORD_NAMES.has(name) && !FAILED_RECORD_NAME.test(name))
+    throw new Error('Invalid embedding receipt name');
   const canonical = await embeddingJobDirectory(directory);
   const serialized = JSON.stringify(payload);
   if (serialized === undefined) throw new Error('Embedding receipt payload is not JSON');
@@ -56,7 +58,8 @@ export async function writeEmbeddingJobRecord(
 
 /** Bounded read; malformed or untrusted receipts never become an empty job. */
 export async function readEmbeddingJobRecord(directory: string, name: string): Promise<unknown> {
-  if (!RECORD_NAMES.has(name)) throw new Error('Invalid embedding receipt name');
+  if (!RECORD_NAMES.has(name) && !FAILED_RECORD_NAME.test(name))
+    throw new Error('Invalid embedding receipt name');
   const canonical = await embeddingJobDirectory(directory);
   const target = path.join(canonical, name);
   if (!(await fs.lstat(target)).isFile())

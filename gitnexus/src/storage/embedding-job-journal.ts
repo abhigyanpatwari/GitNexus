@@ -1,0 +1,339 @@
+/** Compact scheduling journal. The caller owns the checkout's exclusive job lock. */
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import type {
+  EmbeddingManifestCursor,
+  EmbeddingManifestReceipt,
+} from '../core/embeddings/embedding-work-manifest.js';
+import {
+  embeddingJobDirectory,
+  readEmbeddingJobRecord,
+  syncEmbeddingJobDirectory,
+  writeEmbeddingJobRecord,
+} from './embedding-job.js';
+
+export interface EmbeddingUnitIntent {
+  start: EmbeddingManifestCursor;
+  next: EmbeddingManifestCursor;
+  nodes: number;
+  origin: 'manifest' | 'failed';
+}
+
+export interface EmbeddingJobState {
+  version: 1;
+  identity: string;
+  manifestDigest: string;
+  totalUnits: number;
+  totalNodes: number;
+  manifestBytes: number;
+  cursor: EmbeddingManifestCursor;
+  completedUnits: number;
+  completedNodes: number;
+  reusedUnits: number;
+  reusedNodes: number;
+  failedUnits: number;
+  failedNodes: number;
+  chunks: number;
+  active: EmbeddingUnitIntent | null;
+  phase: 'embedding' | 'indexing' | 'ready';
+}
+
+export type EmbeddingFailureCause = 'provider' | 'input' | 'cancelled';
+interface FailedUnit {
+  version: 1;
+  identity: string;
+  manifestDigest: string;
+  intent: EmbeddingUnitIntent;
+  cause: EmbeddingFailureCause;
+  attempt: string;
+}
+
+const DIGEST = /^[a-f0-9]{64}$/;
+const FAILED = /^failed-(\d{16})\.json$/;
+const integer = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+const filename = (unit: number): string => `failed-${String(unit).padStart(16, '0')}.json`;
+const clone = <T>(value: T): T => structuredClone(value);
+
+function validateIntent(intent: EmbeddingUnitIntent, state: EmbeddingJobState): void {
+  if (
+    !intent ||
+    !intent.start ||
+    !intent.next ||
+    !integer(intent.start.unit) ||
+    intent.start.unit >= state.totalUnits ||
+    !integer(intent.start.offset) ||
+    !integer(intent.next.offset) ||
+    intent.next.offset <= intent.start.offset ||
+    intent.next.offset > state.manifestBytes ||
+    intent.next.unit !== intent.start.unit + 1 ||
+    !integer(intent.nodes) ||
+    intent.nodes < 1 ||
+    intent.nodes > 64 ||
+    !['manifest', 'failed'].includes(intent.origin)
+  )
+    throw new Error('Invalid embedding unit intent');
+}
+
+function validateState(
+  value: unknown,
+  identity: string,
+  manifest: EmbeddingManifestReceipt,
+): asserts value is EmbeddingJobState {
+  const s = value as EmbeddingJobState;
+  if (
+    !s ||
+    s.version !== 1 ||
+    s.identity !== identity ||
+    s.manifestDigest !== manifest.digest ||
+    s.totalNodes !== manifest.totalNodes ||
+    s.totalUnits !== manifest.totalUnits ||
+    s.manifestBytes !== manifest.bytes ||
+    !s.cursor ||
+    !integer(s.cursor.unit) ||
+    s.cursor.unit > s.totalUnits ||
+    !integer(s.cursor.offset) ||
+    s.cursor.offset > manifest.bytes ||
+    (s.cursor.unit === 0 && s.cursor.offset !== 0) ||
+    (s.cursor.unit === s.totalUnits && s.cursor.offset !== manifest.bytes) ||
+    ![
+      s.completedUnits,
+      s.completedNodes,
+      s.reusedUnits,
+      s.reusedNodes,
+      s.failedUnits,
+      s.failedNodes,
+      s.chunks,
+    ].every(integer) ||
+    s.completedUnits + s.reusedUnits + s.failedUnits > s.totalUnits ||
+    s.completedNodes + s.reusedNodes + s.failedNodes > s.totalNodes ||
+    !['embedding', 'indexing', 'ready'].includes(s.phase) ||
+    s.active === undefined
+  )
+    throw new Error('Embedding job identity or coverage is invalid; artifacts retained');
+  if (s.active) {
+    validateIntent(s.active, s);
+    const active = s.active;
+    if (
+      active.origin === 'manifest'
+        ? active.start.unit !== s.cursor.unit || active.start.offset !== s.cursor.offset
+        : active.next.unit > s.cursor.unit
+    )
+      throw new Error('Embedding job active cursor is inconsistent');
+  }
+  const settled = s.completedUnits + s.reusedUnits + s.failedUnits;
+  if (
+    settled + (s.active?.origin === 'failed' ? 1 : 0) !== s.cursor.unit ||
+    (s.phase !== 'embedding' &&
+      (s.active !== null ||
+        s.failedUnits !== 0 ||
+        settled !== s.totalUnits ||
+        s.completedNodes + s.reusedNodes !== s.totalNodes))
+  )
+    throw new Error('Embedding job accounting is inconsistent');
+}
+
+/** No model, DB, source text, or growing pending-ID list is retained here. */
+export class EmbeddingJobJournal {
+  private busy = false;
+  private uncertain = false;
+  /** Failed units are attempted at most once per invocation, even if readdir sees a replacement. */
+  readonly attempt = randomUUID();
+
+  private constructor(
+    readonly directory: string,
+    private state: EmbeddingJobState,
+    private readonly manifest: EmbeddingManifestReceipt,
+  ) {}
+
+  static async create(
+    directory: string,
+    identity: string,
+    manifest: EmbeddingManifestReceipt,
+  ): Promise<EmbeddingJobJournal> {
+    if (!DIGEST.test(identity) || !DIGEST.test(manifest.digest))
+      throw new Error('Invalid embedding job identity');
+    const canonical = await embeddingJobDirectory(directory);
+    try {
+      await fs.lstat(path.join(canonical, 'job.json'));
+      throw new Error('Embedding job already exists');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    const state: EmbeddingJobState = {
+      version: 1,
+      identity,
+      manifestDigest: manifest.digest,
+      totalUnits: manifest.totalUnits,
+      totalNodes: manifest.totalNodes,
+      manifestBytes: manifest.bytes,
+      cursor: { unit: 0, offset: 0 },
+      completedUnits: 0,
+      completedNodes: 0,
+      reusedUnits: 0,
+      reusedNodes: 0,
+      failedUnits: 0,
+      failedNodes: 0,
+      chunks: 0,
+      active: null,
+      phase: 'embedding',
+    };
+    validateState(state, identity, manifest);
+    await writeEmbeddingJobRecord(canonical, 'job.json', state);
+    return new EmbeddingJobJournal(canonical, state, clone(manifest));
+  }
+
+  static async open(
+    directory: string,
+    identity: string,
+    manifest: EmbeddingManifestReceipt,
+  ): Promise<EmbeddingJobJournal> {
+    if (!DIGEST.test(identity)) throw new Error('Invalid embedding job identity');
+    const canonical = await embeddingJobDirectory(directory);
+    const state = await readEmbeddingJobRecord(canonical, 'job.json');
+    validateState(state, identity, manifest);
+    return new EmbeddingJobJournal(canonical, state, clone(manifest));
+  }
+
+  snapshot(): EmbeddingJobState {
+    return clone(this.state);
+  }
+
+  private async mutate(action: (next: EmbeddingJobState) => Promise<void>): Promise<void> {
+    if (this.busy) throw new Error('Concurrent embedding journal mutation');
+    if (this.uncertain)
+      throw new Error('Embedding journal durability uncertain; reopen before retry');
+    this.busy = true;
+    try {
+      const next = clone(this.state);
+      await action(next);
+      validateState(next, next.identity, this.manifest);
+      await writeEmbeddingJobRecord(this.directory, 'job.json', next);
+      this.state = next;
+    } catch (error) {
+      // Even a failed fsync can follow a successful rename. Never keep writing
+      // using an in-memory cursor that may differ from the durable one.
+      this.uncertain = true;
+      throw error;
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  async begin(intent: EmbeddingUnitIntent): Promise<void> {
+    const requested = clone(intent);
+    await this.mutate(async (next) => {
+      if (next.active || next.phase !== 'embedding')
+        throw new Error('Embedding job already active or complete');
+      validateIntent(requested, next);
+      if (requested.origin === 'failed') {
+        const record = await this.readFailed(filename(requested.start.unit));
+        if (
+          record.intent.start.unit !== requested.start.unit ||
+          record.intent.start.offset !== requested.start.offset ||
+          record.intent.next.unit !== requested.next.unit ||
+          record.intent.next.offset !== requested.next.offset ||
+          record.intent.nodes !== requested.nodes
+        )
+          throw new Error('Failed embedding unit cursor mismatch');
+        next.failedUnits--;
+        next.failedNodes -= requested.nodes;
+      }
+      next.active = requested;
+    });
+  }
+
+  /** Call only after the vector store has verified and checkpointed this unit. */
+  async acknowledge(result: { reusedNodes: number; chunks: number }): Promise<void> {
+    await this.mutate(async (next) => {
+      const active = next.active;
+      if (
+        !active ||
+        !integer(result.reusedNodes) ||
+        result.reusedNodes > active.nodes ||
+        !integer(result.chunks)
+      )
+        throw new Error('Invalid embedding unit acknowledgement');
+      // If the process dies after unlink, the still-active intent owns replay.
+      await fs.rm(path.join(this.directory, filename(active.start.unit)), { force: true });
+      await syncEmbeddingJobDirectory(this.directory);
+      if (result.reusedNodes === active.nodes) next.reusedUnits++;
+      else next.completedUnits++;
+      next.reusedNodes += result.reusedNodes;
+      next.completedNodes += active.nodes - result.reusedNodes;
+      next.chunks += result.chunks;
+      if (active.origin === 'manifest') next.cursor = active.next;
+      next.active = null;
+    });
+  }
+
+  /** Input/provider failures stay durable; storage/durability failures must abort. */
+  async fail(cause: EmbeddingFailureCause): Promise<void> {
+    await this.mutate(async (next) => {
+      const active = next.active;
+      if (!active || !['provider', 'input', 'cancelled'].includes(cause))
+        throw new Error('Invalid embedding failure');
+      const record: FailedUnit = {
+        version: 1,
+        identity: next.identity,
+        manifestDigest: next.manifestDigest,
+        intent: { ...active, origin: 'failed' },
+        cause,
+        attempt: this.attempt,
+      };
+      await writeEmbeddingJobRecord(this.directory, filename(active.start.unit), record);
+      next.failedUnits++;
+      next.failedNodes += active.nodes;
+      if (active.origin === 'manifest') next.cursor = active.next;
+      next.active = null;
+    });
+  }
+
+  private async readFailed(name: string): Promise<FailedUnit> {
+    const record = (await readEmbeddingJobRecord(this.directory, name)) as FailedUnit;
+    if (
+      !record ||
+      record.version !== 1 ||
+      record.identity !== this.state.identity ||
+      record.manifestDigest !== this.state.manifestDigest ||
+      !['provider', 'input', 'cancelled'].includes(record.cause) ||
+      typeof record.attempt !== 'string'
+    )
+      throw new Error('Invalid failed embedding unit');
+    validateIntent(record.intent, this.state);
+    if (record.intent.origin !== 'failed' || name !== filename(record.intent.start.unit))
+      throw new Error('Failed embedding unit identity mismatch');
+    return record;
+  }
+
+  async *failed(): AsyncGenerator<EmbeddingUnitIntent> {
+    const directory = await fs.opendir(this.directory);
+    for await (const entry of directory) {
+      if (!FAILED.test(entry.name)) continue;
+      const record = await this.readFailed(entry.name);
+      if (
+        record.attempt === this.attempt ||
+        record.intent.start.unit === this.state.active?.start.unit
+      )
+        continue;
+      if (record.intent.next.unit > this.state.cursor.unit)
+        throw new Error('Orphan failed unit has no active intent');
+      yield clone(record.intent);
+    }
+  }
+
+  async indexing(): Promise<void> {
+    await this.mutate(async (next) => {
+      next.phase = 'indexing';
+    });
+  }
+
+  /** The completed vector artifact must be closed and published before this call. */
+  async ready(): Promise<void> {
+    await this.mutate(async (next) => {
+      if (next.phase !== 'indexing') throw new Error('Embedding index has not been finalized');
+      next.phase = 'ready';
+    });
+  }
+}

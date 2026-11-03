@@ -23,3 +23,20 @@ These measurements establish native feasibility. They do not establish
 end-to-end analyze throughput, crash recovery, model throughput, or total RSS
 bounds. Run the application regression matrix before making those claims.
 Windows handle behavior and local-model execution also need their own runs.
+
+Measure the implemented vector store and journal after building:
+
+```sh
+npm run build
+node bench/analyze-resume/vector-store.mjs --check
+```
+
+This alternates five baseline and candidate runs over 512 nodes and 256-dimensional
+vectors. The baseline uses the existing prepared DELETE/CREATE write sequence.
+The candidate includes node receipts, complete chunk-set validation, a native
+checkpoint per 64-node unit, and fsynced intent/acknowledgement journal updates.
+Schema creation and final index construction are outside the timed region for
+both paths. This isolates write overhead; it does not measure inference or graph
+ingestion. `--check` rejects a candidate median above the baseline median.
+The initial Linux/Node 22 run in `vector-store-baseline.json` measured a 0.470
+candidate/baseline median ratio, including the durability journal.

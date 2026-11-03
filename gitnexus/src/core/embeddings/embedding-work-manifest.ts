@@ -160,15 +160,19 @@ async function verifyUniqueKeys(files: string[]): Promise<void> {
     let previous: string | undefined;
     for (;;) {
       let selected = -1;
+      let selectedHead: { id: string; bytes: Buffer } | undefined;
       for (let i = 0; i < heads.length; i++) {
+        const candidate = heads[i];
         if (
-          heads[i] &&
-          (selected < 0 || Buffer.compare(heads[i]!.bytes, heads[selected]!.bytes) < 0)
-        )
+          candidate &&
+          (!selectedHead || Buffer.compare(candidate.bytes, selectedHead.bytes) < 0)
+        ) {
           selected = i;
+          selectedHead = candidate;
+        }
       }
-      if (selected < 0) break;
-      const id = heads[selected]!.id;
+      if (!selectedHead) break;
+      const id = selectedHead.id;
       if (id === previous)
         throw new Error(
           'Embedding read: duplicate graph node identity; rebuild with analyze --force',

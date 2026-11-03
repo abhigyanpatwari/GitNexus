@@ -1,6 +1,9 @@
 import { defineConfig } from 'vitest/config';
 import PerfSequencer from './test/helpers/perf-sequencer.js';
 
+// Keep native tests in exactly one project (TESTING.md).
+const EMBEDDING_VECTOR_STORE_TEST = 'test/integration/embedding-vector-store.test.ts';
+
 export default defineConfig({
   test: {
     // Shared settings — inherited by all projects via extends: true
@@ -78,6 +81,7 @@ export default defineConfig({
         test: {
           name: 'lbug-db',
           include: [
+            EMBEDDING_VECTOR_STORE_TEST,
             'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',
             'test/integration/class-expression-owners.test.ts',
@@ -196,6 +200,7 @@ export default defineConfig({
           sequence: { groupOrder: 3 },
           include: ['test/**/*.test.ts'],
           exclude: [
+            EMBEDDING_VECTOR_STORE_TEST,
             'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',
             'test/integration/class-expression-owners.test.ts',

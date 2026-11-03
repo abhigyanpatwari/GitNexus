@@ -1,0 +1,60 @@
+{
+  "node": "v22.23.3",
+  "platform": "linux",
+  "nodes": 512,
+  "dimensions": 256,
+  "unitNodes": 64,
+  "samples": [
+    {
+      "trial": 0,
+      "mode": "baseline",
+      "ms": 3712.8183809999996
+    },
+    {
+      "trial": 0,
+      "mode": "durable",
+      "ms": 1684.6306610000001
+    },
+    {
+      "trial": 1,
+      "mode": "durable",
+      "ms": 1745.7803060000006
+    },
+    {
+      "trial": 1,
+      "mode": "baseline",
+      "ms": 3620.8808309999995
+    },
+    {
+      "trial": 2,
+      "mode": "baseline",
+      "ms": 3750.5283279999985
+    },
+    {
+      "trial": 2,
+      "mode": "durable",
+      "ms": 1692.780707
+    },
+    {
+      "trial": 3,
+      "mode": "durable",
+      "ms": 2035.2204090000014
+    },
+    {
+      "trial": 3,
+      "mode": "baseline",
+      "ms": 3115.5813979999984
+    },
+    {
+      "trial": 4,
+      "mode": "baseline",
+      "ms": 3907.7676600000013
+    },
+    {
+      "trial": 4,
+      "mode": "durable",
+      "ms": 1761.2801880000006
+    }
+  ],
+  "ratio": 0.4702035291933125
+}

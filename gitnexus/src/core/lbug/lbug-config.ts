@@ -847,6 +847,9 @@ type LbugModule = typeof lbug;
 export interface LbugDatabaseOptions {
   readOnly?: boolean;
   throwOnWalReplayFailure?: boolean;
+  /** Explicit per-handle reservation; omitted preserves the existing policy. */
+  bufferPoolBytes?: number;
+  threads?: number;
 }
 
 export interface LbugConnectionHandle {
@@ -946,10 +949,15 @@ export function createLbugDatabase(
   databasePath: string,
   options: LbugDatabaseOptions = {},
 ): lbug.Database {
+  if (
+    options.bufferPoolBytes !== undefined &&
+    (!Number.isSafeInteger(options.bufferPoolBytes) || options.bufferPoolBytes <= 0)
+  )
+    throw new Error('Explicit LadybugDB buffer pool must be a positive byte count');
   // .d.ts declares fewer args than the native constructor accepts.
   return new (lbugModule.Database as any)(
     databasePath,
-    resolveBufferManagerSize(), // bufferManagerSize (#2557: default min(2 GiB, 80% RAM); GITNEXUS_LBUG_BUFFER_POOL_SIZE overrides; 0 restores the native 80%-of-RAM default)
+    options.bufferPoolBytes ?? resolveBufferManagerSize(), // Existing callers retain the environment/default policy.
     false, // enableCompression (pinned for v0.16.0)
     options.readOnly ?? false,
     LBUG_MAX_DB_SIZE,
@@ -1145,11 +1153,20 @@ export async function openLbugConnection(
   databasePath: string,
   options: LbugDatabaseOptions = {},
 ): Promise<LbugConnectionHandle> {
+  if (
+    options.threads !== undefined &&
+    (!Number.isSafeInteger(options.threads) || options.threads < 1)
+  )
+    throw new Error('LadybugDB threads must be a positive integer');
   const safePath = toNativeSafePath(databasePath);
   let db: lbug.Database | undefined;
   try {
     db = await openWithLockRetry(() => createLbugDatabase(lbugModule, safePath, options), safePath);
-    return { db, conn: new lbugModule.Connection(db) };
+    const conn =
+      options.threads === undefined
+        ? new lbugModule.Connection(db)
+        : new lbugModule.Connection(db, options.threads);
+    return { db, conn };
   } catch (err) {
     if (db) await db.close().catch(() => {});
     throw err;
