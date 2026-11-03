@@ -200,6 +200,64 @@ export class EmbeddingJobJournal {
     return clone(this.state);
   }
 
+  /** Recovery requires an independently verified manifest and vector identity.
+   * Preserve damaged receipts; the runner reconstructs coverage only from native
+   * complete groups. A valid receipt for another identity is never discarded.
+   * This also resumes an interruption between preserving and replacing job.json.
+   */
+  static async recover(
+    directory: string,
+    identity: string,
+    manifest: EmbeddingManifestReceipt,
+  ): Promise<EmbeddingJobJournal> {
+    const canonical = await embeddingJobDirectory(directory);
+    let value: unknown;
+    try {
+      value = await readEmbeddingJobRecord(canonical, 'job.json');
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code && code !== 'ENOENT' && code !== 'ERR_ENCODING_INVALID_ENCODED_DATA') throw error;
+      if (
+        !code &&
+        !(error instanceof SyntaxError) &&
+        !/checksum|Malformed|Invalid|UTF-8|receipt exceeds/i.test(String(error))
+      )
+        throw error;
+    }
+    if (value && typeof value === 'object') {
+      const state = value as Partial<EmbeddingJobState>;
+      if (
+        (state.version !== undefined && state.version !== 1) ||
+        (state.identity && state.identity !== identity) ||
+        (state.manifestDigest && state.manifestDigest !== manifest.digest)
+      )
+        throw new Error('Embedding job identity mismatch; recovery refused');
+      try {
+        validateState(value, identity, manifest);
+        return new EmbeddingJobJournal(canonical, value, clone(manifest));
+      } catch {
+        /* Matching identity but damaged accounting requires reconstruction. */
+      }
+    }
+    const suffix = `.preserved-${randomUUID()}`;
+    try {
+      await fs.rename(path.join(canonical, 'job.json'), path.join(canonical, `job.json${suffix}`));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    await syncEmbeddingJobDirectory(canonical);
+    const entries = await fs.opendir(canonical);
+    for await (const entry of entries) {
+      if (FAILED.test(entry.name))
+        await fs.rename(
+          path.join(canonical, entry.name),
+          path.join(canonical, entry.name + suffix),
+        );
+    }
+    await syncEmbeddingJobDirectory(canonical);
+    return this.create(canonical, identity, manifest);
+  }
+
   private async mutate(action: (next: EmbeddingJobState) => Promise<void>): Promise<void> {
     if (this.busy) throw new Error('Concurrent embedding journal mutation');
     if (this.uncertain)

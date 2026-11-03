@@ -7,7 +7,7 @@ import { ExtensionManager } from './extension-loader.js';
 import { assertValidGraphNodeId } from '../graph/node-identity.js';
 import { embeddingJobDirectory } from '../../storage/embedding-job.js';
 
-export const VECTOR_STORE_SCHEMA = 'gitnexus-vector-store-v1';
+export const VECTOR_STORE_SCHEMA = 'gitnexus-vector-store-v2';
 const BLOCK_ROWS = 256;
 const MAX_CHUNKS = 2147483647;
 
@@ -22,10 +22,14 @@ export interface VectorNodeReceipt {
   contentHash: string;
   chunks: number;
   complete: boolean;
+  sourceStartLine?: number;
+  sourceEndLine?: number;
 }
 export interface VectorNodeInput {
   nodeId: string;
   contentHash: string;
+  sourceStartLine?: number;
+  sourceEndLine?: number;
 }
 export type VectorWriteChunk = StoredVectorChunk & VectorNodeInput;
 export interface VectorStoreOptions {
@@ -105,7 +109,7 @@ export class VectorStore {
           `CREATE NODE TABLE CodeEmbedding (id STRING, nodeId STRING, chunkIndex INT32, startLine INT64, endLine INT64, embedding FLOAT[${options.dimensions}], contentHash STRING, PRIMARY KEY(id))`,
         );
         await store.query(
-          'CREATE NODE TABLE EmbeddingNodeReceipt (nodeId STRING, contentHash STRING, chunks INT64, complete BOOL, PRIMARY KEY(nodeId))',
+          'CREATE NODE TABLE EmbeddingNodeReceipt (nodeId STRING, contentHash STRING, chunks INT64, complete BOOL, sourceStartLine INT64, sourceEndLine INT64, PRIMARY KEY(nodeId))',
         );
         await store.query(
           'CREATE NODE TABLE EmbeddingArtifact (id STRING, identity STRING, schema STRING, dimensions INT64, complete BOOL, indexKind STRING, PRIMARY KEY(id))',
@@ -200,7 +204,7 @@ export class VectorStore {
   private async receipts(ids: readonly string[]): Promise<Map<string, VectorNodeReceipt>> {
     const wanted = new Set(ids);
     const rows = await this.query(
-      'UNWIND $ids AS id MATCH (n:EmbeddingNodeReceipt {nodeId:id}) RETURN n.nodeId AS nodeId, n.contentHash AS contentHash, n.chunks AS chunks, n.complete AS complete',
+      'UNWIND $ids AS id MATCH (n:EmbeddingNodeReceipt {nodeId:id}) RETURN n.nodeId AS nodeId, n.contentHash AS contentHash, n.chunks AS chunks, n.complete AS complete, n.sourceStartLine AS sourceStartLine, n.sourceEndLine AS sourceEndLine',
       { ids: [...ids] },
     );
     const receipts = new Map<string, VectorNodeReceipt>();
@@ -221,6 +225,8 @@ export class VectorStore {
         contentHash: row.contentHash,
         chunks,
         complete: row.complete,
+        sourceStartLine: count(row.sourceStartLine),
+        sourceEndLine: count(row.sourceEndLine),
       });
     }
     return receipts;
@@ -240,7 +246,14 @@ export class VectorStore {
       throw new Error('Invalid vector node unit');
     for (const node of nodes) {
       assertValidGraphNodeId(node.nodeId, 'Vector store');
-      if (!node.contentHash) throw new Error('Missing embedding input hash');
+      if (typeof node.contentHash !== 'string' || !node.contentHash)
+        throw new Error('Missing embedding input hash');
+      if (
+        !nonnegative(node.sourceStartLine ?? 0) ||
+        !nonnegative(node.sourceEndLine ?? 0) ||
+        (node.sourceEndLine ?? 0) < (node.sourceStartLine ?? 0)
+      )
+        throw new Error('Invalid embedding source lines');
     }
     await this.exclusive(async () => {
       const previous = await this.receipts(nodes.map((n) => n.nodeId));
@@ -267,16 +280,16 @@ export class VectorStore {
         await remove();
       }
       await this.transaction(async () => {
-        for (const { nodeId, contentHash } of nodes) {
+        for (const { nodeId, contentHash, sourceStartLine = 0, sourceEndLine = 0 } of nodes) {
           if (previous.has(nodeId))
             await this.query(
-              'MATCH (n:EmbeddingNodeReceipt {nodeId:$nodeId}) SET n.contentHash=$contentHash, n.chunks=0',
-              { nodeId, contentHash },
+              'MATCH (n:EmbeddingNodeReceipt {nodeId:$nodeId}) SET n.contentHash=$contentHash, n.chunks=0, n.sourceStartLine=$sourceStartLine, n.sourceEndLine=$sourceEndLine',
+              { nodeId, contentHash, sourceStartLine, sourceEndLine },
             );
           else
             await this.query(
-              'CREATE (:EmbeddingNodeReceipt {nodeId:$nodeId, contentHash:$contentHash, chunks:0, complete:false})',
-              { nodeId, contentHash },
+              'CREATE (:EmbeddingNodeReceipt {nodeId:$nodeId, contentHash:$contentHash, chunks:0, complete:false, sourceStartLine:$sourceStartLine, sourceEndLine:$sourceEndLine})',
+              { nodeId, contentHash, sourceStartLine, sourceEndLine },
             );
         }
       });
@@ -395,6 +408,7 @@ export class VectorStore {
       throw new Error('Invalid vector completion unit');
     return this.exclusive(async () => {
       const receipts = await this.receipts(nodes.map((n) => n.nodeId));
+      const verified: VectorNodeReceipt[] = [];
       for (const node of nodes) {
         const receipt = receipts.get(node.nodeId);
         if (
@@ -405,12 +419,13 @@ export class VectorStore {
         )
           throw new Error('Vector node coverage does not match its generated chunks');
         await this.verify(receipt);
+        verified.push(receipt);
       }
       await this.query(
         'UNWIND $ids AS id MATCH (n:EmbeddingNodeReceipt {nodeId:id}) SET n.complete=true',
         { ids: nodes.map((n) => n.nodeId) },
       );
-      return nodes.map((node) => ({ ...node, complete: true }));
+      return verified.map((receipt) => ({ ...receipt, complete: true }));
     }, true);
   }
 
@@ -421,6 +436,63 @@ export class VectorStore {
         return null;
       await this.verify(receipt);
       return receipt;
+    });
+  }
+
+  /** Same immutable job identity: completed groups need no source/model work. */
+  async completedNodes(ids: readonly string[]): Promise<Map<string, VectorNodeReceipt>> {
+    if (ids.length > 64 || new Set(ids).size !== ids.length)
+      throw new Error('Invalid vector receipt unit');
+    return this.exclusive(async () => {
+      const receipts = await this.receipts(ids);
+      for (const [id, receipt] of receipts) {
+        if (!receipt.complete || receipt.chunks < 1) receipts.delete(id);
+        else await this.verify(receipt);
+      }
+      return receipts;
+    });
+  }
+
+  /** Bounded copy from a compatible complete artifact; never materializes a node's vectors. */
+  async readChunks(
+    receipt: VectorNodeReceipt,
+    start: number,
+    length: number,
+  ): Promise<StoredVectorChunk[]> {
+    if (
+      !nonnegative(start) ||
+      !nonnegative(length) ||
+      !length ||
+      length > BLOCK_ROWS ||
+      start + length > receipt.chunks ||
+      length * (this.options.dimensions * 16 + 128) > this.options.batchBytes
+    )
+      throw new Error('Invalid vector read batch');
+    return this.exclusive(async () => {
+      const rows = await this.query(
+        'UNWIND $ids AS id MATCH (e:CodeEmbedding {id:id}) RETURN e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding, e.contentHash AS contentHash',
+        { ids: Array.from({ length }, (_, i) => `${receipt.nodeId}:${start + i}`) },
+      );
+      if (rows.length !== length) throw new Error('Incomplete vector copy');
+      const chunks = rows
+        .map((row) => {
+          if (
+            row.contentHash !== receipt.contentHash ||
+            !Array.isArray(row.embedding) ||
+            row.embedding.length !== this.options.dimensions
+          )
+            throw new Error('Invalid vector copy');
+          return {
+            chunkIndex: count(row.chunkIndex),
+            startLine: count(row.startLine),
+            endLine: count(row.endLine),
+            embedding: row.embedding as number[],
+          };
+        })
+        .sort((a, b) => a.chunkIndex - b.chunkIndex);
+      if (chunks.some((chunk, i) => chunk.chunkIndex !== start + i))
+        throw new Error('Invalid vector copy sequence');
+      return chunks;
     });
   }
 
@@ -444,13 +516,16 @@ export class VectorStore {
         )
           throw new Error('Cannot acknowledge incomplete vector unit');
       }
+      // An already sealed artifact has a durable final checkpoint. Recovery may
+      // rebuild a damaged filesystem cursor using its verified complete groups.
+      if (this.sealed) return;
       try {
         await this.query('CHECKPOINT');
       } catch (error) {
         this.poisoned = true;
         throw error;
       }
-    }, true);
+    }, !this.sealed);
   }
 
   /** Runs only once all manifest and failed units have complete coverage. */
@@ -469,6 +544,14 @@ export class VectorStore {
         count(vectors[0].chunks) !== totalChunks
       )
         throw new Error('Vector artifact coverage is incomplete');
+      if (this.sealed) {
+        const rows = await this.query(
+          "MATCH (a:EmbeddingArtifact {id:'artifact'}) RETURN a.indexKind AS kind",
+        );
+        if (rows[0]?.kind !== 'hnsw' && rows[0]?.kind !== 'exact')
+          throw new Error('Invalid vector index receipt');
+        return rows[0].kind;
+      }
       const manager = new ExtensionManager();
       let kind: 'hnsw' | 'exact' = 'exact';
       if (
@@ -498,7 +581,7 @@ export class VectorStore {
       }
       this.sealed = true;
       return kind;
-    }, true);
+    }, !this.sealed);
   }
 
   async close(): Promise<void> {

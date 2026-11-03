@@ -40,3 +40,17 @@ both paths. This isolates write overhead; it does not measure inference or graph
 ingestion. `--check` rejects a candidate median above the baseline median.
 The initial Linux/Node 22 run in `vector-store-baseline.json` measured a 0.470
 candidate/baseline median ratio, including the durability journal.
+
+Compare text preparation and streaming chunks with an unchanged built checkout:
+
+```sh
+node --expose-gc bench/analyze-resume/text-streaming.mjs /path/to/baseline/gitnexus/dist
+```
+
+The probe warms both implementations, alternates seven measured pairs, and checks
+identical content hashes and every chunk's text, offsets, and line spans. The
+baseline checkout for `text-streaming-baseline.json` was commit
+`f641342d1fcbfdcb764c5e478db0f69e6cea899a`. Candidate/baseline median ratios were
+0.957 for ordinary snippets, 0.948 for many short lines, 0.917 for an oversized
+short-label node, 0.919 for a large declaration, and 0.595 for character chunks.
+These are preparation costs, not end-to-end inference or analysis measurements.

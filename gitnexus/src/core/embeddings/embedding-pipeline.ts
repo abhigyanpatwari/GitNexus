@@ -181,7 +181,7 @@ export const contentHashForNode = (
   return hash.digest('hex');
 };
 
-const isInputRejection = (error: unknown): boolean =>
+export const isInputRejection = (error: unknown): boolean =>
   error instanceof HttpEmbeddingError &&
   (error.status === 400 || error.status === 413 || error.status === 422);
 
@@ -193,14 +193,15 @@ type EmbeddedRange = { start: number; end: number } & (
 /** Bisect only input rejections, with at most 2n-1 requests per sub-batch.
  * Authentication, throttling, transport and cancellation retain their existing
  * bounded retry/failure policy instead of multiplying requests. */
-async function* embedInputRanges(
+export async function* embedInputRanges(
   texts: string[],
   subBatchSize: number,
   signal?: AbortSignal,
+  provider: typeof embedBatch = embedBatch,
 ): AsyncGenerator<EmbeddedRange> {
   async function* request(start: number, end: number): AsyncGenerator<EmbeddedRange> {
     try {
-      const embeddings = await embedBatch(texts.slice(start, end), { signal });
+      const embeddings = await provider(texts.slice(start, end), { signal });
       yield { start, end, embeddings };
     } catch (error) {
       if (signal?.aborted || isCancellationError(error)) throw error;
