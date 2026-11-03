@@ -82,6 +82,12 @@ closing, and default query behavior. It needs yielding/error/cleanup tests,
 larger-table memory and responsiveness checks, then three matched fresh/warm
 sessions and the full suite. No new dependency is needed.
 
+Subsequent [memory-scaling tests](identity-memory-scaling-20261103.md) found that
+the cooperative prepared path exhausts the native pool on its ninth repeated
+million-node read without forced GC. A separate direct-query probe passed 40
+reads and its natural-GC size sweep, but showed higher peak RSS than the original
+reader. The prepared-path proposal above is therefore superseded by that evidence.
+
 Fresh graph impact for the shared `readQueryRows` helper is **CRITICAL**:
 27 affected symbols, six direct callers and six processes, including query
 handling, embedding reads, statistics, and analysis. This expands the approved
