@@ -1,0 +1,207 @@
+/** Pure admission policy. Reservations are not an OS-enforced RSS limit. */
+const MIB = 1024 * 1024;
+const GRAPH_POOL_MB = 256;
+const VECTOR_POOL_MB = 64;
+const MIN_MAIN_HEAP_MB = 384;
+const MIN_WORKER_HEAP_MB = 512;
+const WORKER_NATIVE_MB = 128;
+
+export interface AnalysisResourceRequest {
+  /** Effective process/container RAM, before reserving host headroom. */
+  effectiveMemoryBytes: number;
+  availableCpus: number;
+  /** Explicit total reservation ceiling; independent of the heap-only flag. */
+  totalMb?: number;
+  mainHeapMb?: number;
+  workers?: number;
+  workerHeapMb?: number;
+  /** Existing automatic worker policy; explicit workers still wins. */
+  preferredWorkers?: number;
+  /** Resume/sync can admit embeddings without reserving parser workers. */
+  includeParsing?: boolean;
+  graphPoolBytes?: number;
+  /** Estimated peak model/sidecar allocation; zero for an HTTP provider. */
+  modelMemoryMb: number;
+}
+
+export interface AnalysisResourceBudget {
+  readonly totalBytes: number;
+  readonly automatic: boolean;
+  readonly headroomBytes: number;
+  readonly mainHeapMb: number;
+  readonly parse: {
+    readonly workers: number;
+    readonly workerHeapMb: number;
+    readonly workerNativeBytes: number;
+    readonly graphPoolBytes: number;
+    readonly reservedBytes: number;
+  };
+  readonly embedding: {
+    readonly graphPoolBytes: number;
+    readonly vectorPoolBytes: number;
+    readonly modelBytes: number;
+    /** Combined source, expanded text, encoded request, vectors and prefetch. */
+    readonly queueBytes: number;
+    readonly nativeThreads: number;
+    readonly reservedBytes: number;
+  };
+}
+
+function integer(value: number, label: string, minimum = 1): number {
+  if (!Number.isSafeInteger(value) || value < minimum) {
+    throw new Error(`${label} must be a safe integer of at least ${minimum}`);
+  }
+  return value;
+}
+
+function bytes(mb: number, label: string): number {
+  return integer(integer(mb, label, 0) * MIB, `${label} in bytes`, 0);
+}
+
+/** Resolve before opening a writable database or starting parser/model work. */
+export function resolveAnalysisResourceBudget(
+  request: AnalysisResourceRequest,
+): AnalysisResourceBudget {
+  const memory = integer(request.effectiveMemoryBytes, 'effectiveMemoryBytes');
+  const cpus = integer(request.availableCpus, 'availableCpus');
+  const availableMb = Math.floor(memory / MIB);
+  const totalMb =
+    request.totalMb === undefined
+      ? Math.floor(availableMb * 0.75)
+      : integer(request.totalMb, 'resource budget');
+  if (totalMb > availableMb) {
+    throw new Error(
+      `Resource budget ${totalMb} MiB exceeds effective process memory ${availableMb} MiB`,
+    );
+  }
+  const totalBytes = bytes(totalMb, 'resource budget');
+  const headroomMb = Math.max(128, Math.ceil(totalMb * 0.12));
+  const graphPoolBytes =
+    request.graphPoolBytes === undefined
+      ? bytes(Math.max(GRAPH_POOL_MB, Math.min(4096, Math.floor(totalMb * 0.15))), 'graph pool')
+      : integer(request.graphPoolBytes, 'graph pool bytes');
+  // Zero is the native engine's unbounded override, never a bounded allocation.
+  const graphPoolMb = Math.ceil(graphPoolBytes / MIB);
+  const modelMb = integer(request.modelMemoryMb, 'model reservation', 0);
+  const queueMb = Math.max(16, Math.min(128, Math.floor(totalMb / 32)));
+  const embeddingFixedMb = headroomMb + graphPoolMb + VECTOR_POOL_MB + modelMb + queueMb;
+  const includeParsing = request.includeParsing !== false;
+  const parseFixedMb =
+    headroomMb + graphPoolMb + (includeParsing ? MIN_WORKER_HEAP_MB + WORKER_NATIVE_MB : 0);
+  const maximumMainMb = totalMb - Math.max(embeddingFixedMb, parseFixedMb);
+  const mainHeapMb =
+    request.mainHeapMb === undefined
+      ? Math.min(16_384, maximumMainMb, Math.max(MIN_MAIN_HEAP_MB, Math.floor(totalMb * 0.35)))
+      : integer(request.mainHeapMb, 'main heap reservation');
+  if (mainHeapMb < MIN_MAIN_HEAP_MB || mainHeapMb > maximumMainMb) {
+    const minimum =
+      Math.max(MIN_MAIN_HEAP_MB, request.mainHeapMb ?? 0) +
+      Math.max(embeddingFixedMb, parseFixedMb);
+    throw new Error(
+      `Resource budget ${totalMb} MiB cannot admit parser/model work; requires at least ${minimum} MiB for these allocations`,
+    );
+  }
+
+  const cpuWorkers = Math.max(1, cpus - 1);
+  const desiredWorkers =
+    request.workers === undefined
+      ? Math.min(integer(request.preferredWorkers ?? 4, 'preferred workers'), cpuWorkers)
+      : integer(request.workers, 'parser workers');
+  if (includeParsing && desiredWorkers > cpuWorkers) {
+    throw new Error(
+      `Requested ${desiredWorkers} parser workers exceeds the ${cpuWorkers}-worker CPU allowance`,
+    );
+  }
+  const workerBudgetMb = totalMb - headroomMb - graphPoolMb - mainHeapMb;
+  const explicitWorkerHeapMb =
+    request.workerHeapMb === undefined
+      ? undefined
+      : integer(request.workerHeapMb, 'worker heap reservation');
+  if (
+    includeParsing &&
+    explicitWorkerHeapMb !== undefined &&
+    explicitWorkerHeapMb < MIN_WORKER_HEAP_MB
+  ) {
+    throw new Error(`Worker heap reservation must be at least ${MIN_WORKER_HEAP_MB} MiB`);
+  }
+  const workers = !includeParsing
+    ? 0
+    : request.workers === undefined
+      ? Math.min(
+          desiredWorkers,
+          Math.floor(
+            workerBudgetMb / ((explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) + WORKER_NATIVE_MB),
+          ),
+        )
+      : desiredWorkers;
+  const workerHeapMb = !includeParsing
+    ? 0
+    : (explicitWorkerHeapMb ??
+      Math.min(4096, Math.floor(workerBudgetMb / Math.max(1, workers)) - WORKER_NATIVE_MB));
+  const parseReservedMb =
+    headroomMb + graphPoolMb + mainHeapMb + workers * (workerHeapMb + WORKER_NATIVE_MB);
+  if (
+    (includeParsing && (workers < 1 || workerHeapMb < MIN_WORKER_HEAP_MB)) ||
+    parseReservedMb > totalMb
+  ) {
+    throw new Error(
+      `Parser workers do not fit resource budget ${totalMb} MiB; reduce workers or explicit heap reservations`,
+    );
+  }
+  const embeddingReservedMb = mainHeapMb + embeddingFixedMb;
+  return Object.freeze({
+    totalBytes,
+    automatic: request.totalMb === undefined,
+    headroomBytes: bytes(headroomMb, 'headroom'),
+    mainHeapMb,
+    parse: Object.freeze({
+      workers,
+      workerHeapMb,
+      workerNativeBytes: bytes(WORKER_NATIVE_MB, 'worker native reservation'),
+      graphPoolBytes,
+      reservedBytes: bytes(parseReservedMb, 'parse reservation'),
+    }),
+    embedding: Object.freeze({
+      graphPoolBytes,
+      vectorPoolBytes: bytes(VECTOR_POOL_MB, 'vector pool'),
+      modelBytes: bytes(modelMb, 'model reservation'),
+      queueBytes: bytes(queueMb, 'embedding queues'),
+      nativeThreads: Math.min(4, cpus),
+      reservedBytes: bytes(embeddingReservedMb, 'embedding reservation'),
+    }),
+  });
+}
+
+/** Account retained payloads before admission, including a prefetched unit. */
+export class EmbeddingByteBudget {
+  private retained = 0;
+  private peak = 0;
+
+  constructor(readonly limit: number) {
+    integer(limit, 'embedding byte budget');
+  }
+
+  get usedBytes(): number {
+    return this.retained;
+  }
+  get peakBytes(): number {
+    return this.peak;
+  }
+
+  reserve(size: number): () => void {
+    integer(size, 'retained payload bytes', 0);
+    if (size > this.limit - this.retained) {
+      throw new Error(
+        `Embedding payload requires ${size} bytes with ${this.limit - this.retained} bytes available`,
+      );
+    }
+    this.retained += size;
+    this.peak = Math.max(this.peak, this.retained);
+    let released = false;
+    return () => {
+      if (released) throw new Error('Embedding byte reservation released twice');
+      released = true;
+      this.retained -= size;
+    };
+  }
+}
