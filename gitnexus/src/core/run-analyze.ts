@@ -462,6 +462,8 @@ export interface AnalyzeCallbacks {
 }
 
 export interface AnalyzeOptions {
+  /** Frozen per-invocation allocations; entrypoints resolve these before destructive work. */
+  resources?: import('./analysis-resource-budget.js').AnalysisResourceBudget;
   /**
    * Rebuild the graph and FTS. Parser output is still reused from the
    * content-addressed parse cache unless `useParseCache` is false.
@@ -1648,7 +1650,15 @@ async function runFullAnalysisInner(
 ): Promise<AnalyzeResult> {
   const ftsDisabledReason = resolveFtsDisableReason(options.skipFts);
   const initAnalysisLbug = (dbPath: string) =>
-    ftsDisabledReason ? initLbug(dbPath, { skipFts: true }) : initLbug(dbPath);
+    options.resources
+      ? initLbug(dbPath, {
+          skipFts: !!ftsDisabledReason,
+          bufferPoolBytes: options.resources.parse.graphPoolBytes,
+          threads: options.resources.parse.nativeThreads,
+        })
+      : ftsDisabledReason
+        ? initLbug(dbPath, { skipFts: true })
+        : initLbug(dbPath);
   const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
@@ -3176,6 +3186,7 @@ async function runFullAnalysisInner(
         parsedFileStorePath: coldParseRebuildDir,
         parseWorkerUrl: parseIdentityResolution.ok ? parseIdentityResolution.workerUrl : undefined,
         workerPoolSize: options.workerPoolSize,
+        ...(options.resources ? { workerResources: options.resources.parse } : {}),
         maxProcesses: processDetectionBudget.maxProcesses,
         maxProcessBranching: processDetectionBudget.overridden.maxProcessBranching
           ? processDetectionBudget.maxProcessBranching

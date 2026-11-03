@@ -94,6 +94,71 @@ afterEach(() => {
 });
 
 describe('worker pool timeout retirement', () => {
+  it('refuses replacement and phase handoff while a budgeted native worker has not drained', async () => {
+    const pool = createWorkerPool(workerUrl, 1, {
+      requireDrain: true,
+      heapLimitMb: 512,
+      subBatchIdleTimeoutMs: 10,
+      maxTimeoutRetries: 1,
+      shutdownDrainMs: 20,
+      workerFactory: () =>
+        new TimeoutThenHealthyWorker() as unknown as import('node:worker_threads').Worker,
+    });
+    try {
+      await expect(
+        pool.dispatch([{ path: 'src/stalled.ts', content: 'const x = 1;' }]),
+      ).rejects.toThrow();
+      expect(TimeoutThenHealthyWorker.instances).toHaveLength(1);
+      expect(TimeoutThenHealthyWorker.instances[0].terminateCalls).toBe(0);
+      await expect(pool.terminate()).rejects.toThrow('native resource reservation');
+      expect(TimeoutThenHealthyWorker.instances[0].terminateCalls).toBe(0);
+    } finally {
+      TimeoutThenHealthyWorker.instances[0].emit('message', { type: 'sub-batch-done' });
+      await waitFor(
+        () => TimeoutThenHealthyWorker.instances[0].terminateCalls === 1,
+        'Worker did not retire',
+      );
+      await pool.terminate();
+    }
+  });
+
+  it('replaces a budgeted worker only after its safe point and native termination complete', async () => {
+    TimeoutThenHealthyWorker.firstWorkerBehavior = 'delayed-safe-return';
+    TimeoutThenHealthyWorker.safeReturnDelayMs = 40;
+    let completeTermination: (() => void) | undefined;
+    const pool = createWorkerPool(workerUrl, 1, {
+      requireDrain: true,
+      subBatchIdleTimeoutMs: 10,
+      maxTimeoutRetries: 1,
+      shutdownDrainMs: 500,
+      workerFactory: () => {
+        const worker = new TimeoutThenHealthyWorker();
+        if (worker.id === 0)
+          worker.terminate = () => {
+            worker.terminateCalls++;
+            return new Promise<number>((resolve) => {
+              completeTermination = () => {
+                worker.emit('exit', 0);
+                resolve(0);
+              };
+            });
+          };
+        return worker as unknown as import('node:worker_threads').Worker;
+      },
+    });
+    try {
+      const result = pool.dispatch([{ path: 'src/delayed.ts', content: '' }]);
+      await waitFor(() => completeTermination !== undefined, 'Missing safe termination');
+      expect(TimeoutThenHealthyWorker.instances).toHaveLength(1);
+      completeTermination!();
+      await expect(result).resolves.toEqual([{ paths: ['src/delayed.ts'] }]);
+      expect(TimeoutThenHealthyWorker.instances).toHaveLength(2);
+    } finally {
+      completeTermination?.();
+      await pool.terminate();
+    }
+  });
+
   it('does not immediately terminate a worker that timed out inside native parsing', async () => {
     const pool = createWorkerPool(workerUrl, 1, {
       subBatchIdleTimeoutMs: 20,

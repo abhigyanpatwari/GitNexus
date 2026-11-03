@@ -255,6 +255,8 @@ export interface PipelineOptions {
    * analyze invocations.
    */
   workerPoolSize?: number;
+  /** Admitted ceiling, separate from an explicit worker count so tiny repos retain auto-sizing. */
+  workerResources?: Readonly<{ workers: number; workerHeapMb: number }>;
   /**
    * Process-detection budget (#3313). Explicit `maxProcesses` replaces the
    * dynamic `symbols / 10` formula; the other three replace compiled defaults.

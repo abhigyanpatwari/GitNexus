@@ -220,6 +220,10 @@ export interface WorkerPoolStats {
 }
 
 export interface WorkerPoolOptions {
+  /** Per-run old-generation allocation; overrides the process-wide environment default. */
+  heapLimitMb?: number;
+  /** Refuse to release the parser reservation while a retired native worker still runs. */
+  requireDrain?: boolean;
   subBatchSize?: number;
   subBatchMaxBytes?: number;
   subBatchIdleTimeoutMs?: number;
@@ -1053,6 +1057,7 @@ export const createWorkerPool = (
 
   const size = poolSize ?? resolveAutoPoolSize();
   const poolOptions = resolveWorkerPoolOptions(options, size);
+  const requireDrain = options?.requireDrain === true;
   // Production factory spawns with `{ stderr: true }` so a worker's crash
   // output is redirected to a `worker.stderr` stream we can tee + capture
   // (see captureWorkerStderr) and attach to readiness-failure messages —
@@ -1071,7 +1076,12 @@ export const createWorkerPool = (
     parsedFileStoreStoragePath || durableParsedFileStoragePath || pdg
       ? { parsedFileStoreStoragePath, durableParsedFileStoragePath, pdg, pdgMaxFunctionLines }
       : undefined;
-  const workerHeapCapMb = resolveWorkerHeapCapMb(size);
+  const workerHeapCapMb = options?.heapLimitMb ?? resolveWorkerHeapCapMb(size);
+  if (
+    options?.heapLimitMb !== undefined &&
+    (!Number.isSafeInteger(workerHeapCapMb) || workerHeapCapMb < 512)
+  )
+    throw new Error('Parser worker heap allocation must be a safe integer of at least 512 MiB');
   // The 512MB per-worker floor exists so a worker can parse anything real,
   // but on a very small container a large pool of floored workers can still
   // overcommit total memory (#2649 review). Behavior is unchanged — deaths
@@ -1135,6 +1145,7 @@ export const createWorkerPool = (
     safePoint: Promise<void>;
   };
   const retiredWorkers = new Set<RetiredWorkerRecord>();
+  const pendingWorkerReleases = new Set<Promise<void>>();
   const respawnCount: number[] = new Array(size).fill(0);
   const activeSlots: Set<number> = new Set();
   // Layer 3 (quarantine): tracked via the dedicated `quarantine.ts`
@@ -1492,7 +1503,7 @@ export const createWorkerPool = (
         reason: string,
       ): void => {
         let cleaned = false;
-        let terminateStarted = false;
+        let termination: Promise<void> | undefined;
         let resolveSafePoint!: () => void;
         const safePoint = new Promise<void>((resolve) => {
           resolveSafePoint = resolve;
@@ -1517,11 +1528,14 @@ export const createWorkerPool = (
           retiredWorkers.delete(record);
         }
 
-        async function terminateRetired() {
-          if (terminateStarted) return;
-          terminateStarted = true;
-          cleanupRetired();
-          await worker.terminate().catch(() => undefined);
+        function terminateRetired(): Promise<void> {
+          termination ??= worker.terminate().then(
+            () => cleanupRetired(),
+            () => {
+              if (!requireDrain) cleanupRetired();
+            },
+          );
+          return termination;
         }
 
         function terminateWhenBackInJs() {
@@ -1582,9 +1596,14 @@ export const createWorkerPool = (
         // Recovery must settle before dispatch returns, but a failed thread
         // may never acknowledge termination. Bound that wait as in shutdown.
         const termination = existing.terminate().then(
-          () => undefined,
+          () => {
+            pendingWorkerReleases.delete(termination);
+          },
           () => undefined,
         );
+        if (requireDrain) {
+          pendingWorkerReleases.add(termination);
+        }
         if (!(await settledWithin(termination, poolOptions.shutdownDrainMs))) {
           existing.unref?.();
           logger.warn(
@@ -1601,6 +1620,22 @@ export const createWorkerPool = (
       ): Promise<boolean> => {
         await removeWorkerFromSlot(workerIndex, mode, reason);
         if (stopped) return false;
+        if (requireDrain) {
+          // A timeout retires a native-active worker without killing it. Its
+          // slot remains reserved until both the safe point and native exit.
+          for (const record of retiredWorkers) {
+            if (record.workerIndex !== workerIndex) continue;
+            if (
+              !record.safeToTerminate &&
+              !(await settledWithin(record.safePoint, poolOptions.shutdownDrainMs))
+            )
+              return false;
+            if (!(await settledWithin(record.terminate(), poolOptions.shutdownDrainMs)))
+              return false;
+            if (retiredWorkers.has(record)) return false;
+          }
+          if (pendingWorkerReleases.size > 0 || stopped) return false;
+        }
         const replacement = spawnAndCapture(workerUrl);
         try {
           await waitForWorkerReady(replacement, poolOptions.workerReadyTimeoutMs);
@@ -2418,6 +2453,10 @@ export const createWorkerPool = (
     await terminateTrackedWorkers(workers);
     workers.length = 0;
     activeSlots.clear();
+    if (requireDrain && (retiredWorkers.size > 0 || pendingWorkerReleases.size > 0))
+      throw new Error(
+        'Parser workers have not released their native resource reservation; refusing to start another analysis phase. Workers will exit at their next safe point.',
+      );
   };
 
   const dispatch = async <TInput, TResult>(

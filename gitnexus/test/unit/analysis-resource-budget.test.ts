@@ -49,6 +49,16 @@ describe('analysis resource admission', () => {
     expect(budget.embedding.reservedBytes).toBeLessThanOrEqual(1024 * MIB);
   });
 
+  it('preserves the heap-only flag minimum without silently raising it', () => {
+    const budget = resolveAnalysisResourceBudget({ ...request, mainHeapMb: 200 });
+    expect(budget.mainHeapMb).toBe(200);
+    expect(budget.parse.nativeThreads).toBe(request.availableCpus);
+    expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
+    expect(() => resolveAnalysisResourceBudget({ ...request, mainHeapMb: 199 })).toThrow(
+      'cannot admit',
+    );
+  });
+
   it('admits the full working set of a supported 10 MiB node with a larger budget', () => {
     const budget = resolveAnalysisResourceBudget({
       ...request,

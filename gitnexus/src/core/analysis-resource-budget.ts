@@ -34,6 +34,8 @@ export interface AnalysisResourceBudget {
     readonly workerHeapMb: number;
     readonly workerNativeBytes: number;
     readonly graphPoolBytes: number;
+    /** Graph writes run after parser workers drain and may use the full CPU allowance. */
+    readonly nativeThreads: number;
     readonly reservedBytes: number;
   };
   readonly embedding: {
@@ -95,10 +97,12 @@ export function resolveAnalysisResourceBudget(
     request.mainHeapMb === undefined
       ? Math.min(16_384, maximumMainMb, Math.max(MIN_MAIN_HEAP_MB, Math.floor(totalMb * 0.35)))
       : integer(request.mainHeapMb, 'main heap reservation');
-  if (mainHeapMb < MIN_MAIN_HEAP_MB || mainHeapMb > maximumMainMb) {
+  // --memory-budget has an established 200 MiB minimum. Preserve that explicit
+  // choice; the larger floor is only the automatic sizing policy.
+  const minimumMainMb = request.mainHeapMb === undefined ? MIN_MAIN_HEAP_MB : 200;
+  if (mainHeapMb < minimumMainMb || mainHeapMb > maximumMainMb) {
     const minimum =
-      Math.max(MIN_MAIN_HEAP_MB, request.mainHeapMb ?? 0) +
-      Math.max(embeddingFixedMb, parseFixedMb);
+      Math.max(minimumMainMb, request.mainHeapMb ?? 0) + Math.max(embeddingFixedMb, parseFixedMb);
     throw new Error(
       `Resource budget ${totalMb} MiB cannot admit parser/model work; requires at least ${minimum} MiB for these allocations`,
     );
@@ -161,6 +165,7 @@ export function resolveAnalysisResourceBudget(
       workerHeapMb,
       workerNativeBytes: bytes(WORKER_NATIVE_MB, 'worker native reservation'),
       graphPoolBytes,
+      nativeThreads: cpus,
       reservedBytes: bytes(parseReservedMb, 'parse reservation'),
     }),
     embedding: Object.freeze({
