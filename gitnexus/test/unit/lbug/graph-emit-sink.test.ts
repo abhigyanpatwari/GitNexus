@@ -24,6 +24,7 @@ import {
   RETAINED_REL_TYPES,
   StreamedRelationshipRemovalError,
 } from '../../../src/core/lbug/graph-emit-sink.js';
+import { UndeclaredRelationPairError } from '../../../src/core/lbug/rel-pair-routing.js';
 import type { GraphRelationship } from 'gitnexus-shared';
 
 const fnId = (name: string): string => `Function:src/a.ts:${name}`;
@@ -128,27 +129,45 @@ describe('GraphEmitSink routing', () => {
     expect(real.relationshipCount).toBe(0);
   });
 
-  it('throws rather than silently dropping an undeclared endpoint-label pair (#2769)', () => {
+  it('fails at finalize, with every undeclared endpoint-label pair, rather than dropping them (#2769, #2797)', async () => {
     // Before #2769's fix, this pair reached COPY, failed the bulk insert, and
     // the per-edge fallback swallowed the failure into `catch {}` — the run
     // still exited 0 with the edge silently missing. Both endpoints are valid
     // node tables (so the validTables gate above does not catch it); the pair
-    // itself is simply absent from RELATION_SCHEMA.
+    // itself is simply absent from RELATION_SCHEMA. The sink now records it,
+    // keeps streaming, and fails once at finalize naming all such pairs.
     const real = createKnowledgeGraph();
     const sink = new GraphEmitSink(real, csvDir);
     sink.beginStreaming();
 
-    const undeclared: GraphRelationship = {
-      id: 'CALLS:Static:a->Static:b',
-      sourceId: 'Static:src/a.ts:A',
-      targetId: 'Static:src/a.ts:B',
+    const undeclared = (from: string, to: string): GraphRelationship => ({
+      id: `CALLS:${from}->${to}`,
+      sourceId: from,
+      targetId: to,
       type: 'CALLS',
       confidence: 1,
       reason: 'direct',
-    };
-    expect(() => sink.addRelationship(undeclared)).toThrow(
-      /Relationship label pair Static → Static is not declared/,
-    );
+    });
+    expect(() =>
+      sink.addRelationship(undeclared('Static:src/a.ts:A', 'Static:src/a.ts:B')),
+    ).not.toThrow();
+    sink.addRelationship(rel('CALLS', 'f', 'g'));
+    sink.addRelationship(undeclared('Static:src/b.ts:C', 'Folder:src/b'));
+
+    let thrown: unknown;
+    try {
+      sink.finalize();
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(UndeclaredRelationPairError);
+    expect((thrown as UndeclaredRelationPairError).pairs.map((pair) => pair.pairKey)).toEqual([
+      'Static|Static',
+      'Static|Folder',
+    ]);
+    // The declared edge was still streamed; the undeclared ones were not.
+    expect(await dataRows(path.join(csvDir, 'rel_Function_Function.csv'))).toHaveLength(1);
+    expect(fs.existsSync(path.join(csvDir, 'rel_Static_Static.csv'))).toBe(false);
   });
 });
 
