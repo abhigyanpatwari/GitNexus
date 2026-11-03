@@ -2312,6 +2312,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                   undefined, // skipNodeIds
                   existingEmbeddings,
                   {
+                    source: {
+                      repoPath: entry.path,
+                      fileHashes: embeddingMeta.fileHashes,
+                      contentRetention: contentRetentionFromMeta(embeddingMeta),
+                    },
                     signal: embedController.signal,
                     forceReembedNodeIds,
                     onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {

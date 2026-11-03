@@ -5106,6 +5106,7 @@ async function runFullAnalysisInner(
         cachedSnapshot.embeddingNodeIds.size > 0 ? cachedSnapshot.embeddingNodeIds : undefined,
         existingEmbeddings,
         {
+          source: { repoPath, fileHashes: newFileHashes, contentRetention },
           forceReembedNodeIds: pendingEmbeddingNodeIds,
           onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
             const handoff = stagedRecoveryEnabled && !recoveryGenerationDurable;
@@ -5511,7 +5512,9 @@ async function runFullAnalysisInner(
       // the CodeEmbedding table is created for every index, git or not, so
       // absence has exactly one meaning — an index older than the field.
       embeddingDims: EMBEDDING_DIMS,
-      fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
+      // Embedding sync also needs snapshot identity for non-git checkouts.
+      // Incremental DB eligibility still independently requires repoHasGit.
+      fileHashes: newFileHashesRecord,
       indexCoverage: hasGitDir(repoPath)
         ? {
             maxFileSizeBytes: getMaxFileSizeBytes(),

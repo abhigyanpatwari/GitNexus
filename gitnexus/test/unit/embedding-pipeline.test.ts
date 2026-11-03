@@ -6,7 +6,11 @@ import {
   resolveEmbeddingInstallPolicy,
 } from '../../src/core/embeddings/embedding-pipeline.js';
 import { generateEmbeddingText } from '../../src/core/embeddings/text-generator.js';
-import type { EmbeddableNode, EmbeddingProgress } from '../../src/core/embeddings/types.js';
+import type {
+  EmbeddableNode,
+  EmbeddingConfig,
+  EmbeddingProgress,
+} from '../../src/core/embeddings/types.js';
 import {
   DEFAULT_EMBEDDING_CONFIG,
   EMBEDDABLE_LABELS,
@@ -17,7 +21,6 @@ import {
 } from '../../src/core/embeddings/types.js';
 import { STALE_HASH_SENTINEL } from '../../src/core/lbug/schema.js';
 
-const CLASS_CHUNK_SIZE = 90;
 const CLASS_OVERLAP = 10;
 
 describe('embedding schema column contracts', () => {
@@ -99,6 +102,30 @@ describe('contentHashForNode', () => {
   it('returns a 40-char hex SHA-1 digest', () => {
     const hash = contentHashForNode(makeNode());
     expect(hash).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it('binds long-source fingerprints, ranges and policy without changing short v7 hashes', () => {
+    const source = {
+      repoPath: '/missing',
+      fileHashes: { 'src/main.ts': 'a'.repeat(64) },
+      contentRetention: 'full' as const,
+    };
+    const short = makeNode();
+    expect(contentHashForNode(short, {}, source)).toBe(contentHashForNode(short));
+    const long = makeNode({
+      content: `${'x'.repeat(5000)} ... [truncated]`,
+      startLine: 10,
+      endLine: 100,
+    });
+    const hash = contentHashForNode(long, {}, source);
+    expect(
+      contentHashForNode(long, {}, { ...source, fileHashes: { 'src/main.ts': 'b'.repeat(64) } }),
+    ).not.toBe(hash);
+    expect(contentHashForNode({ ...long, startLine: 20, endLine: 110 }, {}, source)).not.toBe(hash);
+    expect(contentHashForNode(long, { chunkSize: 10000 }, source)).not.toBe(
+      contentHashForNode(long, { chunkSize: 20000 }, source),
+    );
+    expect(contentHashForNode(long, {}, { ...source, contentRetention: 'symbol' })).not.toBe(hash);
   });
 
   it('is deterministic — same node always produces the same hash', () => {
@@ -1266,7 +1293,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
       executeQuery,
       executeWithReusedStatement,
       onProgress,
-      { chunkSize: 90, overlap: 0 },
+      { chunkSize: 40, overlap: 0 },
       undefined,
       new Map(),
     );
@@ -1279,7 +1306,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
     }
   });
 
-  it('truncates preceding context to the configured overlap size', async () => {
+  it('does not duplicate preceding source context in projected Class chunks', async () => {
     const embedBatchSpy = vi
       .fn()
       .mockImplementation((texts: string[]) =>
@@ -1320,21 +1347,248 @@ describe('runEmbeddingPipeline incremental filter', () => {
       executeQuery,
       executeWithReusedStatement,
       onProgress,
-      { chunkSize: CLASS_CHUNK_SIZE, overlap: CLASS_OVERLAP },
+      { chunkSize: 40, overlap: CLASS_OVERLAP },
       undefined,
       new Map(),
     );
 
     const embeddedTexts = embedBatchSpy.mock.calls.flatMap((call) => call[0] as string[]);
-    const laterChunk = embeddedTexts.find((text) => text.includes('[preceding context]:'));
-    expect(laterChunk).toBeDefined();
-    expect(laterChunk).toContain('[preceding context]: ...');
-    const precedingContextLine = laterChunk
-      ?.split('\n')
-      .find((line) => line.startsWith('[preceding context]: ...'));
-    expect(precedingContextLine).toBeDefined();
-    expect(precedingContextLine).toContain('ring, any>');
-    expect(precedingContextLine).not.toContain('parseJSON() {');
+    expect(embeddedTexts.length).toBeGreaterThan(1);
+    expect(embeddedTexts.join('\n')).toContain('options: ParserOptions;');
+    expect(embeddedTexts.join('\n')).toContain('cache: Map<string, any>;');
+    for (const text of embeddedTexts) {
+      expect(text).not.toContain('[preceding context]:');
+      expect(text).not.toContain('return JSON.parse');
+      expect(text).not.toContain('return true');
+    }
+  });
+
+  it('shares one Class parse and skips parsing and inference once its hash is fresh (#702)', async () => {
+    const inputs: string[] = [];
+    mockEmbedderWith(async (texts) => {
+      inputs.push(...texts);
+      return texts.map(() => new Float32Array(384));
+    });
+    const ast = await import('../../src/core/embeddings/ast-utils.js');
+    const parse = vi.spyOn(ast, 'ensureAndParse');
+    const { runEmbeddingPipeline, contentHashForNode } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+    const cls = makeNode({
+      label: 'Class',
+      id: 'Class:src/main.ts:Sample',
+      name: 'Sample',
+      content: 'class Sample { field = 42; run() { return "BODY_702"; } }',
+      startLine: 10,
+      endLine: 10,
+    });
+    await runEmbeddingPipeline(
+      mockExecuteQuery([cls]),
+      mockExecuteWithReusedStatement(),
+      onProgress,
+      {},
+      undefined,
+      new Map(),
+    );
+    expect(parse).toHaveBeenCalledTimes(1);
+    expect(inputs.join('\n')).toContain('field = 42');
+    expect(inputs.join('\n')).not.toContain('BODY_702');
+    inputs.length = 0;
+    parse.mockClear();
+    await runEmbeddingPipeline(
+      mockExecuteQuery([cls]),
+      mockExecuteWithReusedStatement(),
+      onProgress,
+      {},
+      undefined,
+      new Map([[cls.id, contentHashForNode(cls)]]),
+    );
+    expect(parse).not.toHaveBeenCalled();
+    expect(inputs).toEqual([]);
+  });
+
+  it('embeds overlapping statements once per input instead of duplicating preceding context', async () => {
+    const inputs: string[] = [];
+    mockEmbedderWith(async (texts) => {
+      inputs.push(...texts);
+      return texts.map(() => new Float32Array(384));
+    });
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+    const { chunkNode } = await import('../../src/core/embeddings/chunker.js');
+    const content = `function foo() {\n${Array.from({ length: 30 }, (_, i) => `  const marker${i} = ${i};`).join('\n')}\n}`;
+    const source = makeNode({ content, startLine: 0, endLine: 31 });
+    const chunks = await chunkNode('Function', content, source.filePath, 0, 31, 150, 30);
+    await runEmbeddingPipeline(
+      mockExecuteQuery([source]),
+      mockExecuteWithReusedStatement(),
+      onProgress,
+      { chunkSize: 150, overlap: 30 },
+    );
+    expect(inputs).toHaveLength(chunks.length);
+    let checked = 0;
+    for (let i = 1; i < chunks.length; i++) {
+      const shared = chunks[i - 1].endOffset - chunks[i].startOffset;
+      if (shared <= 0) continue;
+      const statement = chunks[i].text.slice(0, shared).match(/const marker\d+ = \d+;/)?.[0];
+      if (!statement) continue;
+      expect(inputs[i].split(statement)).toHaveLength(2);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  it('skips original-source reads on fresh nodes and fails before deleting stale rows', async () => {
+    const inputs: string[] = [];
+    mockEmbedderWith(async (texts) => {
+      inputs.push(...texts);
+      return texts.map(() => new Float32Array(384));
+    });
+    const { runEmbeddingPipeline, contentHashForNode } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+    const source = {
+      repoPath: '/missing-embedding-checkout-702',
+      fileHashes: { 'src/main.ts': 'a'.repeat(64) },
+      contentRetention: 'full' as const,
+    };
+    const node = makeNode({ content: 'x'.repeat(2000), startLine: 0, endLine: 10 });
+    const run = (hash: string) =>
+      runEmbeddingPipeline(
+        mockExecuteQuery([node]),
+        mockExecuteWithReusedStatement(),
+        onProgress,
+        {},
+        undefined,
+        new Map([[node.id, hash]]),
+        { source },
+      );
+    // A source read here would throw: a matching indexed hash must skip it.
+    await expect(
+      run(contentHashForNode(node, DEFAULT_EMBEDDING_CONFIG, source)),
+    ).resolves.toMatchObject({ nodesProcessed: 0 });
+    expect(inputs).toEqual([]);
+    stmtCalls.length = 0;
+    await expect(run('stale')).rejects.toThrow('Embedding source unavailable');
+    expect(stmtCalls).toEqual([]);
+    expect(inputs).toEqual([]);
+    expect(progressUpdates.at(-1)?.phase).toBe('error');
+  });
+
+  it('reuses identical source inputs after a sibling edit and refreshes the fast fingerprint', async () => {
+    const inputs: string[] = [];
+    mockEmbedderWith(async (texts) => {
+      inputs.push(...texts);
+      return texts.map(() => new Float32Array(384));
+    });
+    const { EmbeddingSourceReader } = await import('../../src/core/embeddings/source-reader.js');
+    const content = `function foo() {\n${'  consume();\n'.repeat(150)}}`;
+    const read = vi.spyOn(EmbeddingSourceReader.prototype, 'read').mockResolvedValue(content);
+    const { runEmbeddingPipeline, contentHashForNode } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+    const node = makeNode({ content, startLine: 0, endLine: 151 });
+    const source = {
+      repoPath: '/verified-by-reader-tests',
+      fileHashes: { 'src/main.ts': 'a'.repeat(64) },
+      contentRetention: 'full' as const,
+    };
+    const config: Partial<EmbeddingConfig> = {};
+    const run = (hash?: string, force = false, execute = mockExecuteWithReusedStatement()) =>
+      runEmbeddingPipeline(
+        mockExecuteQuery([node]),
+        execute,
+        onProgress,
+        config,
+        undefined,
+        hash ? new Map([[node.id, hash]]) : undefined,
+        { source, forceReembedNodeIds: force ? new Set([node.id]) : undefined },
+      );
+    await run();
+    const original = String(
+      stmtCalls.find(({ cypher }) => cypher.includes('CREATE'))!.params[0].contentHash,
+    );
+    expect(inputs.length).toBeGreaterThan(1);
+    source.fileHashes['src/main.ts'] = 'b'.repeat(64);
+    inputs.length = 0;
+    stmtCalls.length = 0;
+    read.mockClear();
+    await run(original);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(inputs).toEqual([]);
+    expect(stmtCalls).toHaveLength(1);
+    expect(stmtCalls[0].cypher).toContain('SET e.contentHash');
+    const refreshed = String(stmtCalls[0].params[0].contentHash);
+    expect(refreshed).toMatch(new RegExp(`^${contentHashForNode(node, {}, source)}:[0-9a-f]{40}$`));
+    stmtCalls.length = 0;
+    read.mockClear();
+    await run(refreshed);
+    expect(read).not.toHaveBeenCalled();
+    expect(inputs).toEqual([]);
+    expect(stmtCalls).toEqual([]);
+
+    // Pending checkpoint groups must be regenerated even when their inputs match.
+    await run(refreshed, true);
+    expect(inputs.length).toBeGreaterThan(1);
+    expect(stmtCalls.some(({ cypher }) => cypher.includes('DELETE'))).toBe(true);
+    inputs.length = 0;
+    stmtCalls.length = 0;
+    source.fileHashes['src/main.ts'] = 'c'.repeat(64);
+    await expect(
+      run(
+        refreshed,
+        false,
+        mockExecuteWithReusedStatement({
+          failOn: 'SET e.contentHash',
+          error: () => new Error('read-only'),
+        }),
+      ),
+    ).rejects.toThrow('read-only');
+    expect(inputs).toEqual([]);
+    expect(stmtCalls.some(({ cypher }) => cypher.includes('DELETE'))).toBe(false);
+
+    // Identical text must not reuse vectors generated by a different model.
+    config.modelId = 'fixture/other-model';
+    stmtCalls.length = 0;
+    await run(refreshed);
+    expect(inputs.length).toBeGreaterThan(1);
+    expect(stmtCalls.some(({ cypher }) => cypher.includes('DELETE'))).toBe(true);
+    read.mockRestore();
+  });
+
+  it('replaces all stale chunks for policy changes and skips identical reruns (#702)', async () => {
+    mockEmbedderSetup();
+    const { runEmbeddingPipeline, contentHashForNode } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+    const source = makeNode({ content: `function foo() { ${'consume();'.repeat(150)} }` });
+    const oldConfig = { chunkSize: 100, overlap: 0, chunkStrategy: 'fixed' as const };
+    const newConfig = { chunkSize: 4000, overlap: 0, chunkStrategy: 'ast' as const };
+    const run = (config: typeof oldConfig | typeof newConfig, hash: string) =>
+      runEmbeddingPipeline(
+        mockExecuteQuery([source]),
+        mockExecuteWithReusedStatement(),
+        onProgress,
+        config,
+        undefined,
+        new Map([[source.id, hash]]),
+      );
+    await run(newConfig, contentHashForNode(source, oldConfig));
+    const deleteIndex = stmtCalls.findIndex(
+      (call) => call.cypher.includes('{nodeId: $nodeId}') && call.cypher.includes('DELETE'),
+    );
+    const createIndex = stmtCalls.findIndex((call) => call.cypher.includes('CREATE'));
+    expect(deleteIndex).toBeGreaterThanOrEqual(0);
+    expect(createIndex).toBeGreaterThan(deleteIndex);
+    expect(
+      stmtCalls.filter((call) => call.cypher.includes('CREATE')).flatMap((call) => call.params),
+    ).toMatchObject([
+      { nodeId: source.id, chunkIndex: 0, contentHash: contentHashForNode(source, newConfig) },
+    ]);
+    stmtCalls.length = 0;
+    await run(newConfig, contentHashForNode(source, newConfig));
+    expect(stmtCalls.filter((call) => call.cypher.includes('CREATE'))).toHaveLength(0);
+    await run(oldConfig, contentHashForNode(source, newConfig));
+    expect(
+      stmtCalls.filter((call) => call.cypher.includes('CREATE')).flatMap((call) => call.params)
+        .length,
+    ).toBeGreaterThan(1);
   });
 
   it('throws when DELETE for stale nodes fails with non-trivial error', async () => {
@@ -2311,7 +2565,10 @@ describe('runEmbeddingPipeline incremental filter', () => {
       expect(
         stmtCalls[straddlerCreateIndex].params.filter((p) => p.nodeId === straddler.id),
       ).toMatchObject([
-        { chunkIndex: 0, contentHash: contentHashForNode(straddler, DEFAULT_EMBEDDING_CONFIG) },
+        {
+          chunkIndex: 0,
+          contentHash: contentHashForNode(straddler, { chunkSize: 10, overlap: 0 }),
+        },
       ]);
       expect(contentHashForNode(straddler, DEFAULT_EMBEDDING_CONFIG)).not.toBe(staleStraddlerHash);
 

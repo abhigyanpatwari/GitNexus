@@ -18,7 +18,30 @@ import {
   CHUNK_MODE_AST_DECLARATION,
   CHUNK_MODE_AST_FUNCTION,
   type ChunkingRule,
+  type EmbeddingConfig,
 } from './types.js';
+
+export interface ChunkOptions {
+  strategy?: EmbeddingConfig['chunkStrategy'];
+  /** Disambiguate declarations sharing the indexed source lines. */
+  name?: string;
+  /** A transient parse shared with structural-name extraction. null means unavailable. */
+  tree?: Awaited<ReturnType<typeof ensureAndParse>>;
+}
+
+export interface EmbeddingChunk extends Chunk {
+  /** Present only after Class source has been structurally filtered. */
+  classDeclaration?: string;
+}
+
+interface ChunkSyntaxNode {
+  type: string;
+  startIndex: number;
+  endIndex: number;
+  namedChildCount: number;
+  namedChild(index: number): ChunkSyntaxNode | null;
+  childForFieldName?(name: string): ChunkSyntaxNode | null;
+}
 
 /**
  * Main chunkNode function: dispatches by label
@@ -31,7 +54,28 @@ export const chunkNode = async (
   endLine: number,
   chunkSize: number = 1200,
   overlap: number = 120,
-): Promise<Chunk[]> => {
+  options?: ChunkOptions,
+): Promise<EmbeddingChunk[]> => {
+  // Even a short class contains implementations. Never fall back to raw Class
+  // source: an unavailable parser yields identity/name metadata only.
+  if (label === 'Class') {
+    try {
+      const tree =
+        options?.tree === undefined ? await ensureAndParse(content, filePath) : options.tree;
+      return projectClassChunks(
+        content,
+        tree,
+        startLine,
+        endLine,
+        chunkSize,
+        overlap,
+        options?.strategy,
+        options?.name,
+      );
+    } catch {
+      return [classMetadataChunk(startLine, endLine)];
+    }
+  }
   // Content fits in one chunk — no splitting needed
   if (content.length <= chunkSize) {
     return [
@@ -47,7 +91,7 @@ export const chunkNode = async (
   }
 
   const rule = CHUNKING_RULES[label];
-  if (!rule) {
+  if (!rule || options?.strategy === 'fixed') {
     return characterChunk(content, startLine, endLine, chunkSize, overlap);
   }
 
@@ -61,6 +105,7 @@ export const chunkNode = async (
         chunkSize,
         overlap,
         rule,
+        options?.name,
       );
       if (astChunks.length > 0) return astChunks;
     }
@@ -98,6 +143,7 @@ const astChunk = async (
   chunkSize: number,
   overlap: number,
   rule: ChunkingRule,
+  expectedName?: string,
 ): Promise<Chunk[]> => {
   const tree = await ensureAndParse(content, filePath);
   if (!tree) return [];
@@ -107,7 +153,7 @@ const astChunk = async (
 
   // Find the function/method declaration in the snippet AST.
   // tree-sitter parses node.content (a snippet), so rows are relative (0-based).
-  const targetNode = findFunctionNode(root);
+  const targetNode = findFunctionNode(root, expectedName);
   if (!targetNode) return [];
 
   // Get the body (statements) via childForFieldName('body')
@@ -119,13 +165,44 @@ const astChunk = async (
   for (let i = 0; i < bodyNode.namedChildCount; i++) {
     const child = bodyNode.namedChild(i);
     if (!child) continue;
-    statements.push({
-      startIndex: child.startIndex,
-      endIndex: child.endIndex,
-    });
+    if (child.endIndex - child.startIndex > chunkSize) {
+      statements.push(
+        ...refineOversizedStatement(
+          child,
+          chunkSize,
+          overlap,
+          i === 0 && rule.includePrefix ? targetNode.startIndex : child.startIndex,
+        ),
+      );
+    } else {
+      statements.push({ startIndex: child.startIndex, endIndex: child.endIndex });
+    }
   }
 
   if (statements.length === 0) return [];
+
+  // A fitting statement must not fall into character splitting just because
+  // its function header or closing delimiters consume the remaining budget.
+  const first = statements[0];
+  const last = statements[statements.length - 1];
+  const firstEnd =
+    statements.length === 1 && rule.includeSuffix ? targetNode.endIndex : first.endIndex;
+  if (
+    rule.includePrefix &&
+    first.startIndex > targetNode.startIndex &&
+    first.endIndex - first.startIndex <= chunkSize &&
+    firstEnd - targetNode.startIndex > chunkSize
+  ) {
+    statements.unshift({ startIndex: targetNode.startIndex, endIndex: first.startIndex });
+  }
+  if (
+    rule.includeSuffix &&
+    last.endIndex < targetNode.endIndex &&
+    last.endIndex - last.startIndex <= chunkSize &&
+    targetNode.endIndex - last.startIndex > chunkSize
+  ) {
+    statements.push({ startIndex: last.endIndex, endIndex: targetNode.endIndex });
+  }
 
   return chunkByUnits(
     content,
@@ -139,6 +216,134 @@ const astChunk = async (
     rule.includePrefix,
     rule.includeSuffix,
   );
+};
+
+const STATEMENT_BLOCK_TYPES = new Set([
+  'statement_block',
+  'block',
+  'compound_statement',
+  'constructor_body',
+  'statements',
+  'switch_body',
+  // Case/default bodies hold statements directly, without a nested block.
+  'switch_case',
+  'switch_default',
+  'case_statement',
+]);
+const COMPOUND_STATEMENT_TYPES = new Set([
+  'if_statement',
+  'if_expression',
+  'else_clause',
+  'elif_clause',
+  'for_statement',
+  'for_in_statement',
+  'for_expression',
+  'enhanced_for_statement',
+  'while_statement',
+  'while_expression',
+  'do_statement',
+  'do_while_statement',
+  'try_statement',
+  'try_expression',
+  'catch_clause',
+  'finally_clause',
+  'switch_statement',
+  'synchronized_statement',
+  'with_statement',
+]);
+
+/** Descend only oversized compound statements, using the existing tree. Keep
+ * every source character, including branch headers and closing delimiters.
+ * An indivisible expression still uses chunkByUnits' bounded fallback. */
+const refineOversizedStatement = (
+  statement: ChunkSyntaxNode,
+  chunkSize: number,
+  overlap: number,
+  firstChunkStart: number,
+): Array<{ startIndex: number; endIndex: number }> => {
+  const boundaries: number[] = [];
+  let cursor = firstChunkStart;
+  const boundary = (end: number) => {
+    if (end > cursor) {
+      boundaries.push(end);
+      cursor = end;
+    }
+  };
+  const pending: Array<{ node: ChunkSyntaxNode; index?: number } | { end: number }> = [
+    { node: statement },
+  ];
+  while (pending.length) {
+    const frame = pending.pop();
+    if (!frame) break;
+    if ('end' in frame) {
+      boundary(frame.end);
+      continue;
+    }
+    const node = frame.node;
+    if (STATEMENT_BLOCK_TYPES.has(node.type)) {
+      const index = frame.index ?? 0;
+      if (index >= node.namedChildCount) continue;
+      const first = node.namedChild(index);
+      if (!first) continue;
+      // Tree-sitter child lookup crosses the native boundary. Binary search
+      // the last fitting statement instead of materializing every inner node.
+      let low = index,
+        high = node.namedChildCount;
+      const budgetEnd = cursor + chunkSize - (boundaries.length ? overlap : 0);
+      while (low < high) {
+        const mid = (low + high) >>> 1;
+        if ((node.namedChild(mid)?.endIndex ?? Infinity) <= budgetEnd) low = mid + 1;
+        else high = mid;
+      }
+      if (low === index) {
+        // Keep a fitting statement whole when a long branch header consumed
+        // its space. Only oversized atoms reach the character fallback.
+        if (first.startIndex > cursor) {
+          boundary(first.startIndex);
+          pending.push({ node, index });
+        } else {
+          pending.push({ node, index: index + 1 }, { node: first });
+        }
+        continue;
+      }
+      const last = low - 1;
+      const end = node.namedChild(last)?.endIndex ?? first.endIndex;
+      if (overlap > 0 && last > index) {
+        let tailLow = index,
+          tailHigh = last;
+        while (tailLow < tailHigh) {
+          const mid = (tailLow + tailHigh) >>> 1;
+          if ((node.namedChild(mid)?.endIndex ?? Infinity) < end - overlap) tailLow = mid + 1;
+          else tailHigh = mid;
+        }
+        if (tailLow < last) boundary(node.namedChild(tailLow)?.endIndex ?? cursor);
+      }
+      boundary(end);
+      pending.push({ node, index: last + 1 });
+    } else if (COMPOUND_STATEMENT_TYPES.has(node.type)) {
+      pending.push({ end: node.endIndex });
+      for (let i = node.namedChildCount - 1; i >= 0; i--) {
+        const child = node.namedChild(i);
+        if (
+          child &&
+          (STATEMENT_BLOCK_TYPES.has(child.type) || COMPOUND_STATEMENT_TYPES.has(child.type))
+        ) {
+          pending.push({ node: child });
+        }
+      }
+    } else {
+      boundary(node.endIndex);
+    }
+  }
+  const units: Array<{ startIndex: number; endIndex: number }> = [];
+  let startIndex = statement.startIndex;
+  for (const endIndex of boundaries) {
+    if (endIndex <= startIndex || endIndex > statement.endIndex) continue;
+    units.push({ startIndex, endIndex });
+    startIndex = endIndex;
+  }
+  if (startIndex < statement.endIndex) units.push({ startIndex, endIndex: statement.endIndex });
+  return units;
 };
 
 const DECLARATION_BODY_NODE_TYPES = new Set([
@@ -358,6 +563,12 @@ const findOverlapStartIndex = (
 ): number => {
   if (overlapSize <= 0) return chunkEndStmtIdx + 1;
 
+  // A single large statement is not an overlap-sized tail. Repeating it can
+  // multiply the embedding work; the pipeline supplies bounded context when
+  // no whole statement fits the overlap budget.
+  const last = statements[chunkEndStmtIdx];
+  if (last.endIndex - last.startIndex > overlapSize) return chunkEndStmtIdx + 1;
+
   let overlapStartIdx = chunkEndStmtIdx;
   while (overlapStartIdx > chunkStartStmtIdx) {
     const overlapLength =
@@ -382,6 +593,181 @@ const getDeclarationBodyNode = (node: any): any | null => {
   }
 
   return null;
+};
+
+const classMetadataChunk = (startLine: number, endLine: number): EmbeddingChunk => ({
+  text: '',
+  chunkIndex: 0,
+  startOffset: 0,
+  endOffset: 0,
+  startLine,
+  endLine,
+  classDeclaration: '',
+});
+
+const CLASS_FIELD_TYPES = new Set([
+  ...FIELD_LIKE_MEMBER_TYPES,
+  'field_declaration',
+  'property_declaration',
+  'variable_declaration',
+  'constant_declaration',
+  'assignment',
+]);
+
+/** Retained spans are packed by their own size, never by the removed methods'
+ * size. Map projected offsets back to original source for search line ranges. */
+const projectClassChunks = (
+  content: string,
+  tree: Awaited<ReturnType<typeof ensureAndParse>>,
+  startLine: number,
+  endLine: number,
+  chunkSize: number,
+  overlap: number,
+  strategy: EmbeddingConfig['chunkStrategy'] = 'ast',
+  expectedName?: string,
+): EmbeddingChunk[] => {
+  const target = tree && findDeclarationNode(tree.rootNode, expectedName);
+  const body = target && getDeclarationBodyNode(target);
+  if (!body || target.hasError) return [classMetadataChunk(startLine, endLine)];
+
+  type Span = { startIndex: number; endIndex: number };
+  const fields: Array<{ node: ChunkSyntaxNode; startIndex: number; endIndex: number }> = [];
+  let firstMemberStart: number | undefined;
+  const groups: ChunkSyntaxNode[] = [body];
+  while (groups.length) {
+    const group = groups.pop();
+    if (!group) break;
+    const firstField = fields.length;
+    let attributeStart: number | undefined;
+    for (let i = 0; i < group.namedChildCount; i++) {
+      const child = group.namedChild(i);
+      if (!child) continue;
+      if (group === target && DIRECT_MEMBER_HEADER_NODE_TYPES.has(child.type)) continue;
+      firstMemberStart = Math.min(firstMemberStart ?? child.startIndex, child.startIndex);
+      if (DECLARATION_MEMBER_WRAPPER_TYPES.has(child.type)) {
+        groups.push(child);
+      } else if (
+        group.type === 'instance_variables' &&
+        IVAR_ATTRIBUTE_PREFIX_TYPES.has(child.type)
+      ) {
+        attributeStart ??= child.startIndex;
+      } else {
+        const assignment =
+          child.type === 'expression_statement' && child.namedChild(0)?.type === 'assignment';
+        const signature =
+          child.type === 'method_signature' ||
+          (child.type === 'method_declaration' && !child.childForFieldName?.('body'));
+        if (CLASS_FIELD_TYPES.has(child.type) || assignment || signature) {
+          fields.push({
+            node: child,
+            startIndex: attributeStart ?? child.startIndex,
+            // Some grammars keep the field's semicolon as an unnamed sibling.
+            endIndex: child.endIndex + (content[child.endIndex] === ';' ? 1 : 0),
+          });
+        }
+        attributeStart = undefined;
+      }
+    }
+    if (group.type === 'instance_variables' && fields.length > firstField) {
+      fields[firstField].startIndex = group.startIndex;
+      fields[fields.length - 1].endIndex = group.endIndex;
+    }
+  }
+  fields.sort((a, b) => a.startIndex - b.startIndex);
+  const headerEnd = firstMemberStart ?? (body === target ? target.startIndex : body.startIndex + 1);
+  const header = content.slice(target.startIndex, headerEnd).trimEnd();
+  const sourceGroups: Span[][] = header
+    ? [[{ startIndex: target.startIndex, endIndex: target.startIndex + header.length }]]
+    : [];
+  for (const { node, startIndex, endIndex } of fields) {
+    // Field initializers can themselves contain lambdas or accessors. Keep
+    // their declarations but remove their bodies without reparsing snippets.
+    const excluded: Span[] = [];
+    const pending = [node];
+    while (pending.length) {
+      const current = pending.pop();
+      if (!current) break;
+      const implementation = current.childForFieldName?.('body');
+      if (implementation) {
+        excluded.push(implementation);
+        continue;
+      }
+      for (let i = current.namedChildCount - 1; i >= 0; i--) {
+        const child = current.namedChild(i);
+        if (child) pending.push(child);
+      }
+    }
+    excluded.sort((a, b) => a.startIndex - b.startIndex);
+    const spans: Span[] = [];
+    let cursor = startIndex;
+    for (const cut of excluded) {
+      if (cut.startIndex > cursor) spans.push({ startIndex: cursor, endIndex: cut.startIndex });
+      cursor = Math.max(cursor, cut.endIndex);
+    }
+    if (cursor < endIndex) spans.push({ startIndex: cursor, endIndex });
+    if (spans.length) sourceGroups.push(spans);
+  }
+
+  const segments: Array<{ start: number; end: number; source: number }> = [];
+  const units: Span[] = [];
+  const pieces: string[] = [];
+  let length = 0;
+  for (const spans of sourceGroups) {
+    const unitStart = length;
+    for (const span of spans) {
+      if (length) {
+        pieces.push('\n');
+        length++;
+      }
+      const text = content.slice(span.startIndex, span.endIndex);
+      segments.push({ start: length, end: length + text.length, source: span.startIndex });
+      pieces.push(text);
+      length += text.length;
+    }
+    units.push({ startIndex: unitStart, endIndex: length });
+  }
+  if (!length) return [classMetadataChunk(startLine, endLine)];
+  const projected = pieces.join('');
+  const chunks =
+    strategy === 'fixed'
+      ? characterChunk(projected, 1, 1, chunkSize, overlap)
+      : chunkByUnits(
+          projected,
+          buildLineIndex(projected),
+          1,
+          chunkSize,
+          overlap,
+          units,
+          0,
+          length,
+          true,
+          true,
+        );
+  const originalLines = buildLineIndex(content);
+  const sourceOffset = (offset: number): number => {
+    let low = 0,
+      high = segments.length - 1;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (segments[mid].end <= offset) low = mid + 1;
+      else high = mid;
+    }
+    const segment = segments[low];
+    return (
+      segment.source + Math.max(0, Math.min(offset - segment.start, segment.end - segment.start))
+    );
+  };
+  return chunks.map((chunk) => {
+    const startOffset = sourceOffset(chunk.startOffset);
+    const endOffset = sourceOffset(chunk.endOffset - 1) + 1;
+    return {
+      ...chunk,
+      startOffset,
+      endOffset,
+      ...resolveChunkLines(originalLines, startOffset, endOffset, startLine),
+      classDeclaration: header,
+    };
+  });
 };
 
 const collectDeclarationUnits = (
