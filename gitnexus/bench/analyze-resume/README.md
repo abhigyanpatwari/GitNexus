@@ -24,6 +24,51 @@ end-to-end analyze throughput, crash recovery, model throughput, or total RSS
 bounds. Run the application regression matrix before making those claims.
 Windows handle behavior and local-model execution also need their own runs.
 
+Measure complete CLI invocations with two built checkouts:
+
+```sh
+node bench/analyze-resume/measure.mjs \
+  --baseline /path/to/baseline/gitnexus/dist/cli/index.js \
+  --output /tmp/analyze-pairs.json
+```
+
+The harness creates isolated Git fixtures, registries and stores, alternates
+baseline/candidate order, warms each scenario and records seven measured pairs.
+Stage both built runtimes on the same filesystem with matching dependencies.
+Preflight rejects different runtime devices/filesystem types, dependency
+lockfiles or native entry bytes; each completed pair also compares the full
+resolved dependency digest from its analyzer receipts. A checkout on a remote
+filesystem compared with a local checkout is not useful regression evidence.
+It includes CLI startup, graph writes, embeddings and final index work. Scenarios
+cover graph-only, warm no-op, one-function incremental edits, fresh/cached HTTP
+embeddings and resume after a deterministic provider outage. The outage ends
+normally through application error handling; it does not kill native work.
+`--help` lists corpus, heap, worker and scenario options. Both sides receive the
+same explicit allocations; default-budget behavior needs a separate comparison.
+
+Raw samples include command/log paths, analyzer receipts, graph/vector counts,
+provider request/input counts, deterministic input fingerprints and sampled Linux
+process-family RSS. Fixture setup is outside the timer and recorded separately.
+Logs and measurements remain beside the output; native stores are removed after
+each measurement unless `--keep-stores` is set. An existing output is never
+overwritten. No-op/cached runs and equal-work checks fail on unexpected work.
+Sending SIGINT to the harness PID stops between invocations after the active CLI
+exits naturally; the harness does not forward a termination signal to native work.
+
+Results use paired log-ratio bootstrap intervals and report regression,
+inconclusive, or no detected regression. Fewer than seven pairs is always
+smoke-only. The report always marks overall acceptance incomplete: synthetic
+counts/input parity do not establish query ranking, local-model performance,
+concurrent query latency, exact peak RSS, queue/native reservations, CPU/disk costs,
+default-budget behavior or Windows correctness. Those remain part of the final
+regression/performance matrix. Do not run measurements alongside indexing/tests.
+
+Check the harness itself with:
+
+```sh
+node --test bench/analyze-resume/measure.test.mjs
+```
+
 Measure the implemented vector store and journal after building:
 
 ```sh
