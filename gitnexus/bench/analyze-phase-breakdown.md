@@ -144,9 +144,10 @@ These changes are outside the timed analysis interval.
 ### CI execution
 
 `.github/workflows/ci-tests.yml` runs the differential check and both process
-lifecycles in a dedicated job. It builds the candidate and its first parent
-(the base branch on a pull-request merge checkout), then uses two clean sparse
-corpus checkouts at that parent. The CI corpus contains the ingestion and shared
+lifecycles in a dedicated job. It builds the candidate and the pull request's
+event baseline SHA, falling back to a verified first parent when the event has
+no baseline. It uses two clean sparse corpus checkouts at that baseline.
+The CI corpus contains the ingestion and shared
 scope-resolution source trees, plus Git's cone-mode parent files. It is smaller
 than the full-repository corpus measured above; its timings are a separate series.
 
@@ -154,8 +155,8 @@ CI sets `GITNEXUS_LEXICAL_BENCH_WORKERS=2` and
 `GITNEXUS_LEXICAL_BENCH_HEAP_MIB=4096`; the local defaults remain 16 workers and
 8192 MiB. Each lifecycle requires a new output directory and retains its raw
 results and logs in the `lexical-lookup-performance` artifact. Graph and persisted
-call mismatches fail the job. The existing first-pair speed screen reports and
-stops a non-improving run; it does not make one noisy timing pair a CI failure.
+call mismatches fail the job. CI sets `GITNEXUS_LEXICAL_BENCH_SCREEN=0` so all
+three paired edits and their correctness checks run regardless of timing noise.
 
 ### Repeated baseline, 2026-11-03 (CI corpus)
 
@@ -190,12 +191,12 @@ The lookup implementations and lockfile are unchanged, but the newer native
 grammar and revision were not measured in that baseline. This receipt remains
 pinned to the earlier builds.
 
-The subsequent [optimization report](../../docs/optimize/lexical-3805-report.md)
+The subsequent [optimization review in PR #3805](https://github.com/abhigyanpatwari/GitNexus/pull/3805)
 and [experiment receipt](lexical-lookup/optimization-20261103.json) compare two
 additional candidates against unchanged `6aeeace8` controls. Neither met the
 required repeatable 5% warm-process improvement with at most 3% fresh-process
-regression. The runtime remains unchanged; the retained changes make complete,
-opposite-order baseline collection reproducible.
+regression. Neither additional lexical candidate was retained. The harness
+makes complete, opposite-order baseline collection reproducible.
 
 ---
 
