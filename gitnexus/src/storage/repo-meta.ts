@@ -119,7 +119,8 @@ export interface RepoMeta {
    * validated by `resolveGraphPath`. Absent means legacy `<storagePath>/lbug`.
    */
   graphPath?: string;
-  /** A verified immutable graph, published independently of optional vectors. */
+  /** A verified logical generation, published independently of optional vectors.
+   * Private incremental writes invalidate this receipt before mutating its file. */
   graphGeneration?: {
     version: 1;
     id: string;
@@ -480,6 +481,8 @@ export interface RepoMeta {
    * to a known-good index.
    */
   incrementalInProgress?: {
+    /** Unique ownership fence for a prepared in-place graph publication. */
+    attemptId?: string;
     /** When the run started (epoch ms). */
     startedAt: number;
     /** Last dirty-flag refresh (epoch ms). */

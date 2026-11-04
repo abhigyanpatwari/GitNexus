@@ -38,6 +38,16 @@ afterEach(async () => {
 });
 
 describe('vector generation routing', () => {
+  it.each([
+    { incrementalInProgress: { startedAt: 1, toWriteCount: 1 } },
+    { graphWriteCollapsed: { expected: 100, persisted: 1 } },
+  ])('gates incomplete legacy and generation graphs before vector access: %o', (incomplete) => {
+    for (const base of [meta, { repoPath: '/repo', lastCommit: '', indexedAt: '' }])
+      expect(select({ ...base, ...incomplete })).toEqual({
+        kind: 'unavailable',
+        reason: 'graph-generation-unverified',
+      });
+  });
   it('preserves the legacy reader and routes a complete matching artifact', () => {
     expect(select({ repoPath: '/repo', lastCommit: '', indexedAt: '' })).toEqual({
       kind: 'legacy',

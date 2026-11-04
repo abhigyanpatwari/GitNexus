@@ -2,13 +2,15 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  beginInPlaceAnalysis,
   prepareAnalysisPublication,
   publishPreparedAnalysis,
   readPreparedAnalysis,
 } from '../../src/core/analysis-publication.js';
-import { getStoragePaths, saveMeta } from '../../src/storage/repo-manager.js';
+import { getStoragePaths, loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
 import { resolveGraphPath } from '../../src/storage/shared-store.js';
 import type { RepoMeta } from '../../src/storage/repo-meta.js';
 
@@ -41,6 +43,92 @@ afterEach(async () => {
 });
 
 describe('durable graph publication', () => {
+  it('publishes only after the real preparing process exits', async () => {
+    const { root, stage, actions } = await fixture();
+    const moduleUrl = new URL('../../dist/core/analysis-publication.js', import.meta.url).href;
+    const child = spawn(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `
+      import { prepareAnalysisPublication } from ${JSON.stringify(moduleUrl)};
+      process.once('message', async ({ root, stage, metadata, content }) => {
+        await prepareAnalysisPublication(root, stage, metadata, content, { waitForProcessExit: true });
+        process.once('message', () => process.disconnect());
+        process.send('prepared');
+      });
+    `,
+      ],
+      { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] },
+    );
+    const exited = new Promise<number | null>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', resolve);
+    });
+    const prepared = new Promise((resolve) => child.once('message', resolve));
+    try {
+      child.send({ root, stage, metadata, content });
+      await Promise.race([
+        prepared,
+        exited.then(() => {
+          throw new Error('Writer exited before preparation');
+        }),
+      ]);
+      expect(child.exitCode).toBeNull();
+      await expect(publishPreparedAnalysis(root, actions)).rejects.toThrow('has not exited');
+      expect(actions.verify).not.toHaveBeenCalled();
+      child.send('release');
+      expect(await exited).toBe(0);
+      const published = await publishPreparedAnalysis(root, actions);
+      expect(published?.graphGeneration).toBeDefined();
+      expect(actions.verify).toHaveBeenCalledOnce();
+    } finally {
+      if (child.connected) child.send('release');
+      await exited;
+    }
+  });
+
+  it('waits for an exit-only writer even after it has prepared the graph', async () => {
+    const { root, stage, actions } = await fixture();
+    const receipt = await prepareAnalysisPublication(root, stage, metadata, content, {
+      waitForProcessExit: true,
+    });
+    expect(receipt.writerPid).toBe(process.pid);
+    await expect(publishPreparedAnalysis(root, actions)).rejects.toThrow('has not exited');
+    expect(actions.verify).not.toHaveBeenCalled();
+    expect(await readPreparedAnalysis(root)).toEqual(receipt);
+    const probe = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('exited'), { code: 'ESRCH' });
+    });
+    await publishPreparedAnalysis(root, actions);
+    expect(probe).toHaveBeenCalledWith(process.pid, 0);
+    expect(actions.verify).toHaveBeenCalledOnce();
+  });
+
+  it('retains a prepared graph when process liveness cannot be established', async () => {
+    const { root, stage, actions } = await fixture();
+    await prepareAnalysisPublication(root, stage, metadata, content, { waitForProcessExit: true });
+    vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('permission denied'), { code: 'EPERM' });
+    });
+    await expect(publishPreparedAnalysis(root, actions)).rejects.toThrow('permission denied');
+    expect(actions.verify).not.toHaveBeenCalled();
+    expect(await fs.readFile(stage, 'utf8')).toBe('verified graph');
+  });
+
+  it('rejects a superseded attempt before verifying or moving its graph', async () => {
+    const { root, stage, actions } = await fixture();
+    const receipt = await prepareAnalysisPublication(root, stage, metadata, content);
+    const newer = { ...metadata, lastCommit: 'newer-writer' };
+    await saveMeta(root, newer);
+    await expect(publishPreparedAnalysis(root, actions)).rejects.toThrow('superseded');
+    expect(actions.verify).not.toHaveBeenCalled();
+    expect(await loadMeta(root)).toEqual(newer);
+    expect(await fs.readFile(stage, 'utf8')).toBe('verified graph');
+    expect(await readPreparedAnalysis(root)).toEqual(receipt);
+  });
+
   it('publishes a verified generation and keeps the previous reader artifact', async () => {
     const { root, stage, actions } = await fixture();
     const receipt = await prepareAnalysisPublication(root, stage, metadata, content);
@@ -180,5 +268,157 @@ describe('durable graph publication', () => {
     expect(getStoragePaths('/repo', 'feature', root).lbugPath).toBe(path.join(slot, graphPath));
     await fs.symlink(path.join(root, 'lbug'), path.join(slot, graphPath));
     expect(() => getStoragePaths('/repo', 'feature', root)).toThrow('regular file');
+  });
+});
+
+describe('logical in-place generations', () => {
+  it('invalidates readiness before writes and retains one physical file across generations', async () => {
+    const { root, actions } = await fixture();
+    let previous = metadata;
+    let file = path.join(root, 'lbug');
+    const before = await fs.stat(file);
+    const generations: string[] = [];
+    for (let iteration = 0; iteration < 3; iteration++) {
+      const dirty = await beginInPlaceAnalysis(
+        root,
+        {
+          ...previous,
+          incrementalInProgress: { startedAt: Date.now(), toWriteCount: 1 },
+        },
+        actions.saveMetadata,
+      );
+      expect((await loadMeta(root))?.graphGeneration).toBeUndefined();
+      const attemptId = dirty.incrementalInProgress?.attemptId;
+      if (!attemptId) throw new Error('Expected an in-place attempt');
+      expect((await loadMeta(root))?.incrementalInProgress?.attemptId).toBe(attemptId);
+      // Simulate the delta write only after the dirty stamp is durable.
+      await fs.writeFile(file, 'verified graph');
+      const receipt = await prepareAnalysisPublication(root, file, previous, content, {
+        mode: 'in-place',
+        attemptId,
+      });
+      const published = await publishPreparedAnalysis(root, actions);
+      if (!published) throw new Error('Expected a published generation');
+      file = resolveGraphPath(root);
+      expect((await fs.stat(file)).ino).toBe(before.ino);
+      expect(receipt.legacyGraphFile).toBeUndefined();
+      expect(published.incrementalInProgress).toBeUndefined();
+      expect(published.graphGeneration?.id).toBe(attemptId);
+      generations.push(attemptId);
+      previous = published;
+    }
+    expect(new Set(generations).size).toBe(3);
+    expect(
+      (await fs.readdir(root)).filter((name) => /^lbug\.generation\.[a-f0-9]{32}$/.test(name)),
+    ).toHaveLength(1);
+    await expect(fs.stat(path.join(root, 'lbug'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it.each(['before-rename', 'after-rename', 'after-metadata'] as const)(
+    'recovers in-place publication %s without restoring a false old generation',
+    async (point) => {
+      const { root, actions } = await fixture();
+      const dirty = await beginInPlaceAnalysis(
+        root,
+        {
+          ...metadata,
+          incrementalInProgress: { startedAt: 1, toWriteCount: 1 },
+        },
+        actions.saveMetadata,
+      );
+      const attemptId = dirty.incrementalInProgress?.attemptId;
+      if (!attemptId) throw new Error('Expected an in-place attempt');
+      await fs.writeFile(path.join(root, 'lbug'), 'verified graph');
+      const receipt = await prepareAnalysisPublication(
+        root,
+        path.join(root, 'lbug'),
+        metadata,
+        content,
+        {
+          mode: 'in-place',
+          attemptId,
+        },
+      );
+      await expect(
+        publishPreparedAnalysis(root, {
+          verify:
+            point === 'before-rename'
+              ? async () => {
+                  throw new Error('crash');
+                }
+              : actions.verify,
+          saveMetadata: async (meta) => {
+            if (point === 'after-metadata') await actions.saveMetadata(meta);
+            throw new Error('crash');
+          },
+        }),
+      ).rejects.toThrow('crash');
+      expect(await readPreparedAnalysis(root)).toEqual(receipt);
+      if (point !== 'after-metadata') {
+        expect((await loadMeta(root))?.graphGeneration).toBeUndefined();
+        expect((await loadMeta(root))?.incrementalInProgress?.attemptId).toBe(attemptId);
+      }
+      const published = await publishPreparedAnalysis(root, actions);
+      expect(published?.graphGeneration?.id).toBe(attemptId);
+      expect(published?.incrementalInProgress).toBeUndefined();
+    },
+  );
+
+  it('requires a durable matching attempt and rejects another writer before preparation', async () => {
+    const { root, actions } = await fixture();
+    const file = path.join(root, 'lbug');
+    await expect(
+      prepareAnalysisPublication(root, file, metadata, content, {
+        mode: 'in-place',
+        attemptId: 'a'.repeat(32),
+      }),
+    ).rejects.toThrow('missing or superseded');
+    const dirty = await beginInPlaceAnalysis(
+      root,
+      {
+        ...metadata,
+        incrementalInProgress: { startedAt: 1, toWriteCount: 1 },
+      },
+      actions.saveMetadata,
+    );
+    const attemptId = dirty.incrementalInProgress?.attemptId;
+    if (!attemptId) throw new Error('Expected an in-place attempt');
+    await saveMeta(root, { ...metadata, lastCommit: 'newer' });
+    await expect(
+      prepareAnalysisPublication(root, file, metadata, content, {
+        mode: 'in-place',
+        attemptId,
+      }),
+    ).rejects.toThrow('missing or superseded');
+    expect(await readPreparedAnalysis(root)).toBeUndefined();
+  });
+
+  it('rejects a shared pointer, missing dirty plan and an outstanding prepared publication', async () => {
+    const { root, stage, actions } = await fixture();
+    await expect(beginInPlaceAnalysis(root, metadata, actions.saveMetadata)).rejects.toThrow(
+      'dirty',
+    );
+    const dirty = { ...metadata, incrementalInProgress: { startedAt: 1, toWriteCount: 1 } };
+    await expect(
+      beginInPlaceAnalysis(root, { ...dirty, graphPath: '/shared/lbug' }, actions.saveMetadata),
+    ).rejects.toThrow('private');
+    await prepareAnalysisPublication(root, stage, metadata, content);
+    await expect(beginInPlaceAnalysis(root, dirty, actions.saveMetadata)).rejects.toThrow(
+      'Recover',
+    );
+  });
+
+  it('rejects an aliased target or foreign slot before changing its dirty marker', async () => {
+    const { root, stage, actions } = await fixture();
+    const dirty = { ...metadata, incrementalInProgress: { startedAt: 1, toWriteCount: 1 } };
+    await expect(
+      beginInPlaceAnalysis(root, { ...dirty, repoPath: '/other-repo' }, actions.saveMetadata),
+    ).rejects.toThrow('another repository');
+    await fs.unlink(path.join(root, 'lbug'));
+    await fs.symlink(stage, path.join(root, 'lbug'));
+    await expect(beginInPlaceAnalysis(root, dirty, actions.saveMetadata)).rejects.toThrow(
+      'regular file',
+    );
+    expect(await loadMeta(root)).toEqual(metadata);
   });
 });

@@ -36,6 +36,8 @@ export function selectVectorGeneration(
   graphPath: string,
   exactScanLimit: number,
 ): VectorReadSelection {
+  if (metadata?.incrementalInProgress || metadata?.graphWriteCollapsed)
+    return { kind: 'unavailable', reason: 'graph-generation-unverified' };
   if (!metadata?.graphGeneration && !metadata?.vectorGeneration && !metadata?.embeddingJob)
     return { kind: 'legacy' };
   const graph = metadata?.graphGeneration;

@@ -10,6 +10,7 @@ import { embeddingJobDirectory, syncEmbeddingJobDirectory } from '../storage/emb
 
 const RECEIPT = 'analysis-publication.json';
 const GENERATION = /^[a-f0-9]{32}$/;
+const PRIVATE_GRAPH = /^lbug\.generation\.[a-f0-9]{32}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const STAGING = /^lbug(?:\.generation\.[a-f0-9]{32})?\.staging\.[a-f0-9-]{36}$/;
 const MAX_RECEIPT_BYTES = 4096;
@@ -17,16 +18,29 @@ const MAX_METADATA_BYTES = 256 * 1024 * 1024;
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 
 export interface PreparedAnalysisPublication {
-  version: 1;
+  version: 2;
+  mode: 'staged' | 'in-place';
   id: string;
+  /** Source basename; also names the existing file for in-place writes. */
   stagingFile: string;
   graphFile: string;
   metadataFile: string;
   metadataBytes: number;
   metadataDigest: string;
+  /** Exact prior metadata, or absence, observed under the slot's write lock. */
+  priorMetadataDigest: string | null;
+  /** Permitted intermediate state while retiring a canonical legacy graph. */
+  redirectedMetadataDigest?: string;
+  /** Exit-only callers may not publish while this process is still alive. */
+  writerPid?: number;
   /** A hard-link destination for the previous legacy graph; never copied. */
   legacyGraphFile?: string;
 }
+
+export type AnalysisPublicationOptions = (
+  | { mode?: 'staged' }
+  | { mode: 'in-place'; attemptId: string }
+) & { waitForProcessExit?: boolean };
 
 export interface AnalysisPublicationActions {
   /** Open read-only and verify graph/schema/FTS against the prepared metadata.
@@ -42,13 +56,23 @@ function validateReceipt(value: unknown): asserts value is PreparedAnalysisPubli
   const r = value as PreparedAnalysisPublication;
   if (
     !r ||
-    r.version !== 1 ||
+    r.version !== 2 ||
     !GENERATION.test(r.id) ||
-    !STAGING.test(r.stagingFile) ||
-    r.graphFile !== `lbug.generation.${r.id}` ||
+    !PRIVATE_GRAPH.test(r.graphFile) ||
+    (r.mode === 'staged'
+      ? !STAGING.test(r.stagingFile) || r.graphFile !== `lbug.generation.${r.id}`
+      : r.mode !== 'in-place' ||
+        (r.stagingFile === 'lbug'
+          ? r.graphFile !== `lbug.generation.${r.id}`
+          : !PRIVATE_GRAPH.test(r.stagingFile) || r.graphFile !== r.stagingFile)) ||
     r.metadataFile !== `analysis-meta-${r.id}.json` ||
+    (r.priorMetadataDigest !== null && !DIGEST.test(r.priorMetadataDigest)) ||
+    (r.redirectedMetadataDigest !== undefined &&
+      (!r.legacyGraphFile || !DIGEST.test(r.redirectedMetadataDigest))) ||
+    (r.writerPid !== undefined && (!Number.isSafeInteger(r.writerPid) || r.writerPid < 1)) ||
     (r.legacyGraphFile !== undefined &&
-      (!/^lbug\.generation\.[a-f0-9]{32}$/.test(r.legacyGraphFile) ||
+      (r.mode !== 'staged' ||
+        !PRIVATE_GRAPH.test(r.legacyGraphFile) ||
         r.legacyGraphFile === r.graphFile)) ||
     !Number.isSafeInteger(r.metadataBytes) ||
     r.metadataBytes < 1 ||
@@ -109,6 +133,58 @@ async function writeDurable(directory: string, name: string, bytes: Buffer): Pro
   }
 }
 
+async function readSlotMetadata(root: string): Promise<RepoMeta | null> {
+  try {
+    const bytes = await boundedRead(path.join(root, INDEX_METADATA_FILE), MAX_METADATA_BYTES);
+    const metadata: RepoMeta = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    if (!metadata || typeof metadata.repoPath !== 'string')
+      throw new Error('Invalid graph slot metadata; artifacts retained');
+    return metadata;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+const metadataDigest = (metadata: RepoMeta | null): string | null =>
+  metadata === null ? null : hash(JSON.stringify(metadata));
+
+/** Replaces the existing pre-write dirty stamp, never an extra post-write stamp.
+ * The coordinator holds the slot lock and must await this before mutating native
+ * data. An interrupted in-place attempt requires the usual dirty-graph rebuild.
+ */
+export async function beginInPlaceAnalysis(
+  directory: string,
+  metadata: RepoMeta,
+  saveMetadata: AnalysisPublicationActions['saveMetadata'],
+): Promise<RepoMeta> {
+  const root = await embeddingJobDirectory(directory);
+  if (
+    !metadata.incrementalInProgress ||
+    (metadata.graphPath !== undefined && !PRIVATE_GRAPH.test(metadata.graphPath))
+  )
+    throw new Error('In-place publication requires a private graph and a dirty write plan');
+  if (await readPreparedAnalysis(root))
+    throw new Error('Recover the pending graph publication before starting another');
+  // Refuse an aliased native target before the caller can perform its first write.
+  await regularFile(path.join(root, metadata.graphPath ?? 'lbug'));
+  const prior = await readSlotMetadata(root);
+  if (prior && prior.repoPath !== metadata.repoPath)
+    throw new Error('Graph slot belongs to another repository');
+  const dirty: RepoMeta = {
+    ...metadata,
+    incrementalInProgress: {
+      ...metadata.incrementalInProgress,
+      writePlan: 'in-place',
+      attemptId: randomUUID().replaceAll('-', ''),
+    },
+  };
+  delete dirty.graphGeneration;
+  await saveMetadata(dirty);
+  await syncPublishedMetadata(root, dirty);
+  return dirty;
+}
+
 /** Call after graph/FTS verification and a successful native checkpoint, before
  * native close. A close crash leaves the owned build and its publication intent.
  * No model or vector work may start until publishPreparedAnalysis completes.
@@ -118,22 +194,43 @@ export async function prepareAnalysisPublication(
   buildPath: string,
   metadata: RepoMeta,
   coveredContent: string,
+  options: AnalysisPublicationOptions = {},
 ): Promise<PreparedAnalysisPublication> {
   const root = await embeddingJobDirectory(directory);
   if (
     !DIGEST.test(coveredContent) ||
     !metadata.repoPath ||
     !metadata.runnerIdentity ||
-    metadata.incrementalInProgress
+    metadata.incrementalInProgress ||
+    metadata.graphWriteCollapsed
   )
     throw new Error('Graph publication requires verified source and analyzer metadata');
-  if (path.dirname(path.resolve(buildPath)) !== root || !STAGING.test(path.basename(buildPath)))
+  const mode = options.mode ?? 'staged';
+  const sourceFile = path.basename(buildPath);
+  if (
+    path.dirname(path.resolve(buildPath)) !== root ||
+    (mode === 'staged'
+      ? !STAGING.test(sourceFile)
+      : sourceFile !== 'lbug' && !PRIVATE_GRAPH.test(sourceFile))
+  )
     throw new Error('Graph build is outside its owned staging directory');
   if (!(await regularFile(buildPath))) throw new Error('Graph build is missing');
   if (await regularFile(path.join(root, RECEIPT)))
     throw new Error('Recover the pending graph publication before preparing another');
-  const id = randomUUID().replaceAll('-', '');
-  const graphFile = `lbug.generation.${id}`;
+  const prior = await readSlotMetadata(root);
+  if (prior && prior.repoPath !== metadata.repoPath)
+    throw new Error('Graph slot belongs to another repository');
+  if (
+    options.mode === 'in-place' &&
+    (!GENERATION.test(options.attemptId) ||
+      prior?.incrementalInProgress?.attemptId !== options.attemptId ||
+      (prior.graphPath ?? 'lbug') !== sourceFile ||
+      prior.graphGeneration)
+  )
+    throw new Error('In-place graph attempt is missing or superseded; artifacts retained');
+  const id = options.mode === 'in-place' ? options.attemptId : randomUUID().replaceAll('-', '');
+  const graphFile =
+    mode === 'in-place' && sourceFile !== 'lbug' ? sourceFile : `lbug.generation.${id}`;
   const metadataFile = `analysis-meta-${id}.json`;
   const preparedMeta: RepoMeta = {
     ...metadata,
@@ -144,17 +241,24 @@ export async function prepareAnalysisPublication(
   if (bytes.length > MAX_METADATA_BYTES)
     throw new Error('Graph metadata exceeds the supported publication size');
   const receipt: PreparedAnalysisPublication = {
-    version: 1,
+    version: 2,
+    mode,
     id,
     stagingFile: path.basename(buildPath),
     graphFile,
     metadataFile,
     metadataBytes: bytes.length,
     metadataDigest: hash(bytes),
-    ...((await regularFile(path.join(root, 'lbug')))
+    priorMetadataDigest: metadataDigest(prior),
+    ...(options.waitForProcessExit ? { writerPid: process.pid } : {}),
+    ...(mode === 'staged' && (await regularFile(path.join(root, 'lbug')))
       ? { legacyGraphFile: `lbug.generation.${randomUUID().replaceAll('-', '')}` }
       : {}),
   };
+  if (receipt.legacyGraphFile && prior && !prior.graphPath)
+    receipt.redirectedMetadataDigest = hash(
+      JSON.stringify({ ...prior, graphPath: receipt.legacyGraphFile }),
+    );
   validateReceipt(receipt);
   await writeDurable(root, metadataFile, bytes);
   const payload = JSON.stringify(receipt);
@@ -221,6 +325,7 @@ async function retireLegacyGraph(
   receipt: PreparedAnalysisPublication,
   metadata: RepoMeta,
   actions: AnalysisPublicationActions,
+  previous: RepoMeta | null,
 ): Promise<void> {
   const legacy = path.join(root, 'lbug');
   if (!receipt.legacyGraphFile) {
@@ -241,12 +346,9 @@ async function retireLegacyGraph(
     await fs.link(legacy, retired);
     await syncEmbeddingJobDirectory(root);
   }
-  const previous = JSON.parse(
-    (await boundedRead(path.join(root, INDEX_METADATA_FILE), MAX_METADATA_BYTES)).toString('utf8'),
-  ) as RepoMeta;
-  if (previous.repoPath !== metadata.repoPath)
+  if (previous && previous.repoPath !== metadata.repoPath)
     throw new Error('Legacy graph belongs to another repository');
-  if (!previous.graphPath) {
+  if (previous && !previous.graphPath) {
     const redirected = { ...previous, graphPath: receipt.legacyGraphFile };
     await actions.saveMetadata(redirected);
     await syncPublishedMetadata(root, redirected);
@@ -257,7 +359,8 @@ async function retireLegacyGraph(
 
 /** Also recovers crashes after rename or metadata publication. Every attempt
  * re-verifies the owned native artifact; a generation identifier is not proof.
- * Existing graph files remain untouched so readers can finish their snapshots.
+ * Staged writes retain the prior reader artifact. In-place writes have already
+ * invalidated it and publish a new logical generation on the same private file.
  */
 export async function publishPreparedAnalysis(
   directory: string,
@@ -266,6 +369,14 @@ export async function publishPreparedAnalysis(
   const root = await embeddingJobDirectory(directory);
   const receipt = await readPreparedAnalysis(root);
   if (!receipt) return undefined;
+  if (receipt.writerPid !== undefined) {
+    try {
+      process.kill(receipt.writerPid, 0);
+      throw new Error('Graph writer has not exited; publication must wait for physical release');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+  }
   const bytes = await boundedRead(path.join(root, receipt.metadataFile), receipt.metadataBytes);
   if (bytes.length !== receipt.metadataBytes || hash(bytes) !== receipt.metadataDigest)
     throw new Error('Prepared graph metadata checksum mismatch; artifacts retained');
@@ -277,19 +388,30 @@ export async function publishPreparedAnalysis(
     !DIGEST.test(metadata.graphGeneration.coveredContent)
   )
     throw new Error('Prepared graph generation mismatch');
+  const previous = await readSlotMetadata(root);
+  const currentDigest = metadataDigest(previous);
+  if (
+    currentDigest !== receipt.priorMetadataDigest &&
+    currentDigest !== receipt.redirectedMetadataDigest &&
+    currentDigest !== receipt.metadataDigest
+  )
+    throw new Error(
+      'Prepared graph publication was superseded; artifacts retained; retry analysis',
+    );
   const staged = path.join(root, receipt.stagingFile);
   const published = path.join(root, receipt.graphFile);
   const stagedExists = await regularFile(staged);
   const publishedExists = await regularFile(published);
-  if (stagedExists === publishedExists)
+  const retainedInPlace = staged === published;
+  if (retainedInPlace ? !publishedExists : stagedExists === publishedExists)
     throw new Error('Prepared publication has missing or conflicting graph artifacts');
   const source = stagedExists ? staged : published;
   await actions.verify(source, metadata);
-  if (stagedExists) {
+  if (stagedExists && !retainedInPlace) {
     await fs.rename(staged, published);
     await syncEmbeddingJobDirectory(root);
   }
-  await retireLegacyGraph(root, receipt, metadata, actions);
+  await retireLegacyGraph(root, receipt, metadata, actions, previous);
   await actions.saveMetadata(metadata);
   // The canonical pointer must be durable before callers start paid work.
   await syncPublishedMetadata(root, metadata);
