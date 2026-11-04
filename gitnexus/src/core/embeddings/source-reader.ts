@@ -23,7 +23,9 @@ export const needsEmbeddingSource = (
   config: Partial<EmbeddingConfig>,
 ): boolean =>
   node.label === 'Class' ||
-  (!isShortLabel(node.label) &&
+  // Fallback File content has synthetic ranges over normalized retained text.
+  (node.label !== 'File' &&
+    !isShortLabel(node.label) &&
     (node.content.length >
       Math.min(
         config.chunkSize ?? DEFAULT_EMBEDDING_CONFIG.chunkSize,

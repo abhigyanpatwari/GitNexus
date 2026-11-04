@@ -111,9 +111,10 @@ When a file changes, verified identical inputs and ranges reuse their existing
 vectors and refresh only the cached fingerprint. Changed tails and incomplete
 checkpoint groups still regenerate their vectors.
 
-For paired performance measurements, build a baseline checkout and run from
-`gitnexus/` with `GITNEXUS_BENCH=1 GITNEXUS_CHUNK_BASELINE_REPO=/path/to/baseline`
-using `npm test -- test/integration/embedding-chunking-benchmark.test.ts`.
+For paired performance measurements, build both checkouts and run from `gitnexus/`:
+`node --expose-gc scripts/benchmark-embedding-chunking.mjs /path/to/baseline /path/to/candidate /tmp/chunk-bench.json`.
+This manual benchmark requires a separately built baseline and runs outside the
+test suite; its failure-cleanup tests always run in CI.
 The benchmark uses the local embedding model and saves raw samples outside the
 repository. Compare per-cohort median/p95, input counts, and memory observations;
 it does not substitute for native analyze and persistence tests.

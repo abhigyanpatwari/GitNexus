@@ -101,8 +101,13 @@ const findSnippetNode = (
     const node = stack.pop()!;
     if (types.has(node.type)) {
       if (expectedName === undefined) return node;
-      const name =
-        node.childForFieldName?.('name')?.text ?? node.parent?.childForFieldName?.('name')?.text;
+      let name = node.childForFieldName?.('name')?.text;
+      // Kotlin class/object names are direct children without a field name.
+      // On callables, a direct type_identifier can instead be the return type.
+      if (!name && (node.type === 'class_declaration' || node.type === 'object_declaration')) {
+        name = node.namedChildren?.find((child: any) => child.type === 'type_identifier')?.text;
+      }
+      name ??= node.parent?.childForFieldName?.('name')?.text;
       if (name === expectedName) return node;
       first ??= node;
       candidates++;
@@ -128,6 +133,7 @@ export const findFunctionNode = (root: any, expectedName?: string): any | null =
 const CLASS_LIKE_TYPES = new Set([
   'class_declaration',
   'class_definition',
+  'class_specifier',
   'struct_declaration',
   'struct_item',
   'interface_declaration',

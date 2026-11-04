@@ -687,7 +687,11 @@ const projectClassChunks = (
     while (pending.length) {
       const current = pending.pop();
       if (!current) break;
-      const implementation = current.childForFieldName?.('body');
+      // Kotlin/Swift closures and accessors also carry unnamed executable
+      // statement groups; Kotlin expression getters use function_body.
+      const implementation =
+        current.childForFieldName?.('body') ??
+        (current.type === 'statements' || current.type === 'function_body' ? current : null);
       if (implementation) {
         excluded.push(implementation);
         continue;

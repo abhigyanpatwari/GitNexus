@@ -104,6 +104,20 @@ describe('contentHashForNode', () => {
     expect(hash).toMatch(/^[0-9a-f]{40}$/);
   });
 
+  it('invalidates cached v1 class projections after declaration and body fixes', () => {
+    const node = {
+      id: 'Class:sample.kt:Outer',
+      name: 'Outer',
+      label: 'Class',
+      filePath: 'sample.kt',
+      content: 'class Outer { val field = 1; class Inner {} }',
+      startLine: 0,
+      endLine: 0,
+    };
+    // Captured from the previous projection: it lost this outer declaration.
+    expect(contentHashForNode(node)).not.toBe('3d53178be207e5c7b4d7054cd2273dd4e73c203c');
+  });
+
   it('binds long-source fingerprints, ranges and policy without changing short v7 hashes', () => {
     const source = {
       repoPath: '/missing',
@@ -566,6 +580,57 @@ describe('runEmbeddingPipeline incremental filter', () => {
       expect(submitted).toHaveLength(1);
       expect(result.failedNodeIds).toHaveLength(6);
       expect(result.nodesProcessed).toBe(0);
+    },
+  );
+
+  it.each([false, true])(
+    'keeps fallback File inputs unchanged with source context: %s',
+    async (multiline) => {
+      mockEmbedderSetup();
+      const { embedBatch } = await import('../../src/core/embeddings/embedder.js');
+      const fileNode = makeNode({
+        id: 'File:README.md',
+        name: 'README.md',
+        label: 'File',
+        filePath: 'README.md',
+        content: `FIRST_LINE ${'documentation '.repeat(110)}${multiline ? '\nSECOND_LINE' : ''}`,
+        startLine: 1,
+        endLine: multiline ? 2 : 1,
+      });
+      const { EmbeddingSourceReader } = await import('../../src/core/embeddings/source-reader.js');
+      const read = vi.spyOn(EmbeddingSourceReader.prototype, 'read');
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+      try {
+        await runEmbeddingPipeline(
+          mockExecuteQuery([fileNode]),
+          mockExecuteWithReusedStatement(),
+          () => {},
+        );
+        const expected = vi.mocked(embedBatch).mock.calls.flatMap(([texts]) => texts);
+        vi.mocked(embedBatch).mockClear();
+        await runEmbeddingPipeline(
+          mockExecuteQuery([fileNode]),
+          mockExecuteWithReusedStatement(),
+          () => {},
+          {},
+          undefined,
+          undefined,
+          {
+            source: {
+              repoPath: '/missing-docs-checkout',
+              fileHashes: {},
+              contentRetention: 'full',
+            },
+          },
+        );
+        expect(vi.mocked(embedBatch).mock.calls.flatMap(([texts]) => texts)).toEqual(expected);
+        expect(expected.join('\n')).toContain('FIRST_LINE');
+        if (multiline) expect(expected.join('\n')).toContain('SECOND_LINE');
+        expect(read).not.toHaveBeenCalled();
+      } finally {
+        read.mockRestore();
+      }
     },
   );
 

@@ -19,6 +19,87 @@ const node = (content: string, label = 'Function', filePath = 'sample.ts'): Embe
 });
 
 describe('AST embedding contracts with real parsers (#702)', () => {
+  it('does not mistake a callable return type for its declaration name', async () => {
+    const tree = await ast.ensureAndParse(
+      'Bar other() { return {}; } Baz Bar() { return {}; }',
+      'sample.cpp',
+    );
+    expect(tree?.rootNode.hasError).toBe(false);
+    // Neither callable exposes a name field; ambiguity must fall back safely.
+    expect(ast.findFunctionNode(tree.rootNode, 'Bar')).toBeNull();
+  });
+
+  it.each(['Outer', 'Inner'])('selects the named nested Kotlin class: %s', async (name) => {
+    const source = 'class Outer { val outerField = 1; class Inner { val innerField = 2 } }';
+    const tree = await ast.ensureAndParse(source, 'sample.kt');
+    expect(tree?.rootNode.hasError).toBe(false);
+    const field = name === 'Outer' ? 'outerField' : 'innerField';
+    const other = name === 'Outer' ? 'innerField' : 'outerField';
+    const chunks = await chunkNode('Class', source, 'sample.kt', 0, 0, 1200, 120, { tree, name });
+    const text = chunks.map((chunk) => chunk.text).join('\n');
+    expect(text).toContain(`class ${name}`);
+    expect(text).toContain(field);
+    expect(text).not.toContain(other);
+    expect((await extractStructuralNames(source, 'sample.kt', tree, name)).fieldNames).toContain(
+      field,
+    );
+  });
+
+  it('preserves C++ class declarations and fields while excluding method implementations', async () => {
+    const source = 'class Cache { int capacity; int size() { return 12345; } };';
+    const tree = await ast.ensureAndParse(source, 'sample.cpp');
+    expect(tree?.rootNode.hasError).toBe(false);
+    const chunks = await chunkNode('Class', source, 'sample.cpp', 0, 0, 1200, 120, {
+      tree,
+      name: 'Cache',
+    });
+    const text = chunks.map((chunk) => chunk.text).join('\n');
+    expect(text).toContain('class Cache');
+    expect(text).toContain('int capacity;');
+    expect(text).not.toContain('12345');
+    expect(await extractStructuralNames(source, 'sample.cpp', tree, 'Cache')).toMatchObject({
+      fieldNames: ['capacity'],
+      methodNames: ['size'],
+    });
+  });
+
+  it.each([
+    [
+      'sample.kt',
+      'class Sample { val callback = { println("LAMBDA_BODY") }; val value: String get() = "GETTER_BODY"; var stored: String = "FIELD_VALUE"\n get() { return "BLOCK_GETTER_BODY" }\n set(value) { println("SETTER_BODY") } }',
+    ],
+    [
+      'sample.swift',
+      'class Sample { var callback = { print("LAMBDA_BODY") }; var value: String { return "GETTER_BODY" }; var stored = "FIELD_VALUE" { willSet { print("WILLSET_BODY") } didSet { print("DIDSET_BODY") } } }',
+    ],
+    [
+      'sample.swift',
+      'class Sample { var callback = { (arg: String) in print("LAMBDA_BODY") }; var value: String { get { return "GETTER_BODY" } set { print("SETTER_BODY") } }; var stored = "FIELD_VALUE" }',
+    ],
+  ])('excludes field implementation bodies in %s: %s', async (filePath, source) => {
+    const tree = await ast.ensureAndParse(source, filePath);
+    expect(tree?.rootNode.hasError).toBe(false);
+    for (const strategy of ['ast', 'fixed'] as const) {
+      const chunks = await chunkNode(
+        'Class',
+        source,
+        filePath,
+        0,
+        source.split('\n').length - 1,
+        80,
+        10,
+        { tree, name: 'Sample', strategy },
+      );
+      const text = chunks.map((chunk) => chunk.text).join('\n');
+      expect(text).toContain('class Sample');
+      expect(text).toContain('callback');
+      expect(text).toContain('value');
+      expect(text).toContain('FIELD_VALUE');
+      expect(text).not.toContain('_BODY');
+      for (const chunk of chunks) expect(chunk.text.length).toBeLessThanOrEqual(80);
+    }
+  });
+
   it('selects a nested Python class without including its enclosing class or method body', async () => {
     const source =
       'class Outer:\n    outer = 2\n    class Inner:\n        field = 1\n        def run(self):\n            return "BODY"\n';
