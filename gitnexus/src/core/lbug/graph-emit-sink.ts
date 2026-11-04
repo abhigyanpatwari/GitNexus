@@ -99,7 +99,8 @@ import type { KnowledgeGraph } from '../graph/types.js';
 import { DECLARED_RELATION_PAIRS, REL_CSV_HEADER, buildRelRow } from './csv-generator.js';
 import {
   VALID_NODE_TABLES,
-  assertDeclaredPair,
+  checkDeclaredPair,
+  UndeclaredPairCollector,
   relPairKeyFor,
   splitRelPairKey,
 } from './rel-pair-routing.js';
@@ -331,6 +332,8 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
    * swallowed by a caller's try/catch and silently drop the rest of the rows.
    */
   private openFailure: unknown | undefined = undefined;
+  /** Undeclared pairs met while streaming; {@link finalize} fails with all of them. */
+  private readonly undeclared = new UndeclaredPairCollector();
 
   constructor(
     private readonly real: KnowledgeGraph,
@@ -447,13 +450,18 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     const pairKey = relPairKeyFor(relationship.sourceId, relationship.targetId, VALID_NODE_TABLES);
     if (pairKey === undefined) return;
 
-    assertDeclaredPair(
-      pairKey,
-      DECLARED_RELATION_PAIRS,
-      relationship.type,
-      relationship.sourceId,
-      relationship.targetId,
-    );
+    if (
+      !checkDeclaredPair(
+        pairKey,
+        DECLARED_RELATION_PAIRS,
+        this.undeclared,
+        relationship.type,
+        relationship.sourceId,
+        relationship.targetId,
+      )
+    ) {
+      return;
+    }
     let writer = this.relWriters.get(pairKey);
     if (writer === undefined) {
       // Cold: once per pair, so decoding the key back into its labels is free.
@@ -529,6 +537,8 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
           }`,
       );
     }
+
+    this.undeclared.throwIfAny();
 
     return { relsByPair, totalRows, structuralRows: this.structuralRows };
   }

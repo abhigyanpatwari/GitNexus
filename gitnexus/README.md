@@ -432,6 +432,20 @@ Like Actuator snapshots, documents are external to git freshness — replacing o
 
 > **`gitnexus uninstall`** removes the named GitNexus MCP entries, hooks, and skill directories from detected editors. This includes a URL-based MCP entry you configured yourself, even if setup preserved it. Skill directories are identified **by bundled gitnexus skill name** (e.g. `gitnexus-cli/`), so if you customized files inside an installed skill directory, back them up first. It is a dry-run preview by default and prints the exact paths it would remove; pass `--force` to apply. Per-repo indexes (`gitnexus clean --all`) and the global npm package (`npm uninstall -g gitnexus`) are left for you to remove.
 
+## Local Embedding Model
+
+Local embeddings use `Snowflake/snowflake-arctic-embed-xs` (384 dimensions). To use another Hugging Face model with ONNX weights for transformers.js, set its id and its vector size:
+
+```bash
+export GITNEXUS_EMBEDDING_MODEL_ID=Xenova/bge-base-en-v1.5
+export GITNEXUS_EMBEDDING_DIMS=768   # required unless the model returns 384-dimensional vectors
+gitnexus analyze . --force --embeddings
+```
+
+Set the same two variables wherever the index is queried (MCP server, `serve`, `query`), and restart running servers after changing them. A server using another model of the same width cannot detect the mismatch and will return unreliable semantic results. A model that returns a different vector size than `GITNEXUS_EMBEDDING_DIMS` stops the run with the size to set. Local models use mean pooling and normalization; model-specific query prefixes and pooling settings are not configurable.
+
+When changing models, run `gitnexus analyze . --force --embeddings`. A plain `analyze`, even with `--embeddings`, can return "Already up to date" on unchanged source; without `--embeddings`, changed-source runs normally only preserve existing vectors. The forced embedding pass replaces vectors whose model changed, including switches between models of the same width. To return to the default model, unset both `GITNEXUS_EMBEDDING_MODEL_ID` and `GITNEXUS_EMBEDDING_DIMS`, then run the same command. For repositories above the default 50,000-node embedding cap, use `--embeddings 0` (no cap) or an explicit higher limit.
+
 ## Remote Embeddings
 
 Set these env vars to use a remote OpenAI-compatible `/v1/embeddings` endpoint instead of the local model:
