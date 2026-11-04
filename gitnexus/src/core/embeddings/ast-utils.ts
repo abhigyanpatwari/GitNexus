@@ -84,9 +84,10 @@ const FUNCTION_LIKE_TYPES = new Set([
 ]);
 
 /**
- * Find the first function/method-like declaration in a snippet AST.
- * Used by the chunker when parsing node.content where absolute line
- * numbers don't apply.
+ * Find a declaration of one of the supplied types in a snippet AST.
+ * Without a name, return the first match. With a name, prefer that match
+ * and fall back only when the snippet has a single candidate.
+ * Snippet offsets are relative to node.content, not the original file.
  */
 const findSnippetNode = (
   root: any,

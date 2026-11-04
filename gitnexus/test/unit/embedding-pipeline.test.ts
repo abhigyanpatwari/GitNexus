@@ -118,6 +118,19 @@ describe('contentHashForNode', () => {
     expect(contentHashForNode(node)).not.toBe('3d53178be207e5c7b4d7054cd2273dd4e73c203c');
   });
 
+  it('invalidates cached v2 empty direct-member projections', () => {
+    const node = {
+      id: 'Class:sample.m:Empty',
+      name: 'Empty',
+      label: 'Class',
+      filePath: 'sample.m',
+      content: '@interface Empty : NSObject\n@end',
+      startLine: 0,
+      endLine: 1,
+    };
+    expect(contentHashForNode(node)).not.toBe('3df96fda573e39197809d34d59257008c1bf9622');
+  });
+
   it('binds long-source fingerprints, ranges and policy without changing short v7 hashes', () => {
     const source = {
       repoPath: '/missing',

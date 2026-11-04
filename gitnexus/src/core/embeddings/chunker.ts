@@ -674,7 +674,7 @@ const projectClassChunks = (
     }
   }
   fields.sort((a, b) => a.startIndex - b.startIndex);
-  const headerEnd = firstMemberStart ?? (body === target ? target.startIndex : body.startIndex + 1);
+  const headerEnd = firstMemberStart ?? (body === target ? target.endIndex : body.startIndex + 1);
   const header = content.slice(target.startIndex, headerEnd).trimEnd();
   const sourceGroups: Span[][] = header
     ? [[{ startIndex: target.startIndex, endIndex: target.startIndex + header.length }]]

@@ -128,7 +128,7 @@ export const contentHashForNode = (
   if (node.label === 'Class') {
     // Class projection has its own revision; unchanged short callables keep v7.
     // Raw source makes this deterministic before and after AST preparation.
-    version += '\nclass-projection:v2';
+    version += '\nclass-projection:v3';
   }
   if (
     strategy === 'ast' &&

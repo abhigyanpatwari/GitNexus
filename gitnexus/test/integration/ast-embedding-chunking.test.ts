@@ -19,6 +19,23 @@ const node = (content: string, label = 'Function', filePath = 'sample.ts'): Embe
 });
 
 describe('AST embedding contracts with real parsers (#702)', () => {
+  it.each(['@interface Empty : NSObject', '@protocol Empty', '@implementation Empty'])(
+    'preserves an empty direct-member declaration: %s',
+    async (header) => {
+      const source = `${header}\n@end`;
+      const tree = await ast.ensureAndParse(source, 'sample.m');
+      expect(tree?.rootNode.hasError).toBe(false);
+      for (const strategy of ['ast', 'fixed'] as const) {
+        const chunks = await chunkNode('Class', source, 'sample.m', 0, 1, 1200, 120, {
+          tree,
+          name: 'Empty',
+          strategy,
+        });
+        expect(chunks.map((chunk) => chunk.text).join('\n')).toContain(header);
+      }
+    },
+  );
+
   it('does not mistake a callable return type for its declaration name', async () => {
     const tree = await ast.ensureAndParse(
       'Bar other() { return {}; } Baz Bar() { return {}; }',
