@@ -52,7 +52,12 @@ it.each([
     nativePhases,
     size: { nodes: 1 },
     reconcileGraphNodeIdentities,
-    adapter: { executeQuery: async (query: string) => (query.includes('Function') ? rows : []) },
+    adapter: {
+      executeQuery: async (query: string) => (query.includes('Function') ? rows : []),
+      forEachQueryRow: async (query: string, onRow: (row: (typeof rows)[number]) => void) => {
+        if (query.includes('Function')) rows.forEach(onRow);
+      },
+    },
   }) as (phase: string) => Promise<void>;
   await audit('controlled-scan');
   expect(nativePhases).toEqual([expect.objectContaining({ verdict, rows: rows.length })]);

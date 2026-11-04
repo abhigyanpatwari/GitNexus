@@ -1,0 +1,735 @@
+{
+  "date": "2026-11-02",
+  "baseCommit": "347cc99b4a237f9a71c0084167bcbcbd9d06e610",
+  "node": "v22.23.3",
+  "ladybug": "0.22.0",
+  "hardware": {
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K",
+    "logicalCpus": 24,
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "settings": {
+    "workers": 16,
+    "heapMiB": 8192,
+    "sharedHost": true,
+    "scopePhaseLogging": true,
+    "cpuProfile": false,
+    "independentColdSeeds": true
+  },
+  "measurement": {
+    "timed": "runFullAnalysis including graph persistence and FTS",
+    "excluded": ["process startup", "graph hashing", "post-analysis persisted target query"],
+    "editOrder": [
+      "baseline-1",
+      "candidate-1",
+      "candidate-2",
+      "baseline-2",
+      "baseline-3",
+      "candidate-3"
+    ],
+    "graphExclusions": [
+      "Folder",
+      "Community",
+      "Process",
+      "CONTAINS",
+      "MEMBER_OF",
+      "STEP_IN_PROCESS"
+    ],
+    "limitations": [
+      "three fresh-process pairs and one repeated-process pair on a shared host",
+      "graph hashes are post-persistence; source content may have been cleared",
+      "persistent process exercises repeated analysis, not watch event scheduling",
+      "baseline resolution limits also apply to candidate",
+      "process maxRSS includes earlier samples in persistent mode"
+    ]
+  },
+  "pin": {
+    "patchSha256": "a61b37f5ab42a95a62ae96510a5e285cb9b835a3f983ce4a96ecd0413504ea43",
+    "runtimes": {
+      "baseline": {
+        "gitnexus/dist/_shared/scope-resolution/name-claims.js": "157fd1ff2870468d335f97fff41d0b002f4cad749db64634aa48469053d7cea3",
+        "gitnexus/dist/core/ingestion/scope-resolution/scope/walkers.js": "15dba69d6ec871e43f4d0d1aadbad93e1645c13a9ad2e664e9f9bd679f73e55c"
+      },
+      "candidate": {
+        "gitnexus/dist/_shared/scope-resolution/name-claims.js": "6f998066bcb3f17d69f2dbae7dba1a1d5af865bc8798d4b137aaed9387a81284",
+        "gitnexus/dist/core/ingestion/scope-resolution/scope/walkers.js": "9400ed640a22343f6cc54e3515944af664022ac7f4a8c4306da0cc95df37f9e1"
+      }
+    }
+  },
+  "harnessSha256": "dbd428561cd614b8f0fb2dda48ad5445e214bea02a9c39f201cc2488bd7a81c8",
+  "harnessProvenance": "Checksums identify the scripts used for measurement, before repository formatting, preflight/cleanup fixes and configurable CI worker/heap limits. Local resource defaults are unchanged.",
+  "differential": {
+    "seed": 48161,
+    "comparisons": 72000,
+    "status": "passed",
+    "harnessSha256": "8a34834c153531daa9f6000e178fc87458e48d3507c8c6e20e2738f739413e88"
+  },
+  "runs": {
+    "fresh": {
+      "rawResultSha256": "3da8095b17ecbb5099164220152f8c9582268868db6a7d23b2565d987f2a7d6d",
+      "samples": [
+        {
+          "name": "baseline-seed",
+          "variant": "baseline",
+          "ms": 218218.857255,
+          "loadBefore": [19.08, 16.18, 14.03],
+          "loadAfter": [13.58, 16.53, 14.82],
+          "maxRssKiB": 5929416,
+          "rebuildReasons": [],
+          "reparsedFiles": 3120,
+          "cachedFiles": 0,
+          "phaseMs": {
+            "extracting": 307.5897699999996,
+            "structure": 59.0564260000001,
+            "parsing": 77980.037363,
+            "scopeResolution": 80390.527192,
+            "enriching": 36.09870200001751,
+            "communities": 2342.1585379999888,
+            "processes": 659.8627029999916,
+            "complete": 0.06783200000063516,
+            "lbug": 17391.16107600002,
+            "fts": 29286.008015999978,
+            "done": 6083.309720000019,
+            "beforeFirstProgress": 3682.979917
+          },
+          "scopeLogs": [
+            "[scope-resolution prof] extract=21ms finalize=71ms propagate=78ms rangeBind=0.0ms resolve=175ms emit=1547ms total=1891ms (110 files)",
+            "[scope-resolution prof] extract=2649ms finalize=1451ms propagate=1426ms rangeBind=0.0ms resolve=7468ms emit=41291ms total=54285ms (2893 files)",
+            "[scope-resolution prof] extract=270ms finalize=65ms propagate=61ms rangeBind=0.0ms resolve=444ms emit=1835ms total=2675ms (113 files)"
+          ],
+          "graph": {
+            "nodes": {
+              "count": 114413,
+              "sha256": "d2e2ee693005fee4770a654b1391f5348d7b03316d57bf0e7bceb4cf6787f9ad"
+            },
+            "edges": {
+              "count": 318798,
+              "sha256": "595afccf9f3fa2725727f3439cb5fd7b1aadd18ae6aca4eaa478ef00b793fe21"
+            }
+          },
+          "persistedTargets": [
+            {
+              "target": "save"
+            }
+          ]
+        },
+        {
+          "name": "candidate-seed",
+          "variant": "candidate",
+          "ms": 187147.92687899998,
+          "loadBefore": [13.13, 16.39, 14.78],
+          "loadAfter": [11.64, 15.07, 14.65],
+          "maxRssKiB": 5912680,
+          "rebuildReasons": [],
+          "reparsedFiles": 3120,
+          "cachedFiles": 0,
+          "phaseMs": {
+            "extracting": 248.5604829999993,
+            "structure": 55.20889800000077,
+            "parsing": 62435.270292,
+            "scopeResolution": 61285.705398999984,
+            "enriching": 31.93969999998808,
+            "communities": 2074.6883160000143,
+            "processes": 544.6516690000135,
+            "complete": 0.05536599998595193,
+            "lbug": 16684.85912899999,
+            "fts": 29567.160881000018,
+            "done": 5673.711943999981,
+            "beforeFirstProgress": 8546.114802
+          },
+          "scopeLogs": [
+            "[scope-resolution prof] extract=18ms finalize=60ms propagate=52ms rangeBind=0.0ms resolve=118ms emit=1176ms total=1425ms (110 files)",
+            "[scope-resolution prof] extract=2048ms finalize=1153ms propagate=1045ms rangeBind=0.0ms resolve=5119ms emit=31736ms total=41101ms (2893 files)",
+            "[scope-resolution prof] extract=201ms finalize=62ms propagate=64ms rangeBind=0.0ms resolve=282ms emit=1469ms total=2078ms (113 files)"
+          ],
+          "graph": {
+            "nodes": {
+              "count": 114413,
+              "sha256": "d2e2ee693005fee4770a654b1391f5348d7b03316d57bf0e7bceb4cf6787f9ad"
+            },
+            "edges": {
+              "count": 318798,
+              "sha256": "595afccf9f3fa2725727f3439cb5fd7b1aadd18ae6aca4eaa478ef00b793fe21"
+            }
+          },
+          "persistedTargets": [
+            {
+              "target": "save"
+            }
+          ]
+        },
+        {
+          "name": "baseline-1",
+          "variant": "baseline",
+          "ms": 122065.065072,
+          "loadBefore": [11.43, 14.97, 14.62],
+          "loadAfter": [8.47, 12.61, 13.79],
+          "maxRssKiB": 4474272,
+          "incremental": {
+            "changedFiles": 1,
+            "reparsedFiles": 22,
+            "affectedDependents": 0,
+            "deletedFiles": 0,
+            "writeMode": "incremental"
+          },
+          "rebuildReasons": [],
+          "reparsedFiles": 22,
+          "cachedFiles": 3098,
+          "phaseMs": {
+            "extracting": 221.9082469999994,
+            "structure": 52.67533299999923,
+            "parsing": 8765.232970000001,
+            "scopeResolution": 65945.25450899999,
+            "enriching": 121.54619799999637,
+            "complete": 0.25131200000760145,
+            "lbug": 10923.801725000012,
+            "communities": 2019.391571,
+            "processes": 5888.645534999989,
+            "fts": 13240.190296,
+            "done": 8270.738006,
+            "beforeFirstProgress": 6615.429370000001
+          },
+          "scopeLogs": [
+            "[scope-resolution prof] extract=19ms finalize=60ms propagate=58ms rangeBind=0.0ms resolve=148ms emit=1294ms total=1578ms (110 files)",
+            "[scope-resolution prof] extract=2031ms finalize=1178ms propagate=1108ms rangeBind=0.0ms resolve=6717ms emit=35251ms total=46284ms (2893 files)",
+            "[scope-resolution prof] extract=232ms finalize=61ms propagate=59ms rangeBind=0.0ms resolve=379ms emit=1552ms total=2283ms (113 files)"
+          ],
+          "graph": {
+            "nodes": {
+              "count": 114413,
+              "sha256": "d2e2ee693005fee4770a654b1391f5348d7b03316d57bf0e7bceb4cf6787f9ad"
+            },
+            "edges": {
+              "count": 318798,
+              "sha256": "4ece58529c66b824a32ee5b1c3f642193279f98e39d95eea53bf2f5ec1700ae8"
+            }
+          },
+          "persistedTargets": [
+            {
+              "target": "load"
+            }
+          ]
+        },
+        {
+          "name": "candidate-1",
+          "variant": "candidate",
+          "ms": 111134.852017,
+          "loadBefore": [8.47, 12.61, 13.79],
+          "loadAfter": [7.79, 11.1, 13.1],
+          "maxRssKiB": 4406608,
+          "incremental": {
+            "changedFiles": 1,
+            "reparsedFiles": 22,
+            "affectedDependents": 0,
+            "deletedFiles": 0,
+            "writeMode": "incremental"
+          },
+          "rebuildReasons": [],
+          "reparsedFiles": 22,
+          "cachedFiles": 3098,
+          "phaseMs": {
+            "extracting": 228.39688900000056,
+            "structure": 58.946551,
+            "parsing": 7914.542683,
+            "scopeResolution": 62759.170073999994,
+            "enriching": 126.18967100000009,
+            "complete": 0.17001499999605585,
+            "lbug": 9233.545855000018,
+            "communities": 1969.2113839999947,
+            "processes": 1475.3109669999976,
+            "fts": 12857.877876999992,
+            "done": 8347.120962,
+            "beforeFirstProgress": 6164.369089
+          },
+          "scopeLogs": [
+            "[scope-resolution prof] extract=15ms finalize=57ms propagate=51ms rangeBind=0.0ms resolve=115ms emit=1221ms total=1459ms (110 files)",
+            "[scope-resolution prof] extract=2192ms finalize=1268ms propagate=1122ms rangeBind=0.0ms resolve=5371ms emit=33985ms total=43937ms (2893 files)",
+            "[scope-resolution prof] extract=176ms finalize=75ms propagate=55ms rangeBind=0.0ms resolve=253ms emit=1333ms total=1892ms (113 files)"
+          ],
+          "graph": {
+            "nodes": {
+              "count": 114413,
+              "sha256": "d2e2ee693005fee4770a654b1391f5348d7b03316d57bf0e7bceb4cf6787f9ad"
+            },
+            "edges": {
+              "count": 318798,
+              "sha256": "4ece58529c66b824a32ee5b1c3f642193279f98e39d95eea53bf2f5ec1700ae8"
+            }
+          },
+          "persistedTargets": [
+            {
+              "target": "load"
+            }
+          ]
+        },
+        {
+          "name": "candidate-2",
+          "variant": "candidate",
+          "ms": 101730.29475,
+          "loadBefore": [7.79, 11.1, 13.1],
+          "loadAfter": [8.7, 10.56, 12.7],
+          "maxRssKiB": 4447528,
+          "incremental": {
+            "changedFiles": 1,
+            "reparsedFiles": 22,
+            "affectedDependents": 0,
+            "deletedFiles": 0,
+            "writeMode": "incremental"
+          },
+          "rebuildReasons": [],
+          "reparsedFiles": 22,
+          "cachedFiles": 3098,
+          "phaseMs": {
+            "extracting": 227.87885000000006,
+            "structure": 50.07236400000011,
+            "parsing": 6870.926647,
+            "scopeResolution": 58457.57910199999,
+            "enriching": 123.74990100000286,
+            "complete": 0.12248400000680704,
+            "lbug": 9597.999660000001,
+            "communities": 1855.2971499999985,
+            "processes": 1319.511560999992,
+            "fts": 12526.206298000005,
+            "done": 8028.759919000004,
+            "beforeFirstProgress": 2672.190814
+          },
+          "scopeLogs": [
+            "[scope-resolution prof] extract=14ms finalize=61ms propagate=47ms rangeBind=0.0ms resolve=103ms emit=1077ms total=1302ms (110 files)",
+            "[scope-resolution prof] extract=1860ms finalize=1052ms propagate=1064ms rangeBind=0.0ms resolve=4989ms emit=31810ms total=40774ms (2893 files)",
+            "[scope-resolution prof] extract=189ms finalize=62ms propagate=52ms rangeBind=0.0ms resolve=258ms emit=1383ms total=1943ms (113 files)"
+          ],
+          "graph": {
+            "nodes": {
+              "count": 114413,
+              "sha256": "d2e2ee693005fee4770a654b1391f5348d7b03316d57bf0e7bceb4cf6787f9ad"
+            },
+            "edges": {
+              "count": 318798,
+              "sha256": "595afccf9f3fa2725727f3439cb5fd7b1aadd18ae6aca4eaa478ef00b793fe21"
+            }
+          },
+          "persistedTargets": [
+            {
+              "target": "save"
+            }
+          ]
+        },
+        {
+          "name": "baseline-2",
+          "variant": "baseline",
+          "ms": 114005.953714,
+          "loadBefore": [8.7, 10.56, 12.7],
+          "loadAfter": [9.5, 10.18, 12.3],
+          "maxRssKiB": 4501784,
+          "incremental": {
+            "changedFiles": 1,
+            "reparsedFiles": 22,
+            "affectedDependents": 0,
+            "deletedFiles": 0,
+            "writeMode": "incremental"
+          },
+          "rebuildReasons": [],
+          "reparsedFiles": 22,
+          "cachedFiles": 3098,
+          "phaseMs": {
+            "extracting": 220.18439399999988,
+            "structure": 56.05602999999974,
+            "parsing": 6693.682359,
+            "scopeResolution": 68196.749623,
+            "enriching": 136.36504800000694,
+            "complete": 0.24019299999054056,
+            "lbug": 10199.119456000015,
+            "communities": 1921.6023549999954,
+            "processes": 1269.8549959999946,
+            "fts": 12961.042190000007,
+            "done": 8423.348173999999,
+            "beforeFirstProgress": 3927.708896
+          },
+          "scopeLogs": [
+            "[scope-resolution prof] extract=15ms finalize=63ms propagate=59ms rangeBind=0.0ms resolve=129ms emit=1239ms total=1506ms (110 files)",
+            "[scope-resolution prof] extract=2317ms finalize=1312ms propagate=1295ms rangeBind=0.0ms resolve=7098ms emit=36604ms total=48627ms (2893 files)",
+            "[scope-resolution prof] extract=225ms finalize=58ms propagate=59ms rangeBind=0.0ms resolve=366ms emit=1623ms total=2331ms (113 files)"
+          ],
+          "graph": {
+            "nodes": {
+              "count": 114413,
+              "sha256": "d2e2ee693005fee4770a654b1391f5348d7b03316d57bf0e7bceb4cf6787f9ad"
+            },
+            "edges": {
+              "count": 318798,
+              "sha256": "595afccf9f3fa2725727f3439cb5fd7b1aadd18ae6aca4eaa478ef00b793fe21"
+            }
+          },
+          "persistedTargets": [
+            {
+              "target": "save"
+            }
+          ]
+        },
+        {
+          "name": "baseline-3",
+          "variant": "baseline",
+          "ms": 131285.117027,
+          "loadBefore": [9.94, 10.26, 12.32],
+          "loadAfter": [11.35, 10.88, 12.28],
+          "maxRssKiB": 4423784,
+          "incremental": {
+            "changedFiles": 1,
+            "reparsedFiles": 22,
+            "affectedDependents": 0,
+            "deletedFiles": 0,
+            "writeMode": "incremental"
+          },
+          "rebuildReasons": [],
+          "reparsedFiles": 22,
+          "cachedFiles": 3098,
+          "phaseMs": {
+            "extracting": 246.84667200000013,
+            "structure": 55.95557000000008,
+            "parsing": 7195.49225,
+            "scopeResolution": 72694.88498100001,
+            "enriching": 136.15589299998828,
+            "complete": 0.1802390000084415,
+            "lbug": 13022.899677999987,
+            "communities": 2414.3188599999994,
+            "processes": 1639.1324740000127,
+            "fts": 14523.853445,
+            "done": 16550.80450099999,
+            "beforeFirstProgress": 2804.592464
+          },
+          "scopeLogs": [
+            "[scope-resolution prof] extract=17ms finalize=67ms propagate=66ms rangeBind=0.0ms resolve=138ms emit=1370ms total=1658ms (110 files)",
+            "[scope-resolution prof] extract=2113ms finalize=1144ms propagate=1129ms rangeBind=0.0ms resolve=7406ms emit=40471ms total=52262ms (2893 files)",
+            "[scope-resolution prof] extract=255ms finalize=74ms propagate=68ms rangeBind=0.0ms resolve=393ms emit=1821ms total=2611ms (113 files)"
+          ],
+          "graph": {
+            "nodes": {
+              "count": 114413,
+              "sha256": "d2e2ee693005fee4770a654b1391f5348d7b03316d57bf0e7bceb4cf6787f9ad"
+            },
+            "edges": {
+              "count": 318798,
+              "sha256": "4ece58529c66b824a32ee5b1c3f642193279f98e39d95eea53bf2f5ec1700ae8"
+            }
+          },
+          "persistedTargets": [
+            {
+              "target": "load"
+            }
+          ]
+        },
+        {
+          "name": "candidate-3",
+          "variant": "candidate",
+          "ms": 111303.319634,
+          "loadBefore": [11, 10.82, 12.25],
+          "loadAfter": [8.98, 10.27, 11.9],
+          "maxRssKiB": 4458828,
+          "incremental": {
+            "changedFiles": 1,
+            "reparsedFiles": 22,
+            "affectedDependents": 0,
+            "deletedFiles": 0,
+            "writeMode": "incremental"
+          },
+          "rebuildReasons": [],
+          "reparsedFiles": 22,
+          "cachedFiles": 3098,
+          "phaseMs": {
+            "extracting": 224.80108500000006,
+            "structure": 54.754461999999876,
+            "parsing": 9906.336681,
+            "scopeResolution": 62344.37333,
+            "enriching": 117.25856000000203,
+            "complete": 0.1237049999908777,
+            "lbug": 9196.625813000006,
+            "communities": 2015.0293479999964,
+            "processes": 3180.0593300000037,
+            "fts": 12870.898965,
+            "done": 7974.200893999994,
+            "beforeFirstProgress": 3418.8574609999996
+          },
+          "scopeLogs": [
+            "[scope-resolution prof] extract=22ms finalize=74ms propagate=61ms rangeBind=0.0ms resolve=115ms emit=1269ms total=1540ms (110 files)",
+            "[scope-resolution prof] extract=2053ms finalize=1125ms propagate=1129ms rangeBind=0.0ms resolve=5562ms emit=32778ms total=42647ms (2893 files)",
+            "[scope-resolution prof] extract=215ms finalize=61ms propagate=54ms rangeBind=0.0ms resolve=267ms emit=1445ms total=2041ms (113 files)"
+          ],
+          "graph": {
+            "nodes": {
+              "count": 114413,
+              "sha256": "d2e2ee693005fee4770a654b1391f5348d7b03316d57bf0e7bceb4cf6787f9ad"
+            },
+            "edges": {
+              "count": 318798,
+              "sha256": "4ece58529c66b824a32ee5b1c3f642193279f98e39d95eea53bf2f5ec1700ae8"
+            }
+          },
+          "persistedTargets": [
+            {
+              "target": "load"
+            }
+          ]
+        }
+      ],
+      "summary": {
+        "baseline": {
+          "editCount": 3,
+          "medianMs": 122065.065072,
+          "sumMs": 367356.13581300003,
+          "medianScopeMs": 68196.749623,
+          "maxRssKiB": 4501784
+        },
+        "candidate": {
+          "editCount": 3,
+          "medianMs": 111134.852017,
+          "sumMs": 324168.466401,
+          "medianScopeMs": 62344.37333,
+          "maxRssKiB": 4458828
+        },
+        "medianReductionPercent": 8.954415457488041,
+        "aggregateReductionPercent": 11.756349003514243,
+        "scopeMedianReductionPercent": 8.581605905490585
+      }
+    },
+    "persistent": {
+      "rawResultSha256": "b09e4f487c1933281a4f875620b5ac5a23794e56246d6c317dd6d3196762293e",
+      "samples": [
+        {
+          "name": "baseline-seed",
+          "variant": "baseline",
+          "ms": 158147.924033,
+          "loadBefore": [3.28, 6.72, 10.14],
+          "loadAfter": [5.3, 7.19, 9.87],
+          "maxRssKiB": 5757604,
+          "rebuildReasons": [],
+          "reparsedFiles": 3120,
+          "cachedFiles": 0,
+          "phaseMs": {
+            "extracting": 205.49587699999938,
+            "structure": 49.78513100000055,
+            "parsing": 58223.494267999995,
+            "scopeResolution": 62109.850408000006,
+            "enriching": 31.760779000003822,
+            "communities": 1872.6300760000013,
+            "processes": 506.77787499999977,
+            "complete": 0.04477599999518134,
+            "lbug": 10664.06607499998,
+            "fts": 18818.957672999997,
+            "done": 2247.716622000007,
+            "beforeFirstProgress": 3417.344473
+          },
+          "scopeLogs": [
+            "[scope-resolution prof] extract=16ms finalize=59ms propagate=66ms rangeBind=0.0ms resolve=132ms emit=1181ms total=1454ms (110 files)",
+            "[scope-resolution prof] extract=1988ms finalize=1096ms propagate=1099ms rangeBind=0.0ms resolve=6393ms emit=33758ms total=44335ms (2893 files)",
+            "[scope-resolution prof] extract=168ms finalize=64ms propagate=50ms rangeBind=0.0ms resolve=322ms emit=1375ms total=1978ms (113 files)"
+          ],
+          "graph": {
+            "nodes": {
+              "count": 114413,
+              "sha256": "d2e2ee693005fee4770a654b1391f5348d7b03316d57bf0e7bceb4cf6787f9ad"
+            },
+            "edges": {
+              "count": 318798,
+              "sha256": "595afccf9f3fa2725727f3439cb5fd7b1aadd18ae6aca4eaa478ef00b793fe21"
+            }
+          },
+          "persistedTargets": [
+            {
+              "target": "save"
+            }
+          ]
+        },
+        {
+          "name": "candidate-seed",
+          "variant": "candidate",
+          "ms": 153951.283825,
+          "loadBefore": [5.3, 7.19, 9.87],
+          "loadAfter": [6.35, 7.83, 9.77],
+          "maxRssKiB": 5734340,
+          "rebuildReasons": [],
+          "reparsedFiles": 3120,
+          "cachedFiles": 0,
+          "phaseMs": {
+            "extracting": 226.53108299999963,
+            "structure": 46.397985999999946,
+            "parsing": 58254.662231,
+            "scopeResolution": 61421.754931999996,
+            "enriching": 35.70321300000069,
+            "communities": 1928.893007000006,
+            "processes": 529.0402800000011,
+            "complete": 0.05887399999483023,
+            "lbug": 10686.215123000002,
+            "fts": 16689.450012999994,
+            "done": 2236.283251999994,
+            "beforeFirstProgress": 1896.2938310000002
+          },
+          "scopeLogs": [
+            "[scope-resolution prof] extract=16ms finalize=54ms propagate=49ms rangeBind=0.0ms resolve=108ms emit=1134ms total=1361ms (110 files)",
+            "[scope-resolution prof] extract=2107ms finalize=1253ms propagate=1084ms rangeBind=0.0ms resolve=5107ms emit=32228ms total=41779ms (2893 files)",
+            "[scope-resolution prof] extract=172ms finalize=65ms propagate=52ms rangeBind=0.0ms resolve=270ms emit=1373ms total=1932ms (113 files)"
+          ],
+          "graph": {
+            "nodes": {
+              "count": 114413,
+              "sha256": "d2e2ee693005fee4770a654b1391f5348d7b03316d57bf0e7bceb4cf6787f9ad"
+            },
+            "edges": {
+              "count": 318798,
+              "sha256": "595afccf9f3fa2725727f3439cb5fd7b1aadd18ae6aca4eaa478ef00b793fe21"
+            }
+          },
+          "persistedTargets": [
+            {
+              "target": "save"
+            }
+          ]
+        },
+        {
+          "name": "baseline-1",
+          "variant": "baseline",
+          "ms": 109482.844232,
+          "loadBefore": [6.35, 7.83, 9.77],
+          "loadAfter": [3.81, 6.46, 9.05],
+          "maxRssKiB": 5757604,
+          "incremental": {
+            "changedFiles": 1,
+            "reparsedFiles": 22,
+            "affectedDependents": 0,
+            "deletedFiles": 0,
+            "writeMode": "incremental"
+          },
+          "rebuildReasons": [],
+          "reparsedFiles": 22,
+          "cachedFiles": 3098,
+          "phaseMs": {
+            "extracting": 211.5071590000298,
+            "structure": 41.07579499995336,
+            "parsing": 7984.799295000033,
+            "scopeResolution": 67012.942599,
+            "enriching": 124.94524899998214,
+            "complete": 0.18859700002940372,
+            "lbug": 8813.617234999954,
+            "communities": 1921.8943519999739,
+            "processes": 1619.4587620000239,
+            "fts": 10599.878043000004,
+            "done": 8947.475924000028,
+            "beforeFirstProgress": 2205.0612219999894
+          },
+          "scopeLogs": [
+            "[scope-resolution prof] extract=12ms finalize=49ms propagate=55ms rangeBind=0.0ms resolve=133ms emit=1216ms total=1467ms (110 files)",
+            "[scope-resolution prof] extract=2000ms finalize=1107ms propagate=1133ms rangeBind=0.0ms resolve=7186ms emit=37166ms total=48593ms (2893 files)",
+            "[scope-resolution prof] extract=164ms finalize=57ms propagate=58ms rangeBind=0.0ms resolve=346ms emit=1455ms total=2081ms (113 files)"
+          ],
+          "graph": {
+            "nodes": {
+              "count": 114413,
+              "sha256": "d2e2ee693005fee4770a654b1391f5348d7b03316d57bf0e7bceb4cf6787f9ad"
+            },
+            "edges": {
+              "count": 318798,
+              "sha256": "4ece58529c66b824a32ee5b1c3f642193279f98e39d95eea53bf2f5ec1700ae8"
+            }
+          },
+          "persistedTargets": [
+            {
+              "target": "load"
+            }
+          ]
+        },
+        {
+          "name": "candidate-1",
+          "variant": "candidate",
+          "ms": 123364.35062099999,
+          "loadBefore": [3.81, 6.46, 9.05],
+          "loadAfter": [12.23, 8.31, 9.37],
+          "maxRssKiB": 5896624,
+          "incremental": {
+            "changedFiles": 1,
+            "reparsedFiles": 22,
+            "affectedDependents": 0,
+            "deletedFiles": 0,
+            "writeMode": "incremental"
+          },
+          "rebuildReasons": [],
+          "reparsedFiles": 22,
+          "cachedFiles": 3098,
+          "phaseMs": {
+            "extracting": 221.45905800000764,
+            "structure": 46.565340999979526,
+            "parsing": 7283.348788000003,
+            "scopeResolution": 65739.48159400001,
+            "enriching": 129.2759209999931,
+            "complete": 0.21377500001108274,
+            "lbug": 12901.81731199997,
+            "communities": 2457.193612000032,
+            "processes": 2556.050026999961,
+            "fts": 14765.58123000001,
+            "done": 14857.72775999998,
+            "beforeFirstProgress": 2405.636203000031
+          },
+          "scopeLogs": [
+            "[scope-resolution prof] extract=11ms finalize=47ms propagate=51ms rangeBind=0.0ms resolve=107ms emit=1124ms total=1340ms (110 files)",
+            "[scope-resolution prof] extract=2046ms finalize=1134ms propagate=1135ms rangeBind=0.0ms resolve=5161ms emit=34994ms total=44470ms (2893 files)",
+            "[scope-resolution prof] extract=407ms finalize=69ms propagate=71ms rangeBind=0.0ms resolve=369ms emit=2216ms total=3132ms (113 files)"
+          ],
+          "graph": {
+            "nodes": {
+              "count": 114413,
+              "sha256": "d2e2ee693005fee4770a654b1391f5348d7b03316d57bf0e7bceb4cf6787f9ad"
+            },
+            "edges": {
+              "count": 318798,
+              "sha256": "4ece58529c66b824a32ee5b1c3f642193279f98e39d95eea53bf2f5ec1700ae8"
+            }
+          },
+          "persistedTargets": [
+            {
+              "target": "load"
+            }
+          ]
+        }
+      ],
+      "summary": {
+        "baseline": {
+          "editCount": 1,
+          "medianMs": 109482.844232,
+          "sumMs": 109482.844232,
+          "medianScopeMs": 67012.942599,
+          "maxRssKiB": 5757604
+        },
+        "candidate": {
+          "editCount": 1,
+          "medianMs": 123364.35062099999,
+          "sumMs": 123364.35062099999,
+          "medianScopeMs": 65739.48159400001,
+          "maxRssKiB": 5896624
+        },
+        "medianReductionPercent": -12.679161275335815,
+        "aggregateReductionPercent": -12.679161275335815,
+        "scopeMedianReductionPercent": 1.9003209762333162
+      }
+    }
+  },
+  "decision": "Experimental: fresh-process screen positive; persistent screen stopped after first non-improving pair; benefit for both workflows unproven",
+  "validation": {
+    "runtimePinsVerifiedAfterRuns": true,
+    "focusedTests": {
+      "files": 6,
+      "tests": 137,
+      "status": "passed"
+    },
+    "scopeTests": {
+      "files": 175,
+      "tests": 3467,
+      "status": "passed",
+      "overlapWithFocused": true
+    },
+    "differentialComparisons": 72000,
+    "parameterizedDifferentialRerun": "passed",
+    "build": "passed for both runtimes",
+    "testTypecheck": "passed",
+    "eslint": "passed; existing warnings",
+    "fullSuite": "not run"
+  }
+}

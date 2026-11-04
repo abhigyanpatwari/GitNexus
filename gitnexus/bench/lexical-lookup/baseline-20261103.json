@@ -1,0 +1,1277 @@
+{
+  "date": "2026-11-03T08:23:10.793Z",
+  "purpose": "Reproducible PR 3805 baseline before further optimization",
+  "provenance": {
+    "date": "2026-11-03T07:48:04.400Z",
+    "before": {
+      "head": "4916e0d5e1f4d6d70d41c1f39cd244bca2c7b390",
+      "ladybug": "0.22.0",
+      "lock": "b5e208e91da7ac7270e0985f8d19097f51fa5c6d4480b6e07473a8d3ea306ff8",
+      "nameClaims": "157fd1ff2870468d335f97fff41d0b002f4cad749db64634aa48469053d7cea3",
+      "walkers": "15dba69d6ec871e43f4d0d1aadbad93e1645c13a9ad2e664e9f9bd679f73e55c"
+    },
+    "after": {
+      "head": "6b487a529e14d59e51a9df9a44524e98705a6b71",
+      "ladybug": "0.22.0",
+      "lock": "b5e208e91da7ac7270e0985f8d19097f51fa5c6d4480b6e07473a8d3ea306ff8",
+      "nameClaims": "6f998066bcb3f17d69f2dbae7dba1a1d5af865bc8798d4b137aaed9387a81284",
+      "walkers": "9400ed640a22343f6cc54e3515944af664022ac7f4a8c4306da0cc95df37f9e1"
+    },
+    "node": "v22.23.3",
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K",
+    "cpuCount": 24,
+    "memory": 33516720128,
+    "os": "6.6.114.1-microsoft-standard-WSL2",
+    "workers": 2,
+    "heapMiB": 4096,
+    "corpusCommit": "4916e0d5e1f4d6d70d41c1f39cd244bca2c7b390",
+    "corpusSparsePaths": ["gitnexus/src/core/ingestion", "gitnexus-shared/src/scope-resolution"],
+    "harness": "02826b93d5826bcf3074ddd2853882350d4a0a8114f64609d60b7bf8aff88bdc",
+    "evaluator": "d83c9ec58ce04b647e282b20e49b59fe84c7448848450e8e5bdfca68fff7823f",
+    "repeats": 3,
+    "pairsPerRepeat": 3,
+    "earlyStopping": false,
+    "order": ["base-first", "candidate-first", "base-first"],
+    "noOpProbe": "rejected; both control files removed",
+    "selectionAndReportingShareCorpus": true,
+    "worktreeCount": 254,
+    "worktreeBudgetWarning": "Existing count exceeds ce-optimize suggested budget 12; no other worktrees changed. Experiments serial.",
+    "remoteHeadObservedAtEnd": "6aeeace8e96603fb062dcc709e834042d5a6df74",
+    "remoteBaseObservedAtEnd": "24d3de239daaa45f163473ea3f195d37a8397b78",
+    "remoteDrift": "PR merged Kotlin grammar update during measurement. Lookup implementations and lockfile unchanged; newer native grammar and head have not been benchmarked. All measurements remain pinned to recorded before/after commits."
+  },
+  "measurements": {
+    "fresh": {
+      "before_session_medians_ms": {
+        "samples": [27167.331744, 28493.790027000003, 30487.120746999997],
+        "median": 28493.790027000003,
+        "min": 27167.331744,
+        "max": 30487.120746999997,
+        "standard_deviation": 1364.3825612209573,
+        "cv_percent": 4.751284023940061
+      },
+      "after_session_medians_ms": {
+        "samples": [25073.12691, 28214.86869, 27551.789628000002],
+        "median": 27551.789628000002,
+        "min": 25073.12691,
+        "max": 28214.86869,
+        "standard_deviation": 1352.1170283120848,
+        "cv_percent": 5.017765786358472
+      },
+      "change_percent": -3.305984911475046,
+      "paired_change_percent": {
+        "samples": [
+          -33.927324510337066, -7.708540734636237, 1.7210219559163908, -0.9788846507807647,
+          -6.172499108184015, 35.12771016582481, -5.880796687043244, -13.386655756223742,
+          -0.8958687711658531
+        ],
+        "median": -5.880796687043244,
+        "min": -33.927324510337066,
+        "max": 35.12771016582481,
+        "standard_deviation": 16.952700990592877
+      },
+      "samples": [
+        {
+          "session": 1,
+          "pair": 1,
+          "before": {
+            "ms": 41835.567646,
+            "scope_ms": 16664.676064,
+            "maxRssKiB": 1975176,
+            "loadBefore": [23.29, 14.18, 7.75],
+            "loadAfter": [20.05, 14.57, 8.16],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "after": {
+            "ms": 27641.87885,
+            "scope_ms": 9817.220289,
+            "maxRssKiB": 1974016,
+            "loadBefore": [20.05, 14.57, 8.16],
+            "loadAfter": [16.14, 14.15, 8.23],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "change_percent": -33.927324510337066
+        },
+        {
+          "session": 1,
+          "pair": 2,
+          "before": {
+            "ms": 27167.331744,
+            "scope_ms": 12672.416329,
+            "maxRssKiB": 1988984,
+            "loadBefore": [13.77, 13.75, 8.25],
+            "loadAfter": [13.07, 13.58, 8.37],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "save"
+              }
+            ]
+          },
+          "after": {
+            "ms": 25073.12691,
+            "scope_ms": 9655.368435,
+            "maxRssKiB": 1949060,
+            "loadBefore": [16.14, 14.15, 8.23],
+            "loadAfter": [13.77, 13.75, 8.25],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "save"
+              }
+            ]
+          },
+          "change_percent": -7.708540734636237
+        },
+        {
+          "session": 1,
+          "pair": 3,
+          "before": {
+            "ms": 24176.948735,
+            "scope_ms": 10316.814948,
+            "maxRssKiB": 1992156,
+            "loadBefore": [13.07, 13.58, 8.37],
+            "loadAfter": [10.47, 12.94, 8.3],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "after": {
+            "ms": 24593.039331,
+            "scope_ms": 9934.868561,
+            "maxRssKiB": 1973040,
+            "loadBefore": [10.47, 12.94, 8.3],
+            "loadAfter": [9.77, 12.57, 8.3],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "change_percent": 1.7210219559163908
+        },
+        {
+          "session": 2,
+          "pair": 1,
+          "before": {
+            "ms": 28493.790027000003,
+            "scope_ms": 10862.499722,
+            "maxRssKiB": 1763120,
+            "loadBefore": [10.75, 10.37, 9.14],
+            "loadAfter": [11, 10.48, 9.21],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "after": {
+            "ms": 28214.86869,
+            "scope_ms": 10576.886433,
+            "maxRssKiB": 1966932,
+            "loadBefore": [11.31, 10.43, 9.11],
+            "loadAfter": [10.75, 10.37, 9.14],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "change_percent": -0.9788846507807647
+        },
+        {
+          "session": 2,
+          "pair": 2,
+          "before": {
+            "ms": 28463.054967,
+            "scope_ms": 10746.571084,
+            "maxRssKiB": 1967760,
+            "loadBefore": [11, 10.48, 9.21],
+            "loadAfter": [10.63, 10.46, 9.25],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "save"
+              }
+            ]
+          },
+          "after": {
+            "ms": 26706.173153,
+            "scope_ms": 9386.829097,
+            "maxRssKiB": 1760300,
+            "loadBefore": [10.63, 10.46, 9.25],
+            "loadAfter": [13.02, 10.98, 9.46],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "save"
+              }
+            ]
+          },
+          "change_percent": -6.172499108184015
+        },
+        {
+          "session": 2,
+          "pair": 3,
+          "before": {
+            "ms": 29975.521841,
+            "scope_ms": 11109.654848000002,
+            "maxRssKiB": 1994928,
+            "loadBefore": [18.77, 12.78, 10.13],
+            "loadAfter": [15.65, 12.6, 10.16],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "after": {
+            "ms": 40505.236273999995,
+            "scope_ms": 17595.557853000002,
+            "maxRssKiB": 1956592,
+            "loadBefore": [13.02, 10.98, 9.46],
+            "loadAfter": [18.77, 12.78, 10.13],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "change_percent": 35.12771016582481
+        },
+        {
+          "session": 3,
+          "pair": 1,
+          "before": {
+            "ms": 29273.29244,
+            "scope_ms": 11244.51295,
+            "maxRssKiB": 1991304,
+            "loadBefore": [10.07, 11.4, 10.05],
+            "loadAfter": [12.12, 11.75, 10.21],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "after": {
+            "ms": 27551.789628000002,
+            "scope_ms": 10222.888305,
+            "maxRssKiB": 1953404,
+            "loadBefore": [12.43, 11.82, 10.24],
+            "loadAfter": [11.26, 11.58, 10.2],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "change_percent": -5.880796687043244
+        },
+        {
+          "session": 3,
+          "pair": 2,
+          "before": {
+            "ms": 30587.541568,
+            "scope_ms": 11982.26958,
+            "maxRssKiB": 1973032,
+            "loadBefore": [11.19, 11.53, 10.22],
+            "loadAfter": [12.67, 11.87, 10.38],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "save"
+              }
+            ]
+          },
+          "after": {
+            "ms": 26492.892674,
+            "scope_ms": 9234.379915,
+            "maxRssKiB": 1758284,
+            "loadBefore": [11.26, 11.58, 10.2],
+            "loadAfter": [11.19, 11.53, 10.22],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "save"
+              }
+            ]
+          },
+          "change_percent": -13.386655756223742
+        },
+        {
+          "session": 3,
+          "pair": 3,
+          "before": {
+            "ms": 30487.120746999997,
+            "scope_ms": 11982.057261,
+            "maxRssKiB": 1758652,
+            "loadBefore": [12.67, 11.87, 10.38],
+            "loadAfter": [10.55, 11.43, 10.29],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "after": {
+            "ms": 30213.996153,
+            "scope_ms": 10663.045373,
+            "maxRssKiB": 1910132,
+            "loadBefore": [10.55, 11.43, 10.29],
+            "loadAfter": [13.09, 11.93, 10.49],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "change_percent": -0.8958687711658531
+        }
+      ]
+    },
+    "persistent": {
+      "before_session_medians_ms": {
+        "samples": [24619.465085000003, 30276.214410000015, 35277.003012],
+        "median": 30276.214410000015,
+        "min": 24619.465085000003,
+        "max": 35277.003012,
+        "standard_deviation": 4353.667856381744,
+        "cv_percent": 14.484434981881922
+      },
+      "after_session_medians_ms": {
+        "samples": [22883.167759999997, 29814.153575999997, 35026.18395899999],
+        "median": 29814.153575999997,
+        "min": 22883.167759999997,
+        "max": 35026.18395899999,
+        "standard_deviation": 4973.894824247497,
+        "cv_percent": 17.009904497732137
+      },
+      "change_percent": -1.5261512808133704,
+      "paired_change_percent": {
+        "samples": [
+          -9.159571429407476, -7.763463257227798, -4.053410478963137, -21.4258822645351,
+          -1.374828412704443, -2.0887840531941593, 3.716134035588081, -17.56829308134683,
+          -0.71099875722066
+        ],
+        "median": -4.053410478963137,
+        "min": -21.4258822645351,
+        "max": 3.716134035588081,
+        "standard_deviation": 7.768448880307043
+      },
+      "samples": [
+        {
+          "session": 1,
+          "pair": 1,
+          "before": {
+            "ms": 25190.51056899999,
+            "scope_ms": 10669.653483000002,
+            "maxRssKiB": 2600492,
+            "loadBefore": [8.96, 11.48, 8.41],
+            "loadAfter": [8.76, 11.23, 8.41],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "after": {
+            "ms": 22883.167759999997,
+            "scope_ms": 9326.451480999996,
+            "maxRssKiB": 2733820,
+            "loadBefore": [8.76, 11.23, 8.41],
+            "loadAfter": [8.55, 10.98, 8.4],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "change_percent": -9.159571429407476
+        },
+        {
+          "session": 1,
+          "pair": 2,
+          "before": {
+            "ms": 24619.465085000003,
+            "scope_ms": 10660.948642999982,
+            "maxRssKiB": 2834936,
+            "loadBefore": [7.81, 10.62, 8.35],
+            "loadAfter": [7.53, 10.32, 8.31],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "save"
+              }
+            ]
+          },
+          "after": {
+            "ms": 22708.141959,
+            "scope_ms": 8981.871341000005,
+            "maxRssKiB": 2894124,
+            "loadBefore": [8.55, 10.98, 8.4],
+            "loadAfter": [7.81, 10.62, 8.35],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "save"
+              }
+            ]
+          },
+          "change_percent": -7.763463257227798
+        },
+        {
+          "session": 1,
+          "pair": 3,
+          "before": {
+            "ms": 24531.59210400001,
+            "scope_ms": 10001.811278000008,
+            "maxRssKiB": 2873708,
+            "loadBefore": [7.53, 10.32, 8.31],
+            "loadAfter": [7.41, 10.06, 8.28],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "after": {
+            "ms": 23537.22597899998,
+            "scope_ms": 9256.044935999991,
+            "maxRssKiB": 2986960,
+            "loadBefore": [7.41, 10.06, 8.28],
+            "loadAfter": [6.98, 9.75, 8.22],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "change_percent": -4.053410478963137
+        },
+        {
+          "session": 2,
+          "pair": 1,
+          "before": {
+            "ms": 37943.98770900001,
+            "scope_ms": 11086.613411999992,
+            "maxRssKiB": 2673196,
+            "loadBefore": [10.62, 9.82, 8.46],
+            "loadAfter": [10.39, 9.86, 8.53],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "after": {
+            "ms": 29814.153575999997,
+            "scope_ms": 9854.81807400001,
+            "maxRssKiB": 2552236,
+            "loadBefore": [9.7, 9.6, 8.34],
+            "loadAfter": [10.62, 9.82, 8.46],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "change_percent": -21.4258822645351
+        },
+        {
+          "session": 2,
+          "pair": 2,
+          "before": {
+            "ms": 30276.214410000015,
+            "scope_ms": 12005.400338000007,
+            "maxRssKiB": 2816756,
+            "loadBefore": [10.39, 9.86, 8.53],
+            "loadAfter": [11.7, 10.25, 8.7],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "save"
+              }
+            ]
+          },
+          "after": {
+            "ms": 29859.968412000017,
+            "scope_ms": 10533.230467999994,
+            "maxRssKiB": 2813324,
+            "loadBefore": [11.7, 10.25, 8.7],
+            "loadAfter": [11.18, 10.26, 8.75],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "save"
+              }
+            ]
+          },
+          "change_percent": -1.374828412704443
+        },
+        {
+          "session": 2,
+          "pair": 3,
+          "before": {
+            "ms": 29899.892047,
+            "scope_ms": 11824.771922000014,
+            "maxRssKiB": 2868456,
+            "loadBefore": [11.23, 10.36, 8.84],
+            "loadAfter": [9.84, 10.11, 8.81],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "after": {
+            "ms": 29275.347869999998,
+            "scope_ms": 10707.014708000002,
+            "maxRssKiB": 3146864,
+            "loadBefore": [11.18, 10.26, 8.75],
+            "loadAfter": [11.23, 10.36, 8.84],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "change_percent": -2.0887840531941593
+        },
+        {
+          "session": 3,
+          "pair": 1,
+          "before": {
+            "ms": 29568.35863500001,
+            "scope_ms": 10798.847978000005,
+            "maxRssKiB": 2454324,
+            "loadBefore": [14.88, 12.7, 10.95],
+            "loadAfter": [14.79, 12.84, 11.05],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "after": {
+            "ms": 30667.158473999996,
+            "scope_ms": 10579.910604999997,
+            "maxRssKiB": 2449224,
+            "loadBefore": [14.79, 12.84, 11.05],
+            "loadAfter": [14.48, 12.95, 11.15],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "change_percent": 3.716134035588081
+        },
+        {
+          "session": 3,
+          "pair": 2,
+          "before": {
+            "ms": 48961.37195100004,
+            "scope_ms": 17583.823956999986,
+            "maxRssKiB": 2750280,
+            "loadBefore": [21.17, 14.9, 11.89],
+            "loadAfter": [26.54, 17.48, 12.94],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "save"
+              }
+            ]
+          },
+          "after": {
+            "ms": 40359.69463000001,
+            "scope_ms": 11766.693460999988,
+            "maxRssKiB": 2645752,
+            "loadBefore": [14.48, 12.95, 11.15],
+            "loadAfter": [21.17, 14.9, 11.89],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "370ac0472dc57f08cd23d8151c2e9da4db5d4f7070446d66f20db9162ba1ceca"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "save"
+              }
+            ]
+          },
+          "change_percent": -17.56829308134683
+        },
+        {
+          "session": 3,
+          "pair": 3,
+          "before": {
+            "ms": 35277.003012,
+            "scope_ms": 13586.94374399999,
+            "maxRssKiB": 3042924,
+            "loadBefore": [26.54, 17.48, 12.94],
+            "loadAfter": [22.52, 17.48, 13.1],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "after": {
+            "ms": 35026.18395899999,
+            "scope_ms": 13313.036121999961,
+            "maxRssKiB": 2658640,
+            "loadBefore": [22.52, 17.48, 13.1],
+            "loadAfter": [20.43, 17.57, 13.3],
+            "graph": {
+              "nodes": {
+                "count": 23641,
+                "sha256": "6c5bce88c7e16be3cf13f9242a8f4b8db4c9b39a087b11bc62a661311c20451e"
+              },
+              "edges": {
+                "count": 64292,
+                "sha256": "ca918e3bc320a00a46e52edda70010320ed1ba7ddb951a02dbe51adbb47c5e27"
+              }
+            },
+            "incremental": {
+              "changedFiles": 1,
+              "reparsedFiles": 8,
+              "affectedDependents": 0,
+              "deletedFiles": 0,
+              "writeMode": "incremental"
+            },
+            "persistedTargets": [
+              {
+                "target": "load"
+              }
+            ]
+          },
+          "change_percent": -0.71099875722066
+        }
+      ]
+    }
+  },
+  "validation": {
+    "targeted_tests": 59,
+    "source_typecheck": "passed",
+    "test_typecheck": "passed",
+    "build": "passed",
+    "eslint": "passed",
+    "formatting": "passed",
+    "differential_comparisons_per_session": 72000,
+    "semantic_graphs_equal": true,
+    "persisted_call_targets_follow_edits": true,
+    "noop_rejected": true
+  },
+  "limitations": [
+    "Shared machine; host load recorded for every sample.",
+    "Sparse CI corpus; these times do not replace the original full-repository numbers.",
+    "Three sessions per mode; three correlated edits within each session.",
+    "No holdout: selection and reporting use the same sample.",
+    "Timing includes analysis, graph persistence and FTS; excludes process startup and subsequent graph verification.",
+    "Semantic equality excludes derived Community, Process and Folder nodes, corresponding derived relationships, and cleared source content.",
+    "Repeated API analysis does not measure watch scheduling.",
+    "maxRSS is a process lifetime high-water mark, including prior samples in persistent mode.",
+    "PR head advanced during measurement; all results apply only to the recorded runtime and corpus pins."
+  ],
+  "aggregation": "Median of three session medians; each session contains three alternating edit pairs. The paired-change distribution is separately recorded.",
+  "decision": "Inconclusive for small gains: repeated-process candidate session CV is 17.01%, above the proposed 5% noise threshold. No additional runtime optimization made or accepted.",
+  "reproduction": {
+    "screen": "GITNEXUS_LEXICAL_BENCH_SCREEN=0",
+    "order": "GITNEXUS_LEXICAL_BENCH_BASE_FIRST=1,0,1 across sessions",
+    "lifecycleOrder": ["fresh,persistent", "persistent,fresh", "fresh,persistent"],
+    "workers": 2,
+    "heapMiB": 4096,
+    "corpus": "4916e0d5e1f4d6d70d41c1f39cd244bca2c7b390",
+    "snapshotNote": "Measured runner copied the PR harness, removed its early screen, and added ordering control. The tracked harness now exposes equivalent optional controls and records their values."
+  }
+}
