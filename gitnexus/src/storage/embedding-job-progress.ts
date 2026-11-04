@@ -7,14 +7,28 @@ import {
 import type { RepoMeta } from './repo-meta.js';
 import type { EmbeddingJobState } from './embedding-job-journal.js';
 import { embeddingJobDirectory, readEmbeddingJobRecord } from './embedding-job.js';
-import { embeddingGenerationDirectory } from './vector-generation.js';
+import { embeddingGenerationDirectory, selectVectorGeneration } from './vector-generation.js';
+import { getExactScanLimit } from '../core/platform/capabilities.js';
 
 export async function readEmbeddingJobProgress(
   metadataDirectory: string,
   metadata: RepoMeta | null | undefined,
 ): Promise<EmbeddingJobProgress | undefined> {
   const reference = metadata?.embeddingJob;
-  if (!reference) return undefined;
+  if (!reference) {
+    if (!metadata?.vectorGeneration?.preservedForGraph) return undefined;
+    const selected = selectVectorGeneration(
+      metadataDirectory,
+      metadata,
+      path.resolve(metadataDirectory, metadata.graphPath ?? 'lbug'),
+      getExactScanLimit(),
+    );
+    // These are historical chunks, not completed/reused work in a current
+    // manifest. Unknown selection totals stay absent, never zero or complete.
+    return selected.kind === 'ready' && selected.coverage === 'preserved'
+      ? { phase: 'preserved', chunks: selected.generation.chunks }
+      : undefined;
+  }
   try {
     if (
       reference.version !== 1 ||

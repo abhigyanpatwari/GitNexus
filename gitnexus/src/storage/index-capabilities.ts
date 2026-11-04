@@ -21,11 +21,16 @@ export async function readIndexCapabilities(
       exactScanLimit,
     );
     if (selection.kind === 'ready') {
-      await assertOwnedVectorGeneration(directory, selection.generation.identity);
+      await assertOwnedVectorGeneration(
+        directory,
+        selection.generation.artifactIdentity ?? selection.generation.identity,
+      );
       vectorSearch = {
         provider: selection.generation.indexKind === 'hnsw' ? 'ladybugdb-vector' : 'exact-scan',
         status: selection.generation.indexKind === 'hnsw' ? 'vector-index' : 'exact-scan',
         exactScanLimit,
+        coverage: selection.coverage ?? 'current',
+        sourceGraphGeneration: selection.generation.graphGeneration,
       };
     } else {
       vectorSearch = {

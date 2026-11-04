@@ -5,7 +5,8 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { RepoMeta } from '../storage/repo-meta.js';
-import { INDEX_METADATA_FILE } from '../storage/storage-constants.js';
+import { INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from '../storage/storage-constants.js';
+import { preserveVectorCoverage } from '../storage/vector-generation.js';
 import { embeddingJobDirectory, syncEmbeddingJobDirectory } from '../storage/embedding-job.js';
 
 const RECEIPT = 'analysis-publication.json';
@@ -135,7 +136,13 @@ async function writeDurable(directory: string, name: string, bytes: Buffer): Pro
 
 async function readSlotMetadata(root: string): Promise<RepoMeta | null> {
   try {
-    const bytes = await boundedRead(path.join(root, INDEX_METADATA_FILE), MAX_METADATA_BYTES);
+    let bytes: Buffer;
+    try {
+      bytes = await boundedRead(path.join(root, INDEX_METADATA_FILE), MAX_METADATA_BYTES);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      bytes = await boundedRead(path.join(root, LEGACY_METADATA_FILE), MAX_METADATA_BYTES);
+    }
     const metadata: RepoMeta = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
     if (!metadata || typeof metadata.repoPath !== 'string')
       throw new Error('Invalid graph slot metadata; artifacts retained');
@@ -171,12 +178,14 @@ export async function beginInPlaceAnalysis(
   const prior = await readSlotMetadata(root);
   if (prior && prior.repoPath !== metadata.repoPath)
     throw new Error('Graph slot belongs to another repository');
+  const attemptId = randomUUID().replaceAll('-', '');
   const dirty: RepoMeta = {
     ...metadata,
+    vectorGeneration: preserveVectorCoverage(metadata, attemptId),
     incrementalInProgress: {
       ...metadata.incrementalInProgress,
       writePlan: 'in-place',
-      attemptId: randomUUID().replaceAll('-', ''),
+      attemptId,
     },
   };
   delete dirty.graphGeneration;
@@ -234,6 +243,7 @@ export async function prepareAnalysisPublication(
   const metadataFile = `analysis-meta-${id}.json`;
   const preparedMeta: RepoMeta = {
     ...metadata,
+    vectorGeneration: preserveVectorCoverage(metadata, id),
     graphPath: graphFile,
     graphGeneration: { version: 1, id, coveredContent },
   };

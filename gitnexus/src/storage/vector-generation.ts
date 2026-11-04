@@ -7,7 +7,7 @@ export type PublishedVectorGeneration = NonNullable<RepoMeta['vectorGeneration']
 export type VectorReadSelection =
   | { kind: 'legacy' }
   | { kind: 'unavailable'; reason: string }
-  | { kind: 'ready'; path: string; generation: PublishedVectorGeneration };
+  | { kind: 'ready'; path: string; generation: PublishedVectorGeneration; coverage?: 'preserved' };
 const DIGEST = /^[a-f0-9]{64}$/;
 const GENERATION = /^[a-f0-9]{32}$/;
 const nonnegative = (n: unknown): n is number =>
@@ -27,6 +27,29 @@ export function metadataMatchesGraph(
   const recorded = metadata.graphPath;
   if (recorded !== undefined && typeof recorded !== 'string') return false;
   return path.resolve(metadataDirectory, recorded ?? 'lbug') === path.resolve(graphPath);
+}
+
+/** Advance only a previously bound completed reference. Called under the slot
+ * lock before invalidating an in-place graph, or while preparing a staged one.
+ * It neither opens vectors nor upgrades missing/foreign coverage provenance. */
+export function preserveVectorCoverage(
+  metadata: RepoMeta,
+  nextGeneration: string,
+): RepoMeta['vectorGeneration'] {
+  if (!GENERATION.test(nextGeneration)) throw new Error('Invalid preservation target');
+  const vector = metadata.vectorGeneration;
+  const graph = metadata.graphGeneration;
+  if (
+    !vector ||
+    vector.version !== 1 ||
+    !GENERATION.test(vector.graphGeneration) ||
+    !graph ||
+    graph.version !== 1 ||
+    !GENERATION.test(graph.id) ||
+    (vector.graphGeneration !== graph.id && vector.preservedForGraph !== graph.id)
+  )
+    return vector;
+  return { ...vector, preservedForGraph: nextGeneration };
 }
 
 /** Run before model initialization, vector COUNTs, or opening an artifact. */
@@ -58,7 +81,9 @@ export function selectVectorGeneration(
   if (metadata.embeddingJob) return { kind: 'unavailable', reason: 'embedding-pending' };
   if (
     vector.version !== 1 ||
-    vector.graphGeneration !== graph.id ||
+    !GENERATION.test(vector.graphGeneration) ||
+    (vector.graphGeneration !== graph.id && vector.preservedForGraph !== graph.id) ||
+    (vector.preservedForGraph !== undefined && !GENERATION.test(vector.preservedForGraph)) ||
     !DIGEST.test(vector.identity) ||
     (vector.artifactIdentity !== undefined && !DIGEST.test(vector.artifactIdentity)) ||
     !DIGEST.test(vector.vectorIdentity) ||
@@ -81,6 +106,7 @@ export function selectVectorGeneration(
       'vectors',
     ),
     generation: vector,
+    ...(vector.graphGeneration === graph.id ? {} : { coverage: 'preserved' as const }),
   };
 }
 

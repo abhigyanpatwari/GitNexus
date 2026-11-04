@@ -5,7 +5,7 @@ export type GraphAnalysisPhase = 'pending' | 'building' | 'ready' | 'failed';
 /** Counts describe durable acknowledgements. Active work is part of pending,
  * never an additional category. Totals remain absent before manifest preflight. */
 export interface EmbeddingJobProgress {
-  phase: 'preparing' | 'embedding' | 'indexing' | 'ready' | 'failed' | 'unverified';
+  phase: 'preparing' | 'embedding' | 'indexing' | 'ready' | 'preserved' | 'failed' | 'unverified';
   totalUnits?: number;
   completedUnits?: number;
   reusedUnits?: number;

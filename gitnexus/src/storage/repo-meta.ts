@@ -143,6 +143,9 @@ export interface RepoMeta {
     /** Absent in older separate stores, whose artifact identity equaled the job. */
     artifactIdentity?: string;
     graphGeneration: string;
+    /** Explicit permission to serve this completed historical artifact against
+     * a newer graph. graphGeneration remains its original coverage receipt. */
+    preservedForGraph?: string;
     vectorIdentity: string;
     inputIdentity: string;
     dimensions: number;
@@ -279,6 +282,9 @@ export interface RepoMeta {
       status: 'vector-index' | 'exact-scan' | 'unavailable';
       exactScanLimit: number;
       reason?: string;
+      /** Native availability and coverage of the current selection differ. */
+      coverage?: 'current' | 'preserved' | 'unknown';
+      sourceGraphGeneration?: string;
     };
   };
   /**

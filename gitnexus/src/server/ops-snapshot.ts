@@ -20,7 +20,7 @@ const publicEmbeddingProgress = (
 ): EmbeddingJobProgress | undefined => {
   if (
     !progress ||
-    !['preparing', 'embedding', 'indexing', 'ready', 'failed', 'unverified'].includes(
+    !['preparing', 'embedding', 'indexing', 'ready', 'preserved', 'failed', 'unverified'].includes(
       progress.phase,
     )
   )
