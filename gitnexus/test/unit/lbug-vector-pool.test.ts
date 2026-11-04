@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   create: vi.fn(),
   fts: vi.fn(),
+  vector: vi.fn(),
   threads: vi.fn(),
   connections: [] as Array<{ close: ReturnType<typeof vi.fn> }>,
 }));
@@ -26,13 +27,18 @@ vi.mock('@ladybugdb/core', () => ({
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   isReadOnlyDbError: () => false,
   loadFTSExtension: mocks.fts,
-  loadVectorExtension: async () => false,
+  loadVectorExtension: mocks.vector,
 }));
 vi.mock('../../src/core/lbug/lbug-config.js', async (original) => ({
   ...(await original<typeof import('../../src/core/lbug/lbug-config.js')>()),
   createLbugDatabase: mocks.create,
 }));
-import { closeLbug, initLbug, isLbugReady } from '../../src/core/lbug/pool-adapter.js';
+import {
+  closeLbug,
+  initLbug,
+  isLbugReady,
+  ensureVectorExtension,
+} from '../../src/core/lbug/pool-adapter.js';
 
 let directory: string;
 const options = { kind: 'vector' as const, bufferPoolBytes: 64 * 1024 * 1024, threads: 2 };
@@ -49,6 +55,7 @@ beforeEach(async () => {
     close: vi.fn(async () => {}),
   }));
   mocks.fts.mockResolvedValue(true);
+  mocks.vector.mockResolvedValue(false);
   mocks.threads.mockResolvedValue(undefined);
   directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-vector-pool-'));
 });
@@ -58,6 +65,87 @@ afterEach(async () => {
 });
 
 describe('vector pool isolation', () => {
+  it('shares one native reservation across hard links until the last reader closes', async () => {
+    const first = await file('first');
+    const second = path.join(directory, 'second');
+    await fs.link(first, second);
+    await initLbug('first', first, options);
+    await initLbug('second', second, options);
+    expect(mocks.create).toHaveBeenCalledOnce();
+    await ensureVectorExtension('first');
+    await ensureVectorExtension('second');
+    expect(mocks.vector).toHaveBeenCalledOnce();
+    const database = mocks.create.mock.results[0].value;
+    await closeLbug('first');
+    expect(database.close).not.toHaveBeenCalled();
+    expect(isLbugReady('second')).toBe(true);
+    await closeLbug('second');
+    expect(database.close).toHaveBeenCalledOnce();
+    await initLbug('second', second, options);
+    expect(mocks.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps independent files separate even when their bytes match', async () => {
+    await initLbug('first', await file('first'), options);
+    await initLbug('second', await file('second'), options);
+    expect(mocks.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('reopens a replaced vector path without closing a sibling on the previous inode', async () => {
+    const first = await file('first');
+    const second = path.join(directory, 'second');
+    await fs.link(first, second);
+    await initLbug('first', first, options);
+    await initLbug('second', second, options);
+    const original = mocks.create.mock.results[0].value;
+    await fs.rename(await file('replacement'), second);
+    expect(await initLbug('second', second, options)).toBe(true);
+    expect(mocks.create).toHaveBeenCalledTimes(2);
+    expect(original.close).not.toHaveBeenCalled();
+    await closeLbug('first');
+    expect(original.close).toHaveBeenCalledOnce();
+    expect(isLbugReady('second')).toBe(true);
+  });
+
+  it('rejects a different reservation through another link to the same vectors', async () => {
+    const first = await file('first');
+    const second = path.join(directory, 'second');
+    await fs.link(first, second);
+    await initLbug('first', first, options);
+    await expect(
+      initLbug('second', second, { ...options, bufferPoolBytes: options.bufferPoolBytes * 2 }),
+    ).rejects.toThrow('different resource reservation');
+    expect(mocks.create).toHaveBeenCalledOnce();
+  });
+
+  it('retains a shared native handle when another reader fails to initialize', async () => {
+    const first = await file('first');
+    const second = path.join(directory, 'second');
+    await fs.link(first, second);
+    await initLbug('first', first, options);
+    const database = mocks.create.mock.results[0].value;
+    mocks.threads.mockRejectedValueOnce(new Error('thread configuration failed'));
+    await expect(initLbug('second', second, options)).rejects.toThrow(
+      'thread configuration failed',
+    );
+    expect(database.close).not.toHaveBeenCalled();
+    expect(isLbugReady('first')).toBe(true);
+    await initLbug('second', second, options);
+    expect(mocks.create).toHaveBeenCalledOnce();
+  });
+
+  it('validates a new link before reusing an already open native handle', async () => {
+    const first = await file('first');
+    const second = path.join(directory, 'second');
+    await fs.link(first, second);
+    await initLbug('first', first, options);
+    await fs.writeFile(second + '.wal', 'unfinished');
+    await expect(initLbug('second', second, options)).rejects.toThrow('unfinished native writes');
+    expect(mocks.create).toHaveBeenCalledOnce();
+    expect(isLbugReady('first')).toBe(true);
+    expect(await fs.readFile(second + '.wal', 'utf8')).toBe('unfinished');
+  });
+
   it('retains the graph-cache capacity while bounding vector residents independently', async () => {
     for (let i = 0; i < 5; i++) await initLbug(`graph-${i}`, await file(`graph-${i}`));
     for (let i = 0; i < 6; i++) await initLbug(`vector-${i}`, await file(`vector-${i}`), options);

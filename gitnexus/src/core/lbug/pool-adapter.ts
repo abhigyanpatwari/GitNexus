@@ -60,6 +60,9 @@ interface PoolEntry {
   }>;
   lastUsed: number;
   dbPath: string;
+  /** Immutable vector hard links share one native pool, independently of the
+   * path each checkout retains. Graph and injected handles remain path-keyed. */
+  dbCacheKey?: string;
   /** Filesystem identity of the on-disk DB at open time. When `analyze`
    *  rebuilds or mutates the index, this diverges from the current file and
    *  initLbug re-opens the pool onto the new file instead of serving the
@@ -139,9 +142,8 @@ export function addPoolCloseListener(listener: PoolCloseListener): () => void {
 }
 
 /**
- * Shared Database cache keyed by resolved dbPath.
- * Multiple repoIds pointing to the same path share one native Database
- * object to avoid exhausting the buffer manager's mmap budget.
+ * Shared Database cache keyed by graph path or immutable vector file identity.
+ * Sibling hard links must not multiply a sealed artifact's native reservation.
  */
 interface SharedDB {
   db: lbug.Database;
@@ -445,7 +447,8 @@ async function closeOne(repoId: string): Promise<void> {
   // Only close the Database when no other repoIds reference it.
   // External databases (injected via initLbugWithDb) are never closed here —
   // the core adapter owns them and handles their lifecycle.
-  const shared = dbCache.get(entry.dbPath);
+  const cacheKey = entry.dbCacheKey ?? entry.dbPath;
+  const shared = dbCache.get(cacheKey);
   if (shared) {
     shared.refCount--;
     if (shared.refCount === 0) {
@@ -463,7 +466,7 @@ async function closeOne(repoId: string): Promise<void> {
         // subsequent reopen (evictLRU / the "idle & changed" path below) must not
         // race. See the awaited call site in evictLRU for the full rationale.
         await shared.db.close().catch(() => {});
-        dbCache.delete(entry.dbPath);
+        dbCache.delete(cacheKey);
       }
     }
   }
@@ -855,12 +858,18 @@ const initLbugInner = async (
     // freshness THROUGH initLbug (rather than calling closeLbug directly) get
     // this guard for free; that is why LocalBackend delegates here (#2614).
     if (existing.checkedOut > 0) return { status: 'done', reopened: false };
-    // Closing only this consumer would leave the shared native handle alive
+    // For graph paths, closing only this consumer leaves the shared handle alive
     // and doInitLbug would attach eight new connections to that same old
     // generation. Keep this pool intact until the other consumers release it;
     // its opened identity stays divergent so the next init can retry then.
-    const shared = dbCache.get(existing.dbPath);
-    if (existing.dbPath === dbPath && shared && shared.db === existing.db && shared.refCount > 1) {
+    const shared = dbCache.get(existing.dbCacheKey ?? existing.dbPath);
+    if (
+      !artifactOptions &&
+      existing.dbPath === dbPath &&
+      shared &&
+      shared.db === existing.db &&
+      shared.refCount > 1
+    ) {
       return { status: 'done', reopened: false };
     }
     // Awaited: see the rationale on the evictLRU call site in doInitLbug below.
@@ -876,24 +885,38 @@ function sameArtifactOptions(a?: VectorPoolOptions, b?: VectorPoolOptions): bool
   );
 }
 
-/** Published vectors are immutable: readers never quarantine, replay, or repair
- * their writer's sidecars. An unfinished artifact must stay unavailable. */
-async function openVectorReadOnlyDatabase(
-  dbPath: string,
-  options: VectorPoolOptions,
-): Promise<lbug.Database> {
-  const stat = await fs.lstat(dbPath);
+/** Validate every retained path before sharing a native handle. No content
+ * hash or copy: sealed files can be pinned by hard links without extra pools.
+ * An unavailable inode identity falls back to the existing path isolation. */
+async function vectorDatabaseKey(dbPath: string): Promise<string> {
+  const stat = await fs.lstat(dbPath, { bigint: true });
   if (!stat.isFile() || stat.isSymbolicLink())
     throw new Error('Vector artifact must be a regular file');
   for (const suffix of ['.wal', '.shadow']) {
     try {
       const sidecar = await fs.lstat(dbPath + suffix);
-      if (sidecar.size || sidecar.isSymbolicLink())
+      if (sidecar.size || !sidecar.isFile() || sidecar.isSymbolicLink())
         throw new Error('Published vector artifact has unfinished native writes');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
   }
+  // NUL cannot occur in a filesystem path, so these keys cannot collide with
+  // the graph cache. ctime changes when another hard link is added; mtime does not.
+  return typeof stat.ino === 'bigint' &&
+    stat.ino > 0n &&
+    typeof stat.dev === 'bigint' &&
+    stat.dev > 0n
+    ? `vector\0${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}`
+    : `vector\0path\0${dbPath}`;
+}
+
+/** Called after vectorDatabaseKey validates the immutable file and sidecars.
+ * Readers never quarantine, replay, or repair their writer's sidecars. */
+async function openVectorReadOnlyDatabase(
+  dbPath: string,
+  options: VectorPoolOptions,
+): Promise<lbug.Database> {
   silenceStdout();
   let db: lbug.Database | undefined;
   try {
@@ -938,9 +961,10 @@ async function doInitLbug(
   // let a 6th native open race a still-resident victim's checkpoint.
   await evictLRU(artifactOptions?.kind);
 
-  // Reuse an existing native Database if another repoId already opened this path.
-  // This prevents buffer manager exhaustion from multiple mmap regions on the same file.
-  let shared = dbCache.get(dbPath);
+  // Immutable vector aliases share the reservation even when their checkout
+  // paths differ. Graph databases retain their existing path-based lifecycle.
+  const cacheKey = artifactOptions ? await vectorDatabaseKey(dbPath) : dbPath;
+  let shared = dbCache.get(cacheKey);
   if (shared && !sameArtifactOptions(shared.artifactOptions, artifactOptions))
     throw new Error('A shared database has a different resource reservation');
   if (shared && !shared.external && shared.dbIdentity) {
@@ -976,7 +1000,7 @@ async function doInitLbug(
         dbIdentity: await statDbIdentity(dbPath),
         artifactOptions,
       };
-      dbCache.set(dbPath, shared);
+      dbCache.set(cacheKey, shared);
     } catch (err: unknown) {
       const lastError = err instanceof Error ? err : new Error(String(err));
       if (artifactOptions) throw lastError;
@@ -997,7 +1021,7 @@ async function doInitLbug(
             ftsLoaded: false,
             dbIdentity: await statDbIdentity(dbPath),
           };
-          dbCache.set(dbPath, shared);
+          dbCache.set(cacheKey, shared);
         } catch (retryErr) {
           throw new Error(
             `LadybugDB WAL corruption detected for ${repoId}. ${WAL_RECOVERY_SUGGESTION} ` +
@@ -1044,7 +1068,7 @@ async function doInitLbug(
     await Promise.allSettled(available.map((connection) => connection.close()));
     shared.refCount--;
     if (shared.refCount === 0) {
-      dbCache.delete(dbPath);
+      dbCache.delete(cacheKey);
       if (!shared.external) await db.close().catch(() => {});
     }
     throw error;
@@ -1074,6 +1098,7 @@ async function doInitLbug(
     waiters: [],
     lastUsed: Date.now(),
     dbPath,
+    dbCacheKey: cacheKey,
     dbIdentity,
     closed: false,
     artifactOptions,
@@ -1169,7 +1194,7 @@ export async function ensureVectorExtension(repoId: string): Promise<boolean> {
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
   }
 
-  const shared = dbCache.get(entry.dbPath);
+  const shared = dbCache.get(entry.dbCacheKey ?? entry.dbPath);
   if (!shared) {
     throw new Error(`LadybugDB shared handle is unavailable for repo "${repoId}".`);
   }

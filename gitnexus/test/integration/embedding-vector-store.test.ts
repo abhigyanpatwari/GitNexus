@@ -825,6 +825,48 @@ describe('separate durable vector artifacts', () => {
 });
 
 describe('published vector readers', () => {
+  it('shares one native database across independently pinned vector files', async () => {
+    const options = await setup();
+    const id = 'Function:source.ts:alpha';
+    await store.beginNode(id, 'hash');
+    await store.append(id, 'hash', [chunk(0)]);
+    await store.finishNode(id, 'hash', 1);
+    await store.seal(1, 1);
+    await store.close();
+    const first = path.join(options.directory, 'vectors');
+    const second = path.join(options.directory, 'sibling-vectors');
+    await fs.link(first, second);
+    const close = vi.spyOn(lbug.Database.prototype, 'close');
+    const reservation = { kind: 'vector' as const, bufferPoolBytes: 64 * 1024 * 1024, threads: 1 };
+    try {
+      await readerPool.initLbug('vector-first', first, reservation);
+      await readerPool.initLbug('vector-second', second, reservation);
+      await readerPool.closeLbug('vector-first');
+      expect(close).not.toHaveBeenCalled();
+      // POSIX can unlink the retired path while its immutable inode is open.
+      // Windows may retain that path until the last reader releases it.
+      if (process.platform !== 'win32') await fs.unlink(first);
+      expect(
+        await readerPool.executeQuery(
+          'vector-second',
+          'MATCH (e:CodeEmbedding) RETURN e.nodeId AS id',
+        ),
+      ).toEqual([{ id }]);
+      await readerPool.closeLbug('vector-second');
+      expect(close).toHaveBeenCalledOnce();
+      await readerPool.initLbug('vector-second', second, reservation);
+      expect(
+        await readerPool.executeQuery(
+          'vector-second',
+          'MATCH (e:CodeEmbedding) RETURN e.nodeId AS id',
+        ),
+      ).toEqual([{ id }]);
+    } finally {
+      await readerPool.closeLbug();
+      close.mockRestore();
+    }
+  });
+
   it('publishes a native FTS graph before opening the independent vector writer', async (context) => {
     temporary = await createTempDir();
     vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
