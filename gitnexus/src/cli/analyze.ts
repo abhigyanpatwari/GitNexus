@@ -74,6 +74,7 @@ import {
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
+import { LocalEmbeddingDimensionError } from '../core/embeddings/config.js';
 import {
   isHttpEmbeddingDimsError,
   isHttpEmbeddingError,
@@ -1899,11 +1900,12 @@ const analyzeCommandImpl = async (
     }
 
     // An extracted edge whose FROM→TO label pair is missing from GitNexus's own
-    // relation DDL (#2789). `assertDeclaredPair` aborts the run rather than let
-    // the bulk COPY fail late and silently drop the edge, so the user sees a
-    // mid-run crash inside GitNexus internals with nothing to act on. Name the
-    // pair, the relationship and the file that produced it, and say plainly that
-    // a re-run cannot help — this is deterministic for the same input.
+    // relation DDL (#2789). `checkDeclaredPair` fails the run, with every such
+    // pair (#2797), rather than let the bulk COPY fail late and silently drop the
+    // edge, so the user sees a failure inside GitNexus internals with nothing to
+    // act on. Name the pair, the relationship and the file that produced it, and
+    // say plainly that a re-run cannot help — this is deterministic for the same
+    // input.
     // Checked by TYPE (repo norm, #2385) BEFORE the message-text heuristics
     // below, and through the `cause` chain because the ingestion phase runner
     // rewraps every phase failure as `Phase 'X' failed: …`.
@@ -1921,6 +1923,7 @@ const analyzeCommandImpl = async (
       cliError(`  ${undeclaredPair.message.replace(/\n/g, '\n  ')}\n`, {
         recoveryHint: 'undeclared-relation-pair',
         labelPair: undeclaredPair.pairKey,
+        labelPairs: undeclaredPair.pairs.map((pair) => pair.pairKey),
         relationType: undeclaredPair.relationType,
         sourceFile: undeclaredPair.sourceFile,
       });
@@ -2066,6 +2069,14 @@ const analyzeCommandImpl = async (
       cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
         recoveryHint: 'embedding-dims-invalid',
       });
+      process.exitCode = 1;
+      return;
+    }
+
+    // A custom local model returned another width than GITNEXUS_EMBEDDING_DIMS:
+    // the message names the value to set, so no stack dump.
+    if (err instanceof LocalEmbeddingDimensionError) {
+      cliError(`  ${msg}\n`, { recoveryHint: 'embedding-dims-invalid' });
       process.exitCode = 1;
       return;
     }

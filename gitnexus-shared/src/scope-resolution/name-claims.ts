@@ -29,11 +29,15 @@ export interface NameClaimSources {
   readonly bindingsAt?: (scope: Scope, name: string) => readonly BindingRef[];
   readonly importsAt?: (scope: Scope) => readonly ImportEdge[];
 }
+const NO_BINDINGS: readonly BindingRef[] = Object.freeze([]);
+const NO_CLAIMS: readonly NameClaim[] = Object.freeze([]);
+const NO_IMPORTS: readonly ImportEdge[] = Object.freeze([]);
+const NO_SELECTION: ScopeClaimSelection = Object.freeze({ status: 'absent', claims: NO_CLAIMS });
 const ABSENT: NameClaimResult = Object.freeze({
   status: 'absent',
-  bindings: [],
-  imports: [],
-  claims: [],
+  bindings: NO_BINDINGS,
+  imports: NO_IMPORTS,
+  claims: NO_CLAIMS,
 });
 // Published scope arrays are readonly. Cache by the array, not the scope ID:
 // finalization and cache hydration can replace a scope's import/claim snapshot.
@@ -42,8 +46,6 @@ const importsByName = new WeakMap<
   readonly ImportEdge[],
   ReadonlyMap<string, readonly ImportEdge[]>
 >();
-const NO_CLAIMS: readonly NameClaim[] = Object.freeze([]);
-const NO_IMPORTS: readonly ImportEdge[] = Object.freeze([]);
 
 export function nameClaimsFor(scope: Scope, name: string): readonly NameClaim[] {
   const claims = scope.nameClaims;
@@ -93,11 +95,13 @@ export function selectClaimsAtScope(
   name: string,
   options: NameLookupOptions = {},
 ): ScopeClaimSelection {
+  const candidates = nameClaimsFor(scope, name);
+  if (candidates.length === 0) return NO_SELECTION;
   const purpose = options.purpose ?? 'value';
-  const claims = nameClaimsFor(scope, name).filter(
+  const claims = candidates.filter(
     (c) => c.purpose === undefined || c.purpose === 'both' || c.purpose === purpose,
   );
-  if (claims.length === 0) return { status: 'absent', claims };
+  if (claims.length === 0) return NO_SELECTION;
   const active = claims.filter(
     (c) =>
       c.availableFrom === undefined ||
@@ -192,6 +196,9 @@ export function lookupLexicalName(
 ): NameClaimResult {
   let id: ScopeId | null = startScope;
   let position = options.position;
+  // Position is cleared when crossing deferred/redirected ownership. Reuse
+  // the caller's readonly options until that happens, then copy only once.
+  let selectionOptions = options;
   let forcedClaims: readonly NameClaim[] | undefined;
   let carriedConstructor: TypeRef | undefined;
   const visited = new Set<ScopeId>();
@@ -209,9 +216,10 @@ export function lookupLexicalName(
       id = scope.lookupPolicy?.parentScope ?? scope.parent;
       continue;
     }
+    if (selectionOptions.position !== position) selectionOptions = { ...options, position };
     const selected: ScopeClaimSelection =
       forcedClaims === undefined
-        ? selectClaimsAtScope(scope, name, { ...options, position })
+        ? selectClaimsAtScope(scope, name, selectionOptions)
         : { status: 'selected', claims: forcedClaims };
     forcedClaims = undefined;
     const redirected = selected.claims.find((c) => c.redirect !== undefined);
@@ -245,38 +253,47 @@ export function lookupLexicalName(
       return { ...ABSENT, status: 'blocked', scope, claims: selected.claims };
     const nameClaims = nameClaimsFor(scope, name);
     const hasClaimsForName = nameClaims.length > 0;
-    const allBindings = sources.bindingsAt?.(scope, name) ?? scope.bindings.get(name) ?? [];
+    const allBindings =
+      sources.bindingsAt?.(scope, name) ?? scope.bindings.get(name) ?? NO_BINDINGS;
     const allImports = importsFor(sources.importsAt?.(scope) ?? scope.imports ?? NO_IMPORTS, name);
-    let bindings = allBindings.filter(
-      (b) =>
-        b.availableFrom === undefined ||
-        position === undefined ||
-        compare(b.availableFrom, position) <= 0,
-    );
+    let bindings =
+      allBindings.length === 0
+        ? NO_BINDINGS
+        : allBindings.filter(
+            (b) =>
+              b.availableFrom === undefined ||
+              position === undefined ||
+              compare(b.availableFrom, position) <= 0,
+          );
     let imports = allImports;
     if (selected.status === 'selected') {
-      bindings = bindings.filter((b) =>
-        selected.claims.some((c) =>
-          c.kind === 'import'
-            ? b.via !== undefined && matchesClaim(b.via.atRange, c)
-            : c.kind === 'binding' &&
-              (b.origin === 'local' || b.declarationRange !== undefined) &&
-              matchesBindingClaim(b.declarationRange, c),
-        ),
-      );
-      imports = allImports.filter((e) =>
-        selected.claims.some((c) => c.kind === 'import' && matchesClaim(e.atRange, c)),
-      );
+      if (bindings.length > 0)
+        bindings = bindings.filter((b) =>
+          selected.claims.some((c) =>
+            c.kind === 'import'
+              ? b.via !== undefined && matchesClaim(b.via.atRange, c)
+              : c.kind === 'binding' &&
+                (b.origin === 'local' || b.declarationRange !== undefined) &&
+                matchesBindingClaim(b.declarationRange, c),
+          ),
+        );
+      imports =
+        allImports.length === 0
+          ? NO_IMPORTS
+          : allImports.filter((e) =>
+              selected.claims.some((c) => c.kind === 'import' && matchesClaim(e.atRange, c)),
+            );
     } else if (hasClaimsForName) {
       // A declaration in another namespace, or a not-yet-visible declaration,
       // must not sneak back through the unfiltered legacy binding channels.
-      bindings = bindings.filter(
-        (b) =>
-          b.availableFrom !== undefined &&
-          b.declarationRange !== undefined &&
-          !nameClaims.some((c) => rangesOverlap(c.range, b.declarationRange!)),
-      );
-      imports = [];
+      if (bindings.length > 0)
+        bindings = bindings.filter(
+          (b) =>
+            b.availableFrom !== undefined &&
+            b.declarationRange !== undefined &&
+            !nameClaims.some((c) => rangesOverlap(c.range, b.declarationRange!)),
+        );
+      imports = NO_IMPORTS;
     }
     const ownType = scope.typeBindings.get(name);
     const typeFactOwnsName =
@@ -328,9 +345,12 @@ export function lookupLexicalName(
         (typeBinding === undefined || isInferredFact(typeBinding.source))
       )
         typeBinding = carriedConstructor;
-      const usable = bindings.filter(
-        (b) => (options.purpose ?? 'value') !== 'value' || b.via?.typeOnly !== true,
-      );
+      const usable =
+        bindings.length === 0
+          ? NO_BINDINGS
+          : bindings.filter(
+              (b) => (options.purpose ?? 'value') !== 'value' || b.via?.typeOnly !== true,
+            );
       return {
         status:
           usable.length > 0 ||
@@ -358,6 +378,9 @@ export function lookupLexicalName(
   }
   // A write to an undeclared name declares nothing, but it still carries the
   // value's type to reads inside the writing scope.
-  const carried = carriedConstructor === undefined ? {} : { typeBinding: carriedConstructor };
-  return id === null ? { ...ABSENT, ...carried } : { ...ABSENT, ...carried, status: 'blocked' };
+  if (carriedConstructor === undefined)
+    return id === null ? ABSENT : { ...ABSENT, status: 'blocked' };
+  return id === null
+    ? { ...ABSENT, typeBinding: carriedConstructor }
+    : { ...ABSENT, typeBinding: carriedConstructor, status: 'blocked' };
 }

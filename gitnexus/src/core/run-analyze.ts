@@ -73,6 +73,7 @@ import {
   loadGraphToLbug,
   getLbugStats,
   executeQuery,
+  forEachQueryRow,
   executeWithReusedStatement,
   closeLbug,
   closeLbugBeforeExit,
@@ -4419,7 +4420,7 @@ async function runFullAnalysisInner(
       await markIncrementalGraphVerification();
       await reconcileGraphNodeIdentities(
         pipelineResult.graph,
-        executeQuery,
+        forEachQueryRow,
         'post-COPY/checkpoint',
       );
     }
@@ -5573,7 +5574,7 @@ async function runFullAnalysisInner(
       }
       await reconcileGraphNodeIdentities(
         pipelineResult.graph,
-        executeQuery,
+        forEachQueryRow,
         'pre-publish/checkpoint',
       );
     }
