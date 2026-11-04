@@ -24,6 +24,53 @@ describe('v8 cache envelope', () => {
     expect(pool.get('dup')).toBe('dup');
   });
 
+  it('visits only own enumerable string properties, including null-prototype records', () => {
+    const pool = new Map<string, string>();
+    const inherited = { inherited: 'prototype-only' };
+    const graph = Object.assign(Object.create(inherited) as Record<PropertyKey, unknown>, {
+      hasOwnProperty: 'own-value',
+      nested: Object.assign(Object.create(null) as Record<string, string>, {
+        value: 'nested-value',
+      }),
+    });
+    const symbol = Symbol('hidden');
+    graph[symbol] = 'symbol-only';
+    Object.defineProperty(graph, 'hidden', { value: 'non-enumerable' });
+
+    internGraphStrings(graph, pool);
+
+    expect([...pool.keys()]).toEqual(['own-value', 'nested-value']);
+    expect(Object.hasOwn(graph, 'inherited')).toBe(false);
+    expect(Object.getPrototypeOf(graph)).toBe(inherited);
+    expect(Object.getPrototypeOf(graph.nested)).toBeNull();
+    expect(graph[symbol]).toBe('symbol-only');
+    expect(graph.hidden).toBe('non-enumerable');
+  });
+
+  it('preserves cycles, shared objects, and collection order while interning', () => {
+    const pool = new Map<string, string>();
+    const shared = { text: 'shared-value' };
+    const graph = {
+      shared,
+      aliases: [shared] as unknown[],
+      map: new Map<unknown, unknown>(),
+      set: new Set<unknown>(),
+    };
+    graph.aliases.push(graph);
+    graph.map.set(shared, graph).set('map-key', shared);
+    graph.set.add(graph).add(shared).add('set-value');
+
+    expect(internGraphStrings(graph, pool)).toBe(graph);
+
+    expect(graph.aliases[0]).toBe(shared);
+    expect(graph.aliases[1]).toBe(graph);
+    expect(graph.map.get(shared)).toBe(graph);
+    expect(graph.map.get('map-key')).toBe(shared);
+    expect([...graph.map.keys()]).toEqual([shared, 'map-key']);
+    expect([...graph.set]).toEqual([graph, shared, 'set-value']);
+    expect([...pool.keys()]).toEqual(['shared-value', 'map-key', 'set-value']);
+  });
+
   it('round-trips a live graph including Maps', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'v8cf-'));
     try {
