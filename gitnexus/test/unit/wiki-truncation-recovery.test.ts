@@ -133,6 +133,74 @@ describe('wiki generation after a completion-token limit', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it.each(['interrupted', 'context-window'] as const)(
+    'retries an incomplete Anthropic page after %s without saving partial output',
+    async (failure) => {
+      const anthropicResponse = (content: string, stopReason: string | null): Response => {
+        const events: unknown[] = [
+          { type: 'content_block_delta', delta: { type: 'text_delta', text: content } },
+        ];
+        if (stopReason !== null) {
+          events.push(
+            { type: 'message_delta', delta: { stop_reason: stopReason } },
+            { type: 'message_stop' },
+          );
+        }
+        return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), {
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      };
+      const anthropicGenerator = () =>
+        new WikiGenerator(
+          repoPath,
+          storagePath,
+          '/unused/lbug',
+          {
+            apiKey: 'test',
+            baseUrl: 'https://wiki.example.test/v1',
+            model: 'test-model',
+            maxTokens: 4096,
+            temperature: 0,
+            provider: 'anthropic',
+          },
+          { concurrency: 1 },
+        );
+      fetchMock.mockImplementation(async () =>
+        anthropicResponse('Complete documentation.', 'end_turn'),
+      );
+      fetchMock.mockResolvedValueOnce(
+        anthropicResponse(
+          'Incomplete page',
+          failure === 'interrupted' ? null : 'model_context_window_exceeded',
+        ),
+      );
+
+      expect(await anthropicGenerator().run()).toEqual({
+        pagesGenerated: 2,
+        mode: 'full',
+        failedModules: ['Billing'],
+      });
+      await expect(fs.readFile(path.join(wikiPath, 'billing.md'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      expect((await metadata()).failedModules).toEqual(['Billing']);
+      const shippingBefore = await fs.readFile(path.join(wikiPath, 'shipping.md'), 'utf8');
+      fetchMock.mockClear();
+
+      expect(await anthropicGenerator().run()).toEqual({
+        pagesGenerated: 2,
+        mode: 'incremental',
+        failedModules: [],
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(await fs.readFile(path.join(wikiPath, 'billing.md'), 'utf8')).toContain(
+        'Complete documentation.',
+      );
+      expect(await fs.readFile(path.join(wikiPath, 'shipping.md'), 'utf8')).toBe(shippingBefore);
+      expect((await metadata()).failedModules).toEqual([]);
+    },
+  );
+
   it('retries a truncated incremental page after the new commit was recorded', async () => {
     await generator().run();
     await fs.writeFile(path.join(repoPath, 'billing.ts'), 'export const bill = 2;\n');

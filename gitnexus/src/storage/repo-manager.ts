@@ -1838,7 +1838,8 @@ export interface CLIConfig {
     | 'codex'
     | 'opencode'
     | 'grok'
-    | 'minimax';
+    | 'minimax'
+    | 'anthropic';
   cursorModel?: string;
   claudeModel?: string;
   codexModel?: string;

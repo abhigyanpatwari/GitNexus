@@ -311,6 +311,7 @@ gitnexus clean --all --force     # Delete all indexes
 gitnexus wiki [path]             # Generate LLM-powered docs from knowledge graph
 gitnexus wiki --model <model>    # Wiki with custom LLM model (default: minimax/minimax-m2.5)
 gitnexus wiki --provider grok    # Local Grok Build CLI (uses `grok login`, no API key)
+gitnexus wiki --provider anthropic  # Anthropic Messages API (ANTHROPIC_API_KEY; default model claude-opus-5-5)
 gitnexus wiki --base-url http://llama-box.local:8080/v1 --allow-insecure-connection llama-box.local
                                   # Allow an exact LAN/self-hosted HTTP LLM host; env: GITNEXUS_ALLOW_INSECURE_CONNECTION
 gitnexus doctor                  # Show runtime platform capabilities and embedding configuration
