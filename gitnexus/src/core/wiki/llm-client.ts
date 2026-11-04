@@ -406,6 +406,9 @@ export async function callLLM(
           ...headers,
         },
         body: JSON.stringify(body),
+        // Fetch preserves x-api-key across origins. Only send credentials and
+        // source code to the configured endpoint, never a redirect destination.
+        ...(anthropic ? { redirect: 'manual' as const } : {}),
         // Request timeout is opt-in for wiki generation. Large local
         // model runs can legitimately take well over a minute, so the
         // default runtime path must not impose a hidden 60s ceiling.
@@ -623,6 +626,9 @@ function readAnthropicMessage(json: AnthropicMessage | null, maxTokens: number):
   if (json?.stop_reason === 'refusal') {
     throw anthropicRefusalError();
   }
+  if (json?.stop_reason === 'model_context_window_exceeded') {
+    throw anthropicContextWindowError();
+  }
   // Thinking blocks come back alongside the answer; only text blocks are the page.
   const content = Array.isArray(json?.content)
     ? json.content
@@ -647,6 +653,12 @@ function anthropicRefusalError(): Error {
   );
 }
 
+function anthropicContextWindowError(): Error {
+  return new Error(
+    'LLM response reached the context window limit (stop_reason "model_context_window_exceeded") and is incomplete. Reduce the input size or use a model with a larger context window.',
+  );
+}
+
 // A response cut off by the completion limit reads like a finished one, and a
 // reasoning model can spend the whole limit before the answer starts.
 function truncatedResponseError(maxTokens: number, stopReason: string): Error {
@@ -659,7 +671,8 @@ function truncatedResponseError(maxTokens: number, stopReason: string): Error {
 interface StreamEvent {
   text?: string;
   /** Set when the provider stopped for a reason that makes the answer unusable. */
-  stop?: 'length' | 'content_filter' | 'refusal';
+  stop?: 'length' | 'content_filter' | 'refusal' | 'context_window';
+  complete?: boolean;
 }
 
 /** How one provider's stream is read. */
@@ -671,6 +684,8 @@ interface StreamProtocol {
   readEvent: (data: unknown) => StreamEvent | undefined;
   /** The provider's own name for a stop at the token limit, quoted in the error. */
   truncationReason: string;
+  /** When set, EOF before this terminal event means the response is incomplete. */
+  completionEvent?: string;
 }
 
 /** OpenAI-compatible chat completions chunks. */
@@ -712,7 +727,12 @@ const anthropicStream: StreamProtocol = {
       case 'message_delta':
         if (data.delta?.stop_reason === 'max_tokens') return { stop: 'length' };
         if (data.delta?.stop_reason === 'refusal') return { stop: 'refusal' };
+        if (data.delta?.stop_reason === 'model_context_window_exceeded') {
+          return { stop: 'context_window' };
+        }
         return undefined;
+      case 'message_stop':
+        return { complete: true };
       case 'error':
         throw new Error(
           `LLM API error mid-stream: ${data.error?.type ?? 'error'}: ${data.error?.message ?? 'no message'}`,
@@ -722,6 +742,7 @@ const anthropicStream: StreamProtocol = {
     }
   },
   truncationReason: 'stop_reason "max_tokens"',
+  completionEvent: 'message_stop',
 };
 
 /**
@@ -741,38 +762,51 @@ async function readSSEStream(
   let contentFilterTriggered = false;
   let lengthLimitReached = false;
   let refused = false;
+  let contextWindowExceeded = false;
+  let complete = false;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    stream: while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith('data: ')) continue;
-      const data = trimmed.slice(6);
-      if (data === '[DONE]') continue;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const data = trimmed.slice(5).trimStart();
+        if (data === '[DONE]') continue;
 
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(data);
-      } catch {
-        // Skip malformed SSE chunks
-        continue;
-      }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          // Skip malformed SSE chunks
+          continue;
+        }
 
-      const event = protocol.readEvent(parsed);
-      if (event?.stop === 'content_filter') contentFilterTriggered = true;
-      if (event?.stop === 'length') lengthLimitReached = true;
-      if (event?.stop === 'refusal') refused = true;
-      if (event?.text) {
-        content += event.text;
-        onChunk(content.length);
+        const event = protocol.readEvent(parsed);
+        if (event?.stop === 'content_filter') contentFilterTriggered = true;
+        if (event?.stop === 'length') lengthLimitReached = true;
+        if (event?.stop === 'refusal') refused = true;
+        if (event?.stop === 'context_window') contextWindowExceeded = true;
+        if (event?.text) {
+          content += event.text;
+          onChunk(content.length);
+        }
+        if (event?.complete) {
+          complete = true;
+          break stream;
+        }
       }
     }
+  } finally {
+    // Release the HTTP response on protocol errors and terminal events, too.
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 
   if (contentFilterTriggered) {
@@ -787,6 +821,14 @@ async function readSSEStream(
 
   if (lengthLimitReached) {
     throw truncatedResponseError(maxTokens, protocol.truncationReason);
+  }
+
+  if (contextWindowExceeded) {
+    throw anthropicContextWindowError();
+  }
+
+  if (protocol.completionEvent && !complete) {
+    throw new Error(`LLM stream ended before ${protocol.completionEvent} and is incomplete.`);
   }
 
   if (!content) {

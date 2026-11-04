@@ -3,6 +3,7 @@ import { createReadStream, createWriteStream, existsSync, constants as fsConstan
 import { createInterface } from 'readline';
 import { once } from 'events';
 import { finished } from 'stream/promises';
+import { setImmediate as yieldQueryRows } from 'node:timers/promises';
 import path from 'path';
 import lbug from '@ladybugdb/core';
 import { closeQueryResults } from './query-result-utils.js';
@@ -1954,6 +1955,57 @@ export const batchInsertNodesToLbug = async (
 // double-report the same query text (#2915).
 export const executeQuery = async (cypher: string): Promise<any[]> => {
   return await executePrepared(cypher, {});
+};
+
+/**
+ * Visit a single trusted, parameter-free query without retaining a JS row array.
+ * The visitor must be synchronous and must not issue another connection query.
+ * Keep the connection locked through yields and cursor close so a checkpoint
+ * cannot interleave with reading. Use direct execution: repeated prepared reads
+ * exhausted the native pool in the normal-GC identity scaling probe.
+ */
+export const forEachQueryRow = async (
+  cypher: string,
+  onRow: (row: any) => undefined,
+): Promise<void> => {
+  warnIfQueryTextUnbounded(cypher, 'forEachQueryRow', (message) => logger.warn(message));
+  const c = conn;
+  if (!c) throw new Error('LadybugDB not initialized. Call initLbug first.');
+
+  await withConnLock(async () => {
+    const queryResult = await c.query(cypher);
+    const results = Array.isArray(queryResult) ? queryResult : [queryResult];
+    let failed = false;
+    let failure: unknown;
+    try {
+      if (results.length !== 1 || !results[0]) {
+        throw new Error('forEachQueryRow requires exactly one query result');
+      }
+      const result = results[0];
+      let rows = 0;
+      while (result.hasNext()) {
+        const row = result.getNextSync();
+        if (row === null) throw new Error('Query cursor ended before its advertised next row');
+        onRow(row);
+        if (++rows % 1024 === 0) await yieldQueryRows();
+      }
+    } catch (error) {
+      failed = true;
+      failure = error;
+    } finally {
+      for (const result of results) {
+        try {
+          result?.close();
+        } catch (error) {
+          if (!failed) {
+            failed = true;
+            failure = error;
+          }
+        }
+      }
+    }
+    if (failed) throw failure;
+  });
 };
 
 export const streamQuery = async (

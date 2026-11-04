@@ -5,6 +5,8 @@
  * OpenAI-compatible providers.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import {
   ANTHROPIC_API_VERSION,
   ANTHROPIC_BASE_URL,
@@ -200,6 +202,70 @@ describe('callLLM — anthropic provider', () => {
     await expect(callLLM('p', config)).rejects.toThrow('stop_reason "refusal"');
   });
 
+  it.each([false, true])('rejects context-window truncation (streaming: %s)', async (streaming) => {
+    stubFetch(
+      streaming
+        ? sseResponse([
+            messageStart,
+            textDelta(0, 'Incomplete page'),
+            messageDelta('model_context_window_exceeded'),
+            { type: 'message_stop' },
+          ])
+        : jsonResponse({
+            content: [{ type: 'text', text: 'Incomplete page' }],
+            stop_reason: 'model_context_window_exceeded',
+          }),
+    );
+
+    await expect(
+      callLLM('p', config, undefined, { onChunk: streaming ? vi.fn() : undefined }),
+    ).rejects.toThrow('stop_reason "model_context_window_exceeded"');
+  });
+
+  it('does not forward the API key or prompt to a redirect target', async () => {
+    const receivedKeys: unknown[] = [];
+    const target = createServer((request, response) => {
+      receivedKeys.push(request.headers['x-api-key']);
+      request.resume();
+      response.setHeader('Content-Type', 'application/json');
+      response.end(
+        JSON.stringify({
+          content: [{ type: 'text', text: 'redirected' }],
+          stop_reason: 'end_turn',
+        }),
+      );
+    });
+    const endpoint = createServer((request, response) => {
+      request.resume();
+      response.writeHead(307, {
+        Location: `http://127.0.0.1:${(target.address() as AddressInfo).port}/messages`,
+      });
+      response.end();
+    });
+    try {
+      await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve));
+      await new Promise<void>((resolve) => endpoint.listen(0, '127.0.0.1', resolve));
+      const result = await callLLM('private source code', {
+        ...config,
+        baseUrl: `http://127.0.0.1:${(endpoint.address() as AddressInfo).port}/v1`,
+      }).catch((error: unknown) => error);
+
+      expect(receivedKeys).toEqual([]);
+      expect(result).toBeInstanceOf(Error);
+      expect((result as Error).message).toContain('307');
+    } finally {
+      await Promise.all(
+        [target, endpoint].map(
+          (server) =>
+            new Promise<void>((resolve) => {
+              server.close(() => resolve());
+              server.closeAllConnections();
+            }),
+        ),
+      );
+    }
+  });
+
   it('converts image parts and refuses video', async () => {
     const fetchSpy = stubFetch(
       jsonResponse({ content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn' }),
@@ -237,6 +303,86 @@ describe('callLLM — anthropic provider', () => {
 
 describe('callLLM — anthropic streaming', () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it.each([false, true])(
+    'rejects EOF without message_stop (stop reason received: %s)',
+    async (hasStopReason) => {
+      stubFetch(
+        sseResponse([
+          messageStart,
+          textDelta(0, 'Incomplete page'),
+          ...(hasStopReason ? [messageDelta('end_turn')] : []),
+        ]),
+      );
+
+      await expect(callLLM('p', config, undefined, { onChunk: vi.fn() })).rejects.toThrow(
+        'message_stop',
+      );
+    },
+  );
+
+  it('cancels and unlocks a response when a stream error interrupts reading', async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}\n\n',
+          ),
+        );
+      },
+      cancel,
+    });
+    stubFetch(new Response(body));
+
+    await expect(callLLM('p', config, undefined, { onChunk: vi.fn() })).rejects.toThrow(
+      'Overloaded',
+    );
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
+  });
+
+  it('accepts SSE data fields without optional whitespace', async () => {
+    const events = [
+      messageStart,
+      textDelta(0, 'Complete page'),
+      messageDelta('end_turn'),
+      { type: 'message_stop' },
+    ];
+    stubFetch(
+      new Response(events.map((event) => `data:${JSON.stringify(event)}\r\n\r\n`).join('')),
+    );
+
+    await expect(callLLM('p', config, undefined, { onChunk: vi.fn() })).resolves.toEqual({
+      content: 'Complete page',
+    });
+  });
+
+  it('finishes at message_stop without waiting for the server to close the connection', async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const events = [
+          textDelta(0, 'Complete page'),
+          messageDelta('end_turn'),
+          { type: 'message_stop' },
+        ];
+        controller.enqueue(
+          new TextEncoder().encode(
+            events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''),
+          ),
+        );
+      },
+      cancel,
+    });
+    stubFetch(new Response(body));
+
+    await expect(callLLM('p', config, undefined, { onChunk: vi.fn() })).resolves.toEqual({
+      content: 'Complete page',
+    });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
+  }, 1000);
 
   it('streams the text deltas and skips thinking deltas', async () => {
     const fetchSpy = stubFetch(
