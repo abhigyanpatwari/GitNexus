@@ -21,6 +21,8 @@ import {
 import type { AnalysisResourceBudget } from '../analysis-resource-budget.js';
 import { syncPublishedMetadata } from '../analysis-publication.js';
 import { EmbeddingGraphSource } from '../lbug/embedding-source.js';
+import { LegacyVectorSource, legacyVectorCompatibility } from '../lbug/legacy-vector-source.js';
+import { readLegacyEmbeddingSource } from '../../storage/legacy-embedding-source.js';
 import { drainAnalysisNativeResources } from '../lbug/lbug-adapter.js';
 import { VectorStore, VECTOR_STORE_SCHEMA } from '../lbug/vector-store.js';
 import { EMBEDDING_TEXT_VERSION } from './embedding-pipeline.js';
@@ -245,6 +247,29 @@ export async function runPublishedEmbeddingJob(
       throw new Error('Owned embedding artifact manifest changed; paid artifacts retained');
   };
   let artifact = await readEmbeddingArtifactSpace(root, space, validateOwner);
+  // A direct legacy receipt survives graph-bound journal replacement. Prefer
+  // the newer complete artifact when one exists; never open two reuse readers.
+  const legacyIdentity =
+    artifact?.owner.fallbackLegacy ??
+    (!artifact && !previousCompatible ? metadata.legacyVectorSource : undefined);
+  let legacy = legacyIdentity ? await readLegacyEmbeddingSource(root, legacyIdentity) : undefined;
+  if (legacy) {
+    const incompatible =
+      legacyVectorCompatibility(legacy.recordedIdentity, vector) ??
+      (legacy.recordedInputIdentity !== undefined &&
+      legacy.recordedInputIdentity !== identities.inputIdentity
+        ? 'Legacy embedding input provenance differs from this request; source retained.'
+        : undefined);
+    if (incompatible) {
+      if (artifact?.owner.fallbackLegacy) throw new Error(incompatible);
+      options.log?.(incompatible);
+      legacy = undefined;
+    } else {
+      const current = await fs.lstat(options.graphPath, { bigint: true });
+      if (String(current.dev) === legacy.file.dev && String(current.ino) === legacy.file.ino)
+        throw new Error('Legacy reuse requires a retired source distinct from the mutable graph');
+    }
+  }
   if (
     !artifact &&
     metadata.embeddingJob &&
@@ -258,16 +283,17 @@ export async function runPublishedEmbeddingJob(
     artifact
       ? artifact.owner.phase === 'sealed'
         ? artifact.owner.jobIdentity !== identities.identity
-        : Boolean(artifact.owner.fallbackArtifact)
+        : Boolean(artifact.owner.fallbackArtifact || artifact.owner.fallbackLegacy)
       : Boolean(
-          previousCompatible &&
-          (previous.artifactIdentity ?? previous.identity) !== identities.identity,
+          legacy ||
+          (previousCompatible &&
+            (previous.artifactIdentity ?? previous.identity) !== identities.identity),
         );
   limits(needsFallback());
   const directory = await jobDirectory(root, identities.identity);
   let source: GraphSource | undefined;
   let store: VectorStore | undefined;
-  let reuse: VectorStore | undefined;
+  let reuse: VectorStore | LegacyVectorSource | undefined;
   let runtime: EmbeddingSidecarReservation | undefined;
   try {
     if (usesLocalRuntime) {
@@ -290,7 +316,7 @@ export async function runPublishedEmbeddingJob(
           recoverEmptyBootstrap: !(await existsOwnedFile(
             path.join(root, 'embeddings', artifact.owner.jobIdentity, 'job.json'),
           )),
-          ...limits(Boolean(artifact.owner.fallbackArtifact)),
+          ...limits(Boolean(artifact.owner.fallbackArtifact || artifact.owner.fallbackLegacy)),
         });
         if (store.isSealed) {
           await store.close();
@@ -299,7 +325,12 @@ export async function runPublishedEmbeddingJob(
             root,
             space,
             artifact,
-            { ...artifact.owner, phase: 'sealed', fallbackArtifact: undefined },
+            {
+              ...artifact.owner,
+              phase: 'sealed',
+              fallbackArtifact: undefined,
+              fallbackLegacy: undefined,
+            },
             validateOwner,
           );
         }
@@ -329,6 +360,7 @@ export async function runPublishedEmbeddingJob(
       artifactIdentity: string,
       revalidateInputs: boolean,
       fallbackArtifact?: string,
+      fallbackLegacy?: string,
     ): EmbeddingArtifactOwner => ({
       artifactIdentity,
       jobIdentity: identities.identity,
@@ -338,6 +370,7 @@ export async function runPublishedEmbeddingJob(
       phase: 'pending',
       revalidateInputs,
       ...(fallbackArtifact === undefined ? {} : { fallbackArtifact }),
+      ...(fallbackLegacy === undefined ? {} : { fallbackLegacy }),
     });
     let owner: EmbeddingArtifactOwner;
     if (artifact?.owner.phase === 'sealed' && artifact.owner.jobIdentity === identities.identity) {
@@ -351,6 +384,7 @@ export async function runPublishedEmbeddingJob(
         artifact.owner.artifactIdentity,
         artifact.owner.revalidateInputs || artifact.owner.jobIdentity !== identities.identity,
         artifact.owner.fallbackArtifact,
+        artifact.owner.fallbackLegacy,
       );
     } else {
       // Start a space beside its first job. This also adopts an older bounded
@@ -361,6 +395,7 @@ export async function runPublishedEmbeddingJob(
         identities.identity,
         false,
         previousCompatible ? (previous.artifactIdentity ?? previous.identity) : undefined,
+        legacy?.identity,
       );
       if (owner.fallbackArtifact === owner.artifactIdentity) owner.fallbackArtifact = undefined;
       if (
@@ -371,7 +406,7 @@ export async function runPublishedEmbeddingJob(
         owner.phase = 'sealed';
     }
     artifact = await adoptEmbeddingArtifact(root, space, artifact, owner, validateOwner);
-    const storeResources = limits(Boolean(owner.fallbackArtifact));
+    const storeResources = limits(Boolean(owner.fallbackArtifact || owner.fallbackLegacy));
     if (
       metadata.embeddingJob?.identity !== identities.identity ||
       metadata.embeddingJob.artifactIdentity !== owner.artifactIdentity ||
@@ -414,6 +449,25 @@ export async function runPublishedEmbeddingJob(
         mode: 'read',
         ...storeResources,
       });
+    } else if (owner.fallbackLegacy && !store.isSealed) {
+      if (!legacy || legacy.identity !== owner.fallbackLegacy)
+        throw new Error('Legacy source does not match the owned fallback; artifacts retained');
+      reuse = await LegacyVectorSource.open(
+        {
+          path: legacy.path,
+          sourceIdentity: legacy.identity,
+          recordedIdentity: legacy.recordedIdentity,
+          expectedIdentity: vector,
+          recordedInputIdentity: legacy.recordedInputIdentity,
+          expectedInputIdentity: identities.inputIdentity,
+          config,
+          signal,
+          log: options.log,
+          ...storeResources,
+        },
+        store,
+        legacy.excludedIds,
+      );
     }
     const provider: typeof embedBatch =
       dependencies.provider ??
@@ -468,7 +522,12 @@ export async function runPublishedEmbeddingJob(
         root,
         space,
         artifact,
-        { ...artifact.owner, phase: 'sealed', fallbackArtifact: undefined },
+        {
+          ...artifact.owner,
+          phase: 'sealed',
+          fallbackArtifact: undefined,
+          fallbackLegacy: undefined,
+        },
         validateOwner,
       );
     }

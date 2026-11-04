@@ -136,6 +136,9 @@ export interface RepoMeta {
     artifactIdentity?: string;
     spaceKey?: string;
   };
+  /** Direct receipt for a retained legacy source; missing historical fields
+   * remain unknown. The source is immutable and separate from graphPath. */
+  legacyVectorSource?: string;
   /** Published only after complete coverage, native durability and index validation. */
   vectorGeneration?: {
     version: 1;

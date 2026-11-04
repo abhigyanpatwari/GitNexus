@@ -36,6 +36,15 @@ export interface VectorNodeInput {
   sourceStartLine?: number;
   sourceEndLine?: number;
 }
+/** A complete legacy group, outside every interrupted checkpoint window.
+ * This is a lookup proof only; it is never counted as current paid coverage. */
+export interface LegacyVectorGroup {
+  nodeId: string;
+  contentHash: string;
+  chunks: number;
+  sourceStartLine: number;
+  sourceEndLine: number;
+}
 export type VectorWriteChunk = StoredVectorChunk & VectorNodeInput;
 export interface VectorStoreOptions {
   directory: string;
@@ -569,6 +578,126 @@ export class VectorStore {
         return null;
       await this.verify(receipt);
       return receipt;
+    });
+  }
+
+  /** One bounded metadata pass builds PK lookups beside the pending writer.
+   * No extra native pool, vector copy, or corpus-sized JS receipt map. A failed
+   * build leaves complete=false; retry replaces only this auxiliary index. */
+  async prepareLegacyReuseIndex(
+    source: string,
+    groups: () => AsyncIterable<LegacyVectorGroup>,
+    excluded: () => AsyncIterable<string> | Iterable<string>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (!/^[a-f0-9]{64}$/.test(source)) throw new Error('Invalid legacy source identity');
+    await this.exclusive(async () => {
+      signal?.throwIfAborted();
+      await this.query(
+        'CREATE NODE TABLE IF NOT EXISTS LegacyEmbeddingGroup (nodeId STRING, contentHash STRING, chunks INT64, sourceStartLine INT64, sourceEndLine INT64, PRIMARY KEY(nodeId))',
+      );
+      await this.query(
+        'CREATE NODE TABLE IF NOT EXISTS LegacyEmbeddingIndex (id STRING, source STRING, complete BOOL, PRIMARY KEY(id))',
+      );
+      const state = await this.query(
+        "MATCH (s:LegacyEmbeddingIndex {id:'source'}) RETURN s.source AS source, s.complete AS complete",
+      );
+      if (state.length === 1 && state[0].source === source && state[0].complete === true) return;
+      await this.query(
+        "MERGE (s:LegacyEmbeddingIndex {id:'source'}) SET s.source=$source, s.complete=false",
+        { source },
+      );
+      await this.query('MATCH (g:LegacyEmbeddingGroup) DELETE g');
+      let batch: LegacyVectorGroup[] = [];
+      let bytes = 0;
+      const flush = async () => {
+        if (!batch.length) return;
+        signal?.throwIfAborted();
+        await this.query(
+          'UNWIND range(1, size($ids)) AS i CREATE (:LegacyEmbeddingGroup {nodeId:$ids[i], contentHash:$hashes[i], chunks:$chunks[i], sourceStartLine:$firstLines[i], sourceEndLine:$lastLines[i]})',
+          {
+            ids: batch.map((g) => g.nodeId),
+            hashes: batch.map((g) => g.contentHash),
+            chunks: batch.map((g) => g.chunks),
+            firstLines: batch.map((g) => g.sourceStartLine),
+            lastLines: batch.map((g) => g.sourceEndLine),
+          },
+        );
+        batch = [];
+        bytes = 0;
+      };
+      for await (const group of groups()) {
+        signal?.throwIfAborted();
+        assertValidGraphNodeId(group.nodeId, 'Legacy vector group');
+        const size = 256 + 8 * (group.nodeId.length + group.contentHash.length);
+        if (
+          !group.contentHash ||
+          !nonnegative(group.chunks) ||
+          !group.chunks ||
+          group.chunks > MAX_CHUNKS ||
+          !nonnegative(group.sourceStartLine) ||
+          !nonnegative(group.sourceEndLine) ||
+          group.sourceEndLine < group.sourceStartLine ||
+          size > this.options.batchBytes
+        )
+          throw new Error('Invalid or oversized legacy group receipt');
+        if (batch.length === 64 || bytes + size > this.options.batchBytes) await flush();
+        batch.push(group);
+        bytes += size;
+      }
+      await flush();
+      let unsafe: string[] = [];
+      const remove = async () => {
+        if (!unsafe.length) return;
+        signal?.throwIfAborted();
+        await this.query('UNWIND $ids AS id MATCH (g:LegacyEmbeddingGroup {nodeId:id}) DELETE g', {
+          ids: unsafe,
+        });
+        unsafe = [];
+        bytes = 0;
+      };
+      for await (const id of excluded()) {
+        signal?.throwIfAborted();
+        assertValidGraphNodeId(id, 'Legacy unsafe window');
+        const size = 256 + 8 * id.length;
+        if (size > this.options.batchBytes) throw new Error('Oversized legacy exclusion');
+        if (unsafe.length === 64 || bytes + size > this.options.batchBytes) await remove();
+        unsafe.push(id);
+        bytes += size;
+      }
+      await remove();
+      signal?.throwIfAborted();
+      await this.query("MATCH (s:LegacyEmbeddingIndex {id:'source'}) SET s.complete=true");
+      try {
+        await this.query('CHECKPOINT');
+      } catch (error) {
+        this.poisoned = true;
+        throw error;
+      }
+    }, true);
+  }
+
+  async legacyReuseGroup(source: string, nodeId: string): Promise<LegacyVectorGroup | null> {
+    if (!/^[a-f0-9]{64}$/.test(source)) throw new Error('Invalid legacy source identity');
+    assertValidGraphNodeId(nodeId, 'Legacy vector group');
+    return this.exclusive(async () => {
+      const rows = await this.query(
+        "MATCH (s:LegacyEmbeddingIndex {id:'source'}), (g:LegacyEmbeddingGroup {nodeId:$nodeId}) WHERE s.source=$source AND s.complete=true RETURN g.contentHash AS contentHash, g.chunks AS chunks, g.sourceStartLine AS sourceStartLine, g.sourceEndLine AS sourceEndLine",
+        { source, nodeId },
+      );
+      if (!rows.length) return null;
+      if (rows.length !== 1 || typeof rows[0].contentHash !== 'string' || !rows[0].contentHash)
+        throw new Error('Corrupt legacy group receipt');
+      const group = {
+        nodeId,
+        contentHash: rows[0].contentHash,
+        chunks: count(rows[0].chunks),
+        sourceStartLine: count(rows[0].sourceStartLine),
+        sourceEndLine: count(rows[0].sourceEndLine),
+      };
+      if (!group.chunks || group.chunks > MAX_CHUNKS || group.sourceEndLine < group.sourceStartLine)
+        throw new Error('Corrupt legacy group receipt');
+      return group;
     });
   }
 

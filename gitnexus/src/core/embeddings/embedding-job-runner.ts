@@ -18,8 +18,25 @@ import { iterateNodeChunks } from './chunker.js';
 import { generateEmbeddingText, splitEmbeddingText } from './text-generator.js';
 import { extractStructuralNames } from './structural-extractor.js';
 import { resolveEmbeddingConfig } from './config.js';
-import { isShortLabel, STRUCTURAL_LABELS, type EmbeddingConfig } from './types.js';
+import {
+  isShortLabel,
+  STRUCTURAL_LABELS,
+  type EmbeddingConfig,
+  type EmbeddableNode,
+} from './types.js';
 import type { embedBatch } from './embedder.js';
+
+export interface EmbeddingReuseSource {
+  options: { batchBytes: number };
+  requiresInputValidation?: boolean;
+  reusable(
+    nodeId: string,
+    contentHash: string,
+    node: EmbeddableNode,
+    prepareInputValidation?: () => Promise<void>,
+  ): Promise<VectorNodeReceipt | null>;
+  readChunks: VectorStore['readChunks'];
+}
 
 export interface EmbeddingJobRunnerOptions {
   directory: string;
@@ -28,7 +45,7 @@ export interface EmbeddingJobRunnerOptions {
   journal: EmbeddingJobJournal;
   store: VectorStore;
   /** The controller has validated vector/input identities before providing reuse. */
-  reuse?: Pick<VectorStore, 'reusable' | 'readChunks' | 'options'>;
+  reuse?: EmbeddingReuseSource;
   /** The writer was adopted from an older graph. Persist this choice for the
    * whole job: old complete receipts cannot skip current-input validation. */
   revalidateStoredInputs?: boolean;
@@ -201,6 +218,15 @@ export async function runEmbeddingJob(
       }
     };
 
+    const prepareInputValidation = options.reuse?.requiresInputValidation
+      ? async () => {
+          // Release a provider batch only when a matching legacy group needs
+          // input expansion. Ineligible groups keep normal provider batching.
+          await flush();
+          if (abort) throw abort;
+        }
+      : undefined;
+
     try {
       // Hash once per fetched node; current-job complete groups never fetch/hash.
       const inputs = fetched.nodes.map((node) => ({
@@ -228,7 +254,12 @@ export async function runEmbeddingJob(
         signal?.throwIfAborted();
         if (options.revalidateStoredInputs && complete.has(node.id)) continue;
         const reuse = options.reuse;
-        const reusable = await reuse?.reusable(node.id, input.contentHash);
+        const reusable = await reuse?.reusable(
+          node.id,
+          input.contentHash,
+          node,
+          prepareInputValidation,
+        );
         if (reusable && reuse) {
           // Flush before copy so there is only one vector batch in memory.
           await flush();

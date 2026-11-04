@@ -27,6 +27,8 @@ export interface EmbeddingArtifactOwner {
   revalidateInputs: boolean;
   /** At most one completed, read-only source for bounded group reuse. */
   fallbackArtifact?: string;
+  /** Alternative sole read-only fallback during first legacy migration. */
+  fallbackLegacy?: string;
 }
 
 export interface EmbeddingArtifactRecord {
@@ -76,7 +78,10 @@ function ownerRecord(value: unknown): EmbeddingArtifactOwner {
     !['pending', 'sealed'].includes(owner.phase) ||
     typeof owner.revalidateInputs !== 'boolean' ||
     (owner.fallbackArtifact !== undefined &&
-      (!DIGEST.test(owner.fallbackArtifact) || owner.fallbackArtifact === owner.artifactIdentity))
+      (!DIGEST.test(owner.fallbackArtifact) ||
+        owner.fallbackArtifact === owner.artifactIdentity)) ||
+    (owner.fallbackLegacy !== undefined &&
+      (!DIGEST.test(owner.fallbackLegacy) || owner.fallbackArtifact !== undefined))
   )
     throw new Error('Invalid embedding artifact ownership; artifacts retained');
   return {
@@ -88,6 +93,7 @@ function ownerRecord(value: unknown): EmbeddingArtifactOwner {
     phase: owner.phase,
     revalidateInputs: owner.revalidateInputs,
     ...(owner.fallbackArtifact === undefined ? {} : { fallbackArtifact: owner.fallbackArtifact }),
+    ...(owner.fallbackLegacy === undefined ? {} : { fallbackLegacy: owner.fallbackLegacy }),
   };
 }
 
@@ -154,6 +160,7 @@ function validateTransition(
       a.phase !== 'sealed' ||
       b.phase !== 'pending' ||
       b.fallbackArtifact !== a.artifactIdentity ||
+      b.fallbackLegacy !== undefined ||
       b.artifactIdentity === a.fallbackArtifact
     )
       throw new Error('Pending paid artifacts must be retained until sealed');
@@ -164,7 +171,8 @@ function validateTransition(
       a.phase !== 'pending' ||
       b.phase !== 'pending' ||
       !b.revalidateInputs ||
-      a.fallbackArtifact !== b.fallbackArtifact
+      a.fallbackArtifact !== b.fallbackArtifact ||
+      a.fallbackLegacy !== b.fallbackLegacy
     )
       throw new Error(
         'Rebased artifact requires current-input validation and its retained fallback',
@@ -176,6 +184,7 @@ function validateTransition(
     a.sourceIdentity !== b.sourceIdentity ||
     a.manifestDigest !== b.manifestDigest ||
     (a.phase === 'sealed' && b.phase !== 'sealed') ||
+    (b.phase === 'pending' && a.fallbackLegacy !== b.fallbackLegacy) ||
     (a.revalidateInputs && !b.revalidateInputs)
   )
     throw new Error('Embedding artifact job identity or sealed state changed');
