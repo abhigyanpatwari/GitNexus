@@ -1964,7 +1964,10 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
  * cannot interleave with reading. Use direct execution: repeated prepared reads
  * exhausted the native pool in the normal-GC identity scaling probe.
  */
-export const forEachQueryRow = async (cypher: string, onRow: (row: any) => void): Promise<void> => {
+export const forEachQueryRow = async (
+  cypher: string,
+  onRow: (row: any) => undefined,
+): Promise<void> => {
   warnIfQueryTextUnbounded(cypher, 'forEachQueryRow', (message) => logger.warn(message));
   const c = conn;
   if (!c) throw new Error('LadybugDB not initialized. Call initLbug first.');

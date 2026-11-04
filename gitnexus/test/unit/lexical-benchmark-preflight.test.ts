@@ -12,6 +12,33 @@ afterEach(() => {
 });
 
 describe('lexical benchmark preflight', () => {
+  it.each(['missing', 'empty-runtime', 'empty-output', 'lifecycle'])(
+    'rejects %s arguments with a diagnostic before filesystem work',
+    (kind) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lexical-args-'));
+      scratch.push(root);
+      const args = [
+        root,
+        root,
+        path.join(root, 'before'),
+        path.join(root, 'after'),
+        path.join(root, 'output'),
+      ];
+      if (kind === 'missing') args.pop();
+      if (kind === 'empty-runtime') args[0] = '';
+      if (kind === 'empty-output') args[4] = '';
+      if (kind === 'lifecycle') args.push('warm');
+      const result = spawnSync(process.execPath, [harness, ...args], { encoding: 'utf8' });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        kind === 'lifecycle'
+          ? 'Lifecycle must be fresh or persistent; received "warm"'
+          : 'Expected BASE_RUNTIME CANDIDATE_RUNTIME BASE_CORPUS CANDIDATE_CORPUS OUTPUT',
+      );
+      expect(fs.readdirSync(root)).toEqual([]);
+    },
+  );
+
   it.each([
     ['GITNEXUS_LEXICAL_BENCH_SCREEN', 'Screen must be 0 or 1'],
     ['GITNEXUS_LEXICAL_BENCH_BASE_FIRST', 'Base first must be 0 or 1'],

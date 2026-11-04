@@ -16,6 +16,7 @@ jobs:
     env:
       GITNEXUS_LEXICAL_BENCH_WORKERS: '2'
       GITNEXUS_LEXICAL_BENCH_HEAP_MIB: '4096'
+      GITNEXUS_LEXICAL_BENCH_SCREEN: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -24,7 +25,15 @@ jobs:
       - name: Pin comparison revision
         id: baseline
         shell: bash
-        run: printf 'sha=%s\n' "$(git rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ -n "$PR_BASE_SHA" ]]; then
+            comparison_sha="$PR_BASE_SHA"
+          else
+            comparison_sha="$(git rev-parse --verify HEAD^1)"
+          fi
+          printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'

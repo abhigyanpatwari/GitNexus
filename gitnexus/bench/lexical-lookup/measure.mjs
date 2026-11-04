@@ -8,10 +8,15 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { execFileSync, fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-const [baselineRuntime, candidateRuntime, baseline, candidate, output] = process.argv
-  .slice(2, 7)
+const args = process.argv.slice(2);
+assert(
+  args.length >= 5 && args.slice(0, 5).every((value) => value !== ''),
+  'Expected BASE_RUNTIME CANDIDATE_RUNTIME BASE_CORPUS CANDIDATE_CORPUS OUTPUT [fresh|persistent]',
+);
+const [baselineRuntime, candidateRuntime, baseline, candidate, output] = args
+  .slice(0, 5)
   .map((value) => path.resolve(value));
-const lifecycle = process.argv[7] ?? 'fresh';
+const lifecycle = args[5] ?? 'fresh';
 const workers = Number(process.env.GITNEXUS_LEXICAL_BENCH_WORKERS ?? 16);
 const heapMiB = Number(process.env.GITNEXUS_LEXICAL_BENCH_HEAP_MIB ?? 8192);
 const screenSetting = process.env.GITNEXUS_LEXICAL_BENCH_SCREEN ?? '1';
@@ -22,14 +27,12 @@ assert(['0', '1'].includes(screenSetting), 'Screen must be 0 or 1');
 assert(['0', '1'].includes(baseFirstSetting), 'Base first must be 0 or 1');
 const screen = screenSetting === '1';
 const baseFirst = baseFirstSetting === '1';
-assert(['fresh', 'persistent'].includes(lifecycle));
 assert(
-  baseline && candidate && output,
-  'Expected BASE_RUNTIME CANDIDATE_RUNTIME BASE_CORPUS CANDIDATE_CORPUS OUTPUT [fresh|persistent]',
+  ['fresh', 'persistent'].includes(lifecycle),
+  `Lifecycle must be fresh or persistent; received ${JSON.stringify(lifecycle)}`,
 );
-assert.notEqual(baseline, candidate);
+assert.notEqual(baseline, candidate, 'BASE_CORPUS and CANDIDATE_CORPUS must differ');
 const isWorker = process.env.GITNEXUS_LEXICAL_BENCH_WORKER === '1';
-assert(baselineRuntime && candidateRuntime);
 let runFullAnalysis, initLbug, executeQuery, closeLbug;
 if (!isWorker) assert(!fs.existsSync(output), 'Output already exists');
 const control = 'gitnexus/src/semantic-bench-control.ts';

@@ -42,7 +42,7 @@ const storedIdentityField = (node: GraphNode, field: string): unknown => {
  */
 export async function reconcileGraphNodeIdentities(
   graph: KnowledgeGraph,
-  readRows: (cypher: string, onRow: (row: IdentityRow) => void) => Promise<void>,
+  readRows: (cypher: string, onRow: (row: IdentityRow) => undefined) => Promise<void>,
   phase: string,
 ): Promise<{ nodes: number; tables: number }> {
   const expected = new Map<NodeTableName, Map<string, GraphNode>>();
