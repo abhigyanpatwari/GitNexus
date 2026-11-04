@@ -37,6 +37,8 @@ import {
   type RegistryEntry,
 } from '../storage/repo-manager.js';
 import { isMissingFilesystemError, loadMeta, type RepoMeta } from '../storage/repo-meta.js';
+import { retainSharedVectorArtifact } from '../storage/shared-vector-artifact.js';
+import { selectVectorGeneration } from '../storage/vector-generation.js';
 import {
   cloneStoreKey,
   commitGraphDir,
@@ -104,10 +106,116 @@ export const featureKeyOf = (meta: RepoMeta): string => {
   for (const [k, v] of Object.entries(meta)) {
     if (!FEATURE_KEY_EXCLUDED.has(k)) kept[k] = v;
   }
-  // Embedding presence changes graph content but lives only in `stats`.
-  kept.hasEmbeddings = (meta.stats?.embeddings ?? 0) > 0;
+  if (hasSeparateGraphGeneration(meta)) {
+    // Logical IDs and separate vector work do not change the graph's facts.
+    // Keep all unknown generation/capability fields in the denylist hash.
+    const generation: Record<string, unknown> = { ...meta.graphGeneration };
+    delete generation.id;
+    kept.graphGeneration = generation;
+    for (const key of ['embeddingJob', 'vectorGeneration', 'legacyVectorSource', 'embeddingDims'])
+      delete kept[key];
+    if (meta.capabilities) {
+      const capabilities: Record<string, unknown> = { ...meta.capabilities };
+      delete capabilities.vectorSearch;
+      kept.capabilities = capabilities;
+    }
+  } else {
+    // Legacy embeddings still live inside the graph database.
+    kept.hasEmbeddings = (meta.stats?.embeddings ?? 0) > 0;
+  }
   return createHash('sha256').update(stableStringify(kept)).digest('hex').slice(0, 16);
 };
+
+function hasSeparateGraphGeneration(meta: RepoMeta): boolean {
+  const generation = meta.graphGeneration;
+  return (
+    generation?.version === 1 &&
+    /^[a-f0-9]{32}$/.test(generation.id) &&
+    /^[a-f0-9]{64}$/.test(generation.coveredContent)
+  );
+}
+
+/** Share completed immutable files only. The original slot keeps its mutable
+ * job and receipts; siblings never inherit ownership of that paid work. */
+async function retainSharedMetadata(
+  source: string,
+  destination: string,
+  meta: RepoMeta,
+  allowCopy = false,
+): Promise<RepoMeta> {
+  if (
+    !meta.graphGeneration &&
+    !meta.embeddingJob &&
+    !meta.vectorGeneration &&
+    !meta.legacyVectorSource
+  )
+    return { ...meta };
+  if (!hasSeparateGraphGeneration(meta))
+    throw new Error('Cannot share an unverified logical graph generation');
+  const exported = { ...meta };
+  delete exported.embeddingJob;
+  delete exported.embeddingCheckpoint;
+  delete exported.legacyVectorSource;
+  const selected = selectVectorGeneration(
+    source,
+    exported,
+    resolveGraphPath(source),
+    Number.MAX_SAFE_INTEGER,
+  );
+  const vector = meta.vectorGeneration;
+  const active = meta.embeddingJob?.artifactIdentity ?? meta.embeddingJob?.identity;
+  const completed =
+    vector &&
+    active !== (vector.artifactIdentity ?? vector.identity) &&
+    (selected.kind === 'ready' ||
+      (selected.kind === 'unavailable' && selected.reason === 'embeddings-empty'));
+  if (completed) {
+    await retainSharedVectorArtifact(source, destination, vector, allowCopy);
+  } else {
+    delete exported.vectorGeneration;
+    delete exported.embeddingDims;
+  }
+  exported.stats = { ...meta.stats, embeddings: completed ? vector.chunks : 0 };
+  if (meta.capabilities) {
+    const exactScanLimit = meta.capabilities.vectorSearch.exactScanLimit;
+    const readable =
+      completed &&
+      vector.chunks > 0 &&
+      (vector.indexKind === 'hnsw' || vector.chunks <= exactScanLimit);
+    exported.capabilities = {
+      ...meta.capabilities,
+      vectorSearch: {
+        provider: completed && vector.indexKind === 'hnsw' ? 'ladybugdb-vector' : 'exact-scan',
+        status: readable
+          ? vector.indexKind === 'hnsw'
+            ? 'vector-index'
+            : 'exact-scan'
+          : 'unavailable',
+        exactScanLimit,
+        coverage: completed
+          ? vector.graphGeneration === meta.graphGeneration?.id
+            ? 'current'
+            : 'preserved'
+          : 'unknown',
+        ...(!readable
+          ? {
+              reason:
+                completed && vector.chunks ? 'vector-index-pending' : 'embeddings-unavailable',
+            }
+          : {}),
+        ...(completed ? { sourceGraphGeneration: vector.graphGeneration } : {}),
+      },
+    };
+  }
+  return exported;
+}
+
+/** Commit metadata intentionally omits checkout-only required RepoMeta fields. */
+function commitMetadata(meta: RepoMeta): RepoMeta {
+  const result: Record<string, unknown> = { ...meta };
+  for (const field of CHECKOUT_FIELDS) delete result[field];
+  return result as unknown as RepoMeta;
+}
 
 const exists = (p: string): Promise<boolean> =>
   fs.access(p).then(
@@ -205,7 +313,7 @@ const seedFromLocalIndex = async (
   source: string,
   log: Log,
 ): Promise<boolean> => {
-  const sourceGraph = path.join(source, LBUG_DIRECTORY);
+  let sourceGraph = resolveGraphPath(source);
   const usable = (m: RepoMeta | null): m is RepoMeta =>
     !!m &&
     !m.incrementalInProgress &&
@@ -220,13 +328,22 @@ const seedFromLocalIndex = async (
   }
   let meta: RepoMeta;
   try {
-    if (lock.lockFree || (await inspectLbugSidecars(sourceGraph)).kind !== 'clean') return false;
+    if (lock.lockFree) return false;
     // Re-read under the lock: an analyze that finished while this waited
     // rewrote both, and the copied graph must match the saved metadata.
     const locked = await loadMeta(source);
     if (!usable(locked)) return false;
-    meta = locked;
+    sourceGraph = resolveGraphPath(source);
+    if ((await inspectLbugSidecars(sourceGraph)).kind !== 'clean') return false;
+    if (
+      locked.embeddingJob &&
+      registryPathEquals(canonicalizePath(locked.repoPath), canonicalizePath(repoPath))
+    )
+      throw new Error(
+        "Finish this checkout's pending embedding job in its original storage before shared-store adoption",
+      );
     await fs.mkdir(slot, { recursive: true });
+    meta = await retainSharedMetadata(source, slot, locked, true);
     try {
       await cloneGraphFile(sourceGraph, path.join(slot, LBUG_DIRECTORY));
     } catch (err) {
@@ -280,13 +397,18 @@ export const seedSharedSlot = async (
     (await withStoreLock(layout, 'publish', async () => {
       const graph = path.join(seed.dir, LBUG_DIRECTORY);
       if (!(await exists(graph))) return false;
+      // Vector publication can advance this snapshot after pickSeed. Re-read
+      // while the publish lock also prevents its source from being collected.
+      const current = await loadMeta(seed.dir);
+      if (!current) return false;
       await fs.mkdir(layout.checkoutSlot, { recursive: true });
+      const retained = await retainSharedMetadata(seed.dir, layout.checkoutSlot, current);
       const meta: RepoMeta = {
-        ...seed.meta,
+        ...retained,
         repoPath,
         storagePath: layout.checkoutSlot,
         graphPath: graph,
-        lastCommit: upToDate ? seed.meta.lastCommit : '',
+        lastCommit: upToDate && canReuseGraph(current) ? current.lastCommit : '',
       };
       delete meta.incrementalInProgress;
       await saveMeta(layout.checkoutSlot, meta);
@@ -398,6 +520,7 @@ export const publishSharedGraph = async (
     // FTS-only repair preserves the graph's existing parser provenance.
     meta.parseCacheIdentity !== undefined &&
     !meta.incrementalInProgress &&
+    !meta.graphWriteCollapsed &&
     builtClean &&
     // Embeddings still owed stay with this checkout, which finishes them; a
     // commit graph never changes, so a shared copy would stay short for good.
@@ -422,8 +545,9 @@ export const publishSharedGraph = async (
       const ownIsBetter =
         published &&
         (!targetMeta ||
-          !!targetMeta.embeddingCheckpoint ||
-          (targetMeta.stats?.embeddings ?? 0) < (meta.stats?.embeddings ?? 0)) &&
+          (!hasSeparateGraphGeneration(meta) &&
+            (!!targetMeta.embeddingCheckpoint ||
+              (targetMeta.stats?.embeddings ?? 0) < (meta.stats?.embeddings ?? 0)))) &&
         (await exists(own));
       if (ownIsBetter) {
         published = false;
@@ -432,22 +556,25 @@ export const publishSharedGraph = async (
         );
       } else if (published) {
         try {
+          if (hasSeparateGraphGeneration(meta) && meta.vectorGeneration && !meta.embeddingJob) {
+            const retained = await retainSharedMetadata(slot, target, meta);
+            if (retained.vectorGeneration) await saveMeta(target, commitMetadata(retained));
+          }
           await wipeLbugDbFiles(own);
         } catch (err) {
           // An open reader (Windows) can block the delete. The analysis
           // already succeeded; keep the private graph and try next run.
           published = false;
           log(
-            `Shared store: could not drop the private graph (${(err as Error).message}); keeping it.`,
+            `Shared store: could not finalize the shared graph (${(err as Error).message}); keeping the existing graph.`,
           );
         }
       } else if ((await exists(own)) && (await inspectLbugSidecars(own)).kind === 'clean') {
         await fs.mkdir(layout.commitsDir, { recursive: true });
         const staging = path.join(layout.commitsDir, `.publish-${randomUUID()}`);
         await fs.mkdir(staging);
-        const commitMeta: Record<string, unknown> = { ...meta };
-        for (const field of CHECKOUT_FIELDS) delete commitMeta[field];
         try {
+          const commitMeta = commitMetadata(await retainSharedMetadata(slot, staging, meta));
           await fs.rename(own, path.join(staging, LBUG_DIRECTORY));
           await fs.writeFile(path.join(staging, INDEX_METADATA_FILE), JSON.stringify(commitMeta));
           await fs.rename(staging, target);

@@ -11,6 +11,7 @@ const RECORD_NAMES = new Set([
   'space.json',
   'rebase.json',
   'legacy.json',
+  'retained.json',
 ]);
 const FAILED_RECORD_NAME = /^failed-\d{16}\.json$/;
 
