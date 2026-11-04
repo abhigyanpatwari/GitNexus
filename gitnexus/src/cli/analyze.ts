@@ -51,6 +51,7 @@ import {
   GitNexusRcError,
 } from './analyze-config.js';
 import type { AnalyzeOptions } from './analyze-options.js';
+import type { CliPreparedAnalysisMessage } from './analyze-phase-ipc.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
@@ -1623,6 +1624,15 @@ const analyzeCommandImpl = async (
         : undefined;
     const result = await runFullAnalysis(repoPath, runOptions, runCallbacks, ...bootstrapArgs);
 
+    let preparedMessage: CliPreparedAnalysisMessage | undefined;
+    if (result.preparedGraph) {
+      const { projectCliPreparedAnalysis, requireCliAnalysisSupervisor } =
+        await import('./analyze-phase-ipc.js');
+      requireCliAnalysisSupervisor();
+      // Validate identity before skill/context writes use the registered name.
+      preparedMessage = projectCliPreparedAnalysis(result, repoPath, t0, selfCommitSafety);
+    }
+
     if (result.alreadyUpToDate) {
       // Even the fast path must prove the repo is discoverable. A prior
       // run can write meta.json and then fail before registerRepo(); in
@@ -1701,7 +1711,7 @@ const analyzeCommandImpl = async (
     // success so the silent-finalize state surfaces with a non-zero
     // exit code and an actionable error instead of being mistaken for
     // a healthy index.
-    await assertAnalysisFinalized(repoPath, result.storagePath);
+    if (!preparedMessage) await assertAnalysisFinalized(repoPath, result.storagePath);
 
     // Skill generation (CLI-only, uses pipeline result from analysis).
     // Gated so `--index-only --skills` skips community skill writes too
@@ -1763,6 +1773,24 @@ const analyzeCommandImpl = async (
       } catch {
         /* best-effort */
       }
+    }
+
+    if (preparedMessage) {
+      // Skill generation above needs the live graph and stays in this child.
+      // Publication, embeddings, the success banner and self-commit belong to
+      // the supervisor only after this process has actually exited.
+      const { sendCliPreparedAnalysis } = await import('./analyze-phase-ipc.js');
+      await sendCliPreparedAnalysis(preparedMessage);
+      clearInterval(elapsedTimer);
+      process.removeListener('SIGINT', sigintHandler);
+      console.log = origLog;
+      // eslint-disable-next-line no-console -- restoring progress-bar routing
+      console.warn = origWarn;
+      // eslint-disable-next-line no-console -- restoring progress-bar routing
+      console.error = origError;
+      bar.stop();
+      process.exitCode = 0;
+      return;
     }
 
     // #2639: opt-in self-commit of any AGENTS.md/CLAUDE.md churn written by
