@@ -66,9 +66,14 @@ export const internGraphStrings = (root: unknown, pool: Map<string, string>): un
       return value;
     }
     const rec = value as Record<string, unknown>;
-    // V8 materializes data properties; avoid a key array for every object.
-    for (const key in rec) {
-      if (Object.hasOwn(rec, key)) rec[key] = walk(rec[key]);
+    const keys = Object.keys(rec);
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      const child = rec[key];
+      if (typeof child === 'string') rec[key] = internString(child, pool);
+      else if (child !== null && typeof child === 'object') {
+        walk(child);
+      }
     }
     return value;
   };

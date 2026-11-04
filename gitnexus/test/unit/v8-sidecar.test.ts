@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtemp, rm, writeFile, readFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
+import { deserialize, serialize } from 'node:v8';
 import {
   inspectV8Cache,
   internGraphStrings,
@@ -69,6 +70,53 @@ describe('v8 cache envelope', () => {
     expect([...graph.map.keys()]).toEqual([shared, 'map-key']);
     expect([...graph.set]).toEqual([graph, shared, 'set-value']);
     expect([...pool.keys()]).toEqual(['shared-value', 'map-key', 'set-value']);
+  });
+
+  it('preserves shared leaf records, scalar values, and binary data after deserialization', () => {
+    const leaf = {
+      text: 'shared-value',
+      zero: -0,
+      nan: NaN,
+      count: 3n,
+      enabled: false,
+      empty: null,
+      missing: undefined,
+    };
+    const graph = {
+      name: 'root',
+      first: leaf,
+      second: leaf,
+      list: [leaf] as unknown[],
+      bytes: new Uint8Array([0, 128, 255]),
+    };
+    graph.list.push(graph);
+    const restored = deserialize(serialize(graph)) as typeof graph;
+    const pool = new Map<string, string>();
+
+    expect(internGraphStrings(restored, pool)).toBe(restored);
+
+    expect(restored).toEqual(graph);
+    expect(restored.first).toBe(restored.second);
+    expect(restored.list[0]).toBe(restored.first);
+    expect(restored.list[1]).toBe(restored);
+    expect(Object.is(restored.first.zero, -0)).toBe(true);
+    expect([...pool.keys()]).toEqual(['root', 'shared-value']);
+  });
+
+  it('interns a shared leaf record once regardless of its reference count', () => {
+    const leaf = Object.fromEntries(
+      Array.from({ length: 100 }, (_, i) => [`key${i}`, `value${i}`]),
+    );
+    const graph = deserialize(serialize(Array(100).fill(leaf))) as (typeof leaf)[];
+    const pool = new Map<string, string>();
+    const get = vi.spyOn(pool, 'get');
+
+    internGraphStrings(graph, pool);
+
+    // Rewalking the shared leaf would perform 10,000 lookups instead of 100.
+    expect(get).toHaveBeenCalledTimes(100);
+    expect(pool.size).toBe(100);
+    expect(graph.every((record) => record === graph[0])).toBe(true);
   });
 
   it('round-trips a live graph including Maps', async () => {
