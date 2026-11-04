@@ -719,6 +719,26 @@ export const getCurrentBranch = (repoPath: string): string | null => {
   }
 };
 
+/** Read HEAD and its branch together; callers must refresh after waiting for a lock. */
+export const getCurrentCheckout = (repoPath: string): { commit: string; branch: string | null } => {
+  try {
+    const lines = execFileSync('git', ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD'], {
+      cwd: repoPath,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    })
+      .trim()
+      .split(/\r?\n/);
+    if (lines.length === 2 && lines[0] && lines[1]) {
+      return { commit: lines[0], branch: lines[1] === 'HEAD' ? null : lines[1] };
+    }
+  } catch {
+    // Preserve independent results if Git can resolve only one of the values.
+  }
+  return { commit: getCurrentCommit(repoPath), branch: getCurrentBranch(repoPath) };
+};
+
 /**
  * Local `refs/heads` names, or `null` when the directory is not a git
  * worktree or git cannot run. An empty array means the listing succeeded

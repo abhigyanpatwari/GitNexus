@@ -275,8 +275,7 @@ import {
 } from '../storage/parse-cache.js';
 import { mergeStagedDurableParsedFileStore } from '../storage/parsedfile-store.js';
 import {
-  getCurrentCommit,
-  getCurrentBranch,
+  getCurrentCheckout,
   getRemoteUrl,
   hasGitDir,
   getInferredRepoName,
@@ -1330,14 +1329,15 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
       )
     : await requireStoragePath(repoPath, storageRequirements);
   const repoHasGit = hasGitDir(repoPath);
-  const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
+  const checkout = repoHasGit ? getCurrentCheckout(repoPath) : { commit: '', branch: null };
+  const currentCommit = checkout.commit;
   // Normalize the auto-detected branch the same way an explicit `--branch` is
   // validated (#2106 R1): a git ref the branch-name rules forbid becomes `null`
   // → the flat slot, matching that a later `--branch <that-ref>` query would
   // also be rejected. A normal ref round-trips index-time/query-time labels.
   // Keep the raw rejected name so `runFullAnalysis` can warn once after the
   // lock settles. Detached / non-git / empty detect stay `null` here and silent.
-  const rawDetectedBranch = repoHasGit ? getCurrentBranch(repoPath) : null;
+  const rawDetectedBranch = checkout.branch;
   const checkedOutBranch = sanitizeDetectedBranch(rawDetectedBranch) ?? null;
   const rejectedDetectedBranch =
     rawDetectedBranch != null && checkedOutBranch === null ? rawDetectedBranch : null;
