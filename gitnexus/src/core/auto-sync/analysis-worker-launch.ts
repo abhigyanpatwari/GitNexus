@@ -195,7 +195,7 @@ export function createAutoSyncAnalysisRunner(
       child.on('message', (message: WorkerMessage) => {
         // Once timeout/cancellation requested shutdown, its reason owns the
         // result. A terminal IPC can already be queued behind cancellation.
-        if (terminalOutcome || terminationError) return;
+        if (message.type === 'graph-prepared' || terminalOutcome || terminationError) return;
         if (message.type === 'progress') {
           // The worker also sends its log lines as progress with percent -1;
           // those are not progress. A listener's failure must not decide the

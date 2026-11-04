@@ -144,6 +144,7 @@ process.on('message', async (msg: ParentMessage) => {
         assertAnalysisFinalized: prepared.loaded.repoManager.assertAnalysisFinalized,
         send,
         claimTerminal,
+        isCancelled: () => cancellationRequested,
       },
       prepared.runnerIdentity,
     );

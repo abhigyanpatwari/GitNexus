@@ -36,6 +36,94 @@ const okRun: WorkerAnalysisDeps['runFullAnalysis'] = vi.fn(async () => baseResul
 const okFinalize: WorkerAnalysisDeps['assertAnalysisFinalized'] = vi.fn(async () => undefined);
 const alwaysClaim: WorkerAnalysisDeps['claimTerminal'] = () => true;
 
+describe('prepared graph worker handoff', () => {
+  const handoff = {
+    version: 1 as const,
+    publicationId: 'a'.repeat(32),
+    repoPath: '/repo',
+    storagePath: '/repo/.gitnexus',
+    metadataDirectory: '/repo/.gitnexus',
+    repoName: 'repo',
+    commit: 'b'.repeat(40),
+  };
+
+  it('sends a nonterminal bounded receipt without traversing the graph or finalizing early', async () => {
+    const claimTerminal = vi.fn(createTerminalClaim());
+    const send = vi.fn();
+    const finalize = vi.fn(async () => undefined);
+    const run = vi.fn<WorkerAnalysisDeps['runFullAnalysis']>(async () => ({
+      ...baseResult,
+      preparedGraph: handoff,
+      get pipelineResult(): never {
+        throw new Error('live graph traversed');
+      },
+    }));
+    await runWorkerAnalysis(
+      '/repo',
+      {},
+      {
+        runFullAnalysis: run,
+        assertAnalysisFinalized: finalize,
+        claimTerminal,
+        isCancelled: () => false,
+        send,
+      },
+    );
+    expect(finalize).not.toHaveBeenCalled();
+    expect(claimTerminal).not.toHaveBeenCalled();
+    expect(claimTerminal()).toBe(true); // A later cancellation still owns one terminal outcome.
+    expect(send).toHaveBeenCalledOnce();
+    const message = send.mock.calls[0][0];
+    expect(message.type).toBe('graph-prepared');
+    expect(message.handoff).toEqual(handoff);
+    expect(message.result.preparedGraph).toBeUndefined();
+    expect(JSON.stringify(message).length).toBeLessThan(2048);
+    expect(run.mock.calls[0][1].skipNativeCloseOnExit).toBe(true);
+  });
+
+  it('suppresses a prepared receipt after cancellation', async () => {
+    const send = vi.fn();
+    const claimTerminal = vi.fn();
+    await runWorkerAnalysis(
+      '/repo',
+      {},
+      {
+        runFullAnalysis: vi.fn(async () => ({ ...baseResult, preparedGraph: handoff })),
+        assertAnalysisFinalized: okFinalize,
+        claimTerminal,
+        isCancelled: () => true,
+        send,
+      },
+    );
+    expect(send).not.toHaveBeenCalled();
+    expect(claimTerminal).not.toHaveBeenCalled();
+  });
+
+  it('refuses a collapsed graph before sending its prepared receipt', async () => {
+    const send = vi.fn();
+    await runWorkerAnalysis(
+      '/repo',
+      {},
+      {
+        runFullAnalysis: vi.fn(async () => ({
+          ...baseResult,
+          preparedGraph: handoff,
+          graphWriteCollapsed: { expected: 100, persisted: 1 },
+        })),
+        assertAnalysisFinalized: okFinalize,
+        claimTerminal: createTerminalClaim(),
+        isCancelled: () => false,
+        send,
+      },
+    );
+    expect(send).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledWith({
+      type: 'error',
+      message: 'Collapsed graph cannot be prepared for publication',
+    });
+  });
+});
+
 describe('runWorkerAnalysis — finalize guard (#2264 P2)', () => {
   it('reports error (not complete) when finalization fails for an unregistered repo', async () => {
     const send = vi.fn<(msg: WorkerMessage) => void>();

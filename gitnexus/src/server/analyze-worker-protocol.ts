@@ -25,6 +25,7 @@
  */
 import type { AnalyzeOptions } from '../core/run-analyze.js';
 import type { AnalyzeResultIpc } from './analyze-worker-ipc.js';
+import type { PreparedAnalysisHandoff } from '../core/analysis-phase-supervisor.js';
 
 /** Parent → child: start one analysis run. */
 export interface StartMessage {
@@ -54,6 +55,13 @@ export interface CompleteMessage {
   result: AnalyzeResultIpc;
 }
 
+/** Nonterminal: the graph process still owns its native allocations. */
+export interface GraphPreparedMessage {
+  type: 'graph-prepared';
+  handoff: PreparedAnalysisHandoff;
+  result: AnalyzeResultIpc;
+}
+
 export interface ErrorMessage {
   type: 'error';
   message: string;
@@ -75,4 +83,4 @@ export interface ErrorMessage {
 }
 
 /** Child → parent IPC messages. Shared with the parent-side launcher. */
-export type WorkerMessage = ProgressMessage | CompleteMessage | ErrorMessage;
+export type WorkerMessage = ProgressMessage | GraphPreparedMessage | CompleteMessage | ErrorMessage;

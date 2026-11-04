@@ -20,6 +20,7 @@ import type { AnalyzeOptions } from '../core/run-analyze.js';
 import type { WorkerMessage } from './analyze-worker-protocol.js';
 import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
 import { projectAnalyzeResultForIpc } from './analyze-worker-ipc.js';
+import { projectPreparedAnalysisHandoff } from '../core/analysis-phase-supervisor.js';
 // Value import (instanceof): index-lock is a lightweight storage primitive
 // (node:fs/net/crypto only), so this does NOT pull in run-analyze/repo-manager.
 import { IndexLockTimeoutError, isIndexLockGuardTimeout } from '../storage/index-lock.js';
@@ -35,6 +36,9 @@ export interface WorkerAnalysisDeps {
    * both report a terminal outcome (#2264 P3). See {@link createTerminalClaim}.
    */
   claimTerminal: () => boolean;
+  /** Required for nonterminal graph handoff; never claim the final outcome just
+   * to test whether cancellation already owns it. */
+  isCancelled?: () => boolean;
 }
 
 /**
@@ -67,6 +71,19 @@ export async function runWorkerAnalysis(
       },
       ...bootstrapArgs,
     );
+    if (result.preparedGraph) {
+      if (!deps.isCancelled) throw new Error('Graph handoff requires cancellation state');
+      if (result.graphWriteCollapsed)
+        throw new Error('Collapsed graph cannot be prepared for publication');
+      if (!deps.isCancelled()) {
+        deps.send({
+          type: 'graph-prepared',
+          handoff: projectPreparedAnalysisHandoff(result.preparedGraph),
+          result: projectAnalyzeResultForIpc(result),
+        });
+      }
+      return;
+    }
     // P2 (#2264): a half-finalized repo — meta.json written but the global
     // registry entry missing (e.g. a prior collision-aborted run, or a wiped
     // registry) — must NOT be reported as a successful analysis. Mirror the CLI's

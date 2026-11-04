@@ -20,6 +20,22 @@ function createChild() {
 }
 
 describe('auto-sync analysis worker', () => {
+  it('does not treat graph-prepared as terminal or clear the active timeout', async () => {
+    const child = createChild();
+    const clearTimeoutFn = vi.fn();
+    const run = createAutoSyncAnalysisRunner({
+      forkWorker: vi.fn(() => child as any),
+      setTimeoutFn: vi.fn(() => 1) as any,
+      clearTimeoutFn: clearTimeoutFn as any,
+    });
+    const result = run('/tmp/repo', {}, 50);
+    child.emit('message', { type: 'graph-prepared', handoff: {}, result: { stats: { files: 3 } } });
+    expect(clearTimeoutFn).not.toHaveBeenCalled();
+    child.emit('message', { type: 'error', message: 'cancelled after preparing' });
+    child.emit('exit', 0, null);
+    await expect(result).rejects.toThrow('cancelled after preparing');
+  });
+
   it('ignores progress and resolves from the terminal complete message', async () => {
     const child = createChild();
     const forkWorker = vi.fn(() => child as any);

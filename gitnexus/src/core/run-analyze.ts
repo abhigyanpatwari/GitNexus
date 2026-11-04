@@ -65,6 +65,7 @@ import { summarizeUndecidedSatisfaction } from './ingestion/scope-resolution/und
 import { summarizeScopeExtractionFailures } from './ingestion/scope-resolution/scope-extraction-failures.js';
 import { summarizeUnresolvedOverloads } from './ingestion/scope-resolution/unresolved-overloads.js';
 import type { KnowledgeGraph } from './graph/types.js';
+import type { PreparedAnalysisHandoff } from './analysis-phase-supervisor.js';
 import { reconcileGraphNodeIdentities } from './incremental/write-reconciliation.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
@@ -797,6 +798,8 @@ export function analyzeFailureMayHaveMutatedLiveIndex(error: unknown): boolean {
 }
 
 export interface AnalyzeResult {
+  /** Exit-only graph phase awaiting its supervisor's verified publication. */
+  preparedGraph?: PreparedAnalysisHandoff;
   repoName: string;
   repoPath: string;
   /** The exact storage slot selected and validated for this analysis. */
