@@ -503,32 +503,39 @@ export class VectorStore {
     }, true);
   }
 
-  private async verify(receipt: VectorNodeReceipt): Promise<void> {
-    for (let start = 0; start < receipt.chunks; start += BLOCK_ROWS) {
-      const ids = Array.from(
-        { length: Math.min(BLOCK_ROWS, receipt.chunks - start) },
-        (_, i) => `${receipt.nodeId}:${start + i}`,
-      );
+  private async verify(input: VectorNodeReceipt | readonly VectorNodeReceipt[]): Promise<void> {
+    const receipts = 'nodeId' in input ? [input] : input;
+    const expected = new Map<string, { receipt: VectorNodeReceipt; ordinal: number }>();
+    const flush = async () => {
+      if (!expected.size) return;
       const rows = await this.query(
         'UNWIND $ids AS id MATCH (e:CodeEmbedding {id:id}) RETURN e.id AS id, e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.contentHash AS contentHash',
-        { ids },
+        { ids: [...expected.keys()] },
       );
       const seen = new Set<string>();
       for (const row of rows) {
-        const i = count(row.chunkIndex);
+        const entry = typeof row.id === 'string' ? expected.get(row.id) : undefined;
         if (
-          row.nodeId !== receipt.nodeId ||
-          row.contentHash !== receipt.contentHash ||
-          i < start ||
-          i >= start + ids.length ||
-          row.id !== `${receipt.nodeId}:${i}` ||
+          !entry ||
+          row.nodeId !== entry.receipt.nodeId ||
+          row.contentHash !== entry.receipt.contentHash ||
+          count(row.chunkIndex) !== entry.ordinal ||
           seen.has(String(row.id))
         )
           throw new Error('Vector node has an invalid chunk set');
         seen.add(String(row.id));
       }
-      if (seen.size !== ids.length) throw new Error('Vector node is missing chunks');
-    }
+      if (seen.size !== expected.size) throw new Error('Vector node is missing chunks');
+      expected.clear();
+    };
+    // Most groups contain one chunk. Fill each bounded PK query across groups
+    // rather than paying a native round trip for every node in a unit.
+    for (const receipt of receipts)
+      for (let ordinal = 0; ordinal < receipt.chunks; ordinal++) {
+        expected.set(`${receipt.nodeId}:${ordinal}`, { receipt, ordinal });
+        if (expected.size === BLOCK_ROWS) await flush();
+      }
+    await flush();
   }
 
   async finishNode(
@@ -560,9 +567,9 @@ export class VectorStore {
           node.chunks < 1
         )
           throw new Error('Vector node coverage does not match its generated chunks');
-        await this.verify(receipt);
         verified.push(receipt);
       }
+      await this.verify(verified);
       await this.query(
         'UNWIND $ids AS id MATCH (n:EmbeddingNodeReceipt {nodeId:id}) SET n.complete=true',
         { ids: nodes.map((n) => n.nodeId) },
@@ -868,6 +875,7 @@ export class VectorStore {
   }
 
   private async verifyVectorIndex(): Promise<void> {
+    // determinism: probe — any stored vector can verify index availability; its identity does not affect publication.
     const sample = await this.query(
       'MATCH (e:CodeEmbedding) RETURN e.embedding AS embedding LIMIT 1',
     );

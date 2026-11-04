@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type lbug from '@ladybugdb/core';
 import type { LbugConnectionHandle } from '../../src/core/lbug/lbug-config.js';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 type LbugModule = typeof lbug;
 
@@ -148,15 +152,19 @@ describe('reserved native resource release', () => {
     const onProgress = vi.fn();
     const loadMetadata = vi.fn();
     const provider = vi.fn();
+    const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-release-admission-'));
+    execFileSync('git', ['init', '--quiet', repo]);
+    vi.stubEnv('GITNEXUS_HOME', path.join(repo, 'home'));
+    vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
     try {
-      await expect(runFullAnalysis('/unused', { resources }, { onProgress })).rejects.toThrow(
+      await expect(runFullAnalysis(repo, { resources }, { onProgress })).rejects.toThrow(
         'previous allocation is live',
       );
       await expect(
         runPublishedEmbeddingJob(
           {
-            metadataDirectory: '/unused',
-            graphPath: '/unused/graph',
+            metadataDirectory: path.join(repo, '.gitnexus'),
+            graphPath: path.join(repo, '.gitnexus', 'lbug'),
             resources: resources.embedding,
             metadata: { loadMetadata, saveMetadata: vi.fn() },
           },
@@ -169,6 +177,8 @@ describe('reserved native resource release', () => {
     } finally {
       h.db.close.mockResolvedValue();
       await native.drainLbugResourceReleases();
+      vi.unstubAllEnvs();
+      await fs.rm(repo, { recursive: true, force: true });
     }
   });
 });

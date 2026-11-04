@@ -18,7 +18,7 @@ import { projectAnalysisPhaseProgress } from '../core/analysis-progress.js';
 // `analyze-worker.ts` entry module: importing it from the entry made this
 // module depend on the very module that depends on it (#cycle). Erased at
 // runtime either way; this way the graph is acyclic too.
-import type { WorkerMessage } from './analyze-worker-protocol.js';
+import type { WorkerMessage, ContinueMessage } from './analyze-worker-protocol.js';
 import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
 import { projectAnalyzeResultForIpc } from './analyze-worker-ipc.js';
 import { projectPreparedAnalysisHandoff } from '../core/analysis-phase-supervisor.js';
@@ -28,6 +28,9 @@ import { IndexLockTimeoutError, isIndexLockGuardTimeout } from '../storage/index
 
 export interface WorkerAnalysisDeps {
   runFullAnalysis: typeof import('../core/run-analyze.js').runFullAnalysis;
+  continuePreparedAnalysis?: typeof import('../core/run-analyze.js').continuePreparedAnalysis;
+  onGraphPublished?: () => Promise<void>;
+  signal?: AbortSignal;
   assertAnalysisFinalized: typeof import('../storage/repo-manager.js').assertAnalysisFinalized;
   send: (msg: WorkerMessage) => void;
   /**
@@ -53,31 +56,53 @@ export async function runWorkerAnalysis(
   options: AnalyzeOptions,
   deps: WorkerAnalysisDeps,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
+  continuation?: ContinueMessage,
 ): Promise<void> {
   let terminal: WorkerMessage;
   try {
     const bootstrapArgs: [] | [AnalyzerRunnerIdentity] = runnerIdentityAtBootstrap
       ? [runnerIdentityAtBootstrap]
       : [];
-    const result = await deps.runFullAnalysis(
-      repoPath,
-      // This worker force-exits right after reporting, so skip the native close
-      // (it can double-free in LadybugDB's ClientContext destructor after --pdg
-      // writes); flushWAL still persists the index, process.exit reclaims handles.
-      { ...options, skipNativeCloseOnExit: true },
-      {
-        onProgress: (phase, percent, message, details) =>
-          deps.send({
-            type: 'progress',
-            phase,
-            percent,
-            message,
-            ...projectAnalysisPhaseProgress(details),
-          }),
-        onLog: (message) => deps.send({ type: 'progress', phase: 'log', percent: -1, message }),
-      },
-      ...bootstrapArgs,
-    );
+    const callbacks: import('../core/run-analyze.js').AnalyzeCallbacks = {
+      signal: deps.signal,
+      onGraphPublished: deps.onGraphPublished,
+      onProgress: (phase, percent, message, details) =>
+        deps.send({
+          type: 'progress',
+          phase,
+          percent,
+          message,
+          ...projectAnalysisPhaseProgress(details),
+        }),
+      onLog: (message) => deps.send({ type: 'progress', phase: 'log', percent: -1, message }),
+    };
+    let result: import('../core/run-analyze.js').AnalyzeResult;
+    if (continuation) {
+      if (!deps.continuePreparedAnalysis) throw new Error('Missing analysis continuation');
+      const handoff = projectPreparedAnalysisHandoff(continuation.prepared.handoff);
+      if (handoff.repoPath !== repoPath || continuation.prepared.result.repoPath !== repoPath)
+        throw new Error('Continuation belongs to a different repository');
+      const metadata = await deps.continuePreparedAnalysis(
+        handoff,
+        continuation.writerPid,
+        options,
+        callbacks,
+        deps.signal,
+      );
+      result = {
+        ...continuation.prepared.result,
+        stats: metadata.stats ?? {},
+        rebuildReasons: [],
+      };
+    } else {
+      // Native allocations belong to this exit-only graph process.
+      result = await deps.runFullAnalysis(
+        repoPath,
+        { ...options, skipNativeCloseOnExit: true },
+        callbacks,
+        ...bootstrapArgs,
+      );
+    }
     if (result.preparedGraph) {
       if (!deps.isCancelled) throw new Error('Graph handoff requires cancellation state');
       if (result.graphWriteCollapsed)

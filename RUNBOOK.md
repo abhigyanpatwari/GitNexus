@@ -129,13 +129,15 @@ costs; compare complete-source candidates separately from older capped inputs.
 
 **Important:** If you already had embeddings, a plain `npx gitnexus analyze` **preserves** them (Non-negotiable 5 in [GUARDRAILS.md](GUARDRAILS.md)) — pass `--embeddings` when you also want vectors generated for new or changed nodes, and `--drop-embeddings` only for a deliberate wipe. See `stats.embeddings` in `.gitnexus/gitnexus.json` (or its legacy `meta.json` mirror; 0 means none) — but that figure isn't always freshly measured: if a run's embedding-count query can't answer, it carries the previous run's number forward instead of writing a wrong zero. For a certified read, check `capabilities.vectorSearch.status` instead — it reads `unavailable` (never a stale count) whenever GitNexus can't vouch for the live vector index.
 
-**Partial embedding index (analyze exits 0, but some nodes never got embedded):** A long run against a flaky embedding endpoint can finish successfully while a bounded number of sub-batches still fail. Affected nodes are dropped to zero rows (never left half-written) and recorded as a pending `embeddingCheckpoint`; `npx gitnexus status` then reports `incompleteReasons: ["embedding-checkpoint-pending"]`. Recovery is a plain:
+**Embedding work interrupted after graph publication:** The graph and keyword index become available before embedding work starts. An embedding failure makes analyze exit nonzero while keeping that graph available and retaining acknowledged embedding work. `npx gitnexus status --json` reports graph freshness separately from embedding progress and vector readiness. Resume with:
 
 ```bash
 npx gitnexus analyze
 ```
 
-No `--embeddings` flag needed — a retained checkpoint forces embedding generation for the pending nodes regardless of flags, and clears once they succeed. `--drop-embeddings` abandons the pending nodes instead of retrying them; `--force` also discards the checkpoint (with a warning) and rebuilds without resuming it.
+No `--embeddings` flag is needed for a retained job. `npx gitnexus embeddings sync` also resumes work against an already published graph. Compatible acknowledged units do not call the provider again; a unit interrupted before acknowledgement may replay. A source or embedding-configuration change revalidates reuse, and changing worker counts or memory budgets does not invalidate paid vectors. `--drop-embeddings` deliberately abandons retained vectors. `--force` rebuilds the graph while retaining compatible paid work for reuse.
+
+Older indexes may instead carry an `embeddingCheckpoint` and report `embedding-checkpoint-pending`. Plain analyze recovers that checkpoint, including any explicitly referenced staging data, before migrating it. Historical vectors without verified provider/model provenance are retained without being relabeled as output from the current model.
 
 **Collapsed graph write (analyze exits NON-ZERO and says INCOMPLETE):** A run can finish writing metadata while only a fraction of the relationships it produced are readable back from the index — edges collapsing to a small share of what was built, or a `CodeRelation` table that never materialized (which reads as a persisted count of zero). Because the metadata IS written and the DB does hold rows, nothing looks broken: queries answer with missing edges rather than an error, which is a confident empty answer rather than a failure. `npx gitnexus status` reports `incompleteReasons: ["graph-write-collapsed"]`, the analyze summary prints `Repository indexed INCOMPLETELY` with the expected and persisted counts, and the CLI exits non-zero so automation is not told an unusable index is fine.
 
@@ -279,6 +281,20 @@ on a partial result.
 ## Memory / analyze crashes
 
 Analyze re-execs Node with a **large old-space heap** when needed (`analyze.ts`). If you still OOM on huge repos, close other processes, avoid `--embeddings` for a first pass, or analyze a smaller path if supported by your workflow.
+
+`--resource-budget <MiB>` admits the analyzer process family within one memory
+reservation: the frontend, main heap, parser workers, native graph/vector pools,
+embedding model, bounded input queue, and headroom. For example:
+
+```bash
+npx gitnexus analyze --embeddings --resource-budget 8192 --memory-budget 3000 --workers 2
+```
+
+`--memory-budget` still controls only the main V8 heap. Explicit settings that do
+not fit the family budget fail before work starts. Without a family override,
+GitNexus derives reservations from available memory and CPUs. The budget controls
+admission and queue sizes; it is not an operating-system RSS limit. Watch mode
+accepts the same family budget and drains active work before shutdown.
 
 `Unable to allocate memory` / `The buffer pool is full` during graph writes
 refers to LadybugDB's native buffer pool. Increasing `NODE_OPTIONS`,

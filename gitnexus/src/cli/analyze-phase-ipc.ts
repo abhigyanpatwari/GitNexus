@@ -25,6 +25,89 @@ export interface CliPreparedAnalysisMessage {
   selfCommitSafety?: { agentsMd: boolean; claudeMd: boolean };
 }
 
+export interface CliAnalysisContinuation {
+  type: 'continue-analysis';
+  writerPid: number;
+  prepared: CliPreparedAnalysisMessage;
+}
+
+/** Validate both directions; never retain extra fields from an IPC object. */
+export function parseCliPreparedAnalysis(value: unknown): CliPreparedAnalysisMessage {
+  const input = value as CliPreparedAnalysisMessage;
+  if (!input || input.type !== 'graph-prepared' || !input.result)
+    throw new Error('Invalid CLI graph phase message');
+  const safety = input.selfCommitSafety;
+  if (safety && (typeof safety.agentsMd !== 'boolean' || typeof safety.claudeMd !== 'boolean'))
+    throw new Error('Invalid CLI self-commit snapshot');
+  return projectCliPreparedAnalysis(
+    { ...input.result, preparedGraph: input.handoff, rebuildReasons: [] },
+    input.handoff.repoPath,
+    input.startedAt,
+    safety
+      ? new Map([
+          ['AGENTS.md', safety.agentsMd],
+          ['CLAUDE.md', safety.claudeMd],
+        ])
+      : undefined,
+  );
+}
+
+export async function receiveCliAnalysisContinuation(
+  signal?: AbortSignal,
+): Promise<CliAnalysisContinuation> {
+  signal?.throwIfAborted();
+  if (!process.connected || !process.send)
+    throw new Error('Analysis continuation requires its connected supervisor');
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      process.removeListener('message', onMessage);
+      process.removeListener('disconnect', onDisconnect);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(signal?.reason ?? new Error('Analysis cancelled'));
+    };
+    const onDisconnect = () => {
+      cleanup();
+      reject(new Error('Analysis supervisor disconnected'));
+    };
+    const onMessage = (message: unknown) => {
+      cleanup();
+      try {
+        const input = message as CliAnalysisContinuation;
+        if (
+          input?.type !== 'continue-analysis' ||
+          !Number.isSafeInteger(input.writerPid) ||
+          input.writerPid < 1
+        )
+          throw new Error('Invalid CLI continuation');
+        resolve({
+          type: 'continue-analysis',
+          writerPid: input.writerPid,
+          prepared: parseCliPreparedAnalysis(input.prepared),
+        });
+      } catch (error) {
+        reject(error);
+      }
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('Analysis supervisor did not send its continuation'));
+    }, 30_000);
+    process.once('message', onMessage);
+    process.once('disconnect', onDisconnect);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    process.send!({ type: 'analysis-continuation-ready' }, (error) => {
+      if (error) {
+        cleanup();
+        reject(error);
+      }
+    });
+  });
+}
+
 export function projectCliPreparedAnalysis(
   result: AnalyzeResult,
   repoPath: string,

@@ -248,6 +248,7 @@ export async function runEmbeddingJob(
         ? inputs.filter((input) => !complete.has(input.nodeId))
         : inputs;
       if (missingInputs.length) await store.beginNodes(missingInputs);
+      const copied: Array<{ nodeId: string; contentHash: string; chunks: number }> = [];
       for (let i = 0; i < fetched.nodes.length; i++) {
         const node = fetched.nodes[i];
         const input = inputs[i];
@@ -300,10 +301,7 @@ export async function runEmbeddingJob(
               release();
             }
           }
-          complete.set(
-            node.id,
-            await store.finishNode(node.id, input.contentHash, reusable.chunks),
-          );
+          copied.push({ nodeId: node.id, contentHash: input.contentHash, chunks: reusable.chunks });
           reusedNodes++;
           continue;
         }
@@ -374,7 +372,8 @@ export async function runEmbeddingJob(
       if (!abort) await flush();
       const finished = [...generated]
         .filter(([id, node]) => node.ended && !failed.has(id))
-        .map(([nodeId, node]) => ({ nodeId, contentHash: node.contentHash, chunks: node.chunks }));
+        .map(([nodeId, node]) => ({ nodeId, contentHash: node.contentHash, chunks: node.chunks }))
+        .concat(copied);
       if (finished.length)
         for (const receipt of await store.finishNodes(finished))
           complete.set(receipt.nodeId, receipt);

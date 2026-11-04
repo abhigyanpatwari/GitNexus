@@ -46,6 +46,21 @@ vi.mock('child_process', async () => {
 // ownership-validated storage path. Pin the filesystem so the gate settles on
 // its FIRST poll — the gate itself is not under test here and its 200ms poll
 // would otherwise put a real timer between the worker message and the assertions.
+vi.mock('../../src/core/analysis-host-resources.js', async () => {
+  const { resolveAnalysisResourceBudget } =
+    await import('../../src/core/analysis-resource-budget.js');
+  return {
+    analysisMayEmbed: async () => false,
+    analysisSupervisorReservation: () => 192 * 1024 ** 2,
+    resolveHostAnalysisResources: () =>
+      resolveAnalysisResourceBudget({
+        effectiveMemoryBytes: 4096 * 1024 ** 2,
+        availableCpus: 2,
+        modelMemoryMb: 0,
+      }),
+  };
+});
+
 vi.mock('../../src/storage/repo-manager.js', () => ({
   INDEX_METADATA_FILE: H.METADATA_FILE,
 }));
@@ -135,6 +150,9 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     const job = jobManager.createJob({ repoPath: REPO_PATH });
     await launch(job, REPO_PATH, {});
     child.emit('message', msg);
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+    expect(backendInit).not.toHaveBeenCalled();
+    child.emit('exit', 0);
 
     await vi.waitFor(() => expect(calls).toContain('updateJob:terminal'));
     return jobManager.getJob(job.id);
@@ -189,6 +207,60 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
         }),
       }),
     );
+  });
+
+  it('publishes the graph before acknowledging paid work and waits for both exits', async () => {
+    child.pid = 12345;
+    const writer = child;
+    const embedding = makeChild();
+    forkMock.mockReturnValueOnce(writer).mockReturnValueOnce(embedding);
+    let visible!: () => void;
+    backendInit.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          visible = resolve;
+        }),
+    );
+    const releaseRepoLock = vi.fn();
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock,
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launch(job, REPO_PATH, { embeddings: true });
+    const handoff = {
+      version: 1,
+      publicationId: 'a'.repeat(32),
+      repoPath: REPO_PATH,
+      storagePath: H.STORAGE_PATH,
+      metadataDirectory: H.STORAGE_PATH,
+      repoName: REPO_NAME,
+      commit: 'b'.repeat(40),
+    };
+    writer.emit('message', { type: 'graph-prepared', handoff, result: completeMessage().result });
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    expect(backendInit).not.toHaveBeenCalled();
+    writer.emit('exit', 0);
+    expect(forkMock).toHaveBeenCalledTimes(2);
+    expect(embedding.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'continue', writerPid: writer.pid }),
+    );
+    embedding.emit('message', { type: 'graph-ready' });
+    await vi.waitFor(() => expect(backendInit).toHaveBeenCalledOnce());
+    expect(embedding.send).not.toHaveBeenCalledWith({ type: 'graph-visible' });
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+    visible();
+    await vi.waitFor(() => expect(embedding.send).toHaveBeenCalledWith({ type: 'graph-visible' }));
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+    embedding.emit('message', completeMessage());
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+    embedding.emit('exit', 0);
+    await vi.waitFor(() => expect(jobManager.getJob(job.id)?.status).toBe('complete'));
+    expect(releaseRepoLock).toHaveBeenCalledOnce();
   });
 
   describe('route configuration', () => {
@@ -444,6 +516,7 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
 
     // Must match FINALIZE_SETTLE_TIMEOUT_MS + one poll in analyze-launch.ts.
+    child.emit('exit', 0);
     await vi.advanceTimersByTimeAsync(61_000);
 
     const done = jobManager.getJob(job.id);
@@ -477,6 +550,7 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
 
     H.settleOk = true;
+    child.emit('exit', 0);
     await vi.advanceTimersByTimeAsync(200);
 
     expect(jobManager.getJob(job.id)?.status).toBe('complete');
@@ -548,6 +622,7 @@ describe('createLaunchAnalysisWorker — pending cancel', () => {
     H.settleOk = false;
     const job = await launchOne();
     child.emit('message', completeMessage());
+    child.emit('exit', 0);
     expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
     expect(jobManager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
     H.settleOk = true;

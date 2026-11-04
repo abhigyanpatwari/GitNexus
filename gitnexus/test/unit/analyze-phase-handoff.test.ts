@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import type { AnalyzeResult } from '../../src/core/run-analyze.js';
 import type { CliPreparedAnalysisMessage } from '../../src/cli/analyze-phase-ipc.js';
 
@@ -6,6 +7,7 @@ type SendCallback = (error: Error | null) => void;
 
 const mocks = vi.hoisted(() => ({
   run: vi.fn(),
+  spawn: vi.fn(),
   skills: vi.fn(async () => ({
     skills: [{ name: 'community' }],
     outputPath: '/repo/.claude/skills',
@@ -26,6 +28,10 @@ const mocks = vi.hoisted(() => ({
     send: vi.fn((_message: unknown, callback: SendCallback) => callback(null)),
   },
 }));
+vi.mock('child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('child_process')>()),
+  spawn: mocks.spawn,
+}));
 vi.mock('../../src/cli/analyze-phase-ipc.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/cli/analyze-phase-ipc.js')>();
   return {
@@ -45,6 +51,11 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   LbugWipeError: class LbugWipeError extends Error {},
 }));
 vi.mock('../../src/storage/repo-manager.js', () => ({
+  loadMeta: vi.fn(async () => null),
+  getStoragePaths: vi.fn(() => ({
+    storagePath: '/repo/.gitnexus',
+    metaPath: '/repo/.gitnexus/gitnexus.json',
+  })),
   getGlobalRegistryPath: vi.fn(() => '/nonexistent/registry.json'),
   RegistryNameCollisionError: class RegistryNameCollisionError extends Error {},
   AnalysisNotFinalizedError: class AnalysisNotFinalizedError extends Error {},
@@ -118,6 +129,88 @@ afterEach(() => {
 });
 
 describe('CLI graph phase handoff', () => {
+  it('announces cancellation readiness before starting graph work', async () => {
+    vi.stubEnv('GITNEXUS_ANALYSIS_SUPERVISED', '1');
+    vi.stubEnv('GITNEXUS_ANALYSIS_MANUAL_HEAP', '1');
+    const sendReady = vi.spyOn(process, 'send').mockImplementation((message, callback) => {
+      if ((message as { type?: string }).type === 'analysis-ready') {
+        process.emit('message', { type: 'cancel' }, undefined);
+        if (typeof callback === 'function') callback(null);
+      }
+      return true;
+    });
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, {});
+    expect(sendReady).toHaveBeenCalledWith({ type: 'analysis-ready' }, expect.any(Function));
+    expect(mocks.run).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(130);
+  });
+
+  it.each(['SIGINT', 'SIGTERM', 'ipc'] as const)(
+    'waits for active work after %s and removes cancellation listeners',
+    async (kind) => {
+      const events = ['SIGINT', 'SIGTERM', 'message', 'disconnect'] as const;
+      const before = events.map((event) => process.listenerCount(event));
+      let finish!: (value: AnalyzeResult) => void;
+      mocks.run.mockImplementationOnce(
+        () =>
+          new Promise<AnalyzeResult>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+      const pending = analyzeCommand(undefined, {});
+      await vi.waitFor(() => expect(mocks.run).toHaveBeenCalledOnce());
+      if (kind === 'ipc') process.emit('message', { type: 'cancel' }, undefined);
+      else process.emit(kind);
+      expect(mocks.run.mock.calls[0][2].signal.aborted).toBe(true);
+      expect(process.exit).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+      finish(result);
+      await pending;
+      expect(process.exitCode).toBe(kind === 'SIGTERM' ? 143 : 130);
+      expect(send).not.toHaveBeenCalled();
+      expect(events.map((event) => process.listenerCount(event))).toEqual(before);
+    },
+  );
+
+  it.each(['pin', 'off', 'ambient'] as const)(
+    'keeps %s heap flags when graph work requires a supervisor',
+    async (kind) => {
+      vi.stubEnv('GITNEXUS_MEMORY', kind === 'off' ? 'off' : '');
+      vi.stubEnv(
+        'NODE_OPTIONS',
+        kind === 'ambient' ? '--max_old_space_size=65536 --max-semi-space-size=16' : '',
+      );
+      const descriptor = Object.getOwnPropertyDescriptor(process, 'execArgv')!;
+      const flags =
+        kind === 'pin' ? ['--max_old_space_size', '2048', '--max-semi-space-size=16'] : [];
+      Object.defineProperty(process, 'execArgv', { configurable: true, value: flags });
+      try {
+        const { AnalysisSupervisorRequired } =
+          await import('../../src/core/analysis-supervision.js');
+        mocks.run.mockRejectedValueOnce(new AnalysisSupervisorRequired());
+        mocks.spawn.mockImplementationOnce(() => {
+          const child = Object.assign(new EventEmitter(), {
+            stdout: new EventEmitter(),
+            stderr: new EventEmitter(),
+          });
+          queueMicrotask(() => child.emit('close', 0, null));
+          return child;
+        });
+        const { analyzeCommand } = await import('../../src/cli/analyze.js');
+        await analyzeCommand(undefined, {});
+        expect(mocks.spawn).toHaveBeenCalledOnce();
+        const [, args, options] = mocks.spawn.mock.calls[0];
+        expect(args).toEqual([...flags, '--stack-size=4096', ...process.argv.slice(1)]);
+        expect(options.env.NODE_OPTIONS).toBe(process.env.NODE_OPTIONS);
+        expect(options.env.GITNEXUS_ANALYSIS_MANUAL_HEAP).toBe('1');
+      } finally {
+        Object.defineProperty(process, 'execArgv', descriptor);
+      }
+    },
+  );
+
   it('finishes live-graph skills before IPC and defers finalization, self-commit and success', async () => {
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
     const output = console.log;

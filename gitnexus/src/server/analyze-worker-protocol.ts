@@ -35,12 +35,25 @@ export interface StartMessage {
   options: AnalyzeOptions;
 }
 
+/** A new process may continue only after the graph writer actually exited. */
+export interface ContinueMessage {
+  type: 'continue';
+  repoPath: string;
+  options: AnalyzeOptions;
+  writerPid: number;
+  prepared: GraphPreparedMessage;
+}
+
+export interface GraphVisibleMessage {
+  type: 'graph-visible';
+}
+
 /** Parent → child: request safe cancellation at the next JS-visible checkpoint. */
 export interface CancelMessage {
   type: 'cancel';
 }
 
-export type ParentMessage = StartMessage | CancelMessage;
+export type ParentMessage = StartMessage | ContinueMessage | CancelMessage | GraphVisibleMessage;
 
 export interface ProgressMessage extends AnalysisPhaseProgress {
   type: 'progress';
@@ -61,6 +74,11 @@ export interface GraphPreparedMessage {
   type: 'graph-prepared';
   handoff: PreparedAnalysisHandoff;
   result: AnalyzeResultIpc;
+}
+
+/** Wait for the serving parent to refresh readers before making paid requests. */
+export interface GraphReadyMessage {
+  type: 'graph-ready';
 }
 
 export interface ErrorMessage {
@@ -84,4 +102,9 @@ export interface ErrorMessage {
 }
 
 /** Child → parent IPC messages. Shared with the parent-side launcher. */
-export type WorkerMessage = ProgressMessage | GraphPreparedMessage | CompleteMessage | ErrorMessage;
+export type WorkerMessage =
+  | ProgressMessage
+  | GraphPreparedMessage
+  | GraphReadyMessage
+  | CompleteMessage
+  | ErrorMessage;

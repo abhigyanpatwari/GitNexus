@@ -64,6 +64,24 @@ describe('artifact identity and pending-job routing', () => {
 });
 
 describe('vector generation routing', () => {
+  it('keeps preserved monolithic vectors readable when a generation was published but embedding was capped', () => {
+    const preserved: RepoMeta = {
+      ...meta,
+      vectorGeneration: undefined,
+      legacyVectorSource: 'f'.repeat(64),
+      embeddingDims: 4,
+      stats: { embeddings: 2 },
+    };
+    expect(select(preserved)).toEqual({ kind: 'legacy' });
+    for (const changed of [
+      { legacyVectorSource: '../foreign' },
+      { stats: { embeddings: 0 } },
+      { embeddingDims: 0 },
+      { embeddingJob: { version: 1 as const, identity, graphGeneration: generation } },
+    ])
+      expect(select({ ...preserved, ...changed })).toMatchObject({ kind: 'unavailable' });
+    expect(select(preserved, '/slot/foreign')).toMatchObject({ kind: 'unavailable' });
+  });
   it.each([
     { incrementalInProgress: { startedAt: 1, toWriteCount: 1 } },
     { graphWriteCollapsed: { expected: 100, persisted: 1 } },

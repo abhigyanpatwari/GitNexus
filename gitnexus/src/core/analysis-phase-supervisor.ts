@@ -2,7 +2,8 @@
 import path from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import type { RepoMeta } from '../storage/repo-meta.js';
-import { acquireIndexLock, requireExclusiveIndexLock } from '../storage/index-lock.js';
+import { requireExclusiveIndexLock } from '../storage/index-lock.js';
+import { acquireAnalysisSlotLock } from '../storage/analysis-slot-lock.js';
 import { embeddingJobDirectory } from '../storage/embedding-job.js';
 import {
   publishPreparedAnalysis,
@@ -126,7 +127,7 @@ export async function publishAnalysisAfterProcessExit(
   actions.signal?.throwIfAborted();
   requireSameTarget(expected, await actions.resolveTarget());
   const root = await embeddingJobDirectory(expected.metadataDirectory);
-  const lock = await acquireIndexLock(root, {
+  const lock = await acquireAnalysisSlotLock(root, {
     sweep: false,
     log: actions.log,
     onWaitStart: actions.onWaitStart,

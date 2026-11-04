@@ -1283,7 +1283,14 @@ export const semanticSearch = async (
   k: number = 10,
   maxDistance: number = getVectorMaxDistance(DEFAULT_VECTOR_MAX_DISTANCE),
   snapshot?: VectorSearchSnapshot,
+  embedQuery?: (text: string) => Promise<readonly number[]>,
 ): Promise<SemanticSearchResult[]> => {
+  const queryVector = async (): Promise<number[]> => {
+    if (embedQuery) return [...(await embedQuery(query))];
+    if (!isEmbedderReady())
+      throw new Error('Embedding model not initialized. Run embedding pipeline first.');
+    return embeddingToArray(await embedText(query));
+  };
   let bestChunks = new Map<
     string,
     { distance: number; chunkIndex: number; startLine: number; endLine: number }
@@ -1291,16 +1298,7 @@ export const semanticSearch = async (
   let generationSelected = false;
   if (snapshot) {
     const { searchVectorGeneration } = await import('./vector-generation-search.js');
-    const chunks = await searchVectorGeneration(
-      snapshot,
-      async () => {
-        if (!isEmbedderReady())
-          throw new Error('Embedding model not initialized. Run embedding pipeline first.');
-        return embeddingToArray(await embedText(query));
-      },
-      k,
-      maxDistance,
-    );
+    const chunks = await searchVectorGeneration(snapshot, queryVector, k, maxDistance);
     generationSelected = chunks !== null;
     if (chunks) bestChunks = new Map(chunks.map(({ nodeId, ...chunk }) => [nodeId, chunk]));
   }
@@ -1312,12 +1310,7 @@ export const semanticSearch = async (
       return [];
     }
 
-    if (!isEmbedderReady()) {
-      throw new Error('Embedding model not initialized. Run embedding pipeline first.');
-    }
-
-    const queryEmbedding = await embedText(query);
-    const queryVec = embeddingToArray(queryEmbedding);
+    const queryVec = await queryVector();
     const queryVecStr = `[${queryVec.join(',')}]`;
 
     // Query/read path: NEVER spawn a network INSTALL on a user query. If the

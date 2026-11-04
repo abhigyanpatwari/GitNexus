@@ -525,6 +525,9 @@ export const publishSharedGraph = async (
     // Embeddings still owed stay with this checkout, which finishes them; a
     // commit graph never changes, so a shared copy would stay short for good.
     !meta.embeddingCheckpoint &&
+    // A migration receipt owns historical vectors in this private slot. Do
+    // not replace its graph or strip that evidence before migration finishes.
+    !Object.hasOwn(meta, 'legacyVectorSource') &&
     // A sparse or partial checkout builds a graph missing the files it hides.
     // Every sparse mode marks those entries skip-worktree, which this rejects
     // (git-utils.test.ts covers no-cone, cone and sparse-index checkouts).

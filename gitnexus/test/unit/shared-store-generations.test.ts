@@ -10,13 +10,32 @@ import {
   seedSharedSlot,
 } from '../../src/core/shared-store-analyze.js';
 import { loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
-import { reclaimSharedStore } from '../../src/storage/shared-store-lifecycle.js';
+import {
+  describeSharedGraph,
+  reclaimSharedStore,
+} from '../../src/storage/shared-store-lifecycle.js';
 import {
   resolveGraphPath,
   resolveGraphWritePath,
   sharedStoreLayout,
 } from '../../src/storage/shared-store.js';
 import type { RepoMeta } from '../../src/storage/repo-meta.js';
+import { acquireIndexLock } from '../../src/storage/index-lock.js';
+import { acquireAnalysisSlotLock } from '../../src/storage/analysis-slot-lock.js';
+
+it('reports named slot-local generations as private and commit graphs as shared', () => {
+  const slot = path.resolve('store/checkouts/owner');
+  expect(describeSharedGraph(path.join(slot, 'lbug'), slot)).toBe('private');
+  expect(describeSharedGraph(path.join(slot, `lbug.generation.${'a'.repeat(32)}`), slot)).toBe(
+    'private',
+  );
+  expect(describeSharedGraph(path.resolve('store/commits/commit-feature/lbug'), slot)).toBe(
+    'shared',
+  );
+  expect(describeSharedGraph(path.resolve('store/checkouts/owner-other/lbug'), slot)).toBe(
+    'shared',
+  );
+});
 
 describe('shared-store logical generations', () => {
   let root: string;
@@ -125,6 +144,71 @@ describe('shared-store logical generations', () => {
     expect((await fs.stat(vectorFile(committed))).ino).toBe((await fs.stat(original)).ino);
     expect(copy).not.toHaveBeenCalled();
   });
+
+  it('keeps the private graph while historical vectors still belong to its migration', async () => {
+    const graph = path.join(slot, generation);
+    await fs.writeFile(graph, 'graph with preserved legacy vectors');
+    const meta = modern({
+      graphPath: generation,
+      legacyVectorSource: 'e'.repeat(64),
+      embeddingDims: 4,
+      stats: { embeddings: 3 },
+    });
+    await saveMeta(slot, meta);
+    await publishSharedGraph(layout, repo, head, () => {});
+    expect(resolveGraphPath(slot)).toBe(graph);
+    expect(await loadMeta(slot)).toMatchObject(meta);
+    expect(await fs.readFile(graph, 'utf8')).toBe('graph with preserved legacy vectors');
+  });
+
+  it('does not collect an orphan member while a branch writer owns its lock', async () => {
+    await saveMeta(slot, metadata({ repoPath: path.join(root, 'removed-checkout') }));
+    const branch = path.join(slot, 'branches', 'feature');
+    await fs.mkdir(branch, { recursive: true });
+    const lock = await acquireIndexLock(branch, { sweep: false });
+    try {
+      expect((await reclaimSharedStore(layout.root, { gc: true })).droppedMembers).toEqual([]);
+      expect((await fs.stat(branch)).isDirectory()).toBe(true);
+    } finally {
+      lock.release();
+    }
+    expect((await reclaimSharedStore(layout.root, { gc: true })).droppedMembers).toEqual([slot]);
+  });
+
+  it('admits new branch writers under the member gate, then releases it for sibling work', async () => {
+    const gate = await acquireIndexLock(slot, { sweep: false });
+    const branch = path.join(slot, 'branches', 'new-branch');
+    try {
+      await expect(
+        acquireAnalysisSlotLock(branch, { timeoutMs: 1, sweep: false }),
+      ).rejects.toThrow();
+    } finally {
+      gate.release();
+    }
+    const writer = await acquireAnalysisSlotLock(branch, { timeoutMs: 1000, sweep: false });
+    try {
+      const rootWriter = await acquireIndexLock(slot, { timeoutMs: 1000, sweep: false });
+      rootWriter.release();
+      await expect(acquireIndexLock(branch, { timeoutMs: 1, sweep: false })).rejects.toThrow();
+    } finally {
+      writer.release();
+    }
+  });
+
+  it.each(['e'.repeat(64), null])(
+    'retains an orphan with historical vector evidence: %s',
+    async (source) => {
+      await saveMeta(
+        slot,
+        metadata({
+          repoPath: path.join(root, 'removed-checkout'),
+          legacyVectorSource: source as unknown as string,
+        }),
+      );
+      expect((await reclaimSharedStore(layout.root, { gc: true })).droppedMembers).toEqual([]);
+      expect(await loadMeta(slot)).toHaveProperty('legacyVectorSource', source);
+    },
+  );
 
   it('seeds independent completed vector pins that survive collection of their source', async () => {
     await fs.writeFile(path.join(slot, generation), 'completed graph');

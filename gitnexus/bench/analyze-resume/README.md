@@ -41,10 +41,13 @@ resolved dependency digest from its analyzer receipts. A checkout on a remote
 filesystem compared with a local checkout is not useful regression evidence.
 It includes CLI startup, graph writes, embeddings and final index work. Scenarios
 cover graph-only, warm no-op, one-function incremental edits, fresh/cached HTTP
-embeddings and resume after a deterministic provider outage. The outage ends
+embeddings, local-model fresh/cached runs, and resume after a deterministic provider outage. The outage ends
 normally through application error handling; it does not kill native work.
 `--help` lists corpus, heap, worker and scenario options. Both sides receive the
-same explicit allocations; default-budget behavior needs a separate comparison.
+same explicit allocations. Run a separate comparison with `--default-resources`
+to omit heap, worker and native-pool overrides on both sides. Local scenarios
+use the installed default model; download it before timing to keep network
+transfer out of the comparison.
 
 Raw samples include command/log paths, analyzer receipts, graph/vector counts,
 provider request/input counts, deterministic input fingerprints and sampled Linux
@@ -58,9 +61,9 @@ exits naturally; the harness does not forward a termination signal to native wor
 Results use paired log-ratio bootstrap intervals and report regression,
 inconclusive, or no detected regression. Fewer than seven pairs is always
 smoke-only. The report always marks overall acceptance incomplete: synthetic
-counts/input parity do not establish query ranking, local-model performance,
+counts/input parity do not establish query ranking,
 concurrent query latency, exact peak RSS, queue/native reservations, CPU/disk costs,
-default-budget behavior or Windows correctness. Those remain part of the final
+unselected scenarios/resource profiles or Windows correctness. Those remain part of the final
 regression/performance matrix. Do not run measurements alongside indexing/tests.
 
 Check the harness itself with:

@@ -299,6 +299,7 @@ gitnexus analyze --verbose       # Log skipped files when parsers are unavailabl
 gitnexus analyze --max-file-size 1024  # Skip files larger than N KB (default: 512, cap: 32768)
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
 gitnexus analyze --memory-budget 3000  # Main-thread V8 heap in MB (>= 200); overrides the auto-sizer and any --max-old-space-size pin
+gitnexus analyze --resource-budget 8192  # Process-family memory reservation in MiB, including workers, native pools and embedding work
 gitnexus analyze --wal-checkpoint-threshold 67108864  # 64 MiB. Control LadybugDB WAL auto-checkpoint threshold (default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB)
 gitnexus auto-sync [init|start|restart|stop|status|reset]  # Scheduled remote clone/pull + analyze from GITNEXUS_HOME/watch_config.yml
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
@@ -841,6 +842,20 @@ To set the main-thread heap yourself on a memory-constrained host, pass
 `--memory-budget <mb>`: analyze re-runs with exactly that V8 heap, overriding
 the auto-sizer and any `--max-old-space-size` pin. It sizes the main thread
 only; parse workers keep their own caps.
+
+Use `--resource-budget <MiB>` to admit the complete analyzer process family,
+including the frontend, main heap, workers, native pools, embedding model, input
+queue, and headroom. An explicit heap or pool that cannot fit is rejected before
+work starts. Defaults derive from available memory and CPUs; this reservation is
+not an operating-system RSS limit. `analyze --watch` accepts the same budget.
+
+Embedding-enabled analysis publishes the graph and keyword index first. If the
+provider fails, analyze exits nonzero while those queries remain available. Run
+plain `gitnexus analyze` or `gitnexus embeddings sync` to resume a retained job.
+Compatible acknowledged work is reused without provider requests; an interrupted
+unacknowledged unit may replay. Changing resource settings does not invalidate
+paid vectors. `gitnexus status --json` exposes graph freshness and embedding
+progress separately; semantic search uses a completed, validated vector artifact.
 
 Escape hatches (`GITNEXUS_MEMORY=off` to decline the autopilot,
 `GITNEXUS_WORKER_HEAP_MB` to size workers yourself) are listed in the

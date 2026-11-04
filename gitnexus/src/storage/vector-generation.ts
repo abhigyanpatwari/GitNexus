@@ -73,6 +73,17 @@ export function selectVectorGeneration(
     !metadataMatchesGraph(metadataDirectory, metadata, graphPath)
   )
     return { kind: 'unavailable', reason: 'graph-generation-unverified' };
+  if (
+    !vector &&
+    !metadata.embeddingJob &&
+    typeof metadata.legacyVectorSource === 'string' &&
+    DIGEST.test(metadata.legacyVectorSource) &&
+    nonnegative(metadata.stats?.embeddings) &&
+    metadata.stats!.embeddings! > 0 &&
+    nonnegative(metadata.embeddingDims) &&
+    metadata.embeddingDims > 0
+  )
+    return { kind: 'legacy' };
   if (!vector)
     return {
       kind: 'unavailable',

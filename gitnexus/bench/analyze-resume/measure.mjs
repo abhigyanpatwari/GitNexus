@@ -10,7 +10,16 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
-const SCENARIOS = ['graph-only', 'noop', 'incremental', 'http-fresh', 'http-cached', 'http-resume'];
+const SCENARIOS = [
+  'graph-only',
+  'noop',
+  'incremental',
+  'http-fresh',
+  'http-cached',
+  'http-resume',
+  'local-fresh',
+  'local-cached',
+];
 const sha = (text) => createHash('sha256').update(text).digest('hex');
 
 async function runtimeEnvironment(cli) {
@@ -65,7 +74,7 @@ export function assertCompletedCase(scenario, metadata, beforeMetadata) {
     assert(beforeMetadata?.indexedAt, 'No-op setup lacks a freshness receipt');
     assert.equal(metadata.indexedAt, beforeMetadata.indexedAt, 'No-op changed graph freshness');
   }
-  if (scenario.startsWith('http-')) {
+  if (scenario.startsWith('http-') || scenario.startsWith('local-')) {
     assert(metadata.stats.embeddings > 0, 'Embedding scenario produced no vectors');
     assert(
       !metadata.embeddingCheckpoint && !metadata.embeddingJob,
@@ -321,6 +330,7 @@ async function runCase({
   functions,
   heapMb,
   workers,
+  defaultResources,
   provider,
   sampleMs,
   stopRequested,
@@ -336,11 +346,12 @@ async function runCase({
     GITNEXUS_HOME: path.join(directory, 'home'),
     GITNEXUS_STORAGE_PATH: store,
     GITNEXUS_SHARED_STORE: 'off',
-    GITNEXUS_LBUG_BUFFER_POOL_SIZE: String(256 * 1024 * 1024),
     GITNEXUS_WORKER_READY_TIMEOUT_MS: '30000',
   });
-  const embedding = scenario.startsWith('http-');
-  if (embedding)
+  if (!defaultResources) env.GITNEXUS_LBUG_BUFFER_POOL_SIZE = String(256 * 1024 * 1024);
+  const http = scenario.startsWith('http-');
+  const embedding = http || scenario.startsWith('local-');
+  if (http)
     Object.assign(env, {
       GITNEXUS_EMBEDDING_URL: provider.url,
       GITNEXUS_EMBEDDING_MODEL: 'gitnexus-benchmark',
@@ -349,16 +360,8 @@ async function runCase({
       GITNEXUS_EMBEDDING_MAX_ATTEMPTS: '1',
       GITNEXUS_EMBEDDING_SUB_BATCH_SIZE: '16',
     });
-  const args = [
-    cli,
-    'analyze',
-    repo,
-    '--index-only',
-    '--memory-budget',
-    String(heapMb),
-    '--workers',
-    String(workers),
-  ];
+  const args = [cli, 'analyze', repo, '--index-only'];
+  if (!defaultResources) args.push('--memory-budget', String(heapMb), '--workers', String(workers));
   if (embedding) args.push('--embeddings', '0');
   const counters = provider.begin(
     scenario === 'http-resume' ? Math.max(16, Math.floor((modules * functions) / 3)) : Infinity,
@@ -381,7 +384,7 @@ async function runCase({
     return result;
   };
   let setup;
-  if (['noop', 'incremental', 'http-cached', 'http-resume'].includes(scenario)) {
+  if (['noop', 'incremental', 'http-cached', 'http-resume', 'local-cached'].includes(scenario)) {
     setup = await invoke('setup', scenario === 'http-resume');
     if (scenario === 'http-resume') {
       assert(
@@ -453,6 +456,7 @@ export async function main(argv = process.argv.slice(2)) {
       functions: { type: 'string', default: '16' },
       'heap-mb': { type: 'string', default: '2048' },
       workers: { type: 'string', default: '2' },
+      'default-resources': { type: 'boolean', default: false },
       'sample-ms': { type: 'string', default: '25' },
       'keep-stores': { type: 'boolean', default: false },
       help: { type: 'boolean' },
@@ -464,11 +468,13 @@ export async function main(argv = process.argv.slice(2)) {
   --scenarios LIST       ${SCENARIOS.join(',')}
   --pairs 7 --warmups 1   Alternating paired invocations; fewer than seven pairs is smoke-only
   --modules 64 --functions 16 --heap-mb 2048 --workers 2 --sample-ms 25
+  --default-resources   Omit heap, worker and native-pool overrides on both sides
   --keep-stores          Retain owned index/home artifacts (logs and measurements always retained)
 Includes full CLI startup, graph/manifest/native writes and final index work.
 HTTP resume uses a deterministic provider outage, not an unsafe native-process kill.
 RSS is sampled Linux process-family RSS; other platforms report it unavailable.
-Local-model, live-query latency, default-budget and platform cases remain separate acceptance requirements.`);
+Local scenarios use the installed default model; prewarm its download before timing.
+Live-query latency and platform cases remain separate acceptance requirements.`);
     return;
   }
   assert(v.baseline && v.output, '--baseline and --output are required');
@@ -531,6 +537,7 @@ Local-model, live-query latency, default-budget and platform cases remain separa
       availableParallelism: os.availableParallelism(),
       totalMemory: os.totalmem(),
       settings: numbers,
+      resourceProfile: v['default-resources'] ? 'default' : 'explicit-heap-workers-pool',
       runtime,
       clis: {},
     },
@@ -538,7 +545,7 @@ Local-model, live-query latency, default-budget and platform cases remain separa
       'Synthetic corpus only; stats and deterministic input coverage are checked, not query ranking.',
       'Linux RSS sampling is a lower-bound observation, not a hard memory limit or exact peak.',
       'CPU/disk, phase timings, native reservations and queue peaks are not collected by this harness.',
-      'Local model, live query latency, default budgets, Windows and final production integration require additional validation.',
+      'Only the selected scenarios and resource profile were measured; live query latency and Windows require additional validation.',
     ],
     acceptance: 'incomplete',
     samples: [],
@@ -583,6 +590,7 @@ Local-model, live-query latency, default-budget and platform cases remain separa
             functions: numbers.functions,
             heapMb: numbers['heap-mb'],
             workers: numbers.workers,
+            defaultResources: v['default-resources'],
             sampleMs: numbers['sample-ms'],
             provider,
             stopRequested: () => interrupted,

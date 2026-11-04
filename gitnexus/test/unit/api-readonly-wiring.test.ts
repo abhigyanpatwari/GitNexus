@@ -67,29 +67,28 @@ describe('api read-only endpoint wiring', () => {
     );
   });
 
-  it('/api/embed refuses an in-place FTS crash WAL before the writable open', async () => {
+  it('/api/embed refuses an in-place FTS crash WAL before the vector phase', async () => {
     const source = await readSource();
     const embedSection = source.match(
-      /\/\/ Run embedding pipeline asynchronously[\s\S]*?skipFtsOption\(ftsSession\.skipFts\)/,
+      /\/\/ Run embedding pipeline asynchronously[\s\S]*?res\.status\(202\)/,
     );
     expect(embedSection).not.toBeNull();
     const gateIdx = embedSection![0].indexOf('assertReadOnlyFtsCrashSafe(lbugPath)');
-    const openIdx = embedSection![0].indexOf('await withLbugDb(');
+    const openIdx = embedSection![0].indexOf('await runAnalysisEmbeddingPhase(');
     expect(gateIdx).toBeGreaterThan(-1);
     expect(openIdx).toBeGreaterThan(gateIdx);
     expect(embedSection![0]).not.toMatch(/fts-inplace-checkpointed/);
     expect(embedSection![0]).not.toMatch(/readOnly:\s*true/);
   });
 
-  it('/api/embed remains write-mode (writes embeddings — must not be flipped to readOnly)', async () => {
+  it('/api/embed delegates vector writes without reopening the graph in legacy write mode', async () => {
     const source = await readSource();
-    // Negative assertion: no `readOnly: true` between the embed job's
-    // `runEmbeddingPipeline` call site and its withLbugDb open. Embed writes
-    // back vector rows; flipping this to readOnly would silently break it.
-    const embedSection = source.match(/runEmbeddingPipeline[\s\S]{0,400}\}\s*\)\s*;[\s\S]{0,200}/);
-    if (embedSection) {
-      expect(embedSection[0]).not.toMatch(/readOnly:\s*true/);
-    }
+    const embedSection = source.match(
+      /\/\/ Run embedding pipeline asynchronously[\s\S]*?res\.status\(202\)/,
+    );
+    expect(embedSection).not.toBeNull();
+    expect(embedSection![0]).toContain('await runAnalysisEmbeddingPhase(');
+    expect(embedSection![0]).not.toContain('await withLbugDb(');
   });
 
   it('/api/embed keeps the repository lock until cancelled work actually stops', async () => {
@@ -107,9 +106,9 @@ describe('api read-only endpoint wiring', () => {
       /\/\/ Run embedding pipeline asynchronously[\s\S]*?res\.status\(202\)/,
     );
     expect(embedSection).not.toBeNull();
-    expect(embedSection?.[0]).toContain('forceReembedNodeIds');
-    expect(embedSection?.[0]).toContain('onCheckpointWindowStart');
-    expect(embedSection?.[0]).toContain('pendingNodeIds');
-    expect(embedSection?.[0]).toContain('saveMeta');
+    expect(embedSection?.[0]).toContain('await runAnalysisEmbeddingPhase(');
+    expect(embedSection?.[0]).toContain('metadataDirectory: storagePath');
+    expect(embedSection?.[0]).toContain('signal: embedController.signal');
+    expect(embedSection?.[0]).not.toContain('embeddingCheckpoint: undefined');
   });
 });

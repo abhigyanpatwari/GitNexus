@@ -8,6 +8,34 @@ const MIB = 1024 * 1024;
 const request = { effectiveMemoryBytes: 32_768 * MIB, availableCpus: 24, modelMemoryMb: 2048 };
 
 describe('analysis resource admission', () => {
+  it('preserves an explicit heap override without inflating automatic native allocations', () => {
+    const host = { ...request, effectiveMemoryBytes: 7500 * MIB, modelMemoryMb: 0 };
+    const automatic = resolveAnalysisResourceBudget(host);
+    const budget = resolveAnalysisResourceBudget({
+      ...host,
+      mainHeapMb: 12000,
+      allowHeapOvercommit: true,
+    });
+    expect(budget.mainHeapMb).toBe(12000);
+    expect(budget.totalBytes).toBeGreaterThan(host.effectiveMemoryBytes);
+    expect(budget.parse.graphPoolBytes).toBe(automatic.parse.graphPoolBytes);
+    expect(budget.embedding.queueBytes).toBe(automatic.embedding.queueBytes);
+    expect(budget.headroomBytes).toBe(automatic.headroomBytes);
+    expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
+    expect(budget.embedding.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
+    expect(() => resolveAnalysisResourceBudget({ ...host, mainHeapMb: 12000 })).toThrow(
+      'cannot admit',
+    );
+    expect(() =>
+      resolveAnalysisResourceBudget({
+        ...host,
+        mainHeapMb: 12000,
+        allowHeapOvercommit: true,
+        totalMb: 5625,
+      }),
+    ).toThrow('cannot admit');
+  });
+
   it('charges a retained supervisor once per phase, independently of worker thread count', () => {
     const fixed = {
       ...request,

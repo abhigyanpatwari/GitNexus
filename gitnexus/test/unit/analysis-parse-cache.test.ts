@@ -67,6 +67,7 @@ const options = (keys: string[] = [], complete = true) => ({
   storagePath: root,
   metadataDirectory: root,
   cacheRoot: root,
+  publishedGeneration: generation,
   collectBranchKeys: async () => ({ keys: new Set(keys), complete }),
   log: vi.fn(),
 });
@@ -90,6 +91,16 @@ async function mutateReceipt(change: (payload: Record<string, unknown>) => void)
   envelope.checksum = createHash('sha256').update(JSON.stringify(envelope.payload)).digest('hex');
   await fs.writeFile(file, JSON.stringify(envelope));
 }
+
+it('rejects a checksummed selection that repeats one key instead of including another', async () => {
+  const cache = emptyParseCache(TEST_PARSE_IDENTITY, { writeStoragePath: stage });
+  cache.usedKeys = new Set([a, b]);
+  await stageAnalysisParseCache(root, generation, cache);
+  await mutateReceipt((payload) => {
+    payload.used = [a, a];
+  });
+  await expect(loadAnalysisParseCache(root, metadata([a, b]))).rejects.toThrow('selection differs');
+});
 
 it('hands off keys without copying live shards, then merges a newer sibling publication', async () => {
   await live([
@@ -124,6 +135,24 @@ it('hands off keys without copying live shards, then merges a newer sibling publ
   expect((await loadParseCacheChunk(published, a))?.[0].fileCount).toBe(11);
   expect((await loadParseCacheChunk(published, c))?.[0].fileCount).toBe(3);
   expect((await loadParseCacheChunk(published, d))?.[0].fileCount).toBe(4);
+  await expect(fs.stat(path.join(root, `analysis-cache-${generation}.json`))).rejects.toMatchObject(
+    { code: 'ENOENT' },
+  );
+});
+
+it('retains its receipt when cache publication fails', async () => {
+  const cache = emptyParseCache(TEST_PARSE_IDENTITY, { writeStoragePath: stage });
+  cache.usedKeys.add(a);
+  await persistParseCacheChunk(cache, a, [result(2)]);
+  await stageAnalysisParseCache(root, generation, cache);
+  vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('cache publication interrupted'));
+  await expect(publishAnalysisParseCache(await restored(metadata([a])), options())).rejects.toThrow(
+    'cache publication interrupted',
+  );
+  await expect(
+    fs.stat(path.join(root, `analysis-cache-${generation}.json`)),
+  ).resolves.toBeDefined();
+  expect((await loadParseCacheChunk(await restored(metadata([a])), a))?.[0].fileCount).toBe(2);
 });
 
 it('flushes memory fallback shards before the child can hand off its cache', async () => {

@@ -21,6 +21,8 @@ interface CachePublicationOptions {
   storagePath: string;
   metadataDirectory: string;
   cacheRoot: string;
+  /** The exact published graph's handoff; never scan generation history. */
+  publishedGeneration?: string;
   sharedStore?: SharedStoreLayout;
   collectBranchKeys: (
     root: string,
@@ -91,6 +93,11 @@ export async function publishAnalysisParseCache(
     );
   };
   await (sharedStore ? withStoreLock(sharedStore, 'cache', publish) : publish());
+  if (options.publishedGeneration) {
+    const root = await embeddingJobDirectory(metadataDirectory);
+    await fs.rm(path.join(root, receiptName(options.publishedGeneration)), { force: true });
+    await syncEmbeddingJobDirectory(root);
+  }
 }
 
 // This contains only chunk keys, never ASTs, graph data or source content.
@@ -240,7 +247,11 @@ export async function loadAnalysisParseCache(
   )
     throw new Error('Prepared parser cache does not match the published graph');
   const usedKeys = new Set(metadata.cacheKeys ?? []);
-  if (payload.used.length !== usedKeys.size || payload.used.some((key) => !usedKeys.has(key)))
+  if (
+    payload.used.length !== usedKeys.size ||
+    new Set(payload.used).size !== usedKeys.size ||
+    payload.used.some((key) => !usedKeys.has(key))
+  )
     throw new Error('Prepared parser cache selection differs from the published graph');
   return {
     identity: payload.identity,

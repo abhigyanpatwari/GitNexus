@@ -179,6 +179,10 @@ program
       'pin; parse workers keep their own heap caps.',
   )
   .option(
+    '--resource-budget <mb>',
+    'Total analysis resource budget in MiB, including native pools, workers, model and supervisor.',
+  )
+  .option(
     '--workers <n>',
     'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
   )

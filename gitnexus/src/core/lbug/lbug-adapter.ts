@@ -2444,7 +2444,9 @@ export const fetchExistingEmbeddingHashes = async (
  */
 export const flushWAL = async (): Promise<void> => {
   const c = conn;
-  if (!c) return;
+  // CHECKPOINT on a read-only connection can leave LadybugDB's checkpoint
+  // marker set even though the write is rejected, poisoning the next reader.
+  if (!c || currentDbReadOnly) return;
   try {
     await withConnLock(async () => {
       const checkpointResult = await c.query('CHECKPOINT');
@@ -2473,7 +2475,7 @@ export const flushWAL = async (): Promise<void> => {
  */
 export const tryFlushWAL = async (): Promise<boolean> => {
   const c = conn;
-  if (!c) return false;
+  if (!c || currentDbReadOnly) return false;
   // Runs on the periodic WAL-checkpoint driver. The lock makes this CHECKPOINT
   // wait for any in-flight COPY / writeback on the singleton connection instead
   // of executing concurrently with it (the `analyze --pdg` heap-corruption bug).

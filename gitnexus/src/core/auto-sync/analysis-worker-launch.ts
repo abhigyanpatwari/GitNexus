@@ -4,8 +4,18 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { AnalyzeOptions, AnalyzeResult } from '../run-analyze.js';
-import type { WorkerMessage } from '../../server/analyze-worker-protocol.js';
+import type {
+  WorkerMessage,
+  ContinueMessage,
+  GraphPreparedMessage,
+} from '../../server/analyze-worker-protocol.js';
 import { autoHeapCapMb } from '../ingestion/utils/effective-ram.js';
+import {
+  analysisMayEmbed,
+  analysisSupervisorReservation,
+  resolveHostAnalysisResources,
+} from '../analysis-host-resources.js';
+import { projectPreparedAnalysisHandoff } from '../analysis-phase-supervisor.js';
 
 const _require = createRequire(import.meta.url);
 export type AutoSyncAnalysisRunner = (
@@ -20,6 +30,7 @@ export type AutoSyncAnalysisRunner = (
 ) => Promise<Pick<AnalyzeResult, 'stats' | 'graphWriteCollapsed'>>;
 
 interface AnalysisWorker extends Pick<ChildProcess, 'send' | 'on'> {
+  pid?: number;
   stdout?: Pick<NodeJS.ReadableStream, 'resume'> | null;
   stderr?: Pick<NodeJS.ReadableStream, 'resume'> | null;
   unref?: () => void;
@@ -95,8 +106,25 @@ export function createAutoSyncAnalysisRunner(
   overrides: Partial<AutoSyncAnalysisLaunchDeps> = {},
 ): AutoSyncAnalysisRunner {
   const deps = { ...DEFAULT_DEPS, ...overrides };
-  return (repoPath, options, timeoutMs, signal, onCancellationRequested, concurrency, onProgress) =>
-    new Promise<Pick<AnalyzeResult, 'stats' | 'graphWriteCollapsed'>>((resolve, reject) => {
+  return async (
+    repoPath,
+    options,
+    timeoutMs,
+    signal,
+    onCancellationRequested,
+    concurrency,
+    onProgress,
+  ) => {
+    signal?.throwIfAborted();
+    const resources =
+      options.resources ??
+      resolveHostAnalysisResources({
+        includeEmbeddings: await analysisMayEmbed(repoPath, options),
+        supervisorBytes: Math.ceil(analysisSupervisorReservation() / (concurrency ?? 1)),
+        concurrency,
+      });
+    const analysisOptions = { ...options, graphPublication: 'auto' as const, resources };
+    return new Promise<Pick<AnalyzeResult, 'stats' | 'graphWriteCollapsed'>>((resolve, reject) => {
       if (signal?.aborted) {
         reject(new Error('Analysis cancelled.'));
         return;
@@ -112,17 +140,16 @@ export function createAutoSyncAnalysisRunner(
         reject(new Error(`Auto-sync analyze worker is missing: ${workerPath}`));
         return;
       }
-      const workerHeapMb = resolveWorkerHeapMb(concurrency);
+      const workerHeapMb = resources.mainHeapMb - 48;
       const execArgv = isDev
         ? [
             '--import',
             pathToFileURL(_require.resolve('tsx/esm')).href,
             `--max-old-space-size=${workerHeapMb}`,
+            '--max-semi-space-size=16',
           ]
-        : [`--max-old-space-size=${workerHeapMb}`];
-      const child = deps.forkWorker(workerPath, execArgv);
-      child.stdout?.resume();
-      child.stderr?.resume();
+        : [`--max-old-space-size=${workerHeapMb}`, '--max-semi-space-size=16'];
+      let child: AnalysisWorker;
 
       let terminalOutcome: WorkerMessage | undefined;
       let terminationError: Error | undefined;
@@ -138,8 +165,8 @@ export function createAutoSyncAnalysisRunner(
       // so both handles have to go. Never a kill: the child may be inside
       // native work and is left to reach its own safe point.
       const releaseChild = () => {
-        child.channel?.unref?.();
-        child.unref?.();
+        child?.channel?.unref?.();
+        child?.unref?.();
       };
       const settle = (
         error?: Error,
@@ -159,7 +186,7 @@ export function createAutoSyncAnalysisRunner(
         // IPC has the same semantics on macOS and Windows. The worker exits only
         // after reaching a JS-visible safe point; this parent keeps ownership until then.
         try {
-          child.send({ type: 'cancel' });
+          child?.send({ type: 'cancel' });
         } catch {
           // A closed IPC channel still has an exit/error path. Do not force-kill a
           // worker that may be inside native code.
@@ -192,72 +219,121 @@ export function createAutoSyncAnalysisRunner(
       const onAbort = () => requestCancellation(new Error('Analysis cancelled.'));
       signal?.addEventListener('abort', onAbort, { once: true });
 
-      child.on('message', (message: WorkerMessage) => {
-        // Once timeout/cancellation requested shutdown, its reason owns the
-        // result. A terminal IPC can already be queued behind cancellation.
-        if (message.type === 'graph-prepared' || terminalOutcome || terminationError) return;
-        if (message.type === 'progress') {
-          // The worker also sends its log lines as progress with percent -1;
-          // those are not progress. A listener's failure must not decide the
-          // run's outcome.
-          if (message.percent < 0) return;
-          try {
-            onProgress?.(message.percent, message.message);
-          } catch {
-            // ignored
+      const launch = (continuation?: ContinueMessage) => {
+        child = deps.forkWorker(workerPath, execArgv);
+        const phaseChild = child;
+        let prepared: GraphPreparedMessage | undefined;
+        child.stdout?.resume();
+        child.stderr?.resume();
+        child.on('message', (message: WorkerMessage) => {
+          // Once timeout/cancellation requested shutdown, its reason owns the
+          // result. A terminal IPC can already be queued behind cancellation.
+          if (terminalOutcome || terminationError || settled || child !== phaseChild) return;
+          if (message.type === 'progress') {
+            // Worker log messages use percent -1 and do not represent progress.
+            if (message.percent < 0) return;
+            try {
+              onProgress?.(message.percent, message.message);
+            } catch {
+              // A listener failure must not decide the run's outcome.
+            }
+            return;
           }
-          return;
-        }
-        terminalOutcome = message;
-        deps.clearTimeoutFn(timeout);
-      });
-      child.on('error', (error) => {
-        const workerError = new Error(`Auto-sync analyze worker error: ${error.message}`);
-        requestCancellation(workerError);
-        // This settles immediately rather than waiting out the grace, so the
-        // grace timer that would otherwise have released the child is cleared
-        // by cleanup(). Release it here instead — an errored channel does not
-        // mean the worker stopped.
-        releaseChild();
-        settle(workerError);
-      });
-      child.on('exit', (code, childSignal) => {
-        if (settled) return;
-        if (terminationError) {
-          settle(terminationError);
-          return;
-        }
-        if (terminalOutcome?.type === 'complete') {
-          const { stats, graphWriteCollapsed } = terminalOutcome.result;
-          // Only present on a collapsed write, so a healthy result keeps its shape.
-          settle(undefined, graphWriteCollapsed ? { stats, graphWriteCollapsed } : { stats });
-          return;
-        }
-        if (terminalOutcome?.type === 'error') {
+          if (message.type === 'graph-ready') {
+            // Watch has no serving reader cache. Publication is already verified.
+            try {
+              child.send({ type: 'graph-visible' });
+            } catch (error) {
+              requestCancellation(error as Error);
+            }
+            return;
+          }
+          if (message.type === 'graph-prepared') {
+            try {
+              if (prepared || continuation) throw new Error('Repeated graph preparation');
+              prepared = { ...message, handoff: projectPreparedAnalysisHandoff(message.handoff) };
+            } catch (error) {
+              requestCancellation(error as Error);
+            }
+            return;
+          }
+          terminalOutcome = message;
+        });
+        child.on('error', (error) => {
+          const workerError = new Error(`Auto-sync analyze worker error: ${error.message}`);
+          requestCancellation(workerError);
+          // This settles immediately rather than waiting out the grace, so the
+          // grace timer that would otherwise have released the child is cleared
+          // by cleanup(). Release it here instead — an errored channel does not
+          // mean the worker stopped.
+          releaseChild();
+          settle(workerError);
+        });
+        child.on('exit', (code, childSignal) => {
+          if (settled || child !== phaseChild) return;
+          if (terminationError) {
+            settle(terminationError);
+            return;
+          }
+          if (terminalOutcome?.type === 'complete') {
+            if (code === 0 && !childSignal) {
+              const { stats, graphWriteCollapsed } = terminalOutcome.result;
+              settle(undefined, graphWriteCollapsed ? { stats, graphWriteCollapsed } : { stats });
+            } else
+              settle(
+                new Error(
+                  `Auto-sync analyze worker exited unsuccessfully (${childSignal ?? code}).`,
+                ),
+              );
+            return;
+          }
+          if (!terminalOutcome && prepared && code === 0 && !childSignal && phaseChild.pid) {
+            try {
+              launch({
+                type: 'continue',
+                repoPath,
+                options: analysisOptions,
+                writerPid: phaseChild.pid,
+                prepared,
+              });
+            } catch (error) {
+              settle(error as Error);
+            }
+            return;
+          }
+          if (terminalOutcome?.type === 'error') {
+            settle(
+              new AutoSyncAnalysisError(terminalOutcome.message, {
+                code: terminalOutcome.code,
+                retryable: terminalOutcome.retryable,
+              }),
+            );
+            return;
+          }
           settle(
-            new AutoSyncAnalysisError(terminalOutcome.message, {
-              code: terminalOutcome.code,
-              retryable: terminalOutcome.retryable,
-            }),
+            new Error(
+              `Auto-sync analyze worker exited before completion (${childSignal ?? code ?? 'unknown'}).`,
+            ),
           );
-          return;
+        });
+        try {
+          child.send(continuation ?? { type: 'start', repoPath, options: analysisOptions });
+        } catch (error) {
+          const startError = new Error(
+            `Failed to start auto-sync analyze worker: ${(error as Error).message}`,
+          );
+          requestCancellation(startError);
+          releaseChild();
+          settle(startError);
         }
-        settle(
-          new Error(
-            `Auto-sync analyze worker exited before completion (${childSignal ?? code ?? 'unknown'}).`,
-          ),
-        );
-      });
+      };
       try {
-        child.send({ type: 'start', repoPath, options });
+        launch();
       } catch (error) {
-        const startError = new Error(
-          `Failed to start auto-sync analyze worker: ${(error as Error).message}`,
-        );
-        requestCancellation(startError);
-        settle(startError);
+        settle(error as Error);
       }
     });
+  };
 }
 
 export const runAutoSyncAnalysis = createAutoSyncAnalysisRunner();

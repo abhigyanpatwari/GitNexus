@@ -1,18 +1,43 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 
-const { autoHeapCapMbMock } = vi.hoisted(() => ({ autoHeapCapMbMock: vi.fn(() => 512) }));
-vi.mock('../../src/core/ingestion/utils/effective-ram.js', () => ({
-  autoHeapCapMb: autoHeapCapMbMock,
-}));
-
 import {
   AutoSyncAnalysisError,
-  createAutoSyncAnalysisRunner,
+  createAutoSyncAnalysisRunner as createRunner,
+  type AutoSyncAnalysisRunner,
 } from '../../src/core/auto-sync/analysis-worker-launch.js';
+import { resolveAnalysisResourceBudget } from '../../src/core/analysis-resource-budget.js';
+
+function createAutoSyncAnalysisRunner(overrides: Parameters<typeof createRunner>[0]) {
+  const run = createRunner(overrides);
+  return (...args: Parameters<AutoSyncAnalysisRunner>) => {
+    const slots = args[5] ?? 1;
+    args[1] = {
+      ...args[1],
+      resources: resolveAnalysisResourceBudget({
+        effectiveMemoryBytes: (16 * 1024 ** 3) / slots,
+        availableCpus: Math.max(1, 8 / slots),
+        mainHeapMb: 2048 / slots,
+        modelMemoryMb: 0,
+      }),
+    };
+    return run(...args);
+  };
+}
+
+const handoff = {
+  version: 1 as const,
+  publicationId: 'a'.repeat(32),
+  repoPath: '/tmp/repo',
+  storagePath: '/tmp/repo/.gitnexus',
+  metadataDirectory: '/tmp/repo/.gitnexus',
+  repoName: 'repo',
+  commit: 'b'.repeat(40),
+};
 
 function createChild() {
   return Object.assign(new EventEmitter(), {
+    pid: 1234,
     send: vi.fn(),
     stdout: { resume: vi.fn() },
     stderr: { resume: vi.fn() },
@@ -20,6 +45,55 @@ function createChild() {
 }
 
 describe('auto-sync analysis worker', () => {
+  it('continues after actual exit and retains the original timeout across phases', async () => {
+    const graph = createChild();
+    const embedding = createChild();
+    const forkWorker = vi.fn().mockReturnValueOnce(graph).mockReturnValueOnce(embedding);
+    const clearTimeoutFn = vi.fn();
+    const run = createAutoSyncAnalysisRunner({
+      forkWorker,
+      setTimeoutFn: vi.fn(() => 1) as any,
+      clearTimeoutFn: clearTimeoutFn as any,
+    });
+    const pending = run('/tmp/repo', {}, 50);
+    const prepared = { type: 'graph-prepared', handoff, result: { stats: { files: 3 } } };
+    graph.emit('message', prepared);
+    expect(forkWorker).toHaveBeenCalledTimes(1);
+    expect(clearTimeoutFn).not.toHaveBeenCalled();
+    graph.emit('exit', 0, null);
+    expect(forkWorker).toHaveBeenCalledTimes(2);
+    expect(clearTimeoutFn).not.toHaveBeenCalled();
+    expect(embedding.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'continue',
+        prepared,
+        writerPid: graph.pid,
+      }),
+    );
+    embedding.emit('message', { type: 'graph-ready' });
+    expect(embedding.send).toHaveBeenLastCalledWith({ type: 'graph-visible' });
+    let done = false;
+    void pending.then(() => {
+      done = true;
+    });
+    embedding.emit('message', { type: 'complete', result: { stats: { files: 3 } } });
+    await Promise.resolve();
+    expect(done).toBe(false);
+    embedding.emit('exit', 0, null);
+    await expect(pending).resolves.toEqual({ stats: { files: 3 } });
+  });
+
+  it('never starts a continuation after an unsuccessful graph exit', async () => {
+    const child = createChild();
+    const forkWorker = vi.fn(() => child as any);
+    const run = createAutoSyncAnalysisRunner({ forkWorker });
+    const pending = run('/tmp/repo', {}, 50);
+    child.emit('message', { type: 'graph-prepared', handoff, result: { stats: {} } });
+    child.emit('exit', 1, null);
+    await expect(pending).rejects.toThrow('exited before completion');
+    expect(forkWorker).toHaveBeenCalledTimes(1);
+  });
+
   it('does not treat graph-prepared as terminal or clear the active timeout', async () => {
     const child = createChild();
     const clearTimeoutFn = vi.fn();
@@ -29,7 +103,7 @@ describe('auto-sync analysis worker', () => {
       clearTimeoutFn: clearTimeoutFn as any,
     });
     const result = run('/tmp/repo', {}, 50);
-    child.emit('message', { type: 'graph-prepared', handoff: {}, result: { stats: { files: 3 } } });
+    child.emit('message', { type: 'graph-prepared', handoff, result: { stats: { files: 3 } } });
     expect(clearTimeoutFn).not.toHaveBeenCalled();
     child.emit('message', { type: 'error', message: 'cancelled after preparing' });
     child.emit('exit', 0, null);
@@ -44,7 +118,7 @@ describe('auto-sync analysis worker', () => {
     const result = run('/tmp/repo', { branch: 'main' }, 50);
     expect(forkWorker).toHaveBeenCalledWith(
       expect.any(String),
-      expect.arrayContaining(['--max-old-space-size=512']),
+      expect.arrayContaining(['--max-old-space-size=2000']),
     );
     child.emit('message', { type: 'progress', phase: 'parsing', percent: 20, message: 'Parsing' });
     child.emit('message', { type: 'complete', result: { stats: { files: 3 } } });
@@ -249,13 +323,13 @@ describe('auto-sync analysis worker', () => {
     const parallel = run('/tmp/repo', { branch: 'main' }, 50, undefined, undefined, 4);
     expect(forkWorker).toHaveBeenLastCalledWith(
       expect.any(String),
-      expect.arrayContaining(['--max-old-space-size=128']),
+      expect.arrayContaining(['--max-old-space-size=464']),
     );
 
     const solo = run('/tmp/repo', { branch: 'main' }, 50);
     expect(forkWorker).toHaveBeenLastCalledWith(
       expect.any(String),
-      expect.arrayContaining(['--max-old-space-size=512']),
+      expect.arrayContaining(['--max-old-space-size=2000']),
     );
 
     for (const child of forkChildren) {

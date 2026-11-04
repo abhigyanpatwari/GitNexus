@@ -13,9 +13,19 @@ const mocks = vi.hoisted(() => ({
   releaseIndexLock: vi.fn(),
   ensurePrivateSharedGraph: vi.fn(),
   runEmbeddingPipeline: vi.fn(),
+  semanticSearch: vi.fn(async () => [
+    { nodeId: 'Function:a.ts:alpha', name: 'alpha', distance: 0 },
+  ]),
+  embedQuery: vi.fn(async () => [1, 0, 0, 0]),
+  runAnalysisEmbeddingPhase: vi.fn(),
   withLbugDb: vi.fn(),
   search: vi.fn(),
   updateJob: vi.fn(),
+  disconnect: vi.fn(async () => {}),
+  serverClose: vi.fn(),
+  activeJob: undefined as
+    | { id: string; repoName: string; status: string; progress: { graphPhase?: 'ready' } }
+    | undefined,
 }));
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
@@ -33,6 +43,12 @@ vi.mock('../../src/core/shared-store-analyze.js', () => ({
 }));
 vi.mock('../../src/core/embeddings/embedding-pipeline.js', () => ({
   runEmbeddingPipeline: mocks.runEmbeddingPipeline,
+  semanticSearch: mocks.semanticSearch,
+}));
+vi.mock('../../src/core/embeddings/embedder.js', () => ({ isEmbedderReady: () => false }));
+vi.mock('../../src/mcp/core/embedder.js', () => ({ embedQuery: mocks.embedQuery }));
+vi.mock('../../src/core/analysis-embedding-phase.js', () => ({
+  runAnalysisEmbeddingPhase: mocks.runAnalysisEmbeddingPhase,
 }));
 vi.mock('../../src/storage/storage-resolver.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/storage/storage-resolver.js')>()),
@@ -55,6 +71,7 @@ vi.mock('../../src/mcp/local/local-backend.js', () => ({
     async init() {
       return true;
     }
+    disconnect = mocks.disconnect;
   },
 }));
 vi.mock('../../src/server/mcp-http.js', () => ({
@@ -72,18 +89,24 @@ vi.mock('../../src/server/grep-scan.js', () => ({
 }));
 vi.mock('../../src/server/sse-progress.js', () => ({ mountSSEProgress: vi.fn() }));
 vi.mock('../../src/server/analyze-job.js', () => ({
-  isTerminalJobStatus: vi.fn(() => true),
+  isTerminalJobStatus: (status: string) => status === 'complete' || status === 'failed',
   JobManager: class {
+    controllers: AbortController[] = [];
     createJob() {
       return { id: 'embed-job', status: 'queued' };
     }
     updateJob = mocks.updateJob;
-    registerAbortController() {}
+    registerAbortController(_id: string, controller: AbortController) {
+      this.controllers.push(controller);
+    }
+    dispose() {
+      for (const controller of this.controllers) controller.abort();
+    }
     getJob() {
-      return { status: 'complete' };
+      return mocks.activeJob ?? { status: 'analyzing' };
     }
     listJobs() {
-      return [];
+      return mocks.activeJob ? [mocks.activeJob] : [];
     }
   },
 }));
@@ -111,7 +134,7 @@ beforeAll(async () => {
   ) {
     app = this;
     queueMicrotask(args.at(-1));
-    return new EventEmitter() as any;
+    return Object.assign(new EventEmitter(), { close: mocks.serverClose }) as any;
   });
   try {
     await createServer(0);
@@ -133,6 +156,7 @@ afterAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.activeJob = undefined;
   mocks.acquireIndexLock.mockResolvedValue({
     release: mocks.releaseIndexLock,
     record: {
@@ -146,6 +170,7 @@ beforeEach(() => {
     },
   });
   mocks.ensurePrivateSharedGraph.mockResolvedValue(true);
+  mocks.runAnalysisEmbeddingPhase.mockResolvedValue({ stats: { embeddings: 2 } });
   mocks.listRegisteredRepos.mockResolvedValue([entry]);
   mocks.withLbugDb.mockImplementation(async (_path, callback) => callback());
   mocks.search.mockImplementation(async (_query, _limit, _exec, reason) => ({
@@ -153,6 +178,37 @@ beforeEach(() => {
     ftsAvailable: !reason,
   }));
 });
+
+it.each(['analyzing', 'failed'])(
+  'releases a waiting graph query after publication while embedding is %s',
+  async (status) => {
+    vi.useFakeTimers();
+    mocks.activeJob = {
+      id: 'analysis-job',
+      repoName: entry.name,
+      status: 'analyzing',
+      progress: {},
+    };
+    mocks.listRegisteredRepos.mockResolvedValueOnce([]).mockResolvedValue([entry]);
+    mocks.loadMeta.mockResolvedValue({ capabilities: { fts: { status: 'available' } } });
+    const pending = invoke('/api/search', { repo: entry.name });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.search).not.toHaveBeenCalled();
+      mocks.activeJob.progress.graphPhase = 'ready';
+      mocks.activeJob.status = status;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(mocks.search).toHaveBeenCalledOnce();
+      await pending;
+      expect(mocks.updateJob).not.toHaveBeenCalled();
+    } finally {
+      mocks.activeJob.status = 'complete';
+      await vi.advanceTimersByTimeAsync(1000);
+      await pending.catch(() => {});
+      vi.useRealTimers();
+    }
+  },
+);
 
 describe('POST /api/embed staged recovery preflight', () => {
   it('passes indexed source identity from the checkout and reports source failures', async () => {
@@ -312,18 +368,23 @@ describe('POST /api/embed staged recovery preflight', () => {
       expect.objectContaining({ status: 'complete' }),
     );
     expect(mocks.ensurePrivateSharedGraph).toHaveBeenCalledTimes(1);
-    expect(mocks.withLbugDb).toHaveBeenCalledTimes(1);
+    expect(mocks.runAnalysisEmbeddingPhase).toHaveBeenCalledTimes(1);
+    expect(mocks.withLbugDb).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(entry.storagePath, 'analyze.lock'))).toBe(false);
   });
 });
 
-async function invoke(route: string, query: Record<string, unknown> = {}) {
+async function invoke(
+  route: string,
+  query: Record<string, unknown> = {},
+  body: Record<string, unknown> = {},
+) {
   const layer = app.router.stack.find((item: any) => item.route?.path === route);
   expect(layer, route).toBeDefined();
   const handler = layer.route.stack.at(-1).handle;
   const req = Object.assign(new EventEmitter(), {
     query,
-    body: { cypher: 'RETURN 1 AS value', query: 'handler', mode: 'bm25', enrich: false },
+    body: { cypher: 'RETURN 1 AS value', query: 'handler', mode: 'bm25', enrich: false, ...body },
   });
   const res = Object.assign(new EventEmitter(), {
     statusCode: 200,
@@ -433,8 +494,8 @@ describe('serve uses one metadata-derived FTS mode on every DB-open path', () =>
   });
 
   it.each(cases)(
-    'preserves write mode while honoring $name metadata for embed',
-    async ({ fts, skip }) => {
+    'keeps the $name graph out of the legacy writable DB path during embed',
+    async ({ fts }) => {
       mocks.loadMeta.mockResolvedValue({ capabilities: { fts } });
       // This test stops at the DB boundary; it must not generate vectors or write an index.
       mocks.withLbugDb.mockResolvedValue(undefined);
@@ -445,16 +506,80 @@ describe('serve uses one metadata-derived FTS mode on every DB-open path', () =>
           expect.objectContaining({ status: 'complete' }),
         ),
       );
-      expect(mocks.withLbugDb).toHaveBeenCalledExactlyOnceWith(
-        path.join(entry.storagePath, 'lbug'),
-        expect.any(Function),
-        skip ? { skipFts: true } : {},
+      expect(mocks.runAnalysisEmbeddingPhase).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadataDirectory: entry.storagePath,
+          graphPath: path.join(entry.storagePath, 'lbug'),
+        }),
       );
-      expect(mocks.loadMeta).toHaveBeenCalledTimes(2);
-      expect(mocks.loadMeta).toHaveBeenNthCalledWith(1, entry.storagePath);
-      expect(mocks.loadMeta).toHaveBeenNthCalledWith(2, entry.storagePath);
+      expect(mocks.withLbugDb).not.toHaveBeenCalled();
+      expect(mocks.saveMeta).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('POST /api/embed published-phase outcomes', () => {
+  it('keeps graph readiness nonterminal until the shared phase completes', async () => {
+    mocks.loadMeta.mockResolvedValue({ repoPath: entry.path });
+    let finish!: () => void;
+    mocks.runAnalysisEmbeddingPhase.mockImplementation(async ({ callbacks }) => {
+      callbacks.onProgress('graph-ready', 90, 'Graph available', { graphPhase: 'ready' });
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      return { stats: { embeddings: 2 } };
+    });
+    await invoke('/api/embed');
+    await vi.waitFor(() => expect(mocks.runAnalysisEmbeddingPhase).toHaveBeenCalledOnce());
+    expect(mocks.updateJob).toHaveBeenCalledWith(
+      'embed-job',
+      expect.objectContaining({
+        progress: expect.objectContaining({ graphPhase: 'ready', phase: 'graph-ready' }),
+      }),
+    );
+    expect(mocks.updateJob).not.toHaveBeenCalledWith(
+      'embed-job',
+      expect.objectContaining({ status: 'complete' }),
+    );
+    expect(mocks.releaseIndexLock).not.toHaveBeenCalled();
+    finish();
+    await vi.waitFor(() => expect(mocks.releaseIndexLock).toHaveBeenCalledOnce());
+    expect(mocks.updateJob).toHaveBeenCalledWith(
+      'embed-job',
+      expect.objectContaining({ status: 'complete' }),
+    );
+    expect(mocks.saveMeta).not.toHaveBeenCalled();
+  });
+
+  it('surfaces incomplete vectors without clearing durable work or reporting complete', async () => {
+    mocks.loadMeta.mockResolvedValue({
+      repoPath: entry.path,
+      stats: { embeddings: 1 },
+      embeddingJob: { identity: 'retained' },
+    });
+    mocks.runAnalysisEmbeddingPhase.mockImplementation(async ({ callbacks }) => {
+      callbacks.onProgress('embeddings', 98, 'Incomplete', {
+        graphPhase: 'ready',
+        embeddingProgress: { phase: 'failed', completedNodes: 1, pendingNodes: 2 },
+      });
+      throw new Error('Provider unavailable; resume durable progress');
+    });
+    await invoke('/api/embed');
+    await vi.waitFor(() => expect(mocks.releaseIndexLock).toHaveBeenCalledOnce());
+    expect(mocks.updateJob).toHaveBeenCalledWith(
+      'embed-job',
+      expect.objectContaining({
+        status: 'failed',
+        error: expect.stringContaining('resume durable progress'),
+      }),
+    );
+    expect(mocks.updateJob).not.toHaveBeenCalledWith(
+      'embed-job',
+      expect.objectContaining({ status: 'complete' }),
+    );
+    expect(mocks.saveMeta).not.toHaveBeenCalled();
+    expect(mocks.withLbugDb).not.toHaveBeenCalled();
+  });
 });
 
 describe('GET /api/search FTS warning redaction', () => {
@@ -489,4 +614,60 @@ describe('GET /api/repos catalog validation', () => {
     expect(mocks.listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
     expect(mocks.listRegisteredRepos).toHaveBeenCalledTimes(1);
   });
+});
+
+it.each(['semantic', 'hybrid'])(
+  'searches published vectors in %s mode without requiring a previously loaded model',
+  async (mode) => {
+    const metadata = {
+      graphGeneration: { version: 1, id: 'a'.repeat(32), coveredContent: 'b'.repeat(64) },
+    };
+    mocks.loadMeta.mockResolvedValue(metadata);
+    await invoke('/api/search', {}, { mode });
+    expect(mocks.semanticSearch).toHaveBeenCalledOnce();
+    const args = mocks.semanticSearch.mock.calls[0] as unknown[];
+    expect(args[4]).toEqual({
+      metadataDirectory: entry.storagePath,
+      metadata,
+      graphPath: path.join(entry.storagePath, 'lbug'),
+    });
+    expect(args[5]).toBeTypeOf('function');
+    // Only the verified vector reader invokes this lazy callback.
+    expect(mocks.embedQuery).not.toHaveBeenCalled();
+  },
+);
+
+it('waits for embedding native cleanup before closing the backend or exiting on shutdown', async () => {
+  mocks.loadMeta.mockResolvedValue({ repoPath: entry.path });
+  let finish!: () => void;
+  let signal!: AbortSignal;
+  mocks.runAnalysisEmbeddingPhase.mockImplementation(async (options) => {
+    signal = options.signal;
+    await new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    signal.throwIfAborted();
+  });
+  const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+  await invoke('/api/embed');
+  await vi.waitFor(() => expect(mocks.runAnalysisEmbeddingPhase).toHaveBeenCalledOnce());
+  const shutdown = process
+    .listeners('SIGTERM')
+    .find((listener) => !originalListeners.get('SIGTERM')!.includes(listener));
+  expect(shutdown).toBeDefined();
+  const stopped = (shutdown as unknown as () => Promise<void>)();
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(signal.aborted).toBe(true);
+    expect(mocks.serverClose).toHaveBeenCalledOnce();
+    expect(mocks.releaseIndexLock).not.toHaveBeenCalled();
+    expect(mocks.disconnect).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+  } finally {
+    finish();
+    await stopped;
+    await vi.waitFor(() => expect(mocks.releaseIndexLock).toHaveBeenCalledOnce());
+    exit.mockRestore();
+  }
+  expect(mocks.disconnect).toHaveBeenCalledOnce();
 });

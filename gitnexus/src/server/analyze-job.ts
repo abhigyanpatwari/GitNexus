@@ -89,7 +89,7 @@ export interface AnalyzeJob {
 const JOB_TTL_MS = 60 * 60 * 1000; // 1 hour
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const JOB_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-/** How long a cancelled worker gets to exit via IPC before a signal is sent. */
+/** How long to retain event-loop references after requesting safe cancellation. */
 const CANCEL_GRACE_MS = 15_000;
 
 export class JobManager {
@@ -209,20 +209,27 @@ export class JobManager {
 
   /** Register a child process for a job — enables cancellation and timeout. */
   registerChild(jobId: string, child: ChildProcess) {
+    const previousTimer = this.timeouts.get(jobId);
+    if (previousTimer) clearTimeout(previousTimer);
     this.children.set(jobId, child);
 
-    // 30-minute timeout
-    const timer = setTimeout(() => {
-      const job = this.jobs.get(jobId);
-      if (job && !this.isTerminal(job.status)) {
-        this.cancelJob(jobId, 'Analysis timed out (30 minute limit)');
-      }
-    }, JOB_TIMEOUT_MS);
+    // One deadline covers graph preparation, continuation, and crash retries.
+    const elapsed = Date.now() - (this.jobs.get(jobId)?.startedAt ?? Date.now());
+    const timer = setTimeout(
+      () => {
+        const job = this.jobs.get(jobId);
+        if (job && !this.isTerminal(job.status)) {
+          this.cancelJob(jobId, 'Analysis timed out (30 minute limit)');
+        }
+      },
+      Math.max(0, JOB_TIMEOUT_MS - elapsed),
+    );
     this.timeouts.set(jobId, timer);
 
     // Apply a pending cancel BEFORE other `exit` listeners (analyze-launch's
     // crash-retry) see a still-non-terminal job and fork a replacement worker.
     const onExit = (): void => {
+      if (this.children.get(jobId) !== child) return;
       this.releaseChild(jobId);
       this.applyPendingCancel(jobId);
     };
@@ -289,10 +296,8 @@ export class JobManager {
    *
    * The worker is asked to stop over IPC first (`{ type: 'cancel' }`), which
    * lets it reach a JS-visible safe point and checkpoint before exiting —
-   * the same cross-platform control path `core/auto-sync` uses. A signal is
-   * sent only as a bounded fallback: on Windows `child.kill('SIGTERM')` is a
-   * forceful termination (Node ignores the signal name there), so leading
-   * with it could kill the worker mid LadybugDB write.
+   * the same cross-platform control path `core/auto-sync` uses. Native work
+   * must reach a safe point even if that takes longer than the grace period.
    */
   cancelJob(jobId: string, reason?: string): boolean {
     const job = this.jobs.get(jobId);
@@ -329,32 +334,25 @@ export class JobManager {
   }
 
   /**
-   * Ask a worker to shut down: IPC cancel now, signal after a grace period if
-   * it has not exited on its own. The grace timer is cleared by the child's
-   * `exit` handler registered in `registerChild`.
+   * Request cancellation, then abandon event-loop references after grace.
+   * Ownership and the job slot remain held until the actual process exit.
    */
   private requestChildShutdown(jobId: string, child: ChildProcess): void {
-    let ipcSent = false;
     if (child.connected) {
       try {
-        child.send({ type: 'cancel' });
-        ipcSent = true;
+        child.send({ type: 'cancel' }, () => {
+          /* Disconnect also requests cancellation. */
+        });
       } catch {
-        // Channel already closed — fall through to the signal path.
+        // The child's disconnect handler cancels without interrupting native work.
       }
-    }
-    if (!ipcSent) {
-      child.kill('SIGTERM');
-      return;
     }
     if (this.cancelGraceTimers.has(jobId)) return;
     const grace = setTimeout(() => {
       this.cancelGraceTimers.delete(jobId);
       if (child.exitCode === null && child.signalCode === null) {
-        // IPC already set the worker's cooperative cancel flag; a second
-        // SIGTERM is a no-op there. SIGKILL is the actual bounded fallback
-        // (on Windows `kill()` is already TerminateProcess).
-        child.kill('SIGKILL');
+        child.channel?.unref();
+        child.unref?.();
       }
     }, CANCEL_GRACE_MS);
     grace.unref?.();
@@ -362,23 +360,14 @@ export class JobManager {
   }
 
   dispose() {
-    // IPC first so a worker that checks in can stop at a safe point.
-    // On Windows `child.kill('SIGTERM')` is TerminateProcess — skip that
-    // immediate kill and leave the 15s grace timer to SIGKILL. On Unix,
-    // SIGTERM after IPC is cooperative, so the grace timers can be dropped.
-    const windows = process.platform === 'win32';
+    // Never turn server shutdown into a native-active worker kill.
     for (const [jobId, child] of this.children) {
       this.requestChildShutdown(jobId, child);
-      if (!windows) {
-        child.kill('SIGTERM');
-      }
+      child.channel?.unref();
+      child.unref?.();
     }
-    this.children.clear();
-    if (!windows) {
-      for (const timer of this.cancelGraceTimers.values()) clearTimeout(timer);
-      this.cancelGraceTimers.clear();
-    }
-    this.pendingCancelReasons.clear();
+    for (const timer of this.cancelGraceTimers.values()) clearTimeout(timer);
+    this.cancelGraceTimers.clear();
     for (const controller of this.abortControllers.values()) controller.abort();
     this.abortControllers.clear();
 

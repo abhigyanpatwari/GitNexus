@@ -32,6 +32,8 @@ export async function readIndexCapabilities(
         coverage: selection.coverage ?? 'current',
         sourceGraphGeneration: selection.generation.graphGeneration,
       };
+    } else if (selection.kind === 'legacy' && metadata?.capabilities?.vectorSearch) {
+      vectorSearch = { ...metadata.capabilities.vectorSearch, coverage: 'preserved' };
     } else {
       vectorSearch = {
         provider: 'ladybugdb-vector',

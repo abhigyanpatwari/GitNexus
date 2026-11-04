@@ -36,12 +36,28 @@ const H = vi.hoisted(() => ({
   // Set per-test: the only directory the fake filesystem reports as freshly
   // written. Anything else looks stale, exactly like a slot this job skipped.
   settledDir: '',
+  graphFile: 'lbug',
 }));
 const { forkMock, REPO_PATH } = H;
 
 vi.mock('child_process', async () => {
   const actual = await vi.importActual<typeof import('child_process')>('child_process');
   return { ...actual, fork: H.forkMock };
+});
+
+vi.mock('../../src/core/analysis-host-resources.js', async () => {
+  const { resolveAnalysisResourceBudget } =
+    await import('../../src/core/analysis-resource-budget.js');
+  return {
+    analysisMayEmbed: async () => false,
+    analysisSupervisorReservation: () => 192 * 1024 ** 2,
+    resolveHostAnalysisResources: () =>
+      resolveAnalysisResourceBudget({
+        effectiveMemoryBytes: 4096 * 1024 ** 2,
+        availableCpus: 2,
+        modelMemoryMb: 0,
+      }),
+  };
 });
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
@@ -56,6 +72,11 @@ vi.mock('../../src/storage/storage-resolver.js', () => ({
   requireStoragePath: async () => H.STORAGE_PATH,
 }));
 
+vi.mock('../../src/storage/shared-store.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/storage/shared-store.js')>();
+  return { ...actual, resolveGraphPath: (slot: string) => `${slot}/${H.graphFile}` };
+});
+
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
   return {
@@ -67,6 +88,8 @@ vi.mock('node:fs', async () => {
       const file = String(p);
       const dir = file.slice(0, Math.max(file.lastIndexOf('/'), file.lastIndexOf('\\')));
       if (H.settledDir && dir === H.settledDir) {
+        if (!file.endsWith(H.METADATA_FILE) && !file.endsWith(H.graphFile))
+          throw Object.assign(new Error('Retired graph name'), { code: 'ENOENT' });
         return { mtimeMs: Number.MAX_SAFE_INTEGER };
       }
       return { mtimeMs: 0 };
@@ -135,6 +158,7 @@ describe('finalization gate follows the placement the run chose', () => {
     backendInit = vi.fn(async () => true);
     closeDbHandle = vi.fn(async () => {});
     H.settledDir = '';
+    H.graphFile = 'lbug';
   });
 
   afterEach(() => {
@@ -200,7 +224,7 @@ describe('finalization gate follows the placement the run chose', () => {
     await launcher()(job, REPO_PATH, { branch: BRANCH });
 
     child.emit('message', completeMessage(false));
-
+    child.emit('exit', 0);
     await vi.waitFor(() => expect(jobManager.getJob(job.id)?.status).toBe('complete'));
     expect(jobManager.getJob(job.id)?.error).toBeUndefined();
     expect(backendInit).toHaveBeenCalledTimes(1);
@@ -214,9 +238,41 @@ describe('finalization gate follows the placement the run chose', () => {
     await launcher()(job, REPO_PATH, {});
 
     child.emit('message', completeMessage(true));
-
+    child.emit('exit', 0);
     await vi.waitFor(() => expect(jobManager.getJob(job.id)?.status).toBe('complete'));
     expect(backendInit).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles an FTS-only repair of a published private generation', async () => {
+    vi.useFakeTimers();
+    H.settledDir = H.STORAGE_PATH;
+    H.graphFile = `lbug.generation.${'a'.repeat(32)}`;
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launcher()(job, REPO_PATH, {});
+    const message = completeMessage(true);
+    message.result.ftsRepairedOnly = true;
+    child.emit('message', message);
+    child.emit('exit', 0);
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(jobManager.getJob(job.id)?.status).toBe('complete');
+    expect(backendInit).toHaveBeenCalledOnce();
+  });
+
+  it('completes resumed vectors after graph visibility and actual worker exit without rewriting the graph', async () => {
+    vi.useFakeTimers();
+    const releaseRepoLock = vi.fn();
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launcher({ releaseRepoLock })(job, REPO_PATH, { embeddings: true });
+    child.emit('message', { type: 'graph-ready' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(child.send).toHaveBeenCalledWith({ type: 'graph-visible' });
+    child.emit('message', completeMessage(true));
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+    child.emit('exit', 0);
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(jobManager.getJob(job.id)?.status).toBe('complete');
+    expect(releaseRepoLock).toHaveBeenCalledOnce();
   });
 
   it('settles a first-pin (branch SET, isPrimaryBranch true) against the flat slot', async () => {
@@ -228,7 +284,7 @@ describe('finalization gate follows the placement the run chose', () => {
     await launcher()(job, REPO_PATH, { branch: BRANCH });
 
     child.emit('message', completeMessage(true));
-
+    child.emit('exit', 0);
     await vi.waitFor(() => expect(jobManager.getJob(job.id)?.status).toBe('complete'));
     expect(jobManager.getJob(job.id)?.error).toBeUndefined();
     expect(backendInit).toHaveBeenCalledTimes(1);
@@ -290,6 +346,7 @@ describe('finalization gate follows the placement the run chose', () => {
     expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
 
     // Must match FINALIZE_SETTLE_TIMEOUT_MS + one poll in analyze-launch.ts.
+    child.emit('exit', 0);
     await vi.advanceTimersByTimeAsync(61_000);
 
     const done = jobManager.getJob(job.id);
@@ -308,6 +365,7 @@ describe('finalization gate follows the placement the run chose', () => {
     const job = jobManager.createJob({ repoPath: REPO_PATH });
     await launcher({ releaseRepoLock })(job, REPO_PATH, {});
     child.emit('message', completeMessage(true));
+    child.emit('exit', 0);
 
     expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
     jobManager.cancelJob(job.id, 'Cancelled by user');
@@ -321,9 +379,6 @@ describe('finalization gate follows the placement the run chose', () => {
     expect(done?.error).toBe('Cancelled by user');
     expect(done?.error).not.toMatch(/finalization not visible/);
     expect(backendInit).not.toHaveBeenCalled();
-    expect(releaseRepoLock).not.toHaveBeenCalled();
-
-    child.emit('exit', 0);
     expect(releaseRepoLock).toHaveBeenCalledTimes(1);
   });
 
@@ -335,10 +390,10 @@ describe('finalization gate follows the placement the run chose', () => {
     const job = jobManager.createJob({ repoPath: REPO_PATH });
     await launcher({ releaseRepoLock })(job, REPO_PATH, {});
     child.emit('message', completeMessage(true));
+    child.emit('exit', 0);
 
     expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
     jobManager.cancelJob(job.id, 'Cancelled by user');
-    child.emit('exit', 0);
 
     expect(jobManager.getJob(job.id)?.status).toBe('failed');
     expect(releaseRepoLock).not.toHaveBeenCalled();
@@ -373,6 +428,7 @@ describe('finalization gate follows the placement the run chose', () => {
     expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
 
     H.settledDir = H.STORAGE_PATH;
+    child.emit('exit', 0);
     await vi.advanceTimersByTimeAsync(200);
 
     expect(jobManager.getJob(job.id)?.status).toBe('complete');

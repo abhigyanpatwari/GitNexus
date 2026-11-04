@@ -25,12 +25,7 @@ import {
   storeRootOfCheckoutSlot,
   type SharedStoreLayout,
 } from './shared-store.js';
-import {
-  GITNEXUS_DIR,
-  INDEX_METADATA_FILE,
-  LBUG_DIRECTORY,
-  LEGACY_METADATA_FILE,
-} from './storage-constants.js';
+import { GITNEXUS_DIR, INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
 
 type StoreRoot = Pick<SharedStoreLayout, 'root'>;
 
@@ -140,7 +135,9 @@ async function hasRetainedAnalysis(slot: string): Promise<boolean> {
     const metadata = await loadMetaStrict(directory);
     if (
       metadata &&
-      (Object.hasOwn(metadata, 'embeddingJob') || Object.hasOwn(metadata, 'embeddingCheckpoint'))
+      (Object.hasOwn(metadata, 'embeddingJob') ||
+        Object.hasOwn(metadata, 'embeddingCheckpoint') ||
+        Object.hasOwn(metadata, 'legacyVectorSource'))
     )
       return true;
   }
@@ -217,8 +214,25 @@ export const reclaimSharedStoreLocked = async (
         orphans.delete(slot);
         continue;
       }
+      const branchLocks: IndexLockHandle[] = [];
       try {
-        if (lock.lockFree || !(await orphanMembers([slot])).has(slot)) {
+        let busy = lock.lockFree;
+        if (!busy) {
+          for (const branch of (await memberMetadataDirectories(slot)).slice(1)) {
+            try {
+              const branchLock = await acquireIndexLock(branch, { timeoutMs: 1, sweep: false });
+              branchLocks.push(branchLock);
+              if (branchLock.lockFree) {
+                busy = true;
+                break;
+              }
+            } catch {
+              busy = true;
+              break;
+            }
+          }
+        }
+        if (busy || !(await orphanMembers([slot])).has(slot)) {
           orphans.delete(slot);
           continue;
         }
@@ -236,6 +250,7 @@ export const reclaimSharedStoreLocked = async (
         }
         result.droppedMembers.push(slot);
       } finally {
+        for (const branchLock of branchLocks) branchLock.release();
         lock.release();
       }
     }
@@ -337,9 +352,7 @@ export const describeSharedGraph = (
   graphPath: string,
   storagePath: string,
 ): 'shared' | 'private' =>
-  path.resolve(graphPath) === path.join(path.resolve(storagePath), LBUG_DIRECTORY)
-    ? 'private'
-    : 'shared';
+  path.dirname(path.resolve(graphPath)) === path.resolve(storagePath) ? 'private' : 'shared';
 
 /** Files a shared checkout keeps in `<checkout>/.gitnexus`; everything else there is legacy. */
 const POINTER_DIR_KEEP = new Set([SHARED_STORE_POINTER, '.gitignore', 'run.cjs']);

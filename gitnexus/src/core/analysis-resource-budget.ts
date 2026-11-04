@@ -13,6 +13,9 @@ export interface AnalysisResourceRequest {
   /** Explicit total reservation ceiling; independent of the heap-only flag. */
   totalMb?: number;
   mainHeapMb?: number;
+  /** Honor an existing heap override when no explicit family ceiling was set.
+   * This may reserve virtual memory above RAM; native defaults still use RAM. */
+  allowHeapOvercommit?: boolean;
   workers?: number;
   workerHeapMb?: number;
   embeddingThreads?: number;
@@ -78,7 +81,7 @@ export function resolveAnalysisResourceBudget(
       : integer(request.embeddingThreads, 'embedding threads');
   if (embeddingThreads > cpus) throw new Error('Embedding threads exceed the CPU allowance');
   const availableMb = Math.floor(memory / MIB);
-  const totalMb =
+  let totalMb =
     request.totalMb === undefined
       ? Math.floor(availableMb * 0.75)
       : integer(request.totalMb, 'resource budget');
@@ -87,7 +90,6 @@ export function resolveAnalysisResourceBudget(
       `Resource budget ${totalMb} MiB exceeds effective process memory ${availableMb} MiB`,
     );
   }
-  const totalBytes = bytes(totalMb, 'resource budget');
   const headroomMb = Math.max(128, Math.ceil(totalMb * 0.12));
   const supervisorMb = Math.ceil(
     integer(request.supervisorBytes ?? 0, 'supervisor reservation', 0) / MIB,
@@ -114,11 +116,24 @@ export function resolveAnalysisResourceBudget(
     supervisorMb +
     graphPoolMb +
     (includeParsing ? MIN_WORKER_HEAP_MB + WORKER_NATIVE_MB : 0);
-  const maximumMainMb = totalMb - Math.max(embeddingFixedMb, parseFixedMb);
+  let maximumMainMb = totalMb - Math.max(embeddingFixedMb, parseFixedMb);
   const mainHeapMb =
     request.mainHeapMb === undefined
       ? Math.min(16_384, maximumMainMb, Math.max(MIN_MAIN_HEAP_MB, Math.floor(totalMb * 0.35)))
       : integer(request.mainHeapMb, 'main heap reservation');
+  // --memory-budget predates the family budget and deliberately permits a heap
+  // above RAM (with the CLI's existing swap warning). Extend only the finite
+  // heap reservation; do not pretend the host has more RAM or enlarge native
+  // pools/queues. An explicit --resource-budget always remains authoritative.
+  if (
+    request.allowHeapOvercommit &&
+    request.totalMb === undefined &&
+    request.mainHeapMb !== undefined
+  ) {
+    totalMb += Math.max(0, mainHeapMb - maximumMainMb);
+    maximumMainMb = totalMb - Math.max(embeddingFixedMb, parseFixedMb);
+  }
+  const totalBytes = bytes(totalMb, 'resource budget');
   // --memory-budget has an established 200 MiB minimum. Preserve that explicit
   // choice; the larger floor is only the automatic sizing policy.
   const minimumMainMb = request.mainHeapMb === undefined ? MIN_MAIN_HEAP_MB : 200;

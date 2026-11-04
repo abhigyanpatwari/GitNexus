@@ -246,6 +246,25 @@ describe('rebased pending vector inputs', () => {
 });
 
 describe('bounded durable embedding runner', () => {
+  it('completes copied groups together at the unit boundary without provider requests', async () => {
+    const fixture = await runnerFixture(64);
+    const finish = vi.spyOn(store, 'finishNodes');
+    const result = await fixture.run({
+      reuse: {
+        options: { batchBytes: 64 * 1024 },
+        async reusable(nodeId: string, contentHash: string) {
+          return { nodeId, contentHash, chunks: 1, complete: true, sourceStartLine: 1 };
+        },
+        async readChunks() {
+          return [chunk(0)];
+        },
+      },
+    });
+    expect(fixture.provider).not.toHaveBeenCalled();
+    expect(result.state).toMatchObject({ reusedNodes: 64, completedNodes: 0, chunks: 64 });
+    expect(finish).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses a symlinked native shadow sidecar before opening the artifact', async () => {
     const options = await setup();
     await store.close();
@@ -677,6 +696,50 @@ describe('bounded durable embedding runner', () => {
 });
 
 describe('separate durable vector artifacts', () => {
+  it('verifies a complete unit with bounded native queries instead of one query per node', async () => {
+    await setup();
+    const nodes = Array.from({ length: 64 }, (_, i) => ({
+      nodeId: `Function:a:batch${i}`,
+      contentHash: `hash${i}`,
+    }));
+    await store.beginNodes(nodes);
+    await store.appendBatch(nodes.map((node) => ({ ...node, ...chunk(0) })));
+    const execute = vi.spyOn(lbug.Connection.prototype, 'execute');
+    const receipts = await store.finishNodes(nodes.map((node) => ({ ...node, chunks: 1 })));
+    expect(receipts).toHaveLength(64);
+    expect(receipts.every((receipt) => receipt.complete)).toBe(true);
+    expect(execute.mock.calls.length).toBeLessThanOrEqual(3);
+    execute.mockRestore();
+    await store.checkpointUnit(receipts);
+  });
+
+  it('rejects a cross-node chunk mismatch before completing any group in a unit', async () => {
+    const options = await setup();
+    const nodes = [0, 1].map((i) => ({ nodeId: `Function:a:group${i}`, contentHash: `hash${i}` }));
+    await store.beginNodes(nodes);
+    await store.appendBatch(nodes.map((node) => ({ ...node, ...chunk(0) })));
+    await store.close();
+    store = undefined;
+    const handle = await openLbugConnection(lbug, path.join(options.directory, 'vectors'), {
+      bufferPoolBytes: options.bufferPoolBytes,
+      threads: 1,
+    });
+    try {
+      const result = await handle.conn.query(
+        "MATCH (e:CodeEmbedding {id:'Function:a:group1:0'}) SET e.nodeId='Function:a:group0'",
+      );
+      for (const part of Array.isArray(result) ? result : [result]) part.close();
+    } finally {
+      await closeLbugConnection(handle);
+    }
+    store = await VectorStore.open({ ...options, mode: 'resume' });
+    await expect(store.finishNodes(nodes.map((node) => ({ ...node, chunks: 1 })))).rejects.toThrow(
+      'invalid chunk set',
+    );
+    for (const node of nodes)
+      expect(await store.reusable(node.nodeId, node.contentHash)).toBeNull();
+  });
+
   it('writes a multi-node unit and verifies a large node in bounded batches', async () => {
     const options = await setup();
     const nodes = [0, 1].map((i) => ({ nodeId: `Function:a:node${i}`, contentHash: 'hash' }));

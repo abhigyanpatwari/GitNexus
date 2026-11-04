@@ -110,7 +110,7 @@ export async function searchVectorGeneration(
       }
     }
     if (selected.generation.chunks > exactLimit) return [];
-    // LIMIT is a defensive bound against edited metadata, not pagination.
+    // determinism: probe — fetch the entire verified set; reject partial or oversized coverage before ranking.
     const rows =
       await execute(`MATCH (e:CodeEmbedding) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex,
       e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding LIMIT ${exactLimit + 1}`);
