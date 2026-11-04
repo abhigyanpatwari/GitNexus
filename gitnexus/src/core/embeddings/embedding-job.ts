@@ -1,9 +1,15 @@
 /** Common lifecycle for jobs on a published graph. The caller holds its index lock. */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { RepoMeta } from '../../storage/repo-meta.js';
 import { embeddingJobDirectory, syncEmbeddingJobDirectory } from '../../storage/embedding-job.js';
+import {
+  adoptEmbeddingArtifact,
+  embeddingArtifactSpaceKey,
+  readEmbeddingArtifactSpace,
+  type EmbeddingArtifactOwner,
+} from '../../storage/embedding-artifact.js';
 import {
   EmbeddingJobJournal,
   type EmbeddingJobState,
@@ -192,7 +198,7 @@ export async function runPublishedEmbeddingJob(
   );
   const previous = metadata.vectorGeneration;
   if (previous?.identity === identities.identity && !metadata.embeddingJob) {
-    await assertOwnedVectorGeneration(root, previous.identity);
+    await assertOwnedVectorGeneration(root, previous.artifactIdentity ?? previous.identity);
     return { metadata, alreadyComplete: true, phase: 'ready', peakQueueBytes: 0 };
   }
   if (metadata.embeddingJob && metadata.embeddingJob.identity !== identities.identity) {
@@ -208,34 +214,57 @@ export async function runPublishedEmbeddingJob(
   } else if (previous && previous.inputIdentity !== identities.inputIdentity) {
     options.log?.('Embedding text options changed; prior vectors are not compatible.');
   }
-  const reusable =
+  const previousCompatible =
     previous &&
     previous.identity !== identities.identity &&
     previous.vectorIdentity === identities.vectorIdentity &&
     previous.inputIdentity === identities.inputIdentity &&
     previous.dimensions === vector.dimensions;
-  // A reuse reader shares the vector reservation; it is not a third default pool.
-  const poolBytes = Math.floor(resources.vectorPoolBytes / (reusable ? 2 : 1));
-  const storeResources = {
-    bufferPoolBytes: poolBytes,
-    threads: resources.nativeThreads,
-    batchBytes: Math.min(resources.queueBytes, 8 * 1024 * 1024),
-  };
-  if (poolBytes < 8 * 1024 * 1024 || storeResources.batchBytes < vector.dimensions * 16)
-    throw new Error('Vector writer and reuse reader do not fit their resource reservation');
-  const directory = await jobDirectory(root, identities.identity);
-  if (metadata.embeddingJob?.identity !== identities.identity) {
-    metadata = {
-      ...metadata,
-      embeddingJob: {
-        version: 1,
-        identity: identities.identity,
-        graphGeneration: graph.id,
-      },
+  const limits = (hasFallback: boolean) => {
+    // Writer and the sole reuse reader share this reservation. A sealed probe
+    // is physically closed before its replacement writer is opened.
+    const result = {
+      bufferPoolBytes: Math.floor(resources.vectorPoolBytes / (hasFallback ? 2 : 1)),
+      threads: resources.nativeThreads,
+      batchBytes: Math.min(resources.queueBytes, 8 * 1024 * 1024),
     };
-    await options.metadata.saveMetadata(metadata);
-    await syncPublishedMetadata(root, metadata);
-  }
+    if (result.bufferPoolBytes < 8 * 1024 * 1024 || result.batchBytes < vector.dimensions * 16)
+      throw new Error('Vector writer and reuse reader do not fit their resource reservation');
+    return result;
+  };
+  const space = {
+    vectorIdentity: identities.vectorIdentity,
+    inputIdentity: identities.inputIdentity,
+    dimensions: vector.dimensions,
+    schema: VECTOR_STORE_SCHEMA,
+  };
+  const validateOwner = async (owner: EmbeddingArtifactOwner) => {
+    const directory = await embeddingJobDirectory(path.join(root, 'embeddings', owner.jobIdentity));
+    const manifest = await loadEmbeddingWorkManifest(directory, owner.sourceIdentity);
+    if (manifest.digest !== owner.manifestDigest)
+      throw new Error('Owned embedding artifact manifest changed; paid artifacts retained');
+  };
+  let artifact = await readEmbeddingArtifactSpace(root, space, validateOwner);
+  if (
+    !artifact &&
+    metadata.embeddingJob &&
+    !metadata.embeddingJob.spaceKey &&
+    metadata.embeddingJob.identity !== identities.identity
+  )
+    options.log?.(
+      'Prior pending job has no verified vector/input ownership receipt; retaining its files without assuming compatibility.',
+    );
+  const needsFallback = () =>
+    artifact
+      ? artifact.owner.phase === 'sealed'
+        ? artifact.owner.jobIdentity !== identities.identity
+        : Boolean(artifact.owner.fallbackArtifact)
+      : Boolean(
+          previousCompatible &&
+          (previous.artifactIdentity ?? previous.identity) !== identities.identity,
+        );
+  limits(needsFallback());
+  const directory = await jobDirectory(root, identities.identity);
   let source: GraphSource | undefined;
   let store: VectorStore | undefined;
   let reuse: VectorStore | undefined;
@@ -248,7 +277,44 @@ export async function runPublishedEmbeddingJob(
       const { drainEmbeddingSidecarForAnalysis } = await import('./embedding-sidecar-client.js');
       await drainEmbeddingSidecarForAnalysis();
     }
+    // A crash after native sealing but before recording that fact must not
+    // turn the complete artifact into a mutable writer for a different graph.
+    if (artifact?.owner.phase === 'pending' && artifact.owner.jobIdentity !== identities.identity) {
+      const ownedDirectory = await jobDirectory(root, artifact.owner.artifactIdentity);
+      if (await existsOwnedFile(path.join(ownedDirectory, 'vectors'))) {
+        store = await VectorStore.open({
+          directory: ownedDirectory,
+          identity: artifact.owner.artifactIdentity,
+          dimensions: vector.dimensions,
+          mode: 'resume',
+          recoverEmptyBootstrap: !(await existsOwnedFile(
+            path.join(root, 'embeddings', artifact.owner.jobIdentity, 'job.json'),
+          )),
+          ...limits(Boolean(artifact.owner.fallbackArtifact)),
+        });
+        if (store.isSealed) {
+          await store.close();
+          store = undefined;
+          artifact = await adoptEmbeddingArtifact(
+            root,
+            space,
+            artifact,
+            { ...artifact.owner, phase: 'sealed', fallbackArtifact: undefined },
+            validateOwner,
+          );
+        }
+      } else if (
+        await existsOwnedFile(path.join(root, 'embeddings', artifact.owner.jobIdentity, 'job.json'))
+      ) {
+        throw new Error('Embedding vectors are missing for acknowledged work; artifacts retained');
+      }
+    }
+    // Sealing may have been discovered by the probe. Admit both pools before
+    // reading source or creating a replacement manifest.
+    limits(needsFallback());
     const manifestExists = await existsOwnedFile(path.join(directory, 'manifest.json'));
+    if (!manifestExists && artifact?.owner.jobIdentity === identities.identity)
+      throw new Error('Owned embedding manifest is missing; paid artifacts retained');
     if (!manifestExists) await clearUnstartedManifest(directory);
     const getSource = async (): Promise<GraphSource> =>
       (source ??= await (dependencies.openSource ?? EmbeddingGraphSource.open)(
@@ -259,24 +325,91 @@ export async function runPublishedEmbeddingJob(
     const manifest = manifestExists
       ? await loadEmbeddingWorkManifest(directory, identities.sourceIdentity)
       : await createEmbeddingWorkManifest(directory, identities.sourceIdentity, await getSource());
-    const hasStore = await existsOwnedFile(path.join(directory, 'vectors'));
+    const makeOwner = (
+      artifactIdentity: string,
+      revalidateInputs: boolean,
+      fallbackArtifact?: string,
+    ): EmbeddingArtifactOwner => ({
+      artifactIdentity,
+      jobIdentity: identities.identity,
+      graphGeneration: graph.id,
+      sourceIdentity: identities.sourceIdentity,
+      manifestDigest: manifest.digest,
+      phase: 'pending',
+      revalidateInputs,
+      ...(fallbackArtifact === undefined ? {} : { fallbackArtifact }),
+    });
+    let owner: EmbeddingArtifactOwner;
+    if (artifact?.owner.phase === 'sealed' && artifact.owner.jobIdentity === identities.identity) {
+      // Publication/index-only recovery for this exact manifest. Never reopen
+      // a sealed artifact with a native writer handle.
+      owner = artifact.owner;
+    } else if (artifact?.owner.phase === 'sealed') {
+      owner = makeOwner(randomBytes(32).toString('hex'), false, artifact.owner.artifactIdentity);
+    } else if (artifact) {
+      owner = makeOwner(
+        artifact.owner.artifactIdentity,
+        artifact.owner.revalidateInputs || artifact.owner.jobIdentity !== identities.identity,
+        artifact.owner.fallbackArtifact,
+      );
+    } else {
+      // Start a space beside its first job. This also adopts an older bounded
+      // artifact only for this exact compatible job; a digest cannot tell us
+      // the vector/text provenance of a different old pending job.
+      const legacyStore = await existsOwnedFile(path.join(directory, 'vectors'));
+      owner = makeOwner(
+        identities.identity,
+        false,
+        previousCompatible ? (previous.artifactIdentity ?? previous.identity) : undefined,
+      );
+      if (owner.fallbackArtifact === owner.artifactIdentity) owner.fallbackArtifact = undefined;
+      if (
+        legacyStore &&
+        previous?.identity === identities.identity &&
+        (previous.artifactIdentity ?? previous.identity) === owner.artifactIdentity
+      )
+        owner.phase = 'sealed';
+    }
+    artifact = await adoptEmbeddingArtifact(root, space, artifact, owner, validateOwner);
+    const storeResources = limits(Boolean(owner.fallbackArtifact));
+    if (
+      metadata.embeddingJob?.identity !== identities.identity ||
+      metadata.embeddingJob.artifactIdentity !== owner.artifactIdentity ||
+      metadata.embeddingJob.spaceKey !== artifact.spaceKey
+    ) {
+      metadata = {
+        ...metadata,
+        embeddingJob: {
+          version: 1,
+          identity: identities.identity,
+          graphGeneration: graph.id,
+          artifactIdentity: owner.artifactIdentity,
+          spaceKey: embeddingArtifactSpaceKey(space),
+        },
+      };
+      await options.metadata.saveMetadata(metadata);
+      await syncPublishedMetadata(root, metadata);
+    }
+    signal?.throwIfAborted();
+    const artifactDirectory = await jobDirectory(root, owner.artifactIdentity);
+    const hasStore = await existsOwnedFile(path.join(artifactDirectory, 'vectors'));
     const hasJournal = await existsOwnedFile(path.join(directory, 'job.json'));
     if (!hasStore && hasJournal)
       throw new Error('Embedding vectors are missing for acknowledged work; artifacts retained');
-    store = await VectorStore.open({
-      directory,
-      identity: identities.identity,
+    store ??= await VectorStore.open({
+      directory: artifactDirectory,
+      identity: owner.artifactIdentity,
       dimensions: vector.dimensions,
-      mode: hasStore ? 'resume' : 'create',
+      mode: owner.phase === 'sealed' ? 'read' : hasStore ? 'resume' : 'create',
       recoverEmptyBootstrap: !hasJournal,
       ...storeResources,
     });
     const journal = await EmbeddingJobJournal.recover(directory, identities.identity, manifest);
-    if (reusable) {
-      const file = await assertOwnedVectorGeneration(root, previous.identity);
+    if (owner.fallbackArtifact) {
+      const file = await assertOwnedVectorGeneration(root, owner.fallbackArtifact);
       reuse = await VectorStore.open({
         directory: path.dirname(file),
-        identity: previous.identity,
+        identity: owner.fallbackArtifact,
         dimensions: vector.dimensions,
         mode: 'read',
         ...storeResources,
@@ -302,6 +435,9 @@ export async function runPublishedEmbeddingJob(
       journal,
       store,
       reuse,
+      // A sealed artifact still belongs to this exact job/manifest; rebuilding
+      // a damaged cursor can use its complete groups without source reads.
+      revalidateStoredInputs: owner.revalidateInputs && !store.isSealed,
       config,
       queueBytes: resources.queueBytes,
       // Opening the graph is lazy even on resume: indexing-only retries do not
@@ -317,6 +453,7 @@ export async function runPublishedEmbeddingJob(
       signal,
       onProgress: options.onProgress,
     });
+    const sealed = store.isSealed;
     await store.close();
     store = undefined;
     await reuse?.close();
@@ -326,11 +463,21 @@ export async function runPublishedEmbeddingJob(
     signal?.throwIfAborted();
     if (!result.indexKind)
       return { metadata, alreadyComplete: false, phase: 'embedding', ...result };
+    if (sealed && artifact.owner.phase !== 'sealed') {
+      artifact = await adoptEmbeddingArtifact(
+        root,
+        space,
+        artifact,
+        { ...artifact.owner, phase: 'sealed', fallbackArtifact: undefined },
+        validateOwner,
+      );
+    }
     const published = await publishVectorGeneration(
       root,
       {
         version: 1,
         identity: identities.identity,
+        artifactIdentity: owner.artifactIdentity,
         graphGeneration: graph.id,
         vectorIdentity: identities.vectorIdentity,
         inputIdentity: identities.inputIdentity,

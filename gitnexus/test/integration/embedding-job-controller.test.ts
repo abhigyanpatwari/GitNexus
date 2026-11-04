@@ -137,6 +137,241 @@ async function fixture(count = 130) {
   };
 }
 
+describe('pending artifacts across graph generations', () => {
+  it('recovers native sealing before the ownership phase was recorded, then reuses read-only', async () => {
+    const f = await fixture(5);
+    const ownership = await import('../../src/storage/embedding-artifact.js');
+    const adopt = ownership.adoptEmbeddingArtifact;
+    const interrupted = vi
+      .spyOn(ownership, 'adoptEmbeddingArtifact')
+      .mockImplementation(async (...args) => {
+        if (args[3].phase === 'sealed') throw new Error('stopped after native seal');
+        return adopt(...args);
+      });
+    await expect(f.run()).rejects.toThrow('stopped after native seal');
+    interrupted.mockRestore();
+    const first = (await loadMeta(f.root))?.embeddingJob;
+    await f.nextGeneration();
+    f.provider.mockClear();
+    const result = await f.run();
+    expect(result.phase).toBe('ready');
+    expect(result.state?.reusedNodes).toBe(5);
+    expect(result.metadata.vectorGeneration?.artifactIdentity).not.toBe(first?.artifactIdentity);
+    expect(f.provider).not.toHaveBeenCalled();
+  });
+
+  it('recovers an adopted artifact when metadata persistence fails before any new paid work', async () => {
+    const f = await fixture(130);
+    await expect(
+      f.run({
+        onProgress: (state) => {
+          if (state.completedNodes === 64) throw new Error('interrupted');
+        },
+      }),
+    ).rejects.toThrow('interrupted');
+    const first = (await loadMeta(f.root))?.embeddingJob;
+    await f.nextGeneration();
+    f.provider.mockClear();
+    await expect(
+      f.run({
+        metadata: {
+          ...f.options().metadata,
+          saveMetadata: async () => {
+            throw new Error('metadata unavailable');
+          },
+        },
+      }),
+    ).rejects.toThrow('metadata unavailable');
+    expect(f.provider).not.toHaveBeenCalled();
+    const result = await f.run();
+    expect(result.phase).toBe('ready');
+    expect(result.metadata.vectorGeneration?.artifactIdentity).toBe(first?.artifactIdentity);
+    expect(result.state?.reusedNodes).toBe(64);
+    expect(f.provider.mock.calls.flatMap(([texts]) => texts)).toHaveLength(66);
+  });
+
+  it('retains the first paid groups across two interrupted rebases with a fresh cursor each time', async () => {
+    const f = await fixture(130);
+    await expect(
+      f.run({
+        onProgress: (state) => {
+          if (state.completedNodes === 64) throw new Error('first interruption');
+        },
+      }),
+    ).rejects.toThrow('first interruption');
+    expect(f.provider.mock.calls.flatMap(([texts]) => texts)).toHaveLength(64);
+    const first = (await loadMeta(f.root))?.embeddingJob;
+    if (!first?.artifactIdentity) throw new Error('Expected owned pending artifact');
+    const file = path.join(f.root, 'embeddings', first.artifactIdentity, 'vectors');
+    const inode = (await fs.stat(file)).ino;
+    const fetch = f.fetch.getMockImplementation();
+    if (!fetch) throw new Error('Missing fixture fetch');
+    const changed = new Set(['Const:a.ts:n00000']);
+    f.fetch.mockImplementation(async (label, ids) =>
+      (await fetch(label, ids)).map((node) =>
+        changed.has(node.id) ? { ...node, content: 'const value = 2;' } : node,
+      ),
+    );
+    await f.nextGeneration();
+    f.provider.mockClear();
+    await expect(
+      f.run({
+        onProgress: (state) => {
+          if (state.completedNodes + state.reusedNodes === 128)
+            throw new Error('second interruption');
+        },
+      }),
+    ).rejects.toThrow('second interruption');
+    const second = (await loadMeta(f.root))?.embeddingJob;
+    expect(second?.identity).not.toBe(first.identity);
+    expect(second?.artifactIdentity).toBe(first.artifactIdentity);
+    expect(f.provider.mock.calls.flatMap(([texts]) => texts)).toHaveLength(65);
+    changed.add('Const:a.ts:n00001');
+    await f.nextGeneration();
+    f.provider.mockClear();
+    const final = await f.run();
+    expect(final.phase).toBe('ready');
+    expect(final.state).toMatchObject({ completedNodes: 3, reusedNodes: 127, totalNodes: 130 });
+    expect(f.provider.mock.calls.flatMap(([texts]) => texts)).toHaveLength(3);
+    expect(final.metadata.vectorGeneration?.artifactIdentity).toBe(first.artifactIdentity);
+    expect(final.metadata.vectorGeneration?.graphGeneration).toBe(
+      final.metadata.graphGeneration?.id,
+    );
+    expect((await fs.stat(file)).ino).toBe(inode);
+    const { searchVectorGeneration } =
+      await import('../../src/core/embeddings/vector-generation-search.js');
+    const pool = await import('../../src/core/lbug/pool-adapter.js');
+    try {
+      const hits = await searchVectorGeneration(
+        { metadataDirectory: f.root, metadata: final.metadata, graphPath: f.options().graphPath },
+        async () => [1, 0, 0, 0],
+        2,
+        1,
+        async () => f.dependencies.identity(),
+      );
+      expect(hits).toHaveLength(2);
+      expect(hits?.every((hit) => hit.nodeId.startsWith('Const:a.ts:'))).toBe(true);
+    } finally {
+      await pool.closeLbug();
+    }
+    f.provider.mockClear();
+    f.openSource.mockClear();
+    expect((await f.run()).alreadyComplete).toBe(true);
+    expect(f.provider).not.toHaveBeenCalled();
+    expect(f.openSource).not.toHaveBeenCalled();
+  });
+
+  it('retains both pending paid groups and its completed fallback across another graph edit', async () => {
+    const f = await fixture(130);
+    const completed = await f.run();
+    const fallback = completed.metadata.vectorGeneration;
+    if (!fallback?.artifactIdentity) throw new Error('Expected completed artifact');
+    const fetch = f.fetch.getMockImplementation();
+    if (!fetch) throw new Error('Missing fixture fetch');
+    const changed = new Set(['Const:a.ts:n00000']);
+    f.fetch.mockImplementation(async (label, ids) =>
+      (await fetch(label, ids)).map((node) =>
+        changed.has(node.id) ? { ...node, content: 'const value = 2;' } : node,
+      ),
+    );
+    await f.nextGeneration();
+    f.provider.mockClear();
+    await expect(
+      f.run({
+        onProgress: (state) => {
+          if (state.completedNodes + state.reusedNodes === 64) throw new Error('interrupted');
+        },
+      }),
+    ).rejects.toThrow('interrupted');
+    expect(f.provider.mock.calls.flatMap(([texts]) => texts)).toHaveLength(1);
+    const pending = (await loadMeta(f.root))?.embeddingJob;
+    expect(pending?.artifactIdentity).not.toBe(fallback.artifactIdentity);
+    changed.add('Const:a.ts:n00001');
+    await f.nextGeneration();
+    f.provider.mockClear();
+    const final = await f.run();
+    expect(final.state).toMatchObject({ completedNodes: 1, reusedNodes: 129 });
+    expect(f.provider.mock.calls.flatMap(([texts]) => texts)).toHaveLength(1);
+    expect(final.metadata.vectorGeneration?.artifactIdentity).toBe(pending?.artifactIdentity);
+    await expect(
+      fs.stat(path.join(f.root, 'embeddings', fallback.artifactIdentity, 'vectors')),
+    ).resolves.toBeDefined();
+  });
+
+  it('uses a sealed but unpublished artifact as a read-only fallback after a graph edit', async () => {
+    const f = await fixture(5);
+    const metadata = f.options().metadata;
+    await expect(
+      f.run({
+        metadata: {
+          ...metadata,
+          saveMetadata: async (value) => {
+            if (value.vectorGeneration) throw new Error('publication interrupted');
+            await metadata.saveMetadata(value);
+          },
+        },
+      }),
+    ).rejects.toThrow('publication interrupted');
+    const first = (await loadMeta(f.root))?.embeddingJob;
+    expect(first?.artifactIdentity).toBeDefined();
+    await f.nextGeneration();
+    f.provider.mockClear();
+    const result = await f.run();
+    expect(result.phase).toBe('ready');
+    expect(result.state?.reusedNodes).toBe(5);
+    expect(result.metadata.vectorGeneration?.artifactIdentity).not.toBe(first?.artifactIdentity);
+    expect(f.provider).not.toHaveBeenCalled();
+  });
+
+  it('returns directly to retained compatible work after using another vector space', async () => {
+    const f = await fixture(10);
+    await expect(
+      f.run({
+        onProgress: (state) => {
+          if (state.completedNodes === 10) throw new Error('interrupted');
+        },
+      }),
+    ).rejects.toThrow('interrupted');
+    const first = (await loadMeta(f.root))?.embeddingJob;
+    f.dependencies.identity.mockReturnValue({ provider: 'local', model: 'other', dimensions: 4 });
+    await f.run();
+    f.dependencies.identity.mockReturnValue({ provider: 'local', model: 'test', dimensions: 4 });
+    f.provider.mockClear();
+    f.openSource.mockClear();
+    const result = await f.run();
+    expect(result.phase).toBe('ready');
+    expect(result.metadata.vectorGeneration?.artifactIdentity).toBe(first?.artifactIdentity);
+    expect(f.provider).not.toHaveBeenCalled();
+    expect(f.openSource).not.toHaveBeenCalled();
+  });
+
+  it('fails before source/model work when the directly keyed ownership receipt is corrupt', async () => {
+    const f = await fixture(5);
+    await expect(
+      f.run({
+        onProgress: (state) => {
+          if (state.completedNodes) throw new Error('interrupted');
+        },
+      }),
+    ).rejects.toThrow('interrupted');
+    const pending = (await loadMeta(f.root))?.embeddingJob;
+    if (!pending?.spaceKey || !pending.artifactIdentity)
+      throw new Error('Missing ownership receipt');
+    const receipt = path.join(f.root, 'embeddings', 'spaces', pending.spaceKey, 'space.json');
+    await fs.writeFile(receipt, '{"checksum":"bad","payload":{}}');
+    f.provider.mockClear();
+    f.openSource.mockClear();
+    f.initializeProvider.mockClear();
+    await expect(f.run()).rejects.toThrow('checksum mismatch');
+    expect(f.provider).not.toHaveBeenCalled();
+    expect(f.openSource).not.toHaveBeenCalled();
+    expect(f.initializeProvider).not.toHaveBeenCalled();
+    await expect(
+      fs.stat(path.join(f.root, 'embeddings', pending.artifactIdentity, 'vectors')),
+    ).resolves.toBeDefined();
+  });
+});
+
 describe('published graph embedding job controller', () => {
   it('resumes an interrupted bootstrap without rescanning the manifest or losing the pending job', async () => {
     const f = await fixture(3);

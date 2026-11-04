@@ -1,6 +1,6 @@
 /** One durable manifest unit, one bounded provider batch, no corpus-sized maps. */
 import { EmbeddingByteBudget } from '../analysis-resource-budget.js';
-import type { VectorStore, VectorWriteChunk } from '../lbug/vector-store.js';
+import type { VectorNodeReceipt, VectorStore, VectorWriteChunk } from '../lbug/vector-store.js';
 import type {
   EmbeddingJobJournal,
   EmbeddingJobState,
@@ -29,6 +29,9 @@ export interface EmbeddingJobRunnerOptions {
   store: VectorStore;
   /** The controller has validated vector/input identities before providing reuse. */
   reuse?: Pick<VectorStore, 'reusable' | 'readChunks' | 'options'>;
+  /** The writer was adopted from an older graph. Persist this choice for the
+   * whole job: old complete receipts cannot skip current-input validation. */
+  revalidateStoredInputs?: boolean;
   config?: Partial<EmbeddingConfig>;
   queueBytes: number;
   provider: typeof embedBatch;
@@ -78,7 +81,9 @@ export async function runEmbeddingJob(
     intent: EmbeddingUnitIntent,
   ): Promise<void> => {
     signal?.throwIfAborted();
-    const complete = await store.completedNodes(unit.nodes.map((node) => node.id));
+    const complete = options.revalidateStoredInputs
+      ? new Map<string, VectorNodeReceipt>()
+      : await store.completedNodes(unit.nodes.map((node) => node.id));
     const missing = unit.nodes.filter((node) => !complete.has(node.id));
     const retainedBytes = missing.reduce(
       (n, key) => n + 2 * (key.contentBytes + key.metadataBytes),
@@ -204,11 +209,24 @@ export async function runEmbeddingJob(
         sourceStartLine: node.startLine ?? 0,
         sourceEndLine: node.endLine ?? 0,
       }));
-      await store.beginNodes(inputs);
+      if (options.revalidateStoredInputs) {
+        for (const input of inputs) {
+          const retained = await store.reuseNode(input);
+          if (retained) {
+            complete.set(input.nodeId, retained);
+            reusedNodes++;
+          }
+        }
+      }
+      const missingInputs = options.revalidateStoredInputs
+        ? inputs.filter((input) => !complete.has(input.nodeId))
+        : inputs;
+      if (missingInputs.length) await store.beginNodes(missingInputs);
       for (let i = 0; i < fetched.nodes.length; i++) {
         const node = fetched.nodes[i];
         const input = inputs[i];
         signal?.throwIfAborted();
+        if (options.revalidateStoredInputs && complete.has(node.id)) continue;
         const reuse = options.reuse;
         const reusable = await reuse?.reusable(node.id, input.contentHash);
         if (reusable && reuse) {
@@ -329,7 +347,11 @@ export async function runEmbeddingJob(
       if (finished.length)
         for (const receipt of await store.finishNodes(finished))
           complete.set(receipt.nodeId, receipt);
-      if (complete.size) await store.checkpointUnit([...complete.values()]);
+      if (complete.size) {
+        if (options.revalidateStoredInputs)
+          await store.markSelected(journal.snapshot().identity, [...complete.keys()]);
+        await store.checkpointUnit([...complete.values()]);
+      }
       if (complete.size === unit.nodes.length) {
         await journal.acknowledge({
           reusedNodes,
@@ -380,6 +402,9 @@ export async function runEmbeddingJob(
     await journal.indexing();
     progress();
   }
+  signal?.throwIfAborted();
+  if (options.revalidateStoredInputs && !store.isSealed)
+    await store.pruneUnselected(journal.snapshot().identity, manifest.totalNodes);
   signal?.throwIfAborted();
   const indexKind = await store.seal(manifest.totalNodes, journal.snapshot().chunks);
   return { state: journal.snapshot(), peakQueueBytes: budget.peakBytes, indexKind };

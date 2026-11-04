@@ -32,7 +32,9 @@ export async function publishVectorGeneration(
     previous.incrementalInProgress ||
     previous.graphGeneration.id !== generation.graphGeneration ||
     previous.embeddingJob?.identity !== generation.identity ||
-    previous.embeddingJob?.graphGeneration !== generation.graphGeneration
+    previous.embeddingJob?.graphGeneration !== generation.graphGeneration ||
+    (previous.embeddingJob.artifactIdentity ?? previous.embeddingJob.identity) !==
+      (generation.artifactIdentity ?? generation.identity)
   )
     throw new Error('Vector publication does not match the active graph job');
   const metadata: RepoMeta = {
@@ -67,10 +69,11 @@ export async function publishVectorGeneration(
     !(selection.kind === 'unavailable' && selection.reason === 'embeddings-empty')
   )
     throw new Error('Invalid vector publication receipt');
-  const file = await assertOwnedVectorGeneration(metadataDirectory, generation.identity);
+  const artifactIdentity = generation.artifactIdentity ?? generation.identity;
+  const file = await assertOwnedVectorGeneration(metadataDirectory, artifactIdentity);
   const store = await VectorStore.open({
     directory: path.dirname(file),
-    identity: generation.identity,
+    identity: artifactIdentity,
     dimensions: generation.dimensions,
     mode: 'read',
     ...resources,

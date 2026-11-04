@@ -49,9 +49,10 @@ export async function searchVectorGeneration(
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10000 || !Number.isFinite(maxDistance))
     throw new Error('Invalid vector search bounds');
   const dbPath = selected.path;
+  const artifactIdentity = selected.generation.artifactIdentity ?? selected.generation.identity;
   const release = pinRepo(dbPath);
   try {
-    await assertOwnedVectorGeneration(snapshot.metadataDirectory, selected.generation.identity);
+    await assertOwnedVectorGeneration(snapshot.metadataDirectory, artifactIdentity);
     await initLbug(dbPath, dbPath, {
       kind: 'vector',
       bufferPoolBytes: 64 * 1024 * 1024,
@@ -65,7 +66,7 @@ export async function searchVectorGeneration(
     const proof = artifact[0];
     if (
       artifact.length !== 1 ||
-      proof.identity !== selected.generation.identity ||
+      proof.identity !== artifactIdentity ||
       proof.schema !== VECTOR_STORE_SCHEMA ||
       Number(proof.dimensions) !== selected.generation.dimensions ||
       proof.complete !== true ||

@@ -37,6 +37,32 @@ afterEach(async () => {
     await fs.rm(directory, { recursive: true, force: true });
 });
 
+describe('artifact identity and pending-job routing', () => {
+  it('routes a rebased artifact by its storage identity while retaining the graph-bound job identity', () => {
+    const artifactIdentity = 'f'.repeat(64);
+    const metadata = { ...meta, vectorGeneration: { ...meta.vectorGeneration, artifactIdentity } };
+    expect(select(metadata)).toEqual({
+      kind: 'ready',
+      path: path.join('/slot', 'embeddings', artifactIdentity, 'vectors'),
+      generation: metadata.vectorGeneration,
+    });
+    expect(
+      select({
+        ...metadata,
+        vectorGeneration: { ...metadata.vectorGeneration, artifactIdentity: '../foreign' },
+      }),
+    ).toMatchObject({ kind: 'unavailable' });
+  });
+  it('gates a pending job even when its identity equals the last completed pointer', () => {
+    expect(
+      select({ ...meta, embeddingJob: { version: 1, identity, graphGeneration: generation } }),
+    ).toEqual({
+      kind: 'unavailable',
+      reason: 'embedding-pending',
+    });
+  });
+});
+
 describe('vector generation routing', () => {
   it.each([
     { incrementalInProgress: { startedAt: 1, toWriteCount: 1 } },

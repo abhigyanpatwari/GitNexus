@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const MAX_RECORD_BYTES = 32 * 1024;
-const RECORD_NAMES = new Set(['manifest.json', 'job.json']);
+const RECORD_NAMES = new Set(['manifest.json', 'job.json', 'space.json', 'rebase.json']);
 const FAILED_RECORD_NAME = /^failed-\d{16}\.json$/;
 
 export async function embeddingJobDirectory(directory: string): Promise<string> {

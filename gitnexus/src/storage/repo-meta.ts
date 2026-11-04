@@ -128,11 +128,20 @@ export interface RepoMeta {
     coveredContent: string;
   };
   /** Checkout-owned durable work. Progress lives in its bounded journal. */
-  embeddingJob?: { version: 1; identity: string; graphGeneration: string };
+  embeddingJob?: {
+    version: 1;
+    identity: string;
+    graphGeneration: string;
+    /** Mutable artifact ownership is separate from this graph-bound job. */
+    artifactIdentity?: string;
+    spaceKey?: string;
+  };
   /** Published only after complete coverage, native durability and index validation. */
   vectorGeneration?: {
     version: 1;
     identity: string;
+    /** Absent in older separate stores, whose artifact identity equaled the job. */
+    artifactIdentity?: string;
     graphGeneration: string;
     vectorIdentity: string;
     inputIdentity: string;

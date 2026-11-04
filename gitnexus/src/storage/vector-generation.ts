@@ -55,12 +55,12 @@ export function selectVectorGeneration(
       kind: 'unavailable',
       reason: metadata.embeddingJob ? 'embedding-pending' : 'embeddings-unavailable',
     };
-  if (metadata.embeddingJob && metadata.embeddingJob.identity !== vector.identity)
-    return { kind: 'unavailable', reason: 'embedding-pending' };
+  if (metadata.embeddingJob) return { kind: 'unavailable', reason: 'embedding-pending' };
   if (
     vector.version !== 1 ||
     vector.graphGeneration !== graph.id ||
     !DIGEST.test(vector.identity) ||
+    (vector.artifactIdentity !== undefined && !DIGEST.test(vector.artifactIdentity)) ||
     !DIGEST.test(vector.vectorIdentity) ||
     !DIGEST.test(vector.inputIdentity) ||
     !nonnegative(vector.dimensions) ||
@@ -76,7 +76,10 @@ export function selectVectorGeneration(
     return { kind: 'unavailable', reason: 'vector-index-pending' };
   return {
     kind: 'ready',
-    path: path.join(embeddingGenerationDirectory(metadataDirectory, vector.identity), 'vectors'),
+    path: path.join(
+      embeddingGenerationDirectory(metadataDirectory, vector.artifactIdentity ?? vector.identity),
+      'vectors',
+    ),
     generation: vector,
   };
 }

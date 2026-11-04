@@ -129,6 +129,122 @@ async function runnerFixture(count: number, content = 'const value = "漢😀";'
   };
 }
 
+describe('rebased pending vector inputs', () => {
+  it('reuses matching groups in place, relocates lines, recomputes changed inputs and prunes deleted nodes', async () => {
+    const f = await runnerFixture(2);
+    const { contentHashForNode } = await import('../../src/core/embeddings/embedding-pipeline.js');
+    const { resolveEmbeddingConfig } = await import('../../src/core/embeddings/config.js');
+    const ids = ['Const:source.ts:n00000', 'Const:source.ts:n00001', 'Const:source.ts:deleted'];
+    const nodes = await f.source.fetch('Const', ids);
+    const hash = contentHashForNode(
+      nodes[0],
+      resolveEmbeddingConfig({ subBatchSize: 8, maxInputChars: 1024 }),
+    );
+    for (const [i, id] of ids.entries()) {
+      const inputHash = i === 0 ? hash : 'previous-input';
+      await store.beginNodes([
+        { nodeId: id, contentHash: inputHash, sourceStartLine: 9, sourceEndLine: 9 },
+      ]);
+      await store.append(id, inputHash, [{ ...chunk(0), startLine: 9, endLine: 9 }]);
+      const receipt = await store.finishNode(id, inputHash, 1);
+      await store.checkpointUnit([receipt]);
+    }
+    const inode = (await fs.stat(path.join(f.options.directory, 'vectors'))).ino;
+    const result = await f.run({ revalidateStoredInputs: true });
+    expect(result.state).toMatchObject({
+      completedNodes: 1,
+      reusedNodes: 1,
+      failedNodes: 0,
+      chunks: 2,
+    });
+    expect(f.provider.mock.calls.flatMap(([texts]) => texts)).toHaveLength(1);
+    expect(await store.reusable(ids[2], 'previous-input')).toBeNull();
+    const moved = await store.reusable(ids[0], hash);
+    expect(moved).toMatchObject({ sourceStartLine: 1, sourceEndLine: 1 });
+    if (!moved) throw new Error('Matching input was not retained');
+    expect(await store.readChunks(moved, 0, 1)).toMatchObject([{ startLine: 1, endLine: 1 }]);
+    expect((await fs.stat(path.join(f.options.directory, 'vectors'))).ino).toBe(inode);
+  });
+
+  it('refuses to prune when current-selection coverage is missing', async () => {
+    await setup();
+    const id = 'Const:source.ts:retained';
+    await store.beginNode(id, 'hash');
+    await store.append(id, 'hash', [chunk(0)]);
+    await store.finishNode(id, 'hash', 1);
+    await expect(store.pruneUnselected('b'.repeat(64), 1)).rejects.toThrow('no groups pruned');
+    expect(await store.reusable(id, 'hash')).not.toBeNull();
+    await store.markSelected('b'.repeat(64), [id]);
+    await expect(store.pruneUnselected('c'.repeat(64), 1)).rejects.toThrow('no groups pruned');
+    await store.pruneUnselected('b'.repeat(64), 1);
+    expect(await store.reusable(id, 'hash')).not.toBeNull();
+  });
+
+  it('prunes an empty new selection and leaves a valid empty artifact', async () => {
+    await setup();
+    const id = 'Const:source.ts:deleted';
+    await store.beginNode(id, 'hash');
+    await store.append(id, 'hash', [chunk(0)]);
+    await store.finishNode(id, 'hash', 1);
+    await store.markSelected('b'.repeat(64), [id]);
+    await store.pruneUnselected('c'.repeat(64), 0);
+    expect(await store.reusable(id, 'hash')).toBeNull();
+    expect(await store.seal(0, 0)).toBe('exact');
+  });
+
+  it('keeps sealed artifacts immutable through every rebase operation', async () => {
+    await setup();
+    const id = 'Const:source.ts:retained';
+    await store.beginNode(id, 'hash');
+    await store.append(id, 'hash', [chunk(0)]);
+    await store.finishNode(id, 'hash', 1);
+    await store.seal(1, 1);
+    expect(store.isSealed).toBe(true);
+    await expect(store.reuseNode({ nodeId: id, contentHash: 'hash' })).rejects.toThrow('immutable');
+    await expect(store.markSelected('b'.repeat(64), [id])).rejects.toThrow('immutable');
+    await expect(store.pruneUnselected('b'.repeat(64), 0)).rejects.toThrow('immutable');
+    expect(await store.reusable(id, 'hash')).not.toBeNull();
+  });
+
+  it('relocates a multi-batch group without copying or changing its vectors', async () => {
+    await setup();
+    const id = 'Function:source.ts:large';
+    await store.beginNodes([
+      { nodeId: id, contentHash: 'hash', sourceStartLine: 10, sourceEndLine: 309 },
+    ]);
+    for (let start = 0; start < 300; start += 100) {
+      await store.append(
+        id,
+        'hash',
+        Array.from({ length: 100 }, (_, i) => ({
+          ...chunk(start + i),
+          startLine: start + i + 10,
+          endLine: start + i + 10,
+        })),
+      );
+    }
+    await store.finishNode(id, 'hash', 300);
+    expect(await store.reuseNode({ nodeId: id, contentHash: 'changed' })).toBeNull();
+    const receipt = await store.reuseNode({
+      nodeId: id,
+      contentHash: 'hash',
+      sourceStartLine: 15,
+      sourceEndLine: 314,
+    });
+    expect(receipt?.chunks).toBe(300);
+    if (!receipt) throw new Error('Complete group was not retained');
+    const first = (await store.readChunks(receipt, 0, 1))[0];
+    const last = (await store.readChunks(receipt, 299, 1))[0];
+    expect(first).toMatchObject({ startLine: 15, endLine: 15 });
+    expect(last).toMatchObject({ startLine: 314, endLine: 314 });
+    expect(first.embedding).toEqual(last.embedding);
+    expect(first.embedding[0]).toBeCloseTo(0.1);
+    await store.markSelected('b'.repeat(64), [id]);
+    await store.pruneUnselected('b'.repeat(64), 1);
+    await store.seal(1, 300);
+  });
+});
+
 describe('bounded durable embedding runner', () => {
   it('refuses a symlinked native shadow sidecar before opening the artifact', async () => {
     const options = await setup();

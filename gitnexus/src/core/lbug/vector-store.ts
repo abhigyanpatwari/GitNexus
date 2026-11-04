@@ -69,6 +69,11 @@ export class VectorStore {
   private closing?: Promise<void>;
   private poisoned = false;
   private sealed = false;
+  private selectionReady = false;
+
+  get isSealed(): boolean {
+    return this.sealed;
+  }
 
   private constructor(
     private readonly handle: LbugConnectionHandle,
@@ -247,6 +252,117 @@ export class VectorStore {
       });
     }
     return receipts;
+  }
+
+  /** Reuse a complete group in the pending writer after validating its CURRENT
+   * input. Relocation updates only line metadata, with no vector round trip.
+   * One transaction makes an interrupted relocation safe to retry. */
+  async reuseNode(input: VectorNodeInput): Promise<VectorNodeReceipt | null> {
+    assertValidGraphNodeId(input.nodeId, 'Vector store');
+    const startLine = input.sourceStartLine ?? 0;
+    const endLine = input.sourceEndLine ?? 0;
+    if (
+      !input.contentHash ||
+      !nonnegative(startLine) ||
+      !nonnegative(endLine) ||
+      endLine < startLine
+    )
+      throw new Error('Invalid reusable embedding input');
+    return this.exclusive(async () => {
+      const previous = await this.receipt(input.nodeId);
+      if (!previous?.complete || previous.chunks < 1 || previous.contentHash !== input.contentHash)
+        return null;
+      await this.verify(previous);
+      if (previous.sourceStartLine === startLine && previous.sourceEndLine === endLine)
+        return previous;
+      const delta = startLine - (previous.sourceStartLine ?? 0);
+      await this.transaction(async () => {
+        for (let start = 0; start < previous.chunks; start += BLOCK_ROWS) {
+          const ids = Array.from(
+            { length: Math.min(BLOCK_ROWS, previous.chunks - start) },
+            (_, i) => `${input.nodeId}:${start + i}`,
+          );
+          await this.query(
+            'UNWIND $ids AS id MATCH (e:CodeEmbedding {id:id}) SET e.startLine=e.startLine+$delta, e.endLine=CASE WHEN e.endLine=$oldEnd THEN $endLine ELSE e.endLine+$delta END',
+            { ids, delta, oldEnd: previous.sourceEndLine ?? 0, endLine },
+          );
+          const invalid = await this.query(
+            'UNWIND $ids AS id MATCH (e:CodeEmbedding {id:id}) WHERE e.startLine < 0 OR e.endLine < e.startLine RETURN count(e) AS invalid',
+            { ids },
+          );
+          if (count(invalid[0].invalid)) throw new Error('Invalid relocated vector lines');
+        }
+        await this.query(
+          'MATCH (n:EmbeddingNodeReceipt {nodeId:$nodeId}) SET n.sourceStartLine=$startLine, n.sourceEndLine=$endLine',
+          { nodeId: input.nodeId, startLine, endLine },
+        );
+      });
+      return { ...previous, sourceStartLine: startLine, sourceEndLine: endLine };
+    }, true);
+  }
+
+  private async ensureSelectionTable(): Promise<void> {
+    if (this.selectionReady) return;
+    // Auxiliary scheduling data leaves the vector/input schema unchanged.
+    await this.query(
+      'CREATE NODE TABLE IF NOT EXISTS EmbeddingSelection (nodeId STRING, job STRING, PRIMARY KEY(nodeId))',
+    );
+    this.selectionReady = true;
+  }
+
+  /** Mark only verified complete groups, before the unit checkpoint and cursor.
+   * Native selection rows replace an unbounded JS set of current node IDs. */
+  async markSelected(job: string, ids: readonly string[]): Promise<void> {
+    if (
+      !/^[a-f0-9]{64}$/.test(job) ||
+      !ids.length ||
+      ids.length > 64 ||
+      new Set(ids).size !== ids.length
+    )
+      throw new Error('Invalid vector selection unit');
+    for (const id of ids) assertValidGraphNodeId(id, 'Vector selection');
+    await this.exclusive(async () => {
+      const receipts = await this.receipts(ids);
+      if (
+        receipts.size !== ids.length ||
+        [...receipts.values()].some((r) => !r.complete || r.chunks < 1)
+      )
+        throw new Error('Cannot select an incomplete vector group');
+      await this.ensureSelectionTable();
+      await this.transaction(async () => {
+        await this.query(
+          'UNWIND $ids AS id MERGE (s:EmbeddingSelection {nodeId:id}) SET s.job=$job',
+          { ids: [...ids], job },
+        );
+      });
+    }, true);
+  }
+
+  /** Called only after the new manifest is fully acknowledged. Counts must
+   * match before deletion, and native joins keep pruning independent of JS RAM. */
+  async pruneUnselected(job: string, totalNodes: number): Promise<void> {
+    if (!/^[a-f0-9]{64}$/.test(job) || !nonnegative(totalNodes))
+      throw new Error('Invalid vector selection coverage');
+    await this.exclusive(async () => {
+      await this.ensureSelectionTable();
+      const selected = await this.query(
+        'MATCH (s:EmbeddingSelection) WHERE s.job=$job RETURN count(s) AS nodes',
+        { job },
+      );
+      if (count(selected[0].nodes) !== totalNodes)
+        throw new Error('Vector selection coverage is incomplete; no groups pruned');
+      await this.transaction(async () => {
+        await this.query(
+          'MATCH (e:CodeEmbedding) WHERE NOT EXISTS { MATCH (s:EmbeddingSelection) WHERE s.nodeId=e.nodeId AND s.job=$job } DELETE e',
+          { job },
+        );
+        await this.query(
+          'MATCH (n:EmbeddingNodeReceipt) WHERE NOT EXISTS { MATCH (s:EmbeddingSelection) WHERE s.nodeId=n.nodeId AND s.job=$job } DELETE n',
+          { job },
+        );
+        await this.query('MATCH (s:EmbeddingSelection) WHERE s.job<>$job DELETE s', { job });
+      });
+    }, true);
   }
 
   /** Replay replaces the entire old group, using PKs rather than repeated table scans. */
