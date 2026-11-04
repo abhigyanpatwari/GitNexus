@@ -30,7 +30,7 @@ export const MINIMAX_DOCS_ROOTS = {
   cn_zh: 'https://platform.minimaxi.com/docs',
 } as const;
 
-export const MINIMAX_MODEL_IDS = ['MiniMax-M3', 'MiniMax-M2.7'] as const;
+export const MINIMAX_MODEL_IDS = ['MiniMax-M3.1-Flash', 'MiniMax-M3'] as const;
 
 export type MiniMaxModelId = (typeof MINIMAX_MODEL_IDS)[number];
 export type MiniMaxThinkingMode = 'adaptive' | 'disabled' | 'always_on';
@@ -43,11 +43,20 @@ export interface MiniMaxModelCapabilities {
 }
 
 export const MINIMAX_MODEL_CAPABILITIES: Record<MiniMaxModelId, MiniMaxModelCapabilities> = {
+  'MiniMax-M3.1-Flash': {
+    contextWindow: 1_000_000,
+    inputModalities: ['text', 'image', 'video'],
+    thinkingModes: ['adaptive'],
+  },
   'MiniMax-M3': {
     contextWindow: 1_000_000,
     inputModalities: ['text', 'image', 'video'],
     thinkingModes: ['adaptive', 'disabled'],
   },
+};
+
+// Retain capabilities for saved older models without advertising them as presets.
+const LEGACY_MINIMAX_MODEL_CAPABILITIES: Record<string, MiniMaxModelCapabilities> = {
   'MiniMax-M2.7': {
     contextWindow: 204_800,
     inputModalities: ['text'],
@@ -56,7 +65,7 @@ export const MINIMAX_MODEL_CAPABILITIES: Record<MiniMaxModelId, MiniMaxModelCapa
 };
 
 export const getMiniMaxModelCapabilities = (model: string): MiniMaxModelCapabilities | undefined =>
-  MINIMAX_MODEL_CAPABILITIES[model as MiniMaxModelId];
+  MINIMAX_MODEL_CAPABILITIES[model as MiniMaxModelId] ?? LEGACY_MINIMAX_MODEL_CAPABILITIES[model];
 
 export type MiniMaxMediaDetail = 'low' | 'default' | 'high';
 

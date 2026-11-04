@@ -46,28 +46,36 @@ describe('loadSettings', () => {
     expect(settings.openai).toBeDefined();
   });
 
-  it('migrates unsupported legacy MiniMax models to the current default', () => {
-    sessionStorage.setItem(
-      'gitnexus-llm-settings',
-      JSON.stringify({
-        activeProvider: 'minimax',
-        minimax: {
-          apiKey: 'minimax-test-key',
-          model: 'MiniMax-M2.5',
-          temperature: 0.1,
-        },
-      }),
-    );
+  it.each(['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.5', 'custom-model'])(
+    'preserves the explicitly saved MiniMax model %s',
+    (savedModel) => {
+      sessionStorage.setItem(
+        'gitnexus-llm-settings',
+        JSON.stringify({
+          activeProvider: 'minimax',
+          minimax: {
+            apiKey: 'minimax-test-key',
+            model: savedModel,
+            temperature: 0.1,
+          },
+        }),
+      );
 
-    const settings = loadSettings();
-    expect(settings.minimax).toMatchObject({
-      model: MINIMAX_MODEL_IDS[0],
-      thinkingMode: 'adaptive',
-    });
+      const settings = loadSettings();
+      expect(settings.minimax).toMatchObject({
+        model: savedModel,
+        apiKey: 'minimax-test-key',
+        temperature: 0.1,
+      });
 
-    const model = createChatModel(getActiveProviderConfig()!) as any;
-    expect(model.model).toBe(MINIMAX_MODEL_IDS[0]);
-    expect(model.thinking).toEqual({ type: 'adaptive' });
+      const model = createChatModel(getActiveProviderConfig()!) as any;
+      expect(model.model).toBe(savedModel);
+    },
+  );
+
+  it.each([undefined, '', '   '])('defaults missing MiniMax model %j to Flash', (model) => {
+    sessionStorage.setItem('gitnexus-llm-settings', JSON.stringify({ minimax: { model } }));
+    expect(loadSettings().minimax?.model).toBe('MiniMax-M3.1-Flash');
   });
 
   it('returns defaults on corrupted JSON', () => {
@@ -220,16 +228,18 @@ describe('getAvailableModels', () => {
   });
 
   it('describes MiniMax model input and thinking capabilities', () => {
-    expect(getMiniMaxModelCapabilities(MINIMAX_MODEL_IDS[0])).toEqual({
+    expect(MINIMAX_MODEL_IDS).toEqual(['MiniMax-M3.1-Flash', 'MiniMax-M3']);
+    expect(getMiniMaxModelCapabilities('MiniMax-M3.1-Flash')).toEqual({
+      contextWindow: 1_000_000,
+      inputModalities: ['text', 'image', 'video'],
+      thinkingModes: ['adaptive'],
+    });
+    expect(getMiniMaxModelCapabilities('MiniMax-M3')).toEqual({
       contextWindow: 1_000_000,
       inputModalities: ['text', 'image', 'video'],
       thinkingModes: ['adaptive', 'disabled'],
     });
-    expect(getMiniMaxModelCapabilities(MINIMAX_MODEL_IDS[1])).toEqual({
-      contextWindow: 204_800,
-      inputModalities: ['text'],
-      thinkingModes: ['always_on'],
-    });
+    expect(getMiniMaxModelCapabilities('MiniMax-M2.7')?.thinkingModes).toEqual(['always_on']);
   });
 
   it('returns empty array for unknown provider', () => {
