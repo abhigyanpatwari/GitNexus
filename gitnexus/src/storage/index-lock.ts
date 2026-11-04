@@ -441,6 +441,16 @@ const deniedCreateHandle = (
  * `branches/<slug>/` sub-slot (which owns its own lock + sweep). Non-recursive.
  */
 export const sweepStagingArtifacts = (lockDir: string, log?: (msg: string) => void): void => {
+  // A graph worker releases this lock before its supervisor reacquires it.
+  // Presence (even malformed or unreadable) retains the attempt until the
+  // publication coordinator validates it; lock ownership alone cannot prove
+  // that these stages are orphaned.
+  try {
+    lstatSync(path.join(lockDir, 'analysis-publication.json'));
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return;
+  }
   // Matches `lbug.new`, `lbug.new.wal`, `lbug.staging.<id>`, `lbug.staging.<id>.wal`, …
   // Does NOT match `lbug`, `lbug.wal`, `lbug.shadow`.
   const stagingRe = /^lbug\.(staging\..+|new(\..+)?)$/;

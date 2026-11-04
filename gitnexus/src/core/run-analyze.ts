@@ -208,7 +208,6 @@ import {
 import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import {
   ensurePrivateSharedGraph,
-  listStoreMetaRoots,
   leaveSharedStore,
   optedInSlotToLeave,
   registerLeftStore,
@@ -216,7 +215,7 @@ import {
   resolveOptedInStore,
   seedSharedSlot,
 } from './shared-store-analyze.js';
-import { withStoreLock } from '../storage/shared-store-lifecycle.js';
+import { publishAnalysisParseCache } from './analysis-parse-cache.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from './ingestion/cfg/collect.js';
 import {
   DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
@@ -268,14 +267,11 @@ import {
 } from './parse-cache-identity.js';
 import {
   loadParseCache,
-  saveParseCache,
-  pruneCache,
   createColdParseRebuildDir,
   getColdParseRebuildDir,
   emptyParseCache,
   forgetCreatedParseCacheDir,
 } from '../storage/parse-cache.js';
-import { mergeStagedDurableParsedFileStore } from '../storage/parsedfile-store.js';
 import {
   getCurrentCheckout,
   getRemoteUrl,
@@ -5764,89 +5760,17 @@ async function runFullAnalysisInner(
     // so the cache file size stays bounded across runs (chunks whose
     // composition no longer matches anything in the current scan are dead
     // weight; the parse phase populates `usedKeys` as it processes chunks).
-    const saveCaches = async (): Promise<void> => {
-      if (!parseCache) return;
-      // #2106 R6: the parse cache + durable store are shared across branches.
-      // Before pruning to this run's keys, fold in the OTHER branches' recorded
-      // chunk keys so a branch switch doesn't evict their still-live shards.
-      // Adding to usedKeys makes them survive pruneCache AND land in the saved
-      // index (saveParseCache builds the index from usedKeys). Excludes this
-      // run's own meta dir, so a single-branch repo folds in nothing → prune
-      // set byte-identical to today. A shared store (#3352) folds in every
-      // member checkout and commit graph the same way.
-      // An unlistable store directory starts the fold incomplete, so the
-      // retention branch below keeps other slots' chunks.
-      const listing = writeTarget.sharedStore
-        ? await listStoreMetaRoots(writeTarget.sharedStore)
-        : { roots: [storagePath], complete: true };
-      const siblingKeys = new Set<string>();
-      let complete = listing.complete;
-      for (const root of listing.roots) {
-        const folded = await collectBranchCacheKeys(root, metaDir);
-        for (const k of folded.keys) siblingKeys.add(k);
-        if (!folded.complete) complete = false;
-      }
-      // Another slot may have published since this run loaded its cache.
-      // Refresh eligibility inside the publication lock for EVERY run. This
-      // is also the first persistent read for a bypass run, after parsing.
-      // Metadata alone cannot admit foreign shards, and live entries cannot
-      // replace this run's staged repairs or revive its retired chunks.
-      const retained = await loadParseCache(cacheRoot, parseCache.identity, coldParseRebuildDir);
-      parseCache.storagePath = cacheRoot;
-      parseCache.onDiskKeys = new Set();
-      for (const key of retained.onDiskKeys ?? []) {
-        if (
-          !parseCache.stagedKeys?.has(key) &&
-          !parseCache.staleKeys?.has(key) &&
-          (parseCache.usedKeys.has(key) || !complete || siblingKeys.has(key))
-        ) {
-          parseCache.onDiskKeys.add(key);
-        }
-      }
-      for (const [key, value] of retained.entries) {
-        if (
-          !parseCache.usedKeys.has(key) &&
-          !parseCache.stagedKeys?.has(key) &&
-          !parseCache.staleKeys?.has(key) &&
-          (!complete || siblingKeys.has(key))
-        ) {
-          parseCache.entries.set(key, value);
-        }
-      }
-      if (complete) {
-        for (const k of siblingKeys) parseCache.usedKeys.add(k);
-      } else {
-        // Fail-safe toward retention: a sibling meta was unreadable, so keep
-        // everything currently loaded rather than evict on incomplete info.
-        log('Parse cache: a branch meta was unreadable — retaining all cached chunks (#2106).');
-        for (const k of parseCache.entries.keys()) parseCache.usedKeys.add(k);
-        for (const k of parseCache.onDiskKeys ?? []) parseCache.usedKeys.add(k);
-      }
-      const pruned = pruneCache(parseCache, parseCache.usedKeys);
-      if (pruned > 0) {
-        log(`Parse cache: pruned ${pruned} stale chunk entries`);
-      }
-      const savedKeys = await saveParseCache(cacheRoot, parseCache);
-      // Prune the durable ParsedFile store to EXACTLY the parse cache's
-      // surviving keys (#2038 warm-cache coverage), so the two content-addressed
-      // stores stay coherent: a chunk is "cached" iff both its parse-cache shard
-      // and its durable shards exist. A retired chunk — worker-quarantined, or
-      // one whose failed durable reset left an uncleared generation behind
-      // (#3204) — is filtered out of `savedKeys`, so it drops out of the
-      // durable index here and re-dispatches next run. Same try/catch — a
-      // durable-store write must never
-      // break an otherwise successful run (next run treats it as a miss).
-      await mergeStagedDurableParsedFileStore(
-        cacheRoot,
-        parseCache.writeStoragePath ?? cacheRoot,
-        parseCache.identity.base,
-        new Set(savedKeys),
-      );
-    };
     try {
-      await (writeTarget.sharedStore
-        ? withStoreLock(writeTarget.sharedStore, 'cache', saveCaches)
-        : saveCaches());
+      if (parseCache) {
+        await publishAnalysisParseCache(parseCache, {
+          storagePath,
+          metadataDirectory: metaDir,
+          cacheRoot,
+          sharedStore: writeTarget.sharedStore,
+          collectBranchKeys: collectBranchCacheKeys,
+          log,
+        });
+      }
     } catch (e) {
       log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
     }
