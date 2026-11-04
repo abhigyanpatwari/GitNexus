@@ -4,7 +4,8 @@ import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from '
  * LLM Client for Wiki Generation
  *
  * OpenAI-compatible API client using native fetch.
- * Supports MiniMax and other OpenAI-compatible endpoints.
+ * Supports MiniMax and other OpenAI-compatible endpoints, and the Anthropic
+ * Messages API natively (provider 'anthropic').
  *
  * Config priority: CLI flags > env vars > defaults
  */
@@ -19,7 +20,8 @@ export type LLMProvider =
   | 'codex'
   | 'opencode'
   | 'grok'
-  | 'minimax';
+  | 'minimax'
+  | 'anthropic';
 
 export const MINIMAX_OPENAI_BASE_URLS = {
   global_en: 'https://api.minimax.io/v1',
@@ -27,6 +29,11 @@ export const MINIMAX_OPENAI_BASE_URLS = {
 } as const;
 
 export const MINIMAX_MODEL_IDS = ['MiniMax-M3', 'MiniMax-M2.7'] as const;
+
+export const ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
+export const ANTHROPIC_DEFAULT_MODEL = 'claude-opus-5-5';
+/** `anthropic-version` header sent with every Messages API request. */
+export const ANTHROPIC_API_VERSION = '2023-06-01';
 
 export type MiniMaxThinkingMode = 'adaptive' | 'disabled' | 'always_on';
 
@@ -126,8 +133,11 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
   const apiKey =
     overrides?.apiKey ||
     (savedProvider === 'minimax' ? process.env.MINIMAX_API_KEY : undefined) ||
+    (savedProvider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : undefined) ||
     (savedProvider !== 'minimax' ? process.env.GITNEXUS_API_KEY : undefined) ||
-    (savedProvider !== 'minimax' ? process.env.OPENAI_API_KEY : undefined) ||
+    (savedProvider !== 'minimax' && savedProvider !== 'anthropic'
+      ? process.env.OPENAI_API_KEY
+      : undefined) ||
     (reuseSavedHttpConfig ? savedConfig.apiKey : undefined) ||
     '';
 
@@ -139,7 +149,9 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
       (reuseSavedHttpConfig ? savedConfig.baseUrl : undefined) ||
       (savedProvider === 'minimax'
         ? MINIMAX_OPENAI_BASE_URLS.global_en
-        : 'https://openrouter.ai/api/v1'),
+        : savedProvider === 'anthropic'
+          ? ANTHROPIC_BASE_URL
+          : 'https://openrouter.ai/api/v1'),
     model:
       overrides?.model ||
       (localProvider ? undefined : process.env.GITNEXUS_MODEL) ||
@@ -147,7 +159,11 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
       (localProvider
         ? ''
         : (reuseSavedHttpConfig ? savedConfig.model : undefined) ||
-          (savedProvider === 'minimax' ? MINIMAX_MODEL_IDS[0] : '')),
+          (savedProvider === 'minimax'
+            ? MINIMAX_MODEL_IDS[0]
+            : savedProvider === 'anthropic'
+              ? ANTHROPIC_DEFAULT_MODEL
+              : '')),
     maxTokens:
       readOverrideMaxCompletionTokens(overrides?.maxTokens) ??
       readEnvMaxCompletionTokens(process.env[LLM_MAX_COMPLETION_TOKENS_ENV]) ??
@@ -344,7 +360,15 @@ export interface CallLLMOptions {
 }
 
 /**
- * Call an OpenAI-compatible LLM API.
+ * Build the Anthropic Messages API URL.
+ */
+export function buildAnthropicMessagesUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/, '')}/messages`;
+}
+
+/**
+ * Call the configured LLM: an OpenAI-compatible chat completions API, or the
+ * Anthropic Messages API when provider is 'anthropic'.
  * Uses streaming when onChunk callback is provided for real-time progress.
  * Retries up to 3 times on transient failures (429, 5xx, network errors).
  */
@@ -357,62 +381,14 @@ export async function callLLM(
   // Validate base URL before any fetch (CodeQL js/http-to-file-access)
   validateLLMBaseUrl(config.baseUrl, config.allowedInsecureHttpHosts);
 
-  const messages: Array<{ role: string; content: LLMUserContent }> = [];
-  if (systemPrompt) {
-    messages.push({ role: 'system', content: systemPrompt });
-  }
-  messages.push({ role: 'user', content: prompt });
-
+  const anthropic = config.provider === 'anthropic';
   // Detect Azure endpoint (by provider field or URL pattern)
-  const azure = config.provider === 'azure' || isAzureProvider(config.baseUrl);
-
-  // Warn when using Azure legacy deployment URL without api-version
-  if (azure && !config.apiVersion && config.baseUrl.includes('/deployments/')) {
-    logger.warn(
-      '[gitnexus] Warning: Azure legacy deployment URL detected but no api-version set. Add --api-version 2024-10-21 or use the v1 API format.',
-    );
-  }
-
-  const miniMaxThinkingMode =
-    config.provider === 'minimax'
-      ? resolveMiniMaxThinkingMode(config.model, config.isReasoningModel)
-      : undefined;
-
-  // Detect reasoning models or explicit provider-specific thinking configuration.
-  const reasoning = miniMaxThinkingMode
-    ? miniMaxThinkingMode !== 'disabled'
-    : isReasoningModel(config.model, config.isReasoningModel);
-
-  const url = buildRequestUrl(config.baseUrl, azure ? config.apiVersion : undefined);
+  const azure = !anthropic && (config.provider === 'azure' || isAzureProvider(config.baseUrl));
   const useStream = !!options?.onChunk;
 
-  // Build request body — reasoning models reject temperature and use max_completion_tokens
-  const body: Record<string, unknown> = {
-    model: config.model,
-    messages,
-  };
-
-  if (miniMaxThinkingMode === 'adaptive' || miniMaxThinkingMode === 'disabled') {
-    body.thinking = { type: miniMaxThinkingMode };
-  }
-  if (config.provider === 'minimax') {
-    body.reasoning_split = true;
-  }
-
-  // max_tokens is deprecated; use max_completion_tokens for all models
-  body.max_completion_tokens = config.maxTokens;
-
-  // Only send temperature for non-Azure providers — some Azure models reject non-default values
-  if (!reasoning && !azure && config.temperature !== undefined) {
-    body.temperature = config.temperature;
-  }
-
-  if (useStream) body.stream = true;
-
-  // Build auth headers — Azure uses api-key header, everyone else uses Authorization: Bearer
-  const authHeaders: Record<string, string> = azure
-    ? { 'api-key': config.apiKey }
-    : { Authorization: `Bearer ${config.apiKey}` };
+  const { url, headers, body } = anthropic
+    ? buildAnthropicRequest(prompt, config, systemPrompt, useStream)
+    : buildChatCompletionsRequest(prompt, config, systemPrompt, useStream, azure);
 
   // Network resilience (bounded retries with exponential-backoff jitter,
   // 5xx + 429 + Retry-After handling, in-process circuit breaker on the
@@ -427,9 +403,12 @@ export async function callLLM(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...authHeaders,
+          ...headers,
         },
         body: JSON.stringify(body),
+        // Fetch preserves x-api-key across origins. Only send credentials and
+        // source code to the configured endpoint, never a redirect destination.
+        ...(anthropic ? { redirect: 'manual' as const } : {}),
         // Request timeout is opt-in for wiki generation. Large local
         // model runs can legitimately take well over a minute, so the
         // default runtime path must not impose a hidden 60s ceiling.
@@ -485,14 +464,22 @@ export async function callLLM(
 
   // Streaming path
   if (useStream && response.body) {
-    return await readSSEStream(response.body, options!.onChunk!, config.maxTokens);
+    return await readSSEStream(
+      response.body,
+      options!.onChunk!,
+      config.maxTokens,
+      anthropic ? anthropicStream : chatCompletionsStream,
+    );
   }
 
   // Non-streaming path
   const json = (await response.json()) as any;
+  if (anthropic) {
+    return readAnthropicMessage(json as AnthropicMessage | null, config.maxTokens);
+  }
   const choice = json.choices?.[0];
   if (choice?.finish_reason === 'length') {
-    throw truncatedResponseError(config.maxTokens);
+    throw truncatedResponseError(config.maxTokens, chatCompletionsStream.truncationReason);
   }
   if (!choice?.message?.content) {
     throw new Error('LLM returned empty response');
@@ -505,21 +492,268 @@ export async function callLLM(
   };
 }
 
-// A response cut off by the completion limit reads like a finished one, and a
-// reasoning model can spend the whole limit before the answer starts.
-function truncatedResponseError(maxTokens: number): Error {
-  return new Error(
-    `LLM response stopped at the completion token limit (${maxTokens}, finish_reason "length") and is incomplete.`,
-  );
+interface LLMRequest {
+  url: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+}
+
+function buildChatCompletionsRequest(
+  prompt: LLMUserContent,
+  config: LLMConfig,
+  systemPrompt: string | undefined,
+  useStream: boolean,
+  azure: boolean,
+): LLMRequest {
+  const messages: Array<{ role: string; content: LLMUserContent }> = [];
+  if (systemPrompt) {
+    messages.push({ role: 'system', content: systemPrompt });
+  }
+  messages.push({ role: 'user', content: prompt });
+
+  // Warn when using Azure legacy deployment URL without api-version
+  if (azure && !config.apiVersion && config.baseUrl.includes('/deployments/')) {
+    logger.warn(
+      '[gitnexus] Warning: Azure legacy deployment URL detected but no api-version set. Add --api-version 2024-10-21 or use the v1 API format.',
+    );
+  }
+
+  const miniMaxThinkingMode =
+    config.provider === 'minimax'
+      ? resolveMiniMaxThinkingMode(config.model, config.isReasoningModel)
+      : undefined;
+
+  // Detect reasoning models or explicit provider-specific thinking configuration.
+  const reasoning = miniMaxThinkingMode
+    ? miniMaxThinkingMode !== 'disabled'
+    : isReasoningModel(config.model, config.isReasoningModel);
+
+  const url = buildRequestUrl(config.baseUrl, azure ? config.apiVersion : undefined);
+
+  // Build request body — reasoning models reject temperature and use max_completion_tokens
+  const body: Record<string, unknown> = {
+    model: config.model,
+    messages,
+  };
+
+  if (miniMaxThinkingMode === 'adaptive' || miniMaxThinkingMode === 'disabled') {
+    body.thinking = { type: miniMaxThinkingMode };
+  }
+  if (config.provider === 'minimax') {
+    body.reasoning_split = true;
+  }
+
+  // max_tokens is deprecated; use max_completion_tokens for all models
+  body.max_completion_tokens = config.maxTokens;
+
+  // Only send temperature for non-Azure providers — some Azure models reject non-default values
+  if (!reasoning && !azure && config.temperature !== undefined) {
+    body.temperature = config.temperature;
+  }
+
+  if (useStream) body.stream = true;
+
+  // Build auth headers — Azure uses api-key header, everyone else uses Authorization: Bearer
+  const headers: Record<string, string> = azure
+    ? { 'api-key': config.apiKey }
+    : { Authorization: `Bearer ${config.apiKey}` };
+
+  return { url, headers, body };
 }
 
 /**
- * Read an SSE stream from an OpenAI-compatible streaming response.
+ * Messages API request. The system prompt is a top-level field, and no sampling
+ * parameter is sent: current Claude models reject temperature, and the wiki's
+ * temperature 0 is an OpenAI-path default, not a user setting.
+ */
+function buildAnthropicRequest(
+  prompt: LLMUserContent,
+  config: LLMConfig,
+  systemPrompt: string | undefined,
+  useStream: boolean,
+): LLMRequest {
+  const body: Record<string, unknown> = {
+    model: config.model,
+    max_tokens: config.maxTokens,
+    messages: [{ role: 'user', content: toAnthropicContent(prompt) }],
+  };
+  if (systemPrompt) body.system = systemPrompt;
+  if (useStream) body.stream = true;
+
+  return {
+    url: buildAnthropicMessagesUrl(config.baseUrl),
+    headers: { 'x-api-key': config.apiKey, 'anthropic-version': ANTHROPIC_API_VERSION },
+    body,
+  };
+}
+
+const ANTHROPIC_IMAGE_DATA_URL = /^data:(image\/(?:png|jpeg|gif|webp));base64,(.+)$/;
+
+function toAnthropicContent(prompt: LLMUserContent): string | Array<Record<string, unknown>> {
+  if (typeof prompt === 'string') return prompt;
+  return prompt.map((part) => {
+    if (part.type === 'text') return { type: 'text', text: part.text };
+    if (part.type === 'image_url') {
+      const dataUrl = ANTHROPIC_IMAGE_DATA_URL.exec(part.image_url.url);
+      if (dataUrl) {
+        return {
+          type: 'image',
+          source: { type: 'base64', media_type: dataUrl[1], data: dataUrl[2] },
+        };
+      }
+      if (/^https:\/\//i.test(part.image_url.url)) {
+        return { type: 'image', source: { type: 'url', url: part.image_url.url } };
+      }
+      throw new Error(
+        'The anthropic provider accepts images as https:// URLs or base64 PNG, JPEG, GIF or WebP data URLs',
+      );
+    }
+    throw new Error('The anthropic provider does not accept video input');
+  });
+}
+
+/** The fields of a Messages API response the wiki reads. */
+interface AnthropicMessage {
+  content?: Array<{ type?: string; text?: unknown }>;
+  stop_reason?: string | null;
+  usage?: { input_tokens?: number; output_tokens?: number };
+}
+
+function readAnthropicMessage(json: AnthropicMessage | null, maxTokens: number): LLMResponse {
+  if (json?.stop_reason === 'max_tokens') {
+    throw truncatedResponseError(maxTokens, anthropicStream.truncationReason);
+  }
+  if (json?.stop_reason === 'refusal') {
+    throw anthropicRefusalError();
+  }
+  if (json?.stop_reason === 'model_context_window_exceeded') {
+    throw anthropicContextWindowError();
+  }
+  // Thinking blocks come back alongside the answer; only text blocks are the page.
+  const content = Array.isArray(json?.content)
+    ? json.content
+        .map((block) =>
+          block?.type === 'text' && typeof block.text === 'string' ? block.text : '',
+        )
+        .join('')
+    : '';
+  if (!content) {
+    throw new Error('LLM returned empty response');
+  }
+  return {
+    content,
+    promptTokens: json?.usage?.input_tokens,
+    completionTokens: json?.usage?.output_tokens,
+  };
+}
+
+function anthropicRefusalError(): Error {
+  return new Error(
+    'The model declined this request (stop_reason "refusal"). Adjust the prompt or use another model.',
+  );
+}
+
+function anthropicContextWindowError(): Error {
+  return new Error(
+    'LLM response reached the context window limit (stop_reason "model_context_window_exceeded") and is incomplete. Reduce the input size or use a model with a larger context window.',
+  );
+}
+
+// A response cut off by the completion limit reads like a finished one, and a
+// reasoning model can spend the whole limit before the answer starts.
+function truncatedResponseError(maxTokens: number, stopReason: string): Error {
+  return new Error(
+    `LLM response stopped at the completion token limit (${maxTokens}, ${stopReason}) and is incomplete.`,
+  );
+}
+
+/** What one SSE `data:` payload adds to the response being streamed. */
+interface StreamEvent {
+  text?: string;
+  /** Set when the provider stopped for a reason that makes the answer unusable. */
+  stop?: 'length' | 'content_filter' | 'refusal' | 'context_window';
+  complete?: boolean;
+}
+
+/** How one provider's stream is read. */
+interface StreamProtocol {
+  /**
+   * Reads one parsed `data:` payload. Returns undefined for payloads that carry
+   * neither text nor a stop reason; throws on a stream error.
+   */
+  readEvent: (data: unknown) => StreamEvent | undefined;
+  /** The provider's own name for a stop at the token limit, quoted in the error. */
+  truncationReason: string;
+  /** When set, EOF before this terminal event means the response is incomplete. */
+  completionEvent?: string;
+}
+
+/** OpenAI-compatible chat completions chunks. */
+/** The fields of a chat completions stream chunk the wiki reads. */
+interface ChatCompletionsChunk {
+  choices?: Array<{ finish_reason?: string | null; delta?: { content?: string | null } }>;
+}
+
+/** The fields of an Anthropic stream event the wiki reads. */
+interface AnthropicStreamPayload {
+  type?: string;
+  delta?: { type?: string; text?: unknown; stop_reason?: string | null };
+  error?: { type?: string; message?: string };
+}
+
+const chatCompletionsStream: StreamProtocol = {
+  readEvent: (payload) => {
+    const choice = (payload as ChatCompletionsChunk | null)?.choices?.[0];
+    // A content-filtered chunk's delta is dropped.
+    if (choice?.finish_reason === 'content_filter') return { stop: 'content_filter' };
+    const text = choice?.delta?.content;
+    return {
+      text: text || undefined,
+      stop: choice?.finish_reason === 'length' ? 'length' : undefined,
+    };
+  },
+  truncationReason: 'finish_reason "length"',
+};
+
+/** Anthropic Messages API events. Thinking deltas are not part of the answer. */
+const anthropicStream: StreamProtocol = {
+  readEvent: (payload) => {
+    const data = payload as AnthropicStreamPayload | null;
+    switch (data?.type) {
+      case 'content_block_delta':
+        return data.delta?.type === 'text_delta' && typeof data.delta.text === 'string'
+          ? { text: data.delta.text }
+          : undefined;
+      case 'message_delta':
+        if (data.delta?.stop_reason === 'max_tokens') return { stop: 'length' };
+        if (data.delta?.stop_reason === 'refusal') return { stop: 'refusal' };
+        if (data.delta?.stop_reason === 'model_context_window_exceeded') {
+          return { stop: 'context_window' };
+        }
+        return undefined;
+      case 'message_stop':
+        return { complete: true };
+      case 'error':
+        throw new Error(
+          `LLM API error mid-stream: ${data.error?.type ?? 'error'}: ${data.error?.message ?? 'no message'}`,
+        );
+      default:
+        return undefined;
+    }
+  },
+  truncationReason: 'stop_reason "max_tokens"',
+  completionEvent: 'message_stop',
+};
+
+/**
+ * Read an SSE stream, letting the provider's protocol say what each `data:`
+ * payload contributes.
  */
 async function readSSEStream(
   body: ReadableStream<Uint8Array>,
   onChunk: (charsReceived: number) => void,
   maxTokens: number,
+  protocol: StreamProtocol,
 ): Promise<LLMResponse> {
   const decoder = new TextDecoder();
   const reader = body.getReader();
@@ -527,43 +761,52 @@ async function readSSEStream(
   let buffer = '';
   let contentFilterTriggered = false;
   let lengthLimitReached = false;
+  let refused = false;
+  let contextWindowExceeded = false;
+  let complete = false;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    stream: while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith('data: ')) continue;
-      const data = trimmed.slice(6);
-      if (data === '[DONE]') continue;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const data = trimmed.slice(5).trimStart();
+        if (data === '[DONE]') continue;
 
-      try {
-        const parsed = JSON.parse(data);
-        const choice = parsed.choices?.[0];
-
-        // Detect content filter finish reason — skip delta from this chunk
-        if (choice?.finish_reason === 'content_filter') {
-          contentFilterTriggered = true;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          // Skip malformed SSE chunks
           continue;
         }
-        if (choice?.finish_reason === 'length') {
-          lengthLimitReached = true;
-        }
 
-        const delta = choice?.delta?.content;
-        if (delta) {
-          content += delta;
+        const event = protocol.readEvent(parsed);
+        if (event?.stop === 'content_filter') contentFilterTriggered = true;
+        if (event?.stop === 'length') lengthLimitReached = true;
+        if (event?.stop === 'refusal') refused = true;
+        if (event?.stop === 'context_window') contextWindowExceeded = true;
+        if (event?.text) {
+          content += event.text;
           onChunk(content.length);
         }
-      } catch {
-        // Skip malformed SSE chunks
+        if (event?.complete) {
+          complete = true;
+          break stream;
+        }
       }
     }
+  } finally {
+    // Release the HTTP response on protocol errors and terminal events, too.
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 
   if (contentFilterTriggered) {
@@ -572,8 +815,20 @@ async function readSSEStream(
     );
   }
 
+  if (refused) {
+    throw anthropicRefusalError();
+  }
+
   if (lengthLimitReached) {
-    throw truncatedResponseError(maxTokens);
+    throw truncatedResponseError(maxTokens, protocol.truncationReason);
+  }
+
+  if (contextWindowExceeded) {
+    throw anthropicContextWindowError();
+  }
+
+  if (protocol.completionEvent && !complete) {
+    throw new Error(`LLM stream ended before ${protocol.completionEvent} and is incomplete.`);
   }
 
   if (!content) {
