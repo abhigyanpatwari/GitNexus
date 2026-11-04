@@ -30,6 +30,7 @@ import type { RouteHookConfig } from '../core/ingestion/language-provider.js';
 import { autoHeapCapMb } from '../core/ingestion/utils/effective-ram.js';
 import { isTerminalJobStatus, type JobManager } from './analyze-job.js';
 import type { WorkerMessage } from './analyze-worker.js';
+import { projectAnalysisPhaseProgress } from '../core/analysis-progress.js';
 
 const _require = createRequire(import.meta.url);
 
@@ -343,7 +344,13 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
         if (msg.type === 'progress') {
           jobManager.updateJob(job.id, {
             status: 'analyzing',
-            progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
+            progress: {
+              ...projectAnalysisPhaseProgress(current.progress),
+              ...projectAnalysisPhaseProgress(msg),
+              phase: msg.phase,
+              percent: msg.percent,
+              message: msg.message,
+            },
           });
         } else if (msg.type === 'complete') {
           if (jobManager.applyPendingCancel(job.id)) {

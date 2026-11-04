@@ -144,6 +144,53 @@ describe('finalization gate follows the placement the run chose', () => {
     forkMock.mockReset();
   });
 
+  it('keeps graph readiness and embedding counters nonterminal across worker log messages', async () => {
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launcher()(job, REPO_PATH, {});
+    const embeddingProgress = {
+      phase: 'embedding',
+      totalNodes: 3,
+      completedNodes: 1,
+      reusedNodes: 1,
+      pendingNodes: 1,
+      failedNodes: 0,
+      activeUnit: 0,
+      chunks: 2,
+    };
+    child.emit('message', {
+      type: 'progress',
+      phase: 'embedding',
+      percent: 70,
+      message: 'Embedding',
+      graphPhase: 'ready',
+      embeddingProgress: { ...embeddingProgress, source: '/private/source', token: 1n },
+      modelDownloadPercent: 100,
+    });
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+    expect(jobManager.getJob(job.id)?.progress).toMatchObject({
+      graphPhase: 'ready',
+      embeddingProgress,
+      modelDownloadPercent: 100,
+    });
+    expect(JSON.stringify(jobManager.getJob(job.id)?.progress)).not.toContain('/private');
+    child.emit('message', {
+      type: 'progress',
+      phase: 'log',
+      percent: -1,
+      message: 'Native checkpoint',
+    });
+    expect(jobManager.getJob(job.id)?.progress).toEqual({
+      phase: 'log',
+      percent: -1,
+      message: 'Native checkpoint',
+      graphPhase: 'ready',
+      embeddingProgress,
+      modelDownloadPercent: 100,
+    });
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+    expect(backendInit).not.toHaveBeenCalled();
+  });
+
   it('completes a branch sub-slot run, whose files are NOT in the flat slot', async () => {
     // Only `branches/<slug>/` looks written. The flat slot is stale, so a gate
     // probing it would spin to the 60s timeout instead of settling here.

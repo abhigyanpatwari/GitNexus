@@ -27,6 +27,68 @@ export interface AnalysisPhaseProgress {
   modelDownloadPercent?: number;
 }
 
+const publicEmbeddingProgress = (
+  progress: EmbeddingJobProgress | undefined,
+): EmbeddingJobProgress | undefined => {
+  if (
+    !progress ||
+    !['preparing', 'embedding', 'indexing', 'ready', 'preserved', 'failed', 'unverified'].includes(
+      progress.phase,
+    )
+  )
+    return undefined;
+  const safe: EmbeddingJobProgress = { phase: progress.phase };
+  // Explicit numeric allowlist: the source may also contain internal paths,
+  // identities, credentials, or values that cannot cross JSON IPC.
+  for (const key of [
+    'totalUnits',
+    'completedUnits',
+    'reusedUnits',
+    'pendingUnits',
+    'failedUnits',
+    'totalNodes',
+    'completedNodes',
+    'reusedNodes',
+    'pendingNodes',
+    'failedNodes',
+    'chunks',
+  ] as const) {
+    const value = progress[key];
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) safe[key] = value;
+  }
+  if (
+    progress.activeUnit === null ||
+    (typeof progress.activeUnit === 'number' &&
+      Number.isSafeInteger(progress.activeUnit) &&
+      progress.activeUnit >= 0)
+  )
+    safe.activeUnit = progress.activeUnit;
+  return safe;
+};
+
+/** The same allowlist protects worker IPC and public progress feeds. */
+export function projectAnalysisPhaseProgress(
+  progress: AnalysisPhaseProgress | undefined,
+): AnalysisPhaseProgress {
+  const result: AnalysisPhaseProgress = {};
+  if (!progress) return result;
+  if (
+    progress.graphPhase &&
+    ['pending', 'building', 'ready', 'failed'].includes(progress.graphPhase)
+  )
+    result.graphPhase = progress.graphPhase;
+  const embeddingProgress = publicEmbeddingProgress(progress.embeddingProgress);
+  if (embeddingProgress) result.embeddingProgress = embeddingProgress;
+  if (
+    typeof progress.modelDownloadPercent === 'number' &&
+    Number.isFinite(progress.modelDownloadPercent) &&
+    progress.modelDownloadPercent >= 0 &&
+    progress.modelDownloadPercent <= 100
+  )
+    result.modelDownloadPercent = progress.modelDownloadPercent;
+  return result;
+}
+
 export function embeddingProgressFromState(state: EmbeddingJobState): EmbeddingJobProgress {
   const counts = [
     state.totalUnits,

@@ -8,6 +8,52 @@ const MIB = 1024 * 1024;
 const request = { effectiveMemoryBytes: 32_768 * MIB, availableCpus: 24, modelMemoryMb: 2048 };
 
 describe('analysis resource admission', () => {
+  it('charges a retained supervisor once per phase, independently of worker thread count', () => {
+    const fixed = {
+      ...request,
+      totalMb: 24576,
+      mainHeapMb: 8192,
+      workers: 2,
+      workerHeapMb: 1024,
+      graphPoolBytes: 1024 * MIB,
+    };
+    const before = resolveAnalysisResourceBudget(fixed);
+    const after = resolveAnalysisResourceBudget({ ...fixed, supervisorBytes: 192 * MIB + 1 });
+    expect(after.supervisorBytes).toBe(193 * MIB);
+    expect(after.mainHeapMb).toBe(before.mainHeapMb);
+    expect(after.parse.workers).toBe(before.parse.workers);
+    expect(after.parse.workerHeapMb).toBe(before.parse.workerHeapMb);
+    expect(after.parse.reservedBytes - before.parse.reservedBytes).toBe(193 * MIB);
+    expect(after.embedding.reservedBytes - before.embedding.reservedBytes).toBe(193 * MIB);
+  });
+
+  it('rejects an embedding-only process family whose supervisor exceeds its remaining capacity', () => {
+    const fixed = {
+      ...request,
+      totalMb: 1024,
+      mainHeapMb: 384,
+      graphPoolBytes: 256 * MIB,
+      modelMemoryMb: 0,
+      includeParsing: false,
+    };
+    expect(
+      resolveAnalysisResourceBudget({ ...fixed, supervisorBytes: 160 * MIB }).embedding
+        .reservedBytes,
+    ).toBe(1024 * MIB);
+    expect(() => resolveAnalysisResourceBudget({ ...fixed, supervisorBytes: 161 * MIB })).toThrow(
+      'cannot admit',
+    );
+  });
+
+  it.each([NaN, Infinity, -1, 0.5])(
+    'rejects an invalid supervisor reservation %s',
+    (supervisorBytes) => {
+      expect(() => resolveAnalysisResourceBudget({ ...request, supervisorBytes })).toThrow(
+        'supervisor',
+      );
+    },
+  );
+
   it('bounds every phase separately and reuses parser capacity for embedding', () => {
     for (const memoryMb of [2048, 4096, 8192, 16384, 32768]) {
       for (const availableCpus of [1, 2, 4, 24]) {

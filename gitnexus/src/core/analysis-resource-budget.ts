@@ -21,6 +21,8 @@ export interface AnalysisResourceRequest {
   /** Resume/sync can admit embeddings without reserving parser workers. */
   includeParsing?: boolean;
   graphPoolBytes?: number;
+  /** Resident parent process, charged once per child phase. */
+  supervisorBytes?: number;
   /** Estimated peak model/sidecar allocation; zero for an HTTP provider. */
   modelMemoryMb: number;
 }
@@ -29,6 +31,7 @@ export interface AnalysisResourceBudget {
   readonly totalBytes: number;
   readonly automatic: boolean;
   readonly headroomBytes: number;
+  readonly supervisorBytes: number;
   readonly mainHeapMb: number;
   readonly parse: {
     readonly workers: number;
@@ -86,6 +89,9 @@ export function resolveAnalysisResourceBudget(
   }
   const totalBytes = bytes(totalMb, 'resource budget');
   const headroomMb = Math.max(128, Math.ceil(totalMb * 0.12));
+  const supervisorMb = Math.ceil(
+    integer(request.supervisorBytes ?? 0, 'supervisor reservation', 0) / MIB,
+  );
   const graphPoolBytes =
     request.graphPoolBytes === undefined
       ? bytes(Math.max(GRAPH_POOL_MB, Math.min(4096, Math.floor(totalMb * 0.15))), 'graph pool')
@@ -100,10 +106,14 @@ export function resolveAnalysisResourceBudget(
   // A supported 10 MiB source node needs its full text/AST working set. Larger
   // explicit budgets must be able to admit it without truncating its content.
   const queueMb = Math.max(16, Math.min(512, Math.floor(totalMb / 32)));
-  const embeddingFixedMb = headroomMb + graphPoolMb + VECTOR_POOL_MB + modelMb + queueMb;
+  const embeddingFixedMb =
+    headroomMb + supervisorMb + graphPoolMb + VECTOR_POOL_MB + modelMb + queueMb;
   const includeParsing = request.includeParsing !== false;
   const parseFixedMb =
-    headroomMb + graphPoolMb + (includeParsing ? MIN_WORKER_HEAP_MB + WORKER_NATIVE_MB : 0);
+    headroomMb +
+    supervisorMb +
+    graphPoolMb +
+    (includeParsing ? MIN_WORKER_HEAP_MB + WORKER_NATIVE_MB : 0);
   const maximumMainMb = totalMb - Math.max(embeddingFixedMb, parseFixedMb);
   const mainHeapMb =
     request.mainHeapMb === undefined
@@ -130,7 +140,7 @@ export function resolveAnalysisResourceBudget(
       `Requested ${desiredWorkers} parser workers exceeds the ${cpuWorkers}-worker CPU allowance`,
     );
   }
-  const workerBudgetMb = totalMb - headroomMb - graphPoolMb - mainHeapMb;
+  const workerBudgetMb = totalMb - headroomMb - supervisorMb - graphPoolMb - mainHeapMb;
   const explicitWorkerHeapMb =
     request.workerHeapMb === undefined
       ? undefined
@@ -157,7 +167,11 @@ export function resolveAnalysisResourceBudget(
     : (explicitWorkerHeapMb ??
       Math.min(4096, Math.floor(workerBudgetMb / Math.max(1, workers)) - WORKER_NATIVE_MB));
   const parseReservedMb =
-    headroomMb + graphPoolMb + mainHeapMb + workers * (workerHeapMb + WORKER_NATIVE_MB);
+    headroomMb +
+    supervisorMb +
+    graphPoolMb +
+    mainHeapMb +
+    workers * (workerHeapMb + WORKER_NATIVE_MB);
   if (
     (includeParsing && (workers < 1 || workerHeapMb < MIN_WORKER_HEAP_MB)) ||
     parseReservedMb > totalMb
@@ -171,6 +185,7 @@ export function resolveAnalysisResourceBudget(
     totalBytes,
     automatic: request.totalMb === undefined,
     headroomBytes: bytes(headroomMb, 'headroom'),
+    supervisorBytes: bytes(supervisorMb, 'supervisor reservation'),
     mainHeapMb,
     parse: Object.freeze({
       workers,

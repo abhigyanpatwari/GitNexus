@@ -24,6 +24,7 @@
  * sites (`analyze-launch.ts`, tests) keep working unchanged.
  */
 import type { AnalyzeOptions } from '../core/run-analyze.js';
+import type { AnalysisPhaseProgress } from '../core/analysis-progress.js';
 import type { AnalyzeResultIpc } from './analyze-worker-ipc.js';
 import type { PreparedAnalysisHandoff } from '../core/analysis-phase-supervisor.js';
 
@@ -41,7 +42,7 @@ export interface CancelMessage {
 
 export type ParentMessage = StartMessage | CancelMessage;
 
-export interface ProgressMessage {
+export interface ProgressMessage extends AnalysisPhaseProgress {
   type: 'progress';
   phase: string;
   percent: number;

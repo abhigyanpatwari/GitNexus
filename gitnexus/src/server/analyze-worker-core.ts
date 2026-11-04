@@ -13,6 +13,7 @@
  * worker — only the lightweight `analyze-worker-ipc` projection helper.
  */
 import type { AnalyzeOptions } from '../core/run-analyze.js';
+import { projectAnalysisPhaseProgress } from '../core/analysis-progress.js';
 // The IPC message protocol lives in a declarations-only leaf, NOT in the
 // `analyze-worker.ts` entry module: importing it from the entry made this
 // module depend on the very module that depends on it (#cycle). Erased at
@@ -65,8 +66,14 @@ export async function runWorkerAnalysis(
       // writes); flushWAL still persists the index, process.exit reclaims handles.
       { ...options, skipNativeCloseOnExit: true },
       {
-        onProgress: (phase, percent, message) =>
-          deps.send({ type: 'progress', phase, percent, message }),
+        onProgress: (phase, percent, message, details) =>
+          deps.send({
+            type: 'progress',
+            phase,
+            percent,
+            message,
+            ...projectAnalysisPhaseProgress(details),
+          }),
         onLog: (message) => deps.send({ type: 'progress', phase: 'log', percent: -1, message }),
       },
       ...bootstrapArgs,

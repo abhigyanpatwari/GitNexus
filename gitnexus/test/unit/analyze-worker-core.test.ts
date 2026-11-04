@@ -20,6 +20,7 @@ import {
 import type { AnalyzeResult } from '../../src/core/run-analyze.js';
 import type { WorkerMessage } from '../../src/server/analyze-worker.js';
 import type { AnalyzerRunnerIdentity } from '../../src/storage/repo-manager.js';
+import type { AnalysisPhaseProgress } from '../../src/core/analysis-progress.js';
 import { IndexLockTimeoutError, type LockRecord } from '../../src/storage/index-lock.js';
 
 const baseResult: AnalyzeResult = {
@@ -35,6 +36,55 @@ const baseResult: AnalyzeResult = {
 const okRun: WorkerAnalysisDeps['runFullAnalysis'] = vi.fn(async () => baseResult);
 const okFinalize: WorkerAnalysisDeps['assertAnalysisFinalized'] = vi.fn(async () => undefined);
 const alwaysClaim: WorkerAnalysisDeps['claimTerminal'] = () => true;
+
+it('carries bounded phase progress over worker IPC without serializing internal fields', async () => {
+  const send = vi.fn<(msg: WorkerMessage) => void>((message) => {
+    JSON.stringify(message);
+  });
+  const embeddingProgress = {
+    phase: 'embedding' as const,
+    totalNodes: 3,
+    completedNodes: 1,
+    reusedNodes: 1,
+    pendingNodes: 1,
+    failedNodes: 0,
+    activeUnit: 0,
+    chunks: 2,
+  };
+  const details = {
+    graphPhase: 'ready',
+    embeddingProgress: { ...embeddingProgress, identity: 1n },
+    modelDownloadPercent: 25,
+    sourcePath: '/private/source',
+    native: 1n,
+  } as unknown as AnalysisPhaseProgress;
+  await runWorkerAnalysis(
+    '/repo',
+    {},
+    {
+      runFullAnalysis: vi.fn(async (_repo, _options, callbacks) => {
+        callbacks.onProgress('embedding', 70, 'Embedding current selection', details);
+        return baseResult;
+      }),
+      assertAnalysisFinalized: okFinalize,
+      claimTerminal: alwaysClaim,
+      send,
+    },
+  );
+  expect(
+    send.mock.calls.filter(([message]) => message.type === 'progress').map(([message]) => message),
+  ).toEqual([
+    {
+      type: 'progress',
+      phase: 'embedding',
+      percent: 70,
+      message: 'Embedding current selection',
+      graphPhase: 'ready',
+      embeddingProgress,
+      modelDownloadPercent: 25,
+    },
+  ]);
+});
 
 describe('prepared graph worker handoff', () => {
   const handoff = {
