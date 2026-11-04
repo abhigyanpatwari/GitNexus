@@ -1,5 +1,5 @@
 /** Paired chunk preparation, hashing and local-model inference benchmark.
- * Usage: node --expose-gc scripts/benchmark-embedding-chunking.mjs BASELINE_REPO CANDIDATE_REPO RESULT_JSON [--source]
+ * Usage: node --expose-gc bench/embedding-chunking/measure.mjs BASELINE_REPO CANDIDATE_REPO RESULT_JSON [--source]
  * Build both repositories first and use the same dependencies/model/hardware.
  */
 import { performance } from 'node:perf_hooks';

@@ -77,7 +77,7 @@ it.each([
       [
         '--import',
         pathToFileURL(preload).href,
-        fileURLToPath(new URL('../../scripts/benchmark-embedding-chunking.mjs', import.meta.url)),
+        fileURLToPath(new URL('../../bench/embedding-chunking/measure.mjs', import.meta.url)),
         repo,
         repo,
         path.join(root, 'result.json'),

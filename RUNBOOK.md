@@ -112,14 +112,17 @@ vectors and refresh only the cached fingerprint. Changed tails and incomplete
 checkpoint groups still regenerate their vectors.
 
 For paired performance measurements, build both checkouts and run from `gitnexus/`:
-`node --expose-gc scripts/benchmark-embedding-chunking.mjs /path/to/baseline /path/to/candidate /tmp/chunk-bench.json`.
+`node --expose-gc bench/embedding-chunking/measure.mjs /path/to/baseline /path/to/candidate /tmp/chunk-bench.json`.
 This manual benchmark requires a separately built baseline and runs outside the
 test suite; its failure-cleanup tests always run in CI.
 The benchmark uses the local embedding model and saves raw samples outside the
-repository. Compare per-cohort median/p95, input counts, and memory observations;
+repository. Recorded paired measurements and their environment are in
+`gitnexus/bench/embedding-chunking/baseline.json`. These are diagnostic references,
+not machine-independent timing gates. Compare per-cohort median/p95, input counts,
+and memory observations;
 it does not substitute for native analyze and persistence tests.
 To include source verification and the stored-snippet cap in the comparison, run
-`node --expose-gc scripts/benchmark-embedding-chunking.mjs /path/to/baseline /path/to/candidate /tmp/chunk-bench.json --source`.
+`node --expose-gc bench/embedding-chunking/measure.mjs /path/to/baseline /path/to/candidate /tmp/chunk-bench.json --source`.
 The large-function and medium-statement cohorts expose extra coverage and overlap
 costs; compare complete-source candidates separately from older capped inputs.
 
