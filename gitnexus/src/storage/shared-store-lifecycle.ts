@@ -105,6 +105,48 @@ const loadMetaStrict = async (slot: string): Promise<RepoMeta | null> => {
   return null;
 };
 
+/** Each branch owns its own publication and vector work under the member's
+ * ordinary slot lock. Never follow a symlink while deciding what to collect. */
+async function memberMetadataDirectories(slot: string): Promise<string[]> {
+  const directories = [slot];
+  const branches = path.join(slot, 'branches');
+  try {
+    const stat = await fs.lstat(branches);
+    if (!stat.isDirectory() || stat.isSymbolicLink())
+      throw new Error('Cannot collect a shared member with an unverified branches directory');
+    for (const entry of await fs.readdir(branches, { withFileTypes: true })) {
+      if (entry.isSymbolicLink())
+        throw new Error('Cannot collect a shared member with a symlinked branch');
+      if (entry.isDirectory() && !entry.name.startsWith('.'))
+        directories.push(path.join(branches, entry.name));
+    }
+  } catch (error) {
+    if (!isMissingFilesystemError(error)) throw error;
+  }
+  return directories;
+}
+
+/** The writer releases its lock before an exit-only supervisor reacquires it.
+ * Its durable intent still owns the files throughout that gap and a restart.
+ * A malformed receipt is retained evidence, never permission to delete it. */
+async function hasRetainedAnalysis(slot: string): Promise<boolean> {
+  for (const directory of await memberMetadataDirectories(slot)) {
+    try {
+      await fs.lstat(path.join(directory, 'analysis-publication.json'));
+      return true;
+    } catch (error) {
+      if (!isMissingFilesystemError(error)) throw error;
+    }
+    const metadata = await loadMetaStrict(directory);
+    if (
+      metadata &&
+      (Object.hasOwn(metadata, 'embeddingJob') || Object.hasOwn(metadata, 'embeddingCheckpoint'))
+    )
+      return true;
+  }
+  return false;
+}
+
 /**
  * Member slots that no registry entry uses any more: the checkout directory is
  * gone, or its entry moved elsewhere (`--no-share`, sharing turned off). The
@@ -121,7 +163,7 @@ const orphanMembers = async (slots: string[]): Promise<Set<string>> => {
     const meta = await loadMeta(slot);
     if (!meta?.repoPath) continue;
     if (!existsSync(meta.repoPath)) {
-      orphans.add(slot);
+      if (!(await hasRetainedAnalysis(slot))) orphans.add(slot);
       continue;
     }
     if (!entries) continue;
@@ -130,7 +172,7 @@ const orphanMembers = async (slots: string[]): Promise<Set<string>> => {
       !entry ||
       !registryPathEquals(canonicalizePath(entry.storagePath), canonicalizePath(slot))
     ) {
-      orphans.add(slot);
+      if (!(await hasRetainedAnalysis(slot))) orphans.add(slot);
     }
   }
   return orphans;
@@ -168,8 +210,9 @@ export const reclaimSharedStoreLocked = async (
       // whose lock is free, so the preview matches what --force would do.
       let lock: IndexLockHandle;
       try {
-        // A preview deletes nothing, not even the staging files the lock sweeps.
-        lock = await acquireIndexLock(slot, { timeoutMs: 1, sweep: !opts.dryRun });
+        // Recheck durable work under ownership before deleting anything. In
+        // particular, acquiring the lock must not sweep a just-prepared graph.
+        lock = await acquireIndexLock(slot, { timeoutMs: 1, sweep: false });
       } catch {
         orphans.delete(slot);
         continue;
@@ -199,8 +242,10 @@ export const reclaimSharedStoreLocked = async (
     slots = slots.filter((slot) => !orphans.has(slot));
   }
   for (const slot of slots) {
-    const graphPath = (await loadMetaStrict(slot))?.graphPath;
-    if (graphPath) referenced.add(path.dirname(path.resolve(graphPath)));
+    for (const directory of await memberMetadataDirectories(slot)) {
+      const graphPath = (await loadMetaStrict(directory))?.graphPath;
+      if (graphPath) referenced.add(path.dirname(path.resolve(directory, graphPath)));
+    }
   }
 
   for (const name of await listDirStrict(commitsDir)) {

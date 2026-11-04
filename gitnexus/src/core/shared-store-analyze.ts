@@ -41,6 +41,7 @@ import {
   cloneStoreKey,
   commitGraphDir,
   resolveGraphPath,
+  resolveGraphWritePath,
   resolveSharedStore,
   sharedStoreLayout,
   storeRootOfCheckoutSlot,
@@ -316,7 +317,7 @@ export const ensurePrivateSharedGraph = async (
   log: Log,
   opts: { copy?: boolean } = {},
 ): Promise<boolean> => {
-  const own = path.join(slot, LBUG_DIRECTORY);
+  const own = resolveGraphWritePath(slot);
   const pointed = resolveGraphPath(slot);
   if (pointed === own) return true;
   const meta = await loadMeta(slot);
@@ -384,7 +385,7 @@ export const publishSharedGraph = async (
   const slot = layout.checkoutSlot;
   const meta = await loadMeta(slot);
   if (!meta) return;
-  const own = path.join(slot, LBUG_DIRECTORY);
+  const own = resolveGraphWritePath(slot);
 
   // A graph built while files were dirty must not become shared until analyze
   // has reconciled those paths with disk and cleared them from the coverage receipt.
@@ -481,7 +482,11 @@ export const publishSharedGraph = async (
         meta.graphPath = targetGraph;
         await saveMeta(slot, meta);
       }
-    } else if (meta.graphPath !== undefined && (await exists(own))) {
+    } else if (
+      meta.graphPath !== undefined &&
+      path.isAbsolute(meta.graphPath) &&
+      (await exists(own))
+    ) {
       delete meta.graphPath;
       await saveMeta(slot, meta);
     }

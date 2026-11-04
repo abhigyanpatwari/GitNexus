@@ -298,6 +298,15 @@ export const resolveGraphPath = (storagePath: string): string => {
   return valid ? graph : own;
 };
 
+/** A private generation remains its own write target. Only an immutable
+ * shared commit graph needs a new slot-local file before mutation. */
+export const resolveGraphWritePath = (storagePath: string): string => {
+  const graph = resolveGraphPath(storagePath);
+  return path.dirname(path.resolve(graph)) === path.resolve(storagePath)
+    ? graph
+    : path.join(storagePath, LBUG_DIRECTORY);
+};
+
 /**
  * The store slot named by `<checkout>/.gitnexus/store.json`, or null. The
  * recorded slot must be this checkout's own slot under the stores directory,
