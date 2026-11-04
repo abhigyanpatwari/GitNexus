@@ -201,6 +201,7 @@ import {
 import {
   isSharedStoreDisabled,
   resolveGraphPath,
+  resolveGraphWritePath,
   resolveSharedStore,
   storeRootOfCheckoutSlot,
   type SharedStoreLayout,
@@ -1288,6 +1289,35 @@ interface WriteTarget {
   sharedStore?: SharedStoreLayout;
 }
 
+/** Adoption must not move the checkout away from its unfinished private work.
+ * Only inspected during a local-to-shared transition; established shared slots
+ * keep their existing fast path. Branch jobs belong to the same local root. */
+async function hasRetainedAnalysisWork(root: string): Promise<boolean> {
+  const pending = async (slot: string): Promise<boolean> => {
+    try {
+      await fs.lstat(path.join(slot, 'analysis-publication.json'));
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    const meta = await loadMeta(slot);
+    return Boolean(meta?.embeddingJob || meta?.embeddingCheckpoint);
+  };
+  if (await pending(root)) return true;
+  let branches;
+  try {
+    branches = await fs.opendir(path.join(root, 'branches'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  for await (const branch of branches) {
+    if (branch.isDirectory() && (await pending(path.join(root, 'branches', branch.name))))
+      return true;
+  }
+  return false;
+}
+
 /**
  * Resolve which storage slot this analyze writes to, including branch
  * placement (#2106/#2354). Extracted from the top of the pipeline so the lock
@@ -1320,15 +1350,29 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
     );
   }
   const sharingOff = options.noShare || isSharedStoreDisabled();
-  const sharedStore = sharingOff
+  let sharedStore = sharingOff
     ? undefined
     : (resolveSharedStore(repoPath) ?? (await resolveOptedInStore(repoPath, options.shareWith)));
+  const previousStorage = resolveStoragePath(repoPath);
+  let retainedStorage: string | undefined;
+  if (
+    sharedStore &&
+    path.resolve(previousStorage) !== path.resolve(sharedStore.checkoutSlot) &&
+    !storeRootOfCheckoutSlot(previousStorage) &&
+    (await hasRetainedAnalysisWork(previousStorage))
+  ) {
+    // Re-resolved after ordinary lock acquisition as well: if the previous
+    // writer completes while we wait, adoption can proceed on the next lock.
+    retainedStorage = previousStorage;
+    sharedStore = undefined;
+  }
   // A checkout still registered in a store after sharing was turned off
   // indexes into its own `.gitnexus` again; its slot is left for `clean --gc`.
-  const leavingStore =
-    !sharedStore && storeRootOfCheckoutSlot(resolveStoragePath(repoPath)) !== null;
+  const leavingStore = !sharedStore && storeRootOfCheckoutSlot(previousStorage) !== null;
   const explicitStorage =
-    sharedStore?.checkoutSlot ?? (leavingStore ? defaultStoragePath(repoPath) : undefined);
+    retainedStorage ??
+    sharedStore?.checkoutSlot ??
+    (leavingStore ? defaultStoragePath(repoPath) : undefined);
   const storagePath = explicitStorage
     ? await requireRegisteredStoragePath(
         { path: repoPath, storagePath: explicitStorage },
@@ -1364,10 +1408,10 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
     : {};
   const paths = getStoragePaths(repoPath, placement.branch, storagePath);
   const { metaPath } = paths;
-  // Analyze always writes a store slot's own graph; a recorded `graphPath`
-  // (an immutable commit graph) only redirects readers.
+  // Owned generation files stay writable in place. Only an immutable shared
+  // commit pointer resolves to a fresh slot-local write target.
   const lbugPath = storeRootOfCheckoutSlot(storagePath)
-    ? path.join(path.dirname(metaPath), LBUG_DIRECTORY)
+    ? resolveGraphWritePath(path.dirname(metaPath))
     : paths.lbugPath;
   return {
     storagePath,
@@ -1447,7 +1491,6 @@ export async function runFullAnalysis(
   }
   initialiseSearchFTSStemmer();
   initialiseSearchFTSCjkSegmentation();
-  if (options.resources) await drainAnalysisNativeResources();
   const contentRetention = contentRetentionFromEnvironment();
   // Scope the degraded-parse log throttle to this run (module-level counter
   // would otherwise stay saturated on a reused process).
@@ -1739,6 +1782,13 @@ async function runFullAnalysisInner(
   };
   const ftsProfile = ftsProfileForContentRetention(contentRetention);
   const ftsIndexes = getFtsIndexes(ftsProfile);
+  const admitGraphResources = async (): Promise<void> => {
+    if (!options.resources) return;
+    const { drainEmbeddingSidecarForAnalysis } =
+      await import('./embeddings/embedding-sidecar-client.js');
+    await drainEmbeddingSidecarForAnalysis();
+    await drainAnalysisNativeResources();
+  };
 
   // Start each analyze with a clean buffer-pool hint: any pre-pipeline DB open
   // (e.g. the embeddings-cache open) falls back to the default until the hint is
@@ -1776,7 +1826,7 @@ async function runFullAnalysisInner(
     }
     // Later dirty-flag writes spread the in-memory metadata; keep them from
     // re-recording the pointer this slot just left.
-    delete loadedMeta?.graphPath;
+    if (loadedMeta?.graphPath !== path.basename(lbugPath)) delete loadedMeta?.graphPath;
   };
   const loadedMeta = await loadMeta(metaDir);
   if (loadedMeta?.incrementalInProgress || options.repairFts) await ensurePrivateGraph();
@@ -1904,6 +1954,7 @@ async function runFullAnalysisInner(
           'Run `gitnexus analyze` (full) to rebuild from scratch.',
       );
     }
+    await admitGraphResources();
     await ensureWritableStorage();
     // P1 R8: park a poisoned live WAL before opening. Staging never parks —
     // the live index next to an unpublished staging file must replay its WAL.
@@ -2903,6 +2954,7 @@ async function runFullAnalysisInner(
     }
   }
 
+  await admitGraphResources();
   await ensureWritableStorage();
   // A forced rebuild reads the old graph only to carry embeddings over; with
   // none to carry, copying the shared graph would be thrown away unread.
@@ -2910,7 +2962,7 @@ async function runFullAnalysisInner(
     resumeEmbeddingCheckpoint ||
     _deriveEmbeddingMode(options, existingMeta?.stats?.embeddings ?? 0).shouldLoadCache;
   await ensurePrivateGraph(!options.force || forcedRebuildReadsOldGraph);
-  delete existingMeta?.graphPath;
+  if (existingMeta?.graphPath !== path.basename(lbugPath)) delete existingMeta?.graphPath;
   // Checkpoint 1, final read: a graph copy that just failed forces the rebuild
   // before the embedding plan, the parse cache, and the emit mode are decided.
   applyCollectedForce();
@@ -5374,6 +5426,7 @@ async function runFullAnalysisInner(
     const meta: RepoMeta = {
       repoPath,
       storagePath,
+      ...(path.basename(lbugPath) !== LBUG_DIRECTORY ? { graphPath: path.basename(lbugPath) } : {}),
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
       contentRetention,
