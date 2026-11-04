@@ -19,6 +19,9 @@ import {
 } from '../storage/storage-resolver.js';
 import { WikiGenerator, type WikiOptions } from '../core/wiki/generator.js';
 import {
+  ATLAS_CLOUD_BASE_URL,
+  ATLAS_CLOUD_DEFAULT_MODEL,
+  getProviderEnvApiKey,
   MINIMAX_MODEL_IDS,
   MINIMAX_OPENAI_BASE_URLS,
   parseLLMAllowedInsecureHttpHosts,
@@ -239,6 +242,10 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     if (options.apiKey) updates.apiKey = options.apiKey;
     if (options.baseUrl) updates.baseUrl = options.baseUrl;
     if (options.provider) updates.provider = options.provider;
+    if (options.provider === 'atlascloud' && providerChanged) {
+      if (!options.baseUrl) updates.baseUrl = ATLAS_CLOUD_BASE_URL;
+      if (!options.model) updates.model = ATLAS_CLOUD_DEFAULT_MODEL;
+    }
     if (options.apiVersion) updates.apiVersion = options.apiVersion;
     if (options.reasoningModel !== undefined) updates.isReasoningModel = options.reasoningModel;
     if (options.provider === 'minimax') {
@@ -304,7 +311,9 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       // Non-interactive mode — need either API key or Cursor CLI
       if (!llmConfig.apiKey && !isLocalProvider(llmConfig.provider)) {
         console.log('  Error: No LLM API key found.');
-        console.log('  Set MINIMAX_API_KEY, GITNEXUS_API_KEY, or OPENAI_API_KEY,');
+        console.log(
+          '  Set MINIMAX_API_KEY, ATLASCLOUD_API_KEY, GITNEXUS_API_KEY, or OPENAI_API_KEY,',
+        );
         console.log(
           '  or pass --api-key <key>, or use --provider cursor|claude|codex|opencode|grok.\n',
         );
@@ -314,7 +323,9 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       // Non-interactive with env var or cursor — just use it
     } else {
       console.log("  No LLM configured. Let's set it up.\n");
-      console.log('  Supports MiniMax, OpenAI-compatible APIs, and local agent CLIs.\n');
+      console.log(
+        '  Supports MiniMax, OpenAI, OpenRouter, Atlas Cloud, Azure, custom OpenAI-compatible APIs, and local agent CLIs.\n',
+      );
 
       // Check if local agent CLIs are available.
       const hasCursor = detectCursorCLI();
@@ -331,10 +342,11 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       console.log('  [1] OpenAI (api.openai.com)');
       console.log('  [2] OpenRouter (openrouter.ai)');
       console.log('  [3] Azure OpenAI');
-      console.log('  [4] Custom endpoint');
-      console.log('  [5] MiniMax Global (api.minimax.io)');
-      console.log('  [6] MiniMax China (api.minimaxi.com)');
-      let nextChoice = 7;
+      console.log('  [4] Atlas Cloud (api.atlascloud.ai)');
+      console.log('  [5] Custom endpoint');
+      console.log('  [6] MiniMax Global (api.minimax.io)');
+      console.log('  [7] MiniMax China (api.minimaxi.com)');
+      let nextChoice = 8;
       if (hasCursor) {
         const choice = String(nextChoice++);
         localChoices.push({
@@ -469,6 +481,10 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
           defaultModel = '';
           provider = 'openrouter';
         } else if (choice === '4') {
+          baseUrl = ATLAS_CLOUD_BASE_URL;
+          defaultModel = ATLAS_CLOUD_DEFAULT_MODEL;
+          provider = 'atlascloud';
+        } else if (choice === '5') {
           baseUrl = await prompt('  Base URL (e.g. http://localhost:11434/v1): ');
           if (!baseUrl) {
             console.log('\n  No URL provided. Aborting.\n');
@@ -477,9 +493,9 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
           }
           defaultModel = 'gpt-4o-mini';
           provider = 'custom';
-        } else if (choice === '5' || choice === '6') {
+        } else if (choice === '6' || choice === '7') {
           baseUrl =
-            choice === '6' ? MINIMAX_OPENAI_BASE_URLS.cn_zh : MINIMAX_OPENAI_BASE_URLS.global_en;
+            choice === '7' ? MINIMAX_OPENAI_BASE_URLS.cn_zh : MINIMAX_OPENAI_BASE_URLS.global_en;
           defaultModel = MINIMAX_MODEL_IDS[0];
           provider = 'minimax';
         } else {
@@ -500,11 +516,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
         }
 
         // API key — pre-fill hint if env var exists
-        const envKey =
-          (provider === 'minimax' ? process.env.MINIMAX_API_KEY : undefined) ||
-          process.env.GITNEXUS_API_KEY ||
-          process.env.OPENAI_API_KEY ||
-          '';
+        const envKey = getProviderEnvApiKey(provider);
         if (envKey) {
           const masked = envKey.slice(0, 6) + '...' + envKey.slice(-4);
           const useEnv = await prompt(`  Use existing env key (${masked})? (Y/n): `);
