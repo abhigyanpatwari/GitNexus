@@ -74,7 +74,7 @@ withTestLbugDB('conn-serialization', () => {
       const cursor = {
         hasNext: () => read < 2050,
         getNextSync: () => {
-          expect(visited).toBe(read); // The previous row was consumed before reading another.
+          expect(visited).toBe(read);
           return { n: ++read };
         },
         close,
@@ -90,7 +90,6 @@ withTestLbugDB('conn-serialization', () => {
         checkpoint = adapter.executeQuery('CHECKPOINT');
       });
       const prepare = vi.spyOn(lbug.Connection.prototype, 'prepare');
-      // executeQuery reaches prepare only once the reader has closed.
       prepare.mockImplementation(async () => {
         expect(visited).toBe(2050);
         expect(close).toHaveBeenCalledTimes(1);

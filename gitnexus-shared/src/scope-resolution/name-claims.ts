@@ -380,6 +380,7 @@ export function lookupLexicalName(
   // value's type to reads inside the writing scope.
   if (carriedConstructor === undefined)
     return id === null ? ABSENT : { ...ABSENT, status: 'blocked' };
-  const carried = { typeBinding: carriedConstructor };
-  return id === null ? { ...ABSENT, ...carried } : { ...ABSENT, ...carried, status: 'blocked' };
+  return id === null
+    ? { ...ABSENT, typeBinding: carriedConstructor }
+    : { ...ABSENT, typeBinding: carriedConstructor, status: 'blocked' };
 }

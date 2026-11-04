@@ -93,7 +93,7 @@ const digest = (rows) => {
   return { count: rows.length, sha256: hash.digest('hex') };
 };
 
-async function sample(repo, reuse, name) {
+async function sample(repo, isCandidate, name) {
   process.env.GITNEXUS_EXPERIMENTAL_SEMANTIC_CACHE = '0';
   global.gc?.();
   records.length = 0;
@@ -157,7 +157,7 @@ async function sample(repo, reuse, name) {
   }
   const report = {
     name,
-    variant: reuse ? 'candidate' : 'baseline',
+    variant: isCandidate ? 'candidate' : 'baseline',
     ms,
     loadBefore,
     loadAfter: os.loadavg(),
@@ -182,7 +182,7 @@ async function sample(repo, reuse, name) {
 
 // Separate runtimes isolate implementation and JIT state. Fresh mode exits
 // after every sample; persistent mode retains a process across real edits.
-function worker(repo, reuse) {
+function worker(repo, isCandidate) {
   let child, pending, exited;
   const start = () => {
     child = fork(fileURLToPath(import.meta.url), process.argv.slice(2), {
@@ -190,7 +190,7 @@ function worker(repo, reuse) {
       env: {
         ...process.env,
         GITNEXUS_LEXICAL_BENCH_WORKER: '1',
-        GITNEXUS_BENCH_RUNTIME: reuse ? candidateRuntime : baselineRuntime,
+        GITNEXUS_BENCH_RUNTIME: isCandidate ? candidateRuntime : baselineRuntime,
       },
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     });
@@ -217,7 +217,7 @@ function worker(repo, reuse) {
       if (!child) start();
       const report = await new Promise((resolve, reject) => {
         pending = { resolve, reject };
-        child.send({ repo, reuse, name });
+        child.send({ repo, reuse: isCandidate, name });
       });
       results.push(report);
       fs.writeFileSync(
@@ -247,9 +247,9 @@ function worker(repo, reuse) {
 }
 
 if (isWorker) {
-  process.on('message', async ({ repo, reuse, name }) => {
+  process.on('message', async ({ repo, reuse: isCandidate, name }) => {
     try {
-      process.send({ report: await sample(repo, reuse, name) });
+      process.send({ report: await sample(repo, isCandidate, name) });
     } catch (error) {
       process.send({ error: error.stack ?? String(error) });
     }
