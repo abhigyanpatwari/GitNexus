@@ -57,6 +57,12 @@ it('reads the opened metadata snapshot and invalidates it after pathname replace
   expect(resolveGraphPath(slot)).toBe(path.join(slot, second));
 });
 
+it('preserves a relative storage path while validating its generation', () => {
+  const { slot } = fixture();
+  const relative = path.relative(process.cwd(), slot);
+  expect(resolveGraphPath(relative, { graphPath: first })).toBe(path.join(relative, first));
+});
+
 it.skipIf(process.platform === 'win32').each([false, true])(
   'rejects symlinked metadata with a warm cache of %s',
   (warm) => {

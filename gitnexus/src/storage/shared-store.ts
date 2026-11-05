@@ -296,7 +296,7 @@ export const resolveGraphPath = (
   if (typeof recorded !== 'string') return own;
   if (/^lbug\.generation\.[a-f0-9]{32}$/.test(recorded)) {
     const graph = path.join(storagePath, recorded);
-    const relative = path.relative(path.resolve(storagePath), path.resolve(graph));
+    const relative = path.relative(storagePath, graph);
     if (relative.startsWith('..') || path.isAbsolute(relative)) return own;
     // Never follow an edited pointer to a symlink or another slot. A missing
     // committed generation must fail at open, rather than serve an older lbug.
