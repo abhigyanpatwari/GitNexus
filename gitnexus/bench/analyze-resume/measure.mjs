@@ -124,6 +124,31 @@ export function summarizePairs(pairs) {
   };
 }
 
+/** Detect slowdowns against a contemporaneous base, never historical wall-clock timings. */
+export function checkPerformance(summaries, baseline) {
+  assert.equal(baseline.schemaVersion, 1, 'Unsupported benchmark baseline');
+  assert.equal(baseline.maxPairedRatio, 1, 'The gate must not allow a performance regression');
+  const scenarios = Object.keys(baseline.scenarios);
+  assert(scenarios.length > 0, 'Missing baseline scenarios');
+  const failedScenarios = [];
+  const inconclusiveScenarios = [];
+  for (const scenario of scenarios) {
+    const summary = summaries[scenario];
+    assert(summary && summary.pairs >= 7, `Missing seven measured pairs for ${scenario}`);
+    const interval = summary.pairedBootstrap95;
+    assert(
+      Array.isArray(interval) &&
+        interval.length === 2 &&
+        interval.every((value) => Number.isFinite(value) && value > 0) &&
+        interval[0] <= interval[1],
+      `Invalid paired interval for ${scenario}`,
+    );
+    if (interval[0] > baseline.maxPairedRatio) failedScenarios.push(scenario);
+    else if (interval[1] >= baseline.maxPairedRatio) inconclusiveScenarios.push(scenario);
+  }
+  return { failedScenarios, inconclusiveScenarios };
+}
+
 /** Sample Linux process RSS once per process, including descendants, never per thread. */
 async function sampleTree(pid) {
   if (process.platform !== 'linux') return undefined;
@@ -443,13 +468,16 @@ async function runCase({
 }
 
 export async function main(argv = process.argv.slice(2)) {
+  const baseline = JSON.parse(
+    await fs.readFile(new URL('./baseline.json', import.meta.url), 'utf8'),
+  );
   const { values: v } = parseArgs({
     args: argv,
     options: {
       baseline: { type: 'string' },
       candidate: { type: 'string' },
       output: { type: 'string' },
-      scenarios: { type: 'string', default: SCENARIOS.join(',') },
+      scenarios: { type: 'string', default: Object.keys(baseline.scenarios).join(',') },
       pairs: { type: 'string', default: '7' },
       warmups: { type: 'string', default: '1' },
       modules: { type: 'string', default: '64' },
@@ -459,6 +487,7 @@ export async function main(argv = process.argv.slice(2)) {
       'default-resources': { type: 'boolean', default: false },
       'sample-ms': { type: 'string', default: '25' },
       'keep-stores': { type: 'boolean', default: false },
+      check: { type: 'boolean', default: false },
       help: { type: 'boolean' },
     },
   });
@@ -469,6 +498,7 @@ export async function main(argv = process.argv.slice(2)) {
   --pairs 7 --warmups 1   Alternating paired invocations; fewer than seven pairs is smoke-only
   --modules 64 --functions 16 --heap-mb 2048 --workers 2 --sample-ms 25
   --default-resources   Omit heap, worker and native-pool overrides on both sides
+  --check               Require the baseline corpus/scenarios and reject detected slowdowns
   --keep-stores          Retain owned index/home artifacts (logs and measurements always retained)
 Includes full CLI startup, graph/manifest/native writes and final index work.
 HTTP resume uses a deterministic provider outage, not an unsafe native-process kill.
@@ -502,6 +532,16 @@ Live-query latency and platform cases remain separate acceptance requirements.`)
       scenarios.every((x) => SCENARIOS.includes(x)),
     'Invalid or repeated scenario',
   );
+  if (v.check) {
+    assert(numbers.pairs >= 7 && numbers.warmups >= 1, '--check requires seven pairs and a warmup');
+    for (const key of ['modules', 'functions'])
+      assert.equal(numbers[key], baseline.settings[key], `--check requires baseline ${key}`);
+    assert(
+      Object.keys(baseline.scenarios).every((scenario) => scenarios.includes(scenario)),
+      '--check requires all baseline scenarios',
+    );
+    assert.equal(baseline.maxPairedRatio, 1, 'The gate must not allow a performance regression');
+  }
   const candidate =
     v.candidate ?? fileURLToPath(new URL('../../dist/cli/index.js', import.meta.url));
   const clis = { baseline: path.resolve(v.baseline), candidate: path.resolve(candidate) };
@@ -634,9 +674,22 @@ Live-query latency and platform cases remain separate acceptance requirements.`)
       report.summaries[scenario] = summarizePairs(pairs);
       await save();
     }
+    if (v.check) {
+      report.check = checkPerformance(report.summaries, baseline);
+      await save();
+      assert.equal(
+        report.check.failedScenarios.length,
+        0,
+        `Performance regression: ${report.check.failedScenarios.join(', ')}; inspect ${output}`,
+      );
+      if (report.check.inconclusiveScenarios.length)
+        console.warn(
+          `Inconclusive timings: ${report.check.inconclusiveScenarios.join(', ')}; not proof of equal performance.`,
+        );
+    }
     console.log(
       JSON.stringify(
-        { output, summaries: report.summaries, acceptance: report.acceptance },
+        { output, summaries: report.summaries, check: report.check, acceptance: report.acceptance },
         null,
         2,
       ),
