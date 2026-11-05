@@ -88,9 +88,14 @@ describe('lexical benchmark preflight', () => {
 });
 
 describe('lexical benchmark sample collection', () => {
-  it.each(['fresh', 'persistent'])(
-    'collects a complete reversed-order baseline with a slower candidate (%s)',
-    (lifecycle) => {
+  it.each([
+    { lifecycle: 'fresh', pairArg: undefined, expectedPairs: 9 },
+    { lifecycle: 'persistent', pairArg: undefined, expectedPairs: 9 },
+    { lifecycle: 'fresh', pairArg: '3', expectedPairs: 3 },
+    { lifecycle: 'persistent', pairArg: '3', expectedPairs: 3 },
+  ])(
+    'collects a complete reversed-order run with a slower candidate ($lifecycle, $expectedPairs pairs)',
+    ({ lifecycle, pairArg, expectedPairs }) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lexical-samples-'));
       scratch.push(root);
       const corpora = ['before', 'after'].map((name) => {
@@ -170,7 +175,7 @@ describe('lexical benchmark sample collection', () => {
         const output = path.join(root, `output-${screen}`);
         const result = spawnSync(
           process.execPath,
-          [harness, ...runtimes, ...corpora, output, lifecycle],
+          [harness, ...runtimes, ...corpora, output, lifecycle, ...(pairArg ? [pairArg] : [])],
           {
             encoding: 'utf8',
             env: {
@@ -187,13 +192,32 @@ describe('lexical benchmark sample collection', () => {
         const report = JSON.parse(fs.readFileSync(path.join(output, 'results.json'), 'utf8'));
         expect(report.screen).toBe(screen === '1');
         expect(report.baseFirst).toBe(false);
-        expect(report.results.map((sample: { name: string }) => sample.name)).toEqual([
+        expect(report.pairs).toBe(expectedPairs);
+        const order = [
           'candidate-seed',
           'baseline-seed',
           'candidate-1',
           'baseline-1',
-          ...(screen === '0' ? ['baseline-2', 'candidate-2', 'candidate-3', 'baseline-3'] : []),
-        ]);
+          'baseline-2',
+          'candidate-2',
+          'candidate-3',
+          'baseline-3',
+          'baseline-4',
+          'candidate-4',
+          'candidate-5',
+          'baseline-5',
+          'baseline-6',
+          'candidate-6',
+          'candidate-7',
+          'baseline-7',
+          'baseline-8',
+          'candidate-8',
+          'candidate-9',
+          'baseline-9',
+        ];
+        expect(report.results.map((sample: { name: string }) => sample.name)).toEqual(
+          order.slice(0, screen === '0' ? 2 + 2 * expectedPairs : 4),
+        );
         for (const repo of corpora)
           expect(fs.existsSync(path.join(repo, 'gitnexus/src/semantic-bench-control.ts'))).toBe(
             false,

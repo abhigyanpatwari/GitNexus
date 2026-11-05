@@ -1,6 +1,7 @@
 // Build both runtimes, then run with Node:
-// measure.mjs BASE_RUNTIME CANDIDATE_RUNTIME BASE_CORPUS CANDIDATE_CORPUS OUTPUT [fresh|persistent]
+// measure.mjs BASE_RUNTIME CANDIDATE_RUNTIME BASE_CORPUS CANDIDATE_CORPUS OUTPUT [fresh|persistent] [PAIRS]
 // Corpus checkouts must be clean/disposable and at the same commit. OUTPUT must not exist.
+// For gate evidence, set GITNEXUS_LEXICAL_BENCH_SCREEN=0; PAIRS defaults to 9.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,6 +18,8 @@ const [baselineRuntime, candidateRuntime, baseline, candidate, output] = args
   .slice(0, 5)
   .map((value) => path.resolve(value));
 const lifecycle = args[5] ?? 'fresh';
+const pairs = Number(args[6] ?? 9);
+assert(Number.isSafeInteger(pairs) && pairs > 0, 'Pairs must be a positive integer');
 const workers = Number(process.env.GITNEXUS_LEXICAL_BENCH_WORKERS ?? 16);
 const heapMiB = Number(process.env.GITNEXUS_LEXICAL_BENCH_HEAP_MIB ?? 8192);
 const screenSetting = process.env.GITNEXUS_LEXICAL_BENCH_SCREEN ?? '1';
@@ -100,6 +103,7 @@ async function sample(repo, isCandidate, name) {
   const logs = [];
   const progress = [];
   const loadBefore = os.loadavg();
+  const cpuBefore = process.cpuUsage();
   const started = performance.now();
   const result = await runFullAnalysis(
     repo,
@@ -120,6 +124,10 @@ async function sample(repo, isCandidate, name) {
     },
   );
   const ms = performance.now() - started;
+  const cpu = process.cpuUsage(cpuBefore);
+  // Process-lifetime high-water mark captured before this sample's verification.
+  // Earlier samples can set it; this is not an interval peak or a memory delta.
+  const analysisPeakRssKiB = process.resourceUsage().maxRSS;
   assert(!result.alreadyUpToDate, 'A no-op is not an edit benchmark');
   assert(!result.graphWriteCollapsed);
   assert(!result.ftsSkipped, 'This benchmark includes FTS');
@@ -159,6 +167,9 @@ async function sample(repo, isCandidate, name) {
     name,
     variant: isCandidate ? 'candidate' : 'baseline',
     ms,
+    cpuMs: (cpu.user + cpu.system) / 1000,
+    analysisPeakRssKiB,
+    storagePath: result.storagePath,
     loadBefore,
     loadAfter: os.loadavg(),
     maxRssKiB: process.resourceUsage().maxRSS,
@@ -227,6 +238,7 @@ function worker(repo, isCandidate) {
             head: head(repo),
             node: process.version,
             lifecycle,
+            pairs,
             workers,
             heapMiB,
             screen,
@@ -271,7 +283,7 @@ if (isWorker) {
       beforeSeed = await beforeWorker.run('baseline-seed');
     }
     assert.deepEqual(afterSeed.graph, beforeSeed.graph, 'Seed semantic graphs differ');
-    for (let pair = 1; pair <= 3; pair++) {
+    for (let pair = 1; pair <= pairs; pair++) {
       const text = pair % 2 ? source.replace('s.save()', 's.load()') : source;
       for (const repo of [baseline, candidate]) fs.writeFileSync(path.join(repo, control), text);
       // Alternate ordering to reduce warm-up/load bias. Both indexes see a real edit.

@@ -122,8 +122,8 @@ clean disposable corpus checkouts at the same commit, then run from
 
 ```sh
 node bench/lexical-lookup/differential.mjs BASE_RUNTIME CANDIDATE_RUNTIME
-node bench/lexical-lookup/measure.mjs BASE_RUNTIME CANDIDATE_RUNTIME BASE_CORPUS CANDIDATE_CORPUS OUTPUT_FRESH fresh
-node bench/lexical-lookup/measure.mjs BASE_RUNTIME CANDIDATE_RUNTIME BASE_CORPUS CANDIDATE_CORPUS OUTPUT_PERSISTENT persistent
+node bench/lexical-lookup/measure.mjs BASE_RUNTIME CANDIDATE_RUNTIME BASE_CORPUS CANDIDATE_CORPUS OUTPUT_FRESH fresh 3
+node bench/lexical-lookup/measure.mjs BASE_RUNTIME CANDIDATE_RUNTIME BASE_CORPUS CANDIDATE_CORPUS OUTPUT_PERSISTENT persistent 3
 ```
 
 By default, the timing harness stops after the first edit pair if the candidate

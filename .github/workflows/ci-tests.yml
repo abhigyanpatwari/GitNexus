@@ -8,9 +8,9 @@ permissions:
 
 jobs:
   lexical-lookup-benchmark:
-    name: lexical lookup / separate and repeated processes
+    name: indexing / lexical lookup and cache interning
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
     env:
@@ -72,7 +72,7 @@ jobs:
           node gitnexus/bench/lexical-lookup/measure.mjs
           "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE"
           "$RUNNER_TEMP/lexical-lookup/corpus-baseline" "$RUNNER_TEMP/lexical-lookup/corpus-candidate"
-          "$RUNNER_TEMP/lexical-lookup/fresh" fresh
+          "$RUNNER_TEMP/lexical-lookup/fresh" fresh 9
           2>&1 | tee "$RUNNER_TEMP/lexical-lookup/fresh.log"
       - name: Measure repeated processes
         if: ${{ !cancelled() }}
@@ -81,8 +81,27 @@ jobs:
           node gitnexus/bench/lexical-lookup/measure.mjs
           "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE"
           "$RUNNER_TEMP/lexical-lookup/corpus-baseline" "$RUNNER_TEMP/lexical-lookup/corpus-candidate"
-          "$RUNNER_TEMP/lexical-lookup/persistent" persistent
+          "$RUNNER_TEMP/lexical-lookup/persistent" persistent 9
           2>&1 | tee "$RUNNER_TEMP/lexical-lookup/persistent.log"
+      - name: Compare real cache shard interning
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: >-
+          node --expose-gc --max-old-space-size=4096 gitnexus/bench/v8-sidecar/intern.mjs
+          "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/lexical-lookup/fresh/results.json"
+          "$RUNNER_TEMP/lexical-lookup/interner.json"
+          2>&1 | tee "$RUNNER_TEMP/lexical-lookup/interner.log"
+      - name: Enforce indexing and cache interning performance budget
+        if: ${{ !cancelled() }}
+        run: node gitnexus/bench/v8-sidecar/check.mjs "$RUNNER_TEMP/lexical-lookup"
+      - name: Publish indexing performance summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f "$RUNNER_TEMP/lexical-lookup/report.md" ]]; then
+            cat "$RUNNER_TEMP/lexical-lookup/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Retain lexical lookup measurements
         if: always()
         uses: ./.github/actions/upload-test-artifact
@@ -91,6 +110,9 @@ jobs:
           path: |
             ${{ runner.temp }}/lexical-lookup/fresh/results.json
             ${{ runner.temp }}/lexical-lookup/persistent/results.json
+            ${{ runner.temp }}/lexical-lookup/interner.json
+            ${{ runner.temp }}/lexical-lookup/report.json
+            ${{ runner.temp }}/lexical-lookup/report.md
             ${{ runner.temp }}/lexical-lookup/*.log
           retention-days: 30
 
