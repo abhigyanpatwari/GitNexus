@@ -145,6 +145,48 @@ describe('contentHashForNode', () => {
     expect(contentHashForNode(node)).not.toBe('a6e73419c424afff21cb94135388d52b04252ebb');
   });
 
+  it('invalidates the previous AST layout while preserving fixed-window fingerprints', () => {
+    const node = {
+      id: 'Function:sample.ts:sample',
+      name: 'sample',
+      label: 'Function',
+      filePath: 'sample.ts',
+      content: `function sample() { return [${Array.from({ length: 100 }, (_, i) => `"value_${i}"`).join(',')}]; }`,
+      startLine: 0,
+      endLine: 0,
+    };
+    // Captured from the layout before generic child splitting.
+    expect(contentHashForNode(node, { chunkSize: 80 })).not.toBe(
+      '1fbea03b8ce82ecef5674a8c3d00168ad4fec352',
+    );
+    expect(contentHashForNode(node, { chunkSize: 80, chunkStrategy: 'fixed' })).toBe(
+      '47b836f2d7f5ae1668fd8a8f98e91f5d4f60f483',
+    );
+  });
+
+  it('invalidates source-backed AST layouts when the chunk size exceeds the retained snippet', () => {
+    const node = {
+      id: 'Function:sample.ts:sample',
+      name: 'sample',
+      label: 'Function',
+      filePath: 'sample.ts',
+      content: 'function sample() {'.padEnd(4000, 'x') + '... [truncated]',
+      startLine: 0,
+      endLine: 500,
+    };
+    const source = {
+      repoPath: '/snapshot',
+      fileHashes: { 'sample.ts': 'a'.repeat(64) },
+      contentRetention: 'full' as const,
+    };
+    expect(contentHashForNode(node, { chunkSize: 10000 }, source)).not.toBe(
+      '5e404f884483e022751b285e3916ccff1e05e486',
+    );
+    expect(contentHashForNode(node, { chunkSize: 10000, chunkStrategy: 'fixed' }, source)).toBe(
+      'a99871a014df204483887e05bc5fabc9ad7d41b6',
+    );
+  });
+
   it('binds long-source fingerprints, ranges and policy without changing short v7 hashes', () => {
     const source = {
       repoPath: '/missing',

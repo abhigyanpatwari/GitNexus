@@ -49,6 +49,11 @@ const sources = {
     'Function',
     `function sample() {\n${Array.from({ length: 30 }, (_, i) => ` consume(${i}, "${'x'.repeat(280)}");`).join('\n')}\n}`,
   ],
+  array: [
+    'Function',
+    `function sample() {\n const values = [\n${Array.from({ length: 100 }, (_, i) => `  { id: ${i}, label: "value_${i}", enabled: true },`).join('\n')}\n ];\n return values;\n}`,
+  ],
+  literal: ['Function', `function sample() { return "${'x'.repeat(9000)}TAIL_SENTINEL"; }`],
   class: [
     'Class',
     `class Sample {\n before: string;\n run() {\n${lines(100, '    ')}\n }\n after = 42;\n}`,

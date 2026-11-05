@@ -362,6 +362,42 @@ describe('AST embedding contracts with real parsers (#702)', () => {
   });
 
   it.each([
+    ['array.ts', 'function sample() { const values = [', ']; return values; }'],
+    ['arguments.ts', 'function sample() { return consume(', '); }'],
+    ['list.py', 'def sample():\n    return [', ']'],
+  ])('splits oversized expressions at child boundaries in %s', async (filePath, prefix, suffix) => {
+    const entries = Array.from({ length: 35 }, (_, i) => `"value_${i}_λ😀_${'x'.repeat(24)}"`);
+    const source = `${prefix}\r\n${entries.join(',\r\n')}\r\n${suffix}`;
+    expect((await ast.ensureAndParse(source, filePath))?.rootNode.hasError).toBe(false);
+    for (const size of [80, 150]) {
+      for (const overlap of [0, 15]) {
+        const chunks = await chunkNode('Function', source, filePath, 10, 50, size, overlap);
+        for (const entry of entries)
+          expect(
+            chunks.some((chunk) => chunk.text.includes(entry)),
+            entry,
+          ).toBe(true);
+        const covered = new Uint8Array(source.length);
+        for (const chunk of chunks) {
+          expect(chunk.text).toBe(source.slice(chunk.startOffset, chunk.endOffset));
+          expect(chunk.text.length).toBeLessThanOrEqual(size);
+          expect(chunk.startLine).toBe(
+            10 + source.slice(0, chunk.startOffset).split('\n').length - 1,
+          );
+          expect(chunk.endLine).toBe(
+            10 + source.slice(0, chunk.endOffset - 1).split('\n').length - 1,
+          );
+          covered.fill(1, chunk.startOffset, chunk.endOffset);
+        }
+        for (let i = 0; i < source.length; i++)
+          if (!/\s/.test(source[i])) expect(covered[i], `uncovered offset ${i}`).toBe(1);
+        for (let i = 1; i < chunks.length; i++)
+          expect(chunks[i - 1].endOffset - chunks[i].startOffset).toBeLessThanOrEqual(overlap);
+      }
+    }
+  });
+
+  it.each([
     ['', ''],
     ['other(); ', ''],
     ['', ' other();'],

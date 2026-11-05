@@ -132,10 +132,12 @@ export const contentHashForNode = (
   }
   if (
     strategy === 'ast' &&
-    node.content.length > chunkSize &&
+    // Original source can exceed a custom budget even when the retained snippet fits.
+    (node.content.length > chunkSize ||
+      (source?.contentRetention === 'full' && needsEmbeddingSource(node, config))) &&
     CHUNKING_RULES[node.label]?.mode === CHUNK_MODE_AST_FUNCTION
   ) {
-    version += '\nnested-statement-layout:v1';
+    version += '\nnested-statement-layout:v2';
   }
   if (
     !isShortLabel(node.label) &&

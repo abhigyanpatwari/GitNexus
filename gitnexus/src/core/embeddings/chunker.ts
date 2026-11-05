@@ -218,43 +218,35 @@ const astChunk = async (
   );
 };
 
-const STATEMENT_BLOCK_TYPES = new Set([
-  'statement_block',
-  'block',
-  'compound_statement',
-  'constructor_body',
-  'statements',
-  'switch_body',
-  // Case/default bodies hold statements directly, without a nested block.
-  'switch_case',
-  'switch_default',
-  'case_statement',
-]);
-const COMPOUND_STATEMENT_TYPES = new Set([
-  'if_statement',
-  'if_expression',
-  'else_clause',
-  'elif_clause',
-  'for_statement',
-  'for_in_statement',
-  'for_expression',
-  'enhanced_for_statement',
-  'while_statement',
-  'while_expression',
-  'do_statement',
-  'do_while_statement',
-  'try_statement',
-  'try_expression',
-  'catch_clause',
-  'finally_clause',
-  'switch_statement',
-  'synchronized_statement',
-  'with_statement',
-]);
-
-/** Descend only oversized compound statements, using the existing tree. Keep
- * every source character, including branch headers and closing delimiters.
- * An indivisible expression still uses chunkByUnits' bounded fallback. */
+/**
+ * Adapted from ASTChunk's cAST split/merge algorithm:
+ * https://github.com/yilinjz/astchunk/blob/82029ada8a8dd8d668283c076980cedb886e6d4c/src/astchunk/astchunk_builder.py
+ * Descend oversized nodes and greedily pack fitting siblings. Use the existing
+ * tree, a hard UTF-16 character budget (including gaps), and bounded overlap.
+ * Retain oversized leaves for chunkByUnits' character fallback instead of
+ * dropping them. An explicit stack avoids recursion limits on deep syntax.
+ *
+ * MIT License
+ * Copyright (c) 2025 Yilin (Jason) Zhang
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
 const refineOversizedStatement = (
   statement: ChunkSyntaxNode,
   chunkSize: number,
@@ -269,26 +261,21 @@ const refineOversizedStatement = (
       cursor = end;
     }
   };
-  const pending: Array<{ node: ChunkSyntaxNode; index?: number } | { end: number }> = [
-    { node: statement },
-  ];
+  const pending = [{ node: statement, index: 0 }];
   while (pending.length) {
     const frame = pending.pop();
     if (!frame) break;
-    if ('end' in frame) {
-      boundary(frame.end);
-      continue;
-    }
-    const node = frame.node;
-    if (STATEMENT_BLOCK_TYPES.has(node.type)) {
-      const index = frame.index ?? 0;
-      if (index >= node.namedChildCount) continue;
+    const { node, index } = frame;
+    const childCount = node.namedChildCount;
+    if (node.endIndex - node.startIndex <= chunkSize || index >= childCount) {
+      boundary(node.endIndex);
+    } else {
       const first = node.namedChild(index);
       if (!first) continue;
       // Tree-sitter child lookup crosses the native boundary. Binary search
       // the last fitting statement instead of materializing every inner node.
       let low = index,
-        high = node.namedChildCount;
+        high = childCount;
       const budgetEnd = cursor + chunkSize - (boundaries.length ? overlap : 0);
       while (low < high) {
         const mid = (low + high) >>> 1;
@@ -302,7 +289,7 @@ const refineOversizedStatement = (
           boundary(first.startIndex);
           pending.push({ node, index });
         } else {
-          pending.push({ node, index: index + 1 }, { node: first });
+          pending.push({ node, index: index + 1 }, { node: first, index: 0 });
         }
         continue;
       }
@@ -320,19 +307,6 @@ const refineOversizedStatement = (
       }
       boundary(end);
       pending.push({ node, index: last + 1 });
-    } else if (COMPOUND_STATEMENT_TYPES.has(node.type)) {
-      pending.push({ end: node.endIndex });
-      for (let i = node.namedChildCount - 1; i >= 0; i--) {
-        const child = node.namedChild(i);
-        if (
-          child &&
-          (STATEMENT_BLOCK_TYPES.has(child.type) || COMPOUND_STATEMENT_TYPES.has(child.type))
-        ) {
-          pending.push({ node: child });
-        }
-      }
-    } else {
-      boundary(node.endIndex);
     }
   }
   const units: Array<{ startIndex: number; endIndex: number }> = [];
