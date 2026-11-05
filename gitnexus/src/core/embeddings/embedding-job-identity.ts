@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { EmbeddingIdentity } from './embedding-identity.js';
 import type { EmbeddingConfig } from './types.js';
+import type { ContentRetention } from '../../storage/repo-meta.js';
 
 export interface EmbeddingGraphIdentity {
   generation: string;
@@ -23,7 +24,9 @@ export function embeddingJobIdentity(
   config: Pick<
     EmbeddingConfig,
     'chunkSize' | 'overlap' | 'maxSnippetLength' | 'maxDescriptionLength' | 'maxInputChars'
-  >,
+  > &
+    Partial<Pick<EmbeddingConfig, 'chunkStrategy'>>,
+  contentRetention: ContentRetention = 'full',
 ): { identity: string; sourceIdentity: string; vectorIdentity: string; inputIdentity: string } {
   const source = [
     graph.generation,
@@ -50,13 +53,18 @@ export function embeddingJobIdentity(
     ].every((n) => Number.isSafeInteger(n) && n >= 0) ||
     config.chunkSize < 1 ||
     config.overlap >= config.chunkSize ||
-    config.maxInputChars < 2
+    config.maxInputChars < 2 ||
+    !['ast', 'fixed'].includes(config.chunkStrategy ?? 'ast') ||
+    !['full', 'symbol', 'none'].includes(contentRetention)
   )
     throw new Error('Incomplete embedding job identity');
   const sourceIdentity = digest(source);
   const vectorIdentity = digest([vector.provider, vector.model, vector.dimensions]);
   const inputIdentity = digest([
+    'source-aware-ast-inputs:v1',
     textVersion,
+    config.chunkStrategy ?? 'ast',
+    contentRetention,
     config.chunkSize,
     config.overlap,
     config.maxSnippetLength,

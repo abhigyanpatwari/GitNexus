@@ -265,8 +265,13 @@ export class VectorStore {
 
   /** Reuse a complete group in the pending writer after validating its CURRENT
    * input. Relocation updates only line metadata, with no vector round trip.
-   * One transaction makes an interrupted relocation safe to retry. */
-  async reuseNode(input: VectorNodeInput): Promise<VectorNodeReceipt | null> {
+   * One transaction makes an interrupted relocation safe to retry.
+   * resolveHash permits a caller-verified exact-input match after the source
+   * snapshot changed. Verification and hash/range replacement are atomic. */
+  async reuseNode(
+    input: VectorNodeInput,
+    resolveHash?: (stored: string) => Promise<string | undefined>,
+  ): Promise<VectorNodeReceipt | null> {
     assertValidGraphNodeId(input.nodeId, 'Vector store');
     const startLine = input.sourceStartLine ?? 0;
     const endLine = input.sourceEndLine ?? 0;
@@ -279,10 +284,18 @@ export class VectorStore {
       throw new Error('Invalid reusable embedding input');
     return this.exclusive(async () => {
       const previous = await this.receipt(input.nodeId);
-      if (!previous?.complete || previous.chunks < 1 || previous.contentHash !== input.contentHash)
-        return null;
+      if (!previous?.complete || previous.chunks < 1) return null;
+      const contentHash =
+        previous.contentHash === input.contentHash
+          ? input.contentHash
+          : await resolveHash?.(previous.contentHash);
+      if (!contentHash) return null;
       await this.verify(previous);
-      if (previous.sourceStartLine === startLine && previous.sourceEndLine === endLine)
+      if (
+        previous.sourceStartLine === startLine &&
+        previous.sourceEndLine === endLine &&
+        previous.contentHash === contentHash
+      )
         return previous;
       const delta = startLine - (previous.sourceStartLine ?? 0);
       await this.transaction(async () => {
@@ -292,8 +305,14 @@ export class VectorStore {
             (_, i) => `${input.nodeId}:${start + i}`,
           );
           await this.query(
-            'UNWIND $ids AS id MATCH (e:CodeEmbedding {id:id}) SET e.startLine=e.startLine+$delta, e.endLine=CASE WHEN e.endLine=$oldEnd THEN $endLine ELSE e.endLine+$delta END',
-            { ids, delta, oldEnd: previous.sourceEndLine ?? 0, endLine },
+            'UNWIND $ids AS id MATCH (e:CodeEmbedding {id:id}) SET e.contentHash=$contentHash, e.startLine=e.startLine+$delta, e.endLine=CASE WHEN e.endLine=$oldEnd THEN $endLine ELSE e.endLine+$delta END',
+            {
+              ids,
+              delta,
+              oldEnd: previous.sourceEndLine ?? 0,
+              endLine,
+              contentHash,
+            },
           );
           const invalid = await this.query(
             'UNWIND $ids AS id MATCH (e:CodeEmbedding {id:id}) WHERE e.startLine < 0 OR e.endLine < e.startLine RETURN count(e) AS invalid',
@@ -302,11 +321,16 @@ export class VectorStore {
           if (count(invalid[0].invalid)) throw new Error('Invalid relocated vector lines');
         }
         await this.query(
-          'MATCH (n:EmbeddingNodeReceipt {nodeId:$nodeId}) SET n.sourceStartLine=$startLine, n.sourceEndLine=$endLine',
-          { nodeId: input.nodeId, startLine, endLine },
+          'MATCH (n:EmbeddingNodeReceipt {nodeId:$nodeId}) SET n.contentHash=$contentHash, n.sourceStartLine=$startLine, n.sourceEndLine=$endLine',
+          { nodeId: input.nodeId, startLine, endLine, contentHash },
         );
       });
-      return { ...previous, sourceStartLine: startLine, sourceEndLine: endLine };
+      return {
+        ...previous,
+        contentHash,
+        sourceStartLine: startLine,
+        sourceEndLine: endLine,
+      };
     }, true);
   }
 
@@ -547,7 +571,7 @@ export class VectorStore {
   }
 
   async finishNodes(
-    nodes: readonly (VectorNodeInput & { chunks: number })[],
+    nodes: readonly (VectorNodeInput & { chunks: number; inputsDigest?: string })[],
   ): Promise<VectorNodeReceipt[]> {
     if (
       !nodes.length ||
@@ -564,24 +588,61 @@ export class VectorStore {
           !receipt ||
           receipt.contentHash !== node.contentHash ||
           receipt.chunks !== node.chunks ||
-          node.chunks < 1
+          node.chunks < 1 ||
+          (node.inputsDigest !== undefined &&
+            (!/^[a-f0-9]{40}$/.test(node.inputsDigest) || !/^[a-f0-9]{40}$/.test(node.contentHash)))
         )
           throw new Error('Vector node coverage does not match its generated chunks');
         verified.push(receipt);
       }
       await this.verify(verified);
-      await this.query(
-        'UNWIND $ids AS id MATCH (n:EmbeddingNodeReceipt {nodeId:id}) SET n.complete=true',
-        { ids: nodes.map((n) => n.nodeId) },
-      );
+      const finalize = async () => {
+        for (let i = 0; i < nodes.length; i++) {
+          const node = nodes[i];
+          if (!node.inputsDigest) continue;
+          const contentHash = `${node.contentHash}:${node.inputsDigest}`;
+          for (let start = 0; start < node.chunks; start += BLOCK_ROWS) {
+            const ids = Array.from(
+              { length: Math.min(BLOCK_ROWS, node.chunks - start) },
+              (_, j) => `${node.nodeId}:${start + j}`,
+            );
+            await this.query(
+              'UNWIND $ids AS id MATCH (e:CodeEmbedding {id:id}) SET e.contentHash=$contentHash',
+              { ids, contentHash },
+            );
+          }
+          await this.query(
+            'MATCH (n:EmbeddingNodeReceipt {nodeId:$nodeId}) SET n.contentHash=$contentHash',
+            { nodeId: node.nodeId, contentHash },
+          );
+          verified[i] = { ...verified[i], contentHash };
+        }
+        await this.query(
+          'UNWIND $ids AS id MATCH (n:EmbeddingNodeReceipt {nodeId:id}) SET n.complete=true',
+          { ids: nodes.map((n) => n.nodeId) },
+        );
+      };
+      if (nodes.some((node) => node.inputsDigest)) await this.transaction(finalize);
+      else await finalize();
       return verified.map((receipt) => ({ ...receipt, complete: true }));
     }, true);
   }
 
-  async reusable(nodeId: string, contentHash: string): Promise<VectorNodeReceipt | null> {
+  async reusable(
+    nodeId: string,
+    contentHash: string,
+    _node?: unknown,
+    _prepare?: unknown,
+    _inputs?: unknown,
+    matchesHash?: (stored: string) => Promise<boolean>,
+  ): Promise<VectorNodeReceipt | null> {
     return this.exclusive(async () => {
       const receipt = await this.receipt(nodeId);
-      if (!receipt?.complete || receipt.contentHash !== contentHash || receipt.chunks < 1)
+      if (
+        !receipt?.complete ||
+        receipt.chunks < 1 ||
+        (receipt.contentHash !== contentHash && !(await matchesHash?.(receipt.contentHash)))
+      )
         return null;
       await this.verify(receipt);
       return receipt;

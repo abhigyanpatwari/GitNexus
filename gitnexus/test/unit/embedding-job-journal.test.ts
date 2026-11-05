@@ -330,4 +330,18 @@ describe('embedding job identity', () => {
       ),
     ).toThrow();
   });
+  it('separates AST/fixed layout and indexed retention without splitting equivalent defaults', () => {
+    const base = embeddingJobIdentity(graph, vector, 'v7', config);
+    expect(embeddingJobIdentity(graph, vector, 'v7', { ...config, chunkStrategy: 'ast' })).toEqual(
+      base,
+    );
+    expect(
+      embeddingJobIdentity(graph, vector, 'v7', { ...config, chunkStrategy: 'fixed' })
+        .inputIdentity,
+    ).not.toBe(base.inputIdentity);
+    for (const retention of ['symbol', 'none'] as const)
+      expect(embeddingJobIdentity(graph, vector, 'v7', config, retention).inputIdentity).not.toBe(
+        base.inputIdentity,
+      );
+  });
 });

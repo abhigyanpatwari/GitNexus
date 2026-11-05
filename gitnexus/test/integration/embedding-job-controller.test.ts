@@ -12,6 +12,8 @@ import { EmbeddingJobJournal } from '../../src/storage/embedding-job-journal.js'
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { EmbeddingSourceReader } from '../../src/core/embeddings/source-reader.js';
 
 let temporary: TestDBHandle | undefined;
 afterEach(async () => {
@@ -138,6 +140,112 @@ async function fixture(count = 130) {
 }
 
 describe('pending artifacts across graph generations', () => {
+  it.each(['full', 'symbol', 'none'] as const)(
+    'uses published repository source policy (%s), then resumes without source or provider work',
+    async (retention) => {
+      const f = await fixture(1);
+      const repo = path.join(f.root, 'checkout');
+      await fs.mkdir(repo);
+      const content = `function sample() {\n${'  consume("padding");\n'.repeat(300)}  return "RECOVERED_TAIL";\n}`;
+      await fs.writeFile(path.join(repo, 'sample.ts'), content);
+      const node: EmbeddableNode = {
+        id: 'Function:sample.ts:sample',
+        label: 'Function',
+        name: 'sample',
+        filePath: 'sample.ts',
+        content: content.slice(0, 5000) + '... [truncated]',
+        startLine: 0,
+        endLine: content.split('\n').length - 1,
+      };
+      f.scan.mockImplementation(async function* (label) {
+        if (label === 'Function')
+          yield { id: node.id, contentBytes: Buffer.byteLength(node.content), metadataBytes: 1024 };
+      });
+      f.fetch.mockImplementation(async () => [node]);
+      const meta = await loadMeta(f.root);
+      if (!meta) throw new Error('Missing fixture metadata');
+      await saveMeta(f.root, {
+        ...meta,
+        repoPath: repo,
+        contentRetention: retention,
+        fileHashes: { 'sample.ts': createHash('sha256').update(content).digest('hex') },
+      });
+      const read = vi.spyOn(EmbeddingSourceReader.prototype, 'read');
+      const result = await f.run();
+      const texts = f.provider.mock.calls.flatMap(([texts]) => texts).join('\n');
+      expect(texts.includes('RECOVERED_TAIL')).toBe(retention === 'full');
+      expect(read.mock.calls.length > 0).toBe(retention === 'full');
+      expect(result.peakQueueBytes).toBeLessThanOrEqual(f.options().resources.queueBytes);
+      expect(node.content).toContain('[truncated]');
+      if (retention === 'full') {
+        const advance = async (source: string) => {
+          await fs.writeFile(path.join(repo, 'sample.ts'), source);
+          await f.nextGeneration();
+          const current = await loadMeta(f.root);
+          if (!current) throw new Error('Missing fixture metadata');
+          await saveMeta(f.root, {
+            ...current,
+            repoPath: repo,
+            contentRetention: retention,
+            fileHashes: { 'sample.ts': createHash('sha256').update(source).digest('hex') },
+          });
+        };
+        f.provider.mockClear();
+        read.mockClear();
+        await advance(content + '\n// unrelated sibling edit');
+        expect((await f.run()).state?.reusedNodes).toBe(1);
+        expect(f.provider).not.toHaveBeenCalled();
+        expect(read).toHaveBeenCalled();
+        await advance(content.replace('RECOVERED_TAIL', 'CHANGED_TAIL'));
+        await f.run();
+        expect(f.provider.mock.calls.flatMap(([texts]) => texts).join('\n')).toContain(
+          'CHANGED_TAIL',
+        );
+      }
+      await fs.rm(repo, { recursive: true });
+      f.provider.mockClear();
+      read.mockClear();
+      expect((await f.run()).alreadyComplete).toBe(true);
+      expect(f.provider).not.toHaveBeenCalled();
+      expect(read).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects oversized original source before paid work and retries with a larger reservation', async () => {
+    const f = await fixture(1);
+    const content = `function sample() {\n${' '.repeat(1024 * 1024)}return "TAIL";\n}`;
+    await fs.writeFile(path.join(f.root, 'sample.ts'), content);
+    const node: EmbeddableNode = {
+      id: 'Function:sample.ts:sample',
+      label: 'Function',
+      name: 'sample',
+      filePath: 'sample.ts',
+      content: 'function sample() ... [truncated]',
+      startLine: 0,
+      endLine: 2,
+    };
+    f.scan.mockImplementation(async function* (label) {
+      if (label === 'Function')
+        yield { id: node.id, contentBytes: Buffer.byteLength(node.content), metadataBytes: 1024 };
+    });
+    f.fetch.mockImplementation(async () => [node]);
+    const meta = await loadMeta(f.root);
+    if (!meta) throw new Error('Missing fixture metadata');
+    await saveMeta(f.root, {
+      ...meta,
+      fileHashes: { 'sample.ts': createHash('sha256').update(content).digest('hex') },
+    });
+    await expect(f.run()).rejects.toThrow('larger resource budget');
+    expect(f.provider).not.toHaveBeenCalled();
+    expect(f.initializeProvider).not.toHaveBeenCalled();
+    const result = await f.run({
+      resources: { ...f.options().resources, queueBytes: 32 * 1024 * 1024 },
+    });
+    expect(result.phase).toBe('ready');
+    expect(result.peakQueueBytes).toBeLessThanOrEqual(32 * 1024 * 1024);
+    expect(f.provider.mock.calls.flatMap(([texts]) => texts).join('\n')).toContain('TAIL');
+  });
+
   it('recovers native sealing before the ownership phase was recorded, then reuses read-only', async () => {
     const f = await fixture(5);
     const ownership = await import('../../src/storage/embedding-artifact.js');

@@ -1,4 +1,5 @@
 /** One durable manifest unit, one bounded provider batch, no corpus-sized maps. */
+import { createHash } from 'node:crypto';
 import { EmbeddingByteBudget } from '../analysis-resource-budget.js';
 import type { VectorNodeReceipt, VectorStore, VectorWriteChunk } from '../lbug/vector-store.js';
 import type {
@@ -14,16 +15,14 @@ import {
   type EmbeddingWorkUnit,
 } from './embedding-work-manifest.js';
 import { contentHashForNode, embedInputRanges, isInputRejection } from './embedding-pipeline.js';
-import { iterateNodeChunks } from './chunker.js';
-import { generateEmbeddingText, splitEmbeddingText } from './text-generator.js';
-import { extractStructuralNames } from './structural-extractor.js';
-import { resolveEmbeddingConfig } from './config.js';
+import { iterateEmbeddingInputs, type EmbeddingInput } from './embedding-inputs.js';
 import {
-  isShortLabel,
-  STRUCTURAL_LABELS,
-  type EmbeddingConfig,
-  type EmbeddableNode,
-} from './types.js';
+  EmbeddingSourceReader,
+  needsEmbeddingSource,
+  type EmbeddingSourceContext,
+} from './source-reader.js';
+import { resolveEmbeddingConfig } from './config.js';
+import { type EmbeddingConfig, type EmbeddableNode } from './types.js';
 import type { embedBatch } from './embedder.js';
 
 export interface EmbeddingReuseSource {
@@ -34,6 +33,8 @@ export interface EmbeddingReuseSource {
     contentHash: string,
     node: EmbeddableNode,
     prepareInputValidation?: () => Promise<void>,
+    inputs?: () => AsyncIterable<EmbeddingInput>,
+    matchesHash?: (stored: string) => Promise<boolean>,
   ): Promise<VectorNodeReceipt | null>;
   readChunks: VectorStore['readChunks'];
 }
@@ -42,6 +43,7 @@ export interface EmbeddingJobRunnerOptions {
   directory: string;
   manifest: EmbeddingManifestReceipt;
   source: EmbeddingManifestSource;
+  sourceContext?: EmbeddingSourceContext;
   journal: EmbeddingJobJournal;
   store: VectorStore;
   /** The controller has validated vector/input identities before providing reuse. */
@@ -71,6 +73,8 @@ export async function runEmbeddingJob(
   const { directory, manifest, source, journal, store, signal } = options;
   const config = resolveEmbeddingConfig(options.config ?? {});
   const budget = new EmbeddingByteBudget(options.queueBytes);
+  let sourceReader: EmbeddingSourceReader | undefined;
+  let releaseSourceCache: (() => void) | undefined;
   const dimensions = store.options.dimensions;
   // UTF-16 text + worst-case JSON escaping/encoding, bounded HTTP response
   // decoding/JSON parsing, float results, JS arrays and native copies. HTTP
@@ -119,7 +123,14 @@ export async function runEmbeddingJob(
       Math.floor(store.options.batchBytes / (16 * dimensions + 128 + 2 * (maxIdChars + 40))),
     );
     if (maximumBatchRows < 1) throw new Error('Vector write does not fit its batch reservation');
-    if (retainedBytes + scratchBytes + rowBytes(config.maxInputChars, maxIdChars) > budget.limit)
+    const minimumUnitBatchBytes = rowBytes(config.maxInputChars, maxIdChars);
+    const unitBytes = retainedBytes + scratchBytes + minimumUnitBatchBytes;
+    if (releaseSourceCache && budget.usedBytes + unitBytes > budget.limit) {
+      sourceReader = undefined;
+      releaseSourceCache();
+      releaseSourceCache = undefined;
+    }
+    if (budget.usedBytes + unitBytes > budget.limit)
       throw new Error(
         `Embedding unit ${unit.ordinal} requires a larger resource budget; no source text was truncated`,
       );
@@ -145,7 +156,10 @@ export async function runEmbeddingJob(
     let copyBatch: VectorWriteChunk[] = [];
     let copyBytes = 0;
     let copyReleases: Array<() => void> = [];
-    const generated = new Map<string, { contentHash: string; chunks: number; ended: boolean }>();
+    const generated = new Map<
+      string,
+      { contentHash: string; chunks: number; ended: boolean; inputsDigest?: string }
+    >();
     const failed = new Set<string>();
     let failureCause: 'input' | 'provider' = 'input';
     let abort: unknown;
@@ -243,22 +257,108 @@ export async function runEmbeddingJob(
         }
       : undefined;
 
+    const nodeInputs = (node: EmbeddableNode) =>
+      iterateEmbeddingInputs(node, config, {
+        source: options.sourceContext,
+        signal,
+        readSource: async (indexedNode) => {
+          const sourceContext = options.sourceContext;
+          if (!sourceContext) throw new Error('Missing indexed embedding source context');
+          let release: (() => void) | undefined;
+          try {
+            if (!sourceReader) {
+              const cacheBytes = Math.min(16 * 1024 * 1024, Math.floor(budget.limit / 8));
+              if (budget.usedBytes + cacheBytes + minimumUnitBatchBytes > budget.limit) {
+                await flush();
+                await flushCopies();
+              }
+              if (abort) throw abort;
+              releaseSourceCache = budget.reserve(cacheBytes);
+              sourceReader = new EmbeddingSourceReader(sourceContext, cacheBytes);
+            }
+            const content = await sourceReader.read(indexedNode, async (fileBytes) => {
+              signal?.throwIfAborted();
+              // Whole-file decoding/line index, notebook reconstruction, AST and
+              // projected declarations live until this node's iterator closes.
+              const bytes = 64 * 1024 + 16 * fileBytes;
+              if (budget.usedBytes + bytes + minimumUnitBatchBytes > budget.limit) {
+                await flush();
+                await flushCopies();
+              }
+              if (abort) throw abort;
+              if (
+                !Number.isSafeInteger(bytes) ||
+                budget.usedBytes + bytes + minimumUnitBatchBytes > budget.limit
+              )
+                throw new Error(
+                  'Original embedding source requires a larger resource budget; no source text was truncated',
+                );
+              release = budget.reserve(bytes);
+            });
+            if (!release) throw new Error('Original embedding source was not admitted');
+            return { content, release };
+          } catch (error) {
+            release?.();
+            throw error;
+          }
+        },
+      });
+
+    const sourceAware = (node: EmbeddableNode) =>
+      options.sourceContext?.contentRetention === 'full' && needsEmbeddingSource(node, config);
+    const inputHasher = () =>
+      createHash('sha1').update('embedding-inputs:v1\n').update(JSON.stringify(config.modelId));
+
     try {
       // Hash once per fetched node; current-job complete groups never fetch/hash.
       const inputs = fetched.nodes.map((node) => ({
         nodeId: node.id,
-        contentHash: contentHashForNode(node, config),
+        contentHash: contentHashForNode(node, config, options.sourceContext),
         sourceStartLine: node.startLine ?? 0,
         sourceEndLine: node.endLine ?? 0,
       }));
-      if (options.revalidateStoredInputs) {
-        for (const input of inputs) {
-          const retained = await store.reuseNode(input);
+      const reusableNodes = new Map<string, VectorNodeReceipt>();
+      for (let i = 0; i < inputs.length; i++) {
+        const input = inputs[i],
+          node = fetched.nodes[i];
+        const baseHash = input.contentHash;
+        let digest: string | undefined;
+        const matchesHash = async (previous: string): Promise<boolean> => {
+          if (!sourceAware(node) || !/^[a-f0-9]{40}:[a-f0-9]{40}$/.test(previous)) return false;
+          if (previous.startsWith(`${baseHash}:`)) {
+            input.contentHash = previous;
+            return true;
+          }
+          if (!digest) {
+            const hash = inputHasher();
+            for await (const part of nodeInputs(node))
+              hash.update(JSON.stringify([part.text, part.startLine, part.endLine]));
+            digest = hash.digest('hex');
+          }
+          if (!previous.endsWith(`:${digest}`)) return false;
+          input.contentHash = `${baseHash}:${digest}`;
+          return true;
+        };
+        if (options.revalidateStoredInputs) {
+          const retained = await store.reuseNode(input, async (previous) =>
+            (await matchesHash(previous)) ? input.contentHash : undefined,
+          );
           if (retained) {
             complete.set(input.nodeId, retained);
             reusedNodes++;
+            continue;
           }
         }
+        const reusable = await options.reuse?.reusable(
+          node.id,
+          input.contentHash,
+          node,
+          prepareInputValidation,
+          () => nodeInputs(node),
+          matchesHash,
+        );
+        if (reusable) reusableNodes.set(node.id, reusable);
+        else input.contentHash = baseHash;
       }
       const missingInputs = options.revalidateStoredInputs
         ? inputs.filter((input) => !complete.has(input.nodeId))
@@ -271,12 +371,7 @@ export async function runEmbeddingJob(
         signal?.throwIfAborted();
         if (options.revalidateStoredInputs && complete.has(node.id)) continue;
         const reuse = options.reuse;
-        const reusable = await reuse?.reusable(
-          node.id,
-          input.contentHash,
-          node,
-          prepareInputValidation,
-        );
+        const reusable = reusableNodes.get(node.id);
         if (reusable && reuse) {
           // Flush before copy so there is only one vector batch in memory.
           await flush();
@@ -337,76 +432,51 @@ export async function runEmbeddingJob(
           continue;
         }
         if (copyBatch.length) await flushCopies();
-        if (!isShortLabel(node.label) && STRUCTURAL_LABELS.has(node.label)) {
-          try {
-            const names = await extractStructuralNames(node.content, node.filePath);
-            node.methodNames = names.methodNames;
-            node.fieldNames = names.fieldNames;
-          } catch {
-            /* Same optional structural enrichment as the legacy pipeline. */
-          }
-        }
-        const state = { contentHash: input.contentHash, chunks: 0, ended: false };
+        const state = {
+          contentHash: input.contentHash,
+          chunks: 0,
+          ended: false,
+          inputsDigest: undefined as string | undefined,
+        };
         generated.set(node.id, state);
-        const chunks = isShortLabel(node.label)
-          ? [
-              {
-                text: node.content,
-                chunkIndex: 0,
-                startLine: node.startLine ?? 0,
-                endLine: node.endLine ?? 0,
-              },
-            ]
-          : iterateNodeChunks(
-              node.label,
-              node.content,
-              node.filePath,
-              node.startLine ?? 0,
-              node.endLine ?? 0,
-              config.chunkSize,
-              config.overlap,
-            );
-        let prevTail = '';
-        for await (const chunk of chunks) {
+        const hash = sourceAware(node) ? inputHasher() : undefined;
+        for await (const generatedInput of nodeInputs(node)) {
           if (failed.has(node.id) || abort) break;
-          const text = generateEmbeddingText(node, chunk.text, config, chunk.chunkIndex, prevTail);
-          for (const inputText of splitEmbeddingText(text, config.maxInputChars)) {
-            const bytes = rowBytes(inputText.length, node.id.length);
-            if (
-              batch.length &&
-              (batch.length >= maximumBatchRows || budget.usedBytes + bytes > budget.limit)
-            )
-              await flush();
-            if (failed.has(node.id) || abort) break;
-            const release = budget.reserve(bytes);
-            // A sliced string can pin an entire oversized generated declaration.
-            // UTF-16 detachment preserves even unpaired surrogate code units.
-            const detached =
-              text.length > config.maxInputChars
-                ? Buffer.from(inputText, 'utf16le').toString('utf16le')
-                : inputText;
-            batch.push({
-              ...input,
-              chunkIndex: state.chunks++,
-              startLine: chunk.startLine,
-              endLine: chunk.endLine,
-              text: detached,
-              release,
-            });
-          }
-          prevTail = config.overlap > 0 ? chunk.text.slice(-config.overlap) : '';
+          hash?.update(
+            JSON.stringify([generatedInput.text, generatedInput.startLine, generatedInput.endLine]),
+          );
+          const bytes = rowBytes(generatedInput.text.length, node.id.length);
+          if (
+            batch.length &&
+            (batch.length >= maximumBatchRows || budget.usedBytes + bytes > budget.limit)
+          )
+            await flush();
+          if (failed.has(node.id) || abort) break;
+          const release = budget.reserve(bytes);
+          batch.push({
+            ...input,
+            chunkIndex: state.chunks++,
+            ...generatedInput,
+            release,
+          });
         }
         state.ended = !failed.has(node.id) && !abort;
-        node.methodNames = undefined;
-        node.fieldNames = undefined;
+        if (state.ended) state.inputsDigest = hash?.digest('hex');
         if (abort) break;
       }
       if (copyBatch.length) await flushCopies();
       if (!abort) await flush();
-      const finished = [...generated]
-        .filter(([id, node]) => node.ended && !failed.has(id))
-        .map(([nodeId, node]) => ({ nodeId, contentHash: node.contentHash, chunks: node.chunks }))
-        .concat(copied);
+      const finished = [
+        ...[...generated]
+          .filter(([id, node]) => node.ended && !failed.has(id))
+          .map(([nodeId, node]) => ({
+            nodeId,
+            contentHash: node.contentHash,
+            chunks: node.chunks,
+            inputsDigest: node.inputsDigest,
+          })),
+        ...copied,
+      ];
       if (finished.length)
         for (const receipt of await store.finishNodes(finished))
           complete.set(receipt.nodeId, receipt);
@@ -447,29 +517,34 @@ export async function runEmbeddingJob(
     }
   };
 
-  if (journal.snapshot().phase === 'embedding') {
-    const active = journal.snapshot().active;
-    if (active) await replay(active);
-    for await (const intent of journal.failed()) await replay(intent);
-    let cursor = journal.snapshot().cursor;
-    for await (const { unit, next } of readEmbeddingWorkUnits(directory, manifest, cursor)) {
-      await processUnit(unit, {
-        start: cursor,
-        next,
-        nodes: unit.nodes.length,
-        origin: 'manifest',
-      });
-      cursor = next;
+  try {
+    if (journal.snapshot().phase === 'embedding') {
+      const active = journal.snapshot().active;
+      if (active) await replay(active);
+      for await (const intent of journal.failed()) await replay(intent);
+      let cursor = journal.snapshot().cursor;
+      for await (const { unit, next } of readEmbeddingWorkUnits(directory, manifest, cursor)) {
+        await processUnit(unit, {
+          start: cursor,
+          next,
+          nodes: unit.nodes.length,
+          origin: 'manifest',
+        });
+        cursor = next;
+      }
+      if (journal.snapshot().failedUnits)
+        return { state: journal.snapshot(), peakQueueBytes: budget.peakBytes };
+      await journal.indexing();
+      progress();
     }
-    if (journal.snapshot().failedUnits)
-      return { state: journal.snapshot(), peakQueueBytes: budget.peakBytes };
-    await journal.indexing();
-    progress();
+    signal?.throwIfAborted();
+    if (options.revalidateStoredInputs && !store.isSealed)
+      await store.pruneUnselected(journal.snapshot().identity, manifest.totalNodes);
+    signal?.throwIfAborted();
+    const indexKind = await store.seal(manifest.totalNodes, journal.snapshot().chunks);
+    return { state: journal.snapshot(), peakQueueBytes: budget.peakBytes, indexKind };
+  } finally {
+    sourceReader = undefined;
+    releaseSourceCache?.();
   }
-  signal?.throwIfAborted();
-  if (options.revalidateStoredInputs && !store.isSealed)
-    await store.pruneUnselected(journal.snapshot().identity, manifest.totalNodes);
-  signal?.throwIfAborted();
-  const indexKind = await store.seal(manifest.totalNodes, journal.snapshot().chunks);
-  return { state: journal.snapshot(), peakQueueBytes: budget.peakBytes, indexKind };
 }

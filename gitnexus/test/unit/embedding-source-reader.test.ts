@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, rm, symlink, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EmbeddingSourceReader,
   needsEmbeddingSource,
@@ -38,6 +38,40 @@ async function file(name: string, text: string) {
 }
 
 describe('original embedding source', () => {
+  it('admits source bytes before reading, including cached files', async () => {
+    await file('sample.py', 'source');
+    const reader = new EmbeddingSourceReader(source);
+    const admit = vi.fn(async (): Promise<void> => {
+      throw new Error('budget exhausted');
+    });
+    await expect(reader.read(node('sample.py', 0, 0), admit)).rejects.toThrow('budget exhausted');
+    expect(admit).toHaveBeenCalledWith(6);
+    admit.mockImplementation(async () => {});
+    expect(await reader.read(node('sample.py', 0, 0), admit)).toBe('source');
+    await unlink(path.join(root, 'sample.py'));
+    expect(await reader.read(node('sample.py', 0, 0), admit)).toBe('source');
+    expect(admit).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects growth after admission instead of reading beyond the reservation', async () => {
+    await file('sample.py', 'source');
+    const reader = new EmbeddingSourceReader(source);
+    await expect(
+      reader.read(node('sample.py', 0, 0), async () => {
+        await writeFile(path.join(root, 'sample.py'), 'source grew');
+      }),
+    ).rejects.toThrow('source size changed');
+  });
+
+  it('honors the job-specific cache allowance', async () => {
+    await file('sample.py', 'source');
+    const reader = new EmbeddingSourceReader(source, 8);
+    expect(await reader.read(node('sample.py', 0, 0))).toBe('source');
+    await unlink(path.join(root, 'sample.py'));
+    await expect(reader.read(node('sample.py', 0, 0))).rejects.toThrow(
+      'Embedding source unavailable',
+    );
+  });
   it('retains indentation, Unicode and exact zero-based inclusive CRLF lines', async () => {
     const text = '# prefix\r\ndef sample():\r\n    value = "雪😀"\r\n    return value\r\n# suffix';
     await file('sample.py', text);

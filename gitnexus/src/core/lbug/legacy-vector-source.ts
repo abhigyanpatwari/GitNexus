@@ -15,15 +15,8 @@ import {
 import { assertValidGraphNodeId } from '../graph/node-identity.js';
 import type { EmbeddingIdentity } from '../embeddings/embedding-identity.js';
 import { resolveEmbeddingConfig } from '../embeddings/config.js';
-import { iterateNodeChunks } from '../embeddings/chunker.js';
-import { generateEmbeddingText, splitEmbeddingText } from '../embeddings/text-generator.js';
-import { extractStructuralNames } from '../embeddings/structural-extractor.js';
-import {
-  isShortLabel,
-  STRUCTURAL_LABELS,
-  type EmbeddableNode,
-  type EmbeddingConfig,
-} from '../embeddings/types.js';
+import { iterateEmbeddingInputs, type EmbeddingInput } from '../embeddings/embedding-inputs.js';
+import { isShortLabel, type EmbeddableNode, type EmbeddingConfig } from '../embeddings/types.js';
 
 export interface LegacyVectorSourceOptions {
   /** Caller validates ownership and holds the slot lock. WAL recovery and
@@ -266,14 +259,24 @@ export class LegacyVectorSource {
     contentHash: string,
     node: EmbeddableNode,
     prepareInputValidation?: () => Promise<void>,
+    inputs?: () => AsyncIterable<EmbeddingInput>,
+    matchesHash?: (stored: string) => Promise<boolean>,
   ): Promise<VectorNodeReceipt | null> {
     this.acquire();
     const originalMethods = node.methodNames,
       originalFields = node.fieldNames;
     try {
       const group = await this.index.legacyReuseGroup(this.options.sourceIdentity, nodeId);
-      if (!group || group.contentHash !== contentHash || node.id !== nodeId) return null;
-      if (!this.options.recordedInputIdentity && !isShortLabel(node.label) && group.chunks > 1) {
+      if (!group || node.id !== nodeId) return null;
+      const sourceAware = /^[a-f0-9]{40}:[a-f0-9]{40}$/.test(group.contentHash);
+      if (group.contentHash !== contentHash && !(await matchesHash?.(group.contentHash)))
+        return null;
+      if (
+        !this.options.recordedInputIdentity &&
+        !sourceAware &&
+        !isShortLabel(node.label) &&
+        group.chunks > 1
+      ) {
         return null;
       }
       await prepareInputValidation?.();
@@ -288,7 +291,7 @@ export class LegacyVectorSource {
       let block: Row[] = [],
         ordinal = 0,
         delta: number | undefined;
-      for await (const span of this.inputSpans(node)) {
+      for await (const span of inputs ? inputs() : this.inputSpans(node)) {
         if (ordinal >= group.chunks) return null;
         if (ordinal % blockSize === 0)
           block = await this.rows(
@@ -323,41 +326,7 @@ export class LegacyVectorSource {
   private async *inputSpans(
     node: EmbeddableNode,
   ): AsyncGenerator<{ startLine: number; endLine: number }> {
-    if (!isShortLabel(node.label) && STRUCTURAL_LABELS.has(node.label)) {
-      try {
-        const names = await extractStructuralNames(node.content, node.filePath);
-        node.methodNames = names.methodNames;
-        node.fieldNames = names.fieldNames;
-      } catch {
-        /* Same optional enrichment and text-version contract as generation. */
-      }
-    }
-    const chunks = isShortLabel(node.label)
-      ? [
-          {
-            text: node.content,
-            chunkIndex: 0,
-            startLine: node.startLine ?? 0,
-            endLine: node.endLine ?? 0,
-          },
-        ]
-      : iterateNodeChunks(
-          node.label,
-          node.content,
-          node.filePath,
-          node.startLine ?? 0,
-          node.endLine ?? 0,
-          this.config.chunkSize,
-          this.config.overlap,
-        );
-    let prevTail = '';
-    for await (const chunk of chunks) {
-      this.options.signal?.throwIfAborted();
-      const text = generateEmbeddingText(node, chunk.text, this.config, chunk.chunkIndex, prevTail);
-      for (const _part of splitEmbeddingText(text, this.config.maxInputChars))
-        yield { startLine: chunk.startLine, endLine: chunk.endLine };
-      prevTail = this.config.overlap > 0 ? chunk.text.slice(-this.config.overlap) : '';
-    }
+    yield* iterateEmbeddingInputs(node, this.config, { signal: this.options.signal });
   }
 
   async readChunks(

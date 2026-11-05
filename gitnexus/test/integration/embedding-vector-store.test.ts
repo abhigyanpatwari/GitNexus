@@ -762,6 +762,36 @@ describe('bounded durable embedding runner', () => {
 });
 
 describe('separate durable vector artifacts', () => {
+  it('publishes exact-input digests with rows and updates a verified source hash without replacing vectors', async () => {
+    const options = await setup();
+    const nodeId = 'Function:source.ts:sample',
+      hash = 'a'.repeat(40),
+      digest = 'b'.repeat(40);
+    await store.beginNodes([{ nodeId, contentHash: hash, sourceStartLine: 1, sourceEndLine: 2 }]);
+    await store.appendBatch([{ nodeId, contentHash: hash, ...chunk(0) }]);
+    const [receipt] = await store.finishNodes([
+      { nodeId, contentHash: hash, chunks: 1, inputsDigest: digest },
+    ]);
+    expect(receipt.contentHash).toBe(`${hash}:${digest}`);
+    const original = await store.readChunks(receipt, 0, 1);
+    const next = {
+      nodeId,
+      contentHash: `${'c'.repeat(40)}:${digest}`,
+      sourceStartLine: 1,
+      sourceEndLine: 2,
+    };
+    expect(await store.reuseNode(next, async () => undefined)).toBeNull();
+    const reused = await store.reuseNode(next, async (previous) =>
+      previous === receipt.contentHash ? next.contentHash : undefined,
+    );
+    expect(reused?.contentHash).toBe(next.contentHash);
+    await store.close();
+    store = await VectorStore.open({ ...options, mode: 'resume' });
+    const recovered = (await store.completedNodes([nodeId])).get(nodeId);
+    if (!recovered) throw new Error('Missing completed input receipt');
+    expect(recovered.contentHash).toBe(next.contentHash);
+    expect(await store.readChunks(recovered, 0, 1)).toEqual(original);
+  });
   it('verifies a complete unit with bounded native queries instead of one query per node', async () => {
     await setup();
     const nodes = Array.from({ length: 64 }, (_, i) => ({

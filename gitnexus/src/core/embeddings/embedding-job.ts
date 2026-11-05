@@ -19,6 +19,7 @@ import {
   metadataMatchesGraph,
 } from '../../storage/vector-generation.js';
 import type { AnalysisResourceBudget } from '../analysis-resource-budget.js';
+import { contentRetentionFromMeta } from '../content-retention.js';
 import { syncPublishedMetadata } from '../analysis-publication.js';
 import { EmbeddingGraphSource } from '../lbug/embedding-source.js';
 import { LegacyVectorSource, legacyVectorCompatibility } from '../lbug/legacy-vector-source.js';
@@ -197,6 +198,7 @@ export async function runPublishedEmbeddingJob(
     vector,
     EMBEDDING_TEXT_VERSION,
     config,
+    contentRetentionFromMeta(metadata),
   );
   const previous = metadata.vectorGeneration;
   if (previous?.identity === identities.identity && !metadata.embeddingJob) {
@@ -494,6 +496,11 @@ export async function runPublishedEmbeddingJob(
       revalidateStoredInputs: owner.revalidateInputs && !store.isSealed,
       config,
       queueBytes: resources.queueBytes,
+      sourceContext: {
+        repoPath: metadata.repoPath,
+        fileHashes: metadata.fileHashes,
+        contentRetention: contentRetentionFromMeta(metadata),
+      },
       // Opening the graph is lazy even on resume: indexing-only retries do not
       // enumerate/fetch source or initialize a provider.
       source: {
