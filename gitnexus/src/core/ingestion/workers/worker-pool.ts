@@ -1510,7 +1510,7 @@ export const createWorkerPool = (
         });
 
         // A message/messageerror proves the worker is executing JS again; an
-        // exit/error means the thread is gone. Either way `worker.terminate()`
+        // exit/error means native execution has stopped. Either way `worker.terminate()`
         // can no longer land mid-N-API call (#2432), so shutdown's drain may
         // stop waiting.
         function markSafeToTerminate() {
@@ -1553,7 +1553,9 @@ export const createWorkerPool = (
 
         const onRetiredError = () => {
           markSafeToTerminate();
-          cleanupRetired();
+          // The error event precedes physical exit. Keep the reservation and
+          // exit listener if termination subsequently rejects or stalls.
+          if (!requireDrain) cleanupRetired();
         };
         const onRetiredExit = () => {
           markSafeToTerminate();

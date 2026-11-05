@@ -108,7 +108,17 @@ const childEnv = (configPinned = false): NodeJS.ProcessEnv => {
   if (configPinned) {
     // The admitted, resolved config travels over IPC. An environment mutation
     // between admission and lazy model init must not override its allocations.
-    for (const name of ['THREADS', 'DEVICE', 'BATCH_SIZE', 'SUB_BATCH_SIZE', 'MAX_INPUT_CHARS']) {
+    for (const name of [
+      'THREADS',
+      'DEVICE',
+      'BATCH_SIZE',
+      'SUB_BATCH_SIZE',
+      'MAX_INPUT_CHARS',
+      'MODEL_ID',
+      'CHUNK_SIZE',
+      'CHUNK_OVERLAP',
+      'CHUNK_STRATEGY',
+    ]) {
       delete env[`GITNEXUS_EMBEDDING_${name}`];
     }
   }

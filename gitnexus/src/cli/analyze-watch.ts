@@ -27,7 +27,11 @@ import type { AnalyzeOptions } from './analyze-options.js';
 import { ensureHeap } from './analyze.js';
 import { cliError, cliInfo, cliWarn } from './cli-message.js';
 import { parseIntegerOption } from './int-option.js';
-import { analysisMayEmbed, resolveHostAnalysisResources } from '../core/analysis-host-resources.js';
+import {
+  analysisMayEmbed,
+  analysisSupervisorReservation,
+  resolveHostAnalysisResources,
+} from '../core/analysis-host-resources.js';
 import {
   formatInvalidProcessDetectionOverride,
   parseProcessDetectionBudgetStrings,
@@ -195,6 +199,7 @@ export async function resolveWatchOptions(
     mainHeapMb: Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
     workers: workerPoolSize,
     includeEmbeddings: await analysisMayEmbed(repoPath, { branch }),
+    supervisorBytes: Number(process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES ?? 0),
   });
 
   setEnvironment(
@@ -495,6 +500,10 @@ export async function watchCommandWithRunnerIdentity(
         mainHeapMb: positiveInteger(cliOptions.memoryBudget, '--memory-budget'),
         workers: positiveInteger(cliOptions.workers, '--workers'),
         includeEmbeddings: await analysisMayEmbed(repoPath, { branch: cliOptions.branch }),
+        supervisorBytes:
+          process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES === undefined
+            ? analysisSupervisorReservation()
+            : Number(process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES),
       });
       if (cancelled) return;
       if (

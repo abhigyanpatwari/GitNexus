@@ -53,7 +53,16 @@ export async function embeddingJobDirectory(directory: string): Promise<string> 
   const stat = await fs.lstat(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink())
     throw new Error('Embedding job directory must be an owned directory');
-  return fs.realpath(directory);
+  const canonical = await fs.realpath(directory);
+  const resolved = await fs.lstat(canonical);
+  if (
+    !resolved.isDirectory() ||
+    resolved.isSymbolicLink() ||
+    resolved.dev !== stat.dev ||
+    resolved.ino !== stat.ino
+  )
+    throw new Error('Embedding job directory changed during resolution');
+  return canonical;
 }
 
 /** Root is already canonical and validated; validate each child before traversing it. */

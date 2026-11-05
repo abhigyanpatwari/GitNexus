@@ -28,6 +28,26 @@ afterEach(async () => {
   );
 });
 
+it.each(['read', 'write'] as const)(
+  'rejects a directory redirected during realpath before receipt %s',
+  async (operation) => {
+    const directory = await fixture({ owned: true });
+    const outside = await fixture({ outside: true });
+    const realpath = fs.realpath.bind(fs);
+    vi.spyOn(fs, 'realpath').mockImplementation((target, options) =>
+      realpath(target === directory ? outside : target, options),
+    );
+    const open = vi.spyOn(fs, 'open');
+    await expect(
+      operation === 'read'
+        ? readEmbeddingJobRecord(directory, 'job.json')
+        : writeEmbeddingJobRecord(directory, 'job.json', { overwritten: true }),
+    ).rejects.toThrow('directory changed');
+    expect(open).not.toHaveBeenCalled();
+    expect(await readEmbeddingJobRecord(outside, 'job.json')).toEqual({ outside: true });
+  },
+);
+
 it.skipIf(process.platform === 'win32')(
   'rejects a receipt replaced by a FIFO without blocking its open',
   async () => {

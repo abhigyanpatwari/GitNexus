@@ -1030,7 +1030,7 @@ describe('published vector readers', () => {
     temporary = await createTempDir();
     vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
     vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', String(64 * 1024 * 1024));
-    const root = temporary.dbPath;
+    const root = await fs.realpath(temporary.dbPath);
     const stage = path.join(root, `lbug.staging.${randomUUID()}`);
     const graph = await openLbugConnection(lbug, stage, {
       bufferPoolBytes: 64 * 1024 * 1024,

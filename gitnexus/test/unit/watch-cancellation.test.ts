@@ -12,6 +12,7 @@ vi.mock('../../src/core/run-analyze.js', () => ({
 }));
 vi.mock('../../src/core/analysis-host-resources.js', () => ({
   analysisMayEmbed: mocks.mayEmbed,
+  analysisSupervisorReservation: () => 192 * 1024 ** 2,
   resolveHostAnalysisResources: () => ({ mainHeapMb: 512 }),
 }));
 import { watchCommandWithRunnerIdentity } from '../../src/cli/analyze-watch.js';

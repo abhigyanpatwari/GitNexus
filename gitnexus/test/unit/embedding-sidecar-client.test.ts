@@ -184,6 +184,30 @@ describe('embedding sidecar client', () => {
     }
   });
 
+  it('pins model and chunk settings across environment changes before lazy initialization', async () => {
+    const { reserveEmbeddingSidecar } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    const config = resolveEmbeddingConfig({ threads: 1 });
+    const lease = await reserveEmbeddingSidecar(config, 512);
+    const changed = {
+      MODEL_ID: 'different/model',
+      CHUNK_SIZE: '128',
+      CHUNK_OVERLAP: '32',
+      CHUNK_STRATEGY: 'fixed',
+    };
+    try {
+      for (const [name, value] of Object.entries(changed))
+        vi.stubEnv(`GITNEXUS_EMBEDDING_${name}`, value);
+      await lease.initialize();
+      for (const name of Object.keys(changed))
+        expect(forkMock.mock.calls[0][2].env?.[`GITNEXUS_EMBEDDING_${name}`]).toBeUndefined();
+      expect(children[0].send.mock.calls[0][0]).toMatchObject({ embeddingConfig: config });
+    } finally {
+      lease.release();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('waits for an idle old process to exit before assigning a different budget', async () => {
     const { reserveEmbeddingSidecar } =
       await import('../../src/core/embeddings/embedding-sidecar-client.js');
