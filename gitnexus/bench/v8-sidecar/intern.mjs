@@ -86,6 +86,7 @@ for (let round = 0; round < 10; round++) {
       variant,
       ms,
       cpuMs,
+      // Full cache hydration: deserialization plus interning, including GC CPU.
       hydrateCpuMs: (used.user + used.system) / 1000,
       heapUsed: process.memoryUsage().heapUsed,
       peakRssKiB: process.resourceUsage().maxRSS,
@@ -113,4 +114,5 @@ fs.writeFileSync(
     null,
     2,
   ) + '\n',
+  { flag: 'wx' },
 );

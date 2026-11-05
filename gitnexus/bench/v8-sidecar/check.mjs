@@ -79,7 +79,7 @@ export function interningMetrics(report) {
     if (round >= 2) pairs.push({ baseline, candidate });
   }
   return ['ms', 'cpuMs', 'hydrateCpuMs'].map((key) => ({
-    name: 'intern/' + key,
+    name: key === 'hydrateCpuMs' ? 'deserialize+intern/cpuMs' : 'intern/' + key,
     ...assessPairs(pairs.map((p) => ({ baseline: p.baseline[key], candidate: p.candidate[key] }))),
   }));
 }
@@ -124,6 +124,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     ),
     '',
     'A slowdown above 5% in either the overall median or median paired ratio of any timed metric fails. This is a regression budget, not a statistical confidence claim. Persistent pairs share processes. CPU includes GC threads; peak RSS is cumulative and descriptive. Shard graph/byte/pool equality and persisted edit targets must match. Incomplete or invalid measurements fail.',
+    "Raw hydrateCpuMs measures deserialization plus interning. Raw analysisPeakRssKiB is the process-lifetime RSS high-water mark captured before the current sample's graph verification; earlier samples can set it. It is not an interval peak.",
     '',
   ];
   const markdown = lines.join('\n');

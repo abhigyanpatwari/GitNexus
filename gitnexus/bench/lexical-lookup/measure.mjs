@@ -124,6 +124,8 @@ async function sample(repo, isCandidate, name) {
   );
   const ms = performance.now() - started;
   const cpu = process.cpuUsage(cpuBefore);
+  // Process-lifetime high-water mark captured before this sample's verification.
+  // Earlier samples can set it; this is not an interval peak or a memory delta.
   const analysisPeakRssKiB = process.resourceUsage().maxRSS;
   assert(!result.alreadyUpToDate, 'A no-op is not an edit benchmark');
   assert(!result.graphWriteCollapsed);
