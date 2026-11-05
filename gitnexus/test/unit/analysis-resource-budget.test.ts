@@ -115,6 +115,21 @@ describe('analysis resource admission', () => {
     expect(Object.isFrozen(budget.embedding)).toBe(true);
   });
 
+  it.each([1, 4])(
+    'admits an explicit worker override on %s CPU(s) within its memory budget',
+    (availableCpus) => {
+      const input = { ...request, availableCpus, mainHeapMb: 8192, workers: 12 };
+      const budget = resolveAnalysisResourceBudget(input);
+      expect(budget.parse.workers).toBe(12);
+      expect(budget.parse.workerHeapMb).toBeGreaterThanOrEqual(512);
+      expect(budget.parse.nativeThreads).toBe(availableCpus);
+      expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
+      expect(() => resolveAnalysisResourceBudget({ ...input, workerHeapMb: 4096 })).toThrow(
+        'do not fit',
+      );
+    },
+  );
+
   it('admits an HTTP embedding-only resume below the parser minimum', () => {
     const input = { ...request, totalMb: 1024, modelMemoryMb: 0 };
     expect(() => resolveAnalysisResourceBudget(input)).toThrow('cannot admit');
@@ -167,9 +182,7 @@ describe('analysis resource admission', () => {
     expect(() =>
       resolveAnalysisResourceBudget({ ...request, totalMb: 8192, workers: 4, workerHeapMb: 4096 }),
     ).toThrow('do not fit');
-    expect(() => resolveAnalysisResourceBudget({ ...request, workers: 24 })).toThrow(
-      'CPU allowance',
-    );
+    expect(() => resolveAnalysisResourceBudget({ ...request, workers: 24 })).toThrow('do not fit');
     expect(() => resolveAnalysisResourceBudget({ ...request, graphPoolBytes: 0 })).toThrow(
       'graph pool bytes',
     );

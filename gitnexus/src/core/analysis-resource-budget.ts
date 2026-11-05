@@ -150,11 +150,9 @@ export function resolveAnalysisResourceBudget(
     request.workers === undefined
       ? Math.min(integer(request.preferredWorkers ?? 4, 'preferred workers'), cpuWorkers)
       : integer(request.workers, 'parser workers');
-  if (includeParsing && desiredWorkers > cpuWorkers) {
-    throw new Error(
-      `Requested ${desiredWorkers} parser workers exceeds the ${cpuWorkers}-worker CPU allowance`,
-    );
-  }
+  // Explicit worker counts intentionally permit CPU oversubscription, as the
+  // parser's existing override does. Reserve every worker's heap/native memory
+  // below; automatic concurrency remains bounded by the usable CPU count.
   const workerBudgetMb = totalMb - headroomMb - supervisorMb - graphPoolMb - mainHeapMb;
   const explicitWorkerHeapMb =
     request.workerHeapMb === undefined

@@ -2,6 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runFullAnalysisMock = vi.fn();
 
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  const mocked = { ...actual, availableParallelism: () => 4 };
+  return { ...mocked, default: mocked };
+});
+
 // This suite checks option forwarding, not the host's capacity to run 12
 // workers. Resource admission has its own constrained-host tests.
 vi.mock('../../src/core/ingestion/utils/effective-ram.js', async (importOriginal) => ({
