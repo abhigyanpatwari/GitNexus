@@ -222,6 +222,14 @@ Notes:
 
 ## Environment variables
 
+| Embedding chunk variable | Default | Effect | When to tune |
+| --- | --- | --- | --- |
+| `GITNEXUS_EMBEDDING_CHUNK_SIZE` | `1200` | Code chunk budget in characters; must be a safe integer of at least 2. | Adjust embedding granularity and vector count. |
+| `GITNEXUS_EMBEDDING_CHUNK_OVERLAP` | `120` | Context overlap budget; must be a nonnegative safe integer smaller than the chunk size. | Balance repeated context against embedding work. |
+| `GITNEXUS_EMBEDDING_CHUNK_STRATEGY` | `ast` | `ast` preserves statement boundaries where possible; `fixed` uses character windows for callables. | Use fixed windows when AST boundaries are unsuitable. Class projection applies to both strategies. |
+
+Unset or blank chunk settings use the configured defaults.
+
 Read queries have a process-wide native-memory guard. See the
 [query memory runbook](../RUNBOOK.md#query-memory-limit) for exit code 70,
 sampling limits, and recovery.

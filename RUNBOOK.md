@@ -81,6 +81,52 @@ finishes rather than treating that response as current.
 npx gitnexus analyze --embeddings
 ```
 
+Chunking defaults to AST boundaries with a 1,200-character budget and 120-character overlap.
+Set `GITNEXUS_EMBEDDING_CHUNK_SIZE`, `GITNEXUS_EMBEDDING_CHUNK_OVERLAP`, and
+`GITNEXUS_EMBEDDING_CHUNK_STRATEGY=ast|fixed` to override them. The size must be a
+safe integer of at least 2, and overlap must be a nonnegative integer smaller
+than the size. Blank values use the configured defaults. Smaller chunks can
+increase embedding requests. Class inputs retain declarations and fields;
+method implementations remain searchable through their own nodes. Unsupported
+parsers and indivisible oversized expressions use bounded character windows;
+Class parser failures retain metadata only.
+AST overlap repeats only whole statements that fit the overlap budget. Preceding
+context excludes text already in the next chunk, avoiding duplicate model input.
+
+Full-retention indexes read original source for classes and long or truncated
+snippets, after skipping unchanged nodes. This preserves indentation, tails
+beyond the FTS snippet cap, and source ranges. The source must match the indexed
+file fingerprint: if embedding sync reports missing or changed source, restore
+the checkout or run `gitnexus analyze` before retrying. Older non-git indexes
+did not store file fingerprints. From that checkout, run `gitnexus analyze`
+once, then retry `gitnexus embeddings sync` or the server's embedding job.
+Sync cannot safely reconstruct the old snapshot's fingerprints from current
+files, so it requires reanalysis instead of reading unverified source.
+Symbol/none retention never reads checkout content for embedding; limited retained snippets use
+conservative enclosing ranges. Changed chunk policies and source-aware layouts
+refresh affected vectors once; unchanged short default inputs retain their hashes.
+Recovering source beyond the old snippet cap can increase vector counts and
+initial embedding time; unchanged nodes still skip source reads and inference.
+When a file changes, verified identical inputs and ranges reuse their existing
+vectors and refresh only the cached fingerprint. Changed tails and incomplete
+checkpoint groups still regenerate their vectors.
+
+For paired performance measurements, build both checkouts and run from `gitnexus/`:
+`node --expose-gc bench/embedding-chunking/measure.mjs /path/to/baseline /path/to/candidate /tmp/chunk-bench.json`.
+The `embedding-chunking-benchmark` job in `.github/workflows/ci-tests.yml` builds
+the comparison revision and candidate, runs this benchmark with `--source`, and
+uploads the JSON samples and log as `embedding-chunking-performance` for 30 days.
+The benchmark uses the local embedding model and saves raw samples outside the
+repository. Recorded paired measurements and their environment are in
+`gitnexus/bench/embedding-chunking/baseline.json`. These are diagnostic references,
+not machine-independent timing gates. Compare per-cohort median/p95, input counts,
+and memory observations;
+it does not substitute for native analyze and persistence tests.
+To include source verification and the stored-snippet cap in the comparison, run
+`node --expose-gc bench/embedding-chunking/measure.mjs /path/to/baseline /path/to/candidate /tmp/chunk-bench.json --source`.
+The large-function and medium-statement cohorts expose extra coverage and overlap
+costs; compare complete-source candidates separately from older capped inputs.
+
 **Important:** If you already had embeddings, a plain `npx gitnexus analyze` **preserves** them (Non-negotiable 5 in [GUARDRAILS.md](GUARDRAILS.md)) — pass `--embeddings` when you also want vectors generated for new or changed nodes, and `--drop-embeddings` only for a deliberate wipe. See `stats.embeddings` in `.gitnexus/gitnexus.json` (or its legacy `meta.json` mirror; 0 means none) — but that figure isn't always freshly measured: if a run's embedding-count query can't answer, it carries the previous run's number forward instead of writing a wrong zero. For a certified read, check `capabilities.vectorSearch.status` instead — it reads `unavailable` (never a stale count) whenever GitNexus can't vouch for the live vector index.
 
 **Partial embedding index (analyze exits 0, but some nodes never got embedded):** A long run against a flaky embedding endpoint can finish successfully while a bounded number of sub-batches still fail. Affected nodes are dropped to zero rows (never left half-written) and recorded as a pending `embeddingCheckpoint`; `npx gitnexus status` then reports `incompleteReasons: ["embedding-checkpoint-pending"]`. Recovery is a plain:

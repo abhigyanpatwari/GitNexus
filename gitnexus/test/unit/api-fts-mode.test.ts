@@ -43,6 +43,7 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   executeQuery: vi.fn(async () => []),
   executePrepared: vi.fn(async () => [{ value: 1 }]),
   executeWithReusedStatement: vi.fn(async () => []),
+  fetchExistingEmbeddingHashes: vi.fn(async () => new Map()),
   streamQuery: vi.fn(async () => 0),
   flushWAL: vi.fn(),
   closeLbug: vi.fn(),
@@ -154,6 +155,30 @@ beforeEach(() => {
 });
 
 describe('POST /api/embed staged recovery preflight', () => {
+  it('passes indexed source identity from the checkout and reports source failures', async () => {
+    const fileHashes = { 'sample.ts': 'a'.repeat(64) };
+    mocks.loadMeta.mockResolvedValue({
+      repoPath: entry.path,
+      fileHashes,
+      contentRetention: 'full',
+      stats: { embeddings: 3 },
+    });
+    mocks.runEmbeddingPipeline.mockRejectedValue(new Error('source fingerprint mismatch'));
+    await invoke('/api/embed');
+    await vi.waitFor(() => expect(mocks.releaseIndexLock).toHaveBeenCalledTimes(1));
+    expect(mocks.runEmbeddingPipeline.mock.calls[0]?.[6].source).toEqual({
+      repoPath: entry.path,
+      fileHashes,
+      contentRetention: 'full',
+    });
+    expect(entry.path).not.toBe(entry.storagePath);
+    expect(mocks.updateJob).toHaveBeenCalledWith(
+      'embed-job',
+      expect.objectContaining({ status: 'failed', error: 'source fingerprint mismatch' }),
+    );
+    expect(mocks.saveMeta).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
     fs.rmSync(entry.storagePath, { recursive: true, force: true });

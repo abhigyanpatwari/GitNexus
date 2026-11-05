@@ -31,15 +31,17 @@ const NOOP_SYMBOL_TABLE = {
 export const extractStructuralNames = async (
   content: string,
   filePath: string,
+  parsedTree?: Awaited<ReturnType<typeof ensureAndParse>>,
+  expectedName?: string,
 ): Promise<StructuralNames> => {
   const provider = getProviderForFileContent(filePath, content);
   if (!provider) return { methodNames: [], fieldNames: [] };
 
-  const tree = await ensureAndParse(content, filePath);
+  const tree = parsedTree === undefined ? await ensureAndParse(content, filePath) : parsedTree;
   if (!tree) return { methodNames: [], fieldNames: [] };
 
   // Parse node.content (a snippet) — find declaration directly, not by range
-  const classNode = findDeclarationNode(tree.rootNode);
+  const classNode = findDeclarationNode(tree.rootNode, expectedName);
   if (!classNode) return { methodNames: [], fieldNames: [] };
 
   const language = provider.id;

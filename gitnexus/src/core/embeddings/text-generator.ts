@@ -139,6 +139,18 @@ const generateCodeBodyText = (
   return parts.join('\n');
 };
 
+/** Keep preceding context that is not already present in the overlapping chunk. */
+export const withoutOverlappingContext = (
+  previousTail: string,
+  previousEndOffset: number | undefined,
+  currentStartOffset: number | undefined,
+): string => {
+  if (!previousTail || previousEndOffset === undefined || currentStartOffset === undefined)
+    return previousTail;
+  const shared = Math.max(0, previousEndOffset - currentStartOffset);
+  return shared ? previousTail.slice(0, Math.max(0, previousTail.length - shared)) : previousTail;
+};
+
 const getCompactContainerContext = (
   cleanedContent: string,
   declarationOnly: string,
@@ -161,6 +173,18 @@ const generateStructuralTypeText = (
   const header = buildEmbeddingHeader(node, config);
   const parts: string[] = [header];
   const isFirstChunk = chunkIndex === undefined || chunkIndex === 0;
+  if (node.label === 'Class') {
+    // Only chunkNode's projection is trusted as Class code. Raw source and
+    // preceding context may contain method bodies, including on one-line classes.
+    const container = getCompactContainerContext('', node.classDeclaration || `Class ${node.name}`);
+    if (container) parts.push(container);
+    if (isFirstChunk && node.methodNames?.length)
+      parts.push(`Methods: ${node.methodNames.join(', ')}`);
+    if (isFirstChunk && node.fieldNames?.length)
+      parts.push(`Properties: ${node.fieldNames.join(', ')}`);
+    if (node.classDeclaration !== undefined && codeBody) parts.push('', cleanContent(codeBody));
+    return parts.join('\n');
+  }
   // Only the first chunk needs the whole declaration. Later chunks must not
   // repeatedly scan and allocate the complete container's source.
   const cleanedContent = isFirstChunk ? cleanContent(node.content) : undefined;
