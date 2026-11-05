@@ -95,9 +95,13 @@ it('honors explicit heap-only overcommit but rejects a conflicting family ceilin
   ).toThrow('cannot admit');
 });
 
-it.each([{ embeddingJob: {} }, { embeddingCheckpoint: {} }, { stats: { embeddings: 1 } }])(
-  'reserves retry/forced model work from the exact branch metadata',
-  async (metadata) => {
+it.each([
+  ['pending job', { embeddingJob: {} }],
+  ['pending checkpoint', { embeddingCheckpoint: {} }],
+  ['preserved vectors', { stats: { embeddings: 1 } }],
+])(
+  'reserves retry/forced model work for %s from the exact branch metadata',
+  async (_case, metadata) => {
     mocks.loadMeta.mockResolvedValue(metadata);
     expect(await analysisMayEmbed('/repo', { force: true, branch: 'release' })).toBe(true);
     expect(mocks.placement).toHaveBeenCalledWith('/repo', 'release');

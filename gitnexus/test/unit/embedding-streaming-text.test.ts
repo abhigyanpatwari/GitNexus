@@ -141,7 +141,7 @@ describe('bounded embedding text preserves existing vectors', () => {
     expect(release).toHaveBeenCalledOnce();
   });
   it.each(['short', 'x'.repeat(2401)])(
-    'rejects a negative overlap without skipping source text',
+    'rejects a negative overlap without skipping source text (case %#)',
     (content) => {
       expect(() => [...iterateCharacterChunks(content, 1, 1, 1200, -1)]).toThrow('overlap');
     },
