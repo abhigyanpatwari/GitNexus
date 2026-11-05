@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
 import fs, { type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { assertValidGraphNodeId } from '../graph/node-identity.js';
@@ -7,6 +6,7 @@ import { EmbeddingByteBudget } from '../analysis-resource-budget.js';
 import { EMBEDDABLE_LABELS, type EmbeddableNode } from './types.js';
 import {
   embeddingJobDirectory,
+  openEmbeddingJobFile,
   readEmbeddingJobRecord,
   syncEmbeddingJobDirectory,
   writeEmbeddingJobRecord,
@@ -104,12 +104,8 @@ class BufferedLines {
 
 /** Framing stays bounded even for a corrupt file without a newline. */
 async function* lines(file: string, start = 0): AsyncGenerator<{ text: string; end: number }> {
-  if (!(await fs.lstat(file)).isFile())
-    throw new Error('Embedding manifest artifact must be a regular file');
-  const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  const { handle } = await openEmbeddingJobFile(file);
   try {
-    if (!(await handle.stat()).isFile())
-      throw new Error('Embedding manifest artifact must be a regular file');
     const buffer = Buffer.alloc(IO_BYTES);
     let pending = Buffer.alloc(0);
     let position = start;

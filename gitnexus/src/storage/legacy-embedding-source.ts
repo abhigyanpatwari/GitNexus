@@ -2,13 +2,14 @@
  * The caller holds the slot lock and retires/checkpoints the source before
  * recording it. No current configuration is used to fill historical fields. */
 import { createHash, randomUUID } from 'node:crypto';
-import { constants, type BigIntStats } from 'node:fs';
+import type { BigIntStats } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { EmbeddingIdentity } from '../core/embeddings/embedding-identity.js';
 import { assertValidGraphNodeId } from '../core/graph/node-identity.js';
 import {
   embeddingJobDirectory,
+  openEmbeddingJobFile,
   readEmbeddingJobRecord,
   writeEmbeddingJobRecord,
   syncEmbeddingJobDirectory,
@@ -222,12 +223,9 @@ async function* exclusions(
   expected: LegacyEmbeddingSourceRecord['excluded'],
 ): AsyncGenerator<string> {
   const file = path.join(directory, 'excluded.jsonl');
-  if (!(await fs.lstat(file)).isFile()) throw new Error('Legacy exclusions must be a regular file');
-  const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  const { handle, stat } = await openEmbeddingJobFile(file);
   try {
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.size !== expected.bytes)
-      throw new Error('Legacy exclusions size mismatch');
+    if (stat.size !== expected.bytes) throw new Error('Legacy exclusions size mismatch');
     const buffer = Buffer.alloc(IO_BYTES),
       checksum = createHash('sha256');
     let pending = Buffer.alloc(0),

@@ -6147,7 +6147,7 @@ async function runFullAnalysisInner(
               : {}),
           },
           excluded: new Set([
-            ...(pendingEmbeddingNodeIds ?? []),
+            ...pendingEmbeddingNodeIds,
             ...inheritedUnsafeNodeIds,
             ...restoreFailedNodeIds,
           ]),

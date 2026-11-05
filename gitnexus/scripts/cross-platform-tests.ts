@@ -26,6 +26,9 @@
 // Platform-specific logic tests — contain explicit process.platform guards
 // or test behavior that differs across operating systems
 const PLATFORM_LOGIC = [
+  // Descriptor validation differs when O_NOFOLLOW is unavailable on Windows.
+  'test/unit/embedding-job-file-security.test.ts',
+  'test/unit/shared-store-read-security.test.ts',
   'test/unit/setup.test.ts',
   'test/unit/setup-jsonc.test.ts',
   'test/unit/setup-codex.test.ts',

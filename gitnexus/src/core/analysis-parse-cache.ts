@@ -1,6 +1,5 @@
 /** Parser cache publication shared by an in-process writer and its exit supervisor. */
 import fs from 'node:fs/promises';
-import { constants } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -11,7 +10,11 @@ import {
   type ParseCache,
 } from '../storage/parse-cache.js';
 import { mergeStagedDurableParsedFileStore } from '../storage/parsedfile-store.js';
-import { embeddingJobDirectory, syncEmbeddingJobDirectory } from '../storage/embedding-job.js';
+import {
+  embeddingJobDirectory,
+  openEmbeddingJobFile,
+  syncEmbeddingJobDirectory,
+} from '../storage/embedding-job.js';
 import { withStoreLock } from '../storage/shared-store-lifecycle.js';
 import type { SharedStoreLayout } from '../storage/shared-store.js';
 import type { RepoMeta } from '../storage/repo-meta.js';
@@ -193,26 +196,17 @@ export async function loadAnalysisParseCache(
   if (!generation) throw new Error('Cache publication requires a published graph generation');
   root = await embeddingJobDirectory(root);
   const file = path.join(root, receiptName(generation));
-  let stat;
+  let opened;
   try {
-    stat = await fs.lstat(file);
+    opened = await openEmbeddingJobFile(file);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw error;
   }
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_HANDOFF_BYTES)
-    throw new Error('Unverified prepared parser cache receipt');
-  const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  const { handle, stat } = opened;
   let bytes: Buffer;
   try {
-    const opened = await handle.stat();
-    if (
-      !opened.isFile() ||
-      opened.size !== stat.size ||
-      opened.ino !== stat.ino ||
-      opened.dev !== stat.dev
-    )
-      throw new Error('Prepared parser cache receipt changed');
+    if (stat.size > MAX_HANDOFF_BYTES) throw new Error('Unverified prepared parser cache receipt');
     bytes = Buffer.alloc(stat.size + 1);
     let length = 0;
     while (length < bytes.length) {

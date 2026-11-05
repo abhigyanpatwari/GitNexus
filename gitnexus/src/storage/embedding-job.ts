@@ -1,7 +1,7 @@
 /** Filesystem-only embedding receipts; importing this never loads a model or DB. */
 import { createHash, randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
-import fs from 'node:fs/promises';
+import { constants, type Stats } from 'node:fs';
+import fs, { type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 
 const MAX_RECORD_BYTES = 32 * 1024;
@@ -14,6 +14,40 @@ const RECORD_NAMES = new Set([
   'retained.json',
 ]);
 const FAILED_RECORD_NAME = /^failed-\d{16}\.json$/;
+
+/** Pin the file before checking it; a replaced pathname cannot redirect reads. */
+export async function openEmbeddingJobFile(
+  file: string,
+): Promise<{ handle: FileHandle; stat: Stats }> {
+  let handle: FileHandle;
+  try {
+    handle = await fs.open(
+      file,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ELOOP')
+      throw new Error('Embedding artifact must be a regular file', { cause: error });
+    throw error;
+  }
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error('Embedding artifact must be a regular file');
+    // Windows lacks O_NOFOLLOW. Validate the directory entry against the
+    // pinned descriptor before reading any bytes; later path swaps are harmless.
+    if (!constants.O_NOFOLLOW) {
+      const entry = await fs.lstat(file);
+      if (!entry.isFile() || entry.isSymbolicLink())
+        throw new Error('Embedding artifact must be a regular file');
+      if (entry.dev !== stat.dev || entry.ino !== stat.ino)
+        throw new Error('Embedding artifact changed during open');
+    }
+    return { handle, stat };
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
 
 export async function embeddingJobDirectory(directory: string): Promise<string> {
   const stat = await fs.lstat(directory);
@@ -69,12 +103,8 @@ export async function readEmbeddingJobRecord(directory: string, name: string): P
     throw new Error('Invalid embedding receipt name');
   const canonical = await embeddingJobDirectory(directory);
   const target = path.join(canonical, name);
-  if (!(await fs.lstat(target)).isFile())
-    throw new Error('Embedding receipt must be a regular file');
-  const handle = await fs.open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  const { handle } = await openEmbeddingJobFile(target);
   try {
-    if (!(await handle.stat()).isFile())
-      throw new Error('Embedding receipt must be a regular file');
     const buffer = Buffer.alloc(MAX_RECORD_BYTES + 1);
     let length = 0;
     while (length < buffer.length) {
