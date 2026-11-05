@@ -105,7 +105,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const lines = [
     '## Cache interning and indexing performance',
     '',
-    'Eight measured pairs after warm-up, alternating execution order. Times in ms.',
+    'Warm-up samples excluded; execution order alternates. Times in ms.',
     '',
     '| Measurement | Base median | Candidate median | Median change | Median paired change | Result |',
     '| --- | ---: | ---: | ---: | ---: | --- |',
@@ -123,7 +123,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         ' |',
     ),
     '',
-    'A slowdown above 5% in either the overall median or median paired ratio of any timed metric fails. This is a regression budget, not a statistical confidence claim. Persistent pairs share processes. CPU includes GC threads; peak RSS is cumulative and descriptive. Shard graph/byte/pool equality and persisted edit targets must match. Incomplete or invalid measurements fail.',
+    'A slowdown above 5% in either the overall median or median paired ratio of any timed metric fails. This is a regression budget, not a statistical confidence claim. Persistent pairs share processes. CPU includes GC threads active during the timed work; forced GC between rounds is excluded. Peak RSS is cumulative and descriptive. Shard graph/byte/pool equality and persisted edit targets must match. Incomplete or invalid measurements fail.',
     "Raw hydrateCpuMs measures deserialization plus interning. Raw analysisPeakRssKiB is the process-lifetime RSS high-water mark captured before the current sample's graph verification; earlier samples can set it. It is not an interval peak.",
     '',
   ];

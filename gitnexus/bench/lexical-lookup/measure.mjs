@@ -1,6 +1,7 @@
 // Build both runtimes, then run with Node:
 // measure.mjs BASE_RUNTIME CANDIDATE_RUNTIME BASE_CORPUS CANDIDATE_CORPUS OUTPUT [fresh|persistent] [PAIRS]
 // Corpus checkouts must be clean/disposable and at the same commit. OUTPUT must not exist.
+// For gate evidence, set GITNEXUS_LEXICAL_BENCH_SCREEN=0; PAIRS defaults to 9.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,7 +18,7 @@ const [baselineRuntime, candidateRuntime, baseline, candidate, output] = args
   .slice(0, 5)
   .map((value) => path.resolve(value));
 const lifecycle = args[5] ?? 'fresh';
-const pairs = Number(args[6] ?? 3);
+const pairs = Number(args[6] ?? 9);
 assert(Number.isSafeInteger(pairs) && pairs > 0, 'Pairs must be a positive integer');
 const workers = Number(process.env.GITNEXUS_LEXICAL_BENCH_WORKERS ?? 16);
 const heapMiB = Number(process.env.GITNEXUS_LEXICAL_BENCH_HEAP_MIB ?? 8192);

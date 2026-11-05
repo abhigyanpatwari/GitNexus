@@ -86,7 +86,7 @@ for (let round = 0; round < 10; round++) {
       variant,
       ms,
       cpuMs,
-      // Full cache hydration: deserialization plus interning, including GC CPU.
+      // Deserialization + interning CPU, excluding the forced heap-measurement GC.
       hydrateCpuMs: (used.user + used.system) / 1000,
       heapUsed: process.memoryUsage().heapUsed,
       peakRssKiB: process.resourceUsage().maxRSS,
