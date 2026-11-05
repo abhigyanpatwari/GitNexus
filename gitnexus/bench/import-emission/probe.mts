@@ -78,71 +78,74 @@ const imports = new Map(
 const scopeTree = { getScope: (id: ScopeId) => scopes.get(id) } as ScopeTree;
 const total = fileCount * importsPerFile;
 const dir = mkdtempSync(path.join(tmpdir(), 'gitnexus-import-emission-'));
-const sink = new GraphEmitSink(createKnowledgeGraph(), path.join(dir, 'csv'));
-sink.beginStreaming();
-Object.defineProperty(globalThis, '__importEmissionBenchmarkInputs', {
-  value: { paths, scopes, imports, sink },
-});
-const digest = createHash('sha256');
-let emitted = 0;
-let firstEmitHeap = 0;
-let lastEmitHeap = 0;
-let sampledPeakHeap = 0;
-const graph = {
-  addRelationship(rel: GraphRelationship) {
-    if (emitted === 0) {
-      global.gc!();
-      firstEmitHeap = process.memoryUsage().heapUsed;
-    }
-    sink.addRelationship(rel);
-    digest.update(JSON.stringify(rel));
-    emitted++;
-    if (emitted % 10000 === 0)
-      sampledPeakHeap = Math.max(sampledPeakHeap, process.memoryUsage().heapUsed);
-    if (emitted === total) {
-      global.gc!();
-      lastEmitHeap = process.memoryUsage().heapUsed;
-    }
-  },
-} as KnowledgeGraph;
-
 try {
-  global.gc!();
-  const inputHeap = process.memoryUsage().heapUsed;
-  const started = performance.now();
-  const count = emitImportEdges(graph, imports, scopeTree);
-  const elapsedMs = performance.now() - started;
-  const manifest = sink.finalize();
-  global.gc!();
-  const afterHeap = process.memoryUsage().heapUsed;
-  assert.equal(count, total);
-  assert.equal(emitted, total);
-  assert.equal(manifest.totalRows, total);
-  const csvDigest = createHash('sha256');
-  for (const { csvPath } of manifest.relsByPair.values()) {
-    for await (const chunk of createReadStream(csvPath)) csvDigest.update(chunk);
+  const sink = new GraphEmitSink(createKnowledgeGraph(), path.join(dir, 'csv'));
+  try {
+    sink.beginStreaming();
+    Object.defineProperty(globalThis, '__importEmissionBenchmarkInputs', {
+      value: { paths, scopes, imports, sink },
+    });
+    const digest = createHash('sha256');
+    let emitted = 0;
+    let firstEmitHeap = 0;
+    let lastEmitHeap = 0;
+    let sampledPeakHeap = 0;
+    const graph = {
+      addRelationship(rel: GraphRelationship) {
+        if (emitted === 0) {
+          global.gc!();
+          firstEmitHeap = process.memoryUsage().heapUsed;
+        }
+        sink.addRelationship(rel);
+        digest.update(JSON.stringify(rel));
+        emitted++;
+        if (emitted % 10000 === 0)
+          sampledPeakHeap = Math.max(sampledPeakHeap, process.memoryUsage().heapUsed);
+        if (emitted === total) {
+          global.gc!();
+          lastEmitHeap = process.memoryUsage().heapUsed;
+        }
+      },
+    } as KnowledgeGraph;
+
+    global.gc!();
+    const inputHeap = process.memoryUsage().heapUsed;
+    const started = performance.now();
+    const count = emitImportEdges(graph, imports, scopeTree);
+    const elapsedMs = performance.now() - started;
+    const manifest = sink.finalize();
+    global.gc!();
+    const afterHeap = process.memoryUsage().heapUsed;
+    assert.equal(count, total);
+    assert.equal(emitted, total);
+    assert.equal(manifest.totalRows, total);
+    const csvDigest = createHash('sha256');
+    for (const { csvPath } of manifest.relsByPair.values()) {
+      for await (const chunk of createReadStream(csvPath)) csvDigest.update(chunk);
+    }
+    console.log(
+      JSON.stringify({
+        node: process.version,
+        emitter: emitterUrl.href,
+        fileCount,
+        importsPerFile,
+        pathLength,
+        count,
+        inputHeap,
+        firstEmitHeap,
+        firstEmitHeapDeltaBytes: firstEmitHeap - inputHeap,
+        lastEmitHeap,
+        sampledPeakHeap,
+        afterHeap,
+        maxRssKiB: process.resourceUsage().maxRSS,
+        elapsedMs,
+        edgeDigest: digest.digest('hex'),
+        csvDigest: csvDigest.digest('hex'),
+      }),
+    );
+  } finally {
+    sink.close();
   }
-  console.log(
-    JSON.stringify({
-      node: process.version,
-      emitter: emitterUrl.href,
-      fileCount,
-      importsPerFile,
-      pathLength,
-      count,
-      inputHeap,
-      firstEmitHeap,
-      firstEmitHeapDeltaBytes: firstEmitHeap - inputHeap,
-      lastEmitHeap,
-      sampledPeakHeap,
-      afterHeap,
-      maxRssKiB: process.resourceUsage().maxRSS,
-      elapsedMs,
-      edgeDigest: digest.digest('hex'),
-      csvDigest: csvDigest.digest('hex'),
-    }),
-  );
 } finally {
-  sink.close();
   rmSync(dir, { recursive: true, force: true });
 }
