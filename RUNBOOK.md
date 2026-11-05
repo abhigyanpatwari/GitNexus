@@ -310,8 +310,11 @@ GITNEXUS_LBUG_BUFFER_POOL_SIZE=3221225472 npx gitnexus analyze --force
 
 The override bypasses automatic pool sizing. Budget for the Node heap, parse
 workers, other native allocations, and the OS alongside it; a larger pool can
-exhaust the host. `GITNEXUS_LBUG_BUFFER_POOL_SIZE=0` restores LadybugDB's native
-80%-of-RAM default, not an unlimited supply of memory. If memory is insufficient,
+exhaust the host. Outside bounded analysis, `GITNEXUS_LBUG_BUFFER_POOL_SIZE=0`
+selects LadybugDB's native 80%-of-RAM default. Analysis and embedding admission
+reject zero because that native allocation cannot fit alongside their other
+reservations. Unset the variable for automatic sizing, or set an explicit byte
+limit of at least 8 MiB that fits the resource budget. If memory is insufficient,
 exclude generated/vendor directories or use a larger host.
 
 A measured graph-write collapse aborts a staged build before publication,

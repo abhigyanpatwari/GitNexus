@@ -74,30 +74,30 @@ it('serves the published graph during an HTTP outage and resumes through /api/em
   };
   child.stdout?.on('data', collect);
   child.stderr?.on('data', collect);
-  const exited = new Promise<number | null>((resolve) => child.once('exit', resolve));
-  const port = await new Promise<number>((resolve, reject) => {
-    child.once('message', (message) => resolve((message as { port: number }).port));
-    child.once('error', reject);
-    void exited.then((code) => reject(new Error(`Server exited ${code}: ${output}`)));
-  });
-  const request = async (route: string, body?: unknown) => {
-    const response = await fetch(`http://127.0.0.1:${port}${route}`, {
-      method: body === undefined ? 'GET' : 'POST',
-      headers: { 'content-type': 'application/json' },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-    const value = (await response.json()) as Record<string, any>;
-    expect(response.ok, JSON.stringify(value) + '\n' + output).toBe(true);
-    return value;
-  };
-  const until = async (check: () => Promise<boolean>) => {
-    const end = Date.now() + 90_000;
-    while (!(await check())) {
-      if (Date.now() > end) throw new Error(`Timed out: ${output}`);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  };
+  const exited = new Promise<number | null>((resolve) => child.once('close', resolve));
   try {
+    const port = await new Promise<number>((resolve, reject) => {
+      child.once('message', (message) => resolve((message as { port: number }).port));
+      child.once('error', reject);
+      void exited.then((code) => reject(new Error(`Server exited ${code}: ${output}`)));
+    });
+    const request = async (route: string, body?: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${port}${route}`, {
+        method: body === undefined ? 'GET' : 'POST',
+        headers: { 'content-type': 'application/json' },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      const value = (await response.json()) as Record<string, any>;
+      expect(response.ok, JSON.stringify(value) + '\n' + output).toBe(true);
+      return value;
+    };
+    const until = async (check: () => Promise<boolean>) => {
+      const end = Date.now() + 90_000;
+      while (!(await check())) {
+        if (Date.now() > end) throw new Error(`Timed out: ${output}`);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    };
     const started = await request('/api/analyze', { path: repo, embeddings: true });
     const poll = () => request(`/api/analyze/${started.jobId}`);
     await until(async () => (await poll()).status === 'analyzing');
@@ -145,9 +145,13 @@ it('serves the published graph during an HTTP outage and resumes through /api/em
     expect((await loadMeta(slot))?.graphGeneration).toEqual(generation);
   } finally {
     releaseOutage();
-    if (child.connected) child.send('shutdown');
-    expect(await exited, output).toBe(0);
-    await new Promise<void>((resolve) => provider.close(() => resolve()));
-    await fs.rm(root, { recursive: true, force: true });
+    try {
+      if (child.connected) child.send('shutdown');
+      expect(await exited, output).toBe(0);
+    } finally {
+      provider.closeAllConnections();
+      await new Promise<void>((resolve) => provider.close(() => resolve()));
+      await fs.rm(root, { recursive: true, force: true });
+    }
   }
 }, 180_000);

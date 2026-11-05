@@ -5,6 +5,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../../src/core/ingestion/utils/effective-ram.js', () => ({
+  effectiveRamBytes: () => 8 * 1024 ** 3,
+}));
+vi.mock('node:v8', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:v8')>();
+  return {
+    ...actual,
+    getHeapStatistics: () => ({ ...actual.getHeapStatistics(), heap_size_limit: 64 * 1024 ** 3 }),
+  };
+});
+
 const mocks = vi.hoisted(() => ({
   loadMeta: vi.fn(),
   saveMeta: vi.fn(),
@@ -229,6 +240,7 @@ describe('POST /api/embed staged recovery preflight', () => {
         metadataDirectory: entry.storagePath,
         graphPath: path.join(entry.storagePath, 'lbug'),
         nodeLimit: 0,
+        resources: expect.objectContaining({ totalBytes: 6 * 1024 ** 3 }),
         signal: expect.any(AbortSignal),
       }),
     );

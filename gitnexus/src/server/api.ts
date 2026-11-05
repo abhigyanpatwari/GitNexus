@@ -2192,11 +2192,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             sweepStagingArtifacts(storagePath);
             const { resolveHostAnalysisResources } =
               await import('../core/analysis-host-resources.js');
-            const { getHeapStatistics } = await import('node:v8');
             const resources = resolveHostAnalysisResources({
               includeParsing: false,
               includeEmbeddings: true,
-              mainHeapMb: Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
             });
             if (!(await ensurePrivateSharedGraph(storagePath, () => {})))
               throw new Error('The shared graph this repository reads is gone. Re-run analyze.');

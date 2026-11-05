@@ -101,6 +101,17 @@ vi.mock('../../src/core/embeddings/embedding-sidecar-client.js', () => ({
 
 const IDENTITY = { model: 'test-model', dimensions: 768, provider: 'local' } as const;
 
+vi.mock('../../src/core/ingestion/utils/effective-ram.js', () => ({
+  effectiveRamBytes: () => 8 * 1024 ** 3,
+}));
+vi.mock('node:v8', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:v8')>();
+  return {
+    ...actual,
+    getHeapStatistics: () => ({ ...actual.getHeapStatistics(), heap_size_limit: 64 * 1024 ** 3 }),
+  };
+});
+
 const BASE_META = {
   repoPath: '/tmp/emb-sync-repo',
   lastCommit: 'abc123',
@@ -198,6 +209,16 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
     if (originalEmbeddingModel === undefined) delete process.env.GITNEXUS_EMBEDDING_MODEL;
     else process.env.GITNEXUS_EMBEDDING_MODEL = originalEmbeddingModel;
     await Promise.all(tmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  });
+
+  it('keeps automatic reservations within host memory despite a larger default V8 limit', async () => {
+    await store();
+    await run();
+    expect(runAnalysisEmbeddingPhaseMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resources: expect.objectContaining({ totalBytes: 6 * 1024 ** 3 }),
+      }),
+    );
   });
 
   it('acquires the index lock before re-reading metadata and releases it in finally', async () => {

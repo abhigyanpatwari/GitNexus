@@ -63,7 +63,20 @@ it('honors bounded worker, pool, and embedding-thread overrides', () => {
   expect(budget.embedding.nativeThreads).toBe(8);
 });
 
-it.each(['0', '-1', '1.5', 'NaN'])(
+it.each(['0', ' 0 ', '0.0'])(
+  'explains why the native default pool %s cannot be reserved',
+  (value) => {
+    vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', value);
+    expect(() => resolveHostAnalysisResources({ includeEmbeddings: false })).toThrow(
+      'bounded analysis cannot reserve',
+    );
+    expect(() => resolveHostAnalysisResources({ includeEmbeddings: false })).toThrow(
+      'Unset GITNEXUS_LBUG_BUFFER_POOL_SIZE',
+    );
+  },
+);
+
+it.each(['-1', '1.5', 'NaN'])(
   'rejects an unbounded or malformed native pool override %s',
   (value) => {
     vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', value);

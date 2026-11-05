@@ -227,7 +227,7 @@ describe('embedding sidecar client', () => {
 
   it('does not certify a timed-out reap or allocate another job over the retained process', async () => {
     vi.useFakeTimers();
-    const { reserveEmbeddingSidecar } =
+    const { reserveEmbeddingSidecar, ensureEmbeddingSidecar } =
       await import('../../src/core/embeddings/embedding-sidecar-client.js');
     const config = resolveEmbeddingConfig({ threads: 1 });
     const first = await reserveEmbeddingSidecar(config, 512);
@@ -239,6 +239,7 @@ describe('embedding sidecar client', () => {
     );
     await vi.advanceTimersByTimeAsync(5_001);
     await rejected;
+    await expect(ensureEmbeddingSidecar()).rejects.toThrow('native resource reservation');
     await expect(reserveEmbeddingSidecar(config, 256)).rejects.toThrow(
       'native resource reservation',
     );

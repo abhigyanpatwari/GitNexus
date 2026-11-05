@@ -69,10 +69,15 @@ function bytes(mb: number, label: string): number {
   return integer(integer(mb, label, 0) * MIB, `${label} in bytes`, 0);
 }
 
+export const UNBOUNDED_GRAPH_POOL_MESSAGE =
+  "Zero graph pool bytes selects LadybugDB's native 80%-of-RAM default, which bounded analysis cannot reserve. " +
+  'Unset GITNEXUS_LBUG_BUFFER_POOL_SIZE for automatic sizing or set a positive byte limit of at least 8388608.';
+
 /** Resolve before opening a writable database or starting parser/model work. */
 export function resolveAnalysisResourceBudget(
   request: AnalysisResourceRequest,
 ): AnalysisResourceBudget {
+  if (request.graphPoolBytes === 0) throw new Error(UNBOUNDED_GRAPH_POOL_MESSAGE);
   const memory = integer(request.effectiveMemoryBytes, 'effectiveMemoryBytes');
   const cpus = integer(request.availableCpus, 'availableCpus');
   const embeddingThreads =

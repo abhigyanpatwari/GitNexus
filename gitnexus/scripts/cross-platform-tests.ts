@@ -167,6 +167,9 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
+  'test/integration/embedding-vector-store.test.ts',
+  'test/integration/legacy-vector-reuse-index.test.ts',
+  'test/integration/legacy-vector-export.test.ts',
   'test/integration/java-overload-impact-persistence.test.ts',
   'test/integration/dangling-owner-edges.test.ts',
   'test/integration/impact-private-type-file-seed.test.ts',

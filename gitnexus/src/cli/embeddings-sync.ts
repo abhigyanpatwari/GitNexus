@@ -4,7 +4,6 @@ import { resolveGraphPath } from '../storage/shared-store.js';
 import { resolveHostAnalysisResources } from '../core/analysis-host-resources.js';
 import { readPreparedAnalysis } from '../core/analysis-publication.js';
 import path from 'node:path';
-import { getHeapStatistics } from 'node:v8';
 import { cliInfo } from './cli-message.js';
 import { getGitRoot } from '../storage/git.js';
 import { requireExclusiveIndexLock, sweepStagingArtifacts } from '../storage/index-lock.js';
@@ -36,7 +35,6 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
   const resources = resolveHostAnalysisResources({
     includeParsing: false,
     includeEmbeddings: true,
-    mainHeapMb: Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
   });
   const lock = await acquireAnalysisSlotLock(metaDir, { sweep: false });
   try {

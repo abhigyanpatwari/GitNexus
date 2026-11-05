@@ -4,6 +4,7 @@ import path from 'node:path';
 import { effectiveRamBytes } from './ingestion/utils/effective-ram.js';
 import {
   resolveAnalysisResourceBudget,
+  UNBOUNDED_GRAPH_POOL_MESSAGE,
   type AnalysisResourceBudget,
   type AnalysisResourceRequest,
 } from './analysis-resource-budget.js';
@@ -14,6 +15,8 @@ function positiveEnvironment(name: string): number | undefined {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') return undefined;
   const value = Number(raw);
+  if (name === 'GITNEXUS_LBUG_BUFFER_POOL_SIZE' && value === 0)
+    throw new Error(UNBOUNDED_GRAPH_POOL_MESSAGE);
   if (!Number.isSafeInteger(value) || value < 1)
     throw new Error(`${name} must be a positive safe integer for bounded analysis`);
   return value;

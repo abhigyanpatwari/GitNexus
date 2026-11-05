@@ -262,7 +262,7 @@ const request = (
 };
 
 const spawnSidecar = (heapLimitMb?: number): ChildProcess => {
-  if (runtimeReservation && liveChildren.size > 0) {
+  if (liveChildren.size > 0) {
     throw new Error('Previous embedding sidecar has not released its native resource reservation');
   }
   const proc = forkImpl(sidecarScriptPath(), [], {
