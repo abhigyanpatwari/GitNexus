@@ -1468,6 +1468,9 @@ jobs:
         shell: bash
         run: node --expose-gc --import tsx bench/scope-resolution/call-signature-memory.mts 500000 --check | tee scope-resolution-call-signature-memory.json
         working-directory: gitnexus
+      - name: Check import-emission memory and output baseline
+        run: node bench/import-emission/measure.mjs --check --output import-emission/measure.json
+        working-directory: gitnexus
       - name: Measure dense Java and check its graph baseline
         shell: bash
         env:
@@ -1485,6 +1488,7 @@ jobs:
           path: |
             gitnexus/scope-resolution-benchmark.json
             gitnexus/scope-resolution-call-signature-memory.json
+            gitnexus/import-emission/measure.json
             gitnexus/scope-resolution-dense-java.log
             gitnexus/java-overload-resolution-benchmark.json
           retention-days: 5
