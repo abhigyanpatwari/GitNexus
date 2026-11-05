@@ -86,6 +86,11 @@ is preserved. Even when the index is already up to date, a newly selected missin
 file or prompt file without a block receives one; existing generated blocks keep
 their community-skill rows during the surgical default-branch refresh.
 
+Custom targets outside GitNexus-managed paths are not excluded from freshness
+checks. Writing one can trigger another analysis even when no source files
+changed. Use a managed target such as `.claude/CLAUDE.md` to avoid this with
+the default indexing configuration.
+
 `--skip-agents-md` suppresses custom-target updates too. `--index-only` suppresses
 all context and skill injection. `--no-stats` omits volatile counts when generating
 the selected target; `--self-commit` applies only to the selected target and does
