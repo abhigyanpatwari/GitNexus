@@ -160,7 +160,7 @@ describe('verified legacy vector reuse', () => {
     expect(Math.max(...f.chunks.map((chunk) => chunk.endLine))).toBeLessThan(original.endLine);
     const reuse = await f.open();
     const moved = { ...original, startLine: 11, endLine: 210 };
-    expect(await reuse.reusable(moved.id, f.hash, moved)).toMatchObject({
+    expect(await reuse.reusable(moved.id, f.hash, { node: moved })).toMatchObject({
       complete: true,
       sourceStartLine: 1,
       sourceEndLine: undefined,
@@ -236,7 +236,7 @@ describe('verified legacy vector reuse', () => {
     expect(new Set(f.chunks.map((c) => `${c.startLine}:${c.endLine}`)).size).toBe(1);
     const log = vi.fn();
     const reuse = await f.open({ recordedInputIdentity: undefined, log });
-    expect(await reuse.reusable(input.id, f.hash, input)).toBeNull();
+    expect(await reuse.reusable(input.id, f.hash, { node: input })).toBeNull();
     expect(log).toHaveBeenCalledOnce();
     expect(log.mock.calls[0][0]).toContain('chunk size/overlap');
   });
@@ -244,7 +244,7 @@ describe('verified legacy vector reuse', () => {
     const input = node('Const');
     const f = await fixture(input);
     const reuse = await f.open({ recordedInputIdentity: undefined });
-    expect(await reuse.reusable(input.id, f.hash, input)).toMatchObject({
+    expect(await reuse.reusable(input.id, f.hash, { node: input })).toMatchObject({
       chunks: f.chunks.length,
     });
     expect(reuse.options.recordedInputIdentity).toBeUndefined();
@@ -252,13 +252,13 @@ describe('verified legacy vector reuse', () => {
   it('rejects changed hashes, holes, and groups in an unsafe checkpoint window', async () => {
     const input = node('File', 'x'.repeat(1000));
     const f = await fixture(input, (rows) => rows.filter((row) => row.chunkIndex !== 1));
-    expect(await (await f.open()).reusable(input.id, f.hash, input)).toBeNull();
+    expect(await (await f.open()).reusable(input.id, f.hash, { node: input })).toBeNull();
     const intact = await fixture(input);
     const excluded = await intact.open({}, [input.id]);
-    expect(await excluded.reusable(input.id, intact.hash, input)).toBeNull();
+    expect(await excluded.reusable(input.id, intact.hash, { node: input })).toBeNull();
     const changed = await fixture(node('Const'));
     expect(
-      await (await changed.open()).reusable('Const:a.txt:n', 'different', node('Const')),
+      await (await changed.open()).reusable('Const:a.txt:n', 'different', { node: node('Const') }),
     ).toBeNull();
   });
 });

@@ -15,7 +15,7 @@ import {
   type EmbeddingWorkUnit,
 } from './embedding-work-manifest.js';
 import { contentHashForNode, embedInputRanges, isInputRejection } from './embedding-pipeline.js';
-import { iterateEmbeddingInputs, type EmbeddingInput } from './embedding-inputs.js';
+import { iterateEmbeddingInputs, type EmbeddingReuseOptions } from './embedding-inputs.js';
 import {
   EmbeddingSourceReader,
   needsEmbeddingSource,
@@ -31,10 +31,7 @@ export interface EmbeddingReuseSource {
   reusable(
     nodeId: string,
     contentHash: string,
-    node: EmbeddableNode,
-    prepareInputValidation?: () => Promise<void>,
-    inputs?: () => AsyncIterable<EmbeddingInput>,
-    matchesHash?: (stored: string) => Promise<boolean>,
+    options: EmbeddingReuseOptions,
   ): Promise<VectorNodeReceipt | null>;
   readChunks: VectorStore['readChunks'];
 }
@@ -349,14 +346,12 @@ export async function runEmbeddingJob(
             continue;
           }
         }
-        const reusable = await options.reuse?.reusable(
-          node.id,
-          input.contentHash,
+        const reusable = await options.reuse?.reusable(node.id, input.contentHash, {
           node,
           prepareInputValidation,
-          () => nodeInputs(node),
+          inputs: () => nodeInputs(node),
           matchesHash,
-        );
+        });
         if (reusable) reusableNodes.set(node.id, reusable);
         else input.contentHash = baseHash;
       }
@@ -378,9 +373,6 @@ export async function runEmbeddingJob(
           if (abort) break;
           const copyRowBytes = 32 * dimensions + 1024 + 4 * node.id.length;
           for (let start = 0; start < reusable.chunks; ) {
-            // Share one bounded transaction across neighboring reused nodes.
-            // Retain its reservation until the write finishes, including while
-            // validating the next node's historical input.
             if (
               copyBatch.length &&
               (copyBatch.length === 256 ||

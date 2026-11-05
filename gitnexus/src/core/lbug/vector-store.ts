@@ -11,6 +11,7 @@ import { ExtensionManager } from './extension-loader.js';
 import { assertValidGraphNodeId } from '../graph/node-identity.js';
 import { embeddingJobDirectory } from '../../storage/embedding-job.js';
 import { getExactScanLimit } from '../platform/capabilities.js';
+import type { EmbeddingReuseOptions } from '../embeddings/embedding-inputs.js';
 
 export const VECTOR_STORE_SCHEMA = 'gitnexus-vector-store-v2';
 const BLOCK_ROWS = 256;
@@ -631,11 +632,9 @@ export class VectorStore {
   async reusable(
     nodeId: string,
     contentHash: string,
-    _node?: unknown,
-    _prepare?: unknown,
-    _inputs?: unknown,
-    matchesHash?: (stored: string) => Promise<boolean>,
+    options?: Pick<EmbeddingReuseOptions, 'matchesHash'>,
   ): Promise<VectorNodeReceipt | null> {
+    const matchesHash = options?.matchesHash;
     return this.exclusive(async () => {
       const receipt = await this.receipt(nodeId);
       if (

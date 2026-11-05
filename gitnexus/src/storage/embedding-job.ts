@@ -56,6 +56,25 @@ export async function embeddingJobDirectory(directory: string): Promise<string> 
   return fs.realpath(directory);
 }
 
+/** Root is already canonical and validated; validate each child before traversing it. */
+export async function createEmbeddingJobDirectories(
+  root: string,
+  components: readonly string[],
+): Promise<string> {
+  let directory = root;
+  for (const component of components) {
+    const next = path.join(directory, component);
+    try {
+      await fs.mkdir(next, { mode: 0o700 });
+      await syncEmbeddingJobDirectory(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    directory = await embeddingJobDirectory(next);
+  }
+  return directory;
+}
+
 /** Flush directory entries where the platform supports opening directories. */
 export async function syncEmbeddingJobDirectory(directory: string): Promise<void> {
   if (process.platform === 'win32') return;

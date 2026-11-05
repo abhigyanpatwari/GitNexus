@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import {
+  createEmbeddingJobDirectories,
   embeddingJobDirectory,
   readEmbeddingJobRecord,
   writeEmbeddingJobRecord,
@@ -122,18 +123,12 @@ function record(value: unknown, space: EmbeddingArtifactSpace): EmbeddingArtifac
 }
 
 async function spaceDirectory(root: string, space: EmbeddingArtifactSpace): Promise<string> {
-  let directory = await embeddingJobDirectory(root);
-  for (const component of ['embeddings', 'spaces', embeddingArtifactSpaceKey(space)]) {
-    const next = path.join(directory, component);
-    try {
-      await fs.mkdir(next, { mode: 0o700 });
-      await syncEmbeddingJobDirectory(directory);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    }
-    directory = await embeddingJobDirectory(next);
-  }
-  return directory;
+  const directory = await embeddingJobDirectory(root);
+  return createEmbeddingJobDirectories(directory, [
+    'embeddings',
+    'spaces',
+    embeddingArtifactSpaceKey(space),
+  ]);
 }
 
 async function optionalRecord(directory: string, name: string): Promise<unknown | null> {

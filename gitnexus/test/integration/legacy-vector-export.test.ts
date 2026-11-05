@@ -131,7 +131,7 @@ it('exports only the vector table and retains a compatible complete group withou
       store,
       receipt.excludedIds,
     );
-    const group = await source.reusable(node.id, f.hash, node);
+    const group = await source.reusable(node.id, f.hash, { node });
     expect(group?.chunks).toBe(1);
     expect(await source.readChunks(group!, 0, 1)).toEqual([
       { chunkIndex: 0, startLine: 1, endLine: 1, embedding: [1, 0, 0, 0] },

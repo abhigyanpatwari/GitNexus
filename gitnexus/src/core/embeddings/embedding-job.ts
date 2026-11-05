@@ -3,7 +3,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import type { RepoMeta } from '../../storage/repo-meta.js';
-import { embeddingJobDirectory, syncEmbeddingJobDirectory } from '../../storage/embedding-job.js';
+import {
+  createEmbeddingJobDirectories,
+  embeddingJobDirectory,
+  syncEmbeddingJobDirectory,
+} from '../../storage/embedding-job.js';
 import {
   adoptEmbeddingArtifact,
   embeddingArtifactSpaceKey,
@@ -87,18 +91,8 @@ async function existsOwnedFile(file: string): Promise<boolean> {
 }
 
 async function jobDirectory(root: string, identity: string): Promise<string> {
-  let directory = await embeddingJobDirectory(root);
-  for (const component of ['embeddings', identity]) {
-    const next = path.join(directory, component);
-    try {
-      await fs.mkdir(next, { mode: 0o700 });
-      await syncEmbeddingJobDirectory(directory);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    }
-    directory = await embeddingJobDirectory(next);
-  }
-  return directory;
+  const directory = await embeddingJobDirectory(root);
+  return createEmbeddingJobDirectories(directory, ['embeddings', identity]);
 }
 
 /** A preflight interrupted before any native/job artifact owns no paid work.

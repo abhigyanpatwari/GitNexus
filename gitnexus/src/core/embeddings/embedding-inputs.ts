@@ -22,6 +22,13 @@ export interface EmbeddingInput {
   endLine: number;
 }
 
+export interface EmbeddingReuseOptions {
+  node: EmbeddableNode;
+  prepareInputValidation?: () => Promise<void>;
+  inputs?: () => AsyncIterable<EmbeddingInput>;
+  matchesHash?: (stored: string) => Promise<boolean>;
+}
+
 export async function* iterateEmbeddingInputs(
   indexedNode: EmbeddableNode,
   config: EmbeddingConfig,

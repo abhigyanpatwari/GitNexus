@@ -15,7 +15,10 @@ import {
 import { assertValidGraphNodeId } from '../graph/node-identity.js';
 import type { EmbeddingIdentity } from '../embeddings/embedding-identity.js';
 import { resolveEmbeddingConfig } from '../embeddings/config.js';
-import { iterateEmbeddingInputs, type EmbeddingInput } from '../embeddings/embedding-inputs.js';
+import {
+  iterateEmbeddingInputs,
+  type EmbeddingReuseOptions,
+} from '../embeddings/embedding-inputs.js';
 import { isShortLabel, type EmbeddableNode, type EmbeddingConfig } from '../embeddings/types.js';
 
 export interface LegacyVectorSourceOptions {
@@ -257,11 +260,9 @@ export class LegacyVectorSource {
   async reusable(
     nodeId: string,
     contentHash: string,
-    node: EmbeddableNode,
-    prepareInputValidation?: () => Promise<void>,
-    inputs?: () => AsyncIterable<EmbeddingInput>,
-    matchesHash?: (stored: string) => Promise<boolean>,
+    options: EmbeddingReuseOptions,
   ): Promise<VectorNodeReceipt | null> {
+    const { node, prepareInputValidation, inputs, matchesHash } = options;
     this.acquire();
     const originalMethods = node.methodNames,
       originalFields = node.fieldNames;
