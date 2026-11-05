@@ -142,11 +142,27 @@ export async function runEmbeddingJob(
     const releaseScratch = budget.reserve(scratchBytes);
     let batch: Array<Omit<VectorWriteChunk, 'embedding'> & { text: string; release: () => void }> =
       [];
+    let copyBatch: VectorWriteChunk[] = [];
+    let copyBytes = 0;
+    let copyReleases: Array<() => void> = [];
     const generated = new Map<string, { contentHash: string; chunks: number; ended: boolean }>();
     const failed = new Set<string>();
     let failureCause: 'input' | 'provider' = 'input';
     let abort: unknown;
     let reusedNodes = complete.size;
+
+    const flushCopies = async (): Promise<void> => {
+      if (!copyBatch.length) return;
+      signal?.throwIfAborted();
+      try {
+        await store.appendBatch(copyBatch);
+      } finally {
+        for (const release of copyReleases) release();
+        copyBatch = [];
+        copyBytes = 0;
+        copyReleases = [];
+      }
+    };
 
     const flush = async (): Promise<void> => {
       if (!batch.length) return;
@@ -265,31 +281,42 @@ export async function runEmbeddingJob(
           // Flush before copy so there is only one vector batch in memory.
           await flush();
           if (abort) break;
-          const copyRows = Math.min(
-            256,
-            Math.floor(
-              Math.min(
-                reuse.options.batchBytes,
-                store.options.batchBytes,
-                budget.limit - budget.usedBytes,
-              ) /
-                (32 * dimensions + 1024 + 4 * node.id.length),
-            ),
-          );
-          if (copyRows < 1)
-            throw new Error('Reusable vector batch does not fit the resource budget');
-          for (let start = 0; start < reusable.chunks; start += copyRows) {
+          const copyRowBytes = 32 * dimensions + 1024 + 4 * node.id.length;
+          for (let start = 0; start < reusable.chunks; ) {
+            // Share one bounded transaction across neighboring reused nodes.
+            // Retain its reservation until the write finishes, including while
+            // validating the next node's historical input.
+            if (
+              copyBatch.length &&
+              (copyBatch.length === 256 ||
+                Math.min(store.options.batchBytes - copyBytes, budget.limit - budget.usedBytes) <
+                  copyRowBytes)
+            )
+              await flushCopies();
+            const copyRows = Math.min(
+              256 - copyBatch.length,
+              Math.floor(
+                Math.min(
+                  reuse.options.batchBytes,
+                  store.options.batchBytes - copyBytes,
+                  budget.limit - budget.usedBytes,
+                ) / copyRowBytes,
+              ),
+            );
+            if (copyRows < 1)
+              throw new Error('Reusable vector batch does not fit the resource budget');
             const length = Math.min(copyRows, reusable.chunks - start);
             // Reuse has no HTTP body or JSON decoder; retain only vector copies.
-            const release = budget.reserve(length * (32 * dimensions + 1024 + 4 * node.id.length));
+            const bytes = length * copyRowBytes;
+            const release = budget.reserve(bytes);
             try {
               const chunks = await reuse.readChunks(reusable, start, length);
               const delta = input.sourceStartLine - (reusable.sourceStartLine ?? 0);
-              await store.append(
-                node.id,
-                input.contentHash,
-                chunks.map((chunk) => ({
+              copyBatch.push(
+                ...chunks.map((chunk) => ({
                   ...chunk,
+                  nodeId: node.id,
+                  contentHash: input.contentHash,
                   startLine: chunk.startLine + delta,
                   endLine:
                     chunk.endLine === reusable.sourceEndLine
@@ -297,14 +324,19 @@ export async function runEmbeddingJob(
                       : chunk.endLine + delta,
                 })),
               );
-            } finally {
+            } catch (error) {
               release();
+              throw error;
             }
+            copyReleases.push(release);
+            copyBytes += bytes;
+            start += length;
           }
           copied.push({ nodeId: node.id, contentHash: input.contentHash, chunks: reusable.chunks });
           reusedNodes++;
           continue;
         }
+        if (copyBatch.length) await flushCopies();
         if (!isShortLabel(node.label) && STRUCTURAL_LABELS.has(node.label)) {
           try {
             const names = await extractStructuralNames(node.content, node.filePath);
@@ -369,6 +401,7 @@ export async function runEmbeddingJob(
         node.fieldNames = undefined;
         if (abort) break;
       }
+      if (copyBatch.length) await flushCopies();
       if (!abort) await flush();
       const finished = [...generated]
         .filter(([id, node]) => node.ended && !failed.has(id))
@@ -392,6 +425,7 @@ export async function runEmbeddingJob(
       if (abort) throw abort;
     } finally {
       for (const row of batch) row.release();
+      for (const release of copyReleases) release();
       releaseScratch();
       fetched.release();
     }

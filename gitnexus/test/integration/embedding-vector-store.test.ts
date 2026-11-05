@@ -249,7 +249,9 @@ describe('bounded durable embedding runner', () => {
   it('completes copied groups together at the unit boundary without provider requests', async () => {
     const fixture = await runnerFixture(64);
     const finish = vi.spyOn(store, 'finishNodes');
+    const queries = vi.spyOn(lbug.Connection.prototype, 'query');
     const result = await fixture.run({
+      queueBytes: 512 * 1024,
       reuse: {
         options: { batchBytes: 64 * 1024 },
         async reusable(nodeId: string, contentHash: string) {
@@ -263,7 +265,71 @@ describe('bounded durable embedding runner', () => {
     expect(fixture.provider).not.toHaveBeenCalled();
     expect(result.state).toMatchObject({ reusedNodes: 64, completedNodes: 0, chunks: 64 });
     expect(finish).toHaveBeenCalledTimes(1);
+    expect(result.peakQueueBytes).toBeLessThanOrEqual(512 * 1024);
+    // A complete unit must not pay one durable native commit per reused node.
+    expect(queries.mock.calls.filter(([sql]) => sql === 'COMMIT').length).toBeLessThan(10);
   });
+
+  it('flushes copied vectors before generated inputs and preserves complete mixed coverage', async () => {
+    const fixture = await runnerFixture(65);
+    const result = await fixture.run({
+      queueBytes: 512 * 1024,
+      reuse: {
+        options: { batchBytes: 64 * 1024 },
+        async reusable(nodeId: string, contentHash: string) {
+          return Number(nodeId.slice(-5)) < 33
+            ? { nodeId, contentHash, chunks: 1, complete: true, sourceStartLine: 1 }
+            : null;
+        },
+        async readChunks() {
+          return [chunk(0)];
+        },
+      },
+    });
+    expect(result.state).toMatchObject({ reusedNodes: 33, completedNodes: 32, chunks: 65 });
+    const submitted = fixture.provider.mock.calls.flatMap(([texts]) => texts);
+    expect(submitted).toHaveLength(32);
+    expect(new Set(submitted).size).toBe(32);
+    expect(result.peakQueueBytes).toBeLessThanOrEqual(512 * 1024);
+  });
+
+  it.each(['read', 'write', 'cancel'] as const)(
+    'replays a copy %s interruption without duplicate chunks or provider requests',
+    async (fault) => {
+      const fixture = await runnerFixture(64);
+      let fail = true;
+      const controller = new AbortController();
+      const append = store.appendBatch.bind(store);
+      vi.spyOn(store, 'appendBatch').mockImplementation(async (chunks) => {
+        await append(chunks);
+        if (fail && fault === 'write') throw new Error('injected reuse failure');
+      });
+      const reuse = {
+        options: { batchBytes: 64 * 1024 },
+        async reusable(nodeId: string, contentHash: string) {
+          return { nodeId, contentHash, chunks: 1, complete: true, sourceStartLine: 1 };
+        },
+        async readChunks(receipt: { nodeId: string }) {
+          if (fail && receipt.nodeId.endsWith('n00055')) {
+            if (fault === 'read') throw new Error('injected reuse failure');
+            if (fault === 'cancel') controller.abort(new Error('injected reuse failure'));
+          }
+          return [chunk(0)];
+        },
+      };
+      await expect(
+        fixture.run({ reuse, queueBytes: 512 * 1024, signal: controller.signal }),
+      ).rejects.toThrow('reuse failure');
+      expect(fixture.journal.snapshot()).toMatchObject({ reusedNodes: 0, chunks: 0 });
+      expect(fixture.journal.snapshot().active).not.toBeNull();
+      await fixture.reopen();
+      fail = false;
+      const result = await fixture.run({ reuse, queueBytes: 512 * 1024 });
+      expect(result.state).toMatchObject({ reusedNodes: 64, completedNodes: 0, chunks: 64 });
+      expect(fixture.provider).not.toHaveBeenCalled();
+      expect(result.peakQueueBytes).toBeLessThanOrEqual(512 * 1024);
+    },
+  );
 
   it('refuses a symlinked native shadow sidecar before opening the artifact', async () => {
     const options = await setup();
