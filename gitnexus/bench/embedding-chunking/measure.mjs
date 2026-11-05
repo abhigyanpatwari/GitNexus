@@ -10,10 +10,14 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { setImmediate } from 'node:timers/promises';
+import { fork } from 'node:child_process';
+import { on } from 'node:events';
+import { promisify } from 'node:util';
 
 const [baselineRoot, candidateRoot, output] = process.argv.slice(2);
 const sourceMode = process.argv.includes('--source');
-if (!baselineRoot || !candidateRoot || !output)
+const workerMode = baselineRoot === '--worker';
+if (!baselineRoot || !candidateRoot || (!workerMode && !output))
   throw new Error('Pass baseline repo, candidate repo and result JSON path');
 async function load(root) {
   const base = `${root}/gitnexus/dist/core/embeddings/`;
@@ -31,11 +35,6 @@ async function load(root) {
   if (existsSync(sourceReader)) modules.push(await import(pathToFileURL(sourceReader).href));
   return Object.assign({}, ...modules);
 }
-const baseline = await load(baselineRoot);
-const candidate = await load(candidateRoot);
-const embedder = await import(
-  pathToFileURL(`${candidateRoot}/gitnexus/dist/core/embeddings/embedder.js`).href
-);
 const lines = (n, prefix = '  ') =>
   Array.from({ length: n }, (_, i) => `${prefix}const value${i} = compute(${i});`).join('\n');
 const sources = {
@@ -117,7 +116,7 @@ async function prepare(api, original, reader) {
   }
   return { count: texts.length, chars, texts };
 }
-async function sample(api, cohort) {
+async function sample(api, cohort, embedder) {
   // Yield between samples and production-sized batches so native tree
   // finalizers can run, as they do while the real pipeline awaits inference.
   await setImmediate();
@@ -170,71 +169,156 @@ async function sample(api, cohort) {
     ...work,
   };
 }
-const result = {
-  runtime: process.version,
-  model: 'Snowflake/snowflake-arctic-embed-xs',
-  device: 'cpu',
-  threads: 2,
-  sourceMode,
-  baselineRoot,
-  candidateRoot,
-  samples: {},
-};
-try {
-  if (sourceMode) {
-    fixtureRoot = await mkdtemp(path.join(tmpdir(), 'gitnexus-chunk-bench-'));
-    sourceContext.repoPath = fixtureRoot;
-    for (const node of Object.values(nodes)) {
-      const raw = `\n${node.content}`;
-      await writeFile(path.join(fixtureRoot, node.filePath), raw);
-      fileHashes.set(node.filePath, createHash('sha256').update(raw).digest('hex'));
-      // Match ingestion's capped, normalized snippet; production rehydrates
-      // eligible nodes from the verified original file before chunking.
-      node.content = (
-        node.content.length > 5000
-          ? `${node.content.slice(0, 5000)}\n... [truncated]`
-          : node.content
-      ).replace(/[\r\n\t]+/g, ' ');
+// Loading two independent LadybugDB addons in one process crashes at exit,
+// even without opening a database. Each revision owns its native dependencies
+// and model sidecar; IPC and startup are outside the measured sample interval.
+function startWorker(root) {
+  const child = fork(
+    new URL(import.meta.url),
+    ['--worker', root, ...(sourceMode ? ['--source'] : [])],
+    {
+      stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+    },
+  );
+  const send = promisify(child.send.bind(child));
+  const messages = on(child, 'message', { close: ['exit'] });
+  const exited = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Benchmark worker for ${root} failed: ${signal ?? `exit ${code}`}`));
+    });
+  });
+  // A worker can fail while the other revision is being measured. Observe its
+  // rejection now and propagate it when receiving a sample or closing workers.
+  exited.catch(() => {});
+  async function receive() {
+    const message = await messages.next();
+    if (message.done) {
+      await exited;
+      throw new Error(`Benchmark worker for ${root} exited before returning a sample`);
     }
+    return message.value[0];
   }
-  await embedder.initEmbedder(undefined, { threads: 2, device: 'cpu' }, 'cpu');
-  for (const cohort of [
-    ...Object.keys(nodes),
-    ...Object.keys(nodes).map((key) => `hash:${key}`),
-    ...Object.keys(nodes).map((key) => `inference:${key}`),
-    'query',
-  ]) {
-    for (let i = 0; i < 3; i++) {
-      await sample(baseline, cohort);
-      await sample(candidate, cohort);
-    }
-    const pairs = [];
-    for (let i = 0; i < 16; i++) {
-      const pair = {};
-      for (const key of i % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate'])
-        pair[key] = await sample(key === 'baseline' ? baseline : candidate, cohort);
-      pairs.push(pair);
-    }
-    result.samples[cohort] = pairs;
-    const percentile = (key, q) =>
-      pairs.map((p) => p[key].ms).sort((a, b) => a - b)[Math.ceil(q * pairs.length) - 1];
-    console.log(
-      JSON.stringify({
-        cohort,
-        baselineMedian: percentile('baseline', 0.5),
-        candidateMedian: percentile('candidate', 0.5),
-        baselineP95: percentile('baseline', 0.95),
-        candidateP95: percentile('candidate', 0.95),
-        baselineWork: pairs[0].baseline,
-        candidateWork: pairs[0].candidate,
-      }),
-    );
-  }
-  await writeFile(output, JSON.stringify(result, null, 2));
-} finally {
+  return {
+    async ready() {
+      if ((await receive()) !== 'ready') throw new Error(`Invalid worker handshake for ${root}`);
+    },
+    async sample(cohort) {
+      await send(cohort);
+      return receive();
+    },
+    async close() {
+      if (child.connected) await send(null);
+      await exited;
+    },
+  };
+}
+
+async function runWorker(root) {
+  const api = await load(root);
+  const embedder = await import(
+    pathToFileURL(`${root}/gitnexus/dist/core/embeddings/embedder.js`).href
+  );
+  const send = promisify(process.send.bind(process));
+  const messages = on(process, 'message', { close: ['disconnect'] });
   try {
-    await embedder.disposeEmbedder();
+    if (sourceMode) {
+      fixtureRoot = await mkdtemp(path.join(tmpdir(), 'gitnexus-chunk-bench-'));
+      sourceContext.repoPath = fixtureRoot;
+      for (const node of Object.values(nodes)) {
+        const raw = `\n${node.content}`;
+        await writeFile(path.join(fixtureRoot, node.filePath), raw);
+        fileHashes.set(node.filePath, createHash('sha256').update(raw).digest('hex'));
+        // Match ingestion's capped, normalized snippet; production rehydrates
+        // eligible nodes from the verified original file before chunking.
+        node.content = (
+          node.content.length > 5000
+            ? `${node.content.slice(0, 5000)}\n... [truncated]`
+            : node.content
+        ).replace(/[\r\n\t]+/g, ' ');
+      }
+    }
+    await embedder.initEmbedder(undefined, { threads: 2, device: 'cpu' }, 'cpu');
+    if (process.connected) await send('ready');
+    for await (const [cohort] of messages) {
+      if (cohort === null) break;
+      const result = await sample(api, cohort, embedder);
+      if (process.connected) await send(result);
+    }
   } finally {
-    if (fixtureRoot) await rm(fixtureRoot, { recursive: true, force: true });
+    await messages.return();
+    try {
+      await embedder.disposeEmbedder();
+    } finally {
+      try {
+        if (fixtureRoot) await rm(fixtureRoot, { recursive: true, force: true });
+      } finally {
+        if (process.connected) process.disconnect();
+      }
+    }
   }
 }
+
+async function runBenchmark() {
+  const result = {
+    runtime: process.version,
+    model: 'Snowflake/snowflake-arctic-embed-xs',
+    device: 'cpu',
+    threads: 2,
+    sourceMode,
+    isolation: 'child-process-per-revision',
+    baselineRoot,
+    candidateRoot,
+    samples: {},
+  };
+  const workers = {};
+  try {
+    for (const [key, root] of Object.entries({
+      baseline: baselineRoot,
+      candidate: candidateRoot,
+    })) {
+      workers[key] = startWorker(root);
+      await workers[key].ready();
+    }
+    for (const cohort of [
+      ...Object.keys(nodes),
+      ...Object.keys(nodes).map((key) => `hash:${key}`),
+      ...Object.keys(nodes).map((key) => `inference:${key}`),
+      'query',
+    ]) {
+      for (let i = 0; i < 3; i++) {
+        await workers.baseline.sample(cohort);
+        await workers.candidate.sample(cohort);
+      }
+      const pairs = [];
+      for (let i = 0; i < 16; i++) {
+        const pair = {};
+        for (const key of i % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate'])
+          pair[key] = await workers[key].sample(cohort);
+        pairs.push(pair);
+      }
+      result.samples[cohort] = pairs;
+      const percentile = (key, q) =>
+        pairs.map((p) => p[key].ms).sort((a, b) => a - b)[Math.ceil(q * pairs.length) - 1];
+      console.log(
+        JSON.stringify({
+          cohort,
+          baselineMedian: percentile('baseline', 0.5),
+          candidateMedian: percentile('candidate', 0.5),
+          baselineP95: percentile('baseline', 0.95),
+          candidateP95: percentile('candidate', 0.95),
+          baselineWork: pairs[0].baseline,
+          candidateWork: pairs[0].candidate,
+        }),
+      );
+    }
+  } finally {
+    await Promise.all(Object.values(workers).map((worker) => worker.close()));
+  }
+  // A native teardown failure must fail the run before publishing a result.
+  await writeFile(output, JSON.stringify(result, null, 2));
+}
+
+if (workerMode) await runWorker(candidateRoot);
+else await runBenchmark();

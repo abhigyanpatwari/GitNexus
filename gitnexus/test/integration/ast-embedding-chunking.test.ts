@@ -21,7 +21,7 @@ const node = (content: string, label = 'Function', filePath = 'sample.ts'): Embe
 describe('AST embedding contracts with real parsers (#702)', () => {
   it.each([
     [
-      'sample.kt',
+      'single-line-constructor.kt',
       'class Sample(val callback: () -> Unit = { println("LAMBDA_BODY") }) { val field = 42 }',
       'callback',
     ],
@@ -31,7 +31,7 @@ describe('AST embedding contracts with real parsers (#702)', () => {
       'extends makeBase',
     ],
     [
-      'sample.kt',
+      'multiline-constructor.kt',
       'class Sample(\n val callback: () -> Unit = {\n  println("LAMBDA_BODY")\n }\n) {\n val field = 42\n}',
       'callback',
     ],
