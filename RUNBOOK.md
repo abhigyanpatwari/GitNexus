@@ -113,8 +113,9 @@ checkpoint groups still regenerate their vectors.
 
 For paired performance measurements, build both checkouts and run from `gitnexus/`:
 `node --expose-gc bench/embedding-chunking/measure.mjs /path/to/baseline /path/to/candidate /tmp/chunk-bench.json`.
-This manual benchmark requires a separately built baseline and runs outside the
-test suite; its failure-cleanup tests always run in CI.
+The `embedding-chunking-benchmark` job in `.github/workflows/ci-tests.yml` builds
+the comparison revision and candidate, runs this benchmark with `--source`, and
+uploads the JSON samples and log as `embedding-chunking-performance` for 30 days.
 The benchmark uses the local embedding model and saves raw samples outside the
 repository. Recorded paired measurements and their environment are in
 `gitnexus/bench/embedding-chunking/baseline.json`. These are diagnostic references,
