@@ -121,6 +121,30 @@ The private repository's complete OOM has not been reproduced by these probes.
 
 ## Import-emission memory probe (#3695)
 
+CI uses the checked-in `../import-emission/baseline.json` and the measurement
+runner below (from `gitnexus/`):
+
+```sh
+node bench/import-emission/measure.mjs --check --output /tmp/import-emission/measure.json
+```
+
+The runner starts three fresh processes with a 512 MiB old-space limit and
+checks every sample's workload, edge count, ordered-edge hash and CSV hash.
+It rejects more than 16 MiB of heap growth from the live-input checkpoint to
+the first emitted edge. The previous global collector measured about 86.7 MiB
+at this boundary; the optimized emitter measured about -1 MiB. The allowance
+absorbs GC/runtime bookkeeping variation without accepting the old collector.
+Elapsed time, RSS and later heap checkpoints remain diagnostic measurements.
+
+`measure.json` retains the raw samples and check outcome, including failed
+checks. Choose a new output path for each run; existing files are protected.
+`--emitter /path/to/baseline/imports-to-edges.ts` checks another revision with
+the same workload and sink. The runner never rewrites `baseline.json`.
+The `scope-resolution-benchmark` job in `.github/workflows/ci-tests.yml` runs
+this command and retains `measure.json` in its always-uploaded artifact.
+
+For a single-process probe or custom workload:
+
 ```sh
 node --expose-gc --max-old-space-size=512 --import tsx \
   bench/scope-resolution/import-emission.mts --files 17095 --imports 32
@@ -143,10 +167,10 @@ use the actual heap checkpoints for revision comparisons.
 On Node 22.23.3/Linux, three paired fresh-process runs against the emitter at
 `3c068dd11d53c1c8f373957d0c144da0acbfbc17` measured these median checkpoints:
 
-| Heap after GC | Baseline | Per-file collector |
-| --- | ---: | ---: |
-| First emitted edge | 137.96 MiB | 51.01 MiB |
-| Last emitted edge | 345.84 MiB | 258.19 MiB |
+| Heap after GC      |   Baseline | Per-file collector |
+| ------------------ | ---------: | -----------------: |
+| First emitted edge | 137.96 MiB |          51.01 MiB |
+| Last emitted edge  | 345.84 MiB |         258.19 MiB |
 
 All six runs produced CSV SHA-256
 `4558668a68f94f4069ed0d471c553db82e0c370877bb3e145b3ac1f9e9f7a1bc`
