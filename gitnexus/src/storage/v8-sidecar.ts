@@ -42,7 +42,7 @@ const internString = (value: string, pool: Map<string, string>): string => {
  * retained heap (~+59% measured vs interned JSON).
  */
 export const internGraphStrings = (root: unknown, pool: Map<string, string>): unknown => {
-  const seen = new WeakSet<object>();
+  const seen = new Set<object>();
   const walk = (value: unknown): unknown => {
     if (typeof value === 'string') return internString(value, pool);
     if (value === null || typeof value !== 'object') return value;

@@ -113,10 +113,23 @@ describe('v8 cache envelope', () => {
 
     internGraphStrings(graph, pool);
 
-    // Rewalking the shared leaf would perform 10,000 lookups instead of 100.
     expect(get).toHaveBeenCalledTimes(100);
     expect(pool.size).toBe(100);
     expect(graph.every((record) => record === graph[0])).toBe(true);
+  });
+
+  it('revisits a graph on later calls with a new pool or new strings', () => {
+    const graph = { text: 'first' };
+    const first = new Map<string, string>();
+    internGraphStrings(graph, first);
+    graph.text = 'second';
+    const second = new Map<string, string>();
+
+    internGraphStrings(graph, second);
+    internGraphStrings(graph, first);
+
+    expect([...first.keys()]).toEqual(['first', 'second']);
+    expect([...second.keys()]).toEqual(['second']);
   });
 
   it('round-trips a live graph including Maps', async () => {
