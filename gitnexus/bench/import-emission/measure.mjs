@@ -9,9 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 const baselinePath = new URL('./baseline.json', import.meta.url);
-const probePath = fileURLToPath(
-  new URL('../scope-resolution/import-emission.mts', import.meta.url),
-);
+const probePath = fileURLToPath(new URL('./probe.mts', import.meta.url));
 const packageRoot = fileURLToPath(new URL('../../', import.meta.url));
 
 export function checkSamples(samples, baseline) {

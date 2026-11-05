@@ -1,7 +1,7 @@
 /**
  * Import-emission memory probe for #3695. Run from gitnexus/:
  *   node --expose-gc --max-old-space-size=512 --import tsx \
- *     bench/scope-resolution/import-emission.mts --files 17095 --imports 32
+ *     bench/import-emission/probe.mts --files 17095 --imports 32
  *
  * Pass --emitter /path/to/baseline/imports-to-edges.ts to compare revisions
  * with the same inputs, sink and runtime. Compare both ordered-edge and CSV
