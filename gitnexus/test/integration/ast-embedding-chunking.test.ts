@@ -19,6 +19,66 @@ const node = (content: string, label = 'Function', filePath = 'sample.ts'): Embe
 });
 
 describe('AST embedding contracts with real parsers (#702)', () => {
+  it.each([
+    [
+      'sample.kt',
+      'class Sample(val callback: () -> Unit = { println("LAMBDA_BODY") }) { val field = 42 }',
+      'callback',
+    ],
+    [
+      'sample.ts',
+      'class Sample extends makeBase(() => { return "LAMBDA_BODY"; }) { field = 42; }',
+      'extends makeBase',
+    ],
+    [
+      'sample.kt',
+      'class Sample(\n val callback: () -> Unit = {\n  println("LAMBDA_BODY")\n }\n) {\n val field = 42\n}',
+      'callback',
+    ],
+    ['sample.cs', 'class Sample { string Name => "GETTER_BODY"; int field = 42; }', 'string Name'],
+  ])(
+    'excludes implementations from every retained class declaration in %s',
+    async (filePath, source, declaration) => {
+      const tree = await ast.ensureAndParse(source, filePath);
+      expect(tree?.rootNode.hasError).toBe(false);
+      for (const strategy of ['ast', 'fixed'] as const) {
+        const chunks = await chunkNode(
+          'Class',
+          source,
+          filePath,
+          0,
+          source.split('\n').length - 1,
+          80,
+          10,
+          {
+            tree,
+            name: 'Sample',
+            strategy,
+          },
+        );
+        const prepared = {
+          ...node(source, 'Class', filePath),
+          name: 'Sample',
+          classDeclaration: chunks[0].classDeclaration,
+        };
+        const projected = chunks.map((chunk) => chunk.text).join('\n');
+        const inputs = chunks
+          .map((chunk) => generateEmbeddingText(prepared, chunk.text, {}, chunk.chunkIndex))
+          .join('\n');
+        expect(projected).toContain(declaration);
+        expect(projected).toContain('field = 42');
+        expect(inputs).not.toContain('_BODY');
+        for (const chunk of chunks) {
+          expect(chunk.text.length).toBeLessThanOrEqual(80);
+          expect(chunk.startLine).toBe(source.slice(0, chunk.startOffset).split('\n').length - 1);
+          expect(chunk.endLine).toBe(source.slice(0, chunk.endOffset - 1).split('\n').length - 1);
+          expect(chunk.startOffset).toBeLessThan(chunk.endOffset);
+          expect(chunk.endOffset).toBeLessThanOrEqual(source.length);
+        }
+      }
+    },
+  );
+
   it.each(['@interface Empty : NSObject', '@protocol Empty', '@implementation Empty'])(
     'preserves an empty direct-member declaration: %s',
     async (header) => {

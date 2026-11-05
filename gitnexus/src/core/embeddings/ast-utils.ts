@@ -126,11 +126,6 @@ const findSnippetNode = (
 export const findFunctionNode = (root: any, expectedName?: string): any | null =>
   findSnippetNode(root, FUNCTION_LIKE_TYPES, expectedName);
 
-/**
- * Find the first class/struct/interface/enum-like declaration in an AST.
- * Used when parsing node.content (a snippet, not a full file) where
- * absolute line numbers don't apply.
- */
 const CLASS_LIKE_TYPES = new Set([
   'class_declaration',
   'class_definition',

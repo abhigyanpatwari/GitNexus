@@ -94,8 +94,7 @@ async function prepare(api, original, reader) {
     options,
   );
   if (chunks[0]?.classDeclaration !== undefined) node.classDeclaration = chunks[0].classDeclaration;
-  let count = 0,
-    chars = 0,
+  let chars = 0,
     tail = '';
   const texts = [];
   let previousEnd;
@@ -110,14 +109,13 @@ async function prepare(api, original, reader) {
       ),
       4096,
     )) {
-      count++;
       chars += text.length;
       texts.push(text);
     }
     tail = chunk.text.slice(-120);
     previousEnd = chunk.endOffset;
   }
-  return { count, chars, texts };
+  return { count: texts.length, chars, texts };
 }
 async function sample(api, cohort) {
   // Yield between samples and production-sized batches so native tree

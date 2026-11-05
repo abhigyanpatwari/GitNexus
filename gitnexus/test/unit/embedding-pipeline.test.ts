@@ -131,6 +131,20 @@ describe('contentHashForNode', () => {
     expect(contentHashForNode(node)).not.toBe('3df96fda573e39197809d34d59257008c1bf9622');
   });
 
+  it('invalidates cached v3 class headers containing lambda bodies', () => {
+    const node = {
+      id: 'Class:sample.kt:Sample',
+      name: 'Sample',
+      label: 'Class',
+      filePath: 'sample.kt',
+      content:
+        'class Sample(val callback: () -> Unit = { println("LAMBDA_BODY") }) { val field = 42 }',
+      startLine: 0,
+      endLine: 0,
+    };
+    expect(contentHashForNode(node)).not.toBe('a6e73419c424afff21cb94135388d52b04252ebb');
+  });
+
   it('binds long-source fingerprints, ranges and policy without changing short v7 hashes', () => {
     const source = {
       repoPath: '/missing',

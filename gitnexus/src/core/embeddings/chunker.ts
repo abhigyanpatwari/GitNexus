@@ -614,6 +614,46 @@ const CLASS_FIELD_TYPES = new Set([
   'assignment',
 ]);
 
+type DeclarationSpan = { startIndex: number; endIndex: number };
+
+const declarationSpans = (
+  nodes: ChunkSyntaxNode[],
+  startIndex: number,
+  endIndex: number,
+): DeclarationSpan[] => {
+  const excluded: DeclarationSpan[] = [];
+  const pending = [...nodes];
+  while (pending.length) {
+    const current = pending.pop()!;
+    // Kotlin/Swift closures and C# expression getters expose executable
+    // groups without a named body field.
+    const implementation =
+      current.childForFieldName?.('body') ??
+      (current.type === 'statements' ||
+      current.type === 'function_body' ||
+      current.type === 'arrow_expression_clause'
+        ? current
+        : null);
+    if (implementation) {
+      excluded.push(implementation);
+      continue;
+    }
+    for (let i = current.namedChildCount - 1; i >= 0; i--) {
+      const child = current.namedChild(i);
+      if (child) pending.push(child);
+    }
+  }
+  excluded.sort((a, b) => a.startIndex - b.startIndex);
+  const spans: DeclarationSpan[] = [];
+  let cursor = startIndex;
+  for (const cut of excluded) {
+    if (cut.startIndex > cursor) spans.push({ startIndex: cursor, endIndex: cut.startIndex });
+    cursor = Math.max(cursor, cut.endIndex);
+  }
+  if (cursor < endIndex) spans.push({ startIndex: cursor, endIndex });
+  return spans;
+};
+
 /** Retained spans are packed by their own size, never by the removed methods'
  * size. Map projected offsets back to original source for search line ranges. */
 const projectClassChunks = (
@@ -630,7 +670,6 @@ const projectClassChunks = (
   const body = target && getDeclarationBodyNode(target);
   if (!body || target.hasError) return [classMetadataChunk(startLine, endLine)];
 
-  type Span = { startIndex: number; endIndex: number };
   const fields: Array<{ node: ChunkSyntaxNode; startIndex: number; endIndex: number }> = [];
   let firstMemberStart: number | undefined;
   const groups: ChunkSyntaxNode[] = [body];
@@ -675,45 +714,28 @@ const projectClassChunks = (
   }
   fields.sort((a, b) => a.startIndex - b.startIndex);
   const headerEnd = firstMemberStart ?? (body === target ? target.endIndex : body.startIndex + 1);
-  const header = content.slice(target.startIndex, headerEnd).trimEnd();
-  const sourceGroups: Span[][] = header
-    ? [[{ startIndex: target.startIndex, endIndex: target.startIndex + header.length }]]
-    : [];
+  const headerNodes: ChunkSyntaxNode[] = [];
+  for (let i = 0; i < target.namedChildCount; i++) {
+    const child = target.namedChild(i);
+    // Inspect constructor defaults and heritage expressions, not the class body.
+    if (child && child.endIndex <= headerEnd) headerNodes.push(child);
+  }
+  const headerSpans = declarationSpans(
+    headerNodes,
+    target.startIndex,
+    target.startIndex + content.slice(target.startIndex, headerEnd).trimEnd().length,
+  );
+  const header = headerSpans
+    .map((span) => content.slice(span.startIndex, span.endIndex))
+    .join('\n');
+  const sourceGroups: DeclarationSpan[][] = header ? [headerSpans] : [];
   for (const { node, startIndex, endIndex } of fields) {
-    // Field initializers can themselves contain lambdas or accessors. Keep
-    // their declarations but remove their bodies without reparsing snippets.
-    const excluded: Span[] = [];
-    const pending = [node];
-    while (pending.length) {
-      const current = pending.pop();
-      if (!current) break;
-      // Kotlin/Swift closures and accessors also carry unnamed executable
-      // statement groups; Kotlin expression getters use function_body.
-      const implementation =
-        current.childForFieldName?.('body') ??
-        (current.type === 'statements' || current.type === 'function_body' ? current : null);
-      if (implementation) {
-        excluded.push(implementation);
-        continue;
-      }
-      for (let i = current.namedChildCount - 1; i >= 0; i--) {
-        const child = current.namedChild(i);
-        if (child) pending.push(child);
-      }
-    }
-    excluded.sort((a, b) => a.startIndex - b.startIndex);
-    const spans: Span[] = [];
-    let cursor = startIndex;
-    for (const cut of excluded) {
-      if (cut.startIndex > cursor) spans.push({ startIndex: cursor, endIndex: cut.startIndex });
-      cursor = Math.max(cursor, cut.endIndex);
-    }
-    if (cursor < endIndex) spans.push({ startIndex: cursor, endIndex });
+    const spans = declarationSpans([node], startIndex, endIndex);
     if (spans.length) sourceGroups.push(spans);
   }
 
   const segments: Array<{ start: number; end: number; source: number }> = [];
-  const units: Span[] = [];
+  const units: DeclarationSpan[] = [];
   const pieces: string[] = [];
   let length = 0;
   for (const spans of sourceGroups) {

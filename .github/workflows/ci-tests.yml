@@ -973,9 +973,16 @@ jobs:
         run: |
           npm ci
           npm run build
+      - name: Install local embedding runtime
+        working-directory: gitnexus
+        env:
+          GITNEXUS_EMBEDDING_RUNTIME_DIR: ${{ runner.temp }}/embedding-chunking-runtime
+        run: node dist/cli/index.js embeddings install
       - name: Measure paired embedding chunking
         working-directory: gitnexus
         shell: bash
+        env:
+          GITNEXUS_EMBEDDING_RUNTIME_DIR: ${{ runner.temp }}/embedding-chunking-runtime
         run: >-
           node --expose-gc bench/embedding-chunking/measure.mjs
           "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE"
