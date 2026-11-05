@@ -12,7 +12,6 @@ assert(
   'Expected BASE_RUNTIME CANDIDATE_RUNTIME INDEXING_RESULTS OUTPUT',
 );
 assert.equal(typeof global.gc, 'function', 'Run with --expose-gc');
-assert(!fs.existsSync(output), 'Output already exists');
 const indexing = JSON.parse(fs.readFileSync(indexingResults, 'utf8'));
 const storage = indexing.results.find((r) => r.name === 'baseline-seed')?.storagePath;
 assert(storage, 'Missing baseline cache storage');
