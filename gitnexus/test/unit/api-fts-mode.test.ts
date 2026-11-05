@@ -211,7 +211,7 @@ it.each(['analyzing', 'failed'])(
 );
 
 describe('POST /api/embed staged recovery preflight', () => {
-  it('passes indexed source identity from the checkout and reports source failures', async () => {
+  it('hands the indexed storage slot to the shared phase and reports source failures', async () => {
     const fileHashes = { 'sample.ts': 'a'.repeat(64) };
     mocks.loadMeta.mockResolvedValue({
       repoPath: entry.path,
@@ -219,14 +219,20 @@ describe('POST /api/embed staged recovery preflight', () => {
       contentRetention: 'full',
       stats: { embeddings: 3 },
     });
-    mocks.runEmbeddingPipeline.mockRejectedValue(new Error('source fingerprint mismatch'));
+    mocks.runAnalysisEmbeddingPhase.mockRejectedValueOnce(new Error('source fingerprint mismatch'));
     await invoke('/api/embed');
     await vi.waitFor(() => expect(mocks.releaseIndexLock).toHaveBeenCalledTimes(1));
-    expect(mocks.runEmbeddingPipeline.mock.calls[0]?.[6].source).toEqual({
-      repoPath: entry.path,
-      fileHashes,
-      contentRetention: 'full',
-    });
+    // The shared phase reads source identity from this slot's published metadata.
+    // embedding-job-controller.test.ts exercises that read with the real controller.
+    expect(mocks.runAnalysisEmbeddingPhase).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        metadataDirectory: entry.storagePath,
+        graphPath: path.join(entry.storagePath, 'lbug'),
+        nodeLimit: 0,
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(mocks.runEmbeddingPipeline).not.toHaveBeenCalled();
     expect(entry.path).not.toBe(entry.storagePath);
     expect(mocks.updateJob).toHaveBeenCalledWith(
       'embed-job',

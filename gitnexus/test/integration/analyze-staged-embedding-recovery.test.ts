@@ -48,6 +48,7 @@ interface Run {
 
 let root: string;
 let stoppedRepo: string;
+let sourceAwareRepo: string;
 let server: http.Server;
 let endpoint: string;
 let submitted: string[] = [];
@@ -270,6 +271,40 @@ function expectLegacyReuse(texts: string[], unfinishedInputs: number): void {
   expect(lastOutput).toContain('Legacy multi-chunk input provenance is unknown');
 }
 
+function removeLegacyInputProvenance(repo: string): void {
+  const stagingFile = readMeta(repo).embeddingCheckpoint?.recovery?.stagingFile;
+  if (!stagingFile) throw new Error('fixture has no retained generation');
+  // The retained core path now writes source-aware hashes. Downgrade only the
+  // long group's input digest to exercise checkpoints predating that receipt.
+  const script = `
+    const native = await import(${JSON.stringify(nativeUrl)});
+    const { default: lbug } = await import('@ladybugdb/core');
+    const handle = await native.openLbugConnection(lbug, ${JSON.stringify(path.join(repo, '.gitnexus', stagingFile))}, {
+      bufferPoolBytes: 64 * 1024 ** 2, threads: 1,
+    });
+    try {
+      const nodeId = 'Function:functions.ts:longRecoverable';
+      const query = await handle.conn.prepare('MATCH (e:CodeEmbedding {nodeId: $nodeId}) RETURN e.contentHash AS contentHash');
+      const result = await handle.conn.execute(query, { nodeId });
+      const rows = await result.getAll();
+      result.close();
+      const hash = rows[0]?.contentHash;
+      if (rows.length < 2 || !/^[a-f0-9]{40}:[a-f0-9]{40}$/.test(hash) || rows.some(row => row.contentHash !== hash))
+        throw new Error('Expected a complete source-aware multi-chunk fixture');
+      const update = await handle.conn.prepare('MATCH (e:CodeEmbedding {nodeId: $nodeId}) SET e.contentHash = $contentHash');
+      (await handle.conn.execute(update, { nodeId, contentHash: hash.slice(0, 40) })).close();
+      console.log('LEGACY_INPUT_PROVENANCE_REMOVED');
+    } finally { await native.closeLbugConnection(handle); }
+  `;
+  const result = spawnSync(
+    process.execPath,
+    ['--import', tsxLoaderUrl(), '--input-type=module', '-e', script],
+    { cwd: packageRoot, env: cliEnv(repo), encoding: 'utf8', timeout: 30_000 },
+  );
+  expect(result.status, `${result.error ?? ''}\n${result.stderr}\n${result.stdout}`).toBe(0);
+  expect(result.stdout).toContain('LEGACY_INPUT_PROVENANCE_REMOVED');
+}
+
 beforeAll(async () => {
   if (process.platform === 'win32') return;
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-staged-recovery-e2e-'));
@@ -364,6 +399,8 @@ beforeAll(async () => {
   expect(completed.filter((text) => text.includes('longRecoverable')).length).toBeGreaterThan(1);
   expect(activeWindowCompleted).toHaveLength(64);
   expect(held.length).toBeGreaterThan(0);
+  sourceAwareRepo = cloneStoppedRepo('source-aware');
+  removeLegacyInputProvenance(stoppedRepo);
   gateResolve = undefined;
   stopAfterCheckpoint = false;
 }, DEADLINE * 2);
@@ -387,6 +424,19 @@ describe.skipIf(process.platform === 'win32')(
   'interrupted staged embedding recovery (real CLI and native DB)',
   { concurrent: false },
   () => {
+    it(
+      'reuses verified source-aware multi-chunk groups without repeat provider work',
+      async () => {
+        const texts = await successfulAnalyze(sourceAwareRepo);
+        expect(texts.filter((text) => durableTexts.includes(text))).toEqual([]);
+        expect(texts).toHaveLength(128);
+        for (const text of held) expect(texts).toContain(text);
+        for (const text of activeWindowCompleted) expect(texts).toContain(text);
+        expectPublishedComplete(sourceAwareRepo, NODE_COUNT);
+      },
+      DEADLINE,
+    );
+
     it.each([
       ['plain', []],
       ['forced', ['--force', '--embeddings']],

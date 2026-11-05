@@ -60,17 +60,25 @@ it('rejects a different regular file at the opened path when O_NOFOLLOW is unava
   const { readEmbeddingJobRecord: readWithoutNoFollow } =
     await import('../../src/storage/embedding-job.js');
   const open = fs.open.bind(fs);
+  const lstat = fs.lstat.bind(fs);
   let close: ReturnType<typeof vi.spyOn> | undefined;
+  let read: ReturnType<typeof vi.spyOn> | undefined;
   vi.spyOn(fs, 'open').mockImplementation(async (target, flags, mode) => {
     const handle = await open(target, flags, mode);
     if (target === file) {
       close = vi.spyOn(handle, 'close');
-      await fs.rename(path.join(replacement, 'job.json'), file);
+      read = vi.spyOn(handle, 'read');
+      // Model a changed directory entry with real inode stats. Windows cannot
+      // rename over an open file, so a rename would fail before testing the guard.
+      vi.spyOn(fs, 'lstat').mockImplementation((target, options) =>
+        lstat(target === file ? path.join(replacement, 'job.json') : target, options),
+      );
     }
     return handle;
   });
   await expect(readWithoutNoFollow(directory, 'job.json')).rejects.toThrow('changed during open');
   expect(close).toHaveBeenCalledOnce();
+  expect(read).not.toHaveBeenCalled();
 });
 
 it.skipIf(process.platform === 'win32')(

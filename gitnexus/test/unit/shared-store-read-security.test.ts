@@ -45,16 +45,27 @@ it('reads the opened metadata snapshot and invalidates it after pathname replace
   const { slot, metadata } = fixture();
   const replacement = path.join(slot, 'replacement.json');
   fs.writeFileSync(replacement, JSON.stringify({ graphPath: second }));
+  // Model a pathname swap while keeping both real files available: Windows
+  // refuses rename-over-open, but descriptor reads must remain pinned there too.
+  let replaced = false;
+  const open = fs.openSync.bind(fs);
+  const stat = fs.lstatSync.bind(fs);
+  vi.spyOn(fs, 'openSync').mockImplementation((file, flags, mode) =>
+    open(replaced && file === metadata ? replacement : file, flags, mode),
+  );
+  vi.spyOn(fs, 'lstatSync').mockImplementation((file, options) =>
+    stat(replaced && file === metadata ? replacement : file, options),
+  );
   const read = fs.readFileSync.bind(fs);
   const spy = vi.spyOn(fs, 'readFileSync').mockImplementation((...args) => {
-    if (typeof args[0] === 'number') {
-      spy.mockRestore();
-      fs.renameSync(replacement, metadata);
-    }
+    replaced = true;
+    if (args[0] === metadata) args[0] = replacement;
     return read(...args);
   });
   expect(resolveGraphPath(slot)).toBe(path.join(slot, first));
   expect(resolveGraphPath(slot)).toBe(path.join(slot, second));
+  expect(spy).toHaveBeenCalledTimes(2);
+  expect(spy.mock.calls.every(([file]) => typeof file === 'number')).toBe(true);
 });
 
 it('preserves a relative storage path while validating its generation', () => {
