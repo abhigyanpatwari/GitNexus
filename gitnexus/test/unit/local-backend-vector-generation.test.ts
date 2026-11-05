@@ -34,6 +34,8 @@ interface Reader {
     limit: number,
   ): Promise<unknown[]>;
   lastObservedPoolState: Map<string, { metadata: RepoMeta }>;
+  lastQueryEmbeddingDims: Map<string, number>;
+  readToolMetadata(repo: { generationUnknown?: boolean }): Promise<RepoMeta>;
 }
 beforeEach(() => {
   vi.clearAllMocks();
@@ -42,6 +44,25 @@ beforeEach(() => {
 });
 
 describe('MCP generation gate', () => {
+  it.each(['before-read', 'during-read'])(
+    'clears a prior query width when ownership is lost %s',
+    async (when) => {
+      const backend = new LocalBackend() as unknown as Reader;
+      backend.lastQueryEmbeddingDims.set(graphPath, 4);
+      const repo = { lbugPath: graphPath, generationUnknown: when === 'before-read' };
+      if (when === 'during-read') {
+        vi.spyOn(backend, 'readToolMetadata').mockImplementation(async (handle) => {
+          handle.generationUnknown = true;
+          return metadata;
+        });
+      }
+      expect(await backend.semanticSearch(repo, 'hello', 5)).toEqual([]);
+      expect(backend.lastQueryEmbeddingDims.has(graphPath)).toBe(false);
+      expect(mocks.embed).not.toHaveBeenCalled();
+      expect(mocks.query).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(['pending', 'foreign-metadata', 'unknown-handle'])(
     'skips model and table access for %s',
     async (state) => {

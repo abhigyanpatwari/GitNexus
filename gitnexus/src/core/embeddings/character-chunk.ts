@@ -19,7 +19,12 @@ export function* iterateCharacterChunks(
   chunkSize = 1200,
   overlap = 120,
 ): Generator<Chunk> {
-  if (!Number.isSafeInteger(chunkSize) || chunkSize < 1 || !Number.isSafeInteger(overlap))
+  if (
+    !Number.isSafeInteger(chunkSize) ||
+    chunkSize < 1 ||
+    !Number.isSafeInteger(overlap) ||
+    overlap < 0
+  )
     throw new Error('Invalid character chunk size or overlap');
   if (content.length <= chunkSize) {
     yield {

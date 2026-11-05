@@ -16,6 +16,13 @@ const fingerprintNode = (label: string, content: string) => ({
 });
 
 describe('bounded embedding text preserves existing vectors', () => {
+  it.each(['short', 'x'.repeat(2401)])(
+    'rejects a negative overlap without skipping source text',
+    (content) => {
+      expect(() => [...iterateCharacterChunks(content, 1, 1, 1200, -1)]).toThrow('overlap');
+    },
+  );
+
   it.each([
     [
       'Function',

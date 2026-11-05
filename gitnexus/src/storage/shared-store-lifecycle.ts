@@ -13,6 +13,7 @@ import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { acquireIndexLock, requireExclusiveIndexLock, type IndexLockHandle } from './index-lock.js';
+import { sharedMemberGatePath } from './analysis-slot-lock.js';
 import {
   canonicalizePath,
   findRegistryEntryByRepoPath,
@@ -197,108 +198,128 @@ export const reclaimSharedStoreLocked = async (
   const checkoutsDir = path.join(storeRoot, 'checkouts');
   const commitsDir = path.join(storeRoot, 'commits');
   const referenced = new Set<string>();
-  let slots = (await listDirStrict(checkoutsDir)).map((name) => path.join(checkoutsDir, name));
-  if (opts.gc) {
-    const orphans = await orphanMembers(slots);
-    for (const slot of [...orphans]) {
-      // An analyze holds its slot's index lock until it has registered the
-      // checkout, so a slot that is seeded but not yet registered is busy,
-      // not orphaned. Judge (and, unless previewing, delete) only a slot
-      // whose lock is free, so the preview matches what --force would do.
-      let lock: IndexLockHandle;
-      try {
-        // Recheck durable work under ownership before deleting anything. In
-        // particular, acquiring the lock must not sweep a just-prepared graph.
-        lock = await acquireIndexLock(slot, { timeoutMs: 1, sweep: false });
-      } catch {
-        orphans.delete(slot);
-        continue;
-      }
-      const branchLocks: IndexLockHandle[] = [];
-      try {
-        let busy = lock.lockFree;
-        if (!busy) {
-          for (const branch of (await memberMetadataDirectories(slot)).slice(1)) {
-            try {
-              const branchLock = await acquireIndexLock(branch, { timeoutMs: 1, sweep: false });
-              branchLocks.push(branchLock);
-              if (branchLock.lockFree) {
-                busy = true;
-                break;
-              }
-            } catch {
-              busy = true;
-              break;
-            }
-          }
-        }
-        if (busy || !(await orphanMembers([slot])).has(slot)) {
+  const heldMemberGates: IndexLockHandle[] = [];
+  try {
+    let slots = (await listDirStrict(checkoutsDir)).map((name) => path.join(checkoutsDir, name));
+    if (opts.gc) {
+      const orphans = await orphanMembers(slots);
+      for (const slot of [...orphans]) {
+        // An analyze holds its slot's index lock until it has registered the
+        // checkout, so a slot that is seeded but not yet registered is busy,
+        // not orphaned. Judge (and, unless previewing, delete) only a slot
+        // whose lock is free, so the preview matches what --force would do.
+        let lock: IndexLockHandle;
+        let gate: IndexLockHandle | undefined;
+        try {
+          gate = await acquireIndexLock(sharedMemberGatePath(storeRoot, slot), {
+            timeoutMs: 1,
+            sweep: false,
+          });
+          requireExclusiveIndexLock(gate, `Cannot acquire the shared member gate at ${slot}.`);
+          // Recheck durable work under ownership before deleting anything. In
+          // particular, acquiring the lock must not sweep a just-prepared graph.
+          lock = await acquireIndexLock(slot, { timeoutMs: 1, sweep: false });
+        } catch {
+          gate?.release();
           orphans.delete(slot);
           continue;
         }
-        if (!opts.dryRun) {
-          try {
-            await fs.rm(slot, { recursive: true, force: true });
-          } catch {
-            // Like an undeletable graph below: keep it for the next collection
-            // rather than abort every store after this one. It stays a member,
-            // so whatever graph it still names is kept too.
+        const branchLocks: IndexLockHandle[] = [];
+        let dropped = false;
+        let deleting = false;
+        try {
+          let busy = lock.lockFree;
+          if (!busy) {
+            for (const branch of (await memberMetadataDirectories(slot)).slice(1)) {
+              try {
+                const branchLock = await acquireIndexLock(branch, { timeoutMs: 1, sweep: false });
+                branchLocks.push(branchLock);
+                if (branchLock.lockFree) {
+                  busy = true;
+                  break;
+                }
+              } catch {
+                busy = true;
+                break;
+              }
+            }
+          }
+          if (busy || !(await orphanMembers([slot])).has(slot)) {
             orphans.delete(slot);
-            result.keptMembers.push(slot);
             continue;
           }
+          if (!opts.dryRun) {
+            try {
+              deleting = true;
+              await fs.rm(slot, { recursive: true, force: true });
+            } catch {
+              // Like an undeletable graph below: keep it for the next collection
+              // rather than abort every store after this one. It stays a member,
+              // so whatever graph it still names is kept too.
+              orphans.delete(slot);
+              result.keptMembers.push(slot);
+              continue;
+            }
+          }
+          result.droppedMembers.push(slot);
+          dropped = true;
+        } finally {
+          for (const branchLock of branchLocks) branchLock.release();
+          lock.release();
+          // A deleted member must not be recreated until all graph and store
+          // deletion finishes. This gate is outside the recursively removed tree.
+          if (dropped || deleting) heldMemberGates.push(gate);
+          else gate.release();
         }
-        result.droppedMembers.push(slot);
-      } finally {
-        for (const branchLock of branchLocks) branchLock.release();
-        lock.release();
+      }
+      slots = slots.filter((slot) => !orphans.has(slot));
+    }
+    for (const slot of slots) {
+      for (const directory of await memberMetadataDirectories(slot)) {
+        const graphPath = (await loadMetaStrict(directory))?.graphPath;
+        if (graphPath) referenced.add(path.dirname(path.resolve(directory, graphPath)));
       }
     }
-    slots = slots.filter((slot) => !orphans.has(slot));
-  }
-  for (const slot of slots) {
-    for (const directory of await memberMetadataDirectories(slot)) {
-      const graphPath = (await loadMetaStrict(directory))?.graphPath;
-      if (graphPath) referenced.add(path.dirname(path.resolve(directory, graphPath)));
-    }
-  }
 
-  for (const name of await listDirStrict(commitsDir)) {
-    const dir = path.join(commitsDir, name);
-    if (referenced.has(dir)) continue;
-    if (opts.dryRun) {
-      if (!name.startsWith('.')) result.removed.push(dir);
-      continue;
+    for (const name of await listDirStrict(commitsDir)) {
+      const dir = path.join(commitsDir, name);
+      if (referenced.has(dir)) continue;
+      if (opts.dryRun) {
+        if (!name.startsWith('.')) result.removed.push(dir);
+        continue;
+      }
+      try {
+        await fs.rm(dir, { recursive: true, force: true });
+        if (!name.startsWith('.')) result.removed.push(dir);
+      } catch {
+        // Windows refuses to delete a file another process has open (an MCP
+        // reader). Keep it for the next reclaim instead of failing the caller.
+        if (!name.startsWith('.')) result.kept.push(dir);
+      }
     }
-    try {
-      await fs.rm(dir, { recursive: true, force: true });
-      if (!name.startsWith('.')) result.removed.push(dir);
-    } catch {
-      // Windows refuses to delete a file another process has open (an MCP
-      // reader). Keep it for the next reclaim instead of failing the caller.
-      if (!name.startsWith('.')) result.kept.push(dir);
-    }
-  }
 
-  const isEmpty = async (): Promise<boolean> =>
-    (await listDirStrict(checkoutsDir)).length + (await listDirStrict(commitsDir)).length === 0;
-  if (!opts.dryRun && (await isEmpty())) {
-    // Also hold the cache lock (publish -> cache, the only nesting order) so
-    // a member saving caches cannot lose them, then re-check: a new member's
-    // slot may have appeared while waiting. The lock directories live inside
-    // the store; removing them while held is safe on POSIX and is retried on
-    // the next reclaim elsewhere.
-    await withStoreLock({ root: storeRoot }, 'cache', async () => {
-      if (!(await isEmpty())) return;
-      await fs
-        .rm(storeRoot, { recursive: true, force: true })
-        .then(() => {
-          result.storeRemoved = true;
-        })
-        .catch(() => {});
-    });
+    const isEmpty = async (): Promise<boolean> =>
+      (await listDirStrict(checkoutsDir)).length + (await listDirStrict(commitsDir)).length === 0;
+    if (!opts.dryRun && (await isEmpty())) {
+      // Also hold the cache lock (publish -> cache, the only nesting order) so
+      // a member saving caches cannot lose them, then re-check: a new member's
+      // slot may have appeared while waiting. The lock directories live inside
+      // the store; removing them while held is safe on POSIX and is retried on
+      // the next reclaim elsewhere.
+      await withStoreLock({ root: storeRoot }, 'cache', async () => {
+        if (!(await isEmpty())) return;
+        await fs
+          .rm(storeRoot, { recursive: true, force: true })
+          .then(() => {
+            result.storeRemoved = true;
+          })
+          .catch(() => {});
+      });
+    }
+    return result;
+  } finally {
+    for (const gate of heldMemberGates) gate.release();
   }
-  return result;
 };
 
 /**

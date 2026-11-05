@@ -2,6 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runFullAnalysisMock = vi.fn();
 
+// This suite checks option forwarding, not the host's capacity to run 12
+// workers. Resource admission has its own constrained-host tests.
+vi.mock('../../src/core/ingestion/utils/effective-ram.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/ingestion/utils/effective-ram.js')>()),
+  effectiveRamBytes: () => 32 * 1024 ** 3,
+}));
+
 vi.mock('../../src/core/run-analyze.js', () => ({
   runFullAnalysis: runFullAnalysisMock,
 }));

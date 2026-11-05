@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,7 +22,10 @@ import {
 } from '../../src/storage/shared-store.js';
 import type { RepoMeta } from '../../src/storage/repo-meta.js';
 import { acquireIndexLock } from '../../src/storage/index-lock.js';
-import { acquireAnalysisSlotLock } from '../../src/storage/analysis-slot-lock.js';
+import {
+  acquireAnalysisSlotLock,
+  sharedMemberGatePath,
+} from '../../src/storage/analysis-slot-lock.js';
 
 it('reports named slot-local generations as private and commit graphs as shared', () => {
   const slot = path.resolve('store/checkouts/owner');
@@ -193,6 +197,78 @@ describe('shared-store logical generations', () => {
     } finally {
       writer.release();
     }
+  });
+
+  it('uses the same file-backed admission gate through a storage-home alias', async () => {
+    vi.stubEnv('GITNEXUS_INDEX_LOCK_BACKEND', 'file');
+    const alias = path.join(root, 'home-alias');
+    await fs.symlink(path.join(root, 'home'), alias, 'junction');
+    const gate = await acquireIndexLock(sharedMemberGatePath(layout.root, slot), { sweep: false });
+    try {
+      vi.stubEnv('GITNEXUS_HOME', alias);
+      const branch = path.join(
+        alias,
+        'stores',
+        path.basename(layout.root),
+        'checkouts',
+        path.basename(slot),
+        'branches',
+        'aliased',
+      );
+      const writer = await acquireAnalysisSlotLock(branch, { timeoutMs: 1, sweep: false }).catch(
+        () => null,
+      );
+      writer?.release();
+      expect(writer).toBeNull();
+    } finally {
+      gate.release();
+    }
+  });
+
+  it.each([
+    { stage: 'member', kind: 'flat' },
+    { stage: 'graph', kind: 'flat' },
+    { stage: 'store', kind: 'flat' },
+    { stage: 'member', kind: 'branch' },
+    { stage: 'graph', kind: 'branch' },
+    { stage: 'store', kind: 'branch' },
+  ])('keeps $kind admission closed throughout orphan $stage deletion', async ({ stage, kind }) => {
+    vi.stubEnv('GITNEXUS_INDEX_LOCK_BACKEND', 'file');
+    await saveMeta(slot, metadata({ repoPath: path.join(root, 'removed-checkout') }));
+    const commit = path.join(layout.commitsDir, 'unreferenced');
+    await fs.mkdir(commit, { recursive: true });
+    await fs.writeFile(path.join(commit, 'lbug'), 'old graph');
+    const branch = kind === 'flat' ? slot : path.join(slot, 'branches', 'new-branch');
+    const remove = fs.rm.bind(fs);
+    let checked = false;
+    let admission: string | undefined;
+    vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
+      await remove(target, options);
+      const deleting = stage === 'member' ? slot : stage === 'graph' ? commit : layout.root;
+      if (String(target) !== deleting) return;
+      checked = true;
+      // A second process must consult the lock on disk, not this process's
+      // in-memory lock queue, after GC has removed the old member directory.
+      const moduleUrl = new URL('../../src/storage/analysis-slot-lock.ts', import.meta.url).href;
+      const { stdout } = await promisify(execFile)(process.execPath, [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '--eval',
+        `import { acquireAnalysisSlotLock } from ${JSON.stringify(moduleUrl)};
+         const lock = await acquireAnalysisSlotLock(${JSON.stringify(branch)}, { timeoutMs: 1, sweep: false }).catch(() => null);
+         console.log(lock ? 'admitted' : 'blocked');
+         lock?.release();`,
+      ]);
+      admission = stdout.trim();
+    });
+    const result = await reclaimSharedStore(layout.root, { gc: true });
+    expect(checked).toBe(true);
+    expect(admission).toBe('blocked');
+    expect(result.droppedMembers).toEqual([slot]);
+    expect(result.storeRemoved).toBe(true);
+    const writer = await acquireAnalysisSlotLock(branch, { timeoutMs: 1000, sweep: false });
+    writer.release();
   });
 
   it.each(['e'.repeat(64), null])(

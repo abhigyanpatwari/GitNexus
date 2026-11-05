@@ -3,6 +3,7 @@ import PerfSequencer from './test/helpers/perf-sequencer.js';
 
 // Keep native tests in exactly one project (TESTING.md).
 const EMBEDDING_VECTOR_STORE_TEST = 'test/integration/embedding-vector-store.test.ts';
+const LEGACY_VECTOR_REUSE_TEST = 'test/integration/legacy-vector-reuse-index.test.ts';
 
 export default defineConfig({
   test: {
@@ -82,6 +83,7 @@ export default defineConfig({
           name: 'lbug-db',
           include: [
             EMBEDDING_VECTOR_STORE_TEST,
+            LEGACY_VECTOR_REUSE_TEST,
             'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',
             'test/integration/class-expression-owners.test.ts',
@@ -201,6 +203,7 @@ export default defineConfig({
           include: ['test/**/*.test.ts'],
           exclude: [
             EMBEDDING_VECTOR_STORE_TEST,
+            LEGACY_VECTOR_REUSE_TEST,
             'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',
             'test/integration/class-expression-owners.test.ts',

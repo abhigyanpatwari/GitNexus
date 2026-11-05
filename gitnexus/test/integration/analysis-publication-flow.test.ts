@@ -4,9 +4,9 @@ import path from 'node:path';
 import { fork, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { continuePreparedAnalysis, runFullAnalysis } from '../../dist/core/run-analyze.js';
-import { verifyPublishedAnalysisGraph } from '../../dist/core/analysis-graph-verification.js';
-import { resolveAnalysisResourceBudget } from '../../dist/core/analysis-resource-budget.js';
+import { continuePreparedAnalysis, runFullAnalysis } from '../../src/core/run-analyze.js';
+import { verifyPublishedAnalysisGraph } from '../../src/core/analysis-graph-verification.js';
+import { resolveAnalysisResourceBudget } from '../../src/core/analysis-resource-budget.js';
 import { loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
 import {
   readPreparedAnalysis,

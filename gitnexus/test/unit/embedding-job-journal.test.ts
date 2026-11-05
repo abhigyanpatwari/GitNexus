@@ -47,6 +47,34 @@ afterEach(async () => {
 });
 
 describe('durable embedding scheduling', () => {
+  it('keeps the journal usable after validation fails before any write', async () => {
+    const journal = await job();
+    await expect(journal.indexing()).rejects.toThrow('accounting');
+    await journal.begin(unit(0));
+    await expect(journal.acknowledge({ reusedNodes: 3, chunks: 2 })).rejects.toThrow(
+      'acknowledgement',
+    );
+    await journal.acknowledge({ reusedNodes: 2, chunks: 2 });
+    await expect(journal.fail('provider')).rejects.toThrow('Invalid embedding failure');
+    await journal.begin(unit(1));
+    expect(journal.snapshot()).toMatchObject({ reusedUnits: 1, active: unit(1) });
+  });
+
+  it('requires reopening after a failed-unit write succeeds but its receipt fails', async () => {
+    const journal = await job();
+    await journal.begin(unit(0));
+    const rename = fs.rename.bind(fs);
+    vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      await rename(from, to);
+      if (path.basename(String(to)) === 'failed-0000000000000000.json')
+        throw new Error('injected failure after failed-unit rename');
+    });
+    await expect(journal.fail('provider')).rejects.toThrow('injected');
+    await expect(journal.acknowledge({ reusedNodes: 0, chunks: 2 })).rejects.toThrow(
+      'durability uncertain',
+    );
+  });
+
   it('refuses foreign failed-unit identity instead of resetting another job', async () => {
     const journal = await job();
     await journal.begin(unit(0));

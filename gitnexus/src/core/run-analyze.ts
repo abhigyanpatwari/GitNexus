@@ -1323,7 +1323,7 @@ async function hasRetainedAnalysisWork(root: string): Promise<boolean> {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
     const meta = await loadMeta(slot);
-    return Boolean(meta?.embeddingJob || meta?.embeddingCheckpoint);
+    return Boolean(meta?.incrementalInProgress || meta?.embeddingJob || meta?.embeddingCheckpoint);
   };
   if (await pending(root)) return true;
   let branches;

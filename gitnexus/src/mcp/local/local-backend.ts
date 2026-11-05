@@ -4591,9 +4591,15 @@ export class LocalBackend {
     // call's width, and the catch below must only clear an entry it did not set.
     let embeddedDims: number | undefined;
     try {
-      if (repo.generationUnknown) return [];
+      if (repo.generationUnknown) {
+        this.lastQueryEmbeddingDims.delete(repo.lbugPath);
+        return [];
+      }
       const metadata = await this.readToolMetadata(repo);
-      if (repo.generationUnknown) return [];
+      if (repo.generationUnknown) {
+        this.lastQueryEmbeddingDims.delete(repo.lbugPath);
+        return [];
+      }
       const selection = selectVectorGeneration(
         path.dirname(repo.lbugPath),
         metadata,

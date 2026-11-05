@@ -1,7 +1,7 @@
 /** Published capability receipts, gated by current routing and artifact ownership.
  * Runtime query probes may further degrade these facts; status never loads a DB. */
-import path from 'node:path';
 import type { RepoMeta } from './repo-meta.js';
+import { resolveGraphPath } from './shared-store.js';
 import { assertOwnedVectorGeneration, selectVectorGeneration } from './vector-generation.js';
 import { getExactScanLimit } from '../core/platform/capabilities.js';
 
@@ -17,7 +17,7 @@ export async function readIndexCapabilities(
     const selection = selectVectorGeneration(
       directory,
       metadata,
-      path.resolve(directory, metadata?.graphPath ?? 'lbug'),
+      resolveGraphPath(directory, metadata),
       exactScanLimit,
     );
     if (selection.kind === 'ready') {

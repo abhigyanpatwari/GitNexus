@@ -63,6 +63,24 @@ afterEach(async () => {
 });
 
 describe('preserved vector coverage', () => {
+  it.each(['../foreign/lbug', '/foreign/lbug', 'lbug.generation.invalid'])(
+    'does not report vectors as ready for a rejected graph route: %s',
+    async (graphPath) => {
+      const f = await fixture();
+      const capabilities = await readIndexCapabilities(f.root, { ...f.metadata, graphPath });
+      expect(capabilities?.vectorSearch).toMatchObject({ status: 'unavailable' });
+    },
+  );
+
+  it('does not report vectors as ready through a symlinked graph generation', async () => {
+    const f = await fixture();
+    await fs.rename(f.graph, f.graph + '.foreign');
+    await fs.symlink(f.graph + '.foreign', f.graph);
+    expect((await readIndexCapabilities(f.root, f.metadata))?.vectorSearch).toMatchObject({
+      status: 'unavailable',
+    });
+  });
+
   it('advances two staged graphs with a small historical reference and no vector writes', async () => {
     const f = await fixture();
     const before = await fs.stat(f.vectors);

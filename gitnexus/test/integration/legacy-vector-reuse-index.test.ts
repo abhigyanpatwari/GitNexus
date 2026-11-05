@@ -14,7 +14,9 @@ async function fixture() {
     directory,
     identity: 'b'.repeat(64),
     dimensions: 4,
-    bufferPoolBytes: 8 * 1024 * 1024,
+    // Match the production vector pool; LadybugDB 0.22 needs more than 8 MiB
+    // for the receipt tables and bounded insert batches.
+    bufferPoolBytes: 64 * 1024 * 1024,
     threads: 1,
     batchBytes: 1024 * 1024,
   };

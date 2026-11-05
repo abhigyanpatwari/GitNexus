@@ -25,6 +25,7 @@ import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { getGlobalDir } from './global-dir.js';
 import { GITNEXUS_DIR, INDEX_METADATA_FILE, LBUG_DIRECTORY } from './storage-constants.js';
 import { slotNameForCanonicalPath, STORAGE_PATH_ENV, STORAGE_ROOT_ENV } from './storage-slot.js';
+import type { RepoMeta } from './repo-meta.js';
 
 export const SHARED_STORE_ENV = 'GITNEXUS_SHARED_STORE';
 export const STORES_DIR = 'stores';
@@ -264,11 +265,16 @@ const readRecordedGraphPath = (slot: string): unknown => {
   }
 };
 
-export const resolveGraphPath = (storagePath: string): string => {
+export const resolveGraphPath = (
+  storagePath: string,
+  metadata?: Pick<RepoMeta, 'graphPath'>,
+): string => {
   const own = path.join(storagePath, LBUG_DIRECTORY);
   let recorded: unknown;
   try {
-    recorded = readRecordedGraphPath(storagePath);
+    // Capability readers already loaded this receipt; validate that same
+    // snapshot without another stat, read, or parse on the status hot path.
+    recorded = metadata === undefined ? readRecordedGraphPath(storagePath) : metadata.graphPath;
   } catch {
     return own;
   }

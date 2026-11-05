@@ -94,6 +94,39 @@ afterEach(() => {
 });
 
 describe('worker pool timeout retirement', () => {
+  it('retains a rejected termination reservation until physical exit, then releases it', async () => {
+    let broken: TimeoutThenHealthyWorker | undefined;
+    const pool = createWorkerPool(workerUrl, 1, {
+      requireDrain: true,
+      shutdownDrainMs: 20,
+      workerFactory: () => {
+        const worker = new TimeoutThenHealthyWorker();
+        if (worker.id === 0) {
+          broken = worker;
+          worker.postMessage = (message: unknown) => {
+            if ((message as { type?: string })?.type === 'sub-batch')
+              queueMicrotask(() => worker.emit('error', new Error('worker failed')));
+          };
+          worker.terminate = async () => {
+            worker.terminateCalls++;
+            throw new Error('termination rejected');
+          };
+        }
+        return worker as unknown as import('node:worker_threads').Worker;
+      },
+    });
+    try {
+      await expect(pool.dispatch([{ path: 'src/error.ts', content: '' }])).rejects.toThrow();
+      expect(TimeoutThenHealthyWorker.instances).toHaveLength(1);
+      await expect(pool.terminate()).rejects.toThrow('native resource reservation');
+      broken!.emit('exit', 1);
+      await expect(pool.terminate()).resolves.toBeUndefined();
+    } finally {
+      broken?.emit('exit', 1);
+      await pool.terminate().catch(() => {});
+    }
+  });
+
   it('refuses replacement and phase handoff while a budgeted native worker has not drained', async () => {
     const pool = createWorkerPool(workerUrl, 1, {
       requireDrain: true,

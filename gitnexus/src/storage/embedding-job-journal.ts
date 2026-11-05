@@ -281,13 +281,12 @@ export class EmbeddingJobJournal {
       const next = clone(this.state);
       await action(next);
       validateState(next, next.identity, this.manifest);
+      // A rejected rename/fsync may already have changed durable state. Pure
+      // validation failures before the first write leave the journal usable.
+      this.uncertain = true;
       await writeEmbeddingJobRecord(this.directory, 'job.json', next);
       this.state = next;
-    } catch (error) {
-      // Even a failed fsync can follow a successful rename. Never keep writing
-      // using an in-memory cursor that may differ from the durable one.
-      this.uncertain = true;
-      throw error;
+      this.uncertain = false;
     } finally {
       this.busy = false;
     }
@@ -328,6 +327,7 @@ export class EmbeddingJobJournal {
       )
         throw new Error('Invalid embedding unit acknowledgement');
       // If the process dies after unlink, the still-active intent owns replay.
+      this.uncertain = true;
       await fs.rm(path.join(this.directory, filename(active.start.unit)), { force: true });
       await syncEmbeddingJobDirectory(this.directory);
       if (result.reusedNodes === active.nodes) next.reusedUnits++;
@@ -354,6 +354,7 @@ export class EmbeddingJobJournal {
         cause,
         attempt: this.attempt,
       };
+      this.uncertain = true;
       await writeEmbeddingJobRecord(this.directory, filename(active.start.unit), record);
       next.failedUnits++;
       next.failedNodes += active.nodes;

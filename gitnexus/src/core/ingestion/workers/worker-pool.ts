@@ -1595,15 +1595,24 @@ export const createWorkerPool = (
         }
         // Recovery must settle before dispatch returns, but a failed thread
         // may never acknowledge termination. Bound that wait as in shutdown.
-        const termination = existing.terminate().then(
-          () => {
-            pendingWorkerReleases.delete(termination);
-          },
-          () => undefined,
-        );
+        let completeRelease!: () => void;
+        const termination = new Promise<void>((resolve) => {
+          completeRelease = resolve;
+        });
+        const released = () => {
+          existing.off('exit', released);
+          pendingWorkerReleases.delete(termination);
+          completeRelease();
+        };
         if (requireDrain) {
           pendingWorkerReleases.add(termination);
+          // A rejected terminate request is not proof of release. An eventual
+          // physical exit is, even when the termination promise rejected.
+          existing.once('exit', released);
         }
+        void existing.terminate().then(released, () => {
+          if (!requireDrain) released();
+        });
         if (!(await settledWithin(termination, poolOptions.shutdownDrainMs))) {
           existing.unref?.();
           logger.warn(
