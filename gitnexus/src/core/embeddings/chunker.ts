@@ -40,8 +40,37 @@ interface ChunkSyntaxNode {
   endIndex: number;
   namedChildCount: number;
   namedChild(index: number): ChunkSyntaxNode | null;
+  firstNamedChildForIndex?(index: number): ChunkSyntaxNode | null;
+  previousNamedSibling?: ChunkSyntaxNode | null;
   childForFieldName?(name: string): ChunkSyntaxNode | null;
 }
+
+/** Find a sibling boundary without repeatedly walking native children by index. */
+const childAtBoundary = (
+  node: ChunkSyntaxNode,
+  offset: number,
+  side: 'before' | 'after',
+): ChunkSyntaxNode | null => {
+  if (node.firstNamedChildForIndex) {
+    const after = node.firstNamedChildForIndex(offset);
+    if (side === 'after' && after && after.startIndex <= offset) return after;
+    const before = after
+      ? (after.previousNamedSibling ?? null)
+      : node.namedChild(node.namedChildCount - 1);
+    // Native lookup can skip a named sibling across punctuation-only subtrees
+    // (for example sparse array elements). Verify the gap before trusting it.
+    if (!before || before.endIndex <= offset) return side === 'after' ? after : before;
+  }
+  let low = 0,
+    high = node.namedChildCount;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if ((node.namedChild(mid)?.endIndex ?? Infinity) <= offset) low = mid + 1;
+    else high = mid;
+  }
+  const index = side === 'before' ? low - 1 : low;
+  return index >= 0 && index < node.namedChildCount ? node.namedChild(index) : null;
+};
 
 /**
  * Main chunkNode function: dispatches by label
@@ -261,52 +290,38 @@ const refineOversizedStatement = (
       cursor = end;
     }
   };
-  const pending = [{ node: statement, index: 0 }];
+  const pending = [{ node: statement, offset: statement.startIndex }];
   while (pending.length) {
     const frame = pending.pop();
     if (!frame) break;
-    const { node, index } = frame;
-    const childCount = node.namedChildCount;
-    if (node.endIndex - node.startIndex <= chunkSize || index >= childCount) {
+    const { node, offset } = frame;
+    if (node.endIndex - node.startIndex <= chunkSize) {
       boundary(node.endIndex);
     } else {
-      const first = node.namedChild(index);
-      if (!first) continue;
-      // Tree-sitter child lookup crosses the native boundary. Binary search
-      // the last fitting statement instead of materializing every inner node.
-      let low = index,
-        high = childCount;
-      const budgetEnd = cursor + chunkSize - (boundaries.length ? overlap : 0);
-      while (low < high) {
-        const mid = (low + high) >>> 1;
-        if ((node.namedChild(mid)?.endIndex ?? Infinity) <= budgetEnd) low = mid + 1;
-        else high = mid;
+      const first = childAtBoundary(node, offset, 'after');
+      if (!first) {
+        boundary(node.endIndex);
+        continue;
       }
-      if (low === index) {
+      const budgetEnd = cursor + chunkSize - (boundaries.length ? overlap : 0);
+      if (first.endIndex > budgetEnd) {
         // Keep a fitting statement whole when a long branch header consumed
         // its space. Only oversized atoms reach the character fallback.
         if (first.startIndex > cursor) {
           boundary(first.startIndex);
-          pending.push({ node, index });
+          pending.push(frame);
         } else {
-          pending.push({ node, index: index + 1 }, { node: first, index: 0 });
+          pending.push({ node, offset: first.endIndex }, { node: first, offset: first.startIndex });
         }
         continue;
       }
-      const last = low - 1;
-      const end = node.namedChild(last)?.endIndex ?? first.endIndex;
-      if (overlap > 0 && last > index) {
-        let tailLow = index,
-          tailHigh = last;
-        while (tailLow < tailHigh) {
-          const mid = (tailLow + tailHigh) >>> 1;
-          if ((node.namedChild(mid)?.endIndex ?? Infinity) < end - overlap) tailLow = mid + 1;
-          else tailHigh = mid;
-        }
-        if (tailLow < last) boundary(node.namedChild(tailLow)?.endIndex ?? cursor);
+      const end = childAtBoundary(node, budgetEnd, 'before')?.endIndex ?? first.endIndex;
+      if (overlap > 0 && end > first.endIndex) {
+        const tail = childAtBoundary(node, Math.max(offset, end - overlap - 1), 'after');
+        if (tail && tail.endIndex < end) boundary(tail.endIndex);
       }
       boundary(end);
-      pending.push({ node, index: last + 1 });
+      pending.push({ node, offset: end });
     }
   }
   const units: Array<{ startIndex: number; endIndex: number }> = [];

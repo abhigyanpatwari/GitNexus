@@ -472,3 +472,41 @@ describe('AST embedding contracts with real parsers (#702)', () => {
     expect(parse).not.toHaveBeenCalled();
   });
 });
+
+describe('AST chunk boundary lookup', () => {
+  it.each([
+    {
+      name: 'sparse Unicode arrays',
+      source: 'function sample() {\nreturn ["λ😀_unique_0",,"λ😀_unique_1",,"λ😀_unique_2"];\n}',
+      overlap: 0,
+      spans: [
+        [0, 20],
+        [20, 27],
+        [27, 42],
+        [42, 58],
+        [58, 78],
+      ],
+    },
+    {
+      name: 'dense arrays with 80% overlap',
+      source: 'function sample() {\nreturn [0,1,2,3,4,5,6,7,8,9,10,11,12];\n}',
+      overlap: 16,
+      spans: [
+        [0, 20],
+        [20, 39],
+        [27, 47],
+        [31, 50],
+        [35, 53],
+        [37, 57],
+        [41, 60],
+      ],
+    },
+  ])('preserves exact chunk spans for $name', async ({ source, overlap, spans }) => {
+    const tree = await ast.ensureAndParse(source, 'sample.ts');
+    expect(tree?.rootNode.hasError).toBe(false);
+    const chunks = await chunkNode('Function', source, 'sample.ts', 10, 12, 20, overlap);
+    expect(chunks.map((chunk) => [chunk.startOffset, chunk.endOffset])).toEqual(spans);
+    for (const chunk of chunks)
+      expect(chunk.text).toBe(source.slice(chunk.startOffset, chunk.endOffset));
+  });
+});
