@@ -12,7 +12,6 @@ import {
 } from '../../storage/embedding-job.js';
 import {
   adoptEmbeddingArtifact,
-  embeddingArtifactSpaceKey,
   readEmbeddingArtifactSpace,
   type EmbeddingArtifactOwner,
 } from '../../storage/embedding-artifact.js';
@@ -429,7 +428,7 @@ export async function runPublishedEmbeddingJob(
           identity: identities.identity,
           graphGeneration: graph.id,
           artifactIdentity: owner.artifactIdentity,
-          spaceKey: embeddingArtifactSpaceKey(space),
+          spaceKey: artifact.spaceKey,
         },
       };
       await options.metadata.saveMetadata(metadata);

@@ -2,10 +2,10 @@ import { defineConfig } from 'vitest/config';
 import PerfSequencer from './test/helpers/perf-sequencer.js';
 
 // Keep native tests in exactly one project (TESTING.md).
-const EMBEDDING_VECTOR_STORE_TEST = 'test/integration/embedding-vector-store.test.ts';
-const LEGACY_VECTOR_REUSE_TEST = 'test/integration/legacy-vector-reuse-index.test.ts';
-const LEGACY_VECTOR_EXPORT_TEST = 'test/integration/legacy-vector-export.test.ts';
 const RESUMABLE_ANALYSIS_NATIVE_TESTS = [
+  'test/integration/embedding-vector-store.test.ts',
+  'test/integration/legacy-vector-reuse-index.test.ts',
+  'test/integration/legacy-vector-export.test.ts',
   'test/integration/analysis-embedding-flow.test.ts',
   'test/integration/analysis-generation-routing.test.ts',
   'test/integration/analysis-publication-flow.test.ts',
@@ -93,9 +93,6 @@ export default defineConfig({
         test: {
           name: 'lbug-db',
           include: [
-            EMBEDDING_VECTOR_STORE_TEST,
-            LEGACY_VECTOR_REUSE_TEST,
-            LEGACY_VECTOR_EXPORT_TEST,
             ...RESUMABLE_ANALYSIS_NATIVE_TESTS,
             'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',
@@ -215,9 +212,6 @@ export default defineConfig({
           sequence: { groupOrder: 3 },
           include: ['test/**/*.test.ts'],
           exclude: [
-            EMBEDDING_VECTOR_STORE_TEST,
-            LEGACY_VECTOR_REUSE_TEST,
-            LEGACY_VECTOR_EXPORT_TEST,
             ...RESUMABLE_ANALYSIS_NATIVE_TESTS,
             'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',

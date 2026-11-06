@@ -310,17 +310,17 @@ export const extractDeclarationOnly = (content: string): string => {
     if (!started) {
       if (DECL_START_RE.test(trimmed)) {
         // Non-brace language check: current line or next 3 lines must have `{`
-        let lookaheadEnd = nextLineStart;
-        for (let i = 0; i < 3; i++) {
-          const end = content.indexOf('\n', lookaheadEnd);
-          if (end < 0) {
-            lookaheadEnd = content.length;
-            break;
+        if (!trimmed.includes('{')) {
+          let lookaheadEnd = nextLineStart;
+          for (let i = 0; i < 3; i++) {
+            const end = content.indexOf('\n', lookaheadEnd);
+            if (end < 0) {
+              lookaheadEnd = content.length;
+              break;
+            }
+            lookaheadEnd = end + 1;
           }
-          lookaheadEnd = end + 1;
-        }
-        if (!trimmed.includes('{') && !content.slice(nextLineStart, lookaheadEnd).includes('{')) {
-          return '';
+          if (!content.slice(nextLineStart, lookaheadEnd).includes('{')) return '';
         }
         started = true;
         declLines.append(trimmed);

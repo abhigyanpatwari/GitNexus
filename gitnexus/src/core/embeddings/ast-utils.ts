@@ -19,7 +19,6 @@ const parserCache = new Map<string, any>();
  * Returns null if language is unavailable or parsing fails.
  */
 export const ensureAndParse = async (content: string, filePath: string): Promise<any | null> => {
-  // Fixed chunks need no provider registry. Load it only when parsing a snippet.
   const { getLanguageForFileContent, getProvider } =
     await import('../ingestion/languages/index.js');
   // Same classifier as ingest. Filename-only maps `.h` → C++, so Objective-C
