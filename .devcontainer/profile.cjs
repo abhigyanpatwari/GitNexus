@@ -69,8 +69,8 @@ function profile(
     );
     result = replaceOnce(
       result,
-      /"workspaceMount": "[^"\n]+"/,
-      '"workspaceMount": "source=gitnexus-workspace-${devcontainerId},target=/workspace,type=volume"',
+      /"source=gitnexus-source-\$\{devcontainerId\},target=\/workspace,type=volume"/,
+      '"source=gitnexus-workspace-${devcontainerId},target=/workspace,type=volume"',
     );
     result = replaceOnce(
       result,

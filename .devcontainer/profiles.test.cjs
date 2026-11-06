@@ -15,7 +15,7 @@ const parse = (text) => {
   return result.config;
 };
 
-test('every runtime profile has only volume mounts and no 9p capability or hook', () => {
+test('runtime profiles use the substituted mounts list and disable the automatic workspace mount', () => {
   for (const text of [
     source,
     ...[
@@ -23,10 +23,18 @@ test('every runtime profile has only volume mounts and no 9p capability or hook'
       { native: true },
       { ui: true, playwright: '1.63.0' },
       { native: true, image: 'example/toolchain' },
+      { native: true, ui: true, playwright: '1.63.0' },
+      { ui: true, image: 'example/toolchain' },
+      { native: true, ui: true, image: 'example/toolchain' },
     ].map((options) => profile(source, options)),
   ]) {
     const config = parse(text);
-    for (const mount of [config.workspaceMount, ...config.mounts]) {
+    assert.equal(config.workspaceMount, '');
+    assert.equal(
+      config.mounts.filter((mount) => mount.split(',').includes('target=/workspace')).length,
+      1,
+    );
+    for (const mount of config.mounts) {
       assert.match(mount, /(?:^|,)type=volume(?:,|$)/);
       assert.doesNotMatch(mount, /localEnv|type=bind|workspace-host/);
     }
@@ -44,9 +52,9 @@ test('default, UI and prebuilt profiles seed local work into a source volume', (
     profile(source, { image: 'example/toolchain' }),
   ]) {
     const c = parse(text);
-    assert.equal(
-      c.workspaceMount,
-      'source=gitnexus-source-${devcontainerId},target=/workspace,type=volume',
+    assert.deepEqual(
+      c.mounts.filter((mount) => mount.split(',').includes('target=/workspace')),
+      ['source=gitnexus-source-${devcontainerId},target=/workspace,type=volume'],
     );
     assert.equal(c.workspaceFolder, '/workspace');
     assert.equal(
@@ -66,11 +74,11 @@ test('native/UI profile inherits hooks, storage and defaults while changing work
   const c = parse(
     profile(source, { native: true, ui: true, playwright: '1.63.0', ref: 'feature/test' }),
   );
-  assert.match(c.workspaceMount, /type=volume/);
+  assert.equal(c.workspaceMount, '');
   assert.match(c.onCreateCommand, /bootstrap-native/);
-  assert.equal(
-    c.workspaceMount,
-    'source=gitnexus-workspace-${devcontainerId},target=/workspace,type=volume',
+  assert.deepEqual(
+    c.mounts.filter((mount) => mount.split(',').includes('target=/workspace')),
+    ['source=gitnexus-workspace-${devcontainerId},target=/workspace,type=volume'],
   );
   assert.equal(
     c.mounts.some((m) => m.includes('target=/workspace-host,')),

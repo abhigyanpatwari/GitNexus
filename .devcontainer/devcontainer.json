@@ -41,8 +41,9 @@
   "updateRemoteUserUID": true,
   // Reap orphaned subprocesses from CLI workers and test runs.
   "init": true,
-  // Keep the host folder/config path stable so existing volume IDs are reused.
-  "workspaceMount": "source=gitnexus-source-${devcontainerId},target=/workspace,type=volume",
+  // Disable the automatic workspace mount. Declare it in mounts below so the
+  // Dev Containers CLI substitutes devcontainerId before passing it to Docker.
+  "workspaceMount": "",
   "workspaceFolder": "/workspace",
 
   // Existing writable config, session, dependency and cache volumes retain
@@ -50,6 +51,7 @@
   // Snapshot credentials seed missing files only; container logins persist.
   // Session volumes overlay config volumes so resetting config preserves history.
   "mounts": [
+    "source=gitnexus-source-${devcontainerId},target=/workspace,type=volume",
     "source=claude-config-${devcontainerId},target=/home/node/.claude,type=volume",
     "source=codex-config-${devcontainerId},target=/home/node/.codex,type=volume",
     "source=cursor-config-${devcontainerId},target=/home/node/.cursor,type=volume",
