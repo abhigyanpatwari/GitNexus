@@ -824,6 +824,41 @@ describe('separate durable vector artifacts', () => {
     expect(recovered.contentHash).toBe(next.contentHash);
     expect(await store.readChunks(recovered, 0, 1)).toEqual(original);
   });
+  it('preserves each node, chunk ordinal, line range and vector in a mixed batch', async () => {
+    const options = await setup();
+    const nodes = [0, 1].map((i) => ({
+      nodeId: `Function:a:mixed${i}`,
+      contentHash: `hash${i}`,
+      sourceStartLine: i * 10,
+      sourceEndLine: i * 10 + 5,
+    }));
+    const rows = [
+      { ...nodes[0], chunkIndex: 0, startLine: 0, endLine: 2, embedding: [1, 2, 3, 4] },
+      { ...nodes[1], chunkIndex: 0, startLine: 10, endLine: 15, embedding: [5, 6, 7, 8] },
+      { ...nodes[0], chunkIndex: 1, startLine: 3, endLine: 5, embedding: [9, 10, 11, 12] },
+    ];
+    await store.beginNodes(nodes);
+    await store.appendBatch(rows);
+    const receipts = await store.finishNodes(
+      nodes.map((node, i) => ({ ...node, chunks: i === 0 ? 2 : 1 })),
+    );
+    await store.checkpointUnit(receipts);
+    await store.close();
+    store = await VectorStore.open({ ...options, mode: 'resume' });
+    for (const receipt of receipts) {
+      expect(await store.readChunks(receipt, 0, receipt.chunks)).toEqual(
+        rows
+          .filter((row) => row.nodeId === receipt.nodeId)
+          .map(({ chunkIndex, startLine, endLine, embedding }) => ({
+            chunkIndex,
+            startLine,
+            endLine,
+            embedding,
+          })),
+      );
+    }
+  });
+
   it('verifies a complete unit with bounded native queries instead of one query per node', async () => {
     await setup();
     const nodes = Array.from({ length: 64 }, (_, i) => ({

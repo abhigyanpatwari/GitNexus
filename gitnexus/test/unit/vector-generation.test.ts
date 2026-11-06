@@ -128,6 +128,22 @@ describe('vector generation routing', () => {
       }),
     ).toMatchObject({ kind: 'unavailable' });
   });
+  it('admits completed coverage with excluded inputs but rejects missing healthy chunks', () => {
+    const vectorGeneration = {
+      ...meta.vectorGeneration,
+      nodes: 3,
+      chunks: 2,
+      excludedNodes: 1,
+      exclusionReason: 'input-rejected' as const,
+    };
+    expect(select({ ...meta, vectorGeneration })).toMatchObject({ kind: 'ready' });
+    expect(select({ ...meta, vectorGeneration: { ...vectorGeneration, chunks: 1 } })).toMatchObject(
+      {
+        kind: 'unavailable',
+        reason: 'vector-generation-mismatch',
+      },
+    );
+  });
   it.each([NaN, -1, 0.5, Infinity])('rejects invalid coverage %s', (chunks) => {
     expect(
       select({ ...meta, vectorGeneration: { ...meta.vectorGeneration, chunks } }),

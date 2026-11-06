@@ -21,6 +21,8 @@ export async function readEmbeddingJobProgress(
       !metadata?.vectorGeneration?.excludedNodes
     )
       return undefined;
+    if (metadata.graphPath !== undefined && typeof metadata.graphPath !== 'string')
+      return { phase: 'unverified' };
     const selected = selectVectorGeneration(
       metadataDirectory,
       metadata,

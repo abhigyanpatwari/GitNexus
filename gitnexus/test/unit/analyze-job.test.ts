@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
 import {
   JobManager,
   isTerminalJobStatus,
@@ -427,6 +431,18 @@ describe('JobManager', () => {
     expect(() => manager.createJob({ repoPath: '/tmp/other' })).toThrow(/already in progress/);
     manager.releaseChild(job.id);
     expect(manager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
+
+  it('finishes shutdown when a registered child fails to spawn without emitting exit', async () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    const child = spawn(process.execPath, [], { cwd: path.join(os.tmpdir(), randomUUID()) });
+    child.on('error', () => manager.releaseChild(job.id));
+    const exit = vi.fn();
+    child.on('exit', exit);
+    manager.registerChild(job.id, child);
+    await manager.waitForChildren();
+    expect(exit).not.toHaveBeenCalled();
+    expect(child.listenerCount('close')).toBe(0);
   });
 
   it('cancelJob leaves a disconnected native worker running until it exits', () => {

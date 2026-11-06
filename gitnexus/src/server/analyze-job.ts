@@ -384,8 +384,18 @@ export class JobManager {
       [...this.children.values()].map(
         (child) =>
           new Promise<void>((resolve) => {
-            if (child.exitCode !== null || child.signalCode !== null) resolve();
-            else child.once('exit', () => resolve());
+            if (child.exitCode !== null || child.signalCode !== null) {
+              resolve();
+              return;
+            }
+            const finished = () => {
+              child.removeListener('exit', finished);
+              child.removeListener('close', finished);
+              resolve();
+            };
+            child.once('exit', finished);
+            // Spawn failures emit error and close, but never exit.
+            child.once('close', finished);
           }),
       ),
     );

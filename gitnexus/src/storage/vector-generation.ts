@@ -107,7 +107,7 @@ export function selectVectorGeneration(
         vector.excludedNodes > vector.nodes ||
         vector.exclusionReason !== 'input-rejected')) ||
     !nonnegative(vector.chunks) ||
-    vector.chunks < vector.nodes ||
+    vector.chunks < vector.nodes - (vector.excludedNodes ?? 0) ||
     (vector.indexKind !== 'hnsw' && vector.indexKind !== 'exact')
   )
     return { kind: 'unavailable', reason: 'vector-generation-mismatch' };

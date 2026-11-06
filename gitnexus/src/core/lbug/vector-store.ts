@@ -479,18 +479,15 @@ export class VectorStore {
         await remove();
       }
       await this.transaction(async () => {
-        for (const { nodeId, contentHash, sourceStartLine = 0, sourceEndLine = 0 } of nodes) {
-          if (previous.has(nodeId))
-            await this.query(
-              'MATCH (n:EmbeddingNodeReceipt {nodeId:$nodeId}) SET n.contentHash=$contentHash, n.chunks=0, n.sourceStartLine=$sourceStartLine, n.sourceEndLine=$sourceEndLine',
-              { nodeId, contentHash, sourceStartLine, sourceEndLine },
-            );
-          else
-            await this.query(
-              'CREATE (:EmbeddingNodeReceipt {nodeId:$nodeId, contentHash:$contentHash, chunks:0, complete:false, sourceStartLine:$sourceStartLine, sourceEndLine:$sourceEndLine})',
-              { nodeId, contentHash, sourceStartLine, sourceEndLine },
-            );
-        }
+        await this.query(
+          'UNWIND range(1, size($ids)) AS i MERGE (n:EmbeddingNodeReceipt {nodeId:$ids[i]}) SET n.contentHash=$hashes[i], n.chunks=0, n.complete=false, n.sourceStartLine=$firstLines[i], n.sourceEndLine=$lastLines[i]',
+          {
+            ids: nodes.map((node) => node.nodeId),
+            hashes: nodes.map((node) => node.contentHash),
+            firstLines: nodes.map((node) => node.sourceStartLine ?? 0),
+            lastLines: nodes.map((node) => node.sourceEndLine ?? 0),
+          },
+        );
       });
     }, true);
   }
@@ -546,16 +543,25 @@ export class VectorStore {
         receipt.chunks++;
       }
       await this.transaction(async () => {
-        for (const chunk of chunks)
-          await this.query(
-            'CREATE (:CodeEmbedding {id:$id, nodeId:$nodeId, chunkIndex:$chunkIndex, startLine:$startLine, endLine:$endLine, embedding:$embedding, contentHash:$contentHash})',
-            { id: `${chunk.nodeId}:${chunk.chunkIndex}`, ...chunk },
-          );
-        for (const receipt of receipts.values())
-          await this.query('MATCH (n:EmbeddingNodeReceipt {nodeId:$nodeId}) SET n.chunks=$chunks', {
-            nodeId: receipt.nodeId,
-            chunks: receipt.chunks,
-          });
+        await this.query(
+          'UNWIND range(1, size($ids)) AS i CREATE (:CodeEmbedding {id:$ids[i], nodeId:$nodeIds[i], chunkIndex:$ordinals[i], startLine:$firstLines[i], endLine:$lastLines[i], embedding:$vectors[i], contentHash:$hashes[i]})',
+          {
+            ids: chunks.map((chunk) => `${chunk.nodeId}:${chunk.chunkIndex}`),
+            nodeIds: chunks.map((chunk) => chunk.nodeId),
+            ordinals: chunks.map((chunk) => chunk.chunkIndex),
+            firstLines: chunks.map((chunk) => chunk.startLine),
+            lastLines: chunks.map((chunk) => chunk.endLine),
+            vectors: chunks.map((chunk) => chunk.embedding),
+            hashes: chunks.map((chunk) => chunk.contentHash),
+          },
+        );
+        await this.query(
+          'UNWIND range(1, size($ids)) AS i MATCH (n:EmbeddingNodeReceipt {nodeId:$ids[i]}) SET n.chunks=$chunks[i]',
+          {
+            ids: [...receipts.keys()],
+            chunks: [...receipts.values()].map((receipt) => receipt.chunks),
+          },
+        );
       });
     }, true);
   }

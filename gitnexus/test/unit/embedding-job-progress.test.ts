@@ -52,6 +52,16 @@ afterEach(async () => {
 });
 
 describe('bounded durable embedding progress', () => {
+  it.each([42, {}, null])('reports malformed graph paths as unverified (%j)', async (graphPath) => {
+    const metadata = {
+      ...meta,
+      embeddingJob: undefined,
+      graphPath,
+      vectorGeneration: { preservedForGraph: generation },
+    } as unknown as RepoMeta;
+    expect(await readEmbeddingJobProgress('/missing', metadata)).toEqual({ phase: 'unverified' });
+  });
+
   it.each(['interrupted', 'collapsed'] as const)(
     'rejects a legacy vector capability after an %s graph write',
     async (state) => {

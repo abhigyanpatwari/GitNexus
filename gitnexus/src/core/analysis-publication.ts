@@ -106,13 +106,16 @@ async function regularFile(file: string): Promise<boolean> {
 }
 
 async function boundedRead(file: string, maximum: number): Promise<Buffer> {
-  const before = await fs.lstat(file);
-  if (!before.isFile() || before.isSymbolicLink())
-    throw new Error('Publication artifact must be an owned regular file');
-  const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  const handle = await fs.open(
+    file,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+  );
   try {
     const stat = await handle.stat();
-    if (stat.dev !== before.dev || stat.ino !== before.ino)
+    const entry = await fs.lstat(file);
+    if (!entry.isFile() || entry.isSymbolicLink())
+      throw new Error('Publication artifact must be an owned regular file');
+    if (stat.dev !== entry.dev || stat.ino !== entry.ino)
       throw new Error('Publication artifact changed while opening');
     if (!stat.isFile() || stat.size > maximum)
       throw new Error('Publication artifact exceeds its receipt bound');

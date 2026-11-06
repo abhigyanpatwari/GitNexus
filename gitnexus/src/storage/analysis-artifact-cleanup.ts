@@ -92,11 +92,16 @@ export async function reclaimAnalysisArtifacts(
         return false;
       }
     };
-    for (const entry of entries) {
-      if (!entry.isFile() || !GRAPH.test(entry.name) || graphs.has(entry.name)) continue;
-      if (await remove(path.join(root, entry.name)))
-        for (const suffix of ['.wal', '.shadow'])
-          await remove(path.join(root, entry.name + suffix));
+    // A busy sidecar may outlive its base graph; include it in the next sweep.
+    const candidates = new Set(
+      entries
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name.replace(/\.(wal|shadow)$/, '')),
+    );
+    for (const graph of candidates) {
+      if (!GRAPH.test(graph) || graphs.has(graph)) continue;
+      if (await remove(path.join(root, graph)))
+        for (const suffix of ['.wal', '.shadow']) await remove(path.join(root, graph + suffix));
     }
     for (const job of orphanJobs) {
       // Keep the ownership receipt until every payload is gone. Recursive

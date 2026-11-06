@@ -224,6 +224,45 @@ describe('durable graph publication', () => {
     await expect(fs.stat(graph)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it.each(['.wal', '.shadow'])(
+    'retries a busy orphan %s after deleting its graph',
+    async (suffix) => {
+      const { root } = await fixture();
+      const graph = path.join(root, `lbug.generation.${'b'.repeat(32)}`);
+      await fs.writeFile(graph, 'retired graph');
+      await fs.writeFile(graph + suffix, 'busy sidecar');
+      const remove = fs.rm.bind(fs);
+      const blocked = vi.spyOn(fs, 'rm').mockImplementation(async (file, options) => {
+        if (String(file) === graph + suffix)
+          throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+        await remove(file, options);
+      });
+      await reclaimAnalysisArtifacts(root, metadata, undefined, vi.fn());
+      await expect(fs.stat(graph)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await fs.readFile(graph + suffix, 'utf8')).toBe('busy sidecar');
+      blocked.mockRestore();
+      await reclaimAnalysisArtifacts(root, metadata);
+      await expect(fs.stat(graph + suffix)).rejects.toMatchObject({ code: 'ENOENT' });
+    },
+  );
+
+  it('rejects a publication receipt replaced after its descriptor is opened', async () => {
+    const { root, stage } = await fixture();
+    await prepareAnalysisPublication(root, stage, metadata, content);
+    const receipt = path.join(root, 'analysis-publication.json');
+    const open = fs.open.bind(fs);
+    vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      if (String(args[0]) === receipt) {
+        await fs.rename(receipt, receipt + '.retained');
+        await fs.writeFile(receipt, 'foreign replacement');
+      }
+      return handle;
+    });
+    await expect(readPreparedAnalysis(root)).rejects.toThrow('changed while opening');
+    expect(await fs.readFile(receipt, 'utf8')).toBe('foreign replacement');
+  });
+
   it('recovers a prior process incarnation even when its PID is now this process', async () => {
     const { root, stage, actions } = await fixture();
     const receipt = await prepareAnalysisPublication(root, stage, metadata, content, {
