@@ -12,6 +12,7 @@ import {
 
 vi.mock('../../src/core/analysis-host-resources.js', () => ({
   analysisMayEmbed: vi.fn(async () => false),
+  analysisSupervisorReservation: () => 192 * 1024 ** 2,
   resolveHostAnalysisResources: vi.fn(() => ({ mainHeapMb: 512 })),
 }));
 
