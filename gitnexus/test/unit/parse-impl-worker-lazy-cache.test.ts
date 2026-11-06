@@ -341,6 +341,24 @@ describe('parse-impl worker pool lazy startup', () => {
     }
   });
 
+  it('accepts a zero-worker budget when there are no parseable files', async () => {
+    const result = await runChunkedParseAndResolve(
+      createKnowledgeGraph(),
+      [],
+      [],
+      0,
+      repoDir,
+      Date.now(),
+      () => {},
+      {
+        workerPoolSize: 0,
+        workerResources: { workers: 0, workerHeapMb: 512 },
+        workerUrlForTest: pathToFileURL(path.join(tempDir, 'must-not-spawn.cjs')),
+      },
+    );
+    expect(result.usedWorkerPool).toBe(false);
+  });
+
   it('keeps tiny-repository automatic sizing inside the admitted worker ceiling', async () => {
     const saved = process.env.GITNEXUS_WORKER_POOL_SIZE;
     delete process.env.GITNEXUS_WORKER_POOL_SIZE;

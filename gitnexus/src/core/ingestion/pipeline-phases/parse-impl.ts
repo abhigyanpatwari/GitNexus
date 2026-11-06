@@ -618,6 +618,7 @@ export async function runChunkedParseAndResolve(
   // spawns the full requested pool.
   const workerResources = options?.workerResources;
   if (
+    totalParseable > 0 &&
     workerResources &&
     (!Number.isSafeInteger(workerResources.workers) ||
       workerResources.workers < 1 ||

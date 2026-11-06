@@ -361,9 +361,13 @@ export class JobManager {
   }
 
   dispose() {
+    // Cancel jobs between workers too, so an already scheduled retry cannot fork.
+    for (const job of this.jobs.values()) {
+      if (!this.hasPendingCancel(job.id)) this.cancelJob(job.id, 'Server shutting down');
+    }
     // Cooperative cancellation precedes bounded standalone-process shutdown.
     for (const [jobId, child] of this.children) {
-      this.requestChildShutdown(jobId, child);
+      if (!this.hasPendingCancel(jobId)) this.requestChildShutdown(jobId, child);
     }
     for (const controller of this.abortControllers.values()) controller.abort();
     this.abortControllers.clear();

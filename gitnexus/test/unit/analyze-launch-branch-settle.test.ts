@@ -437,6 +437,27 @@ describe('finalization gate follows the placement the run chose', () => {
     expect(order).toEqual(['backend.init', 'releaseRepoLock']);
   });
 
+  it.each(['before-exit', 'during-retry'] as const)(
+    'does not restart a worker when shutdown begins %s',
+    async (when) => {
+      vi.useFakeTimers();
+      const releaseRepoLock = vi.fn();
+      const job = jobManager.createJob({ repoPath: REPO_PATH });
+      await launcher({ releaseRepoLock })(job, REPO_PATH, {});
+
+      if (when === 'before-exit') jobManager.dispose();
+      child.emit('exit', 1);
+      if (when === 'during-retry') jobManager.dispose();
+      await jobManager.waitForChildren();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(forkMock).toHaveBeenCalledTimes(1);
+      expect(jobManager.getJob(job.id)?.status).toBe('failed');
+      expect(jobManager.getJob(job.id)?.error).toBe('Server shutting down');
+      expect(releaseRepoLock).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('still treats an exit with no terminal IPC as a crash worth retrying', async () => {
     // The guard must not swallow real crashes: no `complete`/`error` was sent.
     H.settledDir = H.STORAGE_PATH;
