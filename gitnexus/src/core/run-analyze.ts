@@ -51,7 +51,6 @@ import {
   summarizeNameFallback,
   countCallsByLanguage,
 } from './ingestion/scope-resolution/name-fallback-summary.js';
-import { runPipelineFromRepo } from './ingestion/pipeline.js';
 import type { RouteHookConfig } from './ingestion/language-provider.js';
 import { routeHookConfigKey } from './ingestion/route-hook-config.js';
 import {
@@ -1573,7 +1572,10 @@ export async function continuePreparedAnalysis(
   const resources = options.resources;
   if (!resources) throw new Error('Graph continuation requires admitted resources');
   const log = (message: string) => callbacks.onLog?.(stripControlCharacters(message));
-  let target = await resolveWriteTarget(handoff.repoPath, options);
+  // Publication resolves the target before locking and again under the lock.
+  // Retain that verified target for its callbacks; an extra snapshot here is
+  // overwritten before use and adds synchronous Git probes to every handoff.
+  let target: Awaited<ReturnType<typeof resolveWriteTarget>>;
   const resolveTarget = async (): Promise<AnalysisPhaseTarget> => {
     target = await resolveWriteTarget(handoff.repoPath, options);
     return {
@@ -3650,6 +3652,7 @@ async function runFullAnalysisInner(
       );
     }
     callbacks.signal?.throwIfAborted();
+    const { runPipelineFromRepo } = await import('./ingestion/pipeline.js');
     pipelineResult = await runPipelineFromRepo(
       repoPath,
       (p) => {

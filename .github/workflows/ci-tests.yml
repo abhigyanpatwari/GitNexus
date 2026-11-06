@@ -62,7 +62,7 @@ jobs:
         if: always() && matrix.resources == 'explicit'
         uses: ./.github/actions/upload-test-artifact
         with:
-          name: analyze-resume-cpu-profile
+          name: analyze-resume-cpu-profile-${{ matrix.resources }}
           path: |
             ${{ runner.temp }}/analyze-profile/**/*.cpuprofile
             ${{ runner.temp }}/analyze-profile/**/*.json

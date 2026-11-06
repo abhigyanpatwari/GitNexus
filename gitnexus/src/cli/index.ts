@@ -290,14 +290,25 @@ program
       process.env.GITNEXUS_EMBEDDING_DIMS = dimsEnvBaseline;
     }
   })
-  .action(
-    createAnalyzerLbugLazyAction(
+  .action(async (inputPath, options) => {
+    // The connected continuation only publishes the writer's prepared graph
+    // and embeds it. Its analyzer receipt is never used: the graph writer has
+    // already finalized provenance. Keep the native check, without repeating
+    // the complete analyzer identity snapshot in this separate process.
+    if (process.env.GITNEXUS_ANALYSIS_CONTINUATION === '1' && process.connected) {
+      await createLbugLazyAction(() => import('./analyze.js'), 'analyzeCommand')(
+        inputPath,
+        options,
+      );
+      return;
+    }
+    await createAnalyzerLbugLazyAction(
       () => import('../core/analyzer-identity.js'),
       () => import('./analyze.js'),
       'analyzeOrWatchCommandWithRunnerIdentity',
       import.meta.url,
-    ),
-  );
+    )(inputPath, options);
+  });
 
 program
   .command('index [path...]')
