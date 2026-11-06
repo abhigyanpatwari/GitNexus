@@ -127,6 +127,12 @@ export async function runPublishedEmbeddingJob(
   await drainAnalysisNativeResources();
   signal?.throwIfAborted();
   const root = await embeddingJobDirectory(options.metadataDirectory);
+  // Canonicalize the parent just as we do for the job root. macOS temporary
+  // paths can name the same directory through /var and /private/var.
+  const graphPath = path.join(
+    await embeddingJobDirectory(path.dirname(path.resolve(options.graphPath))),
+    path.basename(options.graphPath),
+  );
   let metadata = await options.metadata.loadMetadata();
   const graph = metadata?.graphGeneration;
   const runner = metadata?.runnerIdentity;
@@ -142,7 +148,7 @@ export async function runPublishedEmbeddingJob(
     !metadata.schemaFingerprint ||
     metadata.incrementalInProgress ||
     metadata.graphWriteCollapsed ||
-    !metadataMatchesGraph(root, metadata, options.graphPath)
+    !metadataMatchesGraph(root, metadata, graphPath)
   )
     throw new Error('Embedding job requires a verified published graph generation');
   const config = resolveEmbeddingConfig(options.config);
@@ -261,7 +267,7 @@ export async function runPublishedEmbeddingJob(
       options.log?.(incompatible);
       legacy = undefined;
     } else {
-      const current = await fs.lstat(options.graphPath, { bigint: true });
+      const current = await fs.lstat(graphPath, { bigint: true });
       if (String(current.dev) === legacy.file.dev && String(current.ino) === legacy.file.ino)
         throw new Error('Legacy reuse requires a retired source distinct from the mutable graph');
     }
@@ -345,7 +351,7 @@ export async function runPublishedEmbeddingJob(
     if (!manifestExists) await clearUnstartedManifest(directory);
     const getSource = async (): Promise<GraphSource> =>
       (source ??= await (dependencies.openSource ?? EmbeddingGraphSource.open)(
-        options.graphPath,
+        graphPath,
         resources.graphPoolBytes,
         resources.nativeThreads,
       ));

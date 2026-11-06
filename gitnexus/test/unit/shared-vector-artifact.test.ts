@@ -25,7 +25,7 @@ let root: string,
   preparing: string;
 const differentDevice = () => Object.assign(new Error('Different filesystem'), { code: 'EXDEV' });
 beforeEach(async () => {
-  root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-retain-vectors-'));
+  root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'gn-retain-vectors-')));
   source = path.join(root, 'source');
   destination = path.join(root, 'destination');
   original = path.join(source, 'embeddings', generation.identity, 'vectors');

@@ -72,9 +72,11 @@ it.each(boundaries)(
           },
         },
       });
-      await expect(
-        execute(process.execPath, [helper, root, boundary], { env }),
-      ).rejects.toMatchObject({ code: 73 });
+      const stopped = await execute(process.execPath, [helper, root, boundary], { env }).then(
+        () => ({ code: 0, stderr: '' }),
+        (error: NodeJS.ErrnoException & { stderr?: string }) => error,
+      );
+      expect(stopped.code, stopped.stderr).toBe(73);
       await execute(process.execPath, [helper, root, 'resume'], { env });
       const readInputs = async (
         phase: string,

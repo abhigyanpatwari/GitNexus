@@ -810,6 +810,26 @@ describe('published graph embedding job controller', () => {
     await expect(fs.stat(path.join(job, 'vectors'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('binds graph paths through an aliased ancestor to the canonical job root', async () => {
+    const f = await fixture(1);
+    const alias = path.join(f.root, 'alias');
+    await fs.symlink(
+      path.dirname(f.root),
+      alias,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    const graphFile = path.basename(f.options().graphPath);
+    const result = await f.run({
+      graphPath: path.join(alias, path.basename(f.root), graphFile),
+    });
+    expect(result.phase).toBe('ready');
+    expect(f.openSource).toHaveBeenCalledWith(
+      path.join(await fs.realpath(f.root), graphFile),
+      f.options().resources.graphPoolBytes,
+      f.options().resources.nativeThreads,
+    );
+  });
+
   it('refuses a symlink job root before writing metadata or requesting vectors', async () => {
     const f = await fixture(5);
     await fs.mkdir(path.join(f.root, 'other'));
