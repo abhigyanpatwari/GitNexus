@@ -101,7 +101,8 @@ vi.mock('../../src/core/embeddings/embedding-sidecar-client.js', () => ({
 
 const IDENTITY = { model: 'test-model', dimensions: 768, provider: 'local' } as const;
 
-vi.mock('../../src/core/ingestion/utils/effective-ram.js', () => ({
+vi.mock('../../src/core/ingestion/utils/effective-ram.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/ingestion/utils/effective-ram.js')>()),
   effectiveRamBytes: () => 8 * 1024 ** 3,
 }));
 vi.mock('node:v8', async (importOriginal) => {
@@ -211,12 +212,12 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
     await Promise.all(tmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
-  it('keeps automatic reservations within host memory despite a larger default V8 limit', async () => {
+  it('uses the RAM-sized automatic heap despite a larger default V8 limit', async () => {
     await store();
     await run();
     expect(runAnalysisEmbeddingPhaseMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        resources: expect.objectContaining({ totalBytes: 6 * 1024 ** 3 }),
+        resources: expect.objectContaining({ automatic: true, mainHeapMb: 6553 }),
       }),
     );
   });

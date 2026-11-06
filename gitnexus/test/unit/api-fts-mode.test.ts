@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../src/core/ingestion/utils/effective-ram.js', () => ({
+vi.mock('../../src/core/ingestion/utils/effective-ram.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/ingestion/utils/effective-ram.js')>()),
   effectiveRamBytes: () => 8 * 1024 ** 3,
 }));
 vi.mock('node:v8', async (importOriginal) => {
@@ -113,6 +114,7 @@ vi.mock('../../src/server/analyze-job.js', () => ({
     dispose() {
       for (const controller of this.controllers) controller.abort();
     }
+    async waitForChildren() {}
     getJob() {
       return mocks.activeJob ?? { status: 'analyzing' };
     }
@@ -240,7 +242,7 @@ describe('POST /api/embed staged recovery preflight', () => {
         metadataDirectory: entry.storagePath,
         graphPath: path.join(entry.storagePath, 'lbug'),
         nodeLimit: 0,
-        resources: expect.objectContaining({ totalBytes: 6 * 1024 ** 3 }),
+        resources: expect.objectContaining({ automatic: true, mainHeapMb: 6553 }),
         signal: expect.any(AbortSignal),
       }),
     );

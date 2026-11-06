@@ -15,7 +15,7 @@ const phases = [];
 const result = await runFullAnalysis(
   process.argv[2],
   {
-    graphPublication: recovering ? 'inline' : 'after-exit',
+    graphPublication: recovering ? 'auto' : 'after-exit',
     skipNativeCloseOnExit: !recovering,
     resources,
     skipFts: true,
@@ -38,11 +38,11 @@ if (recovering) {
   process.exit(0);
 }
 if (!result.preparedGraph) throw new Error('Expected a prepared graph');
+process.once('message', (message) => {
+  if (message === 'exit') process.exit(0);
+});
 await new Promise((resolve, reject) =>
   process.send({ handoff: result.preparedGraph, stats: result.stats }, (error) =>
     error ? reject(error) : resolve(),
   ),
 );
-process.once('message', (message) => {
-  if (message === 'exit') process.exit(0);
-});

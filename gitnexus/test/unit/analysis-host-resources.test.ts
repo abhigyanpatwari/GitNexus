@@ -5,7 +5,8 @@ import {
 } from '../../src/core/analysis-host-resources.js';
 
 const mocks = vi.hoisted(() => ({ loadMeta: vi.fn(), placement: vi.fn() }));
-vi.mock('../../src/core/ingestion/utils/effective-ram.js', () => ({
+vi.mock('../../src/core/ingestion/utils/effective-ram.js', async (original) => ({
+  ...(await original<typeof import('../../src/core/ingestion/utils/effective-ram.js')>()),
   effectiveRamBytes: () => 32768 * 1024 ** 2,
 }));
 vi.mock('node:os', () => ({ default: { availableParallelism: () => 16 } }));
@@ -46,7 +47,8 @@ it('reserves local model capacity only for invocations that may embed', () => {
 it('divides the host allowance across concurrent analyses', () => {
   const one = resolveHostAnalysisResources({ includeEmbeddings: false });
   const four = resolveHostAnalysisResources({ includeEmbeddings: false, concurrency: 4 });
-  expect(four.totalBytes * 4).toBe(one.totalBytes);
+  expect(four.totalBytes * 4).toBe(24576 * 1024 ** 2);
+  expect(four.totalBytes * 4).toBeLessThanOrEqual(one.totalBytes);
   expect(four.parse.nativeThreads * 4).toBe(one.parse.nativeThreads);
   expect(four.parse.workers).toBeLessThanOrEqual(3);
 });
@@ -61,6 +63,14 @@ it('honors bounded worker, pool, and embedding-thread overrides', () => {
   expect(budget.parse.workerHeapMb).toBe(512);
   expect(budget.parse.graphPoolBytes).toBe(256 * 1024 ** 2);
   expect(budget.embedding.nativeThreads).toBe(8);
+});
+
+it('ignores embedding-only thread configuration for a graph-only invocation', () => {
+  vi.stubEnv('GITNEXUS_EMBEDDING_THREADS', 'not-a-number');
+  expect(resolveHostAnalysisResources({ includeEmbeddings: false }).parse.workers).toBe(15);
+  expect(() => resolveHostAnalysisResources({ includeEmbeddings: true })).toThrow(
+    'GITNEXUS_EMBEDDING_THREADS',
+  );
 });
 
 it.each(['0', ' 0 ', '0.0'])(

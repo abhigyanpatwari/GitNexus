@@ -117,8 +117,12 @@ describe('bounded embedding text preserves existing vectors', () => {
       expect(createHash('sha256').update(JSON.stringify(inputs)).digest('hex')).toBe(digest);
       expect(release).toHaveBeenCalledTimes(contentRetention === 'full' ? 1 : 0);
       expect(node).not.toHaveProperty('classDeclaration');
-      if (label === 'Class')
-        expect(inputs.map((input) => input.text).join('\n')).not.toContain('BODY_EXCLUDED');
+      expect(
+        inputs
+          .filter(() => label === 'Class')
+          .map((input) => input.text)
+          .join('\n'),
+      ).not.toContain('BODY_EXCLUDED');
     },
   );
 
@@ -181,7 +185,7 @@ describe('bounded embedding text preserves existing vectors', () => {
         expect(chunk.endLine).toBe(
           13 + content.slice(0, chunk.endOffset - 1).split('\n').length - 1,
         );
-        if (overlap >= 0) expect(chunk.startOffset).toBeLessThanOrEqual(covered);
+        expect(chunk.startOffset).toBeLessThanOrEqual(covered);
         covered = chunk.endOffset;
       }
       expect(covered).toBe(content.length);

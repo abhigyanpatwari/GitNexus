@@ -32,6 +32,7 @@ interface Reader {
     repo: { lbugPath: string; generationUnknown?: boolean },
     query: string,
     limit: number,
+    degraded?: { reason?: string },
   ): Promise<unknown[]>;
   lastObservedPoolState: Map<string, { metadata: RepoMeta }>;
   lastQueryEmbeddingDims: Map<string, number>;
@@ -44,6 +45,13 @@ beforeEach(() => {
 });
 
 describe('MCP generation gate', () => {
+  it('explains the temporary keyword-only lane while vectors are pending', async () => {
+    const backend = new LocalBackend() as unknown as Reader;
+    const degraded: { reason?: string } = {};
+    expect(await backend.semanticSearch({ lbugPath: graphPath }, 'hello', 5, degraded)).toEqual([]);
+    expect(degraded.reason).toContain('embeddings are pending');
+    expect(mocks.embed).not.toHaveBeenCalled();
+  });
   it.each(['before-read', 'during-read'])(
     'clears a prior query width when ownership is lost %s',
     async (when) => {

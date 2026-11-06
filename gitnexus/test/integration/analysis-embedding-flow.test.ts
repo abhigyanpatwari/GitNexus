@@ -36,6 +36,8 @@ it('publishes before HTTP work and resumes without parsing or repeating durable 
   await fs.writeFile(path.join(repo, 'a.ts'), content);
   git('add', 'a.ts');
   git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'fixture');
+  // Retrying pending embeddings must also reuse an unchanged dirty graph.
+  await fs.writeFile(path.join(repo, 'a.ts'), `${content}\n// dirty snapshot\n`);
   const accepted: string[] = [];
   let fail = true;
   let requests = 0;
@@ -102,10 +104,19 @@ it('publishes before HTTP work and resumes without parsing or repeating durable 
     embeddingsNodeLimit: 0,
   };
   const phases: string[] = [];
+  let graphPublished!: () => void;
+  const published = new Promise<void>((resolve) => {
+    graphPublished = resolve;
+  });
+  let releasePublication!: () => void;
+  const publicationHeld = new Promise<void>((resolve) => {
+    releasePublication = resolve;
+  });
   const callbacks = {
     async onGraphPublished() {
       // A serving frontend can finish its asynchronous reader refresh first.
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      graphPublished();
+      await publicationHeld;
       graphWasVisible = true;
     },
     onProgress(phase: string) {
@@ -113,7 +124,12 @@ it('publishes before HTTP work and resumes without parsing or repeating durable 
       if (phase === 'graph-ready') graphWasReady = true;
     },
   };
-  await expect(runFullAnalysis(repo, options, callbacks)).rejects.toThrow(/unfinished|incomplete/);
+  const firstRun = runFullAnalysis(repo, options, callbacks);
+  void firstRun.catch(() => {});
+  await Promise.race([published, firstRun]);
+  expect(requests).toBe(0);
+  releasePublication();
+  await expect(firstRun).rejects.toThrow(/unfinished|incomplete/);
   expect(endpointErrors).toEqual([]);
   expect(accepted).toHaveLength(64);
   const interrupted = await loadMeta(slot);

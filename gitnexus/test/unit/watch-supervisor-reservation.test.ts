@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, expect, it, vi } from 'vitest';
+import { getHeapStatistics } from 'node:v8';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   resources: vi.fn((_request: { supervisorBytes?: number }) => ({
@@ -10,7 +11,16 @@ const mocks = vi.hoisted(() => ({
   })),
   heap: vi.fn(async () => true),
 }));
-vi.mock('../../src/cli/analyze.js', () => ({ ensureHeap: mocks.heap }));
+vi.mock('../../src/cli/analyze.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/cli/analyze.js')>();
+  return { ensureHeap: mocks.heap, usesManualAnalysisHeap: actual.usesManualAnalysisHeap };
+});
+vi.mock('../../src/storage/storage-resolver.js', () => ({
+  ANALYZE_STORAGE_REQUIREMENTS: {},
+  requireStoragePath: vi.fn(async () => {
+    throw new Error('stop after admission');
+  }),
+}));
 vi.mock('../../src/core/analysis-host-resources.js', () => ({
   analysisMayEmbed: async () => false,
   analysisSupervisorReservation: () => 192 * 1024 ** 2,
@@ -23,7 +33,13 @@ import {
 import type { AnalyzerRunnerIdentity } from '../../src/storage/repo-manager.js';
 
 const directories: string[] = [];
+beforeEach(() => {
+  vi.stubEnv('GITNEXUS_MEMORY', '');
+  vi.stubEnv('GITNEXUS_ANALYSIS_MANUAL_HEAP', '');
+  vi.stubEnv('NODE_OPTIONS', '');
+});
 afterEach(async () => {
+  process.exitCode = undefined;
   vi.unstubAllEnvs();
   vi.clearAllMocks();
   await Promise.all(
@@ -59,4 +75,18 @@ it('retains the parent reservation across watch refreshes', async () => {
   expect(mocks.resources).toHaveBeenCalledTimes(2);
   for (const [request] of mocks.resources.mock.calls)
     expect(request).toMatchObject({ supervisorBytes: 320 * 1024 ** 2 });
+});
+
+it('honors GITNEXUS_MEMORY=off in the actual watch admission path', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-watch-manual-'));
+  directories.push(directory);
+  await fs.mkdir(path.join(directory, '.git'));
+  vi.stubEnv('GITNEXUS_MEMORY', 'off');
+  await watchCommandWithRunnerIdentity({} as AnalyzerRunnerIdentity, directory);
+  expect(mocks.heap).not.toHaveBeenCalled();
+  expect(mocks.resources).toHaveBeenCalledWith(
+    expect.objectContaining({
+      mainHeapMb: Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
+    }),
+  );
 });

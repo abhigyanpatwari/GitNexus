@@ -11,7 +11,7 @@
 
 import {
   detectGraphWriteCollapse,
-  getIndexIncompleteReasons,
+  getGraphIncompleteReasons,
   type GraphWriteCollapseVerdict,
 } from './index-freshness.js';
 import {
@@ -1585,6 +1585,7 @@ export async function continuePreparedAnalysis(
     };
   };
   const finalize = async (metadata: RepoMeta): Promise<RepoMeta> => {
+    const prior = options.noShare ? await optedInSlotToLeave(handoff.repoPath) : undefined;
     await registerRepo(handoff.repoPath, metadata, {
       name: options.registryName,
       allowDuplicateName: options.allowDuplicateName,
@@ -1604,7 +1605,6 @@ export async function continuePreparedAnalysis(
         allowDuplicateName: options.allowDuplicateName,
       });
     } else if (!target.sharedStore) {
-      const prior = options.noShare ? await optedInSlotToLeave(handoff.repoPath) : undefined;
       if (prior) await leaveSharedStore(handoff.repoPath, prior, target.storagePath, log);
       else await registerLeftStore(handoff.repoPath, target.storagePath);
     }
@@ -1736,6 +1736,7 @@ export async function runFullAnalysis(
   callbacks: AnalyzeCallbacks,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
+  callbacks.signal?.throwIfAborted();
   if (options.graphPublication && !options.resources)
     throw new Error('Graph publication requires admitted resources');
   if (options.graphPublication === 'after-exit' && !options.skipNativeCloseOnExit)
@@ -1828,6 +1829,7 @@ export async function runFullAnalysis(
       if (options.graphPublication === 'auto') {
         const prior = await loadMeta(writeTarget.metaDir);
         const separate = Boolean(
+          (await retainsPreparedGraph(writeTarget.metaDir)) ||
           prior?.graphGeneration ||
           prior?.embeddingJob ||
           (!options.dropEmbeddings && prior?.embeddingCheckpoint) ||
@@ -1846,12 +1848,13 @@ export async function runFullAnalysis(
       // can only belong to an interrupted predecessor; sibling stages live
       // under their own meta directories and must remain untouched. Reclaim
       // before freshness/FTS-only early returns as well as parsing runs.
+      const slotToLeave = options.noShare ? await optedInSlotToLeave(repoPath) : undefined;
       if (options.graphPublication) {
         const recovered = await recoverPreparedGraph(writeTarget, repoPath, options, log);
         if (recovered?.graphPath)
           writeTarget = {
             ...writeTarget,
-            lbugPath: path.join(writeTarget.metaDir, recovered.graphPath),
+            lbugPath: resolveGraphWritePath(writeTarget.metaDir),
           };
       }
       await removeColdParseRebuildDir(getColdParseRebuildDir(writeTarget.metaDir), false);
@@ -1874,7 +1877,6 @@ export async function runFullAnalysis(
         });
       }
       sweepStagingArtifacts(writeTarget.metaDir, log);
-      const slotToLeave = options.noShare ? await optedInSlotToLeave(repoPath) : undefined;
       const result = await runFullAnalysisInner(
         repoPath,
         options,
@@ -1912,16 +1914,21 @@ export async function runFullAnalysis(
         options.graphPublication === 'inline' ||
         (options.graphPublication === 'after-exit' && result.alreadyUpToDate)
       ) {
-        const published = await loadMeta(writeTarget.metaDir);
+        let published = await loadMeta(writeTarget.metaDir);
         const generate = _deriveEmbeddingMode(
           options,
           published?.stats?.embeddings ?? 0,
         ).shouldGenerateEmbeddings;
         if (published && (generate || published.embeddingJob || published.embeddingCheckpoint)) {
+          if (flatShared && !published.graphGeneration) {
+            if (!(await ensurePrivateSharedGraph(writeTarget.metaDir, log)))
+              throw new Error('The shared graph is unavailable; re-run analyze to rebuild it.');
+            published = (await loadMeta(writeTarget.metaDir)) ?? published;
+          }
           const { runAnalysisEmbeddingPhase } = await import('./analysis-embedding-phase.js');
           const metadata = await runAnalysisEmbeddingPhase({
             metadataDirectory: writeTarget.metaDir,
-            graphPath: path.resolve(writeTarget.metaDir, published.graphPath ?? 'lbug'),
+            graphPath: resolveGraphPath(writeTarget.metaDir, published),
             resources: options.resources!,
             callbacks,
             nodeLimit: options.embeddingsNodeLimit,
@@ -1995,7 +2002,7 @@ async function matchesIndexedDirtyWorktree(repoPath: string, meta: RepoMeta): Pr
     !Array.isArray(indexedDirtyPaths) ||
     indexedDirtyPaths.length === 0 ||
     indexedDirtyPaths.some((rel) => typeof rel !== 'string') ||
-    getIndexIncompleteReasons(meta).length > 0 ||
+    getGraphIncompleteReasons(meta).length > 0 ||
     indexCoverage?.maxFileSizeBytes !== getMaxFileSizeBytes()
   ) {
     return false;
@@ -3642,6 +3649,7 @@ async function runFullAnalysisInner(
         inputs.map((file) => file.path),
       );
     }
+    callbacks.signal?.throwIfAborted();
     pipelineResult = await runPipelineFromRepo(
       repoPath,
       (p) => {
@@ -3653,6 +3661,7 @@ async function runFullAnalysisInner(
         progress(p.phase, scaled, message);
       },
       {
+        signal: callbacks.signal,
         parseCache,
         parsedFileStorePath: coldParseRebuildDir,
         parseWorkerUrl: parseIdentityResolution.ok ? parseIdentityResolution.workerUrl : undefined,
@@ -3723,6 +3732,7 @@ async function runFullAnalysisInner(
   }
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
+  callbacks.signal?.throwIfAborted();
   progress('lbug', 60, 'Loading into LadybugDB...');
 
   // Parsing and graph construction always see the original source. Apply the
@@ -4964,6 +4974,7 @@ async function runFullAnalysisInner(
     }
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
+    callbacks.signal?.throwIfAborted();
     // The analyze (write) path owns building the search indexes, so it uses
     // the `auto` install policy (LOAD-first, then one bounded INSTALL) —
     // symmetric with the VECTOR/embeddings path below and consistent with the
@@ -5700,6 +5711,7 @@ async function runFullAnalysisInner(
     }
 
     // ── Phase 5: Finalize (98–100%) ───────────────────────────────────
+    callbacks.signal?.throwIfAborted();
     progress('done', 98, 'Saving metadata...');
 
     // Count embeddings in the index (cached + newly generated). Tri-state, and

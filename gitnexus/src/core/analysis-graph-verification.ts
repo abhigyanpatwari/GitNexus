@@ -6,6 +6,7 @@ import { closeLbugConnection, openLbugConnection } from './lbug/lbug-config.js';
 import { assertLbugPublicationReady } from './lbug/publication.js';
 import { getFtsIndexes } from './search/fts-schema.js';
 import { verifySearchFTSIndexes } from './search/fts-indexes.js';
+import { ExtensionManager } from './lbug/extension-loader.js';
 
 function count(value: unknown): number {
   if (typeof value !== 'number' && typeof value !== 'bigint')
@@ -59,7 +60,12 @@ export async function verifyPublishedAnalysisGraph(
     )
       throw new Error('Prepared graph counts differ after writer release; artifacts retained');
     if (metadata.capabilities?.fts.status === 'available') {
-      await query('LOAD FTS');
+      if (
+        !(await new ExtensionManager().ensure(query, 'fts', 'publication verification', {
+          policy: 'load-only',
+        }))
+      )
+        throw new Error('Prepared graph FTS extension could not be loaded; artifacts retained');
       const missing = await verifySearchFTSIndexes(query, getFtsIndexes(metadata.ftsProfile));
       if (missing.length)
         throw new Error(`Prepared graph search indexes are incomplete: ${missing.join(', ')}`);

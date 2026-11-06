@@ -154,6 +154,9 @@ export interface RepoMeta {
     dimensions: number;
     nodes: number;
     chunks: number;
+    /** Deterministic input failures exhausted three attempts in this job. */
+    excludedNodes?: number;
+    exclusionReason?: 'input-rejected';
     indexKind: 'hnsw' | 'exact';
   };
   lastCommit: string;

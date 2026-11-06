@@ -1,5 +1,36 @@
 # Migration Guide
 
+## Resumable analysis and separate vector storage (#3598)
+
+Analysis with embeddings publishes a private `lbug.generation.<id>` graph and
+stores resumable vector artifacts under `embeddings/<identity>/`. Metadata names
+the active graph and sealed vector generation. Once a slot uses this layout,
+plain analysis, watch and hooks continue using it. Pending embedding work resumes
+on the next plain `gitnexus analyze`; `--force` rebuilds the graph while retaining
+compatible vectors for reuse. `--drop-embeddings` explicitly abandons embeddings.
+
+Upgrade every CLI, MCP/serve process and installed hook that accesses the slot.
+Restart long-running clients and rerun `gitnexus setup` with the upgraded binary.
+Older versions do not understand the private graph pointer or separate vectors.
+Do not run an older analyzer against the migrated slot.
+
+Before upgrading, stop readers and writers and back up the complete storage
+slot, including metadata, graph files, `embeddings/`, and any referenced shared
+store. To roll back, stop clients again and restore that complete backup with
+the matching older binaries. Renaming a generation file to `lbug` does not move
+vectors back into it. There is no reverse conversion for separate vector
+artifacts; without a backup, rebuilding with an older version requires generating
+embeddings again and can incur provider charges.
+
+A graph can be ready while embeddings remain pending. Embedding failure after
+graph publication exits nonzero; the graph remains usable and the next analyze
+resumes paid work. HTTP clients should read `embeddingProgress` and capability
+reasons rather than relying on the former terminal SSE `partial` field. After
+three deterministic input rejections, the job publishes healthy nodes and records
+`excludedNodes` with reason `input-rejected`; status reports the omission.
+On Windows, a legacy reader can prevent retirement of `lbug`. Stop that reader
+and rerun analyze; the prepared publication and vector artifacts are retained.
+
 ## LadybugDB 0.22.0 storage and extensions
 
 LadybugDB 0.22.0 reads indexes written by 0.21.1, but a write/checkpoint upgrades

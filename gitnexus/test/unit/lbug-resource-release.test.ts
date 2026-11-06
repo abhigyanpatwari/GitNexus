@@ -29,7 +29,7 @@ describe('reserved native resource release', () => {
       await expect(native.closeLbugConnection(h.handle, { strict: true })).rejects.toThrow(
         'release failed',
       );
-      if (part === 'conn') expect(h.db.close).not.toHaveBeenCalled();
+      expect(h.db.close).toHaveBeenCalledTimes(part === 'conn' ? 0 : 1);
       await native.closeLbugConnection(h.handle, { strict: true });
       expect(h[part].close).toHaveBeenCalledTimes(2);
       expect(h[part === 'conn' ? 'db' : 'conn'].close).toHaveBeenCalledTimes(1);

@@ -20,6 +20,7 @@ import { resolveEmbeddingConfig } from '../../src/core/embeddings/config.js';
 import { isShortLabel, type EmbeddableNode } from '../../src/core/embeddings/types.js';
 import { createEmbeddingWorkManifest } from '../../src/core/embeddings/embedding-work-manifest.js';
 import { EmbeddingJobJournal } from '../../src/storage/embedding-job-journal.js';
+import { resolveAnalysisResourceBudget } from '../../src/core/analysis-resource-budget.js';
 import { runEmbeddingJob } from '../../src/core/embeddings/embedding-job-runner.js';
 
 const roots: string[] = [];
@@ -151,6 +152,54 @@ afterEach(async () => {
 });
 
 describe('verified legacy vector reuse', () => {
+  it('builds a legacy reuse catalog above 50000 rows with admitted reader and writer pools', async () => {
+    const f = await fixture(node('Const'));
+    const budget = resolveAnalysisResourceBudget({
+      effectiveMemoryBytes: 8 * 1024 ** 3,
+      availableCpus: 4,
+      modelMemoryMb: 0,
+    });
+    const pool = Math.floor(budget.embedding.vectorPoolBytes / 2);
+    const db = await openLbugConnection(lbug, f.options.path, {
+      bufferPoolBytes: pool,
+      threads: 1,
+    });
+    try {
+      const result = await db.conn.query(`UNWIND range(1, 50000) AS i CREATE (:CodeEmbedding {
+        id:'Const:large.ts:n' + CAST(i AS STRING) + ':0', nodeId:'Const:large.ts:n' + CAST(i AS STRING),
+        chunkIndex:0,startLine:1,endLine:1,embedding:[1,0,0,0],contentHash:'hash'})`);
+      for (const cursor of Array.isArray(result) ? result : [result]) cursor.close();
+    } finally {
+      await closeLbugConnection(db, { strict: true, databasePath: f.options.path });
+    }
+    await f.store.close();
+    const index = await VectorStore.open({
+      ...f.store.options,
+      bufferPoolBytes: pool,
+      mode: 'resume',
+    });
+    handles.push(index);
+    const source = await LegacyVectorSource.open(
+      { ...f.options, bufferPoolBytes: pool },
+      index,
+      () => [],
+    );
+    handles.push(source);
+    for (const [nodeId, contentHash] of [
+      [node('Const').id, f.hash],
+      ['Const:large.ts:n1', 'hash'],
+      ['Const:large.ts:n50000', 'hash'],
+    ])
+      expect(await index.legacyReuseGroup(f.options.sourceIdentity, nodeId)).toMatchObject({
+        nodeId,
+        contentHash,
+        chunks: 1,
+      });
+    expect(
+      await index.legacyReuseGroup(f.options.sourceIdentity, 'Const:large.ts:n50001'),
+    ).toBeNull();
+  }, 120_000);
+
   it('relocates chunk spans without treating the last chunk as the whole node range', async () => {
     const original = {
       ...node('File', Array.from({ length: 80 }, (_, i) => `const v${i} = ${i};`).join('\n')),

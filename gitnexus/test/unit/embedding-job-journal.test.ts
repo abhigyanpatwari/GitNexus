@@ -47,6 +47,60 @@ afterEach(async () => {
 });
 
 describe('durable embedding scheduling', () => {
+  it('retains deterministic rejection history across a crash before vector exclusion', async () => {
+    let journal = await job();
+    const id = 'Function:a.ts:bad';
+    await journal.begin(unit(0));
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await journal.recordInputRejections([id]);
+      journal = await EmbeddingJobJournal.recover(journal.directory, identity, manifest);
+      expect(journal.snapshot().active?.inputFailures).toEqual({ [id]: attempt });
+      if (attempt < 3) {
+        await journal.fail('provider');
+        journal = await EmbeddingJobJournal.recover(journal.directory, identity, manifest);
+        await journal.begin(unit(0, 'failed'));
+      }
+    }
+    await journal.acknowledge({ reusedNodes: 1, chunks: 1 });
+    expect(journal.snapshot()).toMatchObject({
+      excludedNodes: 1,
+      reusedNodes: 1,
+      completedNodes: 0,
+    });
+  });
+
+  it.each([0, 4, 1.5])('rejects malformed persisted input failure count %s', async (count) => {
+    const journal = await job();
+    await journal.begin(unit(0));
+    const state = (await readEmbeddingJobRecord(journal.directory, 'job.json')) as Record<
+      string,
+      unknown
+    >;
+    await writeEmbeddingJobRecord(journal.directory, 'job.json', {
+      ...state,
+      active: { ...unit(0), inputFailures: { 'Function:a.ts:bad': count } },
+    });
+    await expect(EmbeddingJobJournal.open(journal.directory, identity, manifest)).rejects.toThrow();
+  });
+
+  it('refuses a foreign failure record beside an active retry without deleting it', async () => {
+    const journal = await job();
+    await journal.begin(unit(0));
+    await journal.fail('provider');
+    await journal.begin(unit(0, 'failed'));
+    const name = 'failed-0000000000000000.json';
+    const record = (await readEmbeddingJobRecord(journal.directory, name)) as Record<
+      string,
+      unknown
+    >;
+    await writeEmbeddingJobRecord(journal.directory, name, { ...record, identity: 'f'.repeat(64) });
+    const before = await fs.readFile(path.join(journal.directory, name));
+    await expect(
+      EmbeddingJobJournal.recover(journal.directory, identity, manifest),
+    ).rejects.toThrow('identity mismatch');
+    expect(await fs.readFile(path.join(journal.directory, name))).toEqual(before);
+  });
+
   it('keeps the journal usable after validation fails before any write', async () => {
     const journal = await job();
     await expect(journal.indexing()).rejects.toThrow('accounting');

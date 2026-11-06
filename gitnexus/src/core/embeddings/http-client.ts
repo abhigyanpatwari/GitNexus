@@ -50,7 +50,13 @@ export interface EmbeddingRequestOptions {
   maxResponseBytes?: number;
 }
 
-class EmbeddingResponseBudgetError extends Error {}
+// A local resource limit aborts the request without retrying or penalising
+// endpoint health. resilientFetch treats AbortError DOMExceptions as neutral.
+class EmbeddingResponseBudgetError extends DOMException {
+  constructor(message: string) {
+    super(message, 'AbortError');
+  }
+}
 
 /** Bound encoded bytes before JSON decoding; Content-Length alone is untrusted. */
 async function readEmbeddingResponse(response: Response, maximum?: number): Promise<unknown> {
@@ -537,7 +543,7 @@ const httpEmbedBatch = async (
             };
           } catch (err) {
             if (err instanceof EmbeddingResponseBudgetError)
-              throw new RetryableEmbeddingBodyError(
+              throw new EmbeddingResponseBudgetError(
                 `Embedding endpoint exceeded its ${requestOptions.maxResponseBytes}-byte response budget (${safeUrl(url)}, batch ${batchIndex})`,
               );
             // Not every `.json()` rejection is a parse error: the per-attempt
@@ -588,6 +594,9 @@ const httpEmbedBatch = async (
       },
     );
   } catch (err) {
+    if (err instanceof EmbeddingResponseBudgetError) {
+      throw new HttpEmbeddingError(err.message, { cause: err });
+    }
     if (
       requestOptions.signal?.aborted ||
       (err instanceof DOMException && err.name === 'AbortError')

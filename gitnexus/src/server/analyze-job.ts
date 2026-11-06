@@ -90,7 +90,7 @@ const JOB_TTL_MS = 60 * 60 * 1000; // 1 hour
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const JOB_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 /** How long to retain event-loop references after requesting safe cancellation. */
-const CANCEL_GRACE_MS = 15_000;
+const CANCEL_GRACE_MS = 60_000;
 
 export class JobManager {
   private jobs = new Map<string, AnalyzeJob>();
@@ -334,7 +334,7 @@ export class JobManager {
   }
 
   /**
-   * Request cancellation, then abandon event-loop references after grace.
+   * Request cancellation, then stop a wedged standalone process after grace.
    * Ownership and the job slot remain held until the actual process exit.
    */
   private requestChildShutdown(jobId: string, child: ChildProcess): void {
@@ -351,8 +351,9 @@ export class JobManager {
     const grace = setTimeout(() => {
       this.cancelGraceTimers.delete(jobId);
       if (child.exitCode === null && child.signalCode === null) {
-        child.channel?.unref();
-        child.unref?.();
+        // Process termination preserves crash-recovery receipts. Never use
+        // this policy for worker_threads running native code in this process.
+        child.kill('SIGKILL');
       }
     }, CANCEL_GRACE_MS);
     grace.unref?.();
@@ -360,14 +361,10 @@ export class JobManager {
   }
 
   dispose() {
-    // Never turn server shutdown into a native-active worker kill.
+    // Cooperative cancellation precedes bounded standalone-process shutdown.
     for (const [jobId, child] of this.children) {
       this.requestChildShutdown(jobId, child);
-      child.channel?.unref();
-      child.unref?.();
     }
-    for (const timer of this.cancelGraceTimers.values()) clearTimeout(timer);
-    this.cancelGraceTimers.clear();
     for (const controller of this.abortControllers.values()) controller.abort();
     this.abortControllers.clear();
 
@@ -381,6 +378,19 @@ export class JobManager {
     this.emitter.removeAllListeners();
   }
 
+  /** Keep shutdown alive until standalone writers have physically exited. */
+  async waitForChildren(): Promise<void> {
+    await Promise.all(
+      [...this.children.values()].map(
+        (child) =>
+          new Promise<void>((resolve) => {
+            if (child.exitCode !== null || child.signalCode !== null) resolve();
+            else child.once('exit', () => resolve());
+          }),
+      ),
+    );
+  }
+
   private isTerminal(status: AnalyzeJob['status']): boolean {
     return isTerminalJobStatus(status);
   }
@@ -392,7 +402,12 @@ export class JobManager {
   private cleanup() {
     const now = Date.now();
     for (const [id, job] of this.jobs) {
-      if (this.isTerminal(job.status) && job.completedAt && now - job.completedAt > JOB_TTL_MS) {
+      if (
+        !this.children.has(id) &&
+        this.isTerminal(job.status) &&
+        job.completedAt &&
+        now - job.completedAt > JOB_TTL_MS
+      ) {
         this.jobs.delete(id);
         this.abortControllers.delete(id);
       }

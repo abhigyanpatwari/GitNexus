@@ -16,7 +16,11 @@ export async function readEmbeddingJobProgress(
 ): Promise<EmbeddingJobProgress | undefined> {
   const reference = metadata?.embeddingJob;
   if (!reference) {
-    if (!metadata?.vectorGeneration?.preservedForGraph) return undefined;
+    if (
+      !metadata?.vectorGeneration?.preservedForGraph &&
+      !metadata?.vectorGeneration?.excludedNodes
+    )
+      return undefined;
     const selected = selectVectorGeneration(
       metadataDirectory,
       metadata,
@@ -25,8 +29,14 @@ export async function readEmbeddingJobProgress(
     );
     // These are historical chunks, not completed/reused work in a current
     // manifest. Unknown selection totals stay absent, never zero or complete.
-    return selected.kind === 'ready' && selected.coverage === 'preserved'
-      ? { phase: 'preserved', chunks: selected.generation.chunks }
+    return selected.kind === 'ready'
+      ? {
+          phase: selected.coverage === 'preserved' ? 'preserved' : 'ready',
+          chunks: selected.generation.chunks,
+          ...(selected.generation.excludedNodes
+            ? { excludedNodes: selected.generation.excludedNodes }
+            : {}),
+        }
       : undefined;
   }
   try {

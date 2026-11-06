@@ -26,6 +26,12 @@
 // Platform-specific logic tests — contain explicit process.platform guards
 // or test behavior that differs across operating systems
 const PLATFORM_LOGIC = [
+  'test/unit/embedding-sidecar-lifetime.test.ts',
+  'test/unit/analysis-publication.test.ts',
+  'test/unit/analysis-phase-supervisor.test.ts',
+  'test/unit/shared-vector-artifact.test.ts',
+  'test/unit/embedding-artifact.test.ts',
+  'test/unit/embedding-job-progress.test.ts',
   // Descriptor validation differs when O_NOFOLLOW is unavailable on Windows.
   'test/unit/embedding-job-file-security.test.ts',
   'test/unit/shared-store-read-security.test.ts',
@@ -167,6 +173,14 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
+  'test/integration/analysis-embedding-flow.test.ts',
+  'test/integration/analysis-generation-routing.test.ts',
+  'test/integration/analysis-publication-flow.test.ts',
+  'test/integration/embedding-job-controller.test.ts',
+  'test/integration/embedding-job-restart.test.ts',
+  'test/integration/embedding-native-release.test.ts',
+  'test/integration/legacy-embedding-controller.test.ts',
+  'test/integration/legacy-vector-source.test.ts',
   'test/integration/embedding-vector-store.test.ts',
   'test/integration/legacy-vector-reuse-index.test.ts',
   'test/integration/legacy-vector-export.test.ts',

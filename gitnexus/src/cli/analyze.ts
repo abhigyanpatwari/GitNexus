@@ -424,6 +424,7 @@ const runRespawnedAnalyze = (
     let forwardedSignal: NodeJS.Signals | undefined;
     let prepared: CliPreparedAnalysisMessage | undefined;
     let phaseError: string | undefined;
+    let cancelTimer: ReturnType<typeof setTimeout> | undefined;
     const child = spawn(process.execPath, [...args], {
       stdio: ['inherit', 'pipe', 'pipe', 'ipc'],
       windowsHide: true,
@@ -431,6 +432,11 @@ const runRespawnedAnalyze = (
     });
     const forwardSignal = (signal: NodeJS.Signals): void => {
       forwardedSignal ??= signal;
+      // This is a standalone process, not a native worker thread. A wedged
+      // process may be killed after grace; dirty/staged receipts recover it.
+      cancelTimer ??= setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }, 60_000);
       if (child.connected) {
         try {
           child.send({ type: 'cancel' }, () => {
@@ -446,6 +452,7 @@ const runRespawnedAnalyze = (
     const finish = (exit: RespawnExit): void => {
       if (settled) return;
       settled = true;
+      clearTimeout(cancelTimer);
       process.removeListener('SIGINT', forwardSigint);
       process.removeListener('SIGTERM', forwardSigterm);
       resolve({
@@ -457,8 +464,8 @@ const runRespawnedAnalyze = (
       });
     };
 
-    process.once('SIGINT', forwardSigint);
-    process.once('SIGTERM', forwardSigterm);
+    process.on('SIGINT', forwardSigint);
+    process.on('SIGTERM', forwardSigterm);
 
     child.on('message', (message: unknown) => {
       try {
@@ -603,6 +610,18 @@ const RECOMMENDED_WAL_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
  * when absent/unparseable. Last occurrence wins, matching V8's own
  * later-flag-wins semantics when NODE_OPTIONS repeats a flag.
  */
+/** CLI and watch must preserve the same explicit heap/autopilot opt-outs. */
+export function usesManualAnalysisHeap(memoryBudget?: string): boolean {
+  return (
+    memoryBudget === undefined &&
+    (process.env.GITNEXUS_ANALYSIS_MANUAL_HEAP === '1' ||
+      (process.env.GITNEXUS_ANALYSIS_SUPERVISED !== '1' &&
+        (memoryAutopilotDisabled() ||
+          parseMaxOldSpaceMb(process.execArgv.join(' ')) !== null ||
+          (parseMaxOldSpaceMb(process.env.NODE_OPTIONS ?? '') ?? 0) >= RESPAWN_HEAP_MB)))
+  );
+}
+
 export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
   return parseV8SizeFlagMb(nodeOptions, 'max-old-space-size');
 }
@@ -1391,13 +1410,7 @@ const analyzeCommandImpl = async (
       process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES === undefined
         ? analysisSupervisorReservation()
         : Number(process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES);
-    manualHeap =
-      options.memoryBudget === undefined &&
-      (process.env.GITNEXUS_ANALYSIS_MANUAL_HEAP === '1' ||
-        (process.env.GITNEXUS_ANALYSIS_SUPERVISED !== '1' &&
-          (memoryAutopilotDisabled() ||
-            parseMaxOldSpaceMb(process.execArgv.join(' ')) !== null ||
-            (parseMaxOldSpaceMb(process.env.NODE_OPTIONS ?? '') ?? 0) >= RESPAWN_HEAP_MB)));
+    manualHeap = usesManualAnalysisHeap(options.memoryBudget);
     resources = resolveHostAnalysisResources({
       totalMb:
         options.resourceBudget === undefined

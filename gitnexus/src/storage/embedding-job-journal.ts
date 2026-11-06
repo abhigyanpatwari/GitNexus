@@ -18,6 +18,8 @@ export interface EmbeddingUnitIntent {
   next: EmbeddingManifestCursor;
   nodes: number;
   origin: 'manifest' | 'failed';
+  /** Bounded by the unit's 64 nodes; three deterministic rejections exclude a node. */
+  inputFailures?: Record<string, number>;
 }
 
 export interface EmbeddingJobState {
@@ -34,6 +36,7 @@ export interface EmbeddingJobState {
   reusedNodes: number;
   failedUnits: number;
   failedNodes: number;
+  excludedNodes?: number;
   chunks: number;
   active: EmbeddingUnitIntent | null;
   phase: 'embedding' | 'indexing' | 'ready';
@@ -84,6 +87,22 @@ function validateIntent(intent: EmbeddingUnitIntent, state: EmbeddingJobState): 
     !['manifest', 'failed'].includes(intent.origin)
   )
     throw new Error('Invalid embedding unit intent');
+  if (
+    intent.inputFailures !== undefined &&
+    (!intent.inputFailures ||
+      typeof intent.inputFailures !== 'object' ||
+      Array.isArray(intent.inputFailures) ||
+      Object.keys(intent.inputFailures).length > intent.nodes ||
+      Object.entries(intent.inputFailures).some(
+        ([id, attempts]) =>
+          !id.length ||
+          id.length > 1024 * 1024 ||
+          !integer(attempts) ||
+          attempts < 1 ||
+          attempts > 3,
+      ))
+  )
+    throw new Error('Invalid embedding input rejection history');
 }
 
 function validateState(
@@ -115,9 +134,10 @@ function validateState(
       s.failedUnits,
       s.failedNodes,
       s.chunks,
+      s.excludedNodes ?? 0,
     ].every(integer) ||
     s.completedUnits + s.reusedUnits + s.failedUnits > s.totalUnits ||
-    s.completedNodes + s.reusedNodes + s.failedNodes > s.totalNodes ||
+    s.completedNodes + s.reusedNodes + s.failedNodes + (s.excludedNodes ?? 0) > s.totalNodes ||
     !['embedding', 'indexing', 'ready'].includes(s.phase) ||
     s.active === undefined
   )
@@ -139,7 +159,7 @@ function validateState(
       (s.active !== null ||
         s.failedUnits !== 0 ||
         settled !== s.totalUnits ||
-        s.completedNodes + s.reusedNodes !== s.totalNodes))
+        s.completedNodes + s.reusedNodes + (s.excludedNodes ?? 0) !== s.totalNodes))
   )
     throw new Error('Embedding job accounting is inconsistent');
 }
@@ -310,6 +330,7 @@ export class EmbeddingJobJournal {
           throw new Error('Failed embedding unit cursor mismatch');
         next.failedUnits--;
         next.failedNodes -= requested.nodes;
+        requested.inputFailures = record.intent.inputFailures;
       }
       next.active = requested;
     });
@@ -319,10 +340,13 @@ export class EmbeddingJobJournal {
   async acknowledge(result: { reusedNodes: number; chunks: number }): Promise<void> {
     await this.mutate(async (next) => {
       const active = next.active;
+      const excluded = Object.values(active?.inputFailures ?? {}).filter(
+        (attempts) => attempts >= 3,
+      ).length;
       if (
         !active ||
         !integer(result.reusedNodes) ||
-        result.reusedNodes > active.nodes ||
+        result.reusedNodes > active.nodes - excluded ||
         !integer(result.chunks)
       )
         throw new Error('Invalid embedding unit acknowledgement');
@@ -333,7 +357,8 @@ export class EmbeddingJobJournal {
       if (result.reusedNodes === active.nodes) next.reusedUnits++;
       else next.completedUnits++;
       next.reusedNodes += result.reusedNodes;
-      next.completedNodes += active.nodes - result.reusedNodes;
+      next.completedNodes += active.nodes - result.reusedNodes - excluded;
+      if (excluded) next.excludedNodes = (next.excludedNodes ?? 0) + excluded;
       next.chunks += result.chunks;
       if (active.origin === 'manifest') next.cursor = active.next;
       next.active = null;
@@ -361,6 +386,23 @@ export class EmbeddingJobJournal {
       if (active.origin === 'manifest') next.cursor = active.next;
       next.active = null;
     });
+  }
+
+  /** Persist input-only failures before discarding rejected nodes' partial rows. */
+  async recordInputRejections(ids: readonly string[]): Promise<Readonly<Record<string, number>>> {
+    if (!ids.length) return clone(this.state.active?.inputFailures ?? {});
+    await this.mutate(async (next) => {
+      if (!next.active || new Set(ids).size !== ids.length || ids.length > next.active.nodes)
+        throw new Error('Invalid embedding input rejections');
+      const history = { ...next.active.inputFailures };
+      for (const id of ids) {
+        if (!id.length || id.length > 1024 * 1024 || id === '__proto__')
+          throw new Error('Invalid rejected node identity');
+        history[id] = Math.min(3, (history[id] ?? 0) + 1);
+      }
+      next.active.inputFailures = history;
+    });
+    return clone(this.state.active!.inputFailures!);
   }
 
   private async readFailed(name: string): Promise<FailedUnit> {
@@ -395,10 +437,10 @@ export class EmbeddingJobJournal {
     const entries = await fs.opendir(this.directory);
     for await (const entry of entries) {
       if (!FAILED.test(entry.name)) continue;
+      const record = await this.readFailed(entry.name);
       // An active retry owns this unit even if its failure file was already
       // removed, or a crash left the previous failed record beside it.
       if (this.state.active && entry.name === filename(this.state.active.start.unit)) continue;
-      const record = await this.readFailed(entry.name);
       units++;
       nodes += record.intent.nodes;
       if (

@@ -39,6 +39,47 @@ export interface EmbeddingArtifactRecord {
   owner: EmbeddingArtifactOwner;
 }
 
+/** Read every model space before reclamation. An interrupted ownership change
+ * retains both sides; malformed/unreadable receipts abort the entire sweep. */
+export async function readEmbeddingArtifactOwners(root: string): Promise<EmbeddingArtifactOwner[]> {
+  const parent = path.join(root, 'embeddings', 'spaces');
+  try {
+    await fs.lstat(parent);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  await embeddingJobDirectory(path.dirname(parent));
+  await embeddingJobDirectory(parent);
+  const owners: EmbeddingArtifactOwner[] = [];
+  for (const entry of await fs.readdir(parent, { withFileTypes: true })) {
+    if (!DIGEST.test(entry.name)) continue;
+    const directory = await embeddingJobDirectory(path.join(parent, entry.name));
+    const add = (value: unknown) => {
+      const raw = value as EmbeddingArtifactRecord;
+      const validated = record(raw, raw?.space);
+      if (validated.spaceKey !== entry.name) throw new Error('Embedding space directory mismatch');
+      owners.push(validated.owner);
+    };
+    const current = await optionalRecord(directory, 'space.json');
+    if (current !== null) add(current);
+    const intent = (await optionalRecord(directory, 'rebase.json')) as {
+      version: number;
+      before: unknown;
+      after: unknown;
+    } | null;
+    if (intent !== null) {
+      if (intent.version !== 1 || intent.before === undefined || !intent.after)
+        throw new Error('Invalid embedding rebase intent; artifacts retained');
+      if (intent.before !== null) add(intent.before);
+      add(intent.after);
+    }
+    if (current === null && intent === null)
+      throw new Error('Embedding space has no ownership receipt');
+  }
+  return owners;
+}
+
 type ValidateOwner = (owner: EmbeddingArtifactOwner) => Promise<void>;
 const DIGEST = /^[a-f0-9]{64}$/;
 

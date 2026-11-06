@@ -22,6 +22,8 @@ import { runPublishedEmbeddingJob } from './embeddings/embedding-job.js';
 import { drainEmbeddingSidecarForAnalysis } from './embeddings/embedding-sidecar-client.js';
 import { deriveEmbeddingCap } from './embedding-mode.js';
 import { embeddingProgressFromState, type EmbeddingJobProgress } from './analysis-progress.js';
+import { ANALYZER_RUNNER_IDENTITY_SCHEMA_VERSION } from './analyzer-identity.js';
+import { resolveGraphPath } from '../storage/shared-store.js';
 
 export function canPromoteLegacyGraph(metadata: RepoMeta): boolean {
   return (
@@ -30,7 +32,7 @@ export function canPromoteLegacyGraph(metadata: RepoMeta): boolean {
     !metadata.graphWriteCollapsed &&
     !metadata.embeddingCheckpoint?.recovery &&
     metadata.schemaFingerprint === SCHEMA_FINGERPRINT &&
-    metadata.runnerIdentity?.schemaVersion === 4 &&
+    metadata.runnerIdentity?.schemaVersion === ANALYZER_RUNNER_IDENTITY_SCHEMA_VERSION &&
     metadata.parseCacheIdentity !== undefined &&
     metadata.fileHashes !== undefined
   );
@@ -215,7 +217,7 @@ export async function runAnalysisEmbeddingPhase(
       resources,
       signal,
     );
-  const graphPath = path.resolve(metadataDirectory, metadata.graphPath ?? 'lbug');
+  const graphPath = resolveGraphPath(metadataDirectory, metadata);
   let progress: EmbeddingJobProgress = { phase: 'preparing' };
   callbacks.onProgress('graph-ready', 90, 'Graph available; preparing embeddings', {
     graphPhase: 'ready',

@@ -47,6 +47,7 @@ import {
   executePrepared,
   streamQuery,
   closeLbug,
+  drainAnalysisNativeResources,
   withLbugDb,
   isReadOnlyDbError,
 } from '../core/lbug/lbug-adapter.js';
@@ -2212,12 +2213,22 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               signal: embedController.signal,
               callbacks: {
                 onGraphPublished: async () => {
-                  await closeLbug();
+                  await drainAnalysisNativeResources();
                   await backend.init();
                 },
                 onProgress: (phase, percent, message, details) => {
                   embedJobManager.updateJob(job.id, {
-                    progress: { ...projectAnalysisPhaseProgress(details), phase, percent, message },
+                    progress: {
+                      ...projectAnalysisPhaseProgress(details),
+                      phase:
+                        phase === 'embeddings'
+                          ? details?.embeddingProgress?.phase === 'indexing'
+                            ? 'indexing'
+                            : 'embedding'
+                          : phase,
+                      percent,
+                      message,
+                    },
                   });
                 },
                 onLog: (message) => logger.info({ repo: entry.name }, message),
@@ -2399,6 +2410,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       // Abort requests are cooperative. Keep the ordinary writer locks and
       // native handles alive until each in-process embedding run has settled.
       await Promise.allSettled(activeEmbeddingRuns);
+      await jobManager.waitForChildren();
       await cleanupMcp();
       await closeLbug();
       await backend.disconnect();

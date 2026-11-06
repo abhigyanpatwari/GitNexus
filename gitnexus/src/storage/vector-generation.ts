@@ -102,6 +102,10 @@ export function selectVectorGeneration(
     !nonnegative(vector.dimensions) ||
     !vector.dimensions ||
     !nonnegative(vector.nodes) ||
+    (vector.excludedNodes !== undefined &&
+      (!nonnegative(vector.excludedNodes) ||
+        vector.excludedNodes > vector.nodes ||
+        vector.exclusionReason !== 'input-rejected')) ||
     !nonnegative(vector.chunks) ||
     vector.chunks < vector.nodes ||
     (vector.indexKind !== 'hnsw' && vector.indexKind !== 'exact')

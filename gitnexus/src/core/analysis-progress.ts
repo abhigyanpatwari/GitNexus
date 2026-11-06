@@ -17,6 +17,7 @@ export interface EmbeddingJobProgress {
   reusedNodes?: number;
   pendingNodes?: number;
   failedNodes?: number;
+  excludedNodes?: number;
   chunks?: number;
 }
 
@@ -51,6 +52,7 @@ const publicEmbeddingProgress = (
     'reusedNodes',
     'pendingNodes',
     'failedNodes',
+    'excludedNodes',
     'chunks',
   ] as const) {
     const value = progress[key];
@@ -99,12 +101,17 @@ export function embeddingProgressFromState(state: EmbeddingJobState): EmbeddingJ
     state.completedNodes,
     state.reusedNodes,
     state.failedNodes,
+    state.excludedNodes ?? 0,
     state.chunks,
   ];
   const pendingUnits =
     state.totalUnits - state.completedUnits - state.reusedUnits - state.failedUnits;
   const pendingNodes =
-    state.totalNodes - state.completedNodes - state.reusedNodes - state.failedNodes;
+    state.totalNodes -
+    state.completedNodes -
+    state.reusedNodes -
+    state.failedNodes -
+    (state.excludedNodes ?? 0);
   const activeUnit = state.active?.start?.unit ?? null;
   if (
     counts.some((n) => !Number.isSafeInteger(n) || n < 0) ||
@@ -143,6 +150,7 @@ export function embeddingProgressFromState(state: EmbeddingJobState): EmbeddingJ
     reusedNodes: state.reusedNodes,
     pendingNodes,
     failedNodes: state.failedNodes,
+    ...(state.excludedNodes ? { excludedNodes: state.excludedNodes } : {}),
     chunks: state.chunks,
   };
 }

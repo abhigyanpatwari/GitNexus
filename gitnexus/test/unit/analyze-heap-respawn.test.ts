@@ -151,10 +151,10 @@ describe('analyzeCommand heap respawn', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [, args, opts] = spawnMock.mock.calls[0];
-    expect(args).toContain('--max-old-space-size=3916');
+    expect(args).toContain('--max-old-space-size=12723');
     expect(args).toContain('--max-semi-space-size=128');
-    expect(opts.env.NODE_OPTIONS).toContain('--max-old-space-size=3916');
-    expect(opts.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB).toBe('4300');
+    expect(opts.env.NODE_OPTIONS).toContain('--max-old-space-size=12723');
+    expect(opts.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB).toBe('13107');
     expect(opts.env.NODE_OPTIONS).toContain('--max-semi-space-size=128');
     expect(opts.env.GITNEXUS_RESPAWN_PROGRESS_TTY).toBe('1');
   });
@@ -197,14 +197,14 @@ describe('analyzeCommand heap respawn', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [, args, opts] = spawnMock.mock.calls[0];
-    expect(args).toContain('--max-old-space-size=3916');
+    expect(args).toContain('--max-old-space-size=12723');
     // The auto flag is appended after the ambient value, so V8's
     // later-flag-wins semantics resolve to the admitted whole-heap cap.
-    expect(opts.env.NODE_OPTIONS.indexOf('--max-old-space-size=3916')).toBeGreaterThan(
+    expect(opts.env.NODE_OPTIONS.indexOf('--max-old-space-size=12723')).toBeGreaterThan(
       opts.env.NODE_OPTIONS.indexOf('--max-old-space-size=4096'),
     );
     const warn = cap.records().find((r) => r.msg.includes('pins the heap to 4096MB'));
-    expect(warn?.msg).toContain('Re-running analyze with the admitted 4300MB main heap');
+    expect(warn?.msg).toContain('Re-running analyze with the admitted 13107MB main heap');
   });
 
   it('honors GITNEXUS_MEMORY=off: keeps the small ambient heap, silently (#2649)', async () => {
@@ -271,6 +271,9 @@ describe('analyzeCommand heap respawn', () => {
       delete process.env.NODE_OPTIONS;
       const child = Object.assign(new EventEmitter(), {
         connected: true,
+        exitCode: null,
+        signalCode: null,
+        kill: vi.fn(),
         stdout: new EventEmitter(),
         stderr: new EventEmitter(),
         send: vi.fn((_message, callback) => callback(null)),
@@ -288,9 +291,12 @@ describe('analyzeCommand heap respawn', () => {
           { type: 'cancel' },
           expect.any(Function),
         );
+        process.emit('SIGTERM');
+        expect(process.listenerCount('SIGTERM')).toBeGreaterThan(0);
+        expect(child.kill).not.toHaveBeenCalled();
         child.emit('message', { type: ready });
         await Promise.resolve();
-        expect(child.send).toHaveBeenCalledTimes(2);
+        expect(child.send).toHaveBeenCalledTimes(3);
         expect(settled).toBe(false);
       } finally {
         child.emit('close', 0, null);
@@ -775,7 +781,7 @@ describe('ensureHeap --memory-budget (#3137)', () => {
     expect({ args, source: opts.env.GITNEXUS_HEAP_LIMIT_SOURCE, records: cap.records() }).toEqual({
       args: [
         ...preserved,
-        '--max-old-space-size=3916',
+        '--max-old-space-size=12723',
         '--max-semi-space-size=128',
         '--stack-size=4096',
         ...process.argv.slice(1),

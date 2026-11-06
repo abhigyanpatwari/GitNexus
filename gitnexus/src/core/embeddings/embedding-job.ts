@@ -544,12 +544,22 @@ export async function runPublishedEmbeddingJob(
         dimensions: vector.dimensions,
         nodes: manifest.totalNodes,
         chunks: result.state.chunks,
+        ...(result.state.excludedNodes
+          ? {
+              excludedNodes: result.state.excludedNodes,
+              exclusionReason: 'input-rejected' as const,
+            }
+          : {}),
         indexKind: result.indexKind,
       },
       storeResources,
       options.metadata,
     );
     if (!published) return { metadata, alreadyComplete: false, phase: 'indexing', ...result };
+    if (result.state.excludedNodes)
+      options.log?.(
+        `Skipped ${result.state.excludedNodes} node(s) after three deterministic embedding input rejections; compatible vectors were published.`,
+      );
     if (journal.snapshot().phase !== 'ready') await journal.ready();
     options.onProgress?.(journal.snapshot(), result.peakQueueBytes);
     return {

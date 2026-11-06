@@ -1,3 +1,4 @@
+import { heapCapMbFor } from '../../src/core/ingestion/utils/effective-ram.js';
 import { describe, expect, it } from 'vitest';
 import {
   EmbeddingByteBudget,
@@ -8,6 +9,34 @@ const MIB = 1024 * 1024;
 const request = { effectiveMemoryBytes: 32_768 * MIB, availableCpus: 24, modelMemoryMb: 2048 };
 
 describe('analysis resource admission', () => {
+  it.each([4096, 8192, 32768])(
+    'preserves automatic main-heap and worker capacity on a %s MiB host',
+    (memoryMb) => {
+      const input = {
+        effectiveMemoryBytes: memoryMb * MIB,
+        availableCpus: 8,
+        preferredWorkers: 16,
+        modelMemoryMb: 0,
+      };
+      const graph = resolveAnalysisResourceBudget(input);
+      const local = resolveAnalysisResourceBudget({ ...input, modelMemoryMb: 2048 });
+      const pinned = resolveAnalysisResourceBudget({
+        ...input,
+        mainHeapMb: 12000,
+        allowHeapOvercommit: true,
+      });
+      expect(graph.mainHeapMb).toBe(heapCapMbFor(memoryMb * 1024 ** 2));
+      expect(graph.parse.workers).toBe(7);
+      expect(graph.parse.workerHeapMb).toBe(
+        Math.min(4096, Math.max(512, Math.floor(memoryMb / 2 / 7))),
+      );
+      expect(local.parse).toEqual(graph.parse);
+      expect(pinned.parse.workers).toBe(graph.parse.workers);
+      expect(pinned.parse.workerHeapMb).toBe(graph.parse.workerHeapMb);
+      expect(local.embedding.reservedBytes).toBeLessThanOrEqual(local.totalBytes);
+      expect(graph.embedding.vectorPoolBytes).toBeGreaterThan(64 * MIB);
+    },
+  );
   it('preserves an explicit heap override without inflating automatic native allocations', () => {
     const host = { ...request, effectiveMemoryBytes: 7500 * MIB, modelMemoryMb: 0 };
     const automatic = resolveAnalysisResourceBudget(host);
@@ -65,10 +94,10 @@ describe('analysis resource admission', () => {
       includeParsing: false,
     };
     expect(
-      resolveAnalysisResourceBudget({ ...fixed, supervisorBytes: 160 * MIB }).embedding
+      resolveAnalysisResourceBudget({ ...fixed, supervisorBytes: 96 * MIB }).embedding
         .reservedBytes,
     ).toBe(1024 * MIB);
-    expect(() => resolveAnalysisResourceBudget({ ...fixed, supervisorBytes: 161 * MIB })).toThrow(
+    expect(() => resolveAnalysisResourceBudget({ ...fixed, supervisorBytes: 97 * MIB })).toThrow(
       'cannot admit',
     );
   });
@@ -88,6 +117,7 @@ describe('analysis resource admission', () => {
         const budget = resolveAnalysisResourceBudget({
           ...request,
           effectiveMemoryBytes: memoryMb * MIB,
+          totalMb: Math.floor(memoryMb * 0.75),
           availableCpus,
           modelMemoryMb: 0,
         });
@@ -124,9 +154,9 @@ describe('analysis resource admission', () => {
       expect(budget.parse.workerHeapMb).toBeGreaterThanOrEqual(512);
       expect(budget.parse.nativeThreads).toBe(availableCpus);
       expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
-      expect(() => resolveAnalysisResourceBudget({ ...input, workerHeapMb: 4096 })).toThrow(
-        'do not fit',
-      );
+      expect(() =>
+        resolveAnalysisResourceBudget({ ...input, totalMb: 24576, workerHeapMb: 4096 }),
+      ).toThrow('do not fit');
     },
   );
 
@@ -182,7 +212,9 @@ describe('analysis resource admission', () => {
     expect(() =>
       resolveAnalysisResourceBudget({ ...request, totalMb: 8192, workers: 4, workerHeapMb: 4096 }),
     ).toThrow('do not fit');
-    expect(() => resolveAnalysisResourceBudget({ ...request, workers: 24 })).toThrow('do not fit');
+    expect(() => resolveAnalysisResourceBudget({ ...request, totalMb: 8192, workers: 24 })).toThrow(
+      'do not fit',
+    );
     expect(() => resolveAnalysisResourceBudget({ ...request, graphPoolBytes: 0 })).toThrow(
       'graph pool bytes',
     );

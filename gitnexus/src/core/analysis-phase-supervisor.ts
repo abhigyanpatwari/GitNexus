@@ -1,6 +1,5 @@
 /** Filesystem-only handoff from an exit-only graph writer. No model/native imports. */
 import path from 'node:path';
-import type { ChildProcess } from 'node:child_process';
 import type { RepoMeta } from '../storage/repo-meta.js';
 import { requireExclusiveIndexLock } from '../storage/index-lock.js';
 import { acquireAnalysisSlotLock } from '../storage/analysis-slot-lock.js';
@@ -52,38 +51,6 @@ export function projectPreparedAnalysisHandoff(value: unknown): PreparedAnalysis
   )
     throw new Error('Invalid prepared analysis identity or location');
   return projected;
-}
-
-/** Call when the process is spawned. A prepared/complete IPC is never release
- * evidence. Errors reject without authorizing any continuation or killing the
- * child; its existing launcher retains cancellation/abandonment ownership. */
-export function waitForAnalysisProcessExit(child: ChildProcess): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const cleanup = () => {
-      child.removeListener('exit', onExit);
-      child.removeListener('error', onError);
-    };
-    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      cleanup();
-      if (code === 0 && signal === null) resolve();
-      else
-        reject(
-          new Error(
-            `Graph process exited unsuccessfully (${signal ?? code ?? 'unknown'}); prepared artifacts retained`,
-          ),
-        );
-    };
-    const onError = (error: Error) => {
-      cleanup();
-      reject(error);
-    };
-    if (child.exitCode !== null || child.signalCode !== null) {
-      onExit(child.exitCode, child.signalCode);
-      return;
-    }
-    child.once('exit', onExit);
-    child.once('error', onError);
-  });
 }
 
 export interface AnalysisPhasePublicationActions extends AnalysisPublicationActions {

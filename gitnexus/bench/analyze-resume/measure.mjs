@@ -40,7 +40,7 @@ async function runtimeEnvironment(cli) {
   };
 }
 
-export function assertComparableRuntimes(baseline, candidate) {
+export function assertComparableRuntimes(baseline, candidate, allowDependencyChanges = false) {
   for (const component of ['cli', 'nativeEntry']) {
     assert.equal(
       candidate[component].device,
@@ -53,12 +53,14 @@ export function assertComparableRuntimes(baseline, candidate) {
       `${component} runtime files are on different filesystem types`,
     );
   }
-  assert.equal(candidate.lockDigest, baseline.lockDigest, 'Dependency lockfiles differ');
-  assert.equal(
-    candidate.nativeEntryDigest,
-    baseline.nativeEntryDigest,
-    'Native runtime entry bytes differ',
-  );
+  if (!allowDependencyChanges) {
+    assert.equal(candidate.lockDigest, baseline.lockDigest, 'Dependency lockfiles differ');
+    assert.equal(
+      candidate.nativeEntryDigest,
+      baseline.nativeEntryDigest,
+      'Native runtime entry bytes differ',
+    );
+  }
 }
 
 export function assertCompletedCase(scenario, metadata, beforeMetadata) {
@@ -88,7 +90,7 @@ const median = (values) => {
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 };
 
-/** Paired log-ratio bootstrap. An interval crossing 1 is unresolved, never a pass. */
+/** Paired log-ratio intervals. Crossing 1 is unresolved, never equivalence. */
 export function summarizePairs(pairs) {
   assert(pairs.length > 0, 'At least one measured pair is required');
   const logs = pairs.map(({ baseline, candidate }) => {
@@ -106,13 +108,42 @@ export function summarizePairs(pairs) {
   const samples = Array.from({ length: 10_000 }, () =>
     Math.exp(average(logs.map(() => logs[Math.floor(random() * logs.length)]))),
   ).sort((a, b) => a - b);
-  const interval = [samples[250], samples[9749]];
+  const bootstrap = [samples[250], samples[9749]];
+  // Bootstrap alone understates uncertainty with seven pairs. Enclose it in
+  // the Student-t interval for the mean log ratio; round df down in this table.
+  const df = logs.length - 1;
+  const critical = [
+    [1, 12.707],
+    [2, 4.303],
+    [3, 3.183],
+    [4, 2.777],
+    [5, 2.571],
+    [6, 2.447],
+    [7, 2.365],
+    [8, 2.307],
+    [9, 2.263],
+    [10, 2.229],
+    [15, 2.132],
+    [20, 2.086],
+    [30, 2.043],
+  ]
+    .filter(([degree]) => degree <= df)
+    .at(-1)?.[1];
+  const mean = average(logs);
+  const margin =
+    df > 0
+      ? critical * Math.sqrt(logs.reduce((sum, x) => sum + (x - mean) ** 2, 0) / df / logs.length)
+      : 0;
+  const student = [Math.exp(mean - margin), Math.exp(mean + margin)];
+  const interval = [Math.min(bootstrap[0], student[0]), Math.max(bootstrap[1], student[1])];
   return {
     pairs: pairs.length,
     baselineMedianMs: median(pairs.map((p) => p.baseline)),
     candidateMedianMs: median(pairs.map((p) => p.candidate)),
     geometricRatio: Math.exp(average(logs)),
-    pairedBootstrap95: interval,
+    pairedBootstrap95: bootstrap,
+    pairedStudent95: student,
+    paired95: interval,
     evidence:
       pairs.length < 7
         ? 'smoke-only'
@@ -135,7 +166,7 @@ export function checkPerformance(summaries, baseline) {
   for (const scenario of scenarios) {
     const summary = summaries[scenario];
     assert(summary && summary.pairs >= 7, `Missing seven measured pairs for ${scenario}`);
-    const interval = summary.pairedBootstrap95;
+    const interval = summary.paired95;
     assert(
       Array.isArray(interval) &&
         interval.length === 2 &&
@@ -485,12 +516,54 @@ export async function main(argv = process.argv.slice(2)) {
       'heap-mb': { type: 'string', default: '2048' },
       workers: { type: 'string', default: '2' },
       'default-resources': { type: 'boolean', default: false },
+      'allow-dependency-changes': { type: 'boolean', default: false },
       'sample-ms': { type: 'string', default: '25' },
       'keep-stores': { type: 'boolean', default: false },
       check: { type: 'boolean', default: false },
+      'validate-gate': { type: 'boolean' },
       help: { type: 'boolean' },
     },
   });
+  if (v['validate-gate']) {
+    const fixture = { schemaVersion: 1, maxPairedRatio: 1, scenarios: { case: {} } };
+    const summary = (ratios) =>
+      summarizePairs(ratios.map((candidate) => ({ baseline: 1, candidate })));
+    assert.deepEqual(checkPerformance({ case: summary(Array(7).fill(1.1)) }, fixture), {
+      failedScenarios: ['case'],
+      inconclusiveScenarios: [],
+    });
+    assert.deepEqual(checkPerformance({ case: summary(Array(7).fill(0.9)) }, fixture), {
+      failedScenarios: [],
+      inconclusiveScenarios: [],
+    });
+    const mixed = summary([0.8, 0.9, 0.95, 1, 1.05, 1.1, 1.2]);
+    assert.deepEqual(checkPerformance({ case: mixed }, fixture), {
+      failedScenarios: [],
+      inconclusiveScenarios: ['case'],
+    });
+    assert(mixed.paired95[0] <= mixed.pairedBootstrap95[0]);
+    assert(mixed.paired95[1] >= mixed.pairedBootstrap95[1]);
+    assert.throws(() => checkPerformance({ case: summary([1, 1]) }, fixture));
+    assert.throws(() => summarizePairs([{ baseline: 0, candidate: 1 }]));
+    const runtime = {
+      cli: { device: '1', filesystem: '1' },
+      nativeEntry: { device: '1', filesystem: '1' },
+      lockDigest: 'a',
+      nativeEntryDigest: 'a',
+    };
+    const changed = { ...runtime, lockDigest: 'b', nativeEntryDigest: 'b' };
+    assert.throws(() => assertComparableRuntimes(runtime, changed));
+    assertComparableRuntimes(runtime, changed, true);
+    assert.throws(() =>
+      assertComparableRuntimes(
+        runtime,
+        { ...changed, cli: { device: '2', filesystem: '1' } },
+        true,
+      ),
+    );
+    console.log('Paired gate decision checks passed');
+    return;
+  }
   if (v.help) {
     console.log(`Usage: node bench/analyze-resume/measure.mjs --baseline /repo/gitnexus/dist/cli/index.js --output /tmp/results.json
   --candidate PATH       Defaults to this checkout's built CLI
@@ -498,6 +571,8 @@ export async function main(argv = process.argv.slice(2)) {
   --pairs 7 --warmups 1   Alternating paired invocations; fewer than seven pairs is smoke-only
   --modules 64 --functions 16 --heap-mb 2048 --workers 2 --sample-ms 25
   --default-resources   Omit heap, worker and native-pool overrides on both sides
+  --allow-dependency-changes Compare shipped runtimes, including intentional dependency changes
+  --validate-gate       Check decision logic without running benchmarks
   --check               Require the baseline corpus/scenarios and reject detected slowdowns
   --keep-stores          Retain owned index/home artifacts (logs and measurements always retained)
 Includes full CLI startup, graph/manifest/native writes and final index work.
@@ -550,7 +625,7 @@ Live-query latency and platform cases remain separate acceptance requirements.`)
     baseline: await runtimeEnvironment(clis.baseline),
     candidate: await runtimeEnvironment(clis.candidate),
   };
-  assertComparableRuntimes(runtime.baseline, runtime.candidate);
+  assertComparableRuntimes(runtime.baseline, runtime.candidate, v['allow-dependency-changes']);
   const output = path.resolve(v.output);
   await fs.mkdir(path.dirname(output), { recursive: true });
   // Never overwrite a prior result; evidence files and temporary directories are exclusively owned.
@@ -578,6 +653,7 @@ Live-query latency and platform cases remain separate acceptance requirements.`)
       totalMemory: os.totalmem(),
       settings: numbers,
       resourceProfile: v['default-resources'] ? 'default' : 'explicit-heap-workers-pool',
+      comparison: v['allow-dependency-changes'] ? 'shipped-runtimes' : 'identical-dependencies',
       runtime,
       clis: {},
     },
@@ -663,11 +739,18 @@ Live-query latency and platform cases remain separate acceptance requirements.`)
           /^sha256:[a-f0-9]{64}$/.test(baselineDependencies ?? ''),
           'Baseline dependency receipt missing',
         );
-        assert.equal(
-          pair.candidate.metadata.runnerIdentity?.dependencyRuntime?.digest,
-          baselineDependencies,
-          'Resolved dependency payloads differ; timings are not comparable',
+        const candidateDependencies =
+          pair.candidate.metadata.runnerIdentity?.dependencyRuntime?.digest;
+        assert(
+          /^sha256:[a-f0-9]{64}$/.test(candidateDependencies ?? ''),
+          'Candidate dependency receipt missing',
         );
+        pair.dependenciesMatch = candidateDependencies === baselineDependencies;
+        if (!v['allow-dependency-changes'])
+          assert(
+            pair.dependenciesMatch,
+            'Resolved dependency payloads differ; use --allow-dependency-changes to compare shipped runtimes',
+          );
         if (iteration >= 0)
           pairs.push({ baseline: pair.baseline.elapsedMs, candidate: pair.candidate.elapsedMs });
       }

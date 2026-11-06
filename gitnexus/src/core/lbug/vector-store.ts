@@ -12,6 +12,7 @@ import { assertValidGraphNodeId } from '../graph/node-identity.js';
 import { embeddingJobDirectory } from '../../storage/embedding-job.js';
 import { getExactScanLimit } from '../platform/capabilities.js';
 import type { EmbeddingReuseOptions } from '../embeddings/embedding-inputs.js';
+import { logger } from '../logger.js';
 
 export const VECTOR_STORE_SCHEMA = 'gitnexus-vector-store-v2';
 const BLOCK_ROWS = 256;
@@ -169,6 +170,20 @@ export class VectorStore {
         store.sealed = rows[0].complete === true;
         if (options.mode === 'read' && !store.sealed)
           throw new Error('Vector artifact is not complete');
+        if (options.mode === 'resume' && !store.sealed) {
+          const indexes = await store.query('CALL SHOW_INDEXES() RETURN *');
+          if (indexes.some((index) => index.index_name === 'code_embedding_idx')) {
+            const manager = new ExtensionManager();
+            if (
+              !(await manager.ensure((sql) => store.query(sql), 'vector', 'vector resume', {
+                policy: 'load-only',
+              }))
+            )
+              throw new Error(
+                'Cannot load VECTOR for the retained index; artifacts preserved. Restore the extension before retrying.',
+              );
+          }
+        }
       }
       return store;
     } catch (error) {
@@ -402,6 +417,23 @@ export class VectorStore {
   /** Replay replaces the entire old group, using PKs rather than repeated table scans. */
   async beginNode(nodeId: string, contentHash: string): Promise<void> {
     return this.beginNodes([{ nodeId, contentHash }]);
+  }
+
+  /** The durable journal owns the three-attempt exclusion proof. Remove only
+   * those rejected nodes' partial rows and checkpoint before acknowledging. */
+  async excludeNodes(ids: readonly string[]): Promise<void> {
+    await this.beginNodes(ids.map((nodeId) => ({ nodeId, contentHash: 'input-rejected' })));
+    await this.exclusive(async () => {
+      await this.query('UNWIND $ids AS id MATCH (n:EmbeddingNodeReceipt {nodeId:id}) DELETE n', {
+        ids: [...ids],
+      });
+      try {
+        await this.query('CHECKPOINT');
+      } catch (error) {
+        this.poisoned = true;
+        throw error;
+      }
+    }, true);
   }
 
   async beginNodes(nodes: readonly VectorNodeInput[]): Promise<void> {
@@ -906,19 +938,35 @@ export class VectorStore {
           // A complete artifact may be searched exactly if optional ANN fails.
           // Native corruption/durability errors still surface at checkpoint.
           if (/already exists/i.test(String(error))) kind = 'hnsw';
+          else
+            logger.warn(
+              { err: error, chunks: totalChunks, bufferPoolBytes: this.options.bufferPoolBytes },
+              'Vector index build failed; completed vectors retained',
+            );
         }
       }
       if (kind === 'hnsw') {
         try {
           await this.verifyVectorIndex();
-        } catch {
+        } catch (error) {
+          logger.warn(
+            { err: error },
+            'Vector index verification failed; dropping the unpublished index for retry',
+          );
+          await this.query("CALL DROP_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx')");
           kind = 'exact';
         }
       }
       // Large exact scans are deliberately unavailable to readers. Keep this
       // complete work unpublished and writable so a later run can retry ANN
       // without a single new provider request.
-      if (kind === 'exact' && totalChunks > getExactScanLimit()) return kind;
+      if (kind === 'exact' && totalChunks > getExactScanLimit()) {
+        logger.warn(
+          { chunks: totalChunks, bufferPoolBytes: this.options.bufferPoolBytes },
+          'Vector index is pending beyond the exact-scan limit. Increase --resource-budget and retry; completed vectors will be reused.',
+        );
+        return kind;
+      }
       await this.query(
         "MATCH (a:EmbeddingArtifact {id:'artifact'}) SET a.complete=true, a.indexKind=$kind",
         { kind },

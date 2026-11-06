@@ -41,15 +41,20 @@ export function resolveHostAnalysisResources(
   if (!Number.isSafeInteger(concurrency) || concurrency < 1)
     throw new Error('Analysis concurrency must be a positive safe integer');
   const http = Boolean(process.env.GITNEXUS_EMBEDDING_URL && process.env.GITNEXUS_EMBEDDING_MODEL);
+  const effectiveMemoryBytes = Math.floor(effectiveRamBytes() / concurrency);
   const request: AnalysisResourceRequest = {
-    effectiveMemoryBytes: Math.floor(effectiveRamBytes() / concurrency),
+    effectiveMemoryBytes,
     availableCpus: Math.max(1, Math.floor(os.availableParallelism() / concurrency)),
-    totalMb: options.totalMb,
+    totalMb:
+      options.totalMb ??
+      (concurrency > 1 ? Math.floor((effectiveMemoryBytes / MIB) * 0.75) : undefined),
     mainHeapMb: options.mainHeapMb,
     allowHeapOvercommit: options.mainHeapMb !== undefined && options.totalMb === undefined,
     workers: options.workers ?? positiveEnvironment('GITNEXUS_WORKER_POOL_SIZE'),
     workerHeapMb: positiveEnvironment('GITNEXUS_WORKER_HEAP_MB'),
-    embeddingThreads: positiveEnvironment('GITNEXUS_EMBEDDING_THREADS'),
+    embeddingThreads: options.includeEmbeddings
+      ? positiveEnvironment('GITNEXUS_EMBEDDING_THREADS')
+      : undefined,
     preferredWorkers: 16,
     includeParsing: options.includeParsing,
     graphPoolBytes: positiveEnvironment('GITNEXUS_LBUG_BUFFER_POOL_SIZE'),

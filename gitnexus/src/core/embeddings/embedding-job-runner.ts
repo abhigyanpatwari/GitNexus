@@ -99,10 +99,15 @@ export async function runEmbeddingJob(
     intent: EmbeddingUnitIntent,
   ): Promise<void> => {
     signal?.throwIfAborted();
+    const history = journal.snapshot().active?.inputFailures ?? intent.inputFailures ?? {};
+    if (Object.keys(history).some((id) => !unit.nodes.some((node) => node.id === id)))
+      throw new Error('Embedding rejection history does not match its manifest unit');
+    const excluded = new Set(Object.keys(history).filter((id) => history[id] >= 3));
     const complete = options.revalidateStoredInputs
       ? new Map<string, VectorNodeReceipt>()
       : await store.completedNodes(unit.nodes.map((node) => node.id));
-    const missing = unit.nodes.filter((node) => !complete.has(node.id));
+    for (const id of excluded) complete.delete(id);
+    const missing = unit.nodes.filter((node) => !complete.has(node.id) && !excluded.has(node.id));
     const retainedBytes = missing.reduce(
       (n, key) => n + 2 * (key.contentBytes + key.metadataBytes),
       0,
@@ -132,9 +137,10 @@ export async function runEmbeddingJob(
         `Embedding unit ${unit.ordinal} requires a larger resource budget; no source text was truncated`,
       );
     if (!journal.snapshot().active) await journal.begin(intent);
+    if (excluded.size) await store.excludeNodes([...excluded]);
     progress();
     if (!missing.length) {
-      await store.checkpointUnit([...complete.values()]);
+      if (complete.size) await store.checkpointUnit([...complete.values()]);
       await journal.acknowledge({
         reusedNodes: complete.size,
         chunks: [...complete.values()].reduce((n, r) => n + r.chunks, 0),
@@ -158,6 +164,7 @@ export async function runEmbeddingJob(
       { contentHash: string; chunks: number; ended: boolean; inputsDigest?: string }
     >();
     const failed = new Set<string>();
+    const rejectedInputs = new Set<string>();
     let failureCause: 'input' | 'provider' = 'input';
     let abort: unknown;
     let reusedNodes = complete.size;
@@ -196,6 +203,7 @@ export async function runEmbeddingJob(
           if ('error' in result) {
             for (const row of rows) failed.add(row.nodeId);
             if (isInputRejection(result.error)) {
+              for (const row of rows) rejectedInputs.add(row.nodeId);
               for (const row of rows) if (rejected.size < 5) rejected.add(row.nodeId);
             } else {
               failureCause = 'provider';
@@ -458,6 +466,14 @@ export async function runEmbeddingJob(
       }
       if (copyBatch.length) await flushCopies();
       if (!abort) await flush();
+      const attempts = await journal.recordInputRejections([...rejectedInputs]);
+      for (const id of rejectedInputs) {
+        if (attempts[id] < 3) continue;
+        await store.excludeNodes([id]);
+        excluded.add(id);
+        generated.delete(id);
+        failed.delete(id);
+      }
       const finished = [
         ...[...generated]
           .filter(([id, node]) => node.ended && !failed.has(id))
@@ -477,7 +493,7 @@ export async function runEmbeddingJob(
           await store.markSelected(journal.snapshot().identity, [...complete.keys()]);
         await store.checkpointUnit([...complete.values()]);
       }
-      if (complete.size === unit.nodes.length) {
+      if (complete.size + excluded.size === unit.nodes.length) {
         await journal.acknowledge({
           reusedNodes,
           chunks: [...complete.values()].reduce((n, r) => n + r.chunks, 0),
@@ -531,9 +547,15 @@ export async function runEmbeddingJob(
     }
     signal?.throwIfAborted();
     if (options.revalidateStoredInputs && !store.isSealed)
-      await store.pruneUnselected(journal.snapshot().identity, manifest.totalNodes);
+      await store.pruneUnselected(
+        journal.snapshot().identity,
+        manifest.totalNodes - (journal.snapshot().excludedNodes ?? 0),
+      );
     signal?.throwIfAborted();
-    const indexKind = await store.seal(manifest.totalNodes, journal.snapshot().chunks);
+    const indexKind = await store.seal(
+      manifest.totalNodes - (journal.snapshot().excludedNodes ?? 0),
+      journal.snapshot().chunks,
+    );
     return { state: journal.snapshot(), peakQueueBytes: budget.peakBytes, indexKind };
   } finally {
     sourceReader = undefined;

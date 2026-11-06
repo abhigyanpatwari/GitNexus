@@ -8,6 +8,8 @@ import type { RepoMeta } from '../storage/repo-meta.js';
 import { INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from '../storage/storage-constants.js';
 import { preserveVectorCoverage } from '../storage/vector-generation.js';
 import { embeddingJobDirectory, syncEmbeddingJobDirectory } from '../storage/embedding-job.js';
+import { readProcStartTime } from '../storage/index-lock.js';
+import { reclaimAnalysisArtifacts } from '../storage/analysis-artifact-cleanup.js';
 
 const RECEIPT = 'analysis-publication.json';
 const GENERATION = /^[a-f0-9]{32}$/;
@@ -17,6 +19,10 @@ const STAGING = /^lbug(?:\.generation\.[a-f0-9]{32})?\.staging\.[a-f0-9-]{36}$/;
 const MAX_RECEIPT_BYTES = 4096;
 const MAX_METADATA_BYTES = 256 * 1024 * 1024;
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+// Share the incarnation across loaders of this module within one process.
+const INSTANCE_KEY = Symbol.for('gitnexus.analysis-publication.writer-instance');
+const processIdentity = process as unknown as Record<symbol, string>;
+const WRITER_INSTANCE = (processIdentity[INSTANCE_KEY] ??= randomUUID().replaceAll('-', ''));
 
 export interface PreparedAnalysisPublication {
   version: 2;
@@ -34,6 +40,8 @@ export interface PreparedAnalysisPublication {
   redirectedMetadataDigest?: string;
   /** Exit-only callers may not publish while this process is still alive. */
   writerPid?: number;
+  writerStartTime?: string;
+  writerInstance?: string;
   /** A hard-link destination for the previous legacy graph; never copied. */
   legacyGraphFile?: string;
 }
@@ -71,6 +79,8 @@ function validateReceipt(value: unknown): asserts value is PreparedAnalysisPubli
     (r.redirectedMetadataDigest !== undefined &&
       (!r.legacyGraphFile || !DIGEST.test(r.redirectedMetadataDigest))) ||
     (r.writerPid !== undefined && (!Number.isSafeInteger(r.writerPid) || r.writerPid < 1)) ||
+    (r.writerStartTime !== undefined && (!r.writerPid || !/^\d{1,32}$/.test(r.writerStartTime))) ||
+    (r.writerInstance !== undefined && (!r.writerPid || !GENERATION.test(r.writerInstance))) ||
     (r.legacyGraphFile !== undefined &&
       (r.mode !== 'staged' ||
         !PRIVATE_GRAPH.test(r.legacyGraphFile) ||
@@ -96,11 +106,14 @@ async function regularFile(file: string): Promise<boolean> {
 }
 
 async function boundedRead(file: string, maximum: number): Promise<Buffer> {
-  if (!(await regularFile(file)))
-    throw Object.assign(new Error('Publication artifact missing'), { code: 'ENOENT' });
+  const before = await fs.lstat(file);
+  if (!before.isFile() || before.isSymbolicLink())
+    throw new Error('Publication artifact must be an owned regular file');
   const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const stat = await handle.stat();
+    if (stat.dev !== before.dev || stat.ino !== before.ino)
+      throw new Error('Publication artifact changed while opening');
     if (!stat.isFile() || stat.size > maximum)
       throw new Error('Publication artifact exceeds its receipt bound');
     const buffer = Buffer.alloc(stat.size + 1);
@@ -217,7 +230,7 @@ export async function prepareAnalysisPublication(
   const mode = options.mode ?? 'staged';
   const sourceFile = path.basename(buildPath);
   if (
-    path.dirname(path.resolve(buildPath)) !== root ||
+    (await fs.realpath(path.dirname(buildPath))) !== root ||
     (mode === 'staged'
       ? !STAGING.test(sourceFile)
       : sourceFile !== 'lbug' && !PRIVATE_GRAPH.test(sourceFile))
@@ -260,7 +273,13 @@ export async function prepareAnalysisPublication(
     metadataBytes: bytes.length,
     metadataDigest: hash(bytes),
     priorMetadataDigest: metadataDigest(prior),
-    ...(options.waitForProcessExit ? { writerPid: process.pid } : {}),
+    ...(options.waitForProcessExit
+      ? {
+          writerPid: process.pid,
+          writerInstance: WRITER_INSTANCE,
+          writerStartTime: readProcStartTime(process.pid) ?? undefined,
+        }
+      : {}),
     ...(mode === 'staged' && (await regularFile(path.join(root, 'lbug')))
       ? { legacyGraphFile: `lbug.generation.${randomUUID().replaceAll('-', '')}` }
       : {}),
@@ -363,7 +382,16 @@ async function retireLegacyGraph(
     await actions.saveMetadata(redirected);
     await syncPublishedMetadata(root, redirected);
   }
-  await fs.unlink(legacy);
+  try {
+    await fs.unlink(legacy);
+  } catch (error) {
+    if (['EBUSY', 'EPERM', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? ''))
+      throw new Error(
+        'Cannot retire the legacy graph while a reader holds it. Stop older MCP/serve processes and rerun analyze; the prepared graph and embeddings are retained.',
+        { cause: error },
+      );
+    throw error;
+  }
   await syncEmbeddingJobDirectory(root);
 }
 
@@ -380,11 +408,31 @@ export async function publishPreparedAnalysis(
   const receipt = await readPreparedAnalysis(root);
   if (!receipt) return undefined;
   if (receipt.writerPid !== undefined) {
-    try {
-      process.kill(receipt.writerPid, 0);
-      throw new Error('Graph writer has not exited; publication must wait for physical release');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    const deadline = performance.now() + 2000;
+    for (;;) {
+      // A live, recycled PID is not the process that prepared this receipt.
+      if (
+        receipt.writerPid === process.pid &&
+        receipt.writerInstance &&
+        receipt.writerInstance !== WRITER_INSTANCE
+      )
+        break;
+      const started = readProcStartTime(receipt.writerPid);
+      if (receipt.writerStartTime && started && receipt.writerStartTime !== started) break;
+      try {
+        process.kill(receipt.writerPid, 0);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') break;
+        throw new Error(
+          `Cannot verify graph writer PID ${receipt.writerPid}: ${error instanceof Error ? error.message : String(error)}. Run analyze as the original index owner after that process exits; artifacts retained.`,
+          { cause: error },
+        );
+      }
+      if (performance.now() >= deadline)
+        throw new Error(
+          `Graph writer PID ${receipt.writerPid} has not exited; publication must wait for physical release. Stop that analysis process and retry; artifacts retained.`,
+        );
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
   const bytes = await boundedRead(path.join(root, receipt.metadataFile), receipt.metadataBytes);
@@ -431,5 +479,6 @@ export async function publishPreparedAnalysis(
   await syncEmbeddingJobDirectory(root);
   await fs.unlink(path.join(root, receipt.metadataFile));
   await syncEmbeddingJobDirectory(root);
+  await reclaimAnalysisArtifacts(root, metadata, previous?.graphPath ?? receipt.legacyGraphFile);
   return metadata;
 }

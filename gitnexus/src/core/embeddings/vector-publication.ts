@@ -8,6 +8,7 @@ import {
 import { VectorStore } from '../lbug/vector-store.js';
 import { syncPublishedMetadata } from '../analysis-publication.js';
 import { getExactScanLimit } from '../platform/capabilities.js';
+import { reclaimAnalysisArtifacts } from '../../storage/analysis-artifact-cleanup.js';
 
 export interface VectorPublicationActions {
   loadMetadata: () => Promise<RepoMeta | null>;
@@ -55,6 +56,7 @@ export async function publishVectorGeneration(
             : 'exact-scan'
           : 'unavailable',
         exactScanLimit,
+        ...(generation.excludedNodes ? { reason: 'embedding-inputs-rejected' } : {}),
       },
     },
   };
@@ -79,12 +81,16 @@ export async function publishVectorGeneration(
     ...resources,
   });
   try {
-    if ((await store.seal(generation.nodes, generation.chunks)) !== generation.indexKind)
+    if (
+      (await store.seal(generation.nodes - (generation.excludedNodes ?? 0), generation.chunks)) !==
+      generation.indexKind
+    )
       throw new Error('Published vector index does not match the native artifact');
   } finally {
     await store.close();
   }
   await actions.saveMetadata(metadata);
   await syncPublishedMetadata(metadataDirectory, metadata);
+  await reclaimAnalysisArtifacts(metadataDirectory, metadata);
   return metadata;
 }

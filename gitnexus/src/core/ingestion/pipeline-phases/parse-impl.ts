@@ -833,6 +833,7 @@ export async function runChunkedParseAndResolve(
   let parseCacheHitFileCount = 0;
   let reparsedFileCount = 0;
   let parseFailure: unknown;
+  let parsingFailed = false;
 
   try {
     // U1 — bounded chunk concurrency (B1 from PR #1693 review): pre-fetch
@@ -1243,6 +1244,7 @@ export async function runChunkedParseAndResolve(
       }
       let missIdx = 0;
       for (const entry of round.entries) {
+        options?.signal?.throwIfAborted();
         if (entry.kind === 'hit') {
           const chunkWorkerData = mergeChunkResults(
             graph,
@@ -1273,6 +1275,7 @@ export async function runChunkedParseAndResolve(
      * park it resolved for the next close to merge.
      */
     const closeRound = async (): Promise<void> => {
+      options?.signal?.throwIfAborted();
       const started = await startRound(roundEntries);
       roundEntries = [];
       roundBudget.reset();
@@ -1307,6 +1310,7 @@ export async function runChunkedParseAndResolve(
     };
 
     for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
+      options?.signal?.throwIfAborted();
       if (heapProbeEveryN > 0 && chunkIdx > 0 && chunkIdx % heapProbeEveryN === 0) {
         logHeapProbe(
           `parse-chunk-${chunkIdx}`,
@@ -1543,15 +1547,16 @@ export async function runChunkedParseAndResolve(
     }
   } catch (error) {
     parseFailure = error;
+    parsingFailed = true;
     throw error;
   } finally {
     try {
       await workerPool?.terminate();
     } catch (drainError) {
-      if (parseFailure !== undefined) {
+      if (parsingFailed) {
         throw new AggregateError(
           [parseFailure, drainError],
-          'Parsing failed and native workers have not drained',
+          `Parsing failed (${parseFailure instanceof Error ? parseFailure.message : String(parseFailure)}) and native workers have not drained`,
           { cause: parseFailure },
         );
       }

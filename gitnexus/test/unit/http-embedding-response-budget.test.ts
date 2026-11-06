@@ -80,6 +80,19 @@ describe('bounded HTTP embedding responses', () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+  it('does not retry a deterministic response-budget violation', async () => {
+    const embed = await client();
+    vi.stubEnv('GITNEXUS_EMBEDDING_MAX_ATTEMPTS', '3');
+    const fetch = vi.fn(
+      async () => new Response('x'.repeat(100), { headers: { 'content-length': '100' } }),
+    );
+    vi.stubGlobal('fetch', fetch);
+    await expect(embed(['text'], { maxResponseBytes: 64 })).rejects.toThrow(
+      '64-byte response budget',
+    );
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it('retains the existing body retry behavior under the byte limit', async () => {
     const embed = await client();
     vi.stubEnv('GITNEXUS_EMBEDDING_MAX_ATTEMPTS', '2');

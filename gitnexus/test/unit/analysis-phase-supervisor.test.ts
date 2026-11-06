@@ -7,10 +7,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   projectPreparedAnalysisHandoff,
   publishAnalysisAfterProcessExit,
-  waitForAnalysisProcessExit,
   type AnalysisPhasePublicationActions,
   type PreparedAnalysisHandoff,
 } from '../../src/core/analysis-phase-supervisor.js';
+import { waitForAnalysisProcessExit } from '../helpers/analysis-process-exit.js';
 import { readPreparedAnalysis } from '../../src/core/analysis-publication.js';
 import { acquireIndexLock } from '../../src/storage/index-lock.js';
 import { loadMeta, saveMeta } from '../../src/storage/repo-manager.js';

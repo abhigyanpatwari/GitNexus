@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import lbug from '@ladybugdb/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { VectorStore, type VectorStoreOptions } from '../../src/core/lbug/vector-store.js';
+import { resolveAnalysisResourceBudget } from '../../src/core/analysis-resource-budget.js';
 import { openLbugConnection, closeLbugConnection } from '../../src/core/lbug/lbug-config.js';
 import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
 import { EmbeddingGraphSource } from '../../src/core/lbug/embedding-source.js';
@@ -700,6 +701,37 @@ describe('bounded durable embedding runner', () => {
     });
   });
 
+  it('excludes a permanently rejected node after three invocations and seals its healthy siblings', async () => {
+    const fixture = await runnerFixture(12);
+    fixture.provider.mockImplementation(async (texts) => {
+      if (texts.some((text) => text.includes('n00003')))
+        throw new HttpEmbeddingError('bad input', { status: 422 });
+      return texts.map(() => new Float32Array([0.1, 0.2, 0.3, 0.4]));
+    });
+    await fixture.run();
+    await fixture.reopen();
+    fixture.provider.mockClear();
+    expect((await fixture.run()).indexKind).toBeUndefined();
+    expect(fixture.provider.mock.calls.flatMap(([texts]) => texts)).toHaveLength(1);
+    await fixture.reopen();
+    fixture.provider.mockClear();
+    const final = await fixture.run();
+    expect(fixture.provider.mock.calls.flatMap(([texts]) => texts)).toHaveLength(1);
+    expect(final.state).toMatchObject({
+      failedUnits: 0,
+      excludedNodes: 1,
+      reusedNodes: 11,
+      completedNodes: 0,
+      chunks: 11,
+      phase: 'indexing',
+    });
+    expect(final.indexKind).toBe('exact');
+    expect(store.isSealed).toBe(true);
+    fixture.provider.mockClear();
+    await fixture.run();
+    expect(fixture.provider).not.toHaveBeenCalled();
+  });
+
   it('bounds one oversized node by bytes and preserves all generated Unicode input', async () => {
     const content = '漢😀abcdef'.repeat(60000);
     const fixture = await runnerFixture(1, content);
@@ -983,7 +1015,137 @@ describe('separate durable vector artifacts', () => {
   });
 });
 
+async function loadVectorFixture(directory: string): Promise<boolean> {
+  const probe = await openLbugConnection(lbug, path.join(directory, 'extension-probe'), {
+    bufferPoolBytes: 64 * 1024 * 1024,
+    threads: 1,
+  });
+  try {
+    return await new ExtensionManager().ensure(
+      async (sql) => {
+        const result = await probe.conn.query(sql);
+        for (const cursor of Array.isArray(result) ? result : [result]) {
+          try {
+            await cursor.getAll();
+          } finally {
+            cursor.close();
+          }
+        }
+      },
+      'vector',
+      'vector fixture',
+      { policy: 'load-only' },
+    );
+  } finally {
+    await closeLbugConnection(probe);
+  }
+}
+
 describe('published vector readers', () => {
+  it('seals a 20001-row 384-dimensional artifact within the admitted writer pool', async (context) => {
+    const initial = await setup();
+    await store.close();
+    await fs.rm(path.join(initial.directory, 'vectors'), { force: true });
+    vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
+    const loaded = await loadVectorFixture(initial.directory);
+    if (!loaded && process.env.GITNEXUS_REQUIRE_VECTOR !== '1') {
+      context.skip('Optional native VECTOR extension is unavailable');
+      return;
+    }
+    expect(loaded).toBe(true);
+    const resources = resolveAnalysisResourceBudget({
+      effectiveMemoryBytes: 8 * 1024 ** 3,
+      availableCpus: 4,
+      modelMemoryMb: 0,
+    });
+    store = await VectorStore.open({
+      ...initial,
+      dimensions: 384,
+      batchBytes: 2 * 1024 ** 2,
+      // The controller reserves the other half for a compatible reuse reader.
+      bufferPoolBytes: Math.floor(resources.embedding.vectorPoolBytes / 2),
+    });
+    const nodeId = 'Function:source.ts:large';
+    await store.beginNode(nodeId, 'hash');
+    const total = 20001;
+    for (let start = 0; start < total; start += 256) {
+      await store.append(
+        nodeId,
+        'hash',
+        Array.from({ length: Math.min(256, total - start) }, (_, offset) => ({
+          chunkIndex: start + offset,
+          startLine: start + offset + 1,
+          endLine: start + offset + 1,
+          embedding: Array.from({ length: 384 }, (_, dimension) =>
+            dimension === 0 ? 1 : ((start + offset + dimension) % 997) / 997,
+          ),
+        })),
+      );
+    }
+    await store.finishNode(nodeId, 'hash', total);
+    const sealed = await store.seal(1, total);
+    expect(sealed).toBe('hnsw');
+    expect(store.isSealed).toBe(true);
+    const options = store.options;
+    await store.close();
+    store = await VectorStore.open({ ...options, mode: 'read' });
+    expect(await store.seal(1, total)).toBe('hnsw');
+  }, 120_000);
+
+  it('resumes writes after a crash between HNSW creation and publication', async (context) => {
+    const options = await setup();
+    vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
+    const nodeId = 'Function:source.ts:alpha';
+    await store.beginNode(nodeId, 'old');
+    await store.append(nodeId, 'old', [chunk(0)]);
+    await store.finishNode(nodeId, 'old', 1);
+    await store.checkpointUnit(
+      [...(await store.completedNodes([nodeId]))].map(([, receipt]) => receipt),
+    );
+    await store.close();
+    const handle = await openLbugConnection(lbug, path.join(options.directory, 'vectors'), {
+      bufferPoolBytes: options.bufferPoolBytes,
+      threads: 1,
+    });
+    try {
+      const query = async (sql: string) => {
+        const result = await handle.conn.query(sql);
+        for (const cursor of Array.isArray(result) ? result : [result]) {
+          try {
+            await cursor.getAll();
+          } finally {
+            cursor.close();
+          }
+        }
+      };
+      const loaded = await new ExtensionManager().ensure(
+        query,
+        'vector',
+        'interrupted vector fixture',
+        { policy: 'load-only' },
+      );
+      if (!loaded && process.env.GITNEXUS_REQUIRE_VECTOR !== '1') {
+        context.skip('Optional native VECTOR extension is unavailable');
+        return;
+      }
+      expect(loaded).toBe(true);
+      await query(
+        "CALL CREATE_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 'embedding', metric := 'cosine')",
+      );
+      await query('CHECKPOINT');
+    } finally {
+      await closeLbugConnection(handle, {
+        strict: true,
+        databasePath: path.join(options.directory, 'vectors'),
+      });
+    }
+    store = await VectorStore.open({ ...options, mode: 'resume' });
+    await store.beginNode(nodeId, 'new');
+    await store.append(nodeId, 'new', [chunk(0), chunk(1)]);
+    await store.finishNode(nodeId, 'new', 2);
+    expect(await store.seal(1, 2)).toBe('hnsw');
+  });
+
   it('shares one native database across independently pinned vector files', async () => {
     const options = await setup();
     const id = 'Function:source.ts:alpha';
@@ -1054,6 +1216,7 @@ describe('published vector readers', () => {
         policy: 'load-only',
       });
       if (!ready) {
+        if (process.env.GITNEXUS_REQUIRE_FTS === '1') throw new Error('Native FTS is required');
         context.skip('Optional native FTS extension is unavailable');
         return;
       }
@@ -1128,22 +1291,12 @@ describe('published vector readers', () => {
     vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
     vi.stubEnv('GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT', '1');
     const root = temporary.dbPath;
-    const probe = await openLbugConnection(lbug, path.join(root, 'extension-probe'), {
-      bufferPoolBytes: 64 * 1024 * 1024,
-      threads: 1,
-    });
-    try {
-      const loaded = await probe.conn.query('LOAD vector');
-      for (const result of Array.isArray(loaded) ? loaded : [loaded]) {
-        await result.getAll();
-        await result.close();
-      }
-    } catch {
+    const loaded = await loadVectorFixture(root);
+    if (!loaded && process.env.GITNEXUS_REQUIRE_VECTOR !== '1') {
       context.skip('Optional native VECTOR extension is unavailable');
       return;
-    } finally {
-      await closeLbugConnection(probe);
     }
+    expect(loaded).toBe(true);
     const generation = 'a'.repeat(32);
     const identity = 'b'.repeat(64);
     const directory = path.join(root, 'embeddings', identity);
@@ -1197,6 +1350,28 @@ describe('published vector readers', () => {
       );
       expect(found).toEqual([
         expect.objectContaining({ nodeId: 'Function:source.ts:alpha', startLine: 1, endLine: 2 }),
+      ]);
+      const execute = readerPool.executeParameterized;
+      vi.spyOn(readerPool, 'executeParameterized').mockImplementation((db, sql, params) =>
+        sql.includes('QUERY_VECTOR_INDEX') ? Promise.resolve([]) : execute(db, sql, params),
+      );
+      vi.stubEnv('GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT', '10');
+      expect(
+        await searchVectorGeneration(
+          { metadataDirectory: root, metadata, graphPath: path.join(root, metadata.graphPath!) },
+          async () => [0.1, 0.2, 0.3, 0.4],
+          5,
+          1,
+          async () => ({ provider: 'local', model: 'fixture', dimensions: 4 }),
+        ),
+      ).toEqual([
+        expect.objectContaining({
+          nodeId: 'Function:source.ts:alpha',
+          chunkIndex: 0,
+          startLine: 1,
+          endLine: 2,
+          distance: expect.any(Number),
+        }),
       ]);
     } finally {
       await readerPool.closeLbug();

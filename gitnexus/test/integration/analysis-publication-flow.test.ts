@@ -12,10 +12,8 @@ import {
   readPreparedAnalysis,
   publishPreparedAnalysis,
 } from '../../src/core/analysis-publication.js';
-import {
-  waitForAnalysisProcessExit,
-  type PreparedAnalysisHandoff,
-} from '../../src/core/analysis-phase-supervisor.js';
+import type { PreparedAnalysisHandoff } from '../../src/core/analysis-phase-supervisor.js';
+import { waitForAnalysisProcessExit } from '../helpers/analysis-process-exit.js';
 import { EmbeddingGraphSource } from '../../src/core/lbug/embedding-source.js';
 import type { RepoMeta } from '../../src/storage/repo-meta.js';
 import lbug from '@ladybugdb/core';
@@ -222,6 +220,22 @@ it('advances the logical generation on a tiny edit without copying its private g
   await fs.writeFile(path.join(repo, 'b.ts'), 'export function beta() { return 6; }\n');
   expect((await runFullAnalysis(repo, options, callbacks)).alreadyUpToDate).not.toBe(true);
   expect((await meta()).fileHashes?.['b.ts']).toBeDefined();
+}, 120_000);
+
+it('verifies published FTS with an empty extension home', async () => {
+  const home = path.join(root, 'empty-home');
+  await fs.mkdir(home);
+  vi.stubEnv('HOME', home);
+  vi.stubEnv('USERPROFILE', home);
+  vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
+  await runFullAnalysis(repo, { ...options, skipFts: false }, callbacks);
+  const published = await meta();
+  expect(published.capabilities?.fts.status).toBe('available');
+  expect(published.graphGeneration).toBeDefined();
+  expect(await readPreparedAnalysis(slot)).toBeUndefined();
+  await expect(fs.stat(path.join(home, '.lbdb', 'extension'))).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
 }, 120_000);
 
 it('preserves completed vector coverage across a new graph generation', async () => {

@@ -32,6 +32,31 @@ describe('JobManager', () => {
     expect(retrieved).toEqual(created);
   });
 
+  it('retains terminal jobs past their TTL while the child still owns the slot', () => {
+    vi.useFakeTimers();
+    manager.dispose();
+    manager = new JobManager();
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    const child = Object.assign(new EventEmitter(), {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: vi.fn(),
+      unref: vi.fn(),
+    });
+    manager.registerChild(job.id, child as unknown as import('node:child_process').ChildProcess);
+    manager.updateJob(job.id, { status: 'failed', error: 'Cancelled' });
+    vi.advanceTimersByTime(70 * 60 * 1000);
+    expect(manager.getJob(job.id)?.status).toBe('failed');
+    expect(() => manager.createJob({ repoPath: '/tmp/other' })).toThrow(
+      'Analysis already in progress',
+    );
+    child.emit('exit', 0);
+    vi.advanceTimersByTime(5 * 60 * 1000);
+    expect(manager.getJob(job.id)).toBeUndefined();
+    expect(manager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
+
   it('keeps the original deadline when a graph worker hands off to an embedding worker', () => {
     manager.dispose();
     vi.useFakeTimers();
@@ -428,7 +453,7 @@ describe('JobManager', () => {
     expect(() => manager.createJob({ repoPath: '/tmp/other' })).toThrow(/already in progress/);
   });
 
-  it('cancelJob abandons its process reference after grace, retaining ownership until exit', () => {
+  it('cancelJob stops a wedged process after grace, retaining ownership until exit', () => {
     manager.dispose();
     vi.useFakeTimers();
     manager = new JobManager();
@@ -455,12 +480,12 @@ describe('JobManager', () => {
     expect(signals).toEqual([]);
     vi.advanceTimersByTime(15_000);
     expect(signals).toEqual([]);
-    expect(fakeChild.unref).toHaveBeenCalledOnce();
-    expect(fakeChild.channel.unref).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(45_000);
+    expect(signals).toEqual(['SIGKILL']);
     expect(() => manager.createJob({ repoPath: '/tmp/other' })).toThrow(/already in progress/);
   });
 
-  it('dispose on Windows never force-kills a native worker', () => {
+  it('dispose on Windows allows cooperative shutdown before stopping a wedged process', () => {
     manager.dispose();
     vi.useFakeTimers();
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
@@ -516,6 +541,14 @@ describe('JobManager', () => {
     vi.advanceTimersByTime(15_000);
     expect(signals).toEqual([]);
     vi.restoreAllMocks();
+  });
+
+  it('aborts in-process embedding work before shutdown waits for it', () => {
+    const job = manager.createJob({ repoPath: '/tmp/embed' });
+    const controller = new AbortController();
+    manager.registerAbortController(job.id, controller);
+    manager.dispose();
+    expect(controller.signal.aborted).toBe(true);
   });
 
   it('cancelJob returns false for terminal jobs', () => {

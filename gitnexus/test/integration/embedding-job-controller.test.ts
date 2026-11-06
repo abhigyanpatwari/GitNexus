@@ -394,6 +394,11 @@ describe('pending artifacts across graph generations', () => {
     expect(f.provider.mock.calls.flatMap(([texts]) => texts)).toHaveLength(1);
     const pending = (await loadMeta(f.root))?.embeddingJob;
     expect(pending?.artifactIdentity).not.toBe(fallback.artifactIdentity);
+    expect(
+      (
+        await fs.stat(path.join(f.root, 'embeddings', fallback.artifactIdentity, 'vectors'))
+      ).isFile(),
+    ).toBe(true);
     changed.add('Const:a.ts:n00001');
     await f.nextGeneration();
     f.provider.mockClear();
@@ -403,7 +408,7 @@ describe('pending artifacts across graph generations', () => {
     expect(final.metadata.vectorGeneration?.artifactIdentity).toBe(pending?.artifactIdentity);
     await expect(
       fs.stat(path.join(f.root, 'embeddings', fallback.artifactIdentity, 'vectors')),
-    ).resolves.toBeDefined();
+    ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('uses a sealed but unpublished artifact as a read-only fallback after a graph edit', async () => {
@@ -660,11 +665,21 @@ describe('published graph embedding job controller', () => {
     expect(f.provider).not.toHaveBeenCalled();
     expect(f.initializeProvider).not.toHaveBeenCalled();
     if (!first.metadata.vectorGeneration) throw new Error('Expected published vectors');
+    await expect(
+      fs.stat(path.join(f.root, 'embeddings', first.metadata.vectorGeneration.identity, 'vectors')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
     expect(
-      await fs.stat(
-        path.join(f.root, 'embeddings', first.metadata.vectorGeneration.identity, 'vectors'),
-      ),
-    ).toBeDefined();
+      (
+        await fs.stat(
+          path.join(
+            f.root,
+            'embeddings',
+            next.metadata.vectorGeneration!.artifactIdentity!,
+            'vectors',
+          ),
+        )
+      ).isFile(),
+    ).toBe(true);
   });
 
   it('does no paid replay if the process stops after publishing the vector pointer', async () => {

@@ -52,6 +52,32 @@ afterEach(async () => {
 });
 
 describe('bounded durable embedding progress', () => {
+  it.each(['interrupted', 'collapsed'] as const)(
+    'rejects a legacy vector capability after an %s graph write',
+    async (state) => {
+      const legacy: RepoMeta = {
+        repoPath: '/repo',
+        indexedAt: '',
+        lastCommit: '',
+        incrementalInProgress:
+          state === 'interrupted' ? { startedAt: 1, toWriteCount: 1 } : undefined,
+        graphWriteCollapsed: state === 'collapsed' ? { expected: 100, persisted: 1 } : undefined,
+        capabilities: {
+          graph: { provider: 'ladybugdb', status: 'available' },
+          fts: { provider: 'ladybugdb-fts', status: 'available' },
+          vectorSearch: {
+            provider: 'ladybugdb-vector',
+            status: 'vector-index',
+            exactScanLimit: 10000,
+          },
+        },
+      };
+      expect(await readIndexCapabilities('/missing', legacy)).toMatchObject({
+        vectorSearch: { status: 'unavailable' },
+      });
+    },
+  );
+
   it('gates a persisted vector-index stamp before filesystem work when the new job is pending', async () => {
     const f = await fixture();
     const previous: NonNullable<RepoMeta['capabilities']> = {

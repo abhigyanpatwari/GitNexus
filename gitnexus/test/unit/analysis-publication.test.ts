@@ -1,7 +1,12 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import * as indexLock from '../../src/storage/index-lock.js';
+import { recordLegacyEmbeddingSource } from '../../src/storage/legacy-embedding-source.js';
+import { reclaimAnalysisArtifacts } from '../../src/storage/analysis-artifact-cleanup.js';
+import { adoptEmbeddingArtifact } from '../../src/storage/embedding-artifact.js';
+import { writeEmbeddingJobRecord } from '../../src/storage/embedding-job.js';
 import { spawn } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -43,6 +48,232 @@ afterEach(async () => {
 });
 
 describe('durable graph publication', () => {
+  it('makes metadata durable before publishing the recovery receipt', async () => {
+    const { root, stage } = await fixture();
+    const events: string[] = [];
+    const open = fs.open.bind(fs);
+    const rename = fs.rename.bind(fs);
+    const label = (file: string) =>
+      file === root
+        ? 'directory'
+        : path.basename(file).includes('analysis-meta-')
+          ? 'metadata'
+          : 'receipt';
+    vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      const sync = handle.sync.bind(handle);
+      vi.spyOn(handle, 'sync').mockImplementation(async () => {
+        await sync();
+        events.push(`sync:${label(String(args[0]))}`);
+      });
+      return handle;
+    });
+    vi.spyOn(fs, 'rename').mockImplementation(async (...args) => {
+      await rename(...args);
+      events.push(`rename:${label(String(args[1]))}`);
+    });
+    await prepareAnalysisPublication(root, stage, metadata, content);
+    const directorySync = process.platform === 'win32' ? [] : ['sync:directory'];
+    expect(events).toEqual([
+      'sync:metadata',
+      'rename:metadata',
+      ...directorySync,
+      'sync:receipt',
+      'rename:receipt',
+      ...directorySync,
+    ]);
+  });
+
+  it('bounds superseded graph generations across repeated staged publications', async () => {
+    const { root, actions } = await fixture();
+    for (let i = 0; i < 5; i++) {
+      const stage = path.join(root, `lbug.staging.${randomUUID()}`);
+      await fs.writeFile(stage, 'verified graph');
+      await prepareAnalysisPublication(root, stage, (await loadMeta(root))!, content);
+      await publishPreparedAnalysis(root, actions);
+    }
+    const graphs = (await fs.readdir(root)).filter((name) =>
+      /^lbug\.generation\.[a-f0-9]{32}$/.test(name),
+    );
+    expect(graphs).toHaveLength(2);
+    expect(graphs).toContain((await loadMeta(root))?.graphPath);
+  });
+
+  it('reclaims unreferenced jobs while retaining all model owners and their fallback vectors', async () => {
+    const { root } = await fixture();
+    const current = 'a'.repeat(64),
+      fallback = 'b'.repeat(64),
+      orphan = 'c'.repeat(64);
+    for (const id of [current, fallback, orphan]) {
+      const directory = path.join(root, 'embeddings', id);
+      await fs.mkdir(directory, { recursive: true });
+      await writeEmbeddingJobRecord(directory, 'job.json', { version: 1, identity: id });
+      await fs.writeFile(path.join(directory, 'vectors'), 'paid vectors');
+    }
+    await adoptEmbeddingArtifact(
+      root,
+      {
+        vectorIdentity: 'd'.repeat(64),
+        inputIdentity: 'e'.repeat(64),
+        dimensions: 4,
+        schema: 'fixture',
+      },
+      null,
+      {
+        artifactIdentity: current,
+        jobIdentity: current,
+        fallbackArtifact: fallback,
+        graphGeneration: 'f'.repeat(32),
+        sourceIdentity: '1'.repeat(64),
+        manifestDigest: '2'.repeat(64),
+        phase: 'pending',
+        revalidateInputs: false,
+      },
+      async () => {},
+    );
+    await reclaimAnalysisArtifacts(root, metadata);
+    expect(await fs.readFile(path.join(root, 'embeddings', current, 'vectors'), 'utf8')).toBe(
+      'paid vectors',
+    );
+    expect(await fs.readFile(path.join(root, 'embeddings', fallback, 'vectors'), 'utf8')).toBe(
+      'paid vectors',
+    );
+    await expect(fs.stat(path.join(root, 'embeddings', orphan))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
+  it('retains an obsolete job receipt until its busy vector file can be removed', async () => {
+    const { root } = await fixture();
+    const identity = 'e'.repeat(64);
+    const job = path.join(root, 'embeddings', identity);
+    await fs.mkdir(job, { recursive: true });
+    await writeEmbeddingJobRecord(job, 'job.json', { version: 1, identity });
+    const vectors = path.join(job, 'vectors');
+    await fs.writeFile(vectors, 'obsolete vectors');
+    const remove = fs.rm.bind(fs);
+    const busy = vi.spyOn(fs, 'rm').mockImplementation(async (file, options) => {
+      if (String(file) === vectors) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+      return remove(file, options);
+    });
+    const warn = vi.fn();
+    await reclaimAnalysisArtifacts(root, metadata, undefined, warn);
+    expect(await fs.readFile(path.join(job, 'job.json'), 'utf8')).toContain(identity);
+    expect(await fs.readFile(vectors, 'utf8')).toBe('obsolete vectors');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('cleanup will retry'));
+    busy.mockRestore();
+    await reclaimAnalysisArtifacts(root, metadata);
+    await expect(fs.stat(job)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('keeps the only legacy vector source while a model-space job references it', async () => {
+    const { root } = await fixture();
+    const sourceFile = `lbug.generation.${'c'.repeat(32)}`;
+    await fs.writeFile(path.join(root, sourceFile), 'paid legacy vectors');
+    const legacy = await recordLegacyEmbeddingSource(
+      root,
+      { sourceFile, schemaFingerprint: 'fixture' },
+      [],
+    );
+    await adoptEmbeddingArtifact(
+      root,
+      {
+        vectorIdentity: 'd'.repeat(64),
+        inputIdentity: 'e'.repeat(64),
+        dimensions: 4,
+        schema: 'fixture',
+      },
+      null,
+      {
+        artifactIdentity: 'a'.repeat(64),
+        jobIdentity: 'a'.repeat(64),
+        fallbackLegacy: legacy,
+        graphGeneration: 'f'.repeat(32),
+        sourceIdentity: '1'.repeat(64),
+        manifestDigest: '2'.repeat(64),
+        phase: 'pending',
+        revalidateInputs: false,
+      },
+      async () => {},
+    );
+    await reclaimAnalysisArtifacts(root, metadata);
+    expect(await fs.readFile(path.join(root, sourceFile), 'utf8')).toBe('paid legacy vectors');
+  });
+
+  it('retains everything when an ownership receipt is corrupt and retries busy files later', async () => {
+    const { root } = await fixture();
+    const graph = path.join(root, `lbug.generation.${'b'.repeat(32)}`);
+    await fs.writeFile(graph, 'previous graph');
+    const space = path.join(root, 'embeddings', 'spaces', 'a'.repeat(64));
+    await fs.mkdir(space, { recursive: true });
+    await fs.writeFile(path.join(space, 'space.json'), '{}');
+    const log = vi.fn();
+    await reclaimAnalysisArtifacts(root, metadata, undefined, log);
+    expect(await fs.readFile(graph, 'utf8')).toBe('previous graph');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('ownership could not be verified'));
+    await fs.rm(space, { recursive: true });
+    const remove = fs.rm.bind(fs);
+    const blocked = vi.spyOn(fs, 'rm').mockImplementation(async (file, options) => {
+      if (String(file) === graph) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+      await remove(file, options);
+    });
+    await reclaimAnalysisArtifacts(root, metadata, undefined, log);
+    expect(await fs.readFile(graph, 'utf8')).toBe('previous graph');
+    blocked.mockRestore();
+    await reclaimAnalysisArtifacts(root, metadata, undefined, log);
+    await expect(fs.stat(graph)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('recovers a prior process incarnation even when its PID is now this process', async () => {
+    const { root, stage, actions } = await fixture();
+    const receipt = await prepareAnalysisPublication(root, stage, metadata, content, {
+      waitForProcessExit: true,
+    });
+    const payload = { ...receipt, writerInstance: 'f'.repeat(32) };
+    await fs.writeFile(
+      path.join(root, 'analysis-publication.json'),
+      JSON.stringify({
+        payload,
+        checksum: createHash('sha256').update(JSON.stringify(payload)).digest('hex'),
+      }),
+    );
+    expect((await publishPreparedAnalysis(root, actions))?.graphGeneration?.id).toBe(receipt.id);
+  });
+
+  it('does not wait for an unrelated process that reused the writer PID', async () => {
+    const { root, stage, actions } = await fixture();
+    const start = vi.spyOn(indexLock, 'readProcStartTime').mockReturnValue('123');
+    const receipt = await prepareAnalysisPublication(root, stage, metadata, content, {
+      waitForProcessExit: true,
+    });
+    start.mockReturnValue('456');
+    expect((await publishPreparedAnalysis(root, actions))?.graphGeneration?.id).toBe(receipt.id);
+  });
+
+  it('publishes through a symlinked parent while validating the real slot', async () => {
+    const { root, stage } = await fixture();
+    const slot = path.join(root, 'slot');
+    await fs.mkdir(slot);
+    await fs.rename(stage, path.join(slot, path.basename(stage)));
+    const alias = path.join(root, 'parent-alias');
+    await fs.symlink(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const aliasedSlot = path.join(alias, 'slot');
+    await saveMeta(aliasedSlot, metadata);
+    const receipt = await prepareAnalysisPublication(
+      aliasedSlot,
+      path.join(aliasedSlot, path.basename(stage)),
+      metadata,
+      content,
+    );
+    const published = await publishPreparedAnalysis(aliasedSlot, {
+      verify: async (file) => {
+        expect(await fs.readFile(file, 'utf8')).toBe('verified graph');
+      },
+      saveMetadata: (meta) => saveMeta(aliasedSlot, meta),
+    });
+    expect(published?.graphGeneration?.id).toBe(receipt.id);
+  });
+
   it('publishes only after the real preparing process exits', async () => {
     const { root, stage, actions } = await fixture();
     const moduleUrl = new URL('../../dist/core/analysis-publication.js', import.meta.url).href;

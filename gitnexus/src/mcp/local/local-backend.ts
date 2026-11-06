@@ -4607,6 +4607,9 @@ export class LocalBackend {
         getExactScanLimit(),
       );
       if (selection.kind === 'unavailable') {
+        if (degraded && selection.reason === 'embedding-pending')
+          degraded.reason =
+            'Semantic search is unavailable while embeddings are pending. Run gitnexus analyze to resume; graph and keyword search remain available.';
         this.lastQueryEmbeddingDims.delete(repo.lbugPath);
         return [];
       }

@@ -61,6 +61,7 @@ import {
 import { GITNEXUS_DIR, INDEX_METADATA_FILE, LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import { wipeLbugDbFiles } from './lbug/lbug-adapter.js';
 import { inspectLbugSidecars } from './lbug/sidecar-recovery.js';
+import { getExactScanLimit } from './platform/capabilities.js';
 
 type Log = (msg: string) => void;
 
@@ -177,7 +178,7 @@ async function retainSharedMetadata(
   }
   exported.stats = { ...meta.stats, embeddings: completed ? vector.chunks : 0 };
   if (meta.capabilities) {
-    const exactScanLimit = meta.capabilities.vectorSearch.exactScanLimit;
+    const exactScanLimit = meta.capabilities.vectorSearch?.exactScanLimit ?? getExactScanLimit();
     const readable =
       completed &&
       vector.chunks > 0 &&

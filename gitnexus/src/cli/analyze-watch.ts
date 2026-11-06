@@ -24,7 +24,7 @@ import {
 } from './analyze-config.js';
 import { logger } from '../core/logger.js';
 import type { AnalyzeOptions } from './analyze-options.js';
-import { ensureHeap } from './analyze.js';
+import { ensureHeap, usesManualAnalysisHeap } from './analyze.js';
 import { cliError, cliInfo, cliWarn } from './cli-message.js';
 import { parseIntegerOption } from './int-option.js';
 import {
@@ -495,9 +495,12 @@ export async function watchCommandWithRunnerIdentity(
     }
     const repoPath = await fs.realpath(requestedRepoPath);
     try {
+      const manualHeap = usesManualAnalysisHeap(cliOptions.memoryBudget);
       const admission = resolveHostAnalysisResources({
         totalMb: positiveInteger(cliOptions.resourceBudget, '--resource-budget'),
-        mainHeapMb: positiveInteger(cliOptions.memoryBudget, '--memory-budget'),
+        mainHeapMb: manualHeap
+          ? Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2)
+          : positiveInteger(cliOptions.memoryBudget, '--memory-budget'),
         workers: positiveInteger(cliOptions.workers, '--workers'),
         includeEmbeddings: await analysisMayEmbed(repoPath, { branch: cliOptions.branch }),
         supervisorBytes:
@@ -507,11 +510,12 @@ export async function watchCommandWithRunnerIdentity(
       });
       if (cancelled) return;
       if (
-        await ensureHeap({
+        !manualHeap &&
+        (await ensureHeap({
           cleanForwardedTermination: true,
           memoryBudget: cliOptions.memoryBudget,
           admittedHeapMb: admission.mainHeapMb,
-        })
+        }))
       )
         return;
       await requireStoragePath(repoPath, ANALYZE_STORAGE_REQUIREMENTS);

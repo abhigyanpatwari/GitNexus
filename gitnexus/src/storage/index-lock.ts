@@ -226,7 +226,7 @@ const unverifiedGuardError = (guardPath: string): Error =>
 const HOSTNAME = os.hostname();
 
 /** Linux: field 22 of /proc/<pid>/stat (starttime). null elsewhere / on error. */
-const readProcStartTime = (pid: number): string | null => {
+export const readProcStartTime = (pid: number): string | null => {
   if (process.platform !== 'linux') return null;
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
@@ -453,7 +453,7 @@ export const sweepStagingArtifacts = (lockDir: string, log?: (msg: string) => vo
   }
   // Matches `lbug.new`, `lbug.new.wal`, `lbug.staging.<id>`, `lbug.staging.<id>.wal`, …
   // Does NOT match `lbug`, `lbug.wal`, `lbug.shadow`.
-  const stagingRe = /^lbug\.(staging\..+|new(\..+)?)$/;
+  const stagingRe = /^lbug\.(?:generation\.[a-f0-9]{32}\.)?(staging\..+|new(\..+)?)$/;
   const retained = new Set(readEmbeddingRecovery(lockDir)?.familyFiles ?? []);
   let removed = 0;
   let entries: string[];

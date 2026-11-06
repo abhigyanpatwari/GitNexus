@@ -9,7 +9,13 @@ export async function readIndexCapabilities(
   directory: string,
   metadata: RepoMeta | null | undefined,
 ): Promise<RepoMeta['capabilities']> {
-  if (!metadata?.graphGeneration && !metadata?.vectorGeneration && !metadata?.embeddingJob)
+  if (
+    !metadata?.graphGeneration &&
+    !metadata?.vectorGeneration &&
+    !metadata?.embeddingJob &&
+    !metadata?.incrementalInProgress &&
+    !metadata?.graphWriteCollapsed
+  )
     return metadata?.capabilities;
   const exactScanLimit = getExactScanLimit();
   let vectorSearch: NonNullable<RepoMeta['capabilities']>['vectorSearch'];
@@ -31,6 +37,7 @@ export async function readIndexCapabilities(
         exactScanLimit,
         coverage: selection.coverage ?? 'current',
         sourceGraphGeneration: selection.generation.graphGeneration,
+        ...(selection.generation.excludedNodes ? { reason: 'embedding-inputs-rejected' } : {}),
       };
     } else if (selection.kind === 'legacy' && metadata?.capabilities?.vectorSearch) {
       vectorSearch = { ...metadata.capabilities.vectorSearch, coverage: 'preserved' };

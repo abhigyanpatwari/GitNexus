@@ -5,7 +5,10 @@ import { execFileSync } from 'node:child_process';
 import { afterEach, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ analyze: vi.fn(), mayEmbed: vi.fn(async () => false) }));
-vi.mock('../../src/cli/analyze.js', () => ({ ensureHeap: vi.fn(async () => false) }));
+vi.mock('../../src/cli/analyze.js', () => ({
+  ensureHeap: vi.fn(async () => false),
+  usesManualAnalysisHeap: () => false,
+}));
 vi.mock('../../src/core/run-analyze.js', () => ({
   runFullAnalysis: mocks.analyze,
   analyzeFailureMayHaveMutatedLiveIndex: () => false,

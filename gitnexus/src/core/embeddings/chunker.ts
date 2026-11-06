@@ -9,7 +9,7 @@
 
 export { type Chunk, characterChunk } from './character-chunk.js';
 
-import { characterChunk, iterateCharacterChunks } from './character-chunk.js';
+import { iterateCharacterChunks } from './character-chunk.js';
 import type { Chunk } from './character-chunk.js';
 import { ensureAndParse, findDeclarationNode, findFunctionNode } from './ast-utils.js';
 import { buildLineIndex, resolveChunkLines } from './line-index.js';
@@ -693,7 +693,7 @@ const projectClassChunks = (
   overlap: number,
   strategy: EmbeddingConfig['chunkStrategy'] = 'ast',
   expectedName?: string,
-): EmbeddingChunk[] => {
+): Iterable<EmbeddingChunk> => {
   const target = tree && findDeclarationNode(tree.rootNode, expectedName);
   const body = target && getDeclarationBodyNode(target);
   if (!body || target.hasError) return [classMetadataChunk(startLine, endLine)];
@@ -784,7 +784,7 @@ const projectClassChunks = (
   const projected = pieces.join('');
   const chunks =
     strategy === 'fixed'
-      ? characterChunk(projected, 1, 1, chunkSize, overlap)
+      ? iterateCharacterChunks(projected, 1, 1, chunkSize, overlap)
       : chunkByUnits(
           projected,
           buildLineIndex(projected),
@@ -811,17 +811,19 @@ const projectClassChunks = (
       segment.source + Math.max(0, Math.min(offset - segment.start, segment.end - segment.start))
     );
   };
-  return Array.from(chunks, (chunk) => {
-    const startOffset = sourceOffset(chunk.startOffset);
-    const endOffset = sourceOffset(chunk.endOffset - 1) + 1;
-    return {
-      ...chunk,
-      startOffset,
-      endOffset,
-      ...resolveChunkLines(originalLines, startOffset, endOffset, startLine),
-      classDeclaration: header,
-    };
-  });
+  return (function* () {
+    for (const chunk of chunks) {
+      const startOffset = sourceOffset(chunk.startOffset);
+      const endOffset = sourceOffset(chunk.endOffset - 1) + 1;
+      yield {
+        ...chunk,
+        startOffset,
+        endOffset,
+        ...resolveChunkLines(originalLines, startOffset, endOffset, startLine),
+        classDeclaration: header,
+      };
+    }
+  })();
 };
 
 const collectDeclarationUnits = (

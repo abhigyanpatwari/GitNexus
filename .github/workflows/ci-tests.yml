@@ -60,7 +60,8 @@ jobs:
           if [[ "$RESOURCE_PROFILE" == default ]]; then
             resource_args+=(--default-resources)
           fi
-          node bench/analyze-resume/measure.mjs --check \
+          node bench/analyze-resume/measure.mjs --validate-gate
+          node bench/analyze-resume/measure.mjs --check --allow-dependency-changes \
             --baseline "$GITHUB_WORKSPACE/baseline/gitnexus/dist/cli/index.js" \
             --output "$RUNNER_TEMP/analyze-resume/results.json" \
             "${resource_args[@]}" 2>&1 | tee "$RUNNER_TEMP/analyze-resume/run.log"

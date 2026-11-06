@@ -16,6 +16,7 @@ import { getExactScanLimit } from '../platform/capabilities.js';
 import { collectBestChunks } from './types.js';
 import { rankExactEmbeddingRows, type ExactSearchChunk } from './exact-search.js';
 import { assertQueryIdentity, rethrowSymbolIdentityError } from '../lbug/query-result-integrity.js';
+import { logger } from '../logger.js';
 
 export interface VectorSearchSnapshot {
   metadataDirectory: string;
@@ -75,7 +76,13 @@ export async function searchVectorGeneration(
       throw new Error('Published vector identity is unverified');
     const annReady =
       selected.generation.indexKind === 'hnsw' &&
-      (await ensureVectorExtension(dbPath).catch(() => false));
+      (await ensureVectorExtension(dbPath).catch((error: unknown) => {
+        logger.warn(
+          { err: error },
+          'Published VECTOR extension could not load; checking the bounded exact-search fallback',
+        );
+        return false;
+      }));
     if (!annReady && selected.generation.chunks > exactLimit) return [];
     const identity = await resolveIdentity();
     const vectorIdentity = createHash('sha256')
@@ -103,7 +110,7 @@ export async function searchVectorGeneration(
             return row as ExactSearchChunk;
           });
         });
-        return [...best].map(([nodeId, chunk]) => ({ nodeId, ...chunk }));
+        if (best.size > 0) return [...best].map(([nodeId, chunk]) => ({ nodeId, ...chunk }));
       } catch (error) {
         rethrowSymbolIdentityError(error);
         if (selected.generation.chunks > exactLimit) throw error;

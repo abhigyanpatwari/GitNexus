@@ -1145,7 +1145,7 @@ export const createWorkerPool = (
     safePoint: Promise<void>;
   };
   const retiredWorkers = new Set<RetiredWorkerRecord>();
-  const pendingWorkerReleases = new Set<Promise<void>>();
+  const pendingWorkerReleases = new Map<Promise<void>, number>();
   const respawnCount: number[] = new Array(size).fill(0);
   const activeSlots: Set<number> = new Set();
   // Layer 3 (quarantine): tracked via the dedicated `quarantine.ts`
@@ -1607,7 +1607,7 @@ export const createWorkerPool = (
           completeRelease();
         };
         if (requireDrain) {
-          pendingWorkerReleases.add(termination);
+          pendingWorkerReleases.set(termination, workerIndex);
           // A rejected terminate request is not proof of release. An eventual
           // physical exit is, even when the termination promise rejected.
           existing.once('exit', released);
@@ -1645,7 +1645,7 @@ export const createWorkerPool = (
               return false;
             if (retiredWorkers.has(record)) return false;
           }
-          if (pendingWorkerReleases.size > 0 || stopped) return false;
+          if ([...pendingWorkerReleases.values()].includes(workerIndex) || stopped) return false;
         }
         const replacement = spawnAndCapture(workerUrl);
         try {
@@ -2466,7 +2466,9 @@ export const createWorkerPool = (
     activeSlots.clear();
     if (requireDrain && (retiredWorkers.size > 0 || pendingWorkerReleases.size > 0))
       throw new Error(
-        'Parser workers have not released their native resource reservation; refusing to start another analysis phase. Workers will exit at their next safe point.',
+        'Parser workers have not released their native resource reservation; refusing to start another analysis phase. ' +
+          `Suspect files: ${quarantine.snapshot().slice(0, 5).join(', ') || 'see the last parser progress message'}. ` +
+          'Workers will exit at their next safe point. Exclude a repeatedly stuck file with .gitnexusignore and retry; do not kill a native worker thread.',
       );
   };
 

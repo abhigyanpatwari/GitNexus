@@ -240,6 +240,8 @@ describe('legacy migration through the published job controller', () => {
     ).rejects.toThrow('first stop');
     const first = (await loadMeta(f.root))?.embeddingJob;
     expect(first?.artifactIdentity).toBeDefined();
+    expect((await fs.stat(f.sourcePath)).ino).toBe(before.ino);
+    expect((await fs.stat(f.sourcePath)).mtimeMs).toBe(before.mtimeMs);
     await f.nextGraph();
     await expect(
       f.run({
@@ -249,6 +251,8 @@ describe('legacy migration through the published job controller', () => {
       }),
     ).rejects.toThrow('second stop');
     expect((await loadMeta(f.root))?.embeddingJob?.artifactIdentity).toBe(first?.artifactIdentity);
+    expect((await fs.stat(f.sourcePath)).ino).toBe(before.ino);
+    expect((await fs.stat(f.sourcePath)).mtimeMs).toBe(before.mtimeMs);
     await f.nextGraph();
     const result = await f.run();
     expect(result.phase).toBe('ready');
@@ -257,8 +261,7 @@ describe('legacy migration through the published job controller', () => {
     expect(scans).toBe(1);
     expect(f.provider).not.toHaveBeenCalled();
     expect(f.initializeProvider).not.toHaveBeenCalled();
-    expect((await fs.stat(f.sourcePath)).ino).toBe(before.ino);
-    expect((await fs.stat(f.sourcePath)).mtimeMs).toBe(before.mtimeMs);
+    await expect(fs.stat(f.sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
     const owner = (await readEmbeddingJobRecord(
       path.join(f.root, 'embeddings', 'spaces', first?.spaceKey ?? ''),
       'space.json',
