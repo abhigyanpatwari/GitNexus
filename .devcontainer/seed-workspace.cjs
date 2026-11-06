@@ -11,8 +11,78 @@ const DEPENDENCIES = [
   'gitnexus-web/node_modules',
   'gitnexus-shared/node_modules',
 ];
-// Recreate the Python environment in Linux; Windows tar cannot stat its WSL symlinks.
-const EXCLUDED = new Set([...DEPENDENCIES, 'eval/.venv', '.husky/_', MARKER]);
+function isWorkspaceExcluded(relative) {
+  const parts = relative.split(path.sep);
+  const git = parts.indexOf('.git');
+  // Ref names can contain node_modules: preserve all Git metadata except our marker.
+  if (git !== -1) return parts.slice(git).join('/') === MARKER;
+  return (
+    parts.includes('node_modules') ||
+    parts.includes('.venv') ||
+    parts.some((part, i) => part === '.husky' && parts[i + 1] === '_')
+  );
+}
+
+function* archiveEntries(source, entries, { exclude = () => false, links = [] } = {}) {
+  source = fs.realpathSync(source);
+  function* visit(relative, type) {
+    if (exclude(relative)) return;
+    const file = path.join(source, relative);
+    type ??= fs.lstatSync(file);
+    const portable = relative.split(path.sep).join('/');
+    if (type.isSymbolicLink()) {
+      links.push([portable, fs.readlinkSync(file)]);
+      return;
+    }
+    yield relative === '.' ? '.' : `./${portable}`;
+    if (type.isDirectory()) {
+      for (const entry of fs.readdirSync(file, { withFileTypes: true }))
+        yield* visit(path.join(relative, entry.name), entry);
+    }
+  }
+  for (const entry of entries) yield* visit(path.normalize(entry));
+}
+
+function restoreLinks(root, links) {
+  root = fs.realpathSync(root);
+  if (!Array.isArray(links)) throw new Error('Invalid symlink manifest');
+  const seen = new Set();
+  const validated = links.map((link) => {
+    if (
+      !Array.isArray(link) ||
+      link.length !== 2 ||
+      link.some((s) => typeof s !== 'string' || !s || s.includes('\0'))
+    )
+      throw new Error('Invalid symlink entry');
+    const [relative, target] = link;
+    const parts = relative.split('/');
+    const file = path.resolve(root, ...parts);
+    if (
+      parts.some((part) => !part || part === '.' || part === '..') ||
+      !file.startsWith(root + path.sep) ||
+      seen.has(file)
+    )
+      throw new Error('Symlink path must be unique and stay inside the archive destination');
+    seen.add(file);
+    for (let parent = path.dirname(file); parent !== root; parent = path.dirname(parent)) {
+      const type = fs.lstatSync(parent, { throwIfNoEntry: false });
+      if (type && (!type.isDirectory() || type.isSymbolicLink()))
+        throw new Error('Symlink parent must be a directory, not another symlink');
+    }
+    if (fs.lstatSync(file, { throwIfNoEntry: false }))
+      throw new Error('Refusing to replace an existing archive entry with a symlink');
+    return [file, target];
+  });
+  for (const [file] of validated) {
+    for (let parent = path.dirname(file); parent !== root; parent = path.dirname(parent))
+      if (seen.has(parent)) throw new Error('Symlink entries must not be parents of other entries');
+  }
+  for (const [file, target] of validated) {
+    // Selected snapshot files can be links whose parent has no other archived entries.
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.symlinkSync(target, file);
+  }
+}
 
 function isDirectory(file) {
   return fs.existsSync(file) && fs.lstatSync(file).isDirectory();
@@ -287,7 +357,7 @@ function seedWorkspace(source, target) {
     preserveTimestamps: true,
     force: false,
     errorOnExist: true,
-    filter: (file) => !EXCLUDED.has(path.relative(source, file)),
+    filter: (file) => !isWorkspaceExcluded(path.relative(source, file)),
   });
   normalizeGit(target);
   const checkout = git(target, 'rev-parse', '--show-toplevel').trim();
@@ -310,11 +380,15 @@ module.exports = {
   validateGitDirectory,
   prepareWorkspace,
   workspaceState,
-  EXCLUDED,
+  isWorkspaceExcluded,
+  archiveEntries,
+  restoreLinks,
 };
 if (require.main === module) {
   try {
-    if (process.argv[2] === '--state') {
+    if (process.argv[2] === '--restore-links') {
+      restoreLinks(process.argv[3], JSON.parse(fs.readFileSync(0, 'utf8')));
+    } else if (process.argv[2] === '--state') {
       console.log(workspaceState(process.argv[3]));
     } else if (process.argv[2] === '--prepare') {
       const uid = process.env.SUDO_UID;

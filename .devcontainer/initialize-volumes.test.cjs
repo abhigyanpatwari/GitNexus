@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const { archiveArgs, snapshotState, HOST_PATHS } = require('./initialize-volumes.cjs');
-const { EXCLUDED } = require('./seed-workspace.cjs');
+const { archiveEntries, isWorkspaceExcluded, restoreLinks } = require('./seed-workspace.cjs');
 
 function temporary(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn import spaces-'));
@@ -19,6 +19,7 @@ test('the host tar omits Node and Python dependencies while preserving ignored l
   for (const file of [
     '.git/config',
     '.git/devcontainer-source-volume',
+    '.git/refs/heads/node_modules/topic',
     '.env.local',
     '.husky/_/h',
     'gitnexus/node_modules/binary',
@@ -27,20 +28,65 @@ test('the host tar omits Node and Python dependencies while preserving ignored l
     'eval/.venv/pyvenv.cfg',
     'eval/.venv-notes/local-file',
     'eval/local-script.py',
+    '.worktrees/zig-receivers/gitnexus-shared/node_modules/binary',
+    '.worktrees/zig-receivers/gitnexus-shared/src/index.ts',
+    '.worktrees/zig-receivers/.husky/_/h',
+    '.claude/worktrees/topic/eval/.venv/bin/python',
+    '.claude/worktrees/topic/local-edit',
+    '.claude/worktrees/topic/.git',
     'file with spaces',
+    "file's name",
+    '-leading-option',
   ]) {
     fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
     fs.writeFileSync(path.join(root, file), 'fixture only');
   }
-  const tar = execFileSync('tar', archiveArgs(root, ['.'], [...EXCLUDED]));
+  const entries = [...archiveEntries(root, ['.'], { exclude: isWorkspaceExcluded })];
+  const tar = execFileSync('tar', archiveArgs(root, entries, [], { recursive: false }), {
+    input: entries.join('\0') + '\0',
+  });
   const listing = execFileSync('tar', ['-tf', '-'], { input: tar, encoding: 'utf8' });
   assert.match(listing, /\.git\/config/);
   assert.match(listing, /\.env.local/);
   assert.match(listing, /file with spaces/);
   assert.match(listing, /eval\/\.venv-notes\/local-file/);
   assert.match(listing, /eval\/local-script\.py/);
+  assert.match(listing, /\.worktrees\/zig-receivers\/gitnexus-shared\/src\/index\.ts/);
+  assert.match(listing, /\.claude\/worktrees\/topic\/local-edit/);
+  assert.match(listing, /\.claude\/worktrees\/topic\/\.git/);
+  assert.match(listing, /\.git\/refs\/heads\/node_modules\/topic/);
   assert.doesNotMatch(listing, /eval\/\.venv(?:\/|$)/m);
-  assert.doesNotMatch(listing, /node_modules|devcontainer-source-volume|\.husky\/_/);
+  const workspace = listing
+    .split(/\r?\n/)
+    .filter((entry) => !entry.startsWith('./.git/'))
+    .join('\n');
+  assert.doesNotMatch(workspace, /node_modules|devcontainer-source-volume|\.husky\/_/);
+});
+
+test('explicit archives restore dangling and directory links without traversing them', (t) => {
+  const root = temporary(t);
+  const source = path.join(root, 'source');
+  const target = path.join(root, 'target');
+  const outside = path.join(root, 'outside');
+  for (const dir of [source, target, outside]) fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(outside, 'keep'), 'outside');
+  fs.symlinkSync('missing target', path.join(source, 'dangling'));
+  fs.symlinkSync(outside, path.join(source, 'directory-link'), 'dir');
+  const names = ['-C', "file's name", 'file with spaces'];
+  if (process.platform !== 'win32') names.push('line\nbreak');
+  for (const name of names) fs.writeFileSync(path.join(source, name), name);
+  const links = [];
+  const entries = [...archiveEntries(source, ['.'], { links })];
+  assert.ok(!entries.some((entry) => /dangling|directory-link/.test(entry)));
+  const tar = execFileSync('tar', archiveArgs(source, entries, [], { recursive: false }), {
+    input: entries.join('\0') + '\0',
+  });
+  execFileSync('tar', ['-xf', '-', '-C', target], { input: tar });
+  restoreLinks(target, links);
+  assert.equal(fs.readlinkSync(path.join(target, 'dangling')), 'missing target');
+  assert.equal(fs.readlinkSync(path.join(target, 'directory-link')), outside);
+  for (const name of names) assert.equal(fs.readFileSync(path.join(target, name), 'utf8'), name);
+  assert.equal(fs.readFileSync(path.join(outside, 'keep'), 'utf8'), 'outside');
 });
 
 test('snapshot selection excludes transcripts and Cursor executable hooks', () => {
@@ -70,8 +116,15 @@ function dockerFixture(t) {
   for (const dir of [source, home, bin, state]) fs.mkdirSync(dir);
   execFileSync('git', ['init', '-q', source]);
   fs.writeFileSync(path.join(source, 'local-edit'), 'uncommitted');
+  fs.symlinkSync('local-edit', path.join(source, 'source-link'));
+  fs.mkdirSync(path.join(source, '.worktrees/topic/gitnexus-shared'), { recursive: true });
+  fs.symlinkSync(
+    '/missing/Linux/dependencies',
+    path.join(source, '.worktrees/topic/gitnexus-shared/node_modules'),
+  );
   fs.mkdirSync(path.join(home, '.ssh'));
   fs.writeFileSync(path.join(home, '.ssh/test-key'), 'fixture, not a credential');
+  fs.symlinkSync('test-key', path.join(home, '.ssh/test-link'));
   fs.mkdirSync(path.join(home, '.codex'));
   fs.writeFileSync(path.join(home, '.codex/auth.json'), '{"fixture":true}');
   fs.writeFileSync(
@@ -101,7 +154,10 @@ switch(args[0]) {
     } else fs.copyFileSync(args[1], dest);
     break;
   }
-  case 'exec': run(args[2], args.slice(3).map(a => a.startsWith('/') ? map(a) : a)); break;
+  case 'exec':
+    if (args[1] === '-i') args.splice(1, 1);
+    if (process.env.IMPORT_FAIL_LINKS && args.includes('--restore-links')) process.exit(4);
+    run(args[2], args.slice(3).map(a => a.startsWith('/') ? map(a) : a)); break;
   default: throw new Error('Unexpected Docker command');
 }
 `,
@@ -136,6 +192,12 @@ test('host import is one-time, uses only native volumes, preserves edits and cle
   const first = run();
   assert.equal(first.status, 0, first.stderr);
   assert.equal(fs.readFileSync(path.join(state, 'workspace/local-edit'), 'utf8'), 'uncommitted');
+  assert.equal(fs.readlinkSync(path.join(state, 'workspace/source-link')), 'local-edit');
+  assert.equal(
+    fs.existsSync(path.join(state, 'workspace/.worktrees/topic/gitnexus-shared/node_modules')),
+    false,
+  );
+  assert.equal(fs.readlinkSync(path.join(state, 'identity/ssh/test-link')), 'test-key');
   assert.equal(fs.statSync(path.join(state, 'identity/ssh/test-key')).mode & 0o777, 0o600);
   assert.equal(fs.existsSync(path.join(state, 'active')), false);
   fs.writeFileSync(path.join(state, 'workspace/local-edit'), 'Linux edits');
@@ -173,6 +235,14 @@ test('an existing importer is never removed by a competing initialization', (t) 
   assert.notEqual(result.status, 0);
   assert.equal(fs.readFileSync(path.join(state, 'active'), 'utf8'), 'other importer');
   assert.doesNotMatch(fs.readFileSync(path.join(state, 'commands'), 'utf8'), /\["rm"/);
+});
+
+test('failed symlink restoration never publishes a successful source marker', (t) => {
+  const { state, run } = dockerFixture(t);
+  const result = run('source', { IMPORT_FAIL_LINKS: '1' });
+  assert.notEqual(result.status, 0);
+  assert.equal(fs.existsSync(path.join(state, 'workspace/.git/devcontainer-source-volume')), false);
+  assert.equal(fs.existsSync(path.join(state, 'active')), false);
 });
 
 test('credential bootstrap preserves existing logins and deliberate logout across rebuilds', (t) => {

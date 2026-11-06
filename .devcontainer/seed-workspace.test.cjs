@@ -5,7 +5,47 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
-const { seedWorkspace } = require('./seed-workspace.cjs');
+const { seedWorkspace, restoreLinks } = require('./seed-workspace.cjs');
+
+test('symlink restoration rejects traversal, symlink parents and replacements before writing', (t) => {
+  const { root, target } = fixture(t);
+  const outside = path.join(root, 'outside');
+  fs.mkdirSync(outside);
+  fs.symlinkSync(outside, path.join(target, 'parent'), 'dir');
+  fs.writeFileSync(path.join(target, 'existing'), 'keep');
+  for (const links of [
+    [['../escape', 'target']],
+    [['parent/escape', 'target']],
+    [['existing', 'target']],
+    [
+      ['new-link', 'target'],
+      ['new-link/child', 'target'],
+    ],
+    [
+      ['new-link/child', 'target'],
+      ['new-link', 'target'],
+    ],
+    [
+      ['new-link', 'target'],
+      ['new-link', 'duplicate'],
+    ],
+    [
+      ['new-link', 'target'],
+      ['../escape', 'target'],
+    ],
+  ]) {
+    assert.throws(() => restoreLinks(target, links));
+    assert.equal(fs.existsSync(path.join(target, 'new-link')), false);
+  }
+  assert.equal(fs.readFileSync(path.join(target, 'existing'), 'utf8'), 'keep');
+  assert.deepEqual(fs.readdirSync(outside), []);
+});
+
+test('symlink restoration creates missing parents for selected snapshot files', (t) => {
+  const { target } = fixture(t);
+  restoreLinks(target, [['.config/gh', '../git-config']]);
+  assert.equal(fs.readlinkSync(path.join(target, '.config/gh')), '../git-config');
+});
 
 function fixture(t, repairOwner = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-source-volume-'));
@@ -54,6 +94,11 @@ test('seed preserves Git state, local files, indexes, nested worktrees and symli
     'eval/.venv/pyvenv.cfg',
     'eval/.venv-notes/local-file',
     'eval/local-script.py',
+    '.worktrees/topic/gitnexus-shared/node_modules/binary',
+    '.worktrees/topic/eval/.venv/bin/python',
+    '.worktrees/topic/.husky/_/h',
+    '.claude/worktrees/topic/local-edit',
+    '.claude/worktrees/topic/node_modules/binary',
   ]) {
     fs.mkdirSync(path.dirname(path.join(source, file)), { recursive: true });
     fs.writeFileSync(path.join(source, file), 'preserve me\n');
@@ -104,6 +149,17 @@ test('seed preserves Git state, local files, indexes, nested worktrees and symli
   assert.equal(fs.statSync(path.join(target, 'executable')).mode & 0o777, 0o755);
   assert.equal(fs.existsSync(path.join(target, '.husky/_')), false);
   assert.equal(fs.existsSync(path.join(target, 'eval/.venv')), false);
+  for (const folder of [
+    '.worktrees/topic/gitnexus-shared/node_modules',
+    '.worktrees/topic/eval/.venv',
+    '.worktrees/topic/.husky/_',
+    '.claude/worktrees/topic/node_modules',
+  ])
+    assert.equal(fs.existsSync(path.join(target, folder)), false, folder);
+  assert.equal(
+    fs.readFileSync(path.join(target, '.claude/worktrees/topic/local-edit'), 'utf8'),
+    'preserve me\n',
+  );
   for (const folder of overlays) {
     assert.equal(fs.existsSync(path.join(target, folder, 'host-dependency')), false);
     assert.equal(

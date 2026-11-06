@@ -4,7 +4,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawn } = require('node:child_process');
-const { EXCLUDED, validateGitDirectory } = require('./seed-workspace.cjs');
+const { Readable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
+const {
+  archiveEntries,
+  isWorkspaceExcluded,
+  validateGitDirectory,
+} = require('./seed-workspace.cjs');
 
 const SNAPSHOT_MARKER = '.devcontainer-snapshot-v1';
 const HOST_PATHS = [
@@ -66,16 +72,29 @@ function finishSnapshot(root, uid, gid, complete) {
   }
 }
 
-function archiveArgs(source, entries, excludes = []) {
-  return ['-C', source, ...excludes.map((entry) => `--exclude=./${entry}`), '-cf', '-', ...entries];
+function archiveArgs(source, entries, excludes = [], { recursive = true } = {}) {
+  return [
+    '-C',
+    source,
+    ...excludes.map((entry) => `--exclude=./${entry}`),
+    '-cf',
+    '-',
+    ...(recursive ? entries : ['--no-recursion', '--null', '-T', '-']),
+  ];
 }
 
-async function copyArchive(source, entries, destination, excludes = []) {
+async function copyArchive(source, entries, destination, excludes = [], exclude = () => false) {
   if (!entries.length) return;
   // No shell: spaces, apostrophes and Windows drive letters remain literal arguments.
   // Watch both processes: a failed tar must never publish a successful seed marker.
-  const archive = spawn('tar', archiveArgs(source, entries, excludes), {
-    stdio: ['ignore', 'pipe', 'inherit'],
+  const links = [];
+  const listing = archiveEntries(source, entries, {
+    links,
+    exclude: (relative) =>
+      excludes.includes(relative.split(path.sep).join('/')) || exclude(relative),
+  });
+  const archive = spawn('tar', archiveArgs(source, [], [], { recursive: false }), {
+    stdio: ['pipe', 'pipe', 'inherit'],
   });
   const copy = spawn('docker', ['cp', '-', destination], { stdio: ['pipe', 'inherit', 'inherit'] });
   const done = (child, name) =>
@@ -92,7 +111,31 @@ async function copyArchive(source, entries, destination, excludes = []) {
   });
   archive.stdout.pipe(copy.stdin);
   try {
-    await Promise.all([done(archive, 'tar'), done(copy, 'docker cp'), pipeDone]);
+    const inputDone = pipeline(
+      Readable.from(
+        (function* () {
+          for (const entry of listing) yield `${entry}\0`;
+        })(),
+      ),
+      archive.stdin,
+    );
+    await Promise.all([done(archive, 'tar'), done(copy, 'docker cp'), pipeDone, inputDone]);
+    if (links.length) {
+      const separator = destination.indexOf(':');
+      execFileSync(
+        'docker',
+        [
+          'exec',
+          '-i',
+          destination.slice(0, separator),
+          'node',
+          '/tmp/seed-workspace.cjs',
+          '--restore-links',
+          destination.slice(separator + 1),
+        ],
+        { input: JSON.stringify(links), stdio: ['pipe', 'inherit', 'inherit'] },
+      );
+    }
   } catch (error) {
     archive.kill();
     copy.kill();
@@ -156,7 +199,9 @@ async function initialize(
       validateGitDirectory(path.join(workspace, '.git'));
       console.log('[volumes] Importing the checkout, Git metadata and local work once...');
       docker('exec', name, 'mkdir', '/seed');
-      await copyArchive(workspace, ['.'], `${name}:/seed`, [...EXCLUDED]);
+      // Windows tar stats WSL links before applying --exclude. Enumerate in Node
+      // and disable tar recursion so it never encounters skipped dependencies.
+      await copyArchive(workspace, ['.'], `${name}:/seed`, [], isWorkspaceExcluded);
       run('seed-workspace.cjs', '/seed', '/workspace');
     }
     // Linux hosts realign the remote UID; Desktop on Windows/macOS keeps node=1000.
