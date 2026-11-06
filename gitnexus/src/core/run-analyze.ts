@@ -256,7 +256,6 @@ import {
   type PersistedSpringConfigConsumerRow,
 } from './incremental/spring-config-drift.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
-import { collectResolutionGroupFiles } from './incremental/resolution-groups.js';
 import { shouldEscalateIncrementalWrite } from './incremental/escalation-gate.js';
 import {
   ftsTablesAmong,
@@ -4164,6 +4163,7 @@ async function runFullAnalysisInner(
       // Resolution groups can change edges between unchanged files without an
       // import or a new-graph edge touching the changed/deleted member. Expand
       // before the importer walk so dependents of these siblings refresh too.
+      const { collectResolutionGroupFiles } = await import('./incremental/resolution-groups.js');
       for (const filePath of collectResolutionGroupFiles(
         [...hashDiff.toWrite, ...hashDiff.deleted],
         allFilePaths,
