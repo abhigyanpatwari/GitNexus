@@ -17,6 +17,7 @@ import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
 import { writeCommandBanner } from './command-banner.js';
 import { runProcessCliUpdateNotice } from './update-notice.js';
+import { memoryAutopilotDisabled } from '../core/ingestion/utils/effective-ram.js';
 
 const program = new Command();
 
@@ -302,8 +303,21 @@ program
       !options.watch &&
       options.memoryBudget !== undefined &&
       process.env.GITNEXUS_HEAP_LIMIT_SOURCE !== 'budget';
+    // An unconfigured automatic-heap parent also always re-execs with the
+    // admitted old/semi-space flags. Keep conservative capture for custom Node
+    // flags, manual heaps, test overrides and every analyzing child.
+    const autoSupervisor =
+      !options.watch &&
+      options.memoryBudget === undefined &&
+      process.env.GITNEXUS_ANALYSIS_SUPERVISED !== '1' &&
+      process.env.GITNEXUS_ANALYSIS_MANUAL_HEAP !== '1' &&
+      !memoryAutopilotDisabled() &&
+      process.env.GITNEXUS_TEST_RESPAWN_HEAP_MB === undefined &&
+      process.execArgv.length === 0 &&
+      !(process.env.NODE_OPTIONS ?? '').trim();
     if (
       budgetSupervisor ||
+      autoSupervisor ||
       (process.env.GITNEXUS_ANALYSIS_CONTINUATION === '1' && process.connected)
     ) {
       await createLbugLazyAction(() => import('./analyze.js'), 'analyzeCommand')(
