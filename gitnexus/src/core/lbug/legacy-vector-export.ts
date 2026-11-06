@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import lbug from '@ladybugdb/core';
-import { openLbugConnection, closeLbugConnection } from './lbug-config.js';
+import { openLbugConnection, closeLbugConnection, toNativeSafePath } from './lbug-config.js';
 import { escapeCypherString } from './cypher-escape.js';
 import { assertLbugPublicationReady } from './publication.js';
 import { embeddingJobDirectory, syncEmbeddingJobDirectory } from '../../storage/embedding-job.js';
@@ -117,7 +117,7 @@ export async function exportLegacyVectors(
   const csv = staging + '.csv';
   const sourceFile = `lbug.generation.${id.replaceAll('-', '')}`;
   const destination = path.join(root, sourceFile);
-  const csvLiteral = `'${escapeCypherString(csv)}'`;
+  const csvLiteral = `'${escapeCypherString(toNativeSafePath(csv).replace(/\\/g, '/'))}'`;
   let stagingReleased = true;
   try {
     options.signal?.throwIfAborted();

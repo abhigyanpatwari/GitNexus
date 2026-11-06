@@ -605,11 +605,6 @@ const forceHeapOOMForTestIfEnabled = (): void => {
 // `gitnexus/src/core/lbug/lbug-config.ts` in sync with this value.
 const RECOMMENDED_WAL_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
 
-/**
- * Last `--max-old-space-size` value (MB) in a NODE_OPTIONS string, or `null`
- * when absent/unparseable. Last occurrence wins, matching V8's own
- * later-flag-wins semantics when NODE_OPTIONS repeats a flag.
- */
 /** CLI and watch must preserve the same explicit heap/autopilot opt-outs. */
 export function usesManualAnalysisHeap(memoryBudget?: string): boolean {
   return (
@@ -622,6 +617,11 @@ export function usesManualAnalysisHeap(memoryBudget?: string): boolean {
   );
 }
 
+/**
+ * Last `--max-old-space-size` value (MB) in a NODE_OPTIONS string, or `null`
+ * when absent/unparseable. Last occurrence wins, matching V8's own
+ * later-flag-wins semantics when NODE_OPTIONS repeats a flag.
+ */
 export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
   return parseV8SizeFlagMb(nodeOptions, 'max-old-space-size');
 }

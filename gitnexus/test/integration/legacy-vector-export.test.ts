@@ -30,8 +30,8 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true });
 });
 
-async function fixture(rows = 1) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "gn-legacy-export-'"));
+async function fixture(rows = 1, prefix = "gn-legacy-export-'") {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   roots.push(root);
   const file = path.join(root, 'lbug');
   const handle = await openLbugConnection(lbug, file, { bufferPoolBytes: pool, threads: 1 });
@@ -75,73 +75,76 @@ async function fixture(rows = 1) {
   };
 }
 
-it('exports only the vector table and retains a compatible complete group without provider work', async () => {
-  const f = await fixture();
-  const before = await fs.stat(f.file, { bigint: true });
-  const copy = vi.spyOn(fs, 'copyFile');
-  let store: VectorStore | undefined, source: LegacyVectorSource | undefined;
-  try {
-    const id = await exportLegacyVectors(f.options);
-    expect(id).toMatch(/^[a-f0-9]{64}$/);
-    const receipt = await readLegacyEmbeddingSource(f.root, id!);
-    expect(receipt.recordedIdentity).toEqual(identity);
-    expect(copy).not.toHaveBeenCalled();
-    expect((await fs.stat(f.file, { bigint: true })).ino).toBe(before.ino);
-    expect(await f.query('MATCH (n:File) RETURN n.content AS content')).toEqual([
-      { content: 'Graph content must stay out of the export' },
-    ]);
-    const exported = await openLbugConnection(lbug, receipt.path, {
-      readOnly: true,
-      bufferPoolBytes: pool,
-      threads: 1,
-    });
+it.each(["gn-legacy-export-'", "gn-legacy-export-路径-'"])(
+  'exports a reusable vector table under %s without provider work',
+  async (prefix) => {
+    const f = await fixture(1, prefix);
+    const before = await fs.stat(f.file, { bigint: true });
+    const copy = vi.spyOn(fs, 'copyFile');
+    let store: VectorStore | undefined, source: LegacyVectorSource | undefined;
     try {
-      const result = await exported.conn.query('CALL show_tables() RETURN name');
-      const cursor = Array.isArray(result) ? result[0] : result;
+      const id = await exportLegacyVectors(f.options);
+      expect(id).toMatch(/^[a-f0-9]{64}$/);
+      const receipt = await readLegacyEmbeddingSource(f.root, id!);
+      expect(receipt.recordedIdentity).toEqual(identity);
+      expect(copy).not.toHaveBeenCalled();
+      expect((await fs.stat(f.file, { bigint: true })).ino).toBe(before.ino);
+      expect(await f.query('MATCH (n:File) RETURN n.content AS content')).toEqual([
+        { content: 'Graph content must stay out of the export' },
+      ]);
+      const exported = await openLbugConnection(lbug, receipt.path, {
+        readOnly: true,
+        bufferPoolBytes: pool,
+        threads: 1,
+      });
       try {
-        expect(await cursor.getAll()).toEqual([{ name: 'CodeEmbedding' }]);
+        const result = await exported.conn.query('CALL show_tables() RETURN name');
+        const cursor = Array.isArray(result) ? result[0] : result;
+        try {
+          expect(await cursor.getAll()).toEqual([{ name: 'CodeEmbedding' }]);
+        } finally {
+          cursor.close();
+        }
       } finally {
-        cursor.close();
+        await closeLbugConnection(exported, { strict: true, databasePath: receipt.path });
       }
-    } finally {
-      await closeLbugConnection(exported, { strict: true, databasePath: receipt.path });
-    }
-    await fs.mkdir(path.join(f.root, 'reuse'));
-    store = await VectorStore.open({
-      directory: path.join(f.root, 'reuse'),
-      identity: 'b'.repeat(64),
-      dimensions: 4,
-      mode: 'create',
-      bufferPoolBytes: pool,
-      threads: 1,
-      batchBytes: 65536,
-    });
-    source = await LegacyVectorSource.open(
-      {
-        path: receipt.path,
-        sourceIdentity: receipt.identity,
-        recordedIdentity: receipt.recordedIdentity,
-        expectedIdentity: identity,
-        expectedInputIdentity: 'c'.repeat(64),
-        config,
+      await fs.mkdir(path.join(f.root, 'reuse'));
+      store = await VectorStore.open({
+        directory: path.join(f.root, 'reuse'),
+        identity: 'b'.repeat(64),
+        dimensions: 4,
+        mode: 'create',
         bufferPoolBytes: pool,
         threads: 1,
         batchBytes: 65536,
-      },
-      store,
-      receipt.excludedIds,
-    );
-    const group = await source.reusable(node.id, f.hash, { node });
-    expect(group?.chunks).toBe(1);
-    expect(await source.readChunks(group!, 0, 1)).toEqual([
-      { chunkIndex: 0, startLine: 1, endLine: 1, embedding: [1, 0, 0, 0] },
-    ]);
-  } finally {
-    await source?.close();
-    await store?.close();
-    await f.close();
-  }
-});
+      });
+      source = await LegacyVectorSource.open(
+        {
+          path: receipt.path,
+          sourceIdentity: receipt.identity,
+          recordedIdentity: receipt.recordedIdentity,
+          expectedIdentity: identity,
+          expectedInputIdentity: 'c'.repeat(64),
+          config,
+          bufferPoolBytes: pool,
+          threads: 1,
+          batchBytes: 65536,
+        },
+        store,
+        receipt.excludedIds,
+      );
+      const group = await source.reusable(node.id, f.hash, { node });
+      expect(group?.chunks).toBe(1);
+      expect(await source.readChunks(group!, 0, 1)).toEqual([
+        { chunkIndex: 0, startLine: 1, endLine: 1, embedding: [1, 0, 0, 0] },
+      ]);
+    } finally {
+      await source?.close();
+      await store?.close();
+      await f.close();
+    }
+  },
+);
 
 it('keeps vector payloads out of JavaScript while transferring a larger table', async () => {
   const f = await fixture(4096);
