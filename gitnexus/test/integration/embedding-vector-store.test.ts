@@ -247,6 +247,24 @@ describe('rebased pending vector inputs', () => {
 });
 
 describe('bounded durable embedding runner', () => {
+  it.each([256, 512])(
+    'retains generated writes within a %i KiB queue until durable completion',
+    async (queueKiB) => {
+      const fixture = await runnerFixture(64);
+      const append = vi.spyOn(store, 'appendBatch');
+      const result = await fixture.run({ queueBytes: queueKiB * 1024 });
+      expect(result.state).toMatchObject({ completedNodes: 64, chunks: 64, failedUnits: 0 });
+      expect(result.peakQueueBytes).toBeLessThanOrEqual(queueKiB * 1024);
+      expect(append.mock.calls.flatMap(([rows]) => rows)).toHaveLength(64);
+      if (queueKiB === 512)
+        expect(append.mock.calls.length).toBeLessThan(fixture.provider.mock.calls.length);
+      await fixture.reopen();
+      fixture.provider.mockClear();
+      expect((await fixture.run()).state.chunks).toBe(64);
+      expect(fixture.provider).not.toHaveBeenCalled();
+    },
+  );
+
   it('completes copied groups together at the unit boundary without provider requests', async () => {
     const fixture = await runnerFixture(64);
     const finish = vi.spyOn(store, 'finishNodes');
@@ -271,7 +289,7 @@ describe('bounded durable embedding runner', () => {
     expect(queries.mock.calls.filter(([sql]) => sql === 'COMMIT').length).toBeLessThan(10);
   });
 
-  it('flushes copied vectors before generated inputs and preserves complete mixed coverage', async () => {
+  it('bounds copied and generated vectors together and preserves complete mixed coverage', async () => {
     const fixture = await runnerFixture(65);
     const result = await fixture.run({
       queueBytes: 512 * 1024,
@@ -517,9 +535,8 @@ describe('bounded durable embedding runner', () => {
     async (when) => {
       const fixture = await runnerFixture(65);
       const append = store.appendBatch.bind(store);
-      let calls = 0;
       vi.spyOn(store, 'appendBatch').mockImplementation(async (rows) => {
-        if (++calls === 9) {
+        if (rows.some((row) => row.nodeId === 'Const:source.ts:n00064')) {
           if (when === 'after') await append(rows);
           throw new Error('simulated write failure');
         }

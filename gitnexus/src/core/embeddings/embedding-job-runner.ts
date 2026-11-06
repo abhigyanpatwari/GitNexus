@@ -170,6 +170,8 @@ export async function runEmbeddingJob(
     const releaseScratch = budget.reserve(scratchBytes);
     let batch: Array<Omit<VectorWriteChunk, 'embedding'> & { text: string; release: () => void }> =
       [];
+    // Retained vector copies share one bounded write buffer, whether their
+    // source is a reusable artifact or a newly completed provider request.
     let copyBatch: VectorWriteChunk[] = [];
     let copyBytes = 0;
     let copyReleases: Array<() => void> = [];
@@ -194,6 +196,30 @@ export async function runEmbeddingJob(
         copyBytes = 0;
         copyReleases = [];
       }
+    };
+
+    const queueWrites = async (chunks: VectorWriteChunk[]): Promise<void> => {
+      const bytes = chunks.reduce(
+        (total, chunk) => total + 32 * dimensions + 1024 + 4 * chunk.nodeId.length,
+        0,
+      );
+      if (
+        copyBatch.length &&
+        (copyBatch.length + chunks.length > 256 ||
+          copyBytes + bytes > store.options.batchBytes ||
+          budget.usedBytes + bytes > budget.limit)
+      )
+        await flushCopies();
+      // The active provider batch already reserves these vector copies. A
+      // tight queue can write immediately without a second retained reservation.
+      if (bytes > store.options.batchBytes || budget.usedBytes + bytes > budget.limit) {
+        await store.appendBatch(chunks);
+        return;
+      }
+      const release = budget.reserve(bytes);
+      copyBatch.push(...chunks);
+      copyBytes += bytes;
+      copyReleases.push(release);
     };
 
     const flush = async (): Promise<void> => {
@@ -250,7 +276,7 @@ export async function runEmbeddingJob(
                   },
                 ],
           );
-          if (updates.length) await store.appendBatch(updates);
+          if (updates.length) await queueWrites(updates);
         }
         if (providerFailed) failures++;
         if (!abort && providerFailed && attempted >= ratioFloor && failures / attempted >= 0.25)
@@ -445,7 +471,6 @@ export async function runEmbeddingJob(
           reusedNodes++;
           continue;
         }
-        if (copyBatch.length) await flushCopies();
         const state = {
           contentHash: input.contentHash,
           chunks: 0,
@@ -466,6 +491,7 @@ export async function runEmbeddingJob(
           )
             await flush();
           if (failed.has(node.id) || abort) break;
+          if (copyBatch.length && budget.usedBytes + bytes > budget.limit) await flushCopies();
           const release = budget.reserve(bytes);
           batch.push({
             ...input,
@@ -478,8 +504,8 @@ export async function runEmbeddingJob(
         if (state.ended) state.inputsDigest = hash?.digest('hex');
         if (abort) break;
       }
-      if (copyBatch.length) await flushCopies();
       if (!abort) await flush();
+      if (copyBatch.length) await flushCopies();
       const attempts = await journal.recordInputRejections([...rejectedInputs]);
       for (const id of rejectedInputs) {
         if (attempts[id] < 3) continue;
