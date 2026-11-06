@@ -46,6 +46,11 @@ Each job runs `--validate-gate` decision checks before measuring and
 uploads raw samples, summaries, dependency receipts and analyzer logs, including
 partial results on failure. The runner never overwrites an existing report.
 
+The explicit-profile CI job also uploads `analyze-resume-cpu-profile` before the
+full comparison. This separate one-pair fresh-HTTP run uses `--cpu-profile` to
+capture Node CPU profiles for each process and parser worker. Profiling is
+incompatible with `--check`; acceptance timings always run without profiling.
+
 Benchmark execution belongs exclusively to the dedicated CI jobs above. It is
 not included in the unit or integration test suites.
 

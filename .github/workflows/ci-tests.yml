@@ -49,6 +49,25 @@ jobs:
       - name: Install candidate search extensions
         working-directory: gitnexus
         run: npx tsx scripts/ensure-fts.ts
+      - name: Profile fresh HTTP analysis separately from acceptance timings
+        if: matrix.resources == 'explicit'
+        working-directory: gitnexus
+        run: |
+          mkdir -p "$RUNNER_TEMP/analyze-profile"
+          node bench/analyze-resume/measure.mjs --cpu-profile --allow-dependency-changes \
+            --scenarios http-fresh --pairs 1 --warmups 0 \
+            --baseline "$GITHUB_WORKSPACE/baseline/gitnexus/dist/cli/index.js" \
+            --output "$RUNNER_TEMP/analyze-profile/results.json"
+      - name: Retain diagnostic CPU profiles before the full comparison
+        if: always() && matrix.resources == 'explicit'
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: analyze-resume-cpu-profile
+          path: |
+            ${{ runner.temp }}/analyze-profile/**/*.cpuprofile
+            ${{ runner.temp }}/analyze-profile/**/*.json
+            ${{ runner.temp }}/analyze-profile/**/*.log
+          retention-days: 7
       - name: Check paired analyze and resume performance
         working-directory: gitnexus
         shell: bash

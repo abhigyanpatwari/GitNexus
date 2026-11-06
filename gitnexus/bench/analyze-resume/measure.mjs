@@ -387,6 +387,7 @@ async function runCase({
   heapMb,
   workers,
   defaultResources,
+  cpuProfile,
   provider,
   sampleMs,
   stopRequested,
@@ -416,7 +417,13 @@ async function runCase({
       GITNEXUS_EMBEDDING_MAX_ATTEMPTS: '1',
       GITNEXUS_EMBEDDING_SUB_BATCH_SIZE: '16',
     });
-  const args = [cli, 'analyze', repo, '--index-only'];
+  const args = [
+    ...(cpuProfile ? ['--cpu-prof', `--cpu-prof-dir=${directory}`] : []),
+    cli,
+    'analyze',
+    repo,
+    '--index-only',
+  ];
   if (!defaultResources) args.push('--memory-budget', String(heapMb), '--workers', String(workers));
   if (embedding) args.push('--embeddings', '0');
   const counters = provider.begin(
@@ -516,6 +523,7 @@ export async function main(argv = process.argv.slice(2)) {
       'heap-mb': { type: 'string', default: '2048' },
       workers: { type: 'string', default: '2' },
       'default-resources': { type: 'boolean', default: false },
+      'cpu-profile': { type: 'boolean', default: false },
       'allow-dependency-changes': { type: 'boolean', default: false },
       'sample-ms': { type: 'string', default: '25' },
       'keep-stores': { type: 'boolean', default: false },
@@ -524,6 +532,10 @@ export async function main(argv = process.argv.slice(2)) {
       help: { type: 'boolean' },
     },
   });
+  assert(
+    !(v.check && v['cpu-profile']),
+    'CPU profiles are diagnostic runs, not acceptance timings',
+  );
   if (v['validate-gate']) {
     const fixture = { schemaVersion: 1, maxPairedRatio: 1, scenarios: { case: {} } };
     const summary = (ratios) =>
@@ -571,6 +583,7 @@ export async function main(argv = process.argv.slice(2)) {
   --pairs 7 --warmups 1   Alternating paired invocations; fewer than seven pairs is smoke-only
   --modules 64 --functions 16 --heap-mb 2048 --workers 2 --sample-ms 25
   --default-resources   Omit heap, worker and native-pool overrides on both sides
+  --cpu-profile         Retain per-process/thread CPU profiles; incompatible with --check
   --allow-dependency-changes Compare shipped runtimes, including intentional dependency changes
   --validate-gate       Check decision logic without running benchmarks
   --check               Require the baseline corpus/scenarios and reject detected slowdowns
@@ -653,6 +666,7 @@ Live-query latency and platform cases remain separate acceptance requirements.`)
       totalMemory: os.totalmem(),
       settings: numbers,
       resourceProfile: v['default-resources'] ? 'default' : 'explicit-heap-workers-pool',
+      cpuProfile: v['cpu-profile'],
       comparison: v['allow-dependency-changes'] ? 'shipped-runtimes' : 'identical-dependencies',
       runtime,
       clis: {},
@@ -660,7 +674,7 @@ Live-query latency and platform cases remain separate acceptance requirements.`)
     limitations: [
       'Synthetic corpus only; stats and deterministic input coverage are checked, not query ranking.',
       'Linux RSS sampling is a lower-bound observation, not a hard memory limit or exact peak.',
-      'CPU/disk, phase timings, native reservations and queue peaks are not collected by this harness.',
+      'Disk, phase timings, native reservations and queue peaks are not collected; optional CPU profiles are diagnostic only.',
       'Only the selected scenarios and resource profile were measured; live query latency and Windows require additional validation.',
     ],
     acceptance: 'incomplete',
@@ -707,6 +721,7 @@ Live-query latency and platform cases remain separate acceptance requirements.`)
             heapMb: numbers['heap-mb'],
             workers: numbers.workers,
             defaultResources: v['default-resources'],
+            cpuProfile: v['cpu-profile'],
             sampleMs: numbers['sample-ms'],
             provider,
             stopRequested: () => interrupted,
