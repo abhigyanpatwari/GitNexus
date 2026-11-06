@@ -43,6 +43,7 @@ import {
   localEmbeddingStackMissingMessage,
 } from '../core/embeddings/runtime-support.js';
 import { reapEmbeddingSidecarSafely } from '../core/embeddings/embedding-sidecar-reap.js';
+import { contentRetentionFromMeta } from '../core/content-retention.js';
 
 /** Add missing embeddings directly to a healthy index, checkpointing periodically. */
 export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> => {
@@ -211,6 +212,11 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
         undefined,
         existing && existing.size ? existing : undefined,
         {
+          source: {
+            repoPath,
+            fileHashes: meta.fileHashes,
+            contentRetention: contentRetentionFromMeta(meta),
+          },
           forceReembedNodeIds,
           onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
             await saveCheckpoint(checkpoint, nodeIds);

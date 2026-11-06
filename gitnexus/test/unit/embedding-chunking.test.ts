@@ -31,7 +31,6 @@ vi.mock('gitnexus-shared', async (importOriginal) => ({
 
 import { chunkNode } from '../../src/core/embeddings/chunker.js';
 
-const CLASS_PREV_TAIL_SAMPLE = 30;
 const STRUCT_PREV_TAIL_SAMPLE = 20;
 
 type FakeNode = {
@@ -192,21 +191,18 @@ describe('embedding-chunking integration', () => {
     });
 
     const chunks = await chunkNode(node.label, node.content, node.filePath, 20, 25, 90, 0);
-    expect(chunks).toHaveLength(2);
-
-    const secondText = generateEmbeddingText(
-      node,
-      chunks[1].text,
-      {},
-      chunks[1].chunkIndex,
-      chunks[0].text.slice(-CLASS_PREV_TAIL_SAMPLE),
-    );
-    expect(secondText).toContain('Class: Parser');
-    expect(secondText).toContain('Container: class Parser {');
-    expect(secondText).toContain('[preceding context]: ...');
-    expect(secondText).not.toContain('Methods: parseJSON, validate');
-    expect(secondText).not.toContain('Properties: options, cache');
-    expect(secondText).toContain('parseJSON(text: string)');
+    expect(chunks).toHaveLength(1);
+    node.classDeclaration = chunks[0].classDeclaration;
+    const text = generateEmbeddingText(node, chunks[0].text, {}, 0, 'return BODY_SENTINEL');
+    expect(text).toContain('Class: Parser');
+    expect(text).toContain('Container: class Parser {');
+    expect(text).toContain('Methods: parseJSON, validate');
+    expect(text).toContain('Properties: options, cache');
+    expect(text).toContain('options: ParserOptions;');
+    expect(text).toContain('cache: Map<string, any>;');
+    expect(text).not.toContain('return JSON.parse');
+    expect(text).not.toContain('return true');
+    expect(text).not.toContain('BODY_SENTINEL');
   });
 
   it('interface chunks retain structural metadata and signatures', async () => {

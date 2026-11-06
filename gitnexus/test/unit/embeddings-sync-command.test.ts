@@ -411,6 +411,19 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
     expect(existsSync(path.join(dir, 'analyze.lock'))).toBe(false);
   });
 
+  it('supplies the checkout root and indexed source policy, not the storage directory', async () => {
+    const { dir } = await store();
+    const fileHashes = { 'sample.ts': 'a'.repeat(64) };
+    loadMetaMock.mockResolvedValue({ ...BASE_META, fileHashes, contentRetention: 'symbol' });
+    await run();
+    expect(runEmbeddingPipelineMock.mock.calls[0]?.[6].source).toEqual({
+      repoPath: BASE_META.repoPath,
+      fileHashes,
+      contentRetention: 'symbol',
+    });
+    expect(dir).not.toBe(BASE_META.repoPath);
+  });
+
   it('persists an interrupted checkpoint from the pipeline checkpoint callbacks', async () => {
     // The resume contract lives in these callbacks; a mock that never invokes
     // them leaves the whole save path unexecuted.

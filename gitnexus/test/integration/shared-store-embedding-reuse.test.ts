@@ -71,6 +71,8 @@ it('reuses sibling vectors across dirty clone copies, shrinking chunks, retries 
     vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'auto');
     await fs.mkdir(first);
     git(first, 'init', '-q', '-b', 'main');
+    // Shared-snapshot assertions require identical checkout bytes on every OS.
+    git(first, 'config', 'core.autocrlf', 'false');
     git(first, 'remote', 'add', 'origin', 'https://example.invalid/shared/embeddings.git');
     for (let i = 0; i < 12; i++) {
       const body =
@@ -84,7 +86,7 @@ it('reuses sibling vectors across dirty clone copies, shrinking chunks, retries 
     }
     git(first, 'add', '-A');
     git(first, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'fixture');
-    git(root, 'clone', '-q', first, second);
+    git(root, 'clone', '-q', '--config', 'core.autocrlf=false', first, second);
     git(second, 'remote', 'set-url', 'origin', 'https://example.invalid/shared/embeddings.git');
     const logs: string[] = [];
     const analyze = (repo: string, force = false) =>

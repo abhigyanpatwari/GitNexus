@@ -60,3 +60,58 @@ describe('resolveEmbeddingConfig', () => {
     },
   );
 });
+
+describe('chunk policy configuration (#702)', () => {
+  it('retains existing defaults and treats blank environment controls as unset', () => {
+    process.env.GITNEXUS_EMBEDDING_CHUNK_SIZE = ' ';
+    process.env.GITNEXUS_EMBEDDING_CHUNK_OVERLAP = '';
+    process.env.GITNEXUS_EMBEDDING_CHUNK_STRATEGY = '\t';
+    expect(resolveEmbeddingConfig()).toMatchObject({
+      chunkSize: 1200,
+      overlap: 120,
+      chunkStrategy: 'ast',
+    });
+    expect(
+      resolveEmbeddingConfig({ chunkSize: 500, overlap: 50, chunkStrategy: 'fixed' }),
+    ).toMatchObject({ chunkSize: 500, overlap: 50, chunkStrategy: 'fixed' });
+  });
+
+  it('resolves environment controls over explicit values and accepts zero overlap', () => {
+    process.env.GITNEXUS_EMBEDDING_CHUNK_SIZE = '500';
+    process.env.GITNEXUS_EMBEDDING_CHUNK_OVERLAP = '0';
+    process.env.GITNEXUS_EMBEDDING_CHUNK_STRATEGY = 'fixed';
+    expect(
+      resolveEmbeddingConfig({ chunkSize: 1000, overlap: 100, chunkStrategy: 'ast' }),
+    ).toMatchObject({ chunkSize: 500, overlap: 0, chunkStrategy: 'fixed' });
+  });
+
+  it.each(['1', '0', '-1', '1.5', 'Infinity', '9007199254740992', 'garbage'])(
+    'rejects invalid chunk size %s',
+    (value) => {
+      process.env.GITNEXUS_EMBEDDING_CHUNK_SIZE = value;
+      expect(() => resolveEmbeddingConfig()).toThrow('GITNEXUS_EMBEDDING_CHUNK_SIZE');
+    },
+  );
+
+  it.each(['-1', '1.5', 'Infinity', '1200', '1300', '9007199254740992', 'garbage'])(
+    'rejects invalid overlap %s',
+    (value) => {
+      process.env.GITNEXUS_EMBEDDING_CHUNK_OVERLAP = value;
+      expect(() => resolveEmbeddingConfig()).toThrow('GITNEXUS_EMBEDDING_CHUNK_OVERLAP');
+    },
+  );
+
+  it('validates the effective pair, including programmatic overrides', () => {
+    expect(() => resolveEmbeddingConfig({ chunkSize: 100 })).toThrow(
+      'GITNEXUS_EMBEDDING_CHUNK_OVERLAP',
+    );
+    expect(() => resolveEmbeddingConfig({ chunkSize: NaN })).toThrow(
+      'GITNEXUS_EMBEDDING_CHUNK_SIZE',
+    );
+    expect(() => resolveEmbeddingConfig({ overlap: -1 })).toThrow(
+      'GITNEXUS_EMBEDDING_CHUNK_OVERLAP',
+    );
+    process.env.GITNEXUS_EMBEDDING_CHUNK_STRATEGY = 'unknown';
+    expect(() => resolveEmbeddingConfig()).toThrow('GITNEXUS_EMBEDDING_CHUNK_STRATEGY');
+  });
+});

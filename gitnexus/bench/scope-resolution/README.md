@@ -118,3 +118,5 @@ provider hooks, including elapsed emit time and graph counts. `sr-post-resolve`
 marks the end of the initial registry lookup only; substantial resolution still
 follows it. These markers distinguish that work on the next reporter run.
 The private repository's complete OOM has not been reproduced by these probes.
+
+For the import-emission memory benchmark, see [its README](../import-emission/README.md).
