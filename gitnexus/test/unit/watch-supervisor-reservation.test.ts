@@ -64,20 +64,29 @@ it.each([undefined, String(320 * 1024 ** 2)])(
   },
 );
 
-it.each([undefined, String(320 * 1024 ** 2)])(
-  'retains supervisor reservation %s across watch refreshes',
-  async (inherited) => {
+it.each([
+  [undefined, undefined],
+  [String(320 * 1024 ** 2), undefined],
+  [undefined, '768'],
+  [String(320 * 1024 ** 2), '768'],
+])(
+  'retains supervisor %s and explicit heap %s across watch refreshes',
+  async (inherited, memoryBudget) => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-watch-supervisor-'));
     directories.push(directory);
     vi.stubEnv('GITNEXUS_ANALYSIS_SUPERVISOR_BYTES', inherited);
     vi.stubEnv('GITNEXUS_RC', '');
     const baseline = { maxFileSize: undefined, workerTimeout: undefined, verbose: undefined };
-    await resolveWatchOptions(directory, {}, baseline);
-    await resolveWatchOptions(directory, {}, baseline);
+    await resolveWatchOptions(directory, { memoryBudget }, baseline);
+    await resolveWatchOptions(directory, { memoryBudget }, baseline);
     expect(mocks.resources).toHaveBeenCalledTimes(2);
     for (const [request] of mocks.resources.mock.calls)
       expect(request).toMatchObject({
         supervisorBytes: inherited === undefined ? 192 * 1024 ** 2 : Number(inherited),
+        mainHeapMb:
+          memoryBudget === undefined
+            ? Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2)
+            : Number(memoryBudget),
       });
   },
 );

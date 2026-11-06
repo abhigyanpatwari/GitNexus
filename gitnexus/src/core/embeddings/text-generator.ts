@@ -319,8 +319,7 @@ export const extractDeclarationOnly = (content: string): string => {
           }
           lookaheadEnd = end + 1;
         }
-        const nextBrace = content.indexOf('{', nextLineStart);
-        if (!trimmed.includes('{') && !(nextBrace >= 0 && nextBrace < lookaheadEnd)) {
+        if (!trimmed.includes('{') && !content.slice(nextLineStart, lookaheadEnd).includes('{')) {
           return '';
         }
         started = true;

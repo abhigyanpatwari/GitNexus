@@ -196,7 +196,9 @@ export async function resolveWatchOptions(
   );
   const resources = resolveHostAnalysisResources({
     totalMb: positiveInteger(merged.resourceBudget, '--resource-budget'),
-    mainHeapMb: Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
+    mainHeapMb:
+      positiveInteger(cli.memoryBudget, '--memory-budget') ??
+      Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
     workers: workerPoolSize,
     includeEmbeddings: await analysisMayEmbed(repoPath, { branch }),
     supervisorBytes:
