@@ -50,6 +50,10 @@ test('seed preserves Git state, local files, indexes, nested worktrees and symli
     '.gitnexus/index-sample',
     '.worktrees/topic/local-edit',
     '.git/worktrees/topic/gitdir',
+    'eval/.venv/bin/python',
+    'eval/.venv/pyvenv.cfg',
+    'eval/.venv-notes/local-file',
+    'eval/local-script.py',
   ]) {
     fs.mkdirSync(path.dirname(path.join(source, file)), { recursive: true });
     fs.writeFileSync(path.join(source, file), 'preserve me\n');
@@ -87,6 +91,8 @@ test('seed preserves Git state, local files, indexes, nested worktrees and symli
     '.worktrees/topic/local-edit',
     '.git/worktrees/topic/gitdir',
     '.husky/pre-commit',
+    'eval/.venv-notes/local-file',
+    'eval/local-script.py',
   ]) {
     assert.deepEqual(
       fs.readFileSync(path.join(target, file)),
@@ -97,6 +103,7 @@ test('seed preserves Git state, local files, indexes, nested worktrees and symli
   assert.equal(fs.readlinkSync(path.join(target, 'dangling-link')), 'missing-file');
   assert.equal(fs.statSync(path.join(target, 'executable')).mode & 0o777, 0o755);
   assert.equal(fs.existsSync(path.join(target, '.husky/_')), false);
+  assert.equal(fs.existsSync(path.join(target, 'eval/.venv')), false);
   for (const folder of overlays) {
     assert.equal(fs.existsSync(path.join(target, folder, 'host-dependency')), false);
     assert.equal(

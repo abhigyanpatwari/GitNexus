@@ -14,7 +14,7 @@ function temporary(t) {
   return root;
 }
 
-test('the host tar omits dependencies and markers while preserving ignored local files', (t) => {
+test('the host tar omits Node and Python dependencies while preserving ignored local files', (t) => {
   const root = temporary(t);
   for (const file of [
     '.git/config',
@@ -23,6 +23,10 @@ test('the host tar omits dependencies and markers while preserving ignored local
     '.husky/_/h',
     'gitnexus/node_modules/binary',
     'node_modules/binary',
+    'eval/.venv/bin/python',
+    'eval/.venv/pyvenv.cfg',
+    'eval/.venv-notes/local-file',
+    'eval/local-script.py',
     'file with spaces',
   ]) {
     fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
@@ -33,6 +37,9 @@ test('the host tar omits dependencies and markers while preserving ignored local
   assert.match(listing, /\.git\/config/);
   assert.match(listing, /\.env.local/);
   assert.match(listing, /file with spaces/);
+  assert.match(listing, /eval\/\.venv-notes\/local-file/);
+  assert.match(listing, /eval\/local-script\.py/);
+  assert.doesNotMatch(listing, /eval\/\.venv(?:\/|$)/m);
   assert.doesNotMatch(listing, /node_modules|devcontainer-source-volume|\.husky\/_/);
 });
 

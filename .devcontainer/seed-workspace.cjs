@@ -11,7 +11,8 @@ const DEPENDENCIES = [
   'gitnexus-web/node_modules',
   'gitnexus-shared/node_modules',
 ];
-const EXCLUDED = new Set([...DEPENDENCIES, '.husky/_', MARKER]);
+// Recreate the Python environment in Linux; Windows tar cannot stat its WSL symlinks.
+const EXCLUDED = new Set([...DEPENDENCIES, 'eval/.venv', '.husky/_', MARKER]);
 
 function isDirectory(file) {
   return fs.existsSync(file) && fs.lstatSync(file).isDirectory();
