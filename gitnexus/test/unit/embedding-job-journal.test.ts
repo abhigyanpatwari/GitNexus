@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   EmbeddingJobJournal,
+  embeddingInputFailureKey,
   type EmbeddingUnitIntent,
 } from '../../src/storage/embedding-job-journal.js';
 import {
@@ -47,26 +48,56 @@ afterEach(async () => {
 });
 
 describe('durable embedding scheduling', () => {
-  it('retains deterministic rejection history across a crash before vector exclusion', async () => {
-    let journal = await job();
-    const id = 'Function:a.ts:bad';
-    await journal.begin(unit(0));
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      await journal.recordInputRejections([id]);
-      journal = await EmbeddingJobJournal.recover(journal.directory, identity, manifest);
-      expect(journal.snapshot().active?.inputFailures).toEqual({ [id]: attempt });
-      if (attempt < 3) {
-        await journal.fail('provider');
+  it.each(['Function:a.ts:bad', `Function:a.ts:${'x'.repeat(40_000)}`])(
+    'retains rejection history across crashes for node ID %#',
+    async (id) => {
+      let journal = await job();
+      await journal.begin(unit(0));
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        expect(await journal.recordInputRejections([id])).toEqual({ [id]: attempt });
         journal = await EmbeddingJobJournal.recover(journal.directory, identity, manifest);
-        await journal.begin(unit(0, 'failed'));
+        expect(journal.snapshot().active).toMatchObject({
+          inputFailureKeyFormat: 'sha256',
+          inputFailures: { [embeddingInputFailureKey(id)]: attempt },
+        });
+        if (attempt < 3) {
+          await journal.fail('provider');
+          journal = await EmbeddingJobJournal.recover(journal.directory, identity, manifest);
+          await journal.begin(unit(0, 'failed'));
+        }
       }
-    }
+      await journal.acknowledge({ reusedNodes: 1, chunks: 1 });
+      expect(journal.snapshot()).toMatchObject({
+        excludedNodes: 1,
+        reusedNodes: 1,
+        completedNodes: 0,
+      });
+    },
+  );
+
+  it('upgrades existing raw-ID rejection history without resetting attempts', async () => {
+    let journal = await job();
+    const id = 'Function:a.ts:legacy';
+    await journal.begin({ ...unit(0), inputFailures: { [id]: 2 } });
+    await journal.fail('input');
+    journal = await EmbeddingJobJournal.recover(journal.directory, identity, manifest);
+    await journal.begin(unit(0, 'failed'));
+    expect(await journal.recordInputRejections([id])).toEqual({ [id]: 3 });
     await journal.acknowledge({ reusedNodes: 1, chunks: 1 });
-    expect(journal.snapshot()).toMatchObject({
-      excludedNodes: 1,
-      reusedNodes: 1,
-      completedNodes: 0,
-    });
+    expect(journal.snapshot().excludedNodes).toBe(1);
+  });
+
+  it('fits a full unit of long rejected IDs within the receipt limit', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-embedding-journal-wide-'));
+    directories.push(directory);
+    const wideManifest = { ...manifest, totalNodes: 64, totalUnits: 1, bytes: 10 };
+    const journal = await EmbeddingJobJournal.create(directory, identity, wideManifest);
+    await journal.begin({ ...unit(0), nodes: 64 });
+    const ids = Array.from({ length: 64 }, (_, i) => `Function:a.ts:${i}${'x'.repeat(40_000)}`);
+    await journal.recordInputRejections(ids);
+    const reopened = await EmbeddingJobJournal.open(journal.directory, identity, wideManifest);
+    expect(Object.keys(reopened.snapshot().active!.inputFailures!)).toHaveLength(64);
+    expect((await fs.stat(path.join(journal.directory, 'job.json'))).size).toBeLessThan(32 * 1024);
   });
 
   it.each([0, 4, 1.5])('rejects malformed persisted input failure count %s', async (count) => {

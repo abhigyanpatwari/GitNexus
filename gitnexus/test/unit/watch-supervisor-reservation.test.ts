@@ -64,18 +64,23 @@ it.each([undefined, String(320 * 1024 ** 2)])(
   },
 );
 
-it('retains the parent reservation across watch refreshes', async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-watch-supervisor-'));
-  directories.push(directory);
-  vi.stubEnv('GITNEXUS_ANALYSIS_SUPERVISOR_BYTES', String(320 * 1024 ** 2));
-  vi.stubEnv('GITNEXUS_RC', '');
-  const baseline = { maxFileSize: undefined, workerTimeout: undefined, verbose: undefined };
-  await resolveWatchOptions(directory, {}, baseline);
-  await resolveWatchOptions(directory, {}, baseline);
-  expect(mocks.resources).toHaveBeenCalledTimes(2);
-  for (const [request] of mocks.resources.mock.calls)
-    expect(request).toMatchObject({ supervisorBytes: 320 * 1024 ** 2 });
-});
+it.each([undefined, String(320 * 1024 ** 2)])(
+  'retains supervisor reservation %s across watch refreshes',
+  async (inherited) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-watch-supervisor-'));
+    directories.push(directory);
+    vi.stubEnv('GITNEXUS_ANALYSIS_SUPERVISOR_BYTES', inherited);
+    vi.stubEnv('GITNEXUS_RC', '');
+    const baseline = { maxFileSize: undefined, workerTimeout: undefined, verbose: undefined };
+    await resolveWatchOptions(directory, {}, baseline);
+    await resolveWatchOptions(directory, {}, baseline);
+    expect(mocks.resources).toHaveBeenCalledTimes(2);
+    for (const [request] of mocks.resources.mock.calls)
+      expect(request).toMatchObject({
+        supervisorBytes: inherited === undefined ? 192 * 1024 ** 2 : Number(inherited),
+      });
+  },
+);
 
 it('honors GITNEXUS_MEMORY=off in the actual watch admission path', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-watch-manual-'));

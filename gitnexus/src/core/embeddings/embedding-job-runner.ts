@@ -2,10 +2,11 @@
 import { createHash } from 'node:crypto';
 import { EmbeddingByteBudget } from '../analysis-resource-budget.js';
 import type { VectorNodeReceipt, VectorStore, VectorWriteChunk } from '../lbug/vector-store.js';
-import type {
-  EmbeddingJobJournal,
-  EmbeddingJobState,
-  EmbeddingUnitIntent,
+import {
+  embeddingInputFailureKey,
+  type EmbeddingJobJournal,
+  type EmbeddingJobState,
+  type EmbeddingUnitIntent,
 } from '../../storage/embedding-job-journal.js';
 import {
   fetchEmbeddingWorkUnit,
@@ -99,10 +100,23 @@ export async function runEmbeddingJob(
     intent: EmbeddingUnitIntent,
   ): Promise<void> => {
     signal?.throwIfAborted();
-    const history = journal.snapshot().active?.inputFailures ?? intent.inputFailures ?? {};
-    if (Object.keys(history).some((id) => !unit.nodes.some((node) => node.id === id)))
-      throw new Error('Embedding rejection history does not match its manifest unit');
-    const excluded = new Set(Object.keys(history).filter((id) => history[id] >= 3));
+    const active = journal.snapshot().active ?? intent;
+    const history = active.inputFailures ?? {};
+    const excluded = new Set<string>();
+    if (Object.keys(history).length) {
+      const nodesByKey = new Map(
+        unit.nodes.map((node) => [
+          active.inputFailureKeyFormat === 'sha256' ? embeddingInputFailureKey(node.id) : node.id,
+          node.id,
+        ]),
+      );
+      for (const [key, attempts] of Object.entries(history)) {
+        const id = nodesByKey.get(key);
+        if (id === undefined)
+          throw new Error('Embedding rejection history does not match its manifest unit');
+        if (attempts >= 3) excluded.add(id);
+      }
+    }
     const complete = options.revalidateStoredInputs
       ? new Map<string, VectorNodeReceipt>()
       : await store.completedNodes(unit.nodes.map((node) => node.id));

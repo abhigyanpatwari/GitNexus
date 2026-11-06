@@ -1,7 +1,7 @@
 /** Compact scheduling journal. The caller owns the checkout's exclusive job lock. */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   EmbeddingManifestCursor,
   EmbeddingManifestReceipt,
@@ -20,6 +20,8 @@ export interface EmbeddingUnitIntent {
   origin: 'manifest' | 'failed';
   /** Bounded by the unit's 64 nodes; three deterministic rejections exclude a node. */
   inputFailures?: Record<string, number>;
+  /** Older receipts use raw node IDs. New receipts bound keys independently of ID length. */
+  inputFailureKeyFormat?: 'sha256';
 }
 
 export interface EmbeddingJobState {
@@ -59,6 +61,9 @@ const integer = (value: unknown): value is number =>
 const filename = (unit: number): string => `failed-${String(unit).padStart(16, '0')}.json`;
 const clone = <T>(value: T): T => structuredClone(value);
 
+export const embeddingInputFailureKey = (nodeId: string): string =>
+  createHash('sha256').update(nodeId).digest('hex');
+
 /** Operational failures (permissions, I/O) must not be treated as lost state. */
 function damagedRecord(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
@@ -84,7 +89,8 @@ function validateIntent(intent: EmbeddingUnitIntent, state: EmbeddingJobState): 
     !integer(intent.nodes) ||
     intent.nodes < 1 ||
     intent.nodes > 64 ||
-    !['manifest', 'failed'].includes(intent.origin)
+    !['manifest', 'failed'].includes(intent.origin) ||
+    (intent.inputFailureKeyFormat !== undefined && intent.inputFailureKeyFormat !== 'sha256')
   )
     throw new Error('Invalid embedding unit intent');
   if (
@@ -97,6 +103,7 @@ function validateIntent(intent: EmbeddingUnitIntent, state: EmbeddingJobState): 
         ([id, attempts]) =>
           !id.length ||
           id.length > 1024 * 1024 ||
+          (intent.inputFailureKeyFormat === 'sha256' && !DIGEST.test(id)) ||
           !integer(attempts) ||
           attempts < 1 ||
           attempts > 3,
@@ -331,6 +338,7 @@ export class EmbeddingJobJournal {
         next.failedUnits--;
         next.failedNodes -= requested.nodes;
         requested.inputFailures = record.intent.inputFailures;
+        requested.inputFailureKeyFormat = record.intent.inputFailureKeyFormat;
       }
       next.active = requested;
     });
@@ -388,21 +396,30 @@ export class EmbeddingJobJournal {
     });
   }
 
-  /** Persist input-only failures before discarding rejected nodes' partial rows. */
+  /** Persist input-only failures before discarding partial rows; return counts for these IDs. */
   async recordInputRejections(ids: readonly string[]): Promise<Readonly<Record<string, number>>> {
-    if (!ids.length) return clone(this.state.active?.inputFailures ?? {});
+    if (!ids.length) return {};
     await this.mutate(async (next) => {
-      if (!next.active || new Set(ids).size !== ids.length || ids.length > next.active.nodes)
+      const active = next.active;
+      if (!active || new Set(ids).size !== ids.length || ids.length > active.nodes)
         throw new Error('Invalid embedding input rejections');
-      const history = { ...next.active.inputFailures };
+      const history = Object.fromEntries(
+        Object.entries(active.inputFailures ?? {}).map(([key, attempts]) => [
+          active.inputFailureKeyFormat === 'sha256' ? key : embeddingInputFailureKey(key),
+          attempts,
+        ]),
+      );
       for (const id of ids) {
         if (!id.length || id.length > 1024 * 1024 || id === '__proto__')
           throw new Error('Invalid rejected node identity');
-        history[id] = Math.min(3, (history[id] ?? 0) + 1);
+        const key = embeddingInputFailureKey(id);
+        history[key] = Math.min(3, (history[key] ?? 0) + 1);
       }
-      next.active.inputFailures = history;
+      active.inputFailures = history;
+      active.inputFailureKeyFormat = 'sha256';
     });
-    return clone(this.state.active!.inputFailures!);
+    const history = this.state.active!.inputFailures!;
+    return Object.fromEntries(ids.map((id) => [id, history[embeddingInputFailureKey(id)]]));
   }
 
   private async readFailed(name: string): Promise<FailedUnit> {
