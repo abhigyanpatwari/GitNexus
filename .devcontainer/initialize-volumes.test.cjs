@@ -14,12 +14,19 @@ function temporary(t) {
   return root;
 }
 
-test('the host tar omits Node and Python dependencies while preserving ignored local files', (t) => {
+test('the host tar omits dependencies and parser caches while preserving indexes and local files', (t) => {
   const root = temporary(t);
   for (const file of [
     '.git/config',
     '.git/devcontainer-source-volume',
     '.git/refs/heads/node_modules/topic',
+    '.git/refs/heads/.gitnexus/parse-cache/topic',
+    '.gitnexus/parse-cache/chunk.v8',
+    '.gitnexus/parse-cache.json',
+    '.gitnexus/parsedfile-cache/chunk.v8',
+    '.gitnexus/lbug',
+    '.gitnexus/gitnexus.json',
+    '.gitnexus/run.cjs',
     '.env.local',
     '.husky/_/h',
     'gitnexus/node_modules/binary',
@@ -31,9 +38,15 @@ test('the host tar omits Node and Python dependencies while preserving ignored l
     '.worktrees/zig-receivers/gitnexus-shared/node_modules/binary',
     '.worktrees/zig-receivers/gitnexus-shared/src/index.ts',
     '.worktrees/zig-receivers/.husky/_/h',
+    '.worktrees/zig-receivers/.gitnexus/parse-cache/chunk.v8',
+    '.worktrees/zig-receivers/.gitnexus/parsedfile-cache/chunk.v8',
+    '.worktrees/zig-receivers/.gitnexus/lbug',
     '.claude/worktrees/topic/eval/.venv/bin/python',
     '.claude/worktrees/topic/local-edit',
     '.claude/worktrees/topic/.git',
+    '.claude/worktrees/topic/.gitnexus/parse-cache.json',
+    'src/parse-cache/implementation.cjs',
+    '.gitnexus/parse-cache-notes/local-file',
     'file with spaces',
     "file's name",
     '-leading-option',
@@ -55,12 +68,44 @@ test('the host tar omits Node and Python dependencies while preserving ignored l
   assert.match(listing, /\.claude\/worktrees\/topic\/local-edit/);
   assert.match(listing, /\.claude\/worktrees\/topic\/\.git/);
   assert.match(listing, /\.git\/refs\/heads\/node_modules\/topic/);
+  assert.match(listing, /\.git\/refs\/heads\/\.gitnexus\/parse-cache\/topic/);
+  assert.match(listing, /\.gitnexus\/lbug/);
+  assert.match(listing, /\.gitnexus\/gitnexus.json/);
+  assert.match(listing, /\.gitnexus\/run.cjs/);
+  assert.match(listing, /\.worktrees\/zig-receivers\/\.gitnexus\/lbug/);
+  assert.match(listing, /src\/parse-cache\/implementation.cjs/);
+  assert.match(listing, /\.gitnexus\/parse-cache-notes\/local-file/);
   assert.doesNotMatch(listing, /eval\/\.venv(?:\/|$)/m);
   const workspace = listing
     .split(/\r?\n/)
     .filter((entry) => !entry.startsWith('./.git/'))
     .join('\n');
   assert.doesNotMatch(workspace, /node_modules|devcontainer-source-volume|\.husky\/_/);
+  assert.doesNotMatch(
+    workspace,
+    /\.gitnexus\/(?:parse-cache(?:\.json)?|parsedfile-cache)(?:\/|$)/m,
+  );
+});
+
+test('progress reports activity while idle and stops its timer on completion or failure', () => {
+  for (const outcome of ['done', 'failed']) {
+    const result = spawnSync(
+      process.execPath,
+      [
+        '-e',
+        `const { startProgress } = require(process.argv[1]);
+       const finish = startProgress('Fixture', () => '; 2.0 MiB streamed to Docker', 10);
+       setTimeout(() => finish(process.argv[2]), 60);`,
+        path.join(__dirname, 'initialize-volumes.cjs'),
+        outcome,
+      ],
+      { encoding: 'utf8', timeout: 10000 },
+    );
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    assert.match(result.stdout, /Fixture: starting; [\d.]+s elapsed/);
+    assert.match(result.stdout, /Fixture: working; [\d.]+s elapsed; 2.0 MiB streamed to Docker/);
+    assert.match(result.stdout.trim().split('\n').at(-1), new RegExp(`Fixture: ${outcome};`));
+  }
 });
 
 test('explicit archives restore dangling and directory links without traversing them', (t) => {
@@ -118,6 +163,15 @@ function dockerFixture(t) {
   fs.writeFileSync(path.join(source, 'local-edit'), 'uncommitted');
   fs.symlinkSync('local-edit', path.join(source, 'source-link'));
   fs.mkdirSync(path.join(source, '.worktrees/topic/gitnexus-shared'), { recursive: true });
+  fs.mkdirSync(path.join(source, '.worktrees/topic/.gitnexus/parse-cache'), { recursive: true });
+  fs.writeFileSync(
+    path.join(source, '.worktrees/topic/.gitnexus/parse-cache/chunk.v8'),
+    'regenerable',
+  );
+  fs.writeFileSync(
+    path.join(source, '.worktrees/topic/.gitnexus/lbug'),
+    'keep graph and embeddings',
+  );
   fs.symlinkSync(
     '/missing/Linux/dependencies',
     path.join(source, '.worktrees/topic/gitnexus-shared/node_modules'),
@@ -150,7 +204,10 @@ switch(args[0]) {
     const dest = map(args[2].split(':').slice(1).join(':'));
     if (args[1] === '-') {
       if (process.env.IMPORT_FAIL_COPY) process.exit(3);
-      run('tar', ['-xf', '-', '-C', dest], fs.readFileSync(0));
+      const input = fs.readFileSync(0);
+      if (process.env.IMPORT_SLOW_COPY && args[2].endsWith(':/seed'))
+        setTimeout(() => run('tar', ['-xf', '-', '-C', dest], input), 5200);
+      else run('tar', ['-xf', '-', '-C', dest], input);
     } else fs.copyFileSync(args[1], dest);
     break;
   }
@@ -194,6 +251,14 @@ test('host import is one-time, uses only native volumes, preserves edits and cle
   assert.equal(fs.readFileSync(path.join(state, 'workspace/local-edit'), 'utf8'), 'uncommitted');
   assert.equal(fs.readlinkSync(path.join(state, 'workspace/source-link')), 'local-edit');
   assert.equal(
+    fs.existsSync(path.join(state, 'workspace/.worktrees/topic/.gitnexus/parse-cache')),
+    false,
+  );
+  assert.equal(
+    fs.readFileSync(path.join(state, 'workspace/.worktrees/topic/.gitnexus/lbug'), 'utf8'),
+    'keep graph and embeddings',
+  );
+  assert.equal(
     fs.existsSync(path.join(state, 'workspace/.worktrees/topic/gitnexus-shared/node_modules')),
     false,
   );
@@ -209,6 +274,22 @@ test('host import is one-time, uses only native volumes, preserves edits and cle
   const commands = fs.readFileSync(path.join(state, 'commands'), 'utf8');
   assert.doesNotMatch(commands, /type=bind|--privileged|SYS_ADMIN/);
   assert.equal(commands.split('\n').filter((line) => line.startsWith('["cp","-"')).length, 3);
+  assert.match(first.stdout, /Archive to \/seed: done; .*entries queued.*MiB streamed to Docker/);
+  assert.match(first.stdout, /Copying into the source volume and normalizing Git: starting/);
+  assert.match(first.stdout, /\[workspace\] Ready/);
+  assert.match(first.stdout, /Finalizing \/host: done/);
+  assert.match(first.stdout, /Removing temporary import helper: done/);
+});
+
+test('archive progress continues while Docker finishes a slow copy', (t) => {
+  const { run } = dockerFixture(t);
+  const result = run('source', { IMPORT_SLOW_COPY: '1' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    /Archive to \/seed: working; .*entries queued.*MiB streamed to Docker/,
+  );
+  assert.match(result.stdout, /Archive to \/seed: done/);
 });
 
 test('native profile imports config without copying or requiring a host checkout', (t) => {
@@ -224,6 +305,8 @@ test('a failed copy aborts initialization and never marks the source ready', (t)
   const { state, run } = dockerFixture(t);
   const result = run('source', { IMPORT_FAIL_COPY: '1' });
   assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /Archive to \/seed: failed/);
+  assert.doesNotMatch(result.stdout, /Archive to \/seed: done/);
   assert.equal(fs.existsSync(path.join(state, 'workspace/.git/devcontainer-source-volume')), false);
   assert.equal(fs.existsSync(path.join(state, 'active')), false);
 });

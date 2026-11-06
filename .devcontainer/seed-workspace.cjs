@@ -19,6 +19,13 @@ function isWorkspaceExcluded(relative) {
   return (
     parts.includes('node_modules') ||
     parts.includes('.venv') ||
+    // Parser caches are regenerable and can dwarf the checkout across worktrees.
+    // Keep the graph, embeddings, metadata and runner in the same .gitnexus dir.
+    parts.some(
+      (part, i) =>
+        part === '.gitnexus' &&
+        ['parse-cache', 'parse-cache.json', 'parsedfile-cache'].includes(parts[i + 1]),
+    ) ||
     parts.some((part, i) => part === '.husky' && parts[i + 1] === '_')
   );
 }

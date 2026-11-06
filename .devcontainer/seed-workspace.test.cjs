@@ -88,6 +88,13 @@ test('seed preserves Git state, local files, indexes, nested worktrees and symli
   fs.writeFileSync(path.join(source, 'executable'), '#!/bin/sh\n', { mode: 0o755 });
   for (const file of [
     '.gitnexus/index-sample',
+    '.gitnexus/parse-cache/chunk.v8',
+    '.gitnexus/parse-cache.json',
+    '.gitnexus/parsedfile-cache/chunk.v8',
+    '.worktrees/topic/.gitnexus/parse-cache/chunk.v8',
+    '.worktrees/topic/.gitnexus/parsedfile-cache/chunk.v8',
+    '.worktrees/topic/.gitnexus/lbug',
+    '.claude/worktrees/topic/.gitnexus/parse-cache/chunk.v8',
     '.worktrees/topic/local-edit',
     '.git/worktrees/topic/gitdir',
     'eval/.venv/bin/python',
@@ -133,6 +140,7 @@ test('seed preserves Git state, local files, indexes, nested worktrees and symli
     'ignored-local',
     'untracked',
     '.gitnexus/index-sample',
+    '.worktrees/topic/.gitnexus/lbug',
     '.worktrees/topic/local-edit',
     '.git/worktrees/topic/gitdir',
     '.husky/pre-commit',
@@ -150,12 +158,20 @@ test('seed preserves Git state, local files, indexes, nested worktrees and symli
   assert.equal(fs.existsSync(path.join(target, '.husky/_')), false);
   assert.equal(fs.existsSync(path.join(target, 'eval/.venv')), false);
   for (const folder of [
+    '.gitnexus/parse-cache',
+    '.gitnexus/parse-cache.json',
+    '.gitnexus/parsedfile-cache',
+    '.worktrees/topic/.gitnexus/parse-cache',
+    '.worktrees/topic/.gitnexus/parsedfile-cache',
+    '.claude/worktrees/topic/.gitnexus/parse-cache',
     '.worktrees/topic/gitnexus-shared/node_modules',
     '.worktrees/topic/eval/.venv',
     '.worktrees/topic/.husky/_',
     '.claude/worktrees/topic/node_modules',
-  ])
+  ]) {
     assert.equal(fs.existsSync(path.join(target, folder)), false, folder);
+    assert.equal(fs.existsSync(path.join(source, folder)), true, `host keeps ${folder}`);
+  }
   assert.equal(
     fs.readFileSync(path.join(target, '.claude/worktrees/topic/local-edit'), 'utf8'),
     'preserve me\n',

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawn } = require('node:child_process');
-const { Readable } = require('node:stream');
+const { Readable, Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const {
   archiveEntries,
@@ -83,47 +83,100 @@ function archiveArgs(source, entries, excludes = [], { recursive = true } = {}) 
   ];
 }
 
+function startProgress(label, details = () => '', intervalMs = 5000) {
+  const started = performance.now();
+  const report = (status) => {
+    const elapsed = ((performance.now() - started) / 1000).toFixed(1);
+    console.log(`[volumes] ${label}: ${status}; ${elapsed}s elapsed${details()}`);
+  };
+  report('starting');
+  const timer = setInterval(() => report('working'), intervalMs);
+  return (status) => {
+    clearInterval(timer);
+    report(status);
+  };
+}
+
+function childDone(child, name) {
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) =>
+      code === 0 ? resolve() : reject(new Error(`${name} exited ${signal || code}`)),
+    );
+  });
+}
+
+async function runWithProgress(label, args, input) {
+  const finish = startProgress(label);
+  const child = spawn('docker', args, {
+    stdio: [input === undefined ? 'ignore' : 'pipe', 'inherit', 'inherit'],
+  });
+  try {
+    const done = childDone(child, label);
+    const written =
+      input === undefined ? Promise.resolve() : pipeline(Readable.from([input]), child.stdin);
+    await Promise.all([done, written]);
+    finish('done');
+  } catch (error) {
+    child.kill();
+    finish('failed');
+    throw error;
+  }
+}
+
 async function copyArchive(source, entries, destination, excludes = [], exclude = () => false) {
   if (!entries.length) return;
   // No shell: spaces, apostrophes and Windows drive letters remain literal arguments.
   // Watch both processes: a failed tar must never publish a successful seed marker.
   const links = [];
+  let queued = 0;
+  let bytes = 0;
+  let skipped = 0;
+  const finish = startProgress(
+    `Archive to ${destination.slice(destination.indexOf(':') + 1)}`,
+    () =>
+      `; ${queued} entries queued, ${links.length} symlinks, ${skipped} excluded paths; ${(bytes / 1024 ** 2).toFixed(1)} MiB streamed to Docker`,
+  );
   const listing = archiveEntries(source, entries, {
     links,
-    exclude: (relative) =>
-      excludes.includes(relative.split(path.sep).join('/')) || exclude(relative),
+    exclude: (relative) => {
+      const omit = excludes.includes(relative.split(path.sep).join('/')) || exclude(relative);
+      if (omit) skipped++;
+      return omit;
+    },
   });
   const archive = spawn('tar', archiveArgs(source, [], [], { recursive: false }), {
     stdio: ['pipe', 'pipe', 'inherit'],
   });
   const copy = spawn('docker', ['cp', '-', destination], { stdio: ['pipe', 'inherit', 'inherit'] });
-  const done = (child, name) =>
-    new Promise((resolve, reject) => {
-      child.once('error', reject);
-      child.once('close', (code) =>
-        code === 0 ? resolve() : reject(new Error(`${name} exited ${code}`)),
-      );
-    });
-  const pipeDone = new Promise((resolve, reject) => {
-    copy.stdin.once('error', reject);
-    copy.stdin.once('finish', resolve);
-    archive.stdout.once('error', reject);
+  const meter = new Transform({
+    transform(chunk, encoding, callback) {
+      bytes += chunk.length;
+      callback(null, chunk);
+    },
   });
-  archive.stdout.pipe(copy.stdin);
   try {
     const inputDone = pipeline(
       Readable.from(
         (function* () {
-          for (const entry of listing) yield `${entry}\0`;
+          for (const entry of listing) {
+            queued++;
+            yield `${entry}\0`;
+          }
         })(),
       ),
       archive.stdin,
     );
-    await Promise.all([done(archive, 'tar'), done(copy, 'docker cp'), pipeDone, inputDone]);
+    await Promise.all([
+      childDone(archive, 'tar'),
+      childDone(copy, 'docker cp'),
+      pipeline(archive.stdout, meter, copy.stdin),
+      inputDone,
+    ]);
     if (links.length) {
       const separator = destination.indexOf(':');
-      execFileSync(
-        'docker',
+      await runWithProgress(
+        'Restoring symlinks',
         [
           'exec',
           '-i',
@@ -133,12 +186,14 @@ async function copyArchive(source, entries, destination, excludes = [], exclude 
           '--restore-links',
           destination.slice(separator + 1),
         ],
-        { input: JSON.stringify(links), stdio: ['pipe', 'inherit', 'inherit'] },
+        JSON.stringify(links),
       );
     }
+    finish('done');
   } catch (error) {
     archive.kill();
     copy.kill();
+    finish('failed');
     throw error;
   }
 }
@@ -176,7 +231,7 @@ async function initialize(
   const name = `gitnexus-import-${id}`;
   let created = false;
   try {
-    docker(
+    await runWithProgress('Preparing import helper', [
       'create',
       '--name',
       name,
@@ -189,20 +244,32 @@ async function initialize(
       'sleep',
       image,
       'infinity',
-    );
+    ]);
     created = true;
-    docker('start', name);
+    await runWithProgress('Starting import helper', ['start', name]);
     for (const file of ['initialize-volumes.cjs', 'seed-workspace.cjs'])
       docker('cp', path.join(__dirname, file), `${name}:/tmp/${file}`);
     const run = (script, ...args) => docker('exec', name, 'node', `/tmp/${script}`, ...args);
     if (mode === 'source' && run('seed-workspace.cjs', '--state', '/workspace') === 'empty') {
       validateGitDirectory(path.join(workspace, '.git'));
-      console.log('[volumes] Importing the checkout, Git metadata and local work once...');
+      console.log(
+        '[volumes] Importing the checkout, Git metadata and local work once; skipping dependencies and regenerable parser caches.',
+      );
+      console.log(
+        '[volumes] Docker needs space for both the temporary import and the source volume.',
+      );
       docker('exec', name, 'mkdir', '/seed');
       // Windows tar stats WSL links before applying --exclude. Enumerate in Node
       // and disable tar recursion so it never encounters skipped dependencies.
       await copyArchive(workspace, ['.'], `${name}:/seed`, [], isWorkspaceExcluded);
-      run('seed-workspace.cjs', '/seed', '/workspace');
+      await runWithProgress('Copying into the source volume and normalizing Git', [
+        'exec',
+        name,
+        'node',
+        '/tmp/seed-workspace.cjs',
+        '/seed',
+        '/workspace',
+      ]);
     }
     // Linux hosts realign the remote UID; Desktop on Windows/macOS keeps node=1000.
     const uid = String(process.platform === 'linux' ? process.getuid() : 1000);
@@ -224,12 +291,22 @@ async function initialize(
           SNAPSHOT_MARKER,
         ]);
       }
-      run('initialize-volumes.cjs', '--snapshot-finish', snapshot.target, uid, gid, state);
+      await runWithProgress(`Finalizing ${snapshot.target}`, [
+        'exec',
+        name,
+        'node',
+        '/tmp/initialize-volumes.cjs',
+        '--snapshot-finish',
+        snapshot.target,
+        uid,
+        gid,
+        state,
+      ]);
     }
     console.log('[volumes] Linux volumes ready. Host files are not synchronized.');
   } finally {
     // Only the disposable helper is removed, never any volume or host file.
-    if (created) docker('rm', '-f', name);
+    if (created) await runWithProgress('Removing temporary import helper', ['rm', '-f', name]);
   }
 }
 
@@ -237,6 +314,7 @@ module.exports = {
   initialize,
   copyArchive,
   archiveArgs,
+  startProgress,
   snapshotState,
   finishSnapshot,
   HOST_PATHS,
