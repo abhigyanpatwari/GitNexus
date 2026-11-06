@@ -60,6 +60,13 @@ function profile(
     }
   }
   if (native) {
+    // The explicit native profile still clones a remote branch; the default
+    // profile instead preserves the host checkout, including uncommitted work.
+    result = replaceOnce(
+      result,
+      /"\$\{devcontainerId\}",\s*"source"/,
+      '"${devcontainerId}", "native"',
+    );
     result = replaceOnce(
       result,
       /"workspaceMount": "[^"\n]+"/,
@@ -73,8 +80,8 @@ function profile(
     );
     result = replaceOnce(
       result,
-      /"updateContentCommand":/,
-      '"onCreateCommand": "node /usr/local/share/gitnexus-devcontainer/bootstrap-native.cjs",\n  "updateContentCommand":',
+      /"onCreateCommand": "[^"\n]+"/,
+      '"onCreateCommand": "node /usr/local/share/gitnexus-devcontainer/bootstrap-native.cjs"',
     );
   }
   if (imageOnly) {
