@@ -94,6 +94,30 @@ afterEach(() => {
 });
 
 describe('worker pool timeout retirement', () => {
+  it('retains a live worker when its shutdown termination request rejects', async () => {
+    let live!: TimeoutThenHealthyWorker;
+    const pool = createWorkerPool(workerUrl, 1, {
+      requireDrain: true,
+      workerFactory: () => {
+        live = new TimeoutThenHealthyWorker();
+        live.terminate = async () => {
+          live.terminateCalls++;
+          throw new Error('termination rejected');
+        };
+        return live as unknown as import('node:worker_threads').Worker;
+      },
+    });
+    try {
+      await expect(pool.terminate()).rejects.toThrow('native resource reservation');
+      await expect(pool.terminate()).rejects.toThrow('native resource reservation');
+      expect(live.terminateCalls).toBe(1);
+      live.emit('exit', 0);
+      await expect(pool.terminate()).resolves.toBeUndefined();
+    } finally {
+      live.emit('exit', 0);
+      await pool.terminate();
+    }
+  });
   it('retains a rejected termination reservation until physical exit, then releases it', async () => {
     let broken: TimeoutThenHealthyWorker | undefined;
     const pool = createWorkerPool(workerUrl, 1, {

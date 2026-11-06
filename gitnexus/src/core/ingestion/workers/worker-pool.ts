@@ -1195,7 +1195,31 @@ export const createWorkerPool = (
   ): Promise<void> => {
     const retired = Array.from(retiredWorkers);
     await Promise.all([
-      ...liveWorkers.map((worker) => worker?.terminate().catch(() => undefined)),
+      ...liveWorkers.map(async (worker, workerIndex) => {
+        if (!worker) return;
+        let completeRelease!: () => void;
+        const termination = new Promise<void>((resolve) => {
+          completeRelease = resolve;
+        });
+        const released = () => {
+          worker.off('exit', released);
+          pendingWorkerReleases.delete(termination);
+          completeRelease();
+        };
+        if (requireDrain) {
+          pendingWorkerReleases.set(termination, workerIndex);
+          worker.once('exit', released);
+        }
+        try {
+          await worker.terminate();
+          released();
+        } catch {
+          // A rejected request does not prove physical exit. Retain ownership
+          // after workers[] is cleared, and release it on the eventual exit.
+          if (!requireDrain) released();
+          else worker.unref?.();
+        }
+      }),
       ...retired.map(async (record) => {
         // #2432: a retired worker that has not reached a JS-visible safe
         // point may be inside an N-API call — terminating it aborts the

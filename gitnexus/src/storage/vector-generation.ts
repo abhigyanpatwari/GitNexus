@@ -125,8 +125,9 @@ export function selectVectorGeneration(
   };
 }
 
-/** Refuse ancestor symlinks as well as a symlinked database. The coordinator
- * holds the slot lock while creating jobs; published directories are immutable. */
+/** Refuse symlinks from the owned metadata slot down to the database. Parent
+ * path aliases remain valid. The coordinator holds the slot lock while creating
+ * jobs; published directories are immutable. */
 export async function assertOwnedVectorGeneration(
   metadataDirectory: string,
   identity: string,
