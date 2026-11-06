@@ -118,12 +118,14 @@ export async function exportLegacyVectors(
   const sourceFile = `lbug.generation.${id.replaceAll('-', '')}`;
   const destination = path.join(root, sourceFile);
   const csvLiteral = `'${escapeCypherString(csv)}'`;
+  let stagingReleased = true;
   try {
     options.signal?.throwIfAborted();
     await options.query(
       `COPY (MATCH (e:CodeEmbedding) RETURN ${fields.map((f) => `e.${f} AS ${f}`).join(', ')}) TO ${csvLiteral} (HEADER=true)`,
     );
     options.signal?.throwIfAborted();
+    stagingReleased = false;
     const handle = await openLbugConnection(lbug, staging, {
       bufferPoolBytes: options.bufferPoolBytes,
       threads: options.threads,
@@ -154,6 +156,7 @@ export async function exportLegacyVectors(
       // A failed physical release remains charged by the native reservation
       // manager. Never rename or certify that still-open export.
       await closeLbugConnection(handle, { strict: true, databasePath: staging });
+      stagingReleased = true;
     }
     options.signal?.throwIfAborted();
     await assertLbugPublicationReady(staging);
@@ -173,5 +176,10 @@ export async function exportLegacyVectors(
     );
   } finally {
     await fs.rm(csv, { force: true });
+    // The original source remains untouched. A failed close must retain its
+    // live file; renamed generations are reclaimed by the ownership sweep,
+    // since a receipt write can succeed before reporting a durability failure.
+    if (stagingReleased)
+      for (const suffix of ['', '.wal', '.shadow']) await fs.rm(staging + suffix, { force: true });
   }
 }

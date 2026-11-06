@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   adoptEmbeddingArtifact,
   readEmbeddingArtifactSpace,
+  readEmbeddingArtifactOwners,
   embeddingArtifactSpaceKey,
   type EmbeddingArtifactOwner,
   type EmbeddingArtifactRecord,
@@ -39,6 +40,20 @@ afterEach(async () => {
 });
 
 describe('pending embedding artifact ownership', () => {
+  it('does not create ownership directories for a missing space', async () => {
+    expect(await readEmbeddingArtifactSpace(root, space, validate)).toBeNull();
+    expect(await fs.readdir(root)).toEqual([]);
+    expect(validate).not.toHaveBeenCalled();
+  });
+
+  it('ignores an empty interrupted space but retains unidentified contents', async () => {
+    await fs.mkdir(directory(), { recursive: true });
+    expect(await readEmbeddingArtifactOwners(root)).toEqual([]);
+    await fs.writeFile(path.join(directory(), 'unknown'), 'retain');
+    await expect(readEmbeddingArtifactOwners(root)).rejects.toThrow('no ownership receipt');
+    expect(await fs.readFile(path.join(directory(), 'unknown'), 'utf8')).toBe('retain');
+  });
+
   it('keeps one artifact through repeated source generations without enumerating job history', async () => {
     vi.spyOn(fs, 'readdir').mockRejectedValue(new Error('History scan'));
     vi.spyOn(fs, 'opendir').mockRejectedValue(new Error('History scan'));

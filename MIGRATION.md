@@ -31,6 +31,12 @@ three deterministic input rejections, the job publishes healthy nodes and record
 On Windows, a legacy reader can prevent retirement of `lbug`. Stop that reader
 and rerun analyze; the prepared publication and vector artifacts are retained.
 
+Legacy source receipts now include the file's change time as well as its size
+and modification time. Receipts from earlier previews without that guard are
+retained but cannot certify reuse. Keep them with the original source when
+recovering from a backup or re-exporting a verified source; do not fill in a
+missing guard from the current file, which may have changed since retirement.
+
 `GITNEXUS_LBUG_BUFFER_POOL_SIZE=0` is no longer accepted by analysis: it asks
 the native engine to allocate an unbounded pool. Remove this setting from CLI,
 server and auto-sync environments to use automatic sizing, or set a positive

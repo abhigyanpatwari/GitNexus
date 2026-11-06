@@ -154,8 +154,30 @@ describe('retained legacy source receipts', () => {
     await expect(readLegacyEmbeddingSource(f.root, identity)).rejects.toThrow('regular file');
     await fs.unlink(f.source);
     await fs.rename(f.source + '.old', f.source);
+    const restoredIdentity = await recordLegacyEmbeddingSource(f.root, f.input, []);
     await fs.writeFile(f.source + '.wal', 'not checkpointed');
-    await expect(readLegacyEmbeddingSource(f.root, identity)).rejects.toThrow('native recovery');
+    await expect(readLegacyEmbeddingSource(f.root, restoredIdentity)).rejects.toThrow(
+      'native recovery',
+    );
+  });
+  it('rejects in-place source changes even when size and mtime are restored', async () => {
+    const f = await fixture();
+    const timestamp = new Date('2020-01-01T00:00:00Z');
+    await fs.utimes(f.source, timestamp, timestamp);
+    const identity = await recordLegacyEmbeddingSource(f.root, f.input, []);
+    const before = await fs.stat(f.source, { bigint: true });
+    await fs.writeFile(f.source, 'changed database');
+    await fs.utimes(f.source, timestamp, timestamp);
+    const after = await fs.stat(f.source, { bigint: true });
+    expect({ ino: after.ino, size: after.size, mtime: after.mtimeNs }).toEqual({
+      ino: before.ino,
+      size: before.size,
+      mtime: before.mtimeNs,
+    });
+    await expect(readLegacyEmbeddingSource(f.root, identity)).rejects.toThrow(
+      'changed after retirement',
+    );
+    expect(await fs.readFile(f.source, 'utf8')).toBe('changed database');
   });
   it('validates the complete exclusion checksum before a native index may become complete', async () => {
     const f = await fixture();

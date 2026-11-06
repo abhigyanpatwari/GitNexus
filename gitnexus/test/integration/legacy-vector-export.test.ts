@@ -230,9 +230,9 @@ it('refuses publication when the source count changes during the transfer', asyn
         },
       }),
     ).rejects.toThrow('source changed');
-    expect(
-      (await fs.readdir(f.root)).filter((name) => name.startsWith('lbug.generation.')),
-    ).toEqual([]);
+    expect((await fs.readdir(f.root)).filter((name) => /generation|staging/.test(name))).toEqual(
+      [],
+    );
     expect((await f.query('MATCH (e:CodeEmbedding) RETURN count(e) AS count'))[0].count).toBe(1);
   } finally {
     await f.close();

@@ -33,7 +33,7 @@ export interface LegacyEmbeddingSourceRecord {
   recordedInputIdentity?: string;
   /** Descriptor attributes detect replacement/mutation. Ownership and provider
    * provenance come from the retired slot and record, never these attributes. */
-  file: { dev: string; ino: string; size: string; mtimeNs: string };
+  file: { dev: string; ino: string; size: string; mtimeNs: string; ctimeNs: string };
   excluded: { digest: string; bytes: number; nodes: number };
 }
 export interface ResolvedLegacyEmbeddingSource extends LegacyEmbeddingSourceRecord {
@@ -73,7 +73,7 @@ function record(value: unknown): LegacyEmbeddingSourceRecord {
     r.schemaFingerprint.length > 2048 ||
     (r.recordedInputIdentity !== undefined && !DIGEST.test(r.recordedInputIdentity)) ||
     !r.file ||
-    ![r.file.dev, r.file.ino, r.file.size, r.file.mtimeNs].every(
+    ![r.file.dev, r.file.ino, r.file.size, r.file.mtimeNs, r.file.ctimeNs].every(
       (v) => typeof v === 'string' && /^\d+$/.test(v),
     ) ||
     !r.excluded ||
@@ -91,7 +91,13 @@ function record(value: unknown): LegacyEmbeddingSourceRecord {
     ...(r.recordedInputIdentity === undefined
       ? {}
       : { recordedInputIdentity: r.recordedInputIdentity }),
-    file: { dev: r.file.dev, ino: r.file.ino, size: r.file.size, mtimeNs: r.file.mtimeNs },
+    file: {
+      dev: r.file.dev,
+      ino: r.file.ino,
+      size: r.file.size,
+      mtimeNs: r.file.mtimeNs,
+      ctimeNs: r.file.ctimeNs,
+    },
     excluded: { digest: r.excluded.digest, bytes: r.excluded.bytes, nodes: r.excluded.nodes },
   };
 }
@@ -103,6 +109,7 @@ function fileIdentity(stat: BigIntStats): LegacyEmbeddingSourceRecord['file'] {
     ino: String(stat.ino),
     size: String(stat.size),
     mtimeNs: String(stat.mtimeNs),
+    ctimeNs: String(stat.ctimeNs),
   };
 }
 async function sourceFile(root: string, r: LegacyEmbeddingSourceRecord): Promise<string> {

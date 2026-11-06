@@ -1526,9 +1526,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               ? { metadataDirectory: entry.storagePath, metadata, graphPath: lbugPath }
               : undefined;
           const semanticReady =
-            mode !== 'bm25' &&
-            (snapshot !== undefined ||
-              (await import('../core/embeddings/embedder.js')).isEmbedderReady());
+            mode !== 'bm25' && (await import('../core/embeddings/embedder.js')).isEmbedderReady();
           const semanticLane = async (execute: typeof executeQuery, text: string, count = 10) => {
             const { semanticSearch } = await import('../core/embeddings/embedding-pipeline.js');
             return semanticSearch(

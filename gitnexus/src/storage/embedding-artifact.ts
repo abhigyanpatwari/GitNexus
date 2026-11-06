@@ -74,7 +74,7 @@ export async function readEmbeddingArtifactOwners(root: string): Promise<Embeddi
       if (intent.before !== null) add(intent.before);
       add(intent.after);
     }
-    if (current === null && intent === null)
+    if (current === null && intent === null && (await fs.readdir(directory)).length)
       throw new Error('Embedding space has no ownership receipt');
   }
   return owners;
@@ -163,13 +163,16 @@ function record(value: unknown, space: EmbeddingArtifactSpace): EmbeddingArtifac
   };
 }
 
-async function spaceDirectory(root: string, space: EmbeddingArtifactSpace): Promise<string> {
-  const directory = await embeddingJobDirectory(root);
-  return createEmbeddingJobDirectories(directory, [
-    'embeddings',
-    'spaces',
-    embeddingArtifactSpaceKey(space),
-  ]);
+async function spaceDirectory(
+  root: string,
+  space: EmbeddingArtifactSpace,
+  create = true,
+): Promise<string> {
+  let directory = await embeddingJobDirectory(root);
+  const parts = ['embeddings', 'spaces', embeddingArtifactSpaceKey(space)];
+  if (create) return createEmbeddingJobDirectories(directory, parts);
+  for (const part of parts) directory = await embeddingJobDirectory(path.join(directory, part));
+  return directory;
 }
 
 async function optionalRecord(directory: string, name: string): Promise<unknown | null> {
@@ -240,7 +243,13 @@ export async function readEmbeddingArtifactSpace(
   space: EmbeddingArtifactSpace,
   validateOwner: ValidateOwner,
 ): Promise<EmbeddingArtifactRecord | null> {
-  const directory = await spaceDirectory(root, space);
+  let directory: string;
+  try {
+    directory = await spaceDirectory(root, space, false);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
   const currentRaw = await optionalRecord(directory, 'space.json');
   let current = currentRaw === null ? null : record(currentRaw, space);
   const intent = (await optionalRecord(directory, 'rebase.json')) as {

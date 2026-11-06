@@ -305,6 +305,20 @@ describe('legacy migration through the published job controller', () => {
     const graph = f.options().graphPath;
     await fs.unlink(graph);
     await fs.link(f.sourcePath, graph);
+    // Refresh the fixture receipt after link creation changes ctime, so this
+    // still exercises the separate live-graph alias guard.
+    const legacyVectorSource = await recordLegacyEmbeddingSource(
+      f.root,
+      {
+        sourceFile: path.basename(f.sourcePath),
+        schemaFingerprint: 'schema',
+        recordedIdentity: { provider: 'local', model: 'test', dimensions: 4 },
+      },
+      [],
+    );
+    const metadata = await loadMeta(f.root);
+    if (!metadata) throw new Error('Missing fixture metadata');
+    await saveMeta(f.root, { ...metadata, legacyVectorSource });
     await expect(f.run()).rejects.toThrow('distinct from the mutable graph');
     expect(f.provider).not.toHaveBeenCalled();
   });

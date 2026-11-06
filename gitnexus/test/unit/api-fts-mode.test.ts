@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
     { nodeId: 'Function:a.ts:alpha', name: 'alpha', distance: 0 },
   ]),
   embedQuery: vi.fn(async () => [1, 0, 0, 0]),
+  isEmbedderReady: vi.fn(() => false),
   runAnalysisEmbeddingPhase: vi.fn(),
   withLbugDb: vi.fn(),
   search: vi.fn(),
@@ -58,7 +59,9 @@ vi.mock('../../src/core/embeddings/embedding-pipeline.js', () => ({
   runEmbeddingPipeline: mocks.runEmbeddingPipeline,
   semanticSearch: mocks.semanticSearch,
 }));
-vi.mock('../../src/core/embeddings/embedder.js', () => ({ isEmbedderReady: () => false }));
+vi.mock('../../src/core/embeddings/embedder.js', () => ({
+  isEmbedderReady: mocks.isEmbedderReady,
+}));
 vi.mock('../../src/mcp/core/embedder.js', () => ({ embedQuery: mocks.embedQuery }));
 vi.mock('../../src/core/analysis-embedding-phase.js', () => ({
   runAnalysisEmbeddingPhase: mocks.runAnalysisEmbeddingPhase,
@@ -170,6 +173,7 @@ afterAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.isEmbedderReady.mockReturnValue(false);
   mocks.activeJob = undefined;
   mocks.acquireIndexLock.mockResolvedValue({
     release: mocks.releaseIndexLock,
@@ -657,6 +661,7 @@ describe('GET /api/repos catalog validation', () => {
 it.each(['semantic', 'hybrid'])(
   'searches published vectors in %s mode without requiring a previously loaded model',
   async (mode) => {
+    mocks.isEmbedderReady.mockReturnValue(true);
     const metadata = {
       graphGeneration: { version: 1, id: 'a'.repeat(32), coveredContent: 'b'.repeat(64) },
     };
@@ -672,6 +677,20 @@ it.each(['semantic', 'hybrid'])(
     expect(args[5]).toBeTypeOf('function');
     // Only the verified vector reader invokes this lazy callback.
     expect(mocks.embedQuery).not.toHaveBeenCalled();
+  },
+);
+
+it.each(['semantic', 'hybrid'])(
+  'degrades %s search when published vectors have no usable embedder',
+  async (mode) => {
+    mocks.loadMeta.mockResolvedValue({
+      graphGeneration: { version: 1, id: 'a'.repeat(32), coveredContent: 'b'.repeat(64) },
+    });
+    const response = await invoke('/api/search', {}, { mode });
+    expect(response.body.results).toEqual([]);
+    expect(mocks.semanticSearch).not.toHaveBeenCalled();
+    expect(mocks.embedQuery).not.toHaveBeenCalled();
+    expect(mocks.search).toHaveBeenCalledTimes(mode === 'hybrid' ? 1 : 0);
   },
 );
 
