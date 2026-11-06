@@ -295,7 +295,17 @@ program
     // and embeds it. Its analyzer receipt is never used: the graph writer has
     // already finalized provenance. Keep the native check, without repeating
     // the complete analyzer identity snapshot in this separate process.
-    if (process.env.GITNEXUS_ANALYSIS_CONTINUATION === '1' && process.connected) {
+    // An explicit heap budget without the budget-child marker always re-execs
+    // in ensureHeap before runFullAnalysis. Its parent receipt is unused too;
+    // the child still captures provenance before importing the analyzer.
+    const budgetSupervisor =
+      !options.watch &&
+      options.memoryBudget !== undefined &&
+      process.env.GITNEXUS_HEAP_LIMIT_SOURCE !== 'budget';
+    if (
+      budgetSupervisor ||
+      (process.env.GITNEXUS_ANALYSIS_CONTINUATION === '1' && process.connected)
+    ) {
       await createLbugLazyAction(() => import('./analyze.js'), 'analyzeCommand')(
         inputPath,
         options,

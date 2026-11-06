@@ -46,13 +46,19 @@ afterEach(() => {
 });
 
 it.each([
-  { continuation: false, watch: false, captures: true },
-  { continuation: false, watch: true, captures: true },
-  { continuation: true, watch: false, captures: false },
+  { continuation: false, watch: false, budget: false, source: '', captures: true },
+  { continuation: false, watch: true, budget: false, source: '', captures: true },
+  { continuation: true, watch: false, budget: false, source: '', captures: false },
+  { continuation: false, watch: false, budget: true, source: '', captures: false },
+  { continuation: false, watch: false, budget: true, source: 'auto', captures: false },
+  { continuation: false, watch: false, budget: true, source: 'budget', captures: true },
+  { continuation: false, watch: true, budget: true, source: '', captures: true },
 ])('selects the analyzer bootstrap for %j', async (scenario) => {
   vi.stubEnv('GITNEXUS_ANALYSIS_CONTINUATION', scenario.continuation ? '1' : '');
+  vi.stubEnv('GITNEXUS_HEAP_LIMIT_SOURCE', scenario.source);
   process.argv = [process.execPath, 'gitnexus', 'analyze', '/fixture'];
   if (scenario.watch) process.argv.push('--watch');
+  if (scenario.budget) process.argv.push('--memory-budget', '2048');
 
   await import('../../src/cli/index.js');
   if (scenario.captures) {
