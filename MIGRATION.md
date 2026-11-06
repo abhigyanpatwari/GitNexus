@@ -31,6 +31,21 @@ three deterministic input rejections, the job publishes healthy nodes and record
 On Windows, a legacy reader can prevent retirement of `lbug`. Stop that reader
 and rerun analyze; the prepared publication and vector artifacts are retained.
 
+`GITNEXUS_LBUG_BUFFER_POOL_SIZE=0` is no longer accepted by analysis: it asks
+the native engine to allocate an unbounded pool. Remove this setting from CLI,
+server and auto-sync environments to use automatic sizing, or set a positive
+byte limit. An explicit `--resource-budget` must also fit the page-size-scaled
+COPY floor; increase the budget if admission rejects it.
+
+If a superseded or unverifiable `analysis-publication.json` blocks recovery,
+stop every reader and writer and back up the complete storage slot first.
+Move only that receipt into the backup, outside the slot, then run
+`gitnexus analyze --force`. Keep the staged graphs and embedding artifacts until
+the replacement graph and vectors are verified. A valid receipt should normally
+be recovered by plain analysis; discarding it abandons its prepared graph work.
+For an interrupted in-place write, keep clients stopped until the forced rebuild
+completes; removing the receipt does not make the old graph healthy.
+
 ## LadybugDB 0.22.0 storage and extensions
 
 LadybugDB 0.22.0 reads indexes written by 0.21.1, but a write/checkpoint upgrades

@@ -20,6 +20,7 @@ import {
 type FileIdentity = { dev: string; ino: string; size: string; mtimeNs: string };
 interface RetentionReceipt {
   version: 1;
+  identity?: string;
   signature: string;
   source: FileIdentity;
   /** Absent until the entire retained file is durable. */
@@ -138,7 +139,7 @@ export async function retainSharedVectorArtifact(
   let intent: RetentionReceipt;
   try {
     await fs.mkdir(preparing, { mode: 0o700 });
-    intent = { version: 1, signature, source: sourceIdentity };
+    intent = { version: 1, identity: artifact, signature, source: sourceIdentity };
     await writeEmbeddingJobRecord(preparing, 'retained.json', intent);
     await syncEmbeddingJobDirectory(parent);
   } catch (error) {
@@ -148,7 +149,7 @@ export async function retainSharedVectorArtifact(
     } catch (readError) {
       if ((readError as NodeJS.ErrnoException).code !== 'ENOENT') throw readError;
       await recoverEmptyPreparation(preparing);
-      intent = { version: 1, signature, source: sourceIdentity };
+      intent = { version: 1, identity: artifact, signature, source: sourceIdentity };
       await writeEmbeddingJobRecord(preparing, 'retained.json', intent);
       await syncEmbeddingJobDirectory(parent);
     }

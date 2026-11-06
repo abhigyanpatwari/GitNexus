@@ -486,6 +486,23 @@ describe('pending artifacts across graph generations', () => {
 });
 
 describe('published graph embedding job controller', () => {
+  it('reclaims the prior rebased artifact after a third generation seals', async () => {
+    const f = await fixture(3);
+    await f.run();
+    await f.nextGeneration();
+    const second = await f.run();
+    const previous = second.metadata.vectorGeneration!;
+    expect(previous.artifactIdentity).not.toBe(previous.identity);
+    const oldDirectory = path.join(f.root, 'embeddings', previous.artifactIdentity!);
+    expect(
+      JSON.parse(await fs.readFile(path.join(oldDirectory, 'artifact.json'), 'utf8')).payload
+        .identity,
+    ).toBe(previous.artifactIdentity);
+    await f.nextGeneration();
+    const third = await f.run();
+    expect(third.phase).toBe('ready');
+    await expect(fs.stat(oldDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
   it('resumes an interrupted bootstrap without rescanning the manifest or losing the pending job', async () => {
     const f = await fixture(3);
     const original = VectorStore.open.bind(VectorStore);

@@ -25,6 +25,8 @@ export interface AnalysisResourceRequest {
   /** Resume/sync can admit embeddings without reserving parser workers. */
   includeParsing?: boolean;
   graphPoolBytes?: number;
+  /** LadybugDB COPY accounting uses OS-page-sized granules. */
+  graphPoolGranuleRatio?: number;
   /** Resident parent process, charged once per child phase. */
   supervisorBytes?: number;
   /** Estimated peak model/sidecar allocation; zero for an HTTP provider. */
@@ -101,9 +103,15 @@ export function resolveAnalysisResourceBudget(
   const supervisorMb = Math.ceil(
     integer(request.supervisorBytes ?? 0, 'supervisor reservation', 0) / MIB,
   );
+  const poolScale = integer(request.graphPoolGranuleRatio ?? 1, 'graph pool granule ratio');
   const graphPoolBytes =
     request.graphPoolBytes === undefined
-      ? bytes(Math.max(GRAPH_POOL_MB, Math.min(4096, Math.floor(totalMb * 0.15))), 'graph pool')
+      ? bytes(
+          automatic
+            ? Math.min(2048 * poolScale, Math.floor(availableMb * 0.8))
+            : Math.max(GRAPH_POOL_MB * poolScale, Math.min(4096, Math.floor(totalMb * 0.15))),
+          'graph pool',
+        )
       : integer(request.graphPoolBytes, 'graph pool bytes', 8 * MIB);
   // Zero is the native engine's unbounded override, never a bounded allocation.
   const graphPoolMb = Math.ceil(graphPoolBytes / MIB);

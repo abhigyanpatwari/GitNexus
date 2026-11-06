@@ -748,6 +748,19 @@ Live-query latency and platform cases remain separate acceptance requirements.`)
           pair.baseline.equalWork,
           `Unequal work for ${scenario}; inspect retained measurements`,
         );
+        if (scenario === 'http-resume') {
+          assert.equal(
+            pair.candidate.providerAfter.acceptedInputs,
+            pair.candidate.providerAfter.uniqueInputs,
+            'Resume replayed already accepted embedding inputs',
+          );
+          assert.equal(
+            pair.candidate.measuredProviderInputs,
+            pair.candidate.providerAfter.uniqueInputs -
+              pair.candidate.providerBefore.acceptedInputs,
+            'Resume must request only unfinished embedding inputs',
+          );
+        }
         const baselineDependencies =
           pair.baseline.metadata.runnerIdentity?.dependencyRuntime?.digest;
         assert(

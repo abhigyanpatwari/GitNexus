@@ -9,6 +9,7 @@ import { VectorStore } from '../lbug/vector-store.js';
 import { syncPublishedMetadata } from '../analysis-publication.js';
 import { getExactScanLimit } from '../platform/capabilities.js';
 import { reclaimAnalysisArtifacts } from '../../storage/analysis-artifact-cleanup.js';
+import { readEmbeddingArtifactOwners } from '../../storage/embedding-artifact.js';
 
 export interface VectorPublicationActions {
   loadMetadata: () => Promise<RepoMeta | null>;
@@ -24,6 +25,7 @@ export async function publishVectorGeneration(
   generation: PublishedVectorGeneration,
   resources: { bufferPoolBytes: number; threads: number; batchBytes: number },
   actions: VectorPublicationActions,
+  migratedLegacySource?: string,
 ): Promise<RepoMeta | null> {
   const exactScanLimit = getExactScanLimit();
   if (generation.indexKind === 'exact' && generation.chunks > exactScanLimit) return null;
@@ -88,6 +90,16 @@ export async function publishVectorGeneration(
       throw new Error('Published vector index does not match the native artifact');
   } finally {
     await store.close();
+  }
+  if (previous.legacyVectorSource && previous.legacyVectorSource === migratedLegacySource) {
+    const owners = await readEmbeddingArtifactOwners(metadataDirectory);
+    if (
+      owners.some(
+        (owner) => owner.artifactIdentity === artifactIdentity && owner.phase === 'sealed',
+      ) &&
+      !owners.some((owner) => owner.fallbackLegacy === previous.legacyVectorSource)
+    )
+      delete metadata.legacyVectorSource;
   }
   await actions.saveMetadata(metadata);
   await syncPublishedMetadata(metadataDirectory, metadata);

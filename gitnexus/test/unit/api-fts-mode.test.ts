@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { _captureLogger } from '../../src/core/logger.js';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/core/ingestion/utils/effective-ram.js', async (importOriginal) => ({
@@ -232,27 +233,44 @@ describe('POST /api/embed staged recovery preflight', () => {
       contentRetention: 'full',
       stats: { embeddings: 3 },
     });
-    mocks.runAnalysisEmbeddingPhase.mockRejectedValueOnce(new Error('source fingerprint mismatch'));
-    await invoke('/api/embed');
-    await vi.waitFor(() => expect(mocks.releaseIndexLock).toHaveBeenCalledTimes(1));
-    // The shared phase reads source identity from this slot's published metadata.
-    // embedding-job-controller.test.ts exercises that read with the real controller.
-    expect(mocks.runAnalysisEmbeddingPhase).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        metadataDirectory: entry.storagePath,
-        graphPath: path.join(entry.storagePath, 'lbug'),
-        nodeLimit: 0,
-        resources: expect.objectContaining({ automatic: true, mainHeapMb: 6553 }),
-        signal: expect.any(AbortSignal),
-      }),
-    );
-    expect(mocks.runEmbeddingPipeline).not.toHaveBeenCalled();
-    expect(entry.path).not.toBe(entry.storagePath);
-    expect(mocks.updateJob).toHaveBeenCalledWith(
-      'embed-job',
-      expect.objectContaining({ status: 'failed', error: 'source fingerprint mismatch' }),
-    );
-    expect(mocks.saveMeta).not.toHaveBeenCalled();
+    const log = _captureLogger();
+    try {
+      mocks.runAnalysisEmbeddingPhase.mockRejectedValueOnce(
+        new Error('source fingerprint mismatch', {
+          cause: new Error('private provider response excerpt'),
+        }),
+      );
+      await invoke('/api/embed');
+      await vi.waitFor(() => expect(mocks.releaseIndexLock).toHaveBeenCalledTimes(1));
+      // The shared phase reads source identity from this slot's published metadata.
+      // embedding-job-controller.test.ts exercises that read with the real controller.
+      expect(mocks.runAnalysisEmbeddingPhase).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          metadataDirectory: entry.storagePath,
+          graphPath: path.join(entry.storagePath, 'lbug'),
+          nodeLimit: 0,
+          resources: expect.objectContaining({ automatic: true, mainHeapMb: 6553 }),
+          signal: expect.any(AbortSignal),
+        }),
+      );
+      expect(mocks.runEmbeddingPipeline).not.toHaveBeenCalled();
+      expect(entry.path).not.toBe(entry.storagePath);
+      expect(mocks.updateJob).toHaveBeenCalledWith(
+        'embed-job',
+        expect.objectContaining({ status: 'failed', error: 'source fingerprint mismatch' }),
+      );
+      expect(mocks.saveMeta).not.toHaveBeenCalled();
+      expect(log.records()).toContainEqual(
+        expect.objectContaining({
+          reason: 'source fingerprint mismatch',
+          repo: entry.name,
+          msg: 'Embedding generation failed',
+        }),
+      );
+      expect(log.text()).not.toContain('private provider response excerpt');
+    } finally {
+      log.restore();
+    }
   });
 
   afterEach(() => {

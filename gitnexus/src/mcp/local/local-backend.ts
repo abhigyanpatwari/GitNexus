@@ -4592,11 +4592,17 @@ export class LocalBackend {
     let embeddedDims: number | undefined;
     try {
       if (repo.generationUnknown) {
+        if (degraded)
+          degraded.reason =
+            'Semantic search is unavailable because the graph generation is unverified. Run gitnexus analyze; graph and keyword search remain available.';
         this.lastQueryEmbeddingDims.delete(repo.lbugPath);
         return [];
       }
       const metadata = await this.readToolMetadata(repo);
       if (repo.generationUnknown) {
+        if (degraded)
+          degraded.reason =
+            'Semantic search is unavailable because the graph generation is unverified. Run gitnexus analyze; graph and keyword search remain available.';
         this.lastQueryEmbeddingDims.delete(repo.lbugPath);
         return [];
       }
@@ -4610,6 +4616,8 @@ export class LocalBackend {
         if (degraded && selection.reason === 'embedding-pending')
           degraded.reason =
             'Semantic search is unavailable while embeddings are pending. Run gitnexus analyze to resume; graph and keyword search remain available.';
+        else if (degraded && selection.reason !== 'embeddings-unavailable')
+          degraded.reason = `Semantic search is unavailable (${selection.reason}). Run gitnexus analyze; graph and keyword search remain available.`;
         this.lastQueryEmbeddingDims.delete(repo.lbugPath);
         return [];
       }

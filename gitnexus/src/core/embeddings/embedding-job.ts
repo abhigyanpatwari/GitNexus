@@ -7,6 +7,8 @@ import {
   createEmbeddingJobDirectories,
   embeddingJobDirectory,
   syncEmbeddingJobDirectory,
+  readEmbeddingJobRecord,
+  writeEmbeddingJobRecord,
 } from '../../storage/embedding-job.js';
 import {
   adoptEmbeddingArtifact,
@@ -30,6 +32,7 @@ import { LegacyVectorSource, legacyVectorCompatibility } from '../lbug/legacy-ve
 import { readLegacyEmbeddingSource } from '../../storage/legacy-embedding-source.js';
 import { drainAnalysisNativeResources } from '../lbug/lbug-adapter.js';
 import { VectorStore, VECTOR_STORE_SCHEMA } from '../lbug/vector-store.js';
+import { estimateBufferPool } from '../lbug/lbug-config.js';
 import { EMBEDDING_TEXT_VERSION } from './embedding-pipeline.js';
 import { embeddingJobIdentity } from './embedding-job-identity.js';
 import { resolveEmbeddingIdentity, type EmbeddingIdentity } from './embedding-identity.js';
@@ -349,10 +352,15 @@ export async function runPublishedEmbeddingJob(
     if (!manifestExists && artifact?.owner.jobIdentity === identities.identity)
       throw new Error('Owned embedding manifest is missing; paid artifacts retained');
     if (!manifestExists) await clearUnstartedManifest(directory);
+    const graphElements = (metadata.stats?.nodes ?? NaN) + (metadata.stats?.edges ?? NaN);
+    const sourcePoolBytes =
+      Number.isSafeInteger(graphElements) && graphElements >= 0
+        ? Math.min(resources.graphPoolBytes, estimateBufferPool(graphElements))
+        : resources.graphPoolBytes;
     const getSource = async (): Promise<GraphSource> =>
       (source ??= await (dependencies.openSource ?? EmbeddingGraphSource.open)(
         graphPath,
-        resources.graphPoolBytes,
+        sourcePoolBytes,
         resources.nativeThreads,
       ));
     const manifest = manifestExists
@@ -429,6 +437,30 @@ export async function runPublishedEmbeddingJob(
     }
     signal?.throwIfAborted();
     const artifactDirectory = await jobDirectory(root, owner.artifactIdentity);
+    if (owner.artifactIdentity !== owner.jobIdentity) {
+      // Rebased artifacts live apart from the journal. Keep independent proof
+      // of ownership so a later generation can reclaim their native payload.
+      try {
+        const receipt = (await readEmbeddingJobRecord(artifactDirectory, 'artifact.json')) as {
+          version: number;
+          identity: string;
+          jobIdentity: string;
+        };
+        if (
+          receipt.version !== 1 ||
+          receipt.identity !== owner.artifactIdentity ||
+          !/^[a-f0-9]{64}$/.test(receipt.jobIdentity)
+        )
+          throw new Error('Embedding artifact has unknown ownership');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        await writeEmbeddingJobRecord(artifactDirectory, 'artifact.json', {
+          version: 1,
+          identity: owner.artifactIdentity,
+          jobIdentity: owner.jobIdentity,
+        });
+      }
+    }
     const hasStore = await existsOwnedFile(path.join(artifactDirectory, 'vectors'));
     const hasJournal = await existsOwnedFile(path.join(directory, 'job.json'));
     if (!hasStore && hasJournal)
@@ -560,6 +592,7 @@ export async function runPublishedEmbeddingJob(
       },
       storeResources,
       options.metadata,
+      legacy?.identity,
     );
     if (!published) return { metadata, alreadyComplete: false, phase: 'indexing', ...result };
     if (result.state.excludedNodes)

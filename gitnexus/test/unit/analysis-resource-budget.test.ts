@@ -9,6 +9,27 @@ const MIB = 1024 * 1024;
 const request = { effectiveMemoryBytes: 32_768 * MIB, availableCpus: 24, modelMemoryMb: 2048 };
 
 describe('analysis resource admission', () => {
+  it.each([1, 4, 16])(
+    'preserves the automatic graph cap and explicit COPY floor at granule ratio %s',
+    (scale) => {
+      const automatic = resolveAnalysisResourceBudget({ ...request, graphPoolGranuleRatio: scale });
+      expect(automatic.parse.graphPoolBytes).toBe(
+        Math.min(2048 * scale, Math.floor(32768 * 0.8)) * MIB,
+      );
+      const explicit = resolveAnalysisResourceBudget({
+        ...request,
+        totalMb: 16384,
+        graphPoolGranuleRatio: scale,
+      });
+      expect(explicit.parse.graphPoolBytes).toBeGreaterThanOrEqual(256 * scale * MIB);
+      expect(explicit.parse.reservedBytes).toBeLessThanOrEqual(explicit.totalBytes);
+    },
+  );
+  it('rejects an explicit family budget that cannot fit the 64 KiB COPY floor', () => {
+    expect(() =>
+      resolveAnalysisResourceBudget({ ...request, totalMb: 2048, graphPoolGranuleRatio: 16 }),
+    ).toThrow('cannot admit');
+  });
   it.each([4096, 8192, 32768])(
     'preserves automatic main-heap and worker capacity on a %s MiB host',
     (memoryMb) => {

@@ -11,7 +11,10 @@ import {
   type PreparedAnalysisHandoff,
 } from '../../src/core/analysis-phase-supervisor.js';
 import { waitForAnalysisProcessExit } from '../helpers/analysis-process-exit.js';
-import { readPreparedAnalysis } from '../../src/core/analysis-publication.js';
+import {
+  readPreparedAnalysis,
+  publishPreparedAnalysis,
+} from '../../src/core/analysis-publication.js';
 import { acquireIndexLock } from '../../src/storage/index-lock.js';
 import { loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
 import type { RepoMeta } from '../../src/storage/repo-meta.js';
@@ -101,6 +104,38 @@ async function fixture() {
 }
 
 describe('graph process handoff', () => {
+  it('continues when a waiting writer already recovered the exact publication', async () => {
+    const f = await fixture();
+    f.release();
+    await f.exited;
+    const recovered = await publishPreparedAnalysis(f.root, f.actions);
+    expect(await readPreparedAnalysis(f.root)).toBeUndefined();
+    expect((await f.finish()).graphGeneration).toEqual(recovered?.graphGeneration);
+    expect(f.actions.finalizeGraph).toHaveBeenCalledOnce();
+    expect(f.actions.verify).toHaveBeenCalledOnce();
+  });
+
+  it.each(['foreign', 'dirty', 'collapsed', 'commit'] as const)(
+    'rejects a %s publication without a receipt',
+    async (state) => {
+      const f = await fixture();
+      f.release();
+      await f.exited;
+      const recovered = await publishPreparedAnalysis(f.root, f.actions);
+      if (!recovered) throw new Error('Missing publication');
+      await saveMeta(f.root, {
+        ...recovered,
+        ...(state === 'foreign'
+          ? { graphGeneration: { ...recovered.graphGeneration!, id: 'e'.repeat(32) } }
+          : {}),
+        ...(state === 'dirty' ? { incrementalInProgress: { startedAt: 1, toWriteCount: 1 } } : {}),
+        ...(state === 'collapsed' ? { graphWriteCollapsed: { expected: 10, persisted: 1 } } : {}),
+        ...(state === 'commit' ? { lastCommit: 'f'.repeat(40) } : {}),
+      } as RepoMeta);
+      await expect(f.finish()).rejects.toThrow('attempt changed');
+      expect(f.actions.finalizeGraph).not.toHaveBeenCalled();
+    },
+  );
   it('keeps prepared nonterminal and publishes only after actual exit', async () => {
     const f = await fixture();
     const provider = vi.fn();

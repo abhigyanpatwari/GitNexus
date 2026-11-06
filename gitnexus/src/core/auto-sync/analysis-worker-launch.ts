@@ -119,6 +119,7 @@ export function createAutoSyncAnalysisRunner(
     const resources =
       options.resources ??
       resolveHostAnalysisResources({
+        mainHeapMb: resolveWorkerHeapMb(concurrency) + 48,
         includeEmbeddings: await analysisMayEmbed(repoPath, options),
         supervisorBytes: Math.ceil(analysisSupervisorReservation() / (concurrency ?? 1)),
         concurrency,

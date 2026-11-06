@@ -272,6 +272,9 @@ describe('legacy migration through the published job controller', () => {
     const f = await fixture(5, ['Const:a.ts:n00002']);
     f.changed.set(f.id(1), 'const changed = 2;');
     const result = await f.run();
+    expect(result.metadata.legacyVectorSource).toBeUndefined();
+    expect((await loadMeta(f.root))?.legacyVectorSource).toBeUndefined();
+    await expect(fs.stat(f.sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(result.state?.reusedNodes).toBe(3);
     expect(f.provider.mock.calls.flatMap(([texts]) => texts)).toHaveLength(2);
     expect(f.events[0]).toContain('chunk size/overlap');

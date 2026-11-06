@@ -2243,7 +2243,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               });
           } catch (err: any) {
             const current = embedJobManager.getJob(job.id);
-            logger.error({ err, repo: entry.name }, 'Embedding generation failed');
+            // Provider causes may contain response text. Log only the public
+            // message, as the CLI does, without pino's recursive Error serializer.
+            logger.error(
+              { reason: err.message || 'Embedding generation failed', repo: entry.name },
+              'Embedding generation failed',
+            );
             if (!current || current.status !== 'failed') {
               embedJobManager.updateJob(job.id, {
                 status: 'failed',

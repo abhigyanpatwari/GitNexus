@@ -99,72 +99,83 @@ describe('durable graph publication', () => {
     expect(graphs).toContain((await loadMeta(root))?.graphPath);
   });
 
-  it('reclaims unreferenced jobs while retaining all model owners and their fallback vectors', async () => {
-    const { root } = await fixture();
-    const current = 'a'.repeat(64),
-      fallback = 'b'.repeat(64),
-      orphan = 'c'.repeat(64);
-    for (const id of [current, fallback, orphan]) {
-      const directory = path.join(root, 'embeddings', id);
-      await fs.mkdir(directory, { recursive: true });
-      await writeEmbeddingJobRecord(directory, 'job.json', { version: 1, identity: id });
-      await fs.writeFile(path.join(directory, 'vectors'), 'paid vectors');
-    }
-    await adoptEmbeddingArtifact(
-      root,
-      {
-        vectorIdentity: 'd'.repeat(64),
-        inputIdentity: 'e'.repeat(64),
-        dimensions: 4,
-        schema: 'fixture',
-      },
-      null,
-      {
-        artifactIdentity: current,
-        jobIdentity: current,
-        fallbackArtifact: fallback,
-        graphGeneration: 'f'.repeat(32),
-        sourceIdentity: '1'.repeat(64),
-        manifestDigest: '2'.repeat(64),
-        phase: 'pending',
-        revalidateInputs: false,
-      },
-      async () => {},
-    );
-    await reclaimAnalysisArtifacts(root, metadata);
-    expect(await fs.readFile(path.join(root, 'embeddings', current, 'vectors'), 'utf8')).toBe(
-      'paid vectors',
-    );
-    expect(await fs.readFile(path.join(root, 'embeddings', fallback, 'vectors'), 'utf8')).toBe(
-      'paid vectors',
-    );
-    await expect(fs.stat(path.join(root, 'embeddings', orphan))).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
-  });
+  it.each(['pending', 'sealed'] as const)(
+    'reclaims unreferenced jobs and obsolete graphs for a %s model owner',
+    async (phase) => {
+      const { root } = await fixture();
+      const current = 'a'.repeat(64),
+        fallback = 'b'.repeat(64),
+        orphan = 'c'.repeat(64);
+      const ownerGraph = path.join(root, `lbug.generation.${'f'.repeat(32)}`);
+      await fs.writeFile(ownerGraph, 'old owner graph');
+      for (const id of [current, fallback, orphan]) {
+        const directory = path.join(root, 'embeddings', id);
+        await fs.mkdir(directory, { recursive: true });
+        await writeEmbeddingJobRecord(directory, 'job.json', { version: 1, identity: id });
+        await fs.writeFile(path.join(directory, 'vectors'), 'paid vectors');
+      }
+      await adoptEmbeddingArtifact(
+        root,
+        {
+          vectorIdentity: 'd'.repeat(64),
+          inputIdentity: 'e'.repeat(64),
+          dimensions: 4,
+          schema: 'fixture',
+        },
+        null,
+        {
+          artifactIdentity: current,
+          jobIdentity: current,
+          fallbackArtifact: fallback,
+          graphGeneration: 'f'.repeat(32),
+          sourceIdentity: '1'.repeat(64),
+          manifestDigest: '2'.repeat(64),
+          phase,
+          revalidateInputs: false,
+        },
+        async () => {},
+      );
+      await reclaimAnalysisArtifacts(root, metadata);
+      if (phase === 'pending')
+        expect(await fs.readFile(ownerGraph, 'utf8')).toBe('old owner graph');
+      else await expect(fs.stat(ownerGraph)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await fs.readFile(path.join(root, 'embeddings', current, 'vectors'), 'utf8')).toBe(
+        'paid vectors',
+      );
+      expect(await fs.readFile(path.join(root, 'embeddings', fallback, 'vectors'), 'utf8')).toBe(
+        'paid vectors',
+      );
+      await expect(fs.stat(path.join(root, 'embeddings', orphan))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    },
+  );
 
-  it('retains an obsolete job receipt until its busy vector file can be removed', async () => {
-    const { root } = await fixture();
-    const identity = 'e'.repeat(64);
-    const job = path.join(root, 'embeddings', identity);
-    await fs.mkdir(job, { recursive: true });
-    await writeEmbeddingJobRecord(job, 'job.json', { version: 1, identity });
-    const vectors = path.join(job, 'vectors');
-    await fs.writeFile(vectors, 'obsolete vectors');
-    const remove = fs.rm.bind(fs);
-    const busy = vi.spyOn(fs, 'rm').mockImplementation(async (file, options) => {
-      if (String(file) === vectors) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
-      return remove(file, options);
-    });
-    const warn = vi.fn();
-    await reclaimAnalysisArtifacts(root, metadata, undefined, warn);
-    expect(await fs.readFile(path.join(job, 'job.json'), 'utf8')).toContain(identity);
-    expect(await fs.readFile(vectors, 'utf8')).toBe('obsolete vectors');
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('cleanup will retry'));
-    busy.mockRestore();
-    await reclaimAnalysisArtifacts(root, metadata);
-    await expect(fs.stat(job)).rejects.toMatchObject({ code: 'ENOENT' });
-  });
+  it.each(['job.json', 'artifact.json', 'retained.json'])(
+    'retains %s until its busy vector file can be removed',
+    async (receiptName) => {
+      const { root } = await fixture();
+      const identity = 'e'.repeat(64);
+      const job = path.join(root, 'embeddings', identity);
+      await fs.mkdir(job, { recursive: true });
+      await writeEmbeddingJobRecord(job, receiptName, { version: 1, identity });
+      const vectors = path.join(job, 'vectors');
+      await fs.writeFile(vectors, 'obsolete vectors');
+      const remove = fs.rm.bind(fs);
+      const busy = vi.spyOn(fs, 'rm').mockImplementation(async (file, options) => {
+        if (String(file) === vectors) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+        return remove(file, options);
+      });
+      const warn = vi.fn();
+      await reclaimAnalysisArtifacts(root, metadata, undefined, warn);
+      expect(await fs.readFile(path.join(job, receiptName), 'utf8')).toContain(identity);
+      expect(await fs.readFile(vectors, 'utf8')).toBe('obsolete vectors');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('cleanup will retry'));
+      busy.mockRestore();
+      await reclaimAnalysisArtifacts(root, metadata);
+      await expect(fs.stat(job)).rejects.toMatchObject({ code: 'ENOENT' });
+    },
+  );
 
   it('keeps the only legacy vector source while a model-space job references it', async () => {
     const { root } = await fixture();

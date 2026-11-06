@@ -2065,13 +2065,15 @@ async function runFullAnalysisInner(
   const ftsDisabledReason = resolveFtsDisableReason(options.skipFts);
   const initAnalysisLbug = (dbPath: string) => {
     if (options.resources) {
-      // Admission is a ceiling. Preserve the existing graph-sized cache so
-      // small repositories do not pay for a host-sized native allocation.
+      // Only an explicit family budget caps the existing page-scaled sizing.
+      // Automatic reservations preserve the COPY floor on large-page hosts.
       const sizedPool = getEffectiveBufferPoolSize();
       const ceiling = options.resources.parse.graphPoolBytes;
       return initLbug(dbPath, {
         skipFts: !!ftsDisabledReason,
-        bufferPoolBytes: Math.min(sizedPool || ceiling, ceiling),
+        bufferPoolBytes: options.resources.automatic
+          ? sizedPool
+          : Math.min(sizedPool || ceiling, ceiling),
         threads: options.resources.parse.nativeThreads,
       });
     }

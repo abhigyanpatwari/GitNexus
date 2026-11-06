@@ -3,6 +3,7 @@ import {
   analysisMayEmbed,
   resolveHostAnalysisResources,
 } from '../../src/core/analysis-host-resources.js';
+import { heapCapMbFor } from '../../src/core/ingestion/utils/effective-ram.js';
 
 const mocks = vi.hoisted(() => ({ loadMeta: vi.fn(), placement: vi.fn() }));
 vi.mock('../../src/core/ingestion/utils/effective-ram.js', async (original) => ({
@@ -47,8 +48,8 @@ it('reserves local model capacity only for invocations that may embed', () => {
 it('divides the host allowance across concurrent analyses', () => {
   const one = resolveHostAnalysisResources({ includeEmbeddings: false });
   const four = resolveHostAnalysisResources({ includeEmbeddings: false, concurrency: 4 });
-  expect(four.totalBytes * 4).toBe(24576 * 1024 ** 2);
-  expect(four.totalBytes * 4).toBeLessThanOrEqual(one.totalBytes);
+  expect(four.automatic).toBe(true);
+  expect(four.mainHeapMb).toBe(heapCapMbFor(8192 * 1024 ** 2));
   expect(four.parse.nativeThreads * 4).toBe(one.parse.nativeThreads);
   expect(four.parse.workers).toBeLessThanOrEqual(3);
 });

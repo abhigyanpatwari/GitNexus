@@ -7,6 +7,8 @@ import {
   type AutoSyncAnalysisRunner,
 } from '../../src/core/auto-sync/analysis-worker-launch.js';
 import { resolveAnalysisResourceBudget } from '../../src/core/analysis-resource-budget.js';
+import * as hostResources from '../../src/core/analysis-host-resources.js';
+import * as effectiveRam from '../../src/core/ingestion/utils/effective-ram.js';
 
 function createAutoSyncAnalysisRunner(overrides: Parameters<typeof createRunner>[0]) {
   const run = createRunner(overrides);
@@ -45,6 +47,44 @@ function createChild() {
 }
 
 describe('auto-sync analysis worker', () => {
+  it.each([
+    [1, 8192],
+    [4, 3072],
+  ])('admits the historical worker heap for %s concurrent repositories', async (slots, heap) => {
+    const cap = vi.spyOn(effectiveRam, 'autoHeapCapMb').mockReturnValue(12288);
+    const mayEmbed = vi.spyOn(hostResources, 'analysisMayEmbed').mockResolvedValue(false);
+    const admission = vi
+      .spyOn(hostResources, 'resolveHostAnalysisResources')
+      .mockImplementation((options) =>
+        resolveAnalysisResourceBudget({
+          effectiveMemoryBytes: 32 * 1024 ** 3,
+          availableCpus: 8,
+          mainHeapMb: options.mainHeapMb,
+          modelMemoryMb: 0,
+        }),
+      );
+    const child = createChild();
+    const forkWorker = vi.fn(() => child as any);
+    const run = createRunner({ forkWorker });
+    try {
+      const pending = run('/tmp/repo', {}, 30_000, undefined, undefined, slots);
+      await vi.waitFor(() => expect(forkWorker).toHaveBeenCalledOnce());
+      expect(admission).toHaveBeenCalledWith(
+        expect.objectContaining({ mainHeapMb: heap + 48, concurrency: slots }),
+      );
+      expect(forkWorker).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.arrayContaining([`--max-old-space-size=${heap}`]),
+      );
+      child.emit('message', { type: 'complete', result: { stats: { files: 1 } } });
+      child.emit('exit', 0, null);
+      await expect(pending).resolves.toEqual({ stats: { files: 1 } });
+    } finally {
+      cap.mockRestore();
+      mayEmbed.mockRestore();
+      admission.mockRestore();
+    }
+  });
   it('continues after actual exit and retains the original timeout across phases', async () => {
     const graph = createChild();
     const embedding = createChild();

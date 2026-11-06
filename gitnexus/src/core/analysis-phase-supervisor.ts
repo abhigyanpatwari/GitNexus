@@ -4,6 +4,7 @@ import type { RepoMeta } from '../storage/repo-meta.js';
 import { requireExclusiveIndexLock } from '../storage/index-lock.js';
 import { acquireAnalysisSlotLock } from '../storage/analysis-slot-lock.js';
 import { embeddingJobDirectory } from '../storage/embedding-job.js';
+import { loadMeta } from '../storage/repo-meta.js';
 import {
   publishPreparedAnalysis,
   readPreparedAnalysis,
@@ -107,21 +108,35 @@ export async function publishAnalysisAfterProcessExit(
     actions.signal?.throwIfAborted();
     requireSameTarget(expected, await actions.resolveTarget());
     const prepared = await readPreparedAnalysis(root);
-    if (prepared?.id !== expected.publicationId || prepared.writerPid !== writerPid)
+    if (prepared && (prepared.id !== expected.publicationId || prepared.writerPid !== writerPid))
       throw new Error(
         'Prepared graph attempt changed during handoff; artifacts retained; retry analysis',
       );
-    const metadata = await publishPreparedAnalysis(root, {
-      saveMetadata: actions.saveMetadata,
-      verify: async (file, metadata) => {
-        if (metadata.repoPath !== expected.repoPath || metadata.lastCommit !== expected.commit)
-          throw new Error('Prepared graph belongs to a different checkout');
-        actions.signal?.throwIfAborted();
-        await actions.verify(file, metadata);
-        actions.signal?.throwIfAborted();
-      },
-    });
-    if (!metadata) throw new Error('Prepared graph disappeared during publication');
+    const metadata = prepared
+      ? await publishPreparedAnalysis(root, {
+          saveMetadata: actions.saveMetadata,
+          verify: async (file, metadata) => {
+            if (metadata.repoPath !== expected.repoPath || metadata.lastCommit !== expected.commit)
+              throw new Error('Prepared graph belongs to a different checkout');
+            actions.signal?.throwIfAborted();
+            await actions.verify(file, metadata);
+            actions.signal?.throwIfAborted();
+          },
+        })
+      : await loadMeta(root);
+    // Another waiting writer may recover this exact receipt after the graph
+    // child exits. Adopt only the clean, already-published generation.
+    if (
+      !metadata ||
+      metadata.graphGeneration?.id !== expected.publicationId ||
+      metadata.repoPath !== expected.repoPath ||
+      metadata.lastCommit !== expected.commit ||
+      metadata.incrementalInProgress ||
+      metadata.graphWriteCollapsed
+    )
+      throw new Error(
+        'Prepared graph attempt changed during handoff; artifacts retained; retry analysis',
+      );
     // Once publication starts, complete discoverability even if cancellation
     // arrived during its filesystem operations. Paid work remains inadmissible.
     const finalized = await actions.finalizeGraph(metadata);

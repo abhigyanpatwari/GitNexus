@@ -2,7 +2,7 @@
 import lbug from '@ladybugdb/core';
 import type { RepoMeta } from '../storage/repo-meta.js';
 import { NODE_TABLES, REL_TABLE_NAME, SCHEMA_FINGERPRINT } from './lbug/schema.js';
-import { closeLbugConnection, openLbugConnection } from './lbug/lbug-config.js';
+import { closeLbugConnection, openLbugConnection, estimateBufferPool } from './lbug/lbug-config.js';
 import { assertLbugPublicationReady } from './lbug/publication.js';
 import { getFtsIndexes } from './search/fts-schema.js';
 import { verifySearchFTSIndexes } from './search/fts-indexes.js';
@@ -32,7 +32,14 @@ export async function verifyPublishedAnalysisGraph(
   const expectedNodes = count(metadata.stats?.nodes);
   const expectedEdges = count(metadata.stats?.edges);
   await assertLbugPublicationReady(graphPath);
-  const handle = await openLbugConnection(lbug, graphPath, { ...resources, readOnly: true });
+  const handle = await openLbugConnection(lbug, graphPath, {
+    ...resources,
+    bufferPoolBytes: Math.min(
+      resources.bufferPoolBytes,
+      estimateBufferPool(expectedNodes + expectedEdges),
+    ),
+    readOnly: true,
+  });
   const query = async (sql: string): Promise<Record<string, unknown>[]> => {
     const result = await handle.conn.query(sql);
     const cursors = Array.isArray(result) ? result : [result];

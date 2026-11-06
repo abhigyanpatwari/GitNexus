@@ -36,6 +36,7 @@ import type { RouteHookConfig } from '../core/ingestion/language-provider.js';
 import { isTerminalJobStatus, type JobManager } from './analyze-job.js';
 import type { WorkerMessage } from './analyze-worker.js';
 import { projectAnalysisPhaseProgress } from '../core/analysis-progress.js';
+import { autoHeapCapMb } from '../core/ingestion/utils/effective-ram.js';
 
 const _require = createRequire(import.meta.url);
 
@@ -231,7 +232,10 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
     const jobStartMs = Date.now();
     const envHeapMb = Number(process.env.GITNEXUS_SERVER_ANALYZE_HEAP_MB);
     const resources = resolveHostAnalysisResources({
-      mainHeapMb: Number.isInteger(envHeapMb) && envHeapMb > 0 ? envHeapMb + 48 : undefined,
+      mainHeapMb:
+        (Number.isInteger(envHeapMb) && envHeapMb > 0
+          ? envHeapMb
+          : Math.min(8192, autoHeapCapMb())) + 48,
       includeEmbeddings: await analysisMayEmbed(targetPath, opts),
       supervisorBytes: analysisSupervisorReservation(),
     });

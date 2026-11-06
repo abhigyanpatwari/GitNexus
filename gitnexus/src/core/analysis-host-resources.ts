@@ -2,6 +2,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { effectiveRamBytes } from './ingestion/utils/effective-ram.js';
+import { granuleRatio } from './lbug/lbug-config.js';
 import {
   resolveAnalysisResourceBudget,
   UNBOUNDED_GRAPH_POOL_MESSAGE,
@@ -45,9 +46,7 @@ export function resolveHostAnalysisResources(
   const request: AnalysisResourceRequest = {
     effectiveMemoryBytes,
     availableCpus: Math.max(1, Math.floor(os.availableParallelism() / concurrency)),
-    totalMb:
-      options.totalMb ??
-      (concurrency > 1 ? Math.floor((effectiveMemoryBytes / MIB) * 0.75) : undefined),
+    totalMb: options.totalMb,
     mainHeapMb: options.mainHeapMb,
     allowHeapOvercommit: options.mainHeapMb !== undefined && options.totalMb === undefined,
     workers: options.workers ?? positiveEnvironment('GITNEXUS_WORKER_POOL_SIZE'),
@@ -58,6 +57,7 @@ export function resolveHostAnalysisResources(
     preferredWorkers: 16,
     includeParsing: options.includeParsing,
     graphPoolBytes: positiveEnvironment('GITNEXUS_LBUG_BUFFER_POOL_SIZE'),
+    graphPoolGranuleRatio: granuleRatio(),
     modelMemoryMb: options.includeEmbeddings && !http ? 2048 : 0,
     supervisorBytes: options.supervisorBytes,
   };

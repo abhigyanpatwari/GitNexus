@@ -46,7 +46,7 @@ export async function reclaimAnalysisArtifacts(
       keepJob(owner.artifactIdentity);
       keepJob(owner.jobIdentity);
       keepJob(owner.fallbackArtifact);
-      keepGraph(`lbug.generation.${owner.graphGeneration}`);
+      if (owner.phase === 'pending') keepGraph(`lbug.generation.${owner.graphGeneration}`);
       if (owner.fallbackLegacy) legacy.add(owner.fallbackLegacy);
     }
     // Validate every reference before the first deletion, including retired
@@ -63,22 +63,26 @@ export async function reclaimAnalysisArtifacts(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
-    const orphanJobs: string[] = [];
+    const orphanJobs: Array<{ directory: string; receiptName: string }> = [];
     for (const name of jobEntries) {
       if (typeof name !== 'string' || !ID.test(name) || jobs.has(name)) continue;
       const job = await embeddingJobDirectory(path.join(embeddingRoot, name));
-      try {
-        const receipt = (await readEmbeddingJobRecord(job, 'job.json')) as {
-          version?: number;
-          identity?: string;
-        };
-        if (receipt.version !== 1 || receipt.identity !== name)
-          throw new Error('Unreferenced embedding job has unknown ownership');
-        orphanJobs.push(job);
-      } catch (error) {
-        // An interrupted bootstrap has no paid work, but without a receipt we
-        // leave it to explicit cleanup instead of guessing ownership.
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      for (const receiptName of ['job.json', 'artifact.json', 'retained.json']) {
+        try {
+          const receipt = (await readEmbeddingJobRecord(job, receiptName)) as {
+            version?: number;
+            identity?: string;
+          };
+          // Older retained copies have no identity in their receipt. Keep
+          // those unverifiable directories, as with an interrupted bootstrap.
+          if (receiptName === 'retained.json' && receipt.identity === undefined) break;
+          if (receipt.version !== 1 || receipt.identity !== name)
+            throw new Error('Unreferenced embedding artifact has unknown ownership');
+          orphanJobs.push({ directory: job, receiptName });
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
       }
     }
     const remove = async (file: string, recursive = false): Promise<boolean> => {
@@ -103,19 +107,19 @@ export async function reclaimAnalysisArtifacts(
       if (await remove(path.join(root, graph)))
         for (const suffix of ['.wal', '.shadow']) await remove(path.join(root, graph + suffix));
     }
-    for (const job of orphanJobs) {
+    for (const { directory: job, receiptName } of orphanJobs) {
       // Keep the ownership receipt until every payload is gone. Recursive
       // removal of the whole directory can delete job.json before a busy
       // native file fails on Windows, making the next cleanup unverifiable.
       let removed = true;
       for (const name of await fs.readdir(job)) {
-        if (name === 'job.json') continue;
+        if (name === receiptName) continue;
         if (!(await remove(path.join(job, name), true))) {
           removed = false;
           break;
         }
       }
-      if (removed && (await remove(path.join(job, 'job.json')))) await fs.rmdir(job);
+      if (removed && (await remove(path.join(job, receiptName)))) await fs.rmdir(job);
     }
   } catch (error) {
     warn(

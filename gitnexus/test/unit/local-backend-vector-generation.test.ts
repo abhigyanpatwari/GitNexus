@@ -45,6 +45,46 @@ beforeEach(() => {
 });
 
 describe('MCP generation gate', () => {
+  it.each([
+    'graph-generation-unverified',
+    'vector-generation-mismatch',
+    'vector-index-pending',
+    'embeddings-empty',
+    'embeddings-unavailable',
+  ])('reports semantic unavailability for %s except a never-embedded index', async (reason) => {
+    const backend = new LocalBackend() as unknown as Reader;
+    const meta: RepoMeta = {
+      ...metadata,
+      embeddingJob: undefined,
+      vectorGeneration: {
+        version: 1,
+        identity: 'a'.repeat(64),
+        graphGeneration: generation,
+        vectorIdentity: 'b'.repeat(64),
+        inputIdentity: 'c'.repeat(64),
+        dimensions: 4,
+        nodes: 1,
+        chunks: 1,
+        indexKind: 'exact',
+      },
+    };
+    if (reason === 'graph-generation-unverified') meta.graphGeneration = undefined;
+    if (reason === 'vector-generation-mismatch')
+      meta.vectorGeneration!.graphGeneration = 'd'.repeat(32);
+    if (reason === 'vector-index-pending') meta.vectorGeneration!.chunks = 1_000_000_000;
+    if (reason === 'embeddings-empty')
+      Object.assign(meta.vectorGeneration!, { nodes: 0, chunks: 0 });
+    if (reason === 'embeddings-unavailable') meta.vectorGeneration = undefined;
+    vi.spyOn(backend, 'readToolMetadata').mockResolvedValue(meta);
+    const degraded: { reason?: string } = {};
+    expect(await backend.semanticSearch({ lbugPath: graphPath }, 'hello', 5, degraded)).toEqual([]);
+    if (reason === 'embeddings-unavailable') expect(degraded.reason).toBeUndefined();
+    else {
+      expect(degraded.reason).toContain(reason);
+      expect(degraded.reason).toContain('gitnexus analyze');
+    }
+    expect(mocks.embed).not.toHaveBeenCalled();
+  });
   it('explains the temporary keyword-only lane while vectors are pending', async () => {
     const backend = new LocalBackend() as unknown as Reader;
     const degraded: { reason?: string } = {};
@@ -64,7 +104,10 @@ describe('MCP generation gate', () => {
           return metadata;
         });
       }
-      expect(await backend.semanticSearch(repo, 'hello', 5)).toEqual([]);
+      const degraded: { reason?: string } = {};
+      expect(await backend.semanticSearch(repo, 'hello', 5, degraded)).toEqual([]);
+      expect(degraded.reason).toContain('graph generation is unverified');
+      expect(degraded.reason).toContain('gitnexus analyze');
       expect(backend.lastQueryEmbeddingDims.has(graphPath)).toBe(false);
       expect(mocks.embed).not.toHaveBeenCalled();
       expect(mocks.query).not.toHaveBeenCalled();
