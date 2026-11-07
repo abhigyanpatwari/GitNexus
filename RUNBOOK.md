@@ -292,7 +292,12 @@ npx gitnexus analyze --embeddings --resource-budget 8192 --memory-budget 3000 --
 
 `--memory-budget` still controls only the main V8 heap. Explicit settings that do
 not fit the family budget fail before work starts. Without a family override,
-GitNexus derives reservations from available memory and CPUs. The budget controls
+GitNexus fixes the family ceiling at 75% of effective process/container RAM,
+divided among concurrent auto-sync analyses. Automatic heap, worker and native
+pool allocations must fit that ceiling; it never grows to accommodate them.
+Explicit heap, worker or pool requests that cannot fit are rejected before work.
+Small hosts may need an HTTP embedding provider or more RAM for the local model.
+The budget controls
 admission and queue sizes; it is not an operating-system RSS limit. Watch mode
 accepts the same family budget and drains active work before shutdown.
 

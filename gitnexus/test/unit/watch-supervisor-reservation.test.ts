@@ -34,6 +34,8 @@ import type { AnalyzerRunnerIdentity } from '../../src/storage/repo-manager.js';
 
 const directories: string[] = [];
 beforeEach(() => {
+  vi.stubEnv('GITNEXUS_ANALYSIS_MAIN_HEAP_MB', undefined);
+  vi.stubEnv('GITNEXUS_ANALYSIS_SUPERVISOR_BYTES', undefined);
   vi.stubEnv('GITNEXUS_MEMORY', '');
   vi.stubEnv('GITNEXUS_ANALYSIS_MANUAL_HEAP', '');
   vi.stubEnv('NODE_OPTIONS', '');
@@ -103,4 +105,17 @@ it('honors GITNEXUS_MEMORY=off in the actual watch admission path', async () => 
       mainHeapMb: Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
     }),
   );
+});
+
+it('keeps the admitted heap across automatic watch refreshes', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-watch-admitted-'));
+  directories.push(directory);
+  vi.stubEnv('GITNEXUS_ANALYSIS_MAIN_HEAP_MB', '1024');
+  vi.stubEnv('GITNEXUS_RC', '');
+  const baseline = { maxFileSize: undefined, workerTimeout: undefined, verbose: undefined };
+  await resolveWatchOptions(directory, {}, baseline);
+  await resolveWatchOptions(directory, {}, baseline);
+  expect(mocks.resources).toHaveBeenCalledTimes(2);
+  for (const [request] of mocks.resources.mock.calls)
+    expect(request).toMatchObject({ mainHeapMb: 1024 });
 });

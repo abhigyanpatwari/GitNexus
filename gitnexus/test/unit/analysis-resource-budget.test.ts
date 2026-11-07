@@ -1,4 +1,3 @@
-import { heapCapMbFor } from '../../src/core/ingestion/utils/effective-ram.js';
 import { describe, expect, it } from 'vitest';
 import {
   EmbeddingByteBudget,
@@ -10,11 +9,11 @@ const request = { effectiveMemoryBytes: 32_768 * MIB, availableCpus: 24, modelMe
 
 describe('analysis resource admission', () => {
   it.each([1, 4, 16])(
-    'preserves the automatic graph cap and explicit COPY floor at granule ratio %s',
+    'bounds the automatic graph pool while preserving the COPY floor at granule ratio %s',
     (scale) => {
       const automatic = resolveAnalysisResourceBudget({ ...request, graphPoolGranuleRatio: scale });
       expect(automatic.parse.graphPoolBytes).toBe(
-        Math.min(2048 * scale, Math.floor(32768 * 0.8)) * MIB,
+        Math.max(256 * scale, Math.floor(24576 * 0.15)) * MIB,
       );
       const explicit = resolveAnalysisResourceBudget({
         ...request,
@@ -30,58 +29,50 @@ describe('analysis resource admission', () => {
       resolveAnalysisResourceBudget({ ...request, totalMb: 2048, graphPoolGranuleRatio: 16 }),
     ).toThrow('cannot admit');
   });
-  it.each([4096, 8192, 32768])(
-    'preserves automatic main-heap and worker capacity on a %s MiB host',
+  it.each([2048, 4096, 8192, 32768])(
+    'keeps automatic admission inside RAM on a %s MiB host',
     (memoryMb) => {
-      const input = {
-        effectiveMemoryBytes: memoryMb * MIB,
-        availableCpus: 8,
-        preferredWorkers: 16,
-        modelMemoryMb: 0,
-      };
-      const graph = resolveAnalysisResourceBudget(input);
-      const local = resolveAnalysisResourceBudget({ ...input, modelMemoryMb: 2048 });
-      const pinned = resolveAnalysisResourceBudget({
-        ...input,
-        mainHeapMb: 12000,
-        allowHeapOvercommit: true,
-      });
-      expect(graph.mainHeapMb).toBe(heapCapMbFor(memoryMb * 1024 ** 2));
-      expect(graph.parse.workers).toBe(7);
-      expect(graph.parse.workerHeapMb).toBe(
-        Math.min(4096, Math.max(512, Math.floor(memoryMb / 2 / 7))),
-      );
-      expect(local.parse).toEqual(graph.parse);
-      expect(pinned.parse.workers).toBe(graph.parse.workers);
-      expect(pinned.parse.workerHeapMb).toBe(graph.parse.workerHeapMb);
-      expect(local.embedding.reservedBytes).toBeLessThanOrEqual(local.totalBytes);
-      expect(graph.embedding.vectorPoolBytes).toBeGreaterThan(64 * MIB);
+      for (const modelMemoryMb of [0, 2048]) {
+        for (const graphPoolGranuleRatio of [1, 4, 16]) {
+          for (const supervisorBytes of [0, 192 * MIB]) {
+            const input = {
+              effectiveMemoryBytes: memoryMb * MIB,
+              availableCpus: 8,
+              preferredWorkers: 16,
+              modelMemoryMb,
+              graphPoolGranuleRatio,
+              supervisorBytes,
+            };
+            const totalMb = Math.floor(memoryMb * 0.75);
+            // Small hosts cannot fit the local model or large-page COPY floor.
+            const cannotFit =
+              memoryMb === 2048
+                ? modelMemoryMb > 0 || graphPoolGranuleRatio > 1 || supervisorBytes > 0
+                : memoryMb === 4096
+                  ? modelMemoryMb > 0 || graphPoolGranuleRatio === 16
+                  : memoryMb === 8192 && graphPoolGranuleRatio === 16;
+            if (cannotFit) {
+              expect(() => resolveAnalysisResourceBudget(input)).toThrow('cannot admit');
+            } else {
+              const budget = resolveAnalysisResourceBudget(input);
+              expect(budget.totalBytes).toBe(totalMb * MIB);
+              expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
+              expect(budget.embedding.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
+              expect(budget.parse.workers).toBeLessThanOrEqual(7);
+              expect(budget.parse.workerHeapMb).toBeGreaterThanOrEqual(512);
+            }
+          }
+        }
+      }
     },
   );
-  it('preserves an explicit heap override without inflating automatic native allocations', () => {
-    const host = { ...request, effectiveMemoryBytes: 7500 * MIB, modelMemoryMb: 0 };
-    const automatic = resolveAnalysisResourceBudget(host);
-    const budget = resolveAnalysisResourceBudget({
-      ...host,
-      mainHeapMb: 12000,
-      allowHeapOvercommit: true,
-    });
-    expect(budget.mainHeapMb).toBe(12000);
-    expect(budget.totalBytes).toBeGreaterThan(host.effectiveMemoryBytes);
-    expect(budget.parse.graphPoolBytes).toBe(automatic.parse.graphPoolBytes);
-    expect(budget.embedding.queueBytes).toBe(automatic.embedding.queueBytes);
-    expect(budget.headroomBytes).toBe(automatic.headroomBytes);
-    expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
-    expect(budget.embedding.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
-    expect(() => resolveAnalysisResourceBudget({ ...host, mainHeapMb: 12000 })).toThrow(
-      'cannot admit',
-    );
+  it('rejects an impossible explicit heap without growing the automatic family ceiling', () => {
     expect(() =>
       resolveAnalysisResourceBudget({
-        ...host,
+        ...request,
+        effectiveMemoryBytes: 7500 * MIB,
+        modelMemoryMb: 0,
         mainHeapMb: 12000,
-        allowHeapOvercommit: true,
-        totalMb: 5625,
       }),
     ).toThrow('cannot admit');
   });
