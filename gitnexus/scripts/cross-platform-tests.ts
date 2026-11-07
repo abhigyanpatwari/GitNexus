@@ -125,6 +125,7 @@ const PLATFORM_LOGIC = [
   'test/unit/pool-wal-recovery.test.ts',
   'test/unit/lbug-adapter-wal-schema.test.ts',
   'test/unit/detect-changes-worktree.test.ts',
+  'test/unit/detect-changes-hunk-scale.test.ts',
   'test/unit/eval-server-bind-restriction.test.ts',
   'test/unit/ignore-service.test.ts',
   'test/unit/group/bridge-db.test.ts',
