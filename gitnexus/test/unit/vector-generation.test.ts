@@ -8,6 +8,7 @@ import {
   selectVectorGeneration,
 } from '../../src/storage/vector-generation.js';
 import type { RepoMeta } from '../../src/storage/repo-meta.js';
+import { readIndexCapabilities } from '../../src/storage/index-capabilities.js';
 
 const generation = 'a'.repeat(32);
 const identity = 'b'.repeat(64);
@@ -64,6 +65,59 @@ describe('artifact identity and pending-job routing', () => {
 });
 
 describe('vector generation routing', () => {
+  it.each([undefined, 'interrupted', 'partial', 'unverified-count'] as const)(
+    'keeps legacy checkpoint %s unavailable in routing and capabilities',
+    async (kind) => {
+      const legacy: RepoMeta = {
+        repoPath: '/repo',
+        lastCommit: 'abc',
+        indexedAt: 'now',
+        stats: { embeddings: 2 },
+        embeddingDims: 4,
+        capabilities: {
+          vectorSearch: {
+            provider: 'ladybugdb-vector',
+            status: 'vector-index',
+            exactScanLimit: 10000,
+          },
+        },
+        embeddingCheckpoint: {
+          at: 'now',
+          nodesProcessed: 1,
+          totalNodes: 2,
+          chunksProcessed: 2,
+          model: 'model',
+          provider: 'local',
+          dimensions: 4,
+          kind,
+        },
+      };
+      for (const base of [
+        legacy,
+        {
+          ...legacy,
+          graphPath: meta.graphPath,
+          graphGeneration: meta.graphGeneration,
+          legacyVectorSource: 'f'.repeat(64),
+        },
+      ]) {
+        const graphPath = path.join('/slot', base.graphPath ?? 'lbug');
+        const reason =
+          kind === 'unverified-count' ? 'embedding-count-unverified' : 'embedding-pending';
+        expect(select(base, graphPath)).toEqual({ kind: 'unavailable', reason });
+        expect((await readIndexCapabilities('/slot', base))?.vectorSearch).toMatchObject({
+          status: 'unavailable',
+          reason,
+        });
+        expect(select({ ...base, embeddingCheckpoint: undefined }, graphPath)).toEqual({
+          kind: 'legacy',
+        });
+        expect(
+          select({ ...base, graphWriteCollapsed: { expected: 100, persisted: 1 } }, graphPath),
+        ).toEqual({ kind: 'unavailable', reason: 'graph-generation-unverified' });
+      }
+    },
+  );
   it('keeps preserved monolithic vectors readable when a generation was published but embedding was capped', () => {
     const preserved: RepoMeta = {
       ...meta,

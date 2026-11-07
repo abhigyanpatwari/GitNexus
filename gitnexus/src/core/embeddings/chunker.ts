@@ -110,7 +110,8 @@ export const chunkNode = async (
   ];
 };
 
-/** Produce one chunk at a time, without retaining generated text for the node. */
+/** Yield chunks one at a time. Preparation retains source text and may retain
+ * generated projection text for the node (including a joined class projection). */
 export async function* iterateNodeChunks(
   label: string,
   content: string,
