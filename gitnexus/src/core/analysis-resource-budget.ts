@@ -130,12 +130,19 @@ export function resolveAnalysisResourceBudget(
     request.workerHeapMb === undefined
       ? undefined
       : integer(request.workerHeapMb, 'worker heap reservation');
+  const requiredWorkers = includeParsing ? (request.workers ?? 1) : 0;
+  const parseBaseMb = headroomMb + supervisorMb + graphPoolMb;
   const parseFixedMb =
-    headroomMb +
-    supervisorMb +
-    graphPoolMb +
-    (includeParsing ? MIN_WORKER_HEAP_MB + WORKER_NATIVE_MB : 0);
-  const maximumMainMb = totalMb - Math.max(embeddingFixedMb, parseFixedMb);
+    parseBaseMb +
+    requiredWorkers * ((explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) + WORKER_NATIVE_MB);
+  // Node's main-process heap flag overrides Worker resourceLimits. Leave room
+  // for that inherited heap in every required worker, even with a smaller cap.
+  const maximumMainMb = Math.min(
+    totalMb - Math.max(embeddingFixedMb, parseFixedMb),
+    Math.floor(
+      (totalMb - parseBaseMb - requiredWorkers * WORKER_NATIVE_MB) / (requiredWorkers + 1),
+    ),
+  );
   const mainHeapMb =
     request.mainHeapMb === undefined
       ? Math.min(16_384, maximumMainMb, Math.max(MIN_MAIN_HEAP_MB, Math.floor(totalMb * 0.35)))
@@ -145,8 +152,16 @@ export function resolveAnalysisResourceBudget(
   // choice; the larger floor is only the automatic sizing policy.
   const minimumMainMb = request.mainHeapMb === undefined ? MIN_MAIN_HEAP_MB : 200;
   if (mainHeapMb < minimumMainMb || mainHeapMb > maximumMainMb) {
+    const requiredMainMb = Math.max(minimumMainMb, request.mainHeapMb ?? 0);
     const minimum =
-      Math.max(minimumMainMb, request.mainHeapMb ?? 0) + Math.max(embeddingFixedMb, parseFixedMb);
+      requiredMainMb +
+      Math.max(
+        embeddingFixedMb,
+        parseBaseMb +
+          requiredWorkers *
+            (Math.max(requiredMainMb, explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) +
+              WORKER_NATIVE_MB),
+      );
     throw new Error(
       `Resource budget ${totalMb} MiB cannot admit parser/model work; requires at least ${minimum} MiB for these allocations. ` +
         'Reduce explicit reservations or concurrent analyses, or increase available RAM. ' +
@@ -171,14 +186,18 @@ export function resolveAnalysisResourceBudget(
       ? Math.min(
           desiredWorkers,
           Math.floor(
-            workerBudgetMb / ((explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) + WORKER_NATIVE_MB),
+            workerBudgetMb /
+              (Math.max(mainHeapMb, explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) + WORKER_NATIVE_MB),
           ),
         )
       : desiredWorkers;
   const workerHeapMb = !includeParsing
     ? 0
-    : (explicitWorkerHeapMb ??
-      Math.min(4096, Math.floor(workerBudgetMb / Math.max(1, workers)) - WORKER_NATIVE_MB));
+    : Math.max(
+        mainHeapMb,
+        explicitWorkerHeapMb ??
+          Math.min(4096, Math.floor(workerBudgetMb / Math.max(1, workers)) - WORKER_NATIVE_MB),
+      );
   const parseReservedMb =
     headroomMb +
     supervisorMb +

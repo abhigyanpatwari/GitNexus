@@ -287,11 +287,12 @@ reservation: the frontend, main heap, parser workers, native graph/vector pools,
 embedding model, bounded input queue, and headroom. For example:
 
 ```bash
-npx gitnexus analyze --embeddings --resource-budget 8192 --memory-budget 3000 --workers 2
+npx gitnexus analyze --embeddings --resource-budget 8192 --memory-budget 1024 --workers 2
 ```
 
-`--memory-budget` still controls only the main V8 heap. Explicit settings that do
-not fit the family budget fail before work starts. Without a family override,
+Node propagates the main V8 heap flag to parser workers, so each worker reserves
+at least the `--memory-budget` allocation. Explicit settings that do not fit
+the family budget fail before work starts. Without a family override,
 GitNexus fixes the family ceiling at 75% of effective process/container RAM,
 divided among concurrent auto-sync analyses. Automatic heap, worker and native
 pool allocations must fit that ceiling; it never grows to accommodate them.

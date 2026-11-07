@@ -77,11 +77,37 @@ describe('analysis resource admission', () => {
     ).toThrow('cannot admit');
   });
 
+  it.each([undefined, 1])(
+    'makes room for a fitting explicit worker heap with %s workers',
+    (workers) => {
+      const budget = resolveAnalysisResourceBudget({ ...request, workers, workerHeapMb: 9500 });
+      expect(budget.mainHeapMb).toBeGreaterThanOrEqual(384);
+      expect(budget.mainHeapMb).toBeLessThan(8601);
+      expect(budget.parse.workers).toBe(1);
+      expect(budget.parse.workerHeapMb).toBe(9500);
+      expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
+      expect(budget.embedding.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
+    },
+  );
+
+  it.each([undefined, 512, 4096])(
+    'reserves inherited main-heap limits for worker override %s',
+    (workerHeapMb) => {
+      const budget = resolveAnalysisResourceBudget({
+        ...request,
+        preferredWorkers: 16,
+        workerHeapMb,
+      });
+      expect(budget.parse.workerHeapMb).toBeGreaterThanOrEqual(budget.mainHeapMb);
+      expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
+    },
+  );
+
   it('charges a retained supervisor once per phase, independently of worker thread count', () => {
     const fixed = {
       ...request,
       totalMb: 24576,
-      mainHeapMb: 8192,
+      mainHeapMb: 4096,
       workers: 2,
       workerHeapMb: 1024,
       graphPoolBytes: 1024 * MIB,
@@ -142,15 +168,20 @@ describe('analysis resource admission', () => {
     }
   });
 
-  it('preserves explicit main-heap semantics and preferred concurrency when they fit', () => {
+  it.each([
+    [8192, 1],
+    [1024, 6],
+  ])('admits a %s MiB main heap with %s fitting workers', (mainHeapMb, workers) => {
     const budget = resolveAnalysisResourceBudget({
       ...request,
       totalMb: 24_576,
-      mainHeapMb: 8192,
+      mainHeapMb,
       preferredWorkers: 6,
     });
-    expect(budget.mainHeapMb).toBe(8192);
-    expect(budget.parse.workers).toBe(6);
+    expect(budget.mainHeapMb).toBe(mainHeapMb);
+    expect(budget.parse.workers).toBe(workers);
+    expect(budget.parse.workerHeapMb).toBeGreaterThanOrEqual(mainHeapMb);
+    expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
     expect(budget.automatic).toBe(false);
     expect(Object.isFrozen(budget)).toBe(true);
     expect(Object.isFrozen(budget.parse)).toBe(true);
@@ -160,7 +191,7 @@ describe('analysis resource admission', () => {
   it.each([1, 4])(
     'admits an explicit worker override on %s CPU(s) within its memory budget',
     (availableCpus) => {
-      const input = { ...request, availableCpus, mainHeapMb: 8192, workers: 12 };
+      const input = { ...request, availableCpus, mainHeapMb: 1024, workers: 12 };
       const budget = resolveAnalysisResourceBudget(input);
       expect(budget.parse.workers).toBe(12);
       expect(budget.parse.workerHeapMb).toBeGreaterThanOrEqual(512);
@@ -168,7 +199,7 @@ describe('analysis resource admission', () => {
       expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
       expect(() =>
         resolveAnalysisResourceBudget({ ...input, totalMb: 24576, workerHeapMb: 4096 }),
-      ).toThrow('do not fit');
+      ).toThrow('cannot admit');
     },
   );
 
@@ -223,9 +254,9 @@ describe('analysis resource admission', () => {
     ).toThrow('cannot admit');
     expect(() =>
       resolveAnalysisResourceBudget({ ...request, totalMb: 8192, workers: 4, workerHeapMb: 4096 }),
-    ).toThrow('do not fit');
+    ).toThrow('cannot admit');
     expect(() => resolveAnalysisResourceBudget({ ...request, totalMb: 8192, workers: 24 })).toThrow(
-      'do not fit',
+      'cannot admit',
     );
     expect(() => resolveAnalysisResourceBudget({ ...request, graphPoolBytes: 0 })).toThrow(
       'graph pool bytes',
@@ -236,6 +267,19 @@ describe('analysis resource admission', () => {
     expect(() => resolveAnalysisResourceBudget({ ...request, modelMemoryMb: 128 })).toThrow(
       'model reservation',
     );
+  });
+
+  it('reports the inherited heap requirement when explicit worker caps cannot constrain it', () => {
+    expect(() =>
+      resolveAnalysisResourceBudget({
+        ...request,
+        totalMb: 24576,
+        mainHeapMb: 8192,
+        workers: 2,
+        workerHeapMb: 1024,
+        graphPoolBytes: 1024 * MIB,
+      }),
+    ).toThrow('requires at least 28806 MiB');
   });
 
   it.each([NaN, Infinity, -1, 0, 1.5, Number.MAX_SAFE_INTEGER + 1])(

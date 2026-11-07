@@ -840,8 +840,8 @@ If analyze says the repository doesn't fit, do what the message says:
 
 To set the main-thread heap yourself on a memory-constrained host, pass
 `--memory-budget <mb>`: analyze re-runs with exactly that V8 heap, overriding
-the auto-sizer and any `--max-old-space-size` pin. It sizes the main thread
-only; parse workers keep their own caps.
+the auto-sizer and any `--max-old-space-size` pin. Node also applies this
+process-wide heap flag to parser workers, overriding their per-worker limits.
 
 Use `--resource-budget <MiB>` to admit the complete analyzer process family,
 including the frontend, main heap, workers, native pools, embedding model, input
@@ -849,6 +849,10 @@ queue, and headroom. An explicit heap or pool that cannot fit is rejected before
 work starts. Automatic sizing fixes the aggregate phase ceiling at 75% of
 effective process/container RAM, divided among concurrent auto-sync analyses.
 The main heap, workers, pools, and embedding reservations must fit that ceiling.
+Each parser worker reserves at least the main-heap allocation to account for
+Node's inherited limit. Automatic concurrency may shrink to fit; explicit worker
+counts must fit with that per-worker reservation. Automatic main-heap sizing
+leaves room for explicit worker counts and heap requests.
 The reservation is not an operating-system RSS limit. `analyze --watch` accepts
 the same budget. To enlarge the main heap, use `--memory-budget`; increase
 `--resource-budget` as well if needed, within available RAM.
@@ -987,7 +991,7 @@ Four env vars expose the pool's resilience layers (respawn budget, cumulative-ti
 | `GITNEXUS_WORKER_READY_TIMEOUT_MS`              | `5000`                             | Startup budget for a parse worker to load its grammar bindings and report `{type:'ready'}`. Slots that miss it are treated as startup crashes. Raise it on a slow or heavily loaded host where a full pool cold-starting concurrently needs more than 5s. |
 | `GITNEXUS_MEMORY`                               | `off`                              | unset (autopilot on)                                                                                                                                                                                                                                      | `off` declines GitNexus's memory autopilot: analyze will neither re-run itself with a RAM-aware heap cap nor abort the parse before V8 enters its ineffective-mark-compact death spiral. Use it when you want to drive memory manually; to simply pin a heap size, pass Node's own `--max-old-space-size`, which is already honoured as your decision. |
 | `GITNEXUS_ANALYSIS_SUPERVISOR_BYTES` | nonnegative integer bytes | automatic | Internal inherited reservation for the waiting parent process. Leave unset for automatic accounting; a supplied value counts toward analysis admission and does not set the parent heap. |
-| `GITNEXUS_WORKER_HEAP_MB`                       | automatic admission (512–4096 MiB) | Per-worker V8 old-generation heap cap. Automatic analysis divides the remaining parser budget among admitted workers, reserving native memory separately. An explicit value must be at least 512 MiB and fit the aggregate budget; a worker exceeding its heap cap follows quarantine/respawn handling.                                                                                           |
+| `GITNEXUS_WORKER_HEAP_MB`                       | automatic admission              | Requested per-worker V8 old-generation limit, at least 512 MiB. Node's process heap flag can override it, so admission reserves the larger of the requested worker allocation and main-heap allocation, plus native memory. Automatic concurrency shrinks to fit the aggregate budget.                                                                                           |
 | `GITNEXUS_HEAP_LIMIT_SOURCE`                    | unset                              | Set by analyze itself (`budget` or `auto`) to record where the heap limit came from, so out-of-memory advice points at `--memory-budget` rather than a `--max-old-space-size` pin.                                                                        | Never — internal; set `--memory-budget` instead.                                                                                                                                                                                                                                                                                                       |
 | `GITNEXUS_SERVER_ANALYZE_HEAP_MB`               | automatic admission              | V8 old-generation heap for the web/MCP server's forked analyze worker. Defaults to the admitted main-heap reservation minus 48 MiB for young space. A positive integer overrides the old-generation heap in MiB; admission reserves that value plus 48 MiB and rejects it if the aggregate budget cannot fit.                                                              |
 | `GITNEXUS_CPP_CAPTURE_BUDGET_MS`                | `20000`                            | Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning (#2432). `0` expires immediately.                                                                                                         |
