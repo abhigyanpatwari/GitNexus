@@ -36,6 +36,8 @@ During archive transfers, `[volumes]` reports elapsed time, entries queued, excl
 
 Node writes the tar stream itself (ustar with PAX records for long and UTF-8 names), so the host needs no `tar`. Windows `tar.exe` reads file lists in the ANSI code page and macOS `tar` adds AppleDouble `._*` files; neither applies. Sockets and FIFOs are skipped. Selected snapshot roots such as `~/.config/gh` or `~/.claude.json` are followed when they link to an existing target, matching the bind mounts they replace. Every other symlink is transferred as path/target metadata and recreated by the Linux helper without following it. This also applies to configuration snapshots, so WSL-created links are never opened as files. Restoration rejects paths outside the destination, symlinked parent directories, and replacements of existing files. Ordinary source links and their targets are preserved verbatim.
 
+`initialize-volumes.test.cjs` covers this host-side importer on Linux, macOS and Windows CI. It replaces the Docker CLI with a Node adapter through `GITNEXUS_IMPORT_DOCKER`. Tests of code that runs only inside the Linux dev container or import helper skip on other hosts.
+
 The importer probes the destination filesystem and updates `core.ignorecase`, `core.filemode`, and `core.symlinks`, including worktree overrides. Where Windows disabled mode tracking, tracked executable bits are restored from the index. Unedited tracked symlink placeholders become symlinks; edited placeholders retain their bytes. Staged and unstaged contents are preserved. Absolute `core.worktree` overrides are removed from the copied root configuration and from each relinked nested worktree's `config.worktree`. The host Git configuration is untouched.
 
 Before the first rebuild:

@@ -15,6 +15,9 @@ const {
 } = require('./seed-workspace.cjs');
 
 const SNAPSHOT_MARKER = '.devcontainer-snapshot-v1';
+// Tests replace the Docker CLI with a Node adapter (JSON argv). Windows spawn
+// resolves only .exe/.com files, so a script on PATH cannot stand in for docker.
+const [DOCKER, ...DOCKER_ARGS] = JSON.parse(process.env.GITNEXUS_IMPORT_DOCKER || '["docker"]');
 const HOST_PATHS = [
   '.claude.json',
   ...[
@@ -170,7 +173,7 @@ function childDone(child, name) {
 
 async function runWithProgress(label, args, input) {
   const finish = startProgress(label);
-  const child = spawn('docker', args, {
+  const child = spawn(DOCKER, [...DOCKER_ARGS, ...args], {
     stdio: [input === undefined ? 'ignore' : 'pipe', 'inherit', 'inherit'],
   });
   try {
@@ -205,7 +208,9 @@ async function copyArchive(source, entries, destination, exclude = () => false) 
       return omit;
     },
   });
-  const copy = spawn('docker', ['cp', '-', destination], { stdio: ['pipe', 'inherit', 'inherit'] });
+  const copy = spawn(DOCKER, [...DOCKER_ARGS, 'cp', '-', destination], {
+    stdio: ['pipe', 'inherit', 'inherit'],
+  });
   const meter = new Transform({
     transform(chunk, encoding, callback) {
       bytes += chunk.length;
@@ -256,7 +261,10 @@ async function initialize(
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,100}$/.test(id || '') || !['source', 'native'].includes(mode))
     throw new Error('Usage: initialize-volumes.cjs DEVCONTAINER_ID [source|native]');
   const docker = (...args) =>
-    execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }).trim();
+    execFileSync(DOCKER, [...DOCKER_ARGS, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'inherit'],
+    }).trim();
   const image = fs
     .readFileSync(path.join(__dirname, 'Dockerfile'), 'utf8')
     .match(/^FROM (\S+)$/m)?.[1];
