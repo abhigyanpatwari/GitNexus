@@ -30,16 +30,31 @@ function isWorkspaceExcluded(relative) {
   );
 }
 
-function* archiveEntries(source, entries, { exclude = () => false, links = [] } = {}) {
+function rootType(file) {
+  try {
+    return fs.statSync(file);
+  } catch {
+    return fs.lstatSync(file); // Dangling, or a WSL link Windows cannot follow.
+  }
+}
+
+function* archiveEntries(source, entries, { exclude = () => false, links = [], files = [] } = {}) {
   source = fs.realpathSync(source);
   function* visit(relative, type) {
     if (exclude(relative)) return;
     const file = path.join(source, relative);
-    type ??= fs.lstatSync(file);
+    // Selected roots follow existing links, like the bind mounts they replace
+    // (tar -h); nested links are recorded and restored verbatim.
+    type ??= rootType(file);
     const portable = relative.split(path.sep).join('/');
     if (type.isSymbolicLink()) {
       links.push([portable, fs.readlinkSync(file)]);
       return;
+    }
+    if (type.isFile()) {
+      // Stat before tar reads it; copyArchive rejects files changed meanwhile.
+      const { size, mtimeMs } = fs.statSync(file);
+      files.push([file, size, mtimeMs]);
     }
     yield relative === '.' ? '.' : `./${portable}`;
     if (type.isDirectory()) {
@@ -211,13 +226,32 @@ function normalizeGit(root) {
 
   const checkouts = [root];
   const registrations = path.join(gitDir, 'worktrees');
+  const pathParts = (file) =>
+    fs
+      .readFileSync(file, 'utf8')
+      .trim()
+      .split(/[\\/]+/);
+  // The copy of a nested worktree whose .git file names this registration.
+  const copiedWorktree = (dir, entry) => {
+    if (!dir.startsWith(root + path.sep) || !isDirectory(dir)) return false;
+    if (fs.realpathSync(dir) !== dir) return false;
+    const file = path.join(dir, '.git');
+    if (!fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) return false;
+    return pathParts(file).slice(-3).join('/') === `.git/worktrees/${entry}`;
+  };
   if (isDirectory(registrations)) {
     for (const entry of fs.readdirSync(registrations)) {
       const pointer = path.join(registrations, entry, 'gitdir');
       if (!fs.existsSync(pointer) || !fs.lstatSync(pointer).isFile()) continue;
-      const checkout = path.dirname(fs.readFileSync(pointer, 'utf8').trim());
-      if (!checkout.startsWith(root + path.sep) || !isDirectory(checkout)) continue;
-      if (fs.realpathSync(checkout) !== checkout) continue;
+      // Pointers hold host paths (C:/..., /Users/...). Match the longest suffix
+      // that exists in the copy, then relink both sides like `git worktree repair`.
+      const parts = pathParts(pointer);
+      const checkout = parts
+        .map((_, i) => path.join(root, ...parts.slice(i, -1)))
+        .find((dir) => copiedWorktree(dir, entry));
+      if (!checkout) continue; // External worktrees stay registered but unrepaired.
+      fs.writeFileSync(pointer, `${path.join(checkout, '.git')}\n`);
+      fs.writeFileSync(path.join(checkout, '.git'), `gitdir: ${path.join(registrations, entry)}\n`);
       if (
         fs.realpathSync(
           git(checkout, 'rev-parse', '--path-format=absolute', '--git-common-dir').trim(),

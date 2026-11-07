@@ -35,7 +35,8 @@ test('symlink restoration rejects traversal, symlink parents and replacements be
     ],
   ]) {
     assert.throws(() => restoreLinks(target, links));
-    assert.equal(fs.existsSync(path.join(target, 'new-link')), false);
+    // lstat: a created link to the missing 'target' would be dangling.
+    assert.equal(fs.lstatSync(path.join(target, 'new-link'), { throwIfNoEntry: false }), undefined);
   }
   assert.equal(fs.readFileSync(path.join(target, 'existing'), 'utf8'), 'keep');
   assert.deepEqual(fs.readdirSync(outside), []);
@@ -85,7 +86,8 @@ test('seed preserves Git state, local files, indexes, nested worktrees and symli
   fs.writeFileSync(path.join(source, 'untracked'), 'untracked\n');
   fs.symlinkSync('tracked', path.join(source, 'relative-link'));
   fs.symlinkSync('missing-file', path.join(source, 'dangling-link'));
-  fs.writeFileSync(path.join(source, 'executable'), '#!/bin/sh\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(source, 'executable'), '#!/bin/sh\n');
+  fs.chmodSync(path.join(source, 'executable'), 0o755); // Independent of the process umask.
   for (const file of [
     '.gitnexus/index-sample',
     '.gitnexus/parse-cache/chunk.v8',
@@ -265,6 +267,7 @@ test('root preparation recovers an inaccessible old-UID volume and prunes depend
   seedWorkspace(source, target);
   const dependency = path.join(target, 'gitnexus/node_modules');
   fs.mkdirSync(dependency, { recursive: true });
+  fs.chmodSync(dependency, 0o755); // Let the test stat it after the foreign chown.
   fs.writeFileSync(path.join(dependency, 'keep-owner'), 'binary');
   execFileSync('sudo', ['chown', '-R', '20001:20001', target]);
   execFileSync('sudo', ['chmod', '700', path.join(target, '.git')]);
@@ -351,17 +354,16 @@ test('normalizes a nested worktree with independent Windows filesystem overrides
   fs.chmodSync(path.join(nested, 'script'), 0o644);
   fs.writeFileSync(path.join(nested, 'tracked'), 'nested local edits');
   const index = fs.readFileSync(path.join(source, '.git/worktrees/topic/index'));
-  // Model /workspace paths, which remain identical across the real migration.
-  fs.writeFileSync(
-    path.join(source, '.git/worktrees/topic/gitdir'),
-    path.join(target, '.worktrees/topic/.git') + '\n',
-  );
-  fs.writeFileSync(
-    path.join(nested, '.git'),
-    'gitdir: ' + path.join(target, '.git/worktrees/topic') + '\n',
-  );
+  // A host-created worktree records host paths that do not exist in the volume.
+  const host = 'C:/Users/dev/GitNexus';
+  const registration = path.join(source, '.git/worktrees/topic/gitdir');
+  fs.writeFileSync(registration, `${host}/.worktrees/topic/.git\n`);
+  fs.writeFileSync(path.join(nested, '.git'), `gitdir: ${host}/.git/worktrees/topic\n`);
   seedWorkspace(source, target);
   const copied = path.join(target, '.worktrees/topic');
+  assert.equal(git(copied, 'rev-parse', '--show-toplevel'), copied);
+  assert.equal(git(target, 'worktree', 'list', '--porcelain').includes(copied), true);
+  assert.equal(fs.readFileSync(registration, 'utf8'), `${host}/.worktrees/topic/.git\n`);
   assert.equal(git(copied, 'config', 'core.filemode'), 'true');
   assert.equal(git(copied, 'config', 'core.ignorecase'), 'false');
   assert.equal(fs.statSync(path.join(copied, 'script')).mode & 0o111, 0o111);

@@ -72,15 +72,18 @@ function finishSnapshot(root, uid, gid, complete) {
   }
 }
 
-function archiveArgs(source, entries, excludes = [], { recursive = true } = {}) {
-  return [
-    '-C',
-    source,
-    ...excludes.map((entry) => `--exclude=./${entry}`),
-    '-cf',
-    '-',
-    ...(recursive ? entries : ['--no-recursion', '--null', '-T', '-']),
-  ];
+// Names arrive NUL-delimited on stdin. Only selected roots can be links (-h).
+function archiveArgs(source) {
+  return ['-C', source, '-h', '-cf', '-', '--no-recursion', '--null', '-T', '-'];
+}
+
+function assertUnchanged(files) {
+  for (const [file, size, mtimeMs] of files) {
+    const now = fs.statSync(file, { throwIfNoEntry: false });
+    // bsdtar (macOS, Windows) pads or truncates a changing file and exits 0.
+    if (now?.size !== size || now.mtimeMs !== mtimeMs)
+      throw new Error(`${file} changed during the import; stop host writers and retry`);
+  }
 }
 
 function startProgress(label, details = () => '', intervalMs = 5000) {
@@ -129,6 +132,7 @@ async function copyArchive(source, entries, destination, excludes = [], exclude 
   // No shell: spaces, apostrophes and Windows drive letters remain literal arguments.
   // Watch both processes: a failed tar must never publish a successful seed marker.
   const links = [];
+  const files = [];
   let queued = 0;
   let bytes = 0;
   let skipped = 0;
@@ -139,14 +143,17 @@ async function copyArchive(source, entries, destination, excludes = [], exclude 
   );
   const listing = archiveEntries(source, entries, {
     links,
+    files,
     exclude: (relative) => {
       const omit = excludes.includes(relative.split(path.sep).join('/')) || exclude(relative);
       if (omit) skipped++;
       return omit;
     },
   });
-  const archive = spawn('tar', archiveArgs(source, [], [], { recursive: false }), {
+  const archive = spawn('tar', archiveArgs(source), {
     stdio: ['pipe', 'pipe', 'inherit'],
+    // macOS tar otherwise adds AppleDouble ._* entries for extended attributes.
+    env: { ...process.env, COPYFILE_DISABLE: '1' },
   });
   const copy = spawn('docker', ['cp', '-', destination], { stdio: ['pipe', 'inherit', 'inherit'] });
   const meter = new Transform({
@@ -173,6 +180,7 @@ async function copyArchive(source, entries, destination, excludes = [], exclude 
       pipeline(archive.stdout, meter, copy.stdin),
       inputDone,
     ]);
+    assertUnchanged(files);
     if (links.length) {
       const separator = destination.indexOf(':');
       await runWithProgress(
@@ -272,8 +280,10 @@ async function initialize(
       ]);
     }
     // Linux hosts realign the remote UID; Desktop on Windows/macOS keeps node=1000.
-    const uid = String(process.platform === 'linux' ? process.getuid() : 1000);
-    const gid = String(process.platform === 'linux' ? process.getgid() : 1000);
+    // updateRemoteUserUID skips root hosts (UID 0 already exists), so node stays 1000.
+    const realign = process.platform === 'linux' && process.getuid() !== 0;
+    const uid = String(realign ? process.getuid() : 1000);
+    const gid = String(realign ? process.getgid() : 1000);
     if (mode === 'source') {
       // Lifecycle commands need to enter /workspace before sudo can repair
       // restrictive descendants. Make that root accessible before startup.
@@ -314,6 +324,7 @@ module.exports = {
   initialize,
   copyArchive,
   archiveArgs,
+  assertUnchanged,
   startProgress,
   snapshotState,
   finishSnapshot,

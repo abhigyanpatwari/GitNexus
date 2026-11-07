@@ -5,7 +5,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
-const { archiveArgs, snapshotState, HOST_PATHS } = require('./initialize-volumes.cjs');
+const {
+  archiveArgs,
+  assertUnchanged,
+  snapshotState,
+  HOST_PATHS,
+} = require('./initialize-volumes.cjs');
 const { archiveEntries, isWorkspaceExcluded, restoreLinks } = require('./seed-workspace.cjs');
 
 function temporary(t) {
@@ -55,7 +60,7 @@ test('the host tar omits dependencies and parser caches while preserving indexes
     fs.writeFileSync(path.join(root, file), 'fixture only');
   }
   const entries = [...archiveEntries(root, ['.'], { exclude: isWorkspaceExcluded })];
-  const tar = execFileSync('tar', archiveArgs(root, entries, [], { recursive: false }), {
+  const tar = execFileSync('tar', archiveArgs(root), {
     input: entries.join('\0') + '\0',
   });
   const listing = execFileSync('tar', ['-tf', '-'], { input: tar, encoding: 'utf8' });
@@ -123,7 +128,7 @@ test('explicit archives restore dangling and directory links without traversing 
   const links = [];
   const entries = [...archiveEntries(source, ['.'], { links })];
   assert.ok(!entries.some((entry) => /dangling|directory-link/.test(entry)));
-  const tar = execFileSync('tar', archiveArgs(source, entries, [], { recursive: false }), {
+  const tar = execFileSync('tar', archiveArgs(source), {
     input: entries.join('\0') + '\0',
   });
   execFileSync('tar', ['-xf', '-', '-C', target], { input: tar });
@@ -132,6 +137,16 @@ test('explicit archives restore dangling and directory links without traversing 
   assert.equal(fs.readlinkSync(path.join(target, 'directory-link')), outside);
   for (const name of names) assert.equal(fs.readFileSync(path.join(target, name), 'utf8'), name);
   assert.equal(fs.readFileSync(path.join(outside, 'keep'), 'utf8'), 'outside');
+});
+
+test('a file changed after enumeration fails the import instead of publishing torn bytes', (t) => {
+  const root = temporary(t);
+  fs.writeFileSync(path.join(root, 'live.db'), 'page 1');
+  const files = [];
+  assert.deepEqual([...archiveEntries(root, ['.'], { files })], ['.', './live.db']);
+  assertUnchanged(files);
+  fs.appendFileSync(path.join(root, 'live.db'), ', page 2');
+  assert.throws(() => assertUnchanged(files), /live\.db changed during the import/);
 });
 
 test('snapshot selection excludes transcripts and Cursor executable hooks', () => {
@@ -181,6 +196,11 @@ function dockerFixture(t) {
   fs.symlinkSync('test-key', path.join(home, '.ssh/test-link'));
   fs.mkdirSync(path.join(home, '.codex'));
   fs.writeFileSync(path.join(home, '.codex/auth.json'), '{"fixture":true}');
+  // Dotfile managers link selected roots; the snapshot must hold their contents.
+  fs.mkdirSync(path.join(home, 'dotfiles/gh'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'dotfiles/gh/hosts.yml'), 'fixture: true');
+  fs.mkdirSync(path.join(home, '.config'));
+  fs.symlinkSync(path.join(home, 'dotfiles/gh'), path.join(home, '.config/gh'));
   fs.writeFileSync(
     path.join(bin, 'docker'),
     `#!${process.execPath}
@@ -264,6 +284,11 @@ test('host import is one-time, uses only native volumes, preserves edits and cle
   );
   assert.equal(fs.readlinkSync(path.join(state, 'identity/ssh/test-link')), 'test-key');
   assert.equal(fs.statSync(path.join(state, 'identity/ssh/test-key')).mode & 0o777, 0o600);
+  assert.equal(fs.lstatSync(path.join(state, 'host/.config/gh')).isDirectory(), true);
+  assert.equal(
+    fs.readFileSync(path.join(state, 'host/.config/gh/hosts.yml'), 'utf8'),
+    'fixture: true',
+  );
   assert.equal(fs.existsSync(path.join(state, 'active')), false);
   fs.writeFileSync(path.join(state, 'workspace/local-edit'), 'Linux edits');
   fs.rmSync(source, { recursive: true });

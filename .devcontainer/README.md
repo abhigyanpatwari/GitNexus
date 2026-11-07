@@ -16,7 +16,7 @@ Before rebuilding an existing container, follow [Source volume migration](#sourc
 
 On Windows, the original checkout can remain at `D:\\development\\coding\\GitNexus`. The initializer uses `os.homedir()`; setting `HOME` with `setx` is no longer required. Windows tools opening that folder see the original copy, not subsequent container edits.
 
-On WSL2, open the original folder through VS Code's WSL extension with Docker Desktop integration enabled. On macOS or Linux, open the original folder normally. All use the Docker-volume model. Linux hosts retain `updateRemoteUserUID: true`; setup repairs source ownership before dependency installation, including restrictive directories left by an older UID.
+On WSL2, open the original folder through VS Code's WSL extension with Docker Desktop integration enabled. On macOS or Linux, open the original folder normally. All use the Docker-volume model. Linux hosts retain `updateRemoteUserUID: true`; setup repairs source ownership before dependency installation, including restrictive directories left by an older UID. A root host user keeps `node` at UID 1000, matching the Dev Containers CLI, which skips realignment for UID 0.
 
 Keep the host folder and selected configuration path stable: moving either can change `${devcontainerId}` and select different volumes.
 
@@ -30,13 +30,13 @@ The import preserves `.git`, branches, local commits, the index, stashes, uncomm
 
 During archive transfers, `[volumes]` reports elapsed time, entries queued, excluded paths, symlinks, and MiB streamed to Docker every five seconds, followed by a completion or failure line. Streamed bytes measure data sent to Docker, not bytes committed to disk; there is no percentage because the total is not pre-scanned. Helper startup, the second copy into the source volume, Git normalization, snapshot finalization, and cleanup also report activity every five seconds. Output from the Linux helper is shown as it arrives.
 
-Node streams an explicit file list to tar with recursion disabled. Symlinks are transferred as path/target metadata and recreated by the Linux helper without following them. This also applies to configuration snapshots: Windows tar never has to inspect WSL-created links, which it can reject even when their paths are excluded. Restoration rejects paths outside the destination, symlinked parent directories, and replacements of existing files. Ordinary source links and their targets are preserved verbatim.
+Node streams an explicit file list to tar with recursion disabled. Selected snapshot roots such as `~/.config/gh` or `~/.claude.json` are followed when they link to an existing target, matching the bind mounts they replace. Every other symlink is transferred as path/target metadata and recreated by the Linux helper without following it. This also applies to configuration snapshots: Windows tar never has to inspect WSL-created links, which it can reject even when their paths are excluded. Restoration rejects paths outside the destination, symlinked parent directories, and replacements of existing files. Ordinary source links and their targets are preserved verbatim.
 
 The importer probes the destination filesystem and updates `core.ignorecase`, `core.filemode`, and `core.symlinks`, including worktree overrides. Where Windows disabled mode tracking, tracked executable bits are restored from the index. Unedited tracked symlink placeholders become symlinks; edited placeholders retain their bytes. Staged and unstaged contents are preserved. Absolute `core.worktree` overrides are removed from the copied root configuration. The host Git configuration is untouched.
 
 Before the first rebuild:
 
-1. Save files and stop agents, Git operations, indexers, dev servers, and host claude-mem writers. The copy requires a quiet source; it is not a live filesystem snapshot.
+1. Save files and stop agents, Git operations, indexers, dev servers, and host claude-mem writers. The copy requires a quiet source; it is not a live filesystem snapshot. A file whose size or modification time changes while it is archived fails the import before any completion marker is written.
 2. Preserve worktrees and other files outside `/workspace` and existing named volumes. From a **host terminal**, save the current container's writable layer:
 
    ```powershell
@@ -61,9 +61,11 @@ Before the first rebuild:
 
 After import, `.git/devcontainer-source-volume` prevents later initialization from replacing container work. The destination is checked before reading the host checkout. A partial, unmarked source volume fails closed without merging or deleting files. Inspect and back up that volume before removing only that failed volume and retrying. Never add or delete a completion marker to force migration.
 
+Lifecycle hooks run from the branch checked out in `/workspace`, while `devcontainer.json` comes from the host folder. Rebuild from a branch that contains this volume setup; an older branch lacks `seed-workspace.cjs`, so `onCreateCommand` fails until you check out a current branch.
+
 The importer requires a full checkout with its own object database. Linked-worktree roots, external object alternates, active Git locks, symlinked configuration, and absolute `.git/commondir` paths are rejected; `commondir` containing `.` is supported.
 
-Nested worktrees with existing `/workspace/...` registrations retain their paths. External and Windows-specific worktree paths are not rewritten. Copying a registration does not save its files. Recover an external worktree from the backup image with:
+Nested worktrees are relinked to their copied paths, including registrations created on Windows or another host path. Worktrees outside the checkout are not copied or rewritten. Copying a registration does not save its files. Recover an external worktree from the backup image with:
 
 ```powershell
 docker create --name gitnexus-source-recovery gitnexus-before-source-volume
