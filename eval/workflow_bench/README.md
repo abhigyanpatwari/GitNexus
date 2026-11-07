@@ -299,8 +299,8 @@ on three of four tasks; this does not establish a general saving. The
 whose MCP arm could read compiled task fixes, plus its separate tool-accuracy
 check. These are workflow measurements, not SWE-bench results.
 
-A [fresh comparison started on 7 November](measurement-2026-11-07.md) against
-main revision `4ab9e8a4`. Its results are pending.
+The [7 November comparison](measurement-2026-11-07.md) records the run against
+main revision `4ab9e8a4`, its `success` workflow outcome and the available evidence.
 
 This corpus uses a **fresh index at each task base**. A nightly stale Hermes
 index is a separate condition and must not be pooled with it. Import the
