@@ -1,5 +1,5 @@
 import { execFileSync, execSync, spawnSync } from 'child_process';
-import { statSync, existsSync } from 'fs';
+import { statSync, existsSync, lstatSync, realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { logger } from '../core/logger.js';
@@ -585,6 +585,21 @@ export const getCoreExcludesFilePath = (fromPath: string): string => {
  */
 export const resolveRepoIdentityRoot = (fromPath: string): string => {
   const resolved = path.resolve(fromPath);
+  // An ordinary checkout is its own identity root. Let Git interpret worktrees,
+  // symlinks, common-directory indirection and environment overrides as before.
+  try {
+    const gitDir = path.join(resolved, '.git');
+    if (
+      process.env.GIT_DIR === undefined &&
+      process.env.GIT_COMMON_DIR === undefined &&
+      lstatSync(gitDir).isDirectory() &&
+      !existsSync(path.join(gitDir, 'commondir')) &&
+      realpathSync.native(resolved) === resolved
+    )
+      return resolved;
+  } catch {
+    // Missing or unreadable paths retain the existing Git/fallback behavior.
+  }
   const canonical = getCanonicalRepoRoot(resolved);
   if (!canonical) return resolved; // non-git → use as-is
   if (canonical === resolved) return canonical; // canonical checkout
