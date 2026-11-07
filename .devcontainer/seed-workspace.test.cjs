@@ -367,12 +367,21 @@ test('normalizes a nested worktree with independent Windows filesystem overrides
   const index = fs.readFileSync(path.join(source, '.git/worktrees/topic/index'));
   // A host-created worktree records host paths that do not exist in the volume.
   const host = 'C:/Users/dev/GitNexus';
+  git(nested, 'config', '--worktree', 'core.worktree', `${host}/.worktrees/topic`);
+  const nestedConfig = path.join(source, '.git/worktrees/topic/config.worktree');
   const registration = path.join(source, '.git/worktrees/topic/gitdir');
   fs.writeFileSync(registration, `${host}/.worktrees/topic/.git\n`);
   fs.writeFileSync(path.join(nested, '.git'), `gitdir: ${host}/.git/worktrees/topic\n`);
   seedWorkspace(source, target);
   const copied = path.join(target, '.worktrees/topic');
   assert.equal(git(copied, 'rev-parse', '--show-toplevel'), copied);
+  assert.throws(() => git(copied, 'config', '--worktree', '--get-all', 'core.worktree'), {
+    status: 1,
+  });
+  assert.equal(
+    git(source, 'config', '--file', nestedConfig, 'core.worktree'),
+    `${host}/.worktrees/topic`,
+  );
   assert.equal(git(target, 'worktree', 'list', '--porcelain').includes(copied), true);
   assert.equal(fs.readFileSync(registration, 'utf8'), `${host}/.worktrees/topic/.git\n`);
   assert.equal(git(copied, 'config', 'core.filemode'), 'true');

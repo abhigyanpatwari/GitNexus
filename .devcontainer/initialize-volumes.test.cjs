@@ -242,6 +242,10 @@ function dockerFixture(t) {
   fs.writeFileSync(path.join(home, 'dotfiles/gh/hosts.yml'), 'fixture: true');
   fs.mkdirSync(path.join(home, '.config'));
   fs.symlinkSync(path.join(home, 'dotfiles/gh'), path.join(home, '.config/gh'));
+  // A dangling selected root is still selected, so the snapshot keeps the link.
+  fs.symlinkSync('missing-claude.json', path.join(home, '.claude.json'));
+  // A selected path under a non-directory is skipped, not a failed snapshot.
+  fs.writeFileSync(path.join(home, '.cursor'), 'not a directory');
   fs.writeFileSync(
     path.join(bin, 'docker'),
     `#!${process.execPath}
@@ -339,6 +343,7 @@ test(
       fs.readFileSync(path.join(state, 'host/.config/gh/hosts.yml'), 'utf8'),
       'fixture: true',
     );
+    assert.equal(fs.readlinkSync(path.join(state, 'host/.claude.json')), 'missing-claude.json');
     assert.equal(fs.existsSync(path.join(state, 'active')), false);
     fs.writeFileSync(path.join(state, 'workspace/local-edit'), 'Linux edits');
     fs.rmSync(source, { recursive: true });
@@ -477,3 +482,32 @@ test(
     assert.equal(fs.existsSync(dest), false);
   },
 );
+
+test('seed markers stay unpublished until the host snapshot is complete', posixOnly, (t) => {
+  const root = temporary(t);
+  const snapshotMarker = path.join(root, '.devcontainer-snapshot-v1');
+  const dirs = ['claude', 'gh'].map((name) => path.join(root, name));
+  for (const dir of dirs) fs.mkdirSync(dir);
+  const script = fs
+    .readFileSync(path.join(__dirname, 'post-create.sh'), 'utf8')
+    .match(/^mark_seeded\(\) \{[\s\S]*?^\}/m)[0];
+  const run = () =>
+    execFileSync(
+      'bash',
+      [
+        '-eu',
+        '-c',
+        script + '\nmark_seeded .devcontainer-identity-seeded "$@"',
+        'fixture',
+        ...dirs,
+      ],
+      { env: { ...process.env, SNAPSHOT_MARKER: snapshotMarker } },
+    );
+  const seeded = () =>
+    dirs.map((dir) => fs.existsSync(path.join(dir, '.devcontainer-identity-seeded')));
+  run();
+  assert.deepEqual(seeded(), [false, false]);
+  fs.writeFileSync(snapshotMarker, 'complete');
+  run();
+  assert.deepEqual(seeded(), [true, true]);
+});

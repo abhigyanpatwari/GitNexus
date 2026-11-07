@@ -351,9 +351,15 @@ async function initialize(
         fresh &&
         (await attempt(`Snapshot ${snapshot.volume}`, snapshot.target, async () => {
           clear(snapshot.target);
-          const entries = snapshot.entries.filter((entry) =>
-            fs.existsSync(path.join(snapshot.source, entry)),
-          );
+          // lstat keeps dangling links; the archiver records any root it cannot follow.
+          // Like existsSync, a path under a non-directory is just absent.
+          const entries = snapshot.entries.filter((entry) => {
+            try {
+              return Boolean(fs.lstatSync(path.join(snapshot.source, entry)));
+            } catch {
+              return false;
+            }
+          });
           console.log(`[volumes] Creating ${snapshot.volume}`);
           await copyArchive(
             snapshot.source,

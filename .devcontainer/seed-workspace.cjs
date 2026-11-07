@@ -184,17 +184,21 @@ function git(root, ...args) {
   );
 }
 
+// A Windows core.worktree must not affect any later Git read of the checkout.
+function detachWorktreeConfig(file) {
+  const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+  if (!stat) return;
+  if (!stat.isFile()) throw new Error('Git config must not be a symlink');
+  const unset = spawnSync('git', ['config', '--file', file, '--unset-all', 'core.worktree']);
+  if (unset.error || ![0, 5].includes(unset.status))
+    throw new Error('Could not detach the copied Git configuration from its host path');
+}
+
 function normalizeGit(root) {
   const gitDir = path.join(root, '.git');
   validateGitDirectory(gitDir);
-  // A Windows core.worktree must not affect any of the following Git reads.
-  for (const config of ['config', 'config.worktree']) {
-    const file = path.join(gitDir, config);
-    if (!fs.existsSync(file)) continue;
-    const unset = spawnSync('git', ['config', '--file', file, '--unset-all', 'core.worktree']);
-    if (unset.error || ![0, 5].includes(unset.status))
-      throw new Error('Could not detach the copied Git configuration from its host path');
-  }
+  for (const config of ['config', 'config.worktree'])
+    detachWorktreeConfig(path.join(gitDir, config));
   const commonDirIs = (checkout) =>
     fs.realpathSync(
       git(checkout, 'rev-parse', '--path-format=absolute', '--git-common-dir').trim(),
@@ -254,6 +258,7 @@ function normalizeGit(root) {
       if (!checkout) continue; // External worktrees stay registered but unrepaired.
       fs.writeFileSync(pointer, `${path.join(checkout, '.git')}\n`);
       fs.writeFileSync(path.join(checkout, '.git'), `gitdir: ${path.join(registrations, entry)}\n`);
+      detachWorktreeConfig(path.join(registrations, entry, 'config.worktree'));
       if (commonDirIs(checkout)) checkouts.push(checkout);
     }
   }

@@ -114,6 +114,25 @@ mkdir -p /home/node/.claude/plugins /home/node/.cursor/plugins
 # login or configuration with an older snapshot. Completion markers also keep
 # a deliberate logout (deleted credential file) intact on the next rebuild.
 
+# initialize-volumes.cjs writes this marker only after a complete snapshot; a
+# failed snapshot is left empty without it. Seeding from an empty /host copies
+# nothing, so the one-shot completion markers are published only from a
+# complete snapshot — otherwise the next rebuild could never seed it.
+SNAPSHOT_MARKER=${SNAPSHOT_MARKER:-/host/.devcontainer-snapshot-v1}
+[ -f "$SNAPSHOT_MARKER" ] || \
+    echo "[post-create]   WARNING: /host snapshot is incomplete; seeding will retry on the next rebuild"
+
+mark_seeded() {
+    # mark_seeded <marker-name> <dir>...: record a completed seed in each dir.
+    local name=$1
+    shift
+    [ -f "$SNAPSHOT_MARKER" ] || return 0
+    local dir
+    for dir in "$@"; do
+        touch "$dir/$name"
+    done
+}
+
 sync_from_host() {
     local src=$1
     local dst=$2
@@ -182,9 +201,8 @@ sync_from_host \
 sync_from_host /host/.config/gh/hosts.yml  /home/node/.config/gh/hosts.yml
 sync_from_host /host/.config/gh/config.yml /home/node/.config/gh/config.yml 644
 
-for dir in /home/node/.claude /home/node/.codex /home/node/.cursor /home/node/.config/gh; do
-    touch "$dir/.devcontainer-identity-seeded"
-done
+mark_seeded .devcontainer-identity-seeded \
+    /home/node/.claude /home/node/.codex /home/node/.cursor /home/node/.config/gh
 
 echo "[post-create] 3/4: seed shareable config dirs from host (first create only)"
 # The shareable dirs (Claude skills/agents/memory/commands/plugins; Codex
@@ -262,9 +280,8 @@ fi
 # re-runs the whole seed+translate. The cost is re-copying an already-copied CLI
 # on retry; `cp -r` overwrites in place, so that is idempotent and cheap relative
 # to a broken plugin registry.
-for cli in claude codex cursor; do
-    touch "/home/node/.$cli/.devcontainer-shareable-seeded"
-done
+mark_seeded .devcontainer-shareable-seeded \
+    /home/node/.claude /home/node/.codex /home/node/.cursor
 
 echo "[post-create] 4/4: seed claude-mem store from host (first create only)"
 # claude-mem keeps its memory in $HOME/.claude-mem — a SQLite DB (claude-mem.db
