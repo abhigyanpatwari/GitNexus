@@ -1,0 +1,4 @@
+CREATE OR REPLACE PACKAGE app AS
+  PROCEDURE info;
+END app;
+/

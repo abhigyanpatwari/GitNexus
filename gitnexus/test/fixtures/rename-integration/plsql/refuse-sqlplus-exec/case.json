@@ -1,0 +1,16 @@
+{
+  "language": "plsql",
+  "description": "Refuse to rename a procedure that a SQL*Plus EXEC command invokes: client commands are not part of the parsed PL/SQL, so the call could not be rewritten and every source byte must stay unchanged.",
+  "categories": ["sqlplus", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "RUN_DAILY",
+    "kind": "Function",
+    "file": "pkg_job.pkb"
+  },
+  "newName": "run_nightly",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  }
+}

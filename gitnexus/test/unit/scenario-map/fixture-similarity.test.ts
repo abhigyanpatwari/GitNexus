@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -25,6 +25,11 @@ import type {
 import { SupportedLanguages } from 'gitnexus-shared';
 import { layer1Files } from '../../../tools/scenario-map/path-coverage/prefilter.js';
 import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
+import { loadPlSqlParser } from '../../../src/core/ingestion/plsql/facts-store.js';
+
+// The PL/SQL parser loads lazily (its pipeline phase awaits it); vitest cannot
+// take the synchronous require fallback for TypeScript sources, so preload it.
+beforeAll(loadPlSqlParser);
 
 const ROOT = 'gitnexus/test/fixtures';
 const FILE = 'gitnexus/test/integration/example.test.ts';
@@ -54,7 +59,7 @@ const FIXTURES = {
     'export function twice(value: number) { while (value > 0) { value--; } return value; }',
 };
 
-// Exercise the real native providers, including standalone COBOL and embedded Vue scripts.
+// Exercise the real native providers, including standalone COBOL and PL/SQL and embedded Vue scripts.
 const LANGUAGE_FIXTURES: Record<SupportedLanguages, [string, string]> = {
   typescript: ['ts', 'function twice(x: number) { return x + x; }'],
   javascript: ['js', 'function twice(x) { return x + x; }'],
@@ -83,6 +88,10 @@ const LANGUAGE_FIXTURES: Record<SupportedLanguages, [string, string]> = {
     'cbl',
     '       IDENTIFICATION DIVISION.\n       PROGRAM-ID. SAMPLE.\n       PROCEDURE DIVISION.\n       MAIN-PARA.\n           DISPLAY "HI".\n           STOP RUN.\n',
   ],
+  plsql: [
+    'prc',
+    'CREATE OR REPLACE FUNCTION twice(x NUMBER) RETURN NUMBER IS\nBEGIN\n  RETURN x + x;\nEND twice;\n/\n',
+  ],
 };
 
 it.each(Object.entries(LANGUAGE_FIXTURES))(
@@ -93,6 +102,7 @@ it.each(Object.entries(LANGUAGE_FIXTURES))(
     const result = await profiler.profile([root]);
     if (
       language !== SupportedLanguages.Cobol &&
+      language !== SupportedLanguages.PlSql &&
       !isLanguageAvailable(language as SupportedLanguages, `main.${extension}`)
     ) {
       expect(result.contentKey).not.toBeNull();

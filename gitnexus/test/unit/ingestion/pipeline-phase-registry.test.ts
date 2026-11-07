@@ -69,6 +69,7 @@ const FULL_ORDER = [
   'springConfig',
   'markdown',
   'cobol',
+  'plsql',
   'parse',
   'routes',
   'tools',

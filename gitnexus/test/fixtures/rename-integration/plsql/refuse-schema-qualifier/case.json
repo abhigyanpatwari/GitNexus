@@ -1,0 +1,16 @@
+{
+  "language": "plsql",
+  "description": "Refuse to rename package APP when a call `app.n` resolves to a standalone procedure: there `app` is a schema qualifier, not the package, so it must not be rewritten and every source byte must stay unchanged.",
+  "categories": ["package-scope", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "APP",
+    "kind": "Module",
+    "file": "pkg_app.pks"
+  },
+  "newName": "core",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  }
+}

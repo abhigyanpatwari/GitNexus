@@ -1,7 +1,7 @@
 # Language Ingestion Gap Inventories
 
 These inventories are the starting point for language-specific plans. There is one
-`<language>-ingestion-gaps.md` file for each of the 18 languages in
+`<language>-ingestion-gaps.md` file for each of the 19 languages in
 [SCOPE_RESOLVERS](../../gitnexus/src/core/ingestion/scope-resolution/pipeline/registry.ts).
 Names match provider directories; `jvm` is shared infrastructure, not another language.
 
@@ -27,6 +27,7 @@ receiver examples do not establish whole-language, CFG/PDG or rename completenes
 | [JavaScript](javascript-ingestion-gaps.md)   | Preserve JSDoc container evidence for indexed receivers.                 |
 | [Kotlin](kotlin-ingestion-gaps.md)           | Inventory companion and inherited-receiver limits.                       |
 | [Objective-C](objective-c-ingestion-gaps.md) | Add receiver measurements without weakening dynamic-dispatch boundaries. |
+| [PL/SQL](plsql-ingestion-gaps.md)            | Measure call and table-access recall on real Oracle package corpora.     |
 | [PHP](php-ingestion-gaps.md)                 | Retain PHPDoc container types and establish namespace owners.            |
 | [Python](python-ingestion-gaps.md)           | Audit constructor-field and module ownership coverage.                   |
 | [Ruby](ruby-ingestion-gaps.md)               | Isolate YARD parameter bindings before adding recall.                    |

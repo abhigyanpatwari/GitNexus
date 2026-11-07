@@ -1,0 +1,16 @@
+{
+  "language": "plsql",
+  "description": "Refuse to rename a function that dynamic SQL text also names: the string cannot be rewritten safely, so every source byte must stay unchanged.",
+  "categories": ["dynamic-sql", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "CALC_FEE",
+    "kind": "Function",
+    "file": "pkg_fee.pkb"
+  },
+  "newName": "calc_service_fee",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  }
+}

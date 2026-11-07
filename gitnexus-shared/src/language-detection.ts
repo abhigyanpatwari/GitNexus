@@ -55,6 +55,19 @@ const EXTENSION_MAP: Record<SupportedLanguages, readonly string[]> = {
   [SupportedLanguages.Vue]: ['.vue'],
   [SupportedLanguages.Cobol]: ['.cbl', '.cob', '.cpy', '.cobol'],
   [SupportedLanguages.Zig]: ['.zig'],
+  // `.sql` is claimed by content (provider.classifyFileContent), not by extension.
+  [SupportedLanguages.PlSql]: [
+    '.pks',
+    '.pkb',
+    '.pck',
+    '.pls',
+    '.plb',
+    '.prc',
+    '.fnc',
+    '.trg',
+    '.tps',
+    '.tpb',
+  ],
 } satisfies Record<SupportedLanguages, readonly string[]>; // Ensure exhaustiveness
 
 /** Pre-built reverse lookup: extension → language (built once at module load). */
@@ -129,6 +142,7 @@ const SYNTAX_MAP: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Vue]: 'typescript',
   [SupportedLanguages.Cobol]: 'cobol',
   [SupportedLanguages.Zig]: 'zig',
+  [SupportedLanguages.PlSql]: 'plsql',
 } satisfies Record<SupportedLanguages, string>; // Ensure exhaustiveness
 
 /** Non-code file extensions → Prism-compatible syntax identifiers */

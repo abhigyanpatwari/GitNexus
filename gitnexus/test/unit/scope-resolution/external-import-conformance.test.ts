@@ -418,6 +418,21 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
     },
   ],
   [
+    SupportedLanguages.PlSql,
+    {
+      // SQL*Plus `@@script` resolves against the calling script's directory or
+      // the repository root, by exact path only. A vendor script of the same
+      // name elsewhere in the tree is never suffix-matched; it IS reachable by
+      // its relative spelling, which is what the decoy arm proves.
+      files: ['db/install.sql', 'db/packages/pkg_loan.pks', 'vendor/ext_pkg.pks'],
+      fromFile: 'db/install.sql',
+      resolutionConfig: undefined,
+      external: 'ext_pkg.pks',
+      decoy: 'vendor/ext_pkg.pks',
+      reachesDecoy: '../vendor/ext_pkg.pks',
+    },
+  ],
+  [
     SupportedLanguages.ObjectiveC,
     {
       files: ['Headers/Foundation.h', 'Headers/Widget.h', 'Sources/main.m'],

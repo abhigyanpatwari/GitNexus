@@ -1,0 +1,5 @@
+CREATE OR REPLACE PACKAGE pkg_log AS
+  PROCEDURE info(p_msg IN VARCHAR2);
+  PROCEDURE notify(p_msg IN VARCHAR2);
+END pkg_log;
+/

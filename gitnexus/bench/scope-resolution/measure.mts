@@ -18,6 +18,8 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { SCOPE_RESOLVERS } from '../../src/core/ingestion/scope-resolution/pipeline/registry.js';
 import { runScopeResolution } from '../../src/core/ingestion/scope-resolution/pipeline/run.js';
 import { processCobol } from '../../src/core/ingestion/cobol-processor.js';
+import { processPlSql } from '../../src/core/ingestion/plsql-processor.js';
+import { loadPlSqlParser } from '../../src/core/ingestion/plsql/facts-store.js';
 import { generateId } from '../../src/lib/utils.js';
 import { parseFilesWithWorkers } from '../../test/helpers/worker-parse.js';
 import { corpus, generators } from './corpus.mjs';
@@ -53,6 +55,11 @@ async function sample(language: SupportedLanguages, count: number, methods: numb
     // COBOL's structural graph is emitted by its standalone production parser.
     if (language === SupportedLanguages.Cobol) {
       processCobol(graph, files, new Set(files.map((file) => file.path)));
+    }
+    // PL/SQL's structural graph is emitted by its standalone ANTLR parser, loaded on demand.
+    if (language === SupportedLanguages.PlSql) {
+      await loadPlSqlParser();
+      processPlSql(graph, files, new Set(files.map((file) => file.path)));
     }
     const parseMs = performance.now() - parseStarted;
     const heapAfterParse = process.memoryUsage().heapUsed;

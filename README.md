@@ -112,8 +112,8 @@ For Docker, hosted deployments, image verification, or a local frontend, see
 
 ## Supported languages
 
-C, C++, C#, COBOL, Dart, Go, Java, JavaScript, Kotlin, Objective-C, PHP, Python,
-Ruby, Rust, Swift, TypeScript, Vue and Zig have registered providers. Support
+C, C++, C#, COBOL, Dart, Go, Java, JavaScript, Kotlin, Objective-C, Oracle PL/SQL,
+PHP, Python, Ruby, Rust, Swift, TypeScript, Vue and Zig have registered providers. Support
 varies by construct; see the [language inventories](docs/languages/README.md)
 for measured behavior, exclusions and remaining gaps.
 

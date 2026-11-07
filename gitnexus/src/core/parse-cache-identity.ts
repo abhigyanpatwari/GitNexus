@@ -52,6 +52,7 @@ export const PARSE_CACHE_PACKAGE_INPUTS = [
   'smol-toml',
   'glob',
   'ignore',
+  'antlr4ng',
 ] as const;
 
 // These extraction-only helpers live beside their provider. flow-source stays
