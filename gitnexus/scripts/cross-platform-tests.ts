@@ -30,7 +30,7 @@ const PLATFORM_LOGIC = [
   'test/unit/analysis-publication.test.ts',
   'test/unit/analysis-writer-identity.test.ts',
   'test/unit/analysis-writer-identity-platform.test.ts',
-  'test/unit/parse-impl-round-drain.test.ts',
+  'test/integration/parse-impl-round-drain.test.ts',
   'test/unit/analysis-phase-supervisor.test.ts',
   'test/unit/shared-vector-artifact.test.ts',
   'test/unit/embedding-artifact.test.ts',
