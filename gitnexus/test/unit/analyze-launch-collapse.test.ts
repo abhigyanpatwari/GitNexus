@@ -371,10 +371,11 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
 
     it('preserves cancellation during storage resolution when config is invalid', async () => {
       vi.stubEnv('GITNEXUS_RC', `${rcDir}/missing.json`);
+      const acquireRepoLock = vi.fn(() => null);
       const launch = createLaunchAnalysisWorker({
         jobManager,
         backend: { init: backendInit },
-        acquireRepoLock: () => null,
+        acquireRepoLock,
         releaseRepoLock: () => calls.push('releaseRepoLock'),
         closeDbHandle,
       });
@@ -390,7 +391,8 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
       expect(job?.error).toBe('Cancelled during storage resolution');
       expect(jobManager.hasPendingCancel(queued.id)).toBe(false);
       expect(forkMock).not.toHaveBeenCalled();
-      expect(calls.filter((call) => call === 'releaseRepoLock')).toHaveLength(1);
+      expect(acquireRepoLock).not.toHaveBeenCalled();
+      expect(calls).not.toContain('releaseRepoLock');
     });
   });
 

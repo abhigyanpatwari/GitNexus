@@ -38,6 +38,17 @@ async function file(name: string, text: string) {
 }
 
 describe('original embedding source', () => {
+  it('releases cached sources even when admission disables caching on a cache hit', async () => {
+    const text = 'class Sample { value = 1; }';
+    await file('sample.ts', text);
+    const reader = new EmbeddingSourceReader(source);
+    const indexed = node('sample.ts', 0, 0);
+    expect(await reader.read(indexed)).toBe(text);
+    expect(await reader.read(indexed, async () => reader.disableCache())).toBe(text);
+    await unlink(path.join(root, 'sample.ts'));
+    await expect(reader.read(indexed)).rejects.toThrow('Embedding source unavailable');
+  });
+
   it('admits source bytes before reading, including cached files', async () => {
     await file('sample.py', 'source');
     const reader = new EmbeddingSourceReader(source);

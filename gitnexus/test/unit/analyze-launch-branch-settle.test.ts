@@ -30,6 +30,7 @@ import path from 'node:path';
 // them — these stay plain literals and `path` is only used below.
 const H = vi.hoisted(() => ({
   forkMock: vi.fn(),
+  mayEmbed: vi.fn(async () => false),
   STORAGE_PATH: '/tmp/gitnexus-settle-storage',
   REPO_PATH: '/tmp/gitnexus-settle-repo',
   METADATA_FILE: 'gitnexus.json',
@@ -49,7 +50,7 @@ vi.mock('../../src/core/analysis-host-resources.js', async () => {
   const { resolveAnalysisResourceBudget } =
     await import('../../src/core/analysis-resource-budget.js');
   return {
-    analysisMayEmbed: async () => false,
+    analysisMayEmbed: H.mayEmbed,
     analysisSupervisorReservation: () => 192 * 1024 ** 2,
     resolveHostAnalysisResources: () =>
       resolveAnalysisResourceBudget({
@@ -153,6 +154,7 @@ describe('finalization gate follows the placement the run chose', () => {
 
   beforeEach(() => {
     jobManager = new JobManager();
+    H.mayEmbed.mockResolvedValue(false);
     child = makeChild();
     forkMock.mockImplementation(() => child);
     backendInit = vi.fn(async () => true);
@@ -166,6 +168,27 @@ describe('finalization gate follows the placement the run chose', () => {
     jobManager.dispose();
     vi.restoreAllMocks();
     forkMock.mockReset();
+  });
+
+  it('does not fork when resource preflight finishes after the job deadline', async () => {
+    jobManager.dispose();
+    vi.useFakeTimers();
+    jobManager = new JobManager();
+    let finish!: (value: boolean) => void;
+    H.mayEmbed.mockReturnValueOnce(
+      new Promise<boolean>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    const pending = launcher()(job, REPO_PATH, {});
+    vi.advanceTimersByTime(30 * 60_000);
+    expect(jobManager.getJob(job.id)?.status).toBe('failed');
+    expect(jobManager.createJob({ repoPath: '/tmp/next' }).status).toBe('queued');
+    finish(false);
+    await pending;
+    expect(forkMock).not.toHaveBeenCalled();
+    expect(backendInit).not.toHaveBeenCalled();
   });
 
   it('keeps graph readiness and embedding counters nonterminal across worker log messages', async () => {

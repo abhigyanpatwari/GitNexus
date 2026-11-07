@@ -220,6 +220,19 @@ describe('bounded durable embedding progress', () => {
     expect(await readEmbeddingJobProgress(f.root, meta)).toEqual({ phase: 'unverified' });
   });
 
+  it('accepts an absent exclusion counter but rejects explicit null accounting', async () => {
+    const f = await fixture();
+    const state = f.journal.snapshot();
+    delete state.excludedNodes;
+    await writeEmbeddingJobRecord(f.directory, 'job.json', state);
+    expect(await readEmbeddingJobProgress(f.root, meta)).toMatchObject({
+      phase: 'embedding',
+      pendingNodes: 6,
+    });
+    await writeEmbeddingJobRecord(f.directory, 'job.json', { ...state, excludedNodes: null });
+    expect(await readEmbeddingJobProgress(f.root, meta)).toEqual({ phase: 'unverified' });
+  });
+
   it('refuses foreign graph identities and symlinked job ancestors', async () => {
     const f = await fixture();
     expect(

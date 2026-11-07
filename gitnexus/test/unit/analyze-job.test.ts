@@ -93,6 +93,21 @@ describe('JobManager', () => {
     expect(manager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
   });
 
+  it('expires preflight before any child is registered and releases the job slot', () => {
+    manager.dispose();
+    vi.useFakeTimers();
+    manager = new JobManager();
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    vi.advanceTimersByTime(30 * 60_000 - 1);
+    expect(manager.getJob(job.id)?.status).toBe('queued');
+    vi.advanceTimersByTime(1);
+    expect(manager.getJob(job.id)).toMatchObject({
+      status: 'failed',
+      error: 'Analysis timed out (30 minute limit)',
+    });
+    expect(manager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
+
   it('returns undefined for unknown job id', () => {
     expect(manager.getJob('nonexistent')).toBeUndefined();
   });

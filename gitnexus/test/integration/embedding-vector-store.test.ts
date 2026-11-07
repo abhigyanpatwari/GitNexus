@@ -749,6 +749,58 @@ describe('bounded durable embedding runner', () => {
     expect(fixture.provider).not.toHaveBeenCalled();
   });
 
+  it('drops the optional source cache when an admitted unit needs its remaining bytes', async () => {
+    const options = await setup();
+    const text = 'class Sample { value = 1; }';
+    await fs.writeFile(path.join(options.directory, 'source.ts'), text);
+    const content = text.padEnd(20_000, ' ');
+    const nodes: EmbeddableNode[] = Array.from({ length: 16 }, (_, i) => ({
+      id: `Class:source.ts:n${String(i).padStart(2, '0')}`,
+      label: 'Class',
+      name: 'Sample',
+      filePath: 'source.ts',
+      content,
+      startLine: 0,
+      endLine: 0,
+    }));
+    const source = {
+      async *scan(label: string) {
+        if (label !== 'Class') return;
+        for (const node of nodes)
+          yield { id: node.id, contentBytes: Buffer.byteLength(content), metadataBytes: 1024 };
+      },
+      async fetch(_label: string, ids: readonly string[]) {
+        return nodes.filter((node) => ids.includes(node.id));
+      },
+    };
+    const manifest = await createEmbeddingWorkManifest(options.directory, 'source', source);
+    expect(manifest.totalUnits).toBe(1);
+    const journal = await EmbeddingJobJournal.create(options.directory, options.identity, manifest);
+    const provider = vi.fn(async (texts: string[]) =>
+      texts.map(() => new Float32Array([1, 0, 0, 0])),
+    );
+    const queueBytes = 1121 * 1024;
+    const result = await runEmbeddingJob({
+      directory: options.directory,
+      manifest,
+      source,
+      journal,
+      store,
+      provider,
+      queueBytes,
+      config: { subBatchSize: 8, maxInputChars: 256 },
+      sourceContext: {
+        repoPath: options.directory,
+        fileHashes: { 'source.ts': createHash('sha256').update(text).digest('hex') },
+        contentRetention: 'full',
+      },
+    });
+    expect(result.state).toMatchObject({ completedNodes: 16, failedNodes: 0, phase: 'indexing' });
+    expect(result.peakQueueBytes).toBeLessThanOrEqual(queueBytes);
+    expect((await store.completedNodes(nodes.map((node) => node.id))).size).toBe(16);
+    expect(provider).toHaveBeenCalled();
+  });
+
   it.each(['input rejection', 'storage failure'])(
     'preserves source-admission abort recovery and errors (%s)',
     async (failure) => {

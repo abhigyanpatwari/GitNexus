@@ -1006,9 +1006,9 @@ export function createLbugDatabase(
 ): lbug.Database {
   if (
     options.bufferPoolBytes !== undefined &&
-    (!Number.isSafeInteger(options.bufferPoolBytes) || options.bufferPoolBytes <= 0)
+    (!Number.isSafeInteger(options.bufferPoolBytes) || options.bufferPoolBytes < 0)
   )
-    throw new Error('Explicit LadybugDB buffer pool must be a positive byte count');
+    throw new Error('Explicit LadybugDB buffer pool must be a nonnegative byte count');
   // .d.ts declares fewer args than the native constructor accepts.
   return new (lbugModule.Database as any)(
     databasePath,

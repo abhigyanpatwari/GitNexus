@@ -313,7 +313,7 @@ export async function runEmbeddingJob(
           let admissionAbort: unknown;
           try {
             if (!sourceReader) {
-              const cacheBytes = Math.min(16 * 1024 * 1024, Math.floor(budget.limit / 8));
+              let cacheBytes = Math.min(16 * 1024 * 1024, Math.floor(budget.limit / 8));
               if (budget.usedBytes + cacheBytes + minimumUnitBatchBytes > budget.limit) {
                 await flush();
                 await flushCopies();
@@ -322,10 +322,15 @@ export async function runEmbeddingJob(
                 admissionAbort = abort;
                 throw abort;
               }
+              cacheBytes = Math.min(
+                cacheBytes,
+                Math.max(0, budget.limit - budget.usedBytes - minimumUnitBatchBytes),
+              );
               releaseSourceCache = budget.reserve(cacheBytes);
               sourceReader = new EmbeddingSourceReader(sourceContext, cacheBytes);
             }
-            const content = await sourceReader.read(indexedNode, async (fileBytes) => {
+            const reader = sourceReader;
+            const content = await reader.read(indexedNode, async (fileBytes) => {
               signal?.throwIfAborted();
               // Whole-file decoding/line index, notebook reconstruction, AST and
               // projected declarations live until this node's iterator closes.
@@ -337,6 +342,14 @@ export async function runEmbeddingJob(
               if (abort) {
                 admissionAbort = abort;
                 throw abort;
+              }
+              if (
+                releaseSourceCache &&
+                budget.usedBytes + bytes + minimumUnitBatchBytes > budget.limit
+              ) {
+                reader.disableCache();
+                releaseSourceCache();
+                releaseSourceCache = undefined;
               }
               if (
                 !Number.isSafeInteger(bytes) ||
@@ -564,6 +577,8 @@ export async function runEmbeddingJob(
       for (const release of copyReleases) release();
       releaseScratch();
       fetched.release();
+      // A later, smaller unit can use the optional cache again.
+      if (!releaseSourceCache) sourceReader = undefined;
     }
   };
 

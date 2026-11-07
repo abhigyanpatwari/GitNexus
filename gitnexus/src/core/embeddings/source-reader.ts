@@ -62,8 +62,15 @@ export class EmbeddingSourceReader {
 
   constructor(
     private readonly source: EmbeddingSourceContext,
-    private readonly cacheBytes = CACHE_BYTES,
+    private cacheBytes = CACHE_BYTES,
   ) {}
+
+  /** Release optional retained sources when the caller needs their reservation. */
+  disableCache(): void {
+    this.files.clear();
+    this.bytes = 0;
+    this.cacheBytes = 0;
+  }
 
   /** Admission runs before allocation, including on cache hits. The caller
    * holds its reservation until it finishes using/parsing the returned text. */
@@ -96,7 +103,7 @@ export class EmbeddingSourceReader {
     if (file) {
       await admit?.(file.sourceBytes);
       this.files.delete(node.filePath);
-      this.files.set(node.filePath, file);
+      if (this.cacheBytes > 0) this.files.set(node.filePath, file);
     } else {
       if (
         !node.filePath ||

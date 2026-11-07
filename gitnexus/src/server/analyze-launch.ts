@@ -227,22 +227,30 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
     targetPath: string,
     opts: LaunchOptions,
   ): Promise<void> {
+    const launchAborted = (jobId: string): boolean => {
+      const current = jobManager.getJob(jobId);
+      return !current || isTerminalJobStatus(current.status) || jobManager.hasPendingCancel(jobId);
+    };
+    if (launchAborted(job.id)) return;
     // For waitForSettledIndex: files (re)written by this job have mtimes at or
     // after this instant. Taken before the fork so no worker write predates it.
     const jobStartMs = Date.now();
     const envHeapMb = Number(process.env.GITNEXUS_SERVER_ANALYZE_HEAP_MB);
+    const includeEmbeddings = await analysisMayEmbed(targetPath, opts);
+    if (launchAborted(job.id)) return;
     const resources = resolveHostAnalysisResources({
       mainHeapMb:
         (Number.isInteger(envHeapMb) && envHeapMb > 0
           ? envHeapMb
           : Math.min(8192, autoHeapCapMb())) + 48,
-      includeEmbeddings: await analysisMayEmbed(targetPath, opts),
+      includeEmbeddings,
       supervisorBytes: analysisSupervisorReservation(),
     });
     const analyzeLockKey = await requireStoragePath(
       targetPath,
       opts.force ? ANALYZE_FORCE_STORAGE_REQUIREMENTS : ANALYZE_STORAGE_REQUIREMENTS,
     );
+    if (launchAborted(job.id)) return;
     // Acquire shared repo lock only after ownership validation. The same
     // resolved path is retained for finalization instead of being looked up
     // again through the registry after the worker exits.
@@ -303,11 +311,6 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
     const tsxHookArgs: string[] = isDev
       ? ['--import', pathToFileURL(_require.resolve('tsx/esm')).href]
       : [];
-
-    const launchAborted = (jobId: string): boolean => {
-      const current = jobManager.getJob(jobId);
-      return !current || isTerminalJobStatus(current.status) || jobManager.hasPendingCancel(jobId);
-    };
 
     const forkWorker = (continuation?: ContinueMessage) => {
       if (launchAborted(job.id)) {

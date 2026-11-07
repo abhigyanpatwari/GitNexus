@@ -92,6 +92,7 @@ export function projectAnalysisPhaseProgress(
 }
 
 export function embeddingProgressFromState(state: EmbeddingJobState): EmbeddingJobProgress {
+  const excludedNodes = state.excludedNodes === undefined ? 0 : state.excludedNodes;
   const counts = [
     state.totalUnits,
     state.completedUnits,
@@ -101,17 +102,13 @@ export function embeddingProgressFromState(state: EmbeddingJobState): EmbeddingJ
     state.completedNodes,
     state.reusedNodes,
     state.failedNodes,
-    state.excludedNodes ?? 0,
+    excludedNodes,
     state.chunks,
   ];
   const pendingUnits =
     state.totalUnits - state.completedUnits - state.reusedUnits - state.failedUnits;
   const pendingNodes =
-    state.totalNodes -
-    state.completedNodes -
-    state.reusedNodes -
-    state.failedNodes -
-    (state.excludedNodes ?? 0);
+    state.totalNodes - state.completedNodes - state.reusedNodes - state.failedNodes - excludedNodes;
   const activeUnit = state.active?.start?.unit ?? null;
   if (
     counts.some((n) => !Number.isSafeInteger(n) || n < 0) ||
@@ -150,7 +147,7 @@ export function embeddingProgressFromState(state: EmbeddingJobState): EmbeddingJ
     reusedNodes: state.reusedNodes,
     pendingNodes,
     failedNodes: state.failedNodes,
-    ...(state.excludedNodes ? { excludedNodes: state.excludedNodes } : {}),
+    ...(excludedNodes ? { excludedNodes } : {}),
     chunks: state.chunks,
   };
 }

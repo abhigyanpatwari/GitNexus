@@ -157,6 +157,7 @@ export class JobManager {
     };
 
     this.jobs.set(job.id, job);
+    this.armAnalysisTimeout(job.id);
     return job;
   }
 
@@ -192,6 +193,8 @@ export class JobManager {
     if (this.isTerminal(job.status)) {
       job.completedAt = job.completedAt ?? Date.now();
       this.abortControllers.delete(id);
+      clearTimeout(this.timeouts.get(id));
+      this.timeouts.delete(id);
     }
 
     // Emit exactly one event per updateJob call to prevent SSE double-write
@@ -207,13 +210,11 @@ export class JobManager {
     }
   }
 
-  /** Register a child process for a job — enables cancellation and timeout. */
-  registerChild(jobId: string, child: ChildProcess) {
+  private armAnalysisTimeout(jobId: string): void {
     const previousTimer = this.timeouts.get(jobId);
     if (previousTimer) clearTimeout(previousTimer);
-    this.children.set(jobId, child);
 
-    // One deadline covers graph preparation, continuation, and crash retries.
+    // One deadline covers preflight, graph preparation, continuation, and retries.
     const elapsed = Date.now() - (this.jobs.get(jobId)?.startedAt ?? Date.now());
     const timer = setTimeout(
       () => {
@@ -225,6 +226,12 @@ export class JobManager {
       Math.max(0, JOB_TIMEOUT_MS - elapsed),
     );
     this.timeouts.set(jobId, timer);
+  }
+
+  /** Register a child process while retaining the job's original deadline. */
+  registerChild(jobId: string, child: ChildProcess) {
+    this.children.set(jobId, child);
+    this.armAnalysisTimeout(jobId);
 
     // Apply a pending cancel BEFORE other `exit` listeners (analyze-launch's
     // crash-retry) see a still-non-terminal job and fork a replacement worker.
