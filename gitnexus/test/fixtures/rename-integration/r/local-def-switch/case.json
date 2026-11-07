@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when the local function literal is assigned in one switch() arm: the other arm leaves the call reaching the function being renamed.",
+  "categories": ["assignment-shadowing", "call-order", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

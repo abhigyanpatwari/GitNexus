@@ -191,6 +191,14 @@ export const GRAMMAR_SOURCES: Record<string, GrammarSource> = {
     unavailableNote:
       'Ruby parsing requires `tree-sitter-ruby`. Check the install and native binding.',
   },
+  [SupportedLanguages.R]: {
+    packageName: '@eagleoutice/tree-sitter-r',
+    load() {
+      return _require(this.packageName);
+    },
+    unavailableNote:
+      'R parsing requires `@eagleoutice/tree-sitter-r`. Check the install and native binding.',
+  },
   [SupportedLanguages.Vue]: {
     packageName: 'tree-sitter-typescript',
     load() {

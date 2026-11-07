@@ -266,7 +266,7 @@ describe('parse artifact input ownership', () => {
     for (const file of PARSE_CACHE_BASE_FILES)
       expect(existsSync(path.join(sourceRoot, file)), file).toBe(true);
     for (const source of Object.values(GRAMMAR_SOURCES)) {
-      expect(source.packageName).toMatch(/^tree-sitter-/);
+      expect(source.packageName).toMatch(/^(?:@[a-z0-9_.-]+\/)?tree-sitter-/);
       expect(typeof source.load).toBe('function');
     }
   });

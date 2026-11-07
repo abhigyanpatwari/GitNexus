@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a new name whose second dot split names an existing dotted generic (to.json.foo registers a method of to.json).",
+  "categories": ["s3", "name-collision", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "helper.R", "startLine": 0 },
+  "newName": "to.json.foo",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

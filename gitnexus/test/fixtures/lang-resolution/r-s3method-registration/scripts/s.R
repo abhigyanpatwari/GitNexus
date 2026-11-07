@@ -1,0 +1,7 @@
+library(pk)
+w1 <- function() format_impl(1)
+w2 <- function() pk::format_impl(1)
+w3 <- function() pk::print.pkthing(1)
+w4 <- function() print.pkthing(1)
+w5 <- function() pk:::format_impl(1)
+w6 <- function() hidden.fn()

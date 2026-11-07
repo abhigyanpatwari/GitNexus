@@ -1,0 +1,2 @@
+import(pkgB, except = c(lag))
+export(i_main)

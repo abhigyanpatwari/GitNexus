@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a getter whose call sits in an assignment target: helper(z) <- 5 calls helper<-, which a rename would strand.",
+  "categories": ["replacement-function", "getter-setter", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "pair.R", "startLine": 0 },
+  "newName": "accessor",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

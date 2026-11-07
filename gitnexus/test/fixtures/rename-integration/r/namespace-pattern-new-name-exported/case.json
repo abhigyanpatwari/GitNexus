@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when an exportPattern() of the package matches the new name: the rename would add a function to the package API.",
+  "categories": ["namespace", "package-export", "export-pattern", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "R/a.R",
+    "startLine": 0
+  },
+  "newName": "make_helper",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  },
+  "edges": []
+}

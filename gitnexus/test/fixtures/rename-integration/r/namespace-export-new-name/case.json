@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when NAMESPACE already lists the new name in export(): the rename would add a function to the package API.",
+  "categories": ["namespace", "package-export", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "R/a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  },
+  "edges": []
+}

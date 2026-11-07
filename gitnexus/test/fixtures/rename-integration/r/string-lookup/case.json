@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a function that a string literal names for do.call dynamic lookup.",
+  "categories": ["string-dispatch", "negative", "unchanged-on-error"],
+  "target": { "name": "worker", "kind": "Function", "file": "dyn.R", "startLine": 0 },
+  "newName": "job",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

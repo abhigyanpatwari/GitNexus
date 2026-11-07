@@ -76,6 +76,7 @@ updates:
       tree-sitter-grammars:
         patterns:
           - tree-sitter-*
+          - '@eagleoutice/tree-sitter-*'
         exclude-patterns:
           - tree-sitter
           - tree-sitter-cli

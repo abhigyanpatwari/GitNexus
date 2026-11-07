@@ -1,0 +1,15 @@
+{
+  "language": "r",
+  "description": "Rename a private function of a package whose NAMESPACE importFrom()s a name from another repository package: the synthesised import must not hide the plan-time NAMESPACE read.",
+  "categories": ["namespace", "package-export", "import", "positive"],
+  "target": { "name": "hidden", "kind": "Function", "file": "a/R/pub.R", "startLine": 0 },
+  "newName": "secret",
+  "expect": { "status": "success", "edits": 2 },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": { "name": "pub", "kind": "Function", "file": "a/R/pub.R", "startLine": 2 },
+      "to": { "name": "hidden", "kind": "Function", "file": "a/R/pub.R", "startLine": 0 }
+    }
+  ]
+}

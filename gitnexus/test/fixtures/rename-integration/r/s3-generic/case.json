@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse an S3 generic whose UseMethod string and area.circle method dispatch by spelling.",
+  "categories": ["s3", "string-dispatch", "negative", "unchanged-on-error"],
+  "target": { "name": "area", "kind": "Function", "file": "shapes.R", "startLine": 0 },
+  "newName": "surface",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

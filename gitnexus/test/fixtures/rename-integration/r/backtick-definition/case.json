@@ -1,0 +1,15 @@
+{
+  "language": "r",
+  "description": "Rename a function defined in backticks; its backticked and bare calls are renamed with it.",
+  "categories": ["call-graph", "same-file", "backtick-name"],
+  "target": { "name": "`tick`", "kind": "Function", "file": "defined.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "success", "edits": 3 },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": { "name": "use", "kind": "Function", "file": "defined.R", "startLine": 2 },
+      "to": { "name": "`tick`", "kind": "Function", "file": "defined.R", "startLine": 0 }
+    }
+  ]
+}

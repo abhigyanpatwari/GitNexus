@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a new dotted name whose prefix is an existing function, which would silently register an S3 method of it.",
+  "categories": ["s3", "name-collision", "negative", "unchanged-on-error"],
+  "target": { "name": "circle_area", "kind": "Function", "file": "shapes.R", "startLine": 2 },
+  "newName": "area.circle",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

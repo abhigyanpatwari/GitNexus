@@ -1,0 +1,22 @@
+{
+  "language": "r",
+  "description": "Refuse when a function body assigns the name a computed value even though nothing calls it: an assignment may shadow the function, and the occurrence cannot be proved to be an unrelated variable.",
+  "categories": [
+    "assignment-shadowing",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "use.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

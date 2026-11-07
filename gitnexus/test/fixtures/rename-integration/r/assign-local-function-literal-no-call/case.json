@@ -1,0 +1,20 @@
+{
+  "language": "r",
+  "description": "A body assignment of a function literal with no call: only the outer function is renamed (P7).",
+  "categories": [
+    "assignment-shadowing",
+    "same-file"
+  ],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "use.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "success",
+    "edits": 1
+  },
+  "edges": []
+}

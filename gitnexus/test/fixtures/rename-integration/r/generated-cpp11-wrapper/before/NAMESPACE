@@ -1,0 +1,2 @@
+export(use)
+useDynLib(pk, .registration = TRUE)

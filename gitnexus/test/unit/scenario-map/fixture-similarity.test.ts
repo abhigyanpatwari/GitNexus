@@ -79,6 +79,7 @@ const LANGUAGE_FIXTURES: Record<SupportedLanguages, [string, string]> = {
     'vue',
     '<script lang="ts">function twice(x: number) { return x + x; }</script><template><p>Hello</p></template>',
   ],
+  r: ['R', 'twice <- function(x) {\n  return(x + x)\n}\n'],
   cobol: [
     'cbl',
     '       IDENTIFICATION DIVISION.\n       PROGRAM-ID. SAMPLE.\n       PROCEDURE DIVISION.\n       MAIN-PARA.\n           DISPLAY "HI".\n           STOP RUN.\n',

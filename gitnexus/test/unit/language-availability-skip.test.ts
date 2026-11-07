@@ -103,6 +103,36 @@ describe('native parser availability — unavailable language is skipped, not cr
     expect(warned).toBe(true);
   });
 
+  it('names the published package in the rebuild hint: @eagleoutice/tree-sitter-r for R, tree-sitter-<language> otherwise', async () => {
+    cap = _captureLogger();
+    vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
+    fs.writeFileSync(path.join(repoDir, 'a.R'), 'f <- function(x) x\n');
+    fs.writeFileSync(path.join(repoDir, 'App.swift'), 'class A {}\n');
+    const scanned = ['a.R', 'App.swift'].map((rel) => ({
+      path: rel,
+      size: fs.statSync(path.join(repoDir, rel)).size,
+    }));
+    await runChunkedParseAndResolve(
+      createKnowledgeGraph(),
+      scanned,
+      ['a.R', 'App.swift'],
+      1,
+      repoDir,
+      Date.now(),
+      () => {},
+    );
+    const skipped = cap
+      .records()
+      .map((record) => record.msg)
+      .filter((msg): msg is string => typeof msg === 'string' && msg.startsWith('Skipping 1 '));
+    expect(skipped).toEqual(
+      expect.arrayContaining([
+        'Skipping 1 r file(s) — r parser not available (native binding may not have built). Try: npm rebuild @eagleoutice/tree-sitter-r',
+        'Skipping 1 swift file(s) — swift parser not available (native binding may not have built). Try: npm rebuild tree-sitter-swift',
+      ]),
+    );
+  });
+
   it('admits a content-classified Objective-C header when only C++ is unavailable', async () => {
     vi.mocked(parserLoader.isLanguageAvailable).mockImplementation(
       (language) => language === SupportedLanguages.ObjectiveC,
