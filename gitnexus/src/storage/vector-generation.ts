@@ -61,14 +61,8 @@ export function selectVectorGeneration(
 ): VectorReadSelection {
   if (metadata?.incrementalInProgress || metadata?.graphWriteCollapsed)
     return { kind: 'unavailable', reason: 'graph-generation-unverified' };
-  if (metadata?.embeddingCheckpoint)
-    return {
-      kind: 'unavailable',
-      reason:
-        metadata.embeddingCheckpoint.kind === 'unverified-count'
-          ? 'embedding-count-unverified'
-          : 'embedding-pending',
-    };
+  if (metadata?.embeddingCheckpoint && metadata.embeddingCheckpoint.kind !== 'unverified-count')
+    return { kind: 'unavailable', reason: 'embedding-pending' };
   if (!metadata?.graphGeneration && !metadata?.vectorGeneration && !metadata?.embeddingJob)
     return { kind: 'legacy' };
   const graph = metadata?.graphGeneration;

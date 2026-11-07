@@ -2,10 +2,17 @@ import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RepoMeta } from '../../src/storage/repo-meta.js';
 
-const mocks = vi.hoisted(() => ({ query: vi.fn(), embed: vi.fn(), metadata: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  query: vi.fn(),
+  parameterized: vi.fn(),
+  embed: vi.fn(),
+  metadata: vi.fn(),
+}));
 vi.mock('../../src/core/lbug/pool-adapter.js', async (original) => ({
   ...(await original<typeof import('../../src/core/lbug/pool-adapter.js')>()),
   executeQuery: mocks.query,
+  executeParameterized: mocks.parameterized,
+  ensureVectorExtension: vi.fn().mockResolvedValue(false),
 }));
 vi.mock('../../src/storage/repo-manager.js', async (original) => ({
   ...(await original<typeof import('../../src/storage/repo-manager.js')>()),
@@ -39,12 +46,13 @@ interface Reader {
 }
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.query.mockResolvedValue([]);
+  mocks.query.mockReset().mockResolvedValue([]);
+  mocks.parameterized.mockResolvedValue([]);
   mocks.metadata.mockResolvedValue(metadata);
 });
 
 describe('MCP generation gate', () => {
-  it.each([undefined, 'interrupted', 'partial', 'unverified-count'] as const)(
+  it.each([undefined, 'interrupted', 'partial'] as const)(
     'retains bounded legacy checkpoint %s metadata and skips query embedding',
     async (kind) => {
       const backend = new LocalBackend() as unknown as Reader;
@@ -75,11 +83,55 @@ describe('MCP generation gate', () => {
       expect(snapshot.embeddingCheckpoint?.recovery).toBeUndefined();
       const degraded: { reason?: string; embeddingDims?: number } = {};
       expect(await backend.semanticSearch(repo, 'hello', 5, degraded)).toEqual([]);
-      expect(degraded.reason).toContain(
-        kind === 'unverified-count' ? 'embedding-count-unverified' : 'embeddings are pending',
-      );
+      expect(degraded.reason).toContain('embeddings are pending');
       expect(mocks.embed).not.toHaveBeenCalled();
       expect(mocks.query).not.toHaveBeenCalled();
+    },
+  );
+  it.each(['present', 'empty', 'failed'] as const)(
+    'checks live vectors before embedding with an unverified count: %s',
+    async (count) => {
+      const backend = new LocalBackend() as unknown as Reader;
+      mocks.metadata.mockResolvedValue({
+        repoPath: '/repo',
+        lastCommit: 'abc',
+        indexedAt: 'now',
+        stats: { embeddings: 0 },
+        embeddingDims: 4,
+        embeddingCheckpoint: {
+          at: 'now',
+          nodesProcessed: 1,
+          totalNodes: 1,
+          chunksProcessed: 1,
+          model: 'model',
+          provider: 'local',
+          dimensions: 4,
+          kind: 'unverified-count',
+          pendingNodeIds: [],
+        },
+      });
+      if (count === 'failed') mocks.query.mockRejectedValueOnce(new Error('Count failed'));
+      else mocks.query.mockResolvedValueOnce([{ cnt: count === 'present' ? 1 : 0 }]);
+      const nodeId = 'Function:src/example.ts:hello';
+      mocks.query.mockResolvedValueOnce([
+        { nodeId, chunkIndex: 0, startLine: 1, endLine: 2, embedding: [1, 0, 0, 0] },
+      ]);
+      mocks.embed.mockResolvedValue([1, 0, 0, 0]);
+      mocks.parameterized.mockResolvedValue([{ name: 'hello', filePath: 'src/example.ts' }]);
+      const repo = { lbugPath: path.join('/repo/.gitnexus', 'lbug') };
+      const snapshot = await backend.readToolMetadata(repo);
+      expect(snapshot.embeddingCheckpoint?.kind).toBe('unverified-count');
+      expect(snapshot.embeddingCheckpoint?.pendingNodeIds).toBeUndefined();
+      const results = await backend.semanticSearch(repo, 'hello', 5);
+      expect(mocks.query.mock.calls[0][1]).toContain('COUNT(*)');
+      if (count === 'present') {
+        expect(results).toMatchObject([{ nodeId, name: 'hello', filePath: 'src/example.ts' }]);
+        expect(mocks.embed).toHaveBeenCalledOnce();
+      } else {
+        expect(results).toEqual([]);
+        expect(mocks.embed).not.toHaveBeenCalled();
+        expect(mocks.query).toHaveBeenCalledOnce();
+      }
     },
   );
   it.each([
