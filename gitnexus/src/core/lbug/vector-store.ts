@@ -636,29 +636,35 @@ export class VectorStore {
       }
       await this.verify(verified);
       const finalize = async () => {
+        let ids: string[] = [];
+        let hashes: string[] = [];
+        const flush = async () => {
+          if (!ids.length) return;
+          await this.query(
+            'UNWIND range(1, size($ids)) AS i MATCH (e:CodeEmbedding {id:$ids[i]}) SET e.contentHash=$hashes[i]',
+            { ids, hashes },
+          );
+          ids = [];
+          hashes = [];
+        };
         for (let i = 0; i < nodes.length; i++) {
           const node = nodes[i];
           if (!node.inputsDigest) continue;
           const contentHash = `${node.contentHash}:${node.inputsDigest}`;
-          for (let start = 0; start < node.chunks; start += BLOCK_ROWS) {
-            const ids = Array.from(
-              { length: Math.min(BLOCK_ROWS, node.chunks - start) },
-              (_, j) => `${node.nodeId}:${start + j}`,
-            );
-            await this.query(
-              'UNWIND $ids AS id MATCH (e:CodeEmbedding {id:id}) SET e.contentHash=$contentHash',
-              { ids, contentHash },
-            );
+          for (let ordinal = 0; ordinal < node.chunks; ordinal++) {
+            ids.push(`${node.nodeId}:${ordinal}`);
+            hashes.push(contentHash);
+            if (ids.length === BLOCK_ROWS) await flush();
           }
-          await this.query(
-            'MATCH (n:EmbeddingNodeReceipt {nodeId:$nodeId}) SET n.contentHash=$contentHash',
-            { nodeId: node.nodeId, contentHash },
-          );
           verified[i] = { ...verified[i], contentHash };
         }
+        await flush();
         await this.query(
-          'UNWIND $ids AS id MATCH (n:EmbeddingNodeReceipt {nodeId:id}) SET n.complete=true',
-          { ids: nodes.map((n) => n.nodeId) },
+          'UNWIND range(1, size($ids)) AS i MATCH (n:EmbeddingNodeReceipt {nodeId:$ids[i]}) SET n.contentHash=$hashes[i], n.complete=true',
+          {
+            ids: verified.map((receipt) => receipt.nodeId),
+            hashes: verified.map((receipt) => receipt.contentHash),
+          },
         );
       };
       if (nodes.some((node) => node.inputsDigest)) await this.transaction(finalize);

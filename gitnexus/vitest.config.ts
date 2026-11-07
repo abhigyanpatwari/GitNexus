@@ -3,6 +3,7 @@ import PerfSequencer from './test/helpers/perf-sequencer.js';
 
 // Keep native tests in exactly one project (TESTING.md).
 const RESUMABLE_ANALYSIS_NATIVE_TESTS = [
+  'test/integration/embedding-input-isolation.test.ts',
   'test/integration/embedding-vector-store.test.ts',
   'test/integration/legacy-vector-reuse-index.test.ts',
   'test/integration/legacy-vector-export.test.ts',

@@ -920,24 +920,38 @@ describe('separate durable vector artifacts', () => {
       expect(await store.reusable(node.nodeId, node.contentHash)).toBeNull();
   });
 
-  it('writes a multi-node unit and verifies a large node in bounded batches', async () => {
+  it('finalizes distinct input hashes across chunk batches and preserves unhashed groups on reopen', async () => {
     const options = await setup();
-    const nodes = [0, 1].map((i) => ({ nodeId: `Function:a:node${i}`, contentHash: 'hash' }));
+    const nodes = [0, 1, 2].map((i) => ({
+      nodeId: `Function:a:node${i}`,
+      contentHash: String(i).repeat(40),
+    }));
     await store.beginNodes(nodes);
-    for (let start = 0; start < 600; start += 128) {
-      const rows = Array.from({ length: Math.min(128, 600 - start) }, (_, i) => ({
-        ...nodes[start + i < 300 ? 0 : 1],
+    for (let start = 0; start < 601; start += 128) {
+      const rows = Array.from({ length: Math.min(128, 601 - start) }, (_, i) => ({
+        ...nodes[Math.floor((start + i) / 300)],
         ...chunk((start + i) % 300),
       }));
       await store.appendBatch(rows);
     }
-    const receipts = await store.finishNodes(nodes.map((node) => ({ ...node, chunks: 300 })));
+    const receipts = await store.finishNodes(
+      nodes.map((node, i) => ({
+        ...node,
+        chunks: i < 2 ? 300 : 1,
+        inputsDigest: i < 2 ? String(i + 3).repeat(40) : undefined,
+      })),
+    );
+    expect(receipts.map((receipt) => receipt.contentHash)).toEqual([
+      `${nodes[0].contentHash}:${'3'.repeat(40)}`,
+      `${nodes[1].contentHash}:${'4'.repeat(40)}`,
+      nodes[2].contentHash,
+    ]);
     await store.checkpointUnit(receipts);
     await store.close();
     store = await VectorStore.open({ ...options, mode: 'resume' });
     for (const receipt of receipts)
       expect(await store.reusable(receipt.nodeId, receipt.contentHash)).toEqual(receipt);
-    expect(await store.seal(2, 600)).toBe('exact');
+    expect(await store.seal(3, 601)).toBe('exact');
   });
 
   it('publishes an empty artifact without loading a model or ANN extension', async () => {
