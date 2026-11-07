@@ -32,10 +32,9 @@ interface Reader {
     repo: { lbugPath: string; generationUnknown?: boolean },
     query: string,
     limit: number,
-    degraded?: { reason?: string },
+    degraded?: { reason?: string; embeddingDims?: number },
   ): Promise<unknown[]>;
   lastObservedPoolState: Map<string, { metadata: RepoMeta }>;
-  lastQueryEmbeddingDims: Map<string, number>;
   readToolMetadata(repo: { generationUnknown?: boolean }): Promise<RepoMeta>;
 }
 beforeEach(() => {
@@ -45,6 +44,44 @@ beforeEach(() => {
 });
 
 describe('MCP generation gate', () => {
+  it.each([undefined, 'interrupted', 'partial', 'unverified-count'] as const)(
+    'retains bounded legacy checkpoint %s metadata and skips query embedding',
+    async (kind) => {
+      const backend = new LocalBackend() as unknown as Reader;
+      const checkpoint: NonNullable<RepoMeta['embeddingCheckpoint']> = {
+        at: 'now',
+        nodesProcessed: 1,
+        totalNodes: 2,
+        chunksProcessed: 1,
+        model: 'model',
+        provider: 'local',
+        dimensions: 4,
+        kind,
+        pendingNodeIds: ['pending'],
+        recovery: {} as NonNullable<NonNullable<RepoMeta['embeddingCheckpoint']>['recovery']>,
+      };
+      mocks.metadata.mockResolvedValue({
+        repoPath: '/repo',
+        lastCommit: 'abc',
+        indexedAt: 'now',
+        stats: { embeddings: 1 },
+        embeddingDims: 4,
+        embeddingCheckpoint: checkpoint,
+      });
+      const repo = { lbugPath: path.join('/repo/.gitnexus', 'lbug') };
+      const snapshot = await backend.readToolMetadata(repo);
+      expect(snapshot.embeddingCheckpoint).toMatchObject({ model: 'model', dimensions: 4, kind });
+      expect(snapshot.embeddingCheckpoint?.pendingNodeIds).toBeUndefined();
+      expect(snapshot.embeddingCheckpoint?.recovery).toBeUndefined();
+      const degraded: { reason?: string; embeddingDims?: number } = {};
+      expect(await backend.semanticSearch(repo, 'hello', 5, degraded)).toEqual([]);
+      expect(degraded.reason).toContain(
+        kind === 'unverified-count' ? 'embedding-count-unverified' : 'embeddings are pending',
+      );
+      expect(mocks.embed).not.toHaveBeenCalled();
+      expect(mocks.query).not.toHaveBeenCalled();
+    },
+  );
   it.each([
     'graph-generation-unverified',
     'vector-generation-mismatch',
@@ -76,7 +113,7 @@ describe('MCP generation gate', () => {
       Object.assign(meta.vectorGeneration!, { nodes: 0, chunks: 0 });
     if (reason === 'embeddings-unavailable') meta.vectorGeneration = undefined;
     vi.spyOn(backend, 'readToolMetadata').mockResolvedValue(meta);
-    const degraded: { reason?: string } = {};
+    const degraded: { reason?: string; embeddingDims?: number } = {};
     expect(await backend.semanticSearch({ lbugPath: graphPath }, 'hello', 5, degraded)).toEqual([]);
     if (reason === 'embeddings-unavailable') expect(degraded.reason).toBeUndefined();
     else {
@@ -87,16 +124,15 @@ describe('MCP generation gate', () => {
   });
   it('explains the temporary keyword-only lane while vectors are pending', async () => {
     const backend = new LocalBackend() as unknown as Reader;
-    const degraded: { reason?: string } = {};
+    const degraded: { reason?: string; embeddingDims?: number } = {};
     expect(await backend.semanticSearch({ lbugPath: graphPath }, 'hello', 5, degraded)).toEqual([]);
     expect(degraded.reason).toContain('embeddings are pending');
     expect(mocks.embed).not.toHaveBeenCalled();
   });
   it.each(['before-read', 'during-read'])(
-    'clears a prior query width when ownership is lost %s',
+    'records no query width when ownership is lost %s',
     async (when) => {
       const backend = new LocalBackend() as unknown as Reader;
-      backend.lastQueryEmbeddingDims.set(graphPath, 4);
       const repo = { lbugPath: graphPath, generationUnknown: when === 'before-read' };
       if (when === 'during-read') {
         vi.spyOn(backend, 'readToolMetadata').mockImplementation(async (handle) => {
@@ -104,11 +140,11 @@ describe('MCP generation gate', () => {
           return metadata;
         });
       }
-      const degraded: { reason?: string } = {};
+      const degraded: { reason?: string; embeddingDims?: number } = {};
       expect(await backend.semanticSearch(repo, 'hello', 5, degraded)).toEqual([]);
       expect(degraded.reason).toContain('graph generation is unverified');
       expect(degraded.reason).toContain('gitnexus analyze');
-      expect(backend.lastQueryEmbeddingDims.has(graphPath)).toBe(false);
+      expect(degraded.embeddingDims).toBeUndefined();
       expect(mocks.embed).not.toHaveBeenCalled();
       expect(mocks.query).not.toHaveBeenCalled();
     },

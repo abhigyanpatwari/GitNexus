@@ -1,4 +1,3 @@
-import { heapCapMbFor } from './ingestion/utils/effective-ram.js';
 /** Pure admission policy. Reservations are not an OS-enforced RSS limit. */
 const MIB = 1024 * 1024;
 const GRAPH_POOL_MB = 256;
@@ -14,9 +13,6 @@ export interface AnalysisResourceRequest {
   /** Explicit total reservation ceiling; independent of the heap-only flag. */
   totalMb?: number;
   mainHeapMb?: number;
-  /** Honor an existing heap override when no explicit family ceiling was set.
-   * This may reserve virtual memory above RAM; native defaults still use RAM. */
-  allowHeapOvercommit?: boolean;
   workers?: number;
   workerHeapMb?: number;
   embeddingThreads?: number;
@@ -90,7 +86,7 @@ export function resolveAnalysisResourceBudget(
   if (embeddingThreads > cpus) throw new Error('Embedding threads exceed the CPU allowance');
   const availableMb = Math.floor(memory / MIB);
   const automatic = request.totalMb === undefined;
-  let totalMb =
+  const totalMb =
     request.totalMb === undefined
       ? Math.floor(availableMb * 0.75)
       : integer(request.totalMb, 'resource budget');
@@ -107,9 +103,7 @@ export function resolveAnalysisResourceBudget(
   const graphPoolBytes =
     request.graphPoolBytes === undefined
       ? bytes(
-          automatic
-            ? Math.min(2048 * poolScale, Math.floor(availableMb * 0.8))
-            : Math.max(GRAPH_POOL_MB * poolScale, Math.min(4096, Math.floor(totalMb * 0.15))),
+          Math.max(GRAPH_POOL_MB * poolScale, Math.min(4096, Math.floor(totalMb * 0.15))),
           'graph pool',
         )
       : integer(request.graphPoolBytes, 'graph pool bytes', 8 * MIB);
@@ -136,46 +130,16 @@ export function resolveAnalysisResourceBudget(
     request.workerHeapMb === undefined
       ? undefined
       : integer(request.workerHeapMb, 'worker heap reservation');
-  const automaticWorkerHeapMb =
-    explicitWorkerHeapMb ??
-    Math.min(4096, Math.max(MIN_WORKER_HEAP_MB, Math.floor(availableMb / 2 / desiredWorkers)));
   const parseFixedMb =
     headroomMb +
     supervisorMb +
     graphPoolMb +
     (includeParsing ? MIN_WORKER_HEAP_MB + WORKER_NATIVE_MB : 0);
-  let maximumMainMb = totalMb - Math.max(embeddingFixedMb, parseFixedMb);
+  const maximumMainMb = totalMb - Math.max(embeddingFixedMb, parseFixedMb);
   const mainHeapMb =
     request.mainHeapMb === undefined
-      ? automatic
-        ? heapCapMbFor(request.effectiveMemoryBytes)
-        : Math.min(16_384, maximumMainMb, Math.max(MIN_MAIN_HEAP_MB, Math.floor(totalMb * 0.35)))
+      ? Math.min(16_384, maximumMainMb, Math.max(MIN_MAIN_HEAP_MB, Math.floor(totalMb * 0.35)))
       : integer(request.mainHeapMb, 'main heap reservation');
-  // Automatic sizing preserves the established independent V8 ceilings: the existing RAM-aware
-  // main heap, half RAM shared by parser heaps. Their finite caps
-  // can sum above RAM; they are not simultaneous resident allocations. Only an
-  // explicit --resource-budget imposes a sum ceiling. A heap override must not
-  // silently consume worker capacity or inflate the native pools/queues.
-  if (automatic) {
-    if (
-      mainHeapMb > availableMb &&
-      !request.allowHeapOvercommit &&
-      request.mainHeapMb !== undefined
-    )
-      throw new Error(
-        'Resource budget cannot admit a main heap above effective memory without an explicit heap override',
-      );
-    totalMb = Math.max(
-      totalMb,
-      mainHeapMb + embeddingFixedMb,
-      headroomMb +
-        supervisorMb +
-        graphPoolMb +
-        mainHeapMb +
-        (includeParsing ? desiredWorkers * (automaticWorkerHeapMb + WORKER_NATIVE_MB) : 0),
-    );
-    maximumMainMb = totalMb - Math.max(embeddingFixedMb, parseFixedMb);
-  }
   const totalBytes = bytes(totalMb, 'resource budget');
   // --memory-budget has an established 200 MiB minimum. Preserve that explicit
   // choice; the larger floor is only the automatic sizing policy.
@@ -184,7 +148,8 @@ export function resolveAnalysisResourceBudget(
     const minimum =
       Math.max(minimumMainMb, request.mainHeapMb ?? 0) + Math.max(embeddingFixedMb, parseFixedMb);
     throw new Error(
-      `Resource budget ${totalMb} MiB cannot admit parser/model work; requires at least ${minimum} MiB for these allocations`,
+      `Resource budget ${totalMb} MiB cannot admit parser/model work; requires at least ${minimum} MiB for these allocations. ` +
+        'Reduce explicit reservations or concurrent analyses, use an HTTP embedding provider, or increase available RAM.',
     );
   }
 
@@ -201,22 +166,18 @@ export function resolveAnalysisResourceBudget(
   }
   const workers = !includeParsing
     ? 0
-    : automatic
-      ? desiredWorkers
-      : request.workers === undefined
-        ? Math.min(
-            desiredWorkers,
-            Math.floor(
-              workerBudgetMb / ((explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) + WORKER_NATIVE_MB),
-            ),
-          )
-        : desiredWorkers;
+    : request.workers === undefined
+      ? Math.min(
+          desiredWorkers,
+          Math.floor(
+            workerBudgetMb / ((explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) + WORKER_NATIVE_MB),
+          ),
+        )
+      : desiredWorkers;
   const workerHeapMb = !includeParsing
     ? 0
-    : automatic
-      ? automaticWorkerHeapMb
-      : (explicitWorkerHeapMb ??
-        Math.min(4096, Math.floor(workerBudgetMb / Math.max(1, workers)) - WORKER_NATIVE_MB));
+    : (explicitWorkerHeapMb ??
+      Math.min(4096, Math.floor(workerBudgetMb / Math.max(1, workers)) - WORKER_NATIVE_MB));
   const parseReservedMb =
     headroomMb +
     supervisorMb +

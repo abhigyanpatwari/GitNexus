@@ -13,6 +13,7 @@ export async function readIndexCapabilities(
     !metadata?.graphGeneration &&
     !metadata?.vectorGeneration &&
     !metadata?.embeddingJob &&
+    !metadata?.embeddingCheckpoint &&
     !metadata?.incrementalInProgress &&
     !metadata?.graphWriteCollapsed
   )

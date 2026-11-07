@@ -785,7 +785,7 @@ export async function ensureHeap(
       `--max-old-space-size=${decision.sizing.oldSpaceMb}`,
       `--max-semi-space-size=${decision.sizing.semiSpaceMb}`,
       'auto',
-      'Analysis likely ran out of memory in its admitted main heap. Raise --resource-budget or reduce the analysis scope. If this persists, it may be a native crash unrelated to heap size.',
+      'Analysis likely ran out of memory in its admitted main heap. Raise --memory-budget and, if needed, --resource-budget within available RAM, or reduce the analysis scope. If this persists, it may be a native crash unrelated to heap size.',
       nodeOpts,
       options,
     );

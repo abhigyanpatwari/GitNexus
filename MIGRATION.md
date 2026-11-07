@@ -43,6 +43,14 @@ server and auto-sync environments to use automatic sizing, or set a positive
 byte limit. An explicit `--resource-budget` must also fit the page-size-scaled
 COPY floor; increase the budget if admission rejects it.
 
+Automatic analysis now admits all phase reservations within 75% of effective
+process/container RAM. Earlier versions could expand the reported total above
+RAM to preserve independently chosen heap and worker limits. Explicit heap,
+worker and pool overrides that do not fit now fail before work starts. Reduce
+those overrides, reduce concurrent analyses, use an HTTP embedding provider, or
+increase available RAM. `--memory-budget` remains a main-heap limit;
+`--resource-budget` sets the process-family ceiling and cannot exceed RAM.
+
 If a superseded or unverifiable `analysis-publication.json` blocks recovery,
 stop every reader and writer and back up the complete storage slot first.
 Move only that receipt into the backup, outside the slot, then run

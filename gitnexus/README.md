@@ -846,10 +846,20 @@ only; parse workers keep their own caps.
 Use `--resource-budget <MiB>` to admit the complete analyzer process family,
 including the frontend, main heap, workers, native pools, embedding model, input
 queue, and headroom. An explicit heap or pool that cannot fit is rejected before
-work starts. Automatic sizing retains independent RAM-aware main and worker
-ceilings, whose sum may exceed RAM. Only an explicit resource budget imposes an
-aggregate phase ceiling; this reservation is
-not an operating-system RSS limit. `analyze --watch` accepts the same budget.
+work starts. Automatic sizing fixes the aggregate phase ceiling at 75% of
+effective process/container RAM, divided among concurrent auto-sync analyses.
+The main heap, workers, pools, and embedding reservations must fit that ceiling.
+The reservation is not an operating-system RSS limit. `analyze --watch` accepts
+the same budget. To enlarge the main heap, use `--memory-budget`; increase
+`--resource-budget` as well if needed, within available RAM.
+
+`embeddings sync` runs in its current process and reserves its actual V8 heap
+limit. If that heap and the local model cannot fit together, run `analyze` to
+resume with an automatically sized heap, or start sync with a smaller Node heap
+(for example, `NODE_OPTIONS="--max-old-space-size=1024" gitnexus embeddings sync`).
+Server embedding jobs also reserve the running server's actual heap; restart
+`gitnexus serve` with a smaller Node heap if admission fails.
+A supported HTTP embedding provider avoids the local-model reservation.
 
 Embedding-enabled analysis publishes the graph and keyword index first. If the
 provider fails, analyze exits nonzero while those queries remain available. Run

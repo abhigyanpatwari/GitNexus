@@ -20,7 +20,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { EventEmitter } from 'node:events';
 import * as hostResources from '../../src/core/analysis-host-resources.js';
-import * as effectiveRam from '../../src/core/ingestion/utils/effective-ram.js';
 import { resolveAnalysisResourceBudget } from '../../src/core/analysis-resource-budget.js';
 
 // `vi.mock` factories are hoisted above every top-level `const`, and this file
@@ -212,38 +211,42 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     );
   });
 
-  it.each([
-    [undefined, 8192],
-    ['4096', 4096],
-  ] as const)('preserves the server heap cap with override %s', async (override, heap) => {
-    vi.stubEnv('GITNEXUS_SERVER_ANALYZE_HEAP_MB', override);
-    const cap = vi.spyOn(effectiveRam, 'autoHeapCapMb').mockReturnValue(24576);
-    const admission = vi
-      .spyOn(hostResources, 'resolveHostAnalysisResources')
-      .mockImplementation((options) =>
-        resolveAnalysisResourceBudget({
-          effectiveMemoryBytes: 32 * 1024 ** 3,
-          availableCpus: 8,
-          mainHeapMb: options.mainHeapMb,
-          modelMemoryMb: 0,
-        }),
-      );
-    try {
-      expect((await runWorker(completeMessage()))?.status).toBe('complete');
-      expect(admission).toHaveBeenCalledWith(expect.objectContaining({ mainHeapMb: heap + 48 }));
-      expect(forkMock).toHaveBeenCalledWith(
-        expect.any(String),
-        [],
-        expect.objectContaining({
-          execArgv: expect.arrayContaining([`--max-old-space-size=${heap}`]),
-        }),
-      );
-    } finally {
-      cap.mockRestore();
-      admission.mockRestore();
-      vi.unstubAllEnvs();
-    }
-  });
+  it.each([undefined, '4096'])(
+    'launches the admitted server heap with override %s',
+    async (override) => {
+      vi.stubEnv('GITNEXUS_SERVER_ANALYZE_HEAP_MB', override);
+      const admission = vi
+        .spyOn(hostResources, 'resolveHostAnalysisResources')
+        .mockImplementation((options) =>
+          resolveAnalysisResourceBudget({
+            effectiveMemoryBytes: 32 * 1024 ** 3,
+            availableCpus: 8,
+            mainHeapMb: options.mainHeapMb,
+            modelMemoryMb: 0,
+          }),
+        );
+      try {
+        expect((await runWorker(completeMessage()))?.status).toBe('complete');
+        expect(admission).toHaveBeenCalledWith(
+          expect.objectContaining({
+            mainHeapMb: override === undefined ? undefined : Number(override) + 48,
+          }),
+        );
+        expect(forkMock).toHaveBeenCalledWith(
+          expect.any(String),
+          [],
+          expect.objectContaining({
+            execArgv: expect.arrayContaining([
+              `--max-old-space-size=${admission.mock.results[0].value.mainHeapMb - 48}`,
+            ]),
+          }),
+        );
+      } finally {
+        admission.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it('publishes the graph before acknowledging paid work and waits for both exits', async () => {
     child.pid = 12345;

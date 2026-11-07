@@ -658,6 +658,13 @@ Unit acknowledgements follow verified, durable WAL commits. Native automatic
 checkpoints bound WAL growth; the final checkpoint prepares the sealed artifact
 for read-only publication without requiring WAL replay.
 
+Automatic resource admission uses 75% of effective process/container RAM as a
+fixed process-family ceiling, divided across concurrent analyses. Each phase
+accounts for the main heap, retained supervisor, native pools and headroom;
+parser workers and embedding model/queues use separate phase reservations.
+Explicit allocations stay fixed and fail admission when they cannot fit.
+This bounds reservations, not operating-system RSS.
+
 **Options:** `--force` (rebuild regardless), `--embeddings` (opt-in, resumable), `--skipGit`, `--noStats`.
 
 ## Storage
