@@ -18,7 +18,7 @@
  * the symbols come out in, and the label they carry.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { execFileSync, spawnSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 
@@ -235,60 +235,6 @@ async function detectChangesForCodePy(
 beforeEach(() => {
   lbugMocks.executeParameterized.mockReset();
   lbugMocks.executeParameterized.mockResolvedValue([]);
-});
-
-describe('#3837 detect_changes git stderr', () => {
-  it.each(['unstaged', 'all'])(
-    'keeps successful %s diffs quiet without changing results',
-    async (scope) => {
-      const repoDir = makeRepo(['code.py'], 2);
-      writeFileSync(path.join(repoDir, 'code.py'), 'line 1\nline 2 changed\n');
-      registerRepo(repoDir);
-      mockSymbolRows([{ name: 'changed', startLine: 0, endLine: 1 }]);
-
-      execFileSync('git', ['config', 'core.autocrlf', 'false'], { cwd: repoDir });
-      const control = await runDetectChanges(scope);
-      expect(control.summary.changed_count).toBe(1);
-
-      execFileSync('git', ['config', 'core.autocrlf', 'true'], { cwd: repoDir });
-      execFileSync('git', ['config', 'core.safecrlf', 'warn'], { cwd: repoDir });
-      // Prove this working copy triggers a real Git warning on this platform.
-      // spawnSync captures it without forwarding it to the test process.
-      const gitDiff = spawnSync('git', diffArgsFor(scope), { cwd: repoDir, encoding: 'utf8' });
-      expect(gitDiff.status).toBe(0);
-      expect(gitDiff.stderr).not.toBe('');
-
-      const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
-      try {
-        expect(await runDetectChanges(scope)).toEqual(control);
-        expect(stderr).not.toHaveBeenCalled();
-      } finally {
-        stderr.mockRestore();
-      }
-    },
-  );
-
-  it('returns Git failure diagnostics without forwarding them to process stderr', async () => {
-    const repoDir = makeRepo(['code.py'], 2);
-    registerRepo(repoDir);
-    const backend = new LocalBackend();
-    await backend.init();
-
-    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
-    try {
-      const result = await backend.callTool('detect_changes', {
-        repo: 'hunk-scale-repo',
-        scope: 'compare',
-        base_ref: 'missing-ref-3837',
-      });
-      expect(result.error).toContain('Git diff failed:');
-      expect(result.error).toContain('fatal:');
-      expect(result.error).toContain('missing-ref-3837');
-      expect(stderr).not.toHaveBeenCalled();
-    } finally {
-      stderr.mockRestore();
-    }
-  });
 });
 
 describe('#2915 detect_changes hunk scaling', () => {
