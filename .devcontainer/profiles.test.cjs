@@ -54,12 +54,13 @@ test('default, UI and prebuilt profiles seed local work into a source volume', (
     const c = parse(text);
     assert.deepEqual(
       c.mounts.filter((mount) => mount.split(',').includes('target=/workspace')),
-      ['source=gitnexus-source-${devcontainerId},target=/workspace,type=volume'],
+      ['source=gitnexus-source-${devcontainerId},target=/workspace,type=volume,volume-nocopy'],
     );
+    assert.ok(c.mounts.includes('source=gitnexus-seed-${devcontainerId},target=/seed,type=volume'));
     assert.equal(c.workspaceFolder, '/workspace');
     assert.equal(
       c.onCreateCommand,
-      'sudo -n node /workspace/.devcontainer/seed-workspace.cjs --prepare /workspace',
+      'sudo -n node /seed/seed-workspace.cjs --prepare /workspace /seed',
     );
     assert.deepEqual(c.initializeCommand, [
       'node',
@@ -81,7 +82,7 @@ test('native/UI profile inherits hooks, storage and defaults while changing work
     ['source=gitnexus-workspace-${devcontainerId},target=/workspace,type=volume'],
   );
   assert.equal(
-    c.mounts.some((m) => m.includes('target=/workspace-host,')),
+    c.mounts.some((m) => m.includes('target=/workspace-host,') || m.includes('gitnexus-seed-')),
     false,
   );
   assert.equal(c.containerEnv.GITNEXUS_CLONE_REF, 'feature/test');

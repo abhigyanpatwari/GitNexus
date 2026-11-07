@@ -1,10 +1,15 @@
 'use strict';
-// Runs in a temporary importer, or as root to prepare an existing source volume.
+// Runs in the temporary importer (state checks, symlink restoration) and, from
+// the seed volume, as root in onCreateCommand to commit the stage and repair ownership.
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 
 const MARKER = '.git/devcontainer-source-volume';
+// Seed volume layout: the staged checkout, a marker written after it is
+// complete, and this script (copied from the host on every start).
+const STAGE_TREE = 'tree';
+const STAGE_COMPLETE = 'stage-complete';
 const DEPENDENCIES = [
   'node_modules',
   'gitnexus/node_modules',
@@ -38,24 +43,20 @@ function rootType(file) {
   }
 }
 
-function* archiveEntries(source, entries, { exclude = () => false, links = [], files = [] } = {}) {
+function* archiveEntries(source, entries, { exclude = () => false, links = [] } = {}) {
   source = fs.realpathSync(source);
   function* visit(relative, type) {
     if (exclude(relative)) return;
     const file = path.join(source, relative);
     // Selected roots follow existing links, like the bind mounts they replace
-    // (tar -h); nested links are recorded and restored verbatim.
+    // nested links are recorded and restored verbatim.
     type ??= rootType(file);
     const portable = relative.split(path.sep).join('/');
     if (type.isSymbolicLink()) {
       links.push([portable, fs.readlinkSync(file)]);
       return;
     }
-    if (type.isFile()) {
-      // Stat before tar reads it; copyArchive rejects files changed meanwhile.
-      const { size, mtimeMs } = fs.statSync(file);
-      files.push([file, size, mtimeMs]);
-    }
+    if (!type.isFile() && !type.isDirectory()) return; // Sockets and FIFOs, like tar.
     yield relative === '.' ? '.' : `./${portable}`;
     if (type.isDirectory()) {
       for (const entry of fs.readdirSync(file, { withFileTypes: true }))
@@ -325,8 +326,26 @@ function normalizeGit(root) {
   }
 }
 
-function prepareWorkspace(target, uid, gid) {
+// initializeCommand runs on every start, so it only stages. Committing here,
+// in onCreateCommand, happens once per container creation and only accepts a
+// stage whose completion marker was written after the copy finished.
+function commitStaged(seed, target) {
+  if (workspaceState(target) === 'empty') {
+    if (!fs.lstatSync(path.join(seed, STAGE_COMPLETE), { throwIfNoEntry: false })?.isFile())
+      throw new Error(
+        'No complete staged checkout. The initializeCommand output explains why, usually a host ' +
+          'process writing during the copy or an active Git operation. Stop host writers, then ' +
+          'run Rebuild Container.',
+      );
+    seedWorkspace(path.join(seed, STAGE_TREE), target);
+  }
+  for (const name of [STAGE_COMPLETE, STAGE_TREE])
+    fs.rmSync(path.join(seed, name), { recursive: true, force: true });
+}
+
+function prepareWorkspace(target, seed, uid, gid) {
   if (process.getuid() !== 0) throw new Error('Workspace preparation must run through sudo');
+  commitStaged(seed, target);
   target = fs.realpathSync(target);
   validateGitDirectory(path.join(target, '.git'), false);
   if (!fs.lstatSync(path.join(target, MARKER)).isFile())
@@ -390,7 +409,7 @@ function seedWorkspace(source, target) {
     throw new Error('Source and destination must be separate directories');
   validateGitDirectory(path.join(source, '.git'));
 
-  console.log('[workspace] Copying the host checkout once, including Git and local changes...');
+  console.log('[workspace] Copying the staged checkout once, including Git and local changes...');
   fs.cpSync(source, target, {
     recursive: true,
     dereference: false,
@@ -417,6 +436,7 @@ function seedWorkspace(source, target) {
 
 module.exports = {
   seedWorkspace,
+  commitStaged,
   normalizeGit,
   validateGitDirectory,
   prepareWorkspace,
@@ -424,6 +444,8 @@ module.exports = {
   isWorkspaceExcluded,
   archiveEntries,
   restoreLinks,
+  STAGE_COMPLETE,
+  STAGE_TREE,
 };
 if (require.main === module) {
   try {
@@ -436,11 +458,11 @@ if (require.main === module) {
       const gid = process.env.SUDO_GID;
       if (!/^\d+$/.test(uid || '') || !/^\d+$/.test(gid || ''))
         throw new Error('Run workspace preparation with sudo from the remote user');
-      prepareWorkspace(process.argv[3] || '/workspace', Number(uid), Number(gid));
+      if (!process.argv[3] || !process.argv[4])
+        throw new Error('Usage: seed-workspace.cjs --prepare TARGET SEED');
+      prepareWorkspace(process.argv[3], process.argv[4], Number(uid), Number(gid));
     } else {
-      if (!process.argv[2] || !process.argv[3])
-        throw new Error('Usage: seed-workspace.cjs SOURCE TARGET');
-      seedWorkspace(process.argv[2], process.argv[3]);
+      throw new Error('Usage: seed-workspace.cjs --prepare TARGET SEED');
     }
   } catch (error) {
     console.error(`[workspace] ${error.message}`);

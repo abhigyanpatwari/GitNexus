@@ -69,7 +69,7 @@ function profile(
     );
     result = replaceOnce(
       result,
-      /"source=gitnexus-source-\$\{devcontainerId\},target=\/workspace,type=volume"/,
+      /"source=gitnexus-source-\$\{devcontainerId\},target=\/workspace,[^"]+",\s*"source=gitnexus-seed-[^"]+"/,
       '"source=gitnexus-workspace-${devcontainerId},target=/workspace,type=volume"',
     );
     result = replaceOnce(

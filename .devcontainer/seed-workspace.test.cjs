@@ -263,8 +263,11 @@ test('refuses linked checkouts, external object stores, active Git operations an
 });
 test('root preparation recovers an inaccessible old-UID volume and prunes dependencies', (t) => {
   if (spawnSync('sudo', ['-n', 'true']).status !== 0) return t.skip('requires passwordless sudo');
-  const { source, target } = fixture(t, true);
+  const { root, source, target } = fixture(t, true);
   seedWorkspace(source, target);
+  const staging = path.join(root, 'seed');
+  fs.mkdirSync(path.join(staging, 'tree/leftover'), { recursive: true });
+  fs.writeFileSync(path.join(staging, 'stage-complete'), '');
   const dependency = path.join(target, 'gitnexus/node_modules');
   fs.mkdirSync(dependency, { recursive: true });
   fs.chmodSync(dependency, 0o755); // Let the test stat it after the foreign chown.
@@ -273,12 +276,20 @@ test('root preparation recovers an inaccessible old-UID volume and prunes depend
   execFileSync('sudo', ['chmod', '700', path.join(target, '.git')]);
   const result = spawnSync(
     'sudo',
-    ['-n', process.execPath, path.join(__dirname, 'seed-workspace.cjs'), '--prepare', target],
+    [
+      '-n',
+      process.execPath,
+      path.join(__dirname, 'seed-workspace.cjs'),
+      '--prepare',
+      target,
+      staging,
+    ],
     { encoding: 'utf8' },
   );
   assert.equal(result.status, 0, result.stderr);
   assert.equal(fs.statSync(path.join(target, '.git')).uid, process.getuid());
   assert.equal(fs.statSync(path.join(dependency, 'keep-owner')).uid, 20001);
+  assert.deepEqual(fs.readdirSync(staging), []); // A ready volume discards the stale stage.
   assert.equal(seedWorkspace('/missing-host', target), false);
 });
 

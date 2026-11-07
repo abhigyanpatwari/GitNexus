@@ -1,7 +1,7 @@
 // Devcontainer for GitNexus. It pre-installs Claude Code, the OpenAI Codex
 // CLI, and the Cursor CLI, plus the Node.js native build chain. It works on
 // macOS, Linux, Windows via WSL2, and Windows native. Host prerequisites:
-// Docker, Node.js and tar on PATH. All workspace and configuration mounts use
+// Docker and Node.js on PATH. All workspace and configuration mounts use
 // Linux-native Docker volumes. See .devcontainer/README.md.
 //
 // For first-time setup, auth flows, and troubleshooting, see
@@ -24,8 +24,8 @@
     }
   },
 
-  // Runs on the HOST before creation. Streams a one-time snapshot through the
-  // Docker copy API; no host directory is mounted in either container.
+  // Runs on the HOST before every start. Stages the checkout and snapshots
+  // through the Docker copy API; no host directory is mounted in any container.
   "initializeCommand": [
     "node",
     ".devcontainer/initialize-volumes.cjs",
@@ -51,7 +51,8 @@
   // Snapshot credentials seed missing files only; container logins persist.
   // Session volumes overlay config volumes so resetting config preserves history.
   "mounts": [
-    "source=gitnexus-source-${devcontainerId},target=/workspace,type=volume",
+    "source=gitnexus-source-${devcontainerId},target=/workspace,type=volume,volume-nocopy",
+    "source=gitnexus-seed-${devcontainerId},target=/seed,type=volume",
     "source=claude-config-${devcontainerId},target=/home/node/.claude,type=volume",
     "source=codex-config-${devcontainerId},target=/home/node/.codex,type=volume",
     "source=cursor-config-${devcontainerId},target=/home/node/.cursor,type=volume",
@@ -147,9 +148,10 @@
     }
   },
 
-  // Host initialization populates source first; root repairs stale ownership
-  // before the remote user or dependency installer accesses a reused volume.
-  "onCreateCommand": "sudo -n node /workspace/.devcontainer/seed-workspace.cjs --prepare /workspace",
+  // Runs once per container creation: commits the complete staged checkout into
+  // the empty source volume, then repairs ownership before dependency
+  // installation. initializeCommand copies this script into /seed each start.
+  "onCreateCommand": "sudo -n node /seed/seed-workspace.cjs --prepare /workspace /seed",
   "updateContentCommand": "bash .devcontainer/install-deps.sh",
   "postCreateCommand": "bash .devcontainer/post-create.sh"
 }

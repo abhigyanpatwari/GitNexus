@@ -10,6 +10,8 @@ const {
   archiveEntries,
   isWorkspaceExcluded,
   validateGitDirectory,
+  STAGE_COMPLETE,
+  STAGE_TREE,
 } = require('./seed-workspace.cjs');
 
 const SNAPSHOT_MARKER = '.devcontainer-snapshot-v1';
@@ -44,12 +46,7 @@ const IDENTITIES = {
 
 function snapshotState(root) {
   const marker = path.join(root, SNAPSHOT_MARKER);
-  if (fs.existsSync(marker) && fs.lstatSync(marker).isFile()) return 'ready';
-  if (fs.readdirSync(root).length)
-    throw new Error(
-      `Incomplete snapshot at ${root}; inspect its volume before retrying. No files were replaced.`,
-    );
-  return 'empty';
+  return fs.existsSync(marker) && fs.lstatSync(marker).isFile() ? 'ready' : 'stale';
 }
 
 function finishSnapshot(root, uid, gid, complete) {
@@ -72,18 +69,75 @@ function finishSnapshot(root, uid, gid, complete) {
   }
 }
 
-// Names arrive NUL-delimited on stdin. Only selected roots can be links (-h).
-function archiveArgs(source) {
-  return ['-C', source, '-h', '-cf', '-', '--no-recursion', '--null', '-T', '-'];
+// Docker's copy API takes a tar stream, written here as ustar with PAX records
+// for long or non-ASCII names. Host tar is avoided: Windows tar reads file lists
+// in the ANSI code page, macOS tar adds AppleDouble ._* entries, and both pad or
+// truncate a file that changes while it is read.
+const MAX_OCTAL_SIZE = 0o77777777777;
+const tarPadding = (size) => Buffer.alloc((512 - (size % 512)) % 512);
+
+function tarHeader(name, type, size, mode, mtime) {
+  const block = Buffer.alloc(512);
+  // Width - 1 octal digits; the zero-filled last byte terminates each field.
+  const octal = (offset, width, value) =>
+    block.write(value.toString(8).padStart(width - 1, '0'), offset, width - 1, 'ascii');
+  block.write(name.replace(/[^ -~]/g, '_').slice(-100), 0, 100, 'ascii'); // PAX holds the real name.
+  octal(100, 8, mode);
+  octal(108, 8, 0);
+  octal(116, 8, 0);
+  octal(124, 12, size);
+  octal(136, 12, mtime);
+  block.write(type, 156, 1, 'ascii');
+  block.write('ustar\x0000', 257, 8, 'ascii');
+  block.fill(0x20, 148, 156);
+  const sum = block.reduce((total, byte) => total + byte, 0);
+  block.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+  return block;
 }
 
-function assertUnchanged(files) {
-  for (const [file, size, mtimeMs] of files) {
-    const now = fs.statSync(file, { throwIfNoEntry: false });
-    // bsdtar (macOS, Windows) pads or truncates a changing file and exits 0.
-    if (now?.size !== size || now.mtimeMs !== mtimeMs)
+function paxRecord(key, value) {
+  const body = ` ${key}=${value}\n`;
+  const bytes = Buffer.byteLength(body);
+  let length = bytes + 1;
+  while (String(length).length + bytes !== length) length = String(length).length + bytes;
+  return `${length}${body}`;
+}
+
+async function* tarStream(source, names) {
+  for (const name of names) {
+    const file = path.join(source, name);
+    const before = fs.statSync(file, { throwIfNoEntry: false });
+    const directory = before?.isDirectory();
+    if (!directory && !before?.isFile())
       throw new Error(`${file} changed during the import; stop host writers and retry`);
+    // Windows reports 0666/0777 modes; normalizeGit restores tracked executable bits.
+    const mode = process.platform === 'win32' ? (directory ? 0o755 : 0o644) : before.mode & 0o777;
+    const mtime = Math.max(0, Math.floor(before.mtimeMs / 1000));
+    const size = directory ? 0 : before.size;
+    const entry = directory ? `${name}/` : name;
+    const records = [];
+    if (!/^[ -~]{1,100}$/.test(entry)) records.push(paxRecord('path', entry));
+    if (size > MAX_OCTAL_SIZE) records.push(paxRecord('size', String(size)));
+    if (records.length) {
+      const body = Buffer.from(records.join(''));
+      yield tarHeader('PaxHeader', 'x', body.length, 0o644, mtime);
+      yield body;
+      yield tarPadding(body.length);
+    }
+    yield tarHeader(entry, directory ? '5' : '0', size > MAX_OCTAL_SIZE ? 0 : size, mode, mtime);
+    if (directory) continue;
+    let read = 0;
+    for await (const chunk of fs.createReadStream(file, { highWaterMark: 1 << 20 })) {
+      read += chunk.length;
+      if (read > size) break;
+      yield chunk;
+    }
+    const after = fs.statSync(file, { throwIfNoEntry: false });
+    if (read !== size || after?.size !== size || after.mtimeMs !== before.mtimeMs)
+      throw new Error(`${file} changed during the import; stop host writers and retry`);
+    yield tarPadding(size);
   }
+  yield Buffer.alloc(1024);
 }
 
 function startProgress(label, details = () => '', intervalMs = 5000) {
@@ -130,9 +184,8 @@ async function runWithProgress(label, args, input) {
 async function copyArchive(source, entries, destination, excludes = [], exclude = () => false) {
   if (!entries.length) return;
   // No shell: spaces, apostrophes and Windows drive letters remain literal arguments.
-  // Watch both processes: a failed tar must never publish a successful seed marker.
+  // A failed stream or docker cp must never publish a successful marker.
   const links = [];
-  const files = [];
   let queued = 0;
   let bytes = 0;
   let skipped = 0;
@@ -143,17 +196,11 @@ async function copyArchive(source, entries, destination, excludes = [], exclude 
   );
   const listing = archiveEntries(source, entries, {
     links,
-    files,
     exclude: (relative) => {
       const omit = excludes.includes(relative.split(path.sep).join('/')) || exclude(relative);
       if (omit) skipped++;
       return omit;
     },
-  });
-  const archive = spawn('tar', archiveArgs(source), {
-    stdio: ['pipe', 'pipe', 'inherit'],
-    // macOS tar otherwise adds AppleDouble ._* entries for extended attributes.
-    env: { ...process.env, COPYFILE_DISABLE: '1' },
   });
   const copy = spawn('docker', ['cp', '-', destination], { stdio: ['pipe', 'inherit', 'inherit'] });
   const meter = new Transform({
@@ -163,24 +210,16 @@ async function copyArchive(source, entries, destination, excludes = [], exclude 
     },
   });
   try {
-    const inputDone = pipeline(
-      Readable.from(
-        (function* () {
-          for (const entry of listing) {
-            queued++;
-            yield `${entry}\0`;
-          }
-        })(),
-      ),
-      archive.stdin,
-    );
+    const names = (function* () {
+      for (const entry of listing) {
+        queued++;
+        yield entry;
+      }
+    })();
     await Promise.all([
-      childDone(archive, 'tar'),
       childDone(copy, 'docker cp'),
-      pipeline(archive.stdout, meter, copy.stdin),
-      inputDone,
+      pipeline(Readable.from(tarStream(fs.realpathSync(source), names)), meter, copy.stdin),
     ]);
-    assertUnchanged(files);
     if (links.length) {
       const separator = destination.indexOf(':');
       await runWithProgress(
@@ -199,7 +238,6 @@ async function copyArchive(source, entries, destination, excludes = [], exclude 
     }
     finish('done');
   } catch (error) {
-    archive.kill();
     copy.kill();
     finish('failed');
     throw error;
@@ -233,8 +271,12 @@ async function initialize(
   const mounts = snapshots.map(
     (s) => `type=volume,source=${s.volume},target=${s.target},volume-nocopy`,
   );
+  // The host never writes the workspace volume; it only fills the staging volume.
   if (mode === 'source')
-    mounts.push(`type=volume,source=gitnexus-source-${id},target=/workspace,volume-nocopy`);
+    mounts.push(
+      `type=volume,source=gitnexus-source-${id},target=/workspace,volume-nocopy,readonly`,
+      `type=volume,source=gitnexus-seed-${id},target=/seed,volume-nocopy`,
+    );
   // A stable name serializes imports. Never remove someone else's running importer.
   const name = `gitnexus-import-${id}`;
   let created = false;
@@ -258,49 +300,63 @@ async function initialize(
     for (const file of ['initialize-volumes.cjs', 'seed-workspace.cjs'])
       docker('cp', path.join(__dirname, file), `${name}:/tmp/${file}`);
     const run = (script, ...args) => docker('exec', name, 'node', `/tmp/${script}`, ...args);
-    if (mode === 'source' && run('seed-workspace.cjs', '--state', '/workspace') === 'empty') {
-      validateGitDirectory(path.join(workspace, '.git'));
-      console.log(
-        '[volumes] Importing the checkout, Git metadata and local work once; skipping dependencies and regenerable parser caches.',
-      );
-      console.log(
-        '[volumes] Docker needs space for both the temporary import and the source volume.',
-      );
-      docker('exec', name, 'mkdir', '/seed');
-      // Windows tar stats WSL links before applying --exclude. Enumerate in Node
-      // and disable tar recursion so it never encounters skipped dependencies.
-      await copyArchive(workspace, ['.'], `${name}:/seed`, [], isWorkspaceExcluded);
-      await runWithProgress('Copying into the source volume and normalizing Git', [
-        'exec',
-        name,
-        'node',
-        '/tmp/seed-workspace.cjs',
-        '/seed',
-        '/workspace',
-      ]);
-    }
+    const clear = (target) =>
+      docker('exec', name, 'find', target, '-xdev', '-mindepth', '1', '-delete');
+    // Stages and snapshot retakes are best-effort: initializeCommand also runs
+    // when an existing container is reopened, and a busy host must not lock it
+    // out. A failure clears its target; the next start retries it.
+    const attempt = async (label, target, work) => {
+      try {
+        await work();
+        return true;
+      } catch (error) {
+        clear(target);
+        console.warn(`[volumes] ${label} skipped and retried on the next start: ${error.message}`);
+        return false;
+      }
+    };
+    // The host only stages. onCreateCommand commits a complete stage once per
+    // container creation, so reopening an older container just refreshes it.
+    const staging =
+      mode === 'source' && run('seed-workspace.cjs', '--state', '/workspace') === 'empty';
+    if (staging)
+      await attempt('Staging the checkout', '/seed', async () => {
+        console.log(
+          '[volumes] Staging the checkout, Git metadata and local work; skipping dependencies and regenerable parser caches. Container creation copies it into the source volume once.',
+        );
+        clear('/seed'); // Removes the completion marker before anything else.
+        validateGitDirectory(path.join(workspace, '.git'));
+        docker('exec', name, 'mkdir', `/seed/${STAGE_TREE}`);
+        await copyArchive(workspace, ['.'], `${name}:/seed/${STAGE_TREE}`, [], isWorkspaceExcluded);
+        docker('exec', name, 'touch', `/seed/${STAGE_COMPLETE}`); // Written last.
+      });
+    // onCreateCommand runs this host copy, so it matches devcontainer.json and
+    // works with any image, including prebuilt ones.
+    if (mode === 'source')
+      docker('cp', path.join(__dirname, 'seed-workspace.cjs'), `${name}:/seed/seed-workspace.cjs`);
     // Linux hosts realign the remote UID; Desktop on Windows/macOS keeps node=1000.
     // updateRemoteUserUID skips root hosts (UID 0 already exists), so node stays 1000.
     const realign = process.platform === 'linux' && process.getuid() !== 0;
     const uid = String(realign ? process.getuid() : 1000);
     const gid = String(realign ? process.getgid() : 1000);
-    if (mode === 'source') {
-      // Lifecycle commands need to enter /workspace before sudo can repair
-      // restrictive descendants. Make that root accessible before startup.
-      docker('exec', name, 'chown', `${uid}:${gid}`, '/workspace');
-      docker('exec', name, 'chmod', 'u+rwx', '/workspace');
-    }
     for (const snapshot of snapshots) {
-      const state = run('initialize-volumes.cjs', '--snapshot-state', snapshot.target);
-      if (state === 'empty') {
-        const entries = snapshot.entries.filter((entry) =>
-          fs.existsSync(path.join(snapshot.source, entry)),
-        );
-        console.log(`[volumes] Creating ${snapshot.volume}`);
-        await copyArchive(snapshot.source, entries, `${name}:${snapshot.target}`, [
-          SNAPSHOT_MARKER,
-        ]);
-      }
+      // Snapshots are read-only host copies, so replacing one is always safe.
+      // Refresh partial ones, and all of them until the workspace is committed.
+      const fresh =
+        staging || run('initialize-volumes.cjs', '--snapshot-state', snapshot.target) !== 'ready';
+      const copied =
+        fresh &&
+        (await attempt(`Snapshot ${snapshot.volume}`, snapshot.target, async () => {
+          clear(snapshot.target);
+          const entries = snapshot.entries.filter((entry) =>
+            fs.existsSync(path.join(snapshot.source, entry)),
+          );
+          console.log(`[volumes] Creating ${snapshot.volume}`);
+          await copyArchive(snapshot.source, entries, `${name}:${snapshot.target}`, [
+            SNAPSHOT_MARKER,
+          ]);
+        }));
+      if (fresh && !copied) continue; // Never mark a cleared snapshot complete.
       await runWithProgress(`Finalizing ${snapshot.target}`, [
         'exec',
         name,
@@ -310,7 +366,7 @@ async function initialize(
         snapshot.target,
         uid,
         gid,
-        state,
+        fresh ? 'fresh' : 'kept',
       ]);
     }
     console.log('[volumes] Linux volumes ready. Host files are not synchronized.');
@@ -323,8 +379,7 @@ async function initialize(
 module.exports = {
   initialize,
   copyArchive,
-  archiveArgs,
-  assertUnchanged,
+  tarStream,
   startProgress,
   snapshotState,
   finishSnapshot,
@@ -339,7 +394,7 @@ if (require.main === module) {
         process.argv[3],
         Number(process.argv[4]),
         Number(process.argv[5]),
-        process.argv[6] === 'empty',
+        process.argv[6] === 'fresh',
       );
     else await initialize(process.argv[2], process.argv[3]);
   })().catch((error) => {

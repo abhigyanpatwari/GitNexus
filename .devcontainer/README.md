@@ -22,21 +22,25 @@ Keep the host folder and selected configuration path stable: moving either can c
 
 ## Source volume migration
 
-The default workspace is `gitnexus-source-${devcontainerId}:/workspace`. The host `initializeCommand` runs `initialize-volumes.cjs`, starts a disposable helper with volume mounts only, and streams a tar archive through [Docker's copy API](https://docs.docker.com/reference/cli/docker/container/cp/). The helper uses the Dockerfile's digest-pinned base image. It is removed afterward; volumes and host files remain.
+The default workspace is `gitnexus-source-${devcontainerId}:/workspace`. The host `initializeCommand` runs `initialize-volumes.cjs`, starts a disposable helper with volume mounts only, and streams a tar archive through [Docker's copy API](https://docs.docker.com/reference/cli/docker/container/cp/) into the staging volume `gitnexus-seed-${devcontainerId}`. The helper uses the Dockerfile's digest-pinned base image and mounts the source volume read-only. It is removed afterward; volumes and host files remain.
+
+`initializeCommand` also runs whenever an existing container is reopened, so the host only stages. `onCreateCommand`, which runs once per container creation, commits the stage into the empty source volume, normalizes Git, writes the completion marker, empties the stage, and repairs ownership. Reopening a pre-volume container after pulling this change only refreshes the stage, so the eventual rebuild imports current work. The commit only accepts a stage whose completion marker was written after the copy finished. `initializeCommand` copies the host's `seed-workspace.cjs` into the seed volume on every start and `onCreateCommand` runs that copy, so it always matches `devcontainer.json` and works with prebuilt or custom images.
+
+Staging and snapshot retakes are best-effort. If a host process writes a file while it is streamed, initialization warns, clears that copy and continues, so reopening an existing container never fails; the next start retries. Container creation without a complete stage stops at `onCreateCommand` with `No complete staged checkout`.
 
 The workspace volume is declared in `mounts`, with `workspaceMount` set to an empty string to disable the automatic host mount. This lets the Dev Containers CLI substitute `${devcontainerId}` before starting Docker; affected CLI versions leave it literal when the volume is declared in `workspaceMount`. Default and generated profiles retain their existing volume names, so this placement does not trigger another source import.
 
 The import preserves `.git`, branches, local commits, the index, stashes, uncommitted and ignored files, checkout-local indexes, and nested worktrees. Generated `node_modules`, `.venv`, `.husky/_`, `.gitnexus/parse-cache`, `.gitnexus/parse-cache.json`, and `.gitnexus/parsedfile-cache` paths are excluded at every depth, including under `.worktrees` and `.claude/worktrees`. GitNexus graph databases, embeddings, metadata, and runners are kept; parser caches regenerate on the next analysis. Git metadata is preserved except for source-volume completion markers. Reinstall dependencies inside each worktree as needed, and recreate Python environments with the evaluation project's `uv run` commands. Host files are left intact. Existing dependency, index-store, AI configuration, history, and session volume names stay unchanged.
 
-During archive transfers, `[volumes]` reports elapsed time, entries queued, excluded paths, symlinks, and MiB streamed to Docker every five seconds, followed by a completion or failure line. Streamed bytes measure data sent to Docker, not bytes committed to disk; there is no percentage because the total is not pre-scanned. Helper startup, the second copy into the source volume, Git normalization, snapshot finalization, and cleanup also report activity every five seconds. Output from the Linux helper is shown as it arrives.
+During archive transfers, `[volumes]` reports elapsed time, entries queued, excluded paths, symlinks, and MiB streamed to Docker every five seconds, followed by a completion or failure line. Streamed bytes measure data sent to Docker, not bytes committed to disk; there is no percentage because the total is not pre-scanned. Helper startup, snapshot finalization, and cleanup also report activity every five seconds; the commit into the source volume logs to the container creation output. Output from the Linux helper is shown as it arrives.
 
-Node streams an explicit file list to tar with recursion disabled. Selected snapshot roots such as `~/.config/gh` or `~/.claude.json` are followed when they link to an existing target, matching the bind mounts they replace. Every other symlink is transferred as path/target metadata and recreated by the Linux helper without following it. This also applies to configuration snapshots: Windows tar never has to inspect WSL-created links, which it can reject even when their paths are excluded. Restoration rejects paths outside the destination, symlinked parent directories, and replacements of existing files. Ordinary source links and their targets are preserved verbatim.
+Node writes the tar stream itself (ustar with PAX records for long and UTF-8 names), so the host needs no `tar`. Windows `tar.exe` reads file lists in the ANSI code page and macOS `tar` adds AppleDouble `._*` files; neither applies. Sockets and FIFOs are skipped. Selected snapshot roots such as `~/.config/gh` or `~/.claude.json` are followed when they link to an existing target, matching the bind mounts they replace. Every other symlink is transferred as path/target metadata and recreated by the Linux helper without following it. This also applies to configuration snapshots, so WSL-created links are never opened as files. Restoration rejects paths outside the destination, symlinked parent directories, and replacements of existing files. Ordinary source links and their targets are preserved verbatim.
 
 The importer probes the destination filesystem and updates `core.ignorecase`, `core.filemode`, and `core.symlinks`, including worktree overrides. Where Windows disabled mode tracking, tracked executable bits are restored from the index. Unedited tracked symlink placeholders become symlinks; edited placeholders retain their bytes. Staged and unstaged contents are preserved. Absolute `core.worktree` overrides are removed from the copied root configuration. The host Git configuration is untouched.
 
 Before the first rebuild:
 
-1. Save files and stop agents, Git operations, indexers, dev servers, and host claude-mem writers. The copy requires a quiet source; it is not a live filesystem snapshot. A file whose size or modification time changes while it is archived fails the import before any completion marker is written.
+1. Save files and stop agents, Git operations, indexers, dev servers, and host claude-mem writers. The copy requires a quiet source; it is not a live filesystem snapshot. A file whose size or modification time changes while it is streamed discards that stage or snapshot without writing a completion marker.
 2. Preserve worktrees and other files outside `/workspace` and existing named volumes. From a **host terminal**, save the current container's writable layer:
 
    ```powershell
@@ -44,7 +48,7 @@ Before the first rebuild:
    ```
 
    Wait for success before rebuilding. [Docker commit](https://docs.docker.com/reference/cli/docker/container/commit/) excludes mounted volumes, so retain those volumes and the Windows checkout too. This local recovery image can contain private configuration; keep it private.
-3. Keep opening the same host folder and `.devcontainer/devcontainer.json`, then run **Dev Containers: Rebuild Container**. Allow disk space for the source volume and the helper's temporary copy, plus configuration snapshots.
+3. Keep opening the same host folder and `.devcontainer/devcontainer.json`, then run **Dev Containers: Rebuild Container**. Allow disk space for the source volume and the staged copy, plus configuration snapshots. The stage is emptied once the container commits it.
 4. Verify inside the rebuilt container:
 
    ```bash
@@ -143,7 +147,7 @@ The rolling tags are `ghcr.io/abhigyanpatwari/gitnexus-devcontainer:main` and `:
 
 ## Configuration snapshots and CLI state
 
-Host initialization creates these snapshots once. Missing host paths produce an empty snapshot; no host files or directories are created.
+Host initialization creates these snapshots and retakes them until the source volume is committed; after that they are kept. Missing host paths produce an empty snapshot; no host files or directories are created.
 
 | Volume prefix (each ends in `-${devcontainerId}`) | Container target | Access |
 | --- | --- | --- |
@@ -162,7 +166,7 @@ The independent writable `claude-mem` volume is seeded once. Stop host writers b
 
 **Host and container state diverge.** Later host logins, key rotations, plugin installations, and config edits do not update snapshots. Authenticate and manage plugins inside the container for daily work. For an intentional snapshot refresh, export container-only changes, remove the old container, then remove only the relevant `gitnexus-*-snapshot-<id>` volume from the host and reopen. Refreshing `/host` does not overwrite existing CLI config: apply selected changes inside the container, or deliberately reset the corresponding config volume after backup.
 
-Partial snapshots fail closed. Inspect the volume before retrying; the importer never deletes it. If an interrupted import leaves `gitnexus-import-<id>`, inspect and remove that helper before retrying. Do not use `docker rm -v` or broad volume cleanup.
+Snapshots are read-only copies of host files. A partial snapshot is replaced on the next start, and all snapshots are retaken while the source volume is still uncommitted, so they match the staged checkout. If an interrupted import leaves `gitnexus-import-<id>`, inspect and remove that helper before retrying. Do not use `docker rm -v` or broad volume cleanup.
 
 ### Session resume across container recreation
 
@@ -271,6 +275,7 @@ VS Code's Ports panel shows forwarded ports once their listener starts.
 - For ownership errors, first rebuild: source preparation runs as root, and lifecycle hooks repair writable config and dependency volumes.
 - To reset a CLI, back up its container-only configuration/plugins, then remove only its `<cli>-config-<id>` volume after removing the container. Reopening seeds from the existing snapshot. Separate session volumes remain.
 - Resetting `claude-mem-<id>` restores the existing snapshot. To import a newer host store, refresh `gitnexus-host-snapshot-<id>` too, with host writers stopped.
+- `gitnexus-seed-<id>` is empty after the container commits it; removing it is safe.
 - Never remove the source volume to fix a credential problem. Back up volume-only work before removing volumes.
 
 ## Bumping CLI versions
@@ -294,10 +299,12 @@ If `[install-deps]` prints `npm warn EBADENGINE` with Node 22.16.0, run **Dev Co
 
 | Symptom | Check / action |
 | --- | --- |
-| `node`, `docker`, or `tar` missing during initialization | Install the host prerequisite and restart VS Code to refresh PATH. |
+| `node` or `docker` missing during initialization | Install the host prerequisite and restart VS Code to refresh PATH. |
 | Import helper already exists | Inspect `gitnexus-import-<id>`; remove it only if the import is no longer running. |
-| `no space left on device` during import | Docker's Linux storage is full. Check `docker system df` and Docker Desktop's disk allocation. Allow room for both the temporary `/seed` copy and the source volume, plus configuration snapshots. The importer now excludes regenerable parser caches at every depth. A failed `/seed` transfer is discarded with its helper, so retry after resolving space. If the failure occurred while copying into `/workspace`, inspect and preserve the partial source volume before resetting it. Do not prune volumes containing work. |
-| Uninitialized source volume / incomplete snapshot | Inspect and back up that volume, then retry with it empty. Never add a completion marker manually. |
+| `no space left on device` during import | Docker's Linux storage is full. Check `docker system df` and Docker Desktop's disk allocation. Allow room for both the staged copy and the source volume, plus configuration snapshots. The importer excludes regenerable parser caches at every depth. A failed transfer into the stage is replaced on the next start, so retry after resolving space. If the failure occurred while the container committed into `/workspace`, inspect and preserve the partial source volume before resetting it. Do not prune volumes containing work. |
+| Uninitialized source volume | Inspect and back up that volume, then retry with it empty. Never add a completion marker manually. |
+| `No complete staged checkout` during container creation | Staging was skipped; the `[volumes]` initialization output names the cause, usually a host process writing during the copy or an active Git operation. Stop host writers, then run **Rebuild Container** (or `devcontainer up --remove-existing-container`): a failed `onCreateCommand` is not retried in the same container. |
+| `changed during the import` warning | A host process wrote the named file while it was streamed. That stage or snapshot is retried on the next start. Stop agents, indexers and claude-mem on the host before rebuilding. |
 | 9P remains after rebuilding | Check the selected config, regenerate optional profiles, and inspect editor-added mounts and image metadata. |
 | Host edits no longer appear | Work in the attached container. Export files explicitly with Git or `docker cp`. |
 | SSH/cloud/Docker auth fails | Host credential helpers and absolute paths may not work on Linux. Configure the available Linux tool. |
