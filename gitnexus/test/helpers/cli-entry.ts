@@ -15,9 +15,8 @@
  * could otherwise silently spawn a STALE build. dist is used only when explicitly
  * requested, so the entry point in effect is always knowable from the environment.
  *
- * Bonus: the CLI's `ensureHeap()` re-exec "just works" from dist; under tsx it drops
- * the `--import` loader, which is why analyze-calling tests pre-set
- * `--max-old-space-size` in their `cliEnv()`.
+ * The CLI preserves the tsx loader when it re-executes, so fixtures can use
+ * automatic memory admission without pinning a heap larger than the runner.
  */
 
 import fs from 'node:fs';
@@ -94,3 +93,8 @@ function resolvePrefix(): string[] {
  *     spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, 'analyze', repo], opts)
  */
 export const CLI_SPAWN_PREFIX: readonly string[] = resolvePrefix();
+
+/** Let real CLI children size their heap instead of inheriting Vitest's manual mode. */
+export function cliAnalysisEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return { ...process.env, GITNEXUS_MEMORY: undefined, ...overrides };
+}

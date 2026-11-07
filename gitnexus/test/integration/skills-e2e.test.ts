@@ -11,7 +11,7 @@
  * Accepts status === null (timeout) as valid on slow CI runners.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
+import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
@@ -32,10 +32,7 @@ function runSkillsCli(cwd: string, timeoutMs = 45000) {
     encoding: 'utf8',
     timeout: timeoutMs,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-    },
+    env: cliAnalysisEnv(),
   });
 }
 
