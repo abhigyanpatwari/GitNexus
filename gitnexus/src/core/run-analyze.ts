@@ -1482,8 +1482,8 @@ async function preparedAnalysisName(repoPath: string, options: AnalyzeOptions): 
   if (
     existing &&
     existing.name !== path.basename(path.resolve(existing.path)) &&
-    existing.name !== path.basename(resolveRepoIdentityRoot(existing.path)) &&
-    existing.name !== inferred
+    existing.name !== inferred &&
+    existing.name !== path.basename(resolveRepoIdentityRoot(existing.path))
   )
     return existing.name;
   return inferred ?? path.basename(resolveRepoIdentityRoot(repoPath));
