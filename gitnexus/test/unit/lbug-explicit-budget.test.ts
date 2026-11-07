@@ -14,13 +14,13 @@ describe('explicit native handle reservations', () => {
     expect(Database.mock.calls[1][1]).toBe(0);
   });
 
-  it.each([0, -1, NaN, Infinity, 1.5])(
+  it.each([-1, NaN, Infinity, 1.5])(
     'rejects invalid explicit reservation %s before opening native',
     (bufferPoolBytes) => {
       const Database = vi.fn<(...args: unknown[]) => void>(function () {});
       const module = { Database } as unknown as Parameters<typeof createLbugDatabase>[0];
       expect(() => createLbugDatabase(module, '/tmp/invalid', { bufferPoolBytes })).toThrow(
-        'positive byte',
+        'nonnegative byte',
       );
       expect(Database).not.toHaveBeenCalled();
     },
