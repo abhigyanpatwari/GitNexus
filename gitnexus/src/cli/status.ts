@@ -39,7 +39,9 @@ import {
   analyzerRunnerIdentitiesEqual,
   resolveAnalyzerRunnerIdentity,
 } from '../core/analyzer-identity.js';
-import { getIndexIncompleteReasons } from '../core/index-freshness.js';
+import { getIndexIncompleteReasons, getGraphIncompleteReasons } from '../core/index-freshness.js';
+import { readEmbeddingJobProgress } from '../storage/embedding-job-progress.js';
+import { readIndexCapabilities } from '../storage/index-capabilities.js';
 import { getFtsDisabledReason, FTS_DISABLED_MESSAGE } from '../core/search/fts-policy.js';
 import { detectIndexContentDrift, type IndexContentDrift } from '../core/index-content-drift.js';
 import {
@@ -218,6 +220,9 @@ export const statusCommand = async (options: StatusOptions = {}) => {
         runnerIdentity: meta.runnerIdentity ?? null,
         runnerIdentityStatus: runnerIdentityIsCurrent ? 'current' : 'stale-or-unknown',
         incompleteReasons,
+        graphIncompleteReasons: getGraphIncompleteReasons(meta),
+        embeddingProgress: await readEmbeddingJobProgress(storagePath, meta),
+        capabilities: await readIndexCapabilities(storagePath, meta),
         contentRetention: meta.contentRetention ?? 'full',
       },
       current: sourceAvailable ? { commit: getCurrentCommit(entry.path) } : null,
@@ -233,6 +238,14 @@ export const statusCommand = async (options: StatusOptions = {}) => {
       console.log(`Index storage: ${storagePath}`);
       console.log(`Indexed: ${new Date(meta.indexedAt).toLocaleString()}`);
       console.log(`Indexed commit: ${meta.lastCommit?.slice(0, 7)}`);
+      if (incompleteReasons.length) {
+        console.log(`Index incomplete reasons: ${JSON.stringify(incompleteReasons)}`);
+        console.log(
+          `Graph incomplete reasons: ${JSON.stringify(payload.index.graphIncompleteReasons)}`,
+        );
+      }
+      if (payload.index.embeddingProgress)
+        console.log(`Embedding progress: ${JSON.stringify(payload.index.embeddingProgress)}`);
       console.log(
         sourceAvailable
           ? 'Status: registered index (use status without --repo for working-tree freshness)'
@@ -310,12 +323,15 @@ export const statusCommand = async (options: StatusOptions = {}) => {
   // commit comparison below then says whether it needs a re-analyze. Legacy/
   // no-branch metas and detached HEAD also fall through to the flat index.
   let activeMeta = repo.meta;
+  let activeMetaDirectory = repo.storagePath;
   let workspaceLagsBranch = false;
   if (currentBranch && repo.meta.branch && currentBranch !== repo.meta.branch) {
     const { metaPath } = getStoragePaths(repo.repoPath, currentBranch, repo.storagePath);
     const branchMeta = await loadMeta(path.dirname(metaPath));
-    if (branchMeta) activeMeta = branchMeta;
-    else workspaceLagsBranch = true;
+    if (branchMeta) {
+      activeMeta = branchMeta;
+      activeMetaDirectory = path.dirname(metaPath);
+    } else workspaceLagsBranch = true;
   }
 
   const currentRunnerIdentity = resolveAnalyzerRunnerIdentity(import.meta.url);
@@ -324,10 +340,11 @@ export const statusCommand = async (options: StatusOptions = {}) => {
     currentRunnerIdentity,
   );
   const incompleteReasons = getIndexIncompleteReasons(activeMeta);
+  const graphIncompleteReasons = getGraphIncompleteReasons(activeMeta);
   const metadataIsCurrent =
     currentCommit === activeMeta.lastCommit &&
     runnerIdentityIsCurrent &&
-    incompleteReasons.length === 0;
+    graphIncompleteReasons.length === 0;
 
   // A matching HEAD is not enough: `analyze` re-indexes changed content at the
   // same commit, so the files the index covers must still be compared against
@@ -353,7 +370,10 @@ export const statusCommand = async (options: StatusOptions = {}) => {
       contentDrift.reason === 'no-file-hashes' &&
       !isWorkingTreeDirty(repo.repoPath));
 
-  const isUpToDate = metadataIsCurrent && contentIsCurrent;
+  const graphIsCurrent = metadataIsCurrent && contentIsCurrent;
+  const isUpToDate = graphIsCurrent && incompleteReasons.length === 0;
+  const embeddingProgress = await readEmbeddingJobProgress(activeMetaDirectory, activeMeta);
+  const capabilities = await readIndexCapabilities(activeMetaDirectory, activeMeta);
   // Shared sibling store (#3352): which graph this checkout reads, and any
   // pre-adoption index still sitting in <repo>/.gitnexus.
   const storeRoot = storeRootOfCheckoutSlot(repo.storagePath);
@@ -386,10 +406,13 @@ export const statusCommand = async (options: StatusOptions = {}) => {
         index: {
           indexedAt: activeMeta.indexedAt,
           commit: activeMeta.lastCommit,
-          ...(activeMeta.capabilities ? { capabilities: activeMeta.capabilities } : {}),
+          ...(capabilities ? { capabilities } : {}),
           runnerIdentity: activeMeta.runnerIdentity ?? null,
           runnerIdentityStatus: runnerIdentityIsCurrent ? 'current' : 'stale-or-unknown',
           incompleteReasons,
+          graphIncompleteReasons,
+          graphStatus: graphIsCurrent ? 'up-to-date' : 'stale',
+          embeddingProgress,
         },
         current: {
           commit: currentCommit,
@@ -452,6 +475,10 @@ export const statusCommand = async (options: StatusOptions = {}) => {
   );
   if (incompleteReasons.length > 0) {
     console.log(`Index incomplete reasons: ${JSON.stringify(incompleteReasons)}`);
+    console.log(`Graph status: ${graphIsCurrent ? 'up-to-date' : 'stale'}`);
+  }
+  if (embeddingProgress) {
+    console.log(`Embedding progress: ${JSON.stringify(embeddingProgress)}`);
   }
   console.log(`${t('status.currentRunnerIdentity')}: ${JSON.stringify(currentRunnerIdentity)}`);
   if (contentDrift?.kind === 'current') {

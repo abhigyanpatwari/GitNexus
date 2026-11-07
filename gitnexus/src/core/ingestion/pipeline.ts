@@ -56,6 +56,8 @@ import {
 } from './pipeline-phases/index.js';
 
 export interface PipelineOptions {
+  /** Cooperative cancellation checked between parser dispatch and graph phases. */
+  signal?: AbortSignal;
   /**
    * Skip MRO, community detection, and process extraction for faster test runs.
    * The `pruneLocalSymbols` phase still runs — it is graph construction (it cleans
@@ -255,6 +257,8 @@ export interface PipelineOptions {
    * analyze invocations.
    */
   workerPoolSize?: number;
+  /** Admitted ceiling, separate from an explicit worker count so tiny repos retain auto-sizing. */
+  workerResources?: Readonly<{ workers: number; workerHeapMb: number }>;
   /**
    * Process-detection budget (#3313). Explicit `maxProcesses` replaces the
    * dynamic `symbols / 10` formula; the other three replace compiled defaults.
@@ -388,6 +392,7 @@ export const runPipelineFromRepo = async (
   onProgress: (progress: PipelineProgress) => void,
   options?: PipelineOptions,
 ): Promise<PipelineResult> => {
+  options?.signal?.throwIfAborted();
   const graph = createKnowledgeGraph();
   const pipelineStart = Date.now();
 
@@ -427,6 +432,7 @@ export const runPipelineFromRepo = async (
   let results;
   try {
     results = await runPipeline(phases, ctx);
+    options?.signal?.throwIfAborted();
     graphEmitManifest = graphEmitSink?.finalize();
   } finally {
     // Release per-pair fds when the pipeline threw before finalize ran.

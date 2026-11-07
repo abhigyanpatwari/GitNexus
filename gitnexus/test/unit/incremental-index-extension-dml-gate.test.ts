@@ -389,12 +389,8 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
       expect((await readFtsIndexRows(lbugPath)).length).toBe(FTS_INDEXES.length);
 
       // Real rows and NO stampEmbeddingCount, so meta reports zero embeddings
-      // while the DB holds these — the exact trigger state for the forced
-      // rebuild's rescue read. `--drop-embeddings` leaves `cachedEmbeddings`
-      // empty by construction (`deriveEmbeddingMode` returns
-      // `shouldLoadCache: false`), and without a checkpoint the run stays
-      // incremental, so it arrives at the gate looking precisely like the case
-      // the rescue was written for.
+      // while the DB holds these. Explicit dropping must remove them even
+      // when metadata cannot account for them and extensions cannot load.
       const seeded = await seedEmbeddingsForFiles(repo.dbPath, ['src/handler.ts'], 2);
       expect((seeded.get('src/handler.ts') ?? []).length).toBeGreaterThan(0);
 
@@ -410,16 +406,11 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
         ),
       ).resolves.toBeDefined();
 
-      // The FTS block still forces the rebuild — this is the same escalation,
-      // reached with the one flag whose entire purpose is to destroy the rows
-      // the rescue would restore.
-      expect(logs.some((m) => m.includes('full DB write'))).toBe(true);
-      // REVERSION: drop `!options.dropEmbeddings` from the rescue predicate in
-      // run-analyze.ts (`if (extensionForcedRebuild && !options.dropEmbeddings
-      // && cachedEmbeddings.length === 0)`) and the rescue reads the rows back
-      // out of the DB, logs `Preserving N embedding row(s) across the forced
-      // rebuild` on top of this run's own drop, and Phase 3.5 re-inserts every
-      // one of them — `--drop-embeddings` silently becomes a no-op.
+      // Dropping now forces a rebuild before the incremental extension gate.
+      // Verify its published graph and empty vectors, regardless of log wording.
+      expect(contentsByPath(await readGraphFileRows(lbugPath)).get('src/handler.ts')).toContain(
+        '#2841 drop-embeddings touch',
+      );
       expect(logs.some((m) => m.includes('Preserving'))).toBe(false);
       expect(await countEmbeddingRows(lbugPath)).toBe(0);
     } finally {

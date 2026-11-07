@@ -1,0 +1,151 @@
+import path from 'node:path';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { RepoMeta } from '../../src/storage/repo-meta.js';
+
+const mocks = vi.hoisted(() => ({ query: vi.fn(), embed: vi.fn(), metadata: vi.fn() }));
+vi.mock('../../src/core/lbug/pool-adapter.js', async (original) => ({
+  ...(await original<typeof import('../../src/core/lbug/pool-adapter.js')>()),
+  executeQuery: mocks.query,
+}));
+vi.mock('../../src/storage/repo-manager.js', async (original) => ({
+  ...(await original<typeof import('../../src/storage/repo-manager.js')>()),
+  loadMeta: mocks.metadata,
+}));
+vi.mock('../../src/mcp/core/embedder.js', () => ({
+  embedQuery: mocks.embed,
+  getEmbeddingDims: () => 4,
+}));
+import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+
+const generation = 'a'.repeat(32);
+const graphPath = path.join('/repo/.gitnexus', `lbug.generation.${generation}`);
+const metadata: RepoMeta = {
+  repoPath: '/repo',
+  lastCommit: 'abc',
+  indexedAt: 'now',
+  graphPath: path.basename(graphPath),
+  graphGeneration: { version: 1, id: generation, coveredContent: 'b'.repeat(64) },
+  embeddingJob: { version: 1, identity: 'c'.repeat(64), graphGeneration: generation },
+};
+interface Reader {
+  semanticSearch(
+    repo: { lbugPath: string; generationUnknown?: boolean },
+    query: string,
+    limit: number,
+    degraded?: { reason?: string },
+  ): Promise<unknown[]>;
+  lastObservedPoolState: Map<string, { metadata: RepoMeta }>;
+  lastQueryEmbeddingDims: Map<string, number>;
+  readToolMetadata(repo: { generationUnknown?: boolean }): Promise<RepoMeta>;
+}
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.query.mockResolvedValue([]);
+  mocks.metadata.mockResolvedValue(metadata);
+});
+
+describe('MCP generation gate', () => {
+  it.each([
+    'graph-generation-unverified',
+    'vector-generation-mismatch',
+    'vector-index-pending',
+    'embeddings-empty',
+    'embeddings-unavailable',
+  ])('reports semantic unavailability for %s except a never-embedded index', async (reason) => {
+    const backend = new LocalBackend() as unknown as Reader;
+    const meta: RepoMeta = {
+      ...metadata,
+      embeddingJob: undefined,
+      vectorGeneration: {
+        version: 1,
+        identity: 'a'.repeat(64),
+        graphGeneration: generation,
+        vectorIdentity: 'b'.repeat(64),
+        inputIdentity: 'c'.repeat(64),
+        dimensions: 4,
+        nodes: 1,
+        chunks: 1,
+        indexKind: 'exact',
+      },
+    };
+    if (reason === 'graph-generation-unverified') meta.graphGeneration = undefined;
+    if (reason === 'vector-generation-mismatch')
+      meta.vectorGeneration!.graphGeneration = 'd'.repeat(32);
+    if (reason === 'vector-index-pending') meta.vectorGeneration!.chunks = 1_000_000_000;
+    if (reason === 'embeddings-empty')
+      Object.assign(meta.vectorGeneration!, { nodes: 0, chunks: 0 });
+    if (reason === 'embeddings-unavailable') meta.vectorGeneration = undefined;
+    vi.spyOn(backend, 'readToolMetadata').mockResolvedValue(meta);
+    const degraded: { reason?: string } = {};
+    expect(await backend.semanticSearch({ lbugPath: graphPath }, 'hello', 5, degraded)).toEqual([]);
+    if (reason === 'embeddings-unavailable') expect(degraded.reason).toBeUndefined();
+    else {
+      expect(degraded.reason).toContain(reason);
+      expect(degraded.reason).toContain('gitnexus analyze');
+    }
+    expect(mocks.embed).not.toHaveBeenCalled();
+  });
+  it('explains the temporary keyword-only lane while vectors are pending', async () => {
+    const backend = new LocalBackend() as unknown as Reader;
+    const degraded: { reason?: string } = {};
+    expect(await backend.semanticSearch({ lbugPath: graphPath }, 'hello', 5, degraded)).toEqual([]);
+    expect(degraded.reason).toContain('embeddings are pending');
+    expect(mocks.embed).not.toHaveBeenCalled();
+  });
+  it.each(['before-read', 'during-read'])(
+    'clears a prior query width when ownership is lost %s',
+    async (when) => {
+      const backend = new LocalBackend() as unknown as Reader;
+      backend.lastQueryEmbeddingDims.set(graphPath, 4);
+      const repo = { lbugPath: graphPath, generationUnknown: when === 'before-read' };
+      if (when === 'during-read') {
+        vi.spyOn(backend, 'readToolMetadata').mockImplementation(async (handle) => {
+          handle.generationUnknown = true;
+          return metadata;
+        });
+      }
+      const degraded: { reason?: string } = {};
+      expect(await backend.semanticSearch(repo, 'hello', 5, degraded)).toEqual([]);
+      expect(degraded.reason).toContain('graph generation is unverified');
+      expect(degraded.reason).toContain('gitnexus analyze');
+      expect(backend.lastQueryEmbeddingDims.has(graphPath)).toBe(false);
+      expect(mocks.embed).not.toHaveBeenCalled();
+      expect(mocks.query).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['pending', 'foreign-metadata', 'unknown-handle'])(
+    'skips model and table access for %s',
+    async (state) => {
+      const backend = new LocalBackend() as unknown as Reader;
+      if (state === 'foreign-metadata')
+        mocks.metadata.mockResolvedValue({
+          ...metadata,
+          graphPath: `lbug.generation.${'d'.repeat(32)}`,
+        });
+      expect(
+        await backend.semanticSearch(
+          { lbugPath: graphPath, generationUnknown: state === 'unknown-handle' },
+          'hello',
+          5,
+        ),
+      ).toEqual([]);
+      expect(mocks.query).not.toHaveBeenCalled();
+      expect(mocks.embed).not.toHaveBeenCalled();
+    },
+  );
+  it('keeps a warm reader on its own metadata when publication advances', async () => {
+    const backend = new LocalBackend() as unknown as Reader;
+    backend.lastObservedPoolState.set(graphPath, { metadata });
+    mocks.metadata.mockResolvedValue({
+      ...metadata,
+      graphPath: `lbug.generation.${'d'.repeat(32)}`,
+      graphGeneration: { ...metadata.graphGeneration, id: 'd'.repeat(32) },
+    });
+    const repo = { lbugPath: graphPath, generationUnknown: false };
+    expect(await backend.semanticSearch(repo, 'hello', 5)).toEqual([]);
+    expect(repo.generationUnknown).toBe(false);
+    expect(mocks.query).not.toHaveBeenCalled();
+    expect(mocks.embed).not.toHaveBeenCalled();
+  });
+});

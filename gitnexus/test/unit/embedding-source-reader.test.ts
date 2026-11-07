@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, rm, symlink, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EmbeddingSourceReader,
   needsEmbeddingSource,
@@ -38,6 +38,51 @@ async function file(name: string, text: string) {
 }
 
 describe('original embedding source', () => {
+  it('releases cached sources even when admission disables caching on a cache hit', async () => {
+    const text = 'class Sample { value = 1; }';
+    await file('sample.ts', text);
+    const reader = new EmbeddingSourceReader(source);
+    const indexed = node('sample.ts', 0, 0);
+    expect(await reader.read(indexed)).toBe(text);
+    expect(await reader.read(indexed, async () => reader.disableCache())).toBe(text);
+    await unlink(path.join(root, 'sample.ts'));
+    await expect(reader.read(indexed)).rejects.toThrow('Embedding source unavailable');
+  });
+
+  it('admits source bytes before reading, including cached files', async () => {
+    await file('sample.py', 'source');
+    const reader = new EmbeddingSourceReader(source);
+    const admit = vi.fn(async (): Promise<void> => {
+      throw new Error('budget exhausted');
+    });
+    await expect(reader.read(node('sample.py', 0, 0), admit)).rejects.toThrow('budget exhausted');
+    expect(admit).toHaveBeenCalledWith(6);
+    admit.mockImplementation(async () => {});
+    expect(await reader.read(node('sample.py', 0, 0), admit)).toBe('source');
+    await unlink(path.join(root, 'sample.py'));
+    expect(await reader.read(node('sample.py', 0, 0), admit)).toBe('source');
+    expect(admit).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects growth after admission instead of reading beyond the reservation', async () => {
+    await file('sample.py', 'source');
+    const reader = new EmbeddingSourceReader(source);
+    await expect(
+      reader.read(node('sample.py', 0, 0), async () => {
+        await writeFile(path.join(root, 'sample.py'), 'source grew');
+      }),
+    ).rejects.toThrow('source size changed');
+  });
+
+  it('honors the job-specific cache allowance', async () => {
+    await file('sample.py', 'source');
+    const reader = new EmbeddingSourceReader(source, 8);
+    expect(await reader.read(node('sample.py', 0, 0))).toBe('source');
+    await unlink(path.join(root, 'sample.py'));
+    await expect(reader.read(node('sample.py', 0, 0))).rejects.toThrow(
+      'Embedding source unavailable',
+    );
+  });
   it('retains indentation, Unicode and exact zero-based inclusive CRLF lines', async () => {
     const text = '# prefix\r\ndef sample():\r\n    value = "雪😀"\r\n    return value\r\n# suffix';
     await file('sample.py', text);

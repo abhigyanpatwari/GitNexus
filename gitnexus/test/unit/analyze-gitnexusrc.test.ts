@@ -50,9 +50,11 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
 }));
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
+  loadMeta: vi.fn(async () => null),
   getStoragePaths: vi.fn((repoPath: string) => ({
     storagePath: path.join(repoPath, '.gitnexus'),
     lbugPath: path.join(repoPath, '.gitnexus', 'lbug'),
+    metaPath: path.join(repoPath, '.gitnexus', 'gitnexus.json'),
   })),
   getGlobalRegistryPath: vi.fn(() => 'registry.json'),
   RegistryNameCollisionError: class RegistryNameCollisionError extends Error {},

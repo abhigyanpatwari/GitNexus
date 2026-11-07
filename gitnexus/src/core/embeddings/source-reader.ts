@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { readFile, realpath } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import type { ContentRetention } from '../../storage/repo-meta.js';
+import { openEmbeddingJobFile } from '../../storage/embedding-job.js';
 import { isNotebookPath, notebookPythonSnippet } from '../ingestion/ipynb-extractor.js';
 import { buildLineIndex } from './line-index.js';
 import {
@@ -47,6 +48,7 @@ interface SourceFile {
   content: string;
   lines: Int32Array;
   bytes: number;
+  sourceBytes: number;
 }
 
 const CACHE_BYTES = 16 * 1024 * 1024;
@@ -58,9 +60,24 @@ export class EmbeddingSourceReader {
   private bytes = 0;
   private root: Promise<string> | undefined;
 
-  constructor(private readonly source: EmbeddingSourceContext) {}
+  constructor(
+    private readonly source: EmbeddingSourceContext,
+    private cacheBytes = CACHE_BYTES,
+  ) {}
 
-  async read(node: EmbeddableNode): Promise<string> {
+  /** Release optional retained sources when the caller needs their reservation. */
+  disableCache(): void {
+    this.files.clear();
+    this.bytes = 0;
+    this.cacheBytes = 0;
+  }
+
+  /** Admission runs before allocation, including on cache hits. The caller
+   * holds its reservation until it finishes using/parsing the returned text. */
+  async read(
+    node: EmbeddableNode,
+    admit?: (sourceBytes: number) => Promise<void>,
+  ): Promise<string> {
     if (this.source.contentRetention !== 'full') {
       throw new Error('Original embedding source requires full content retention');
     }
@@ -84,8 +101,9 @@ export class EmbeddingSourceReader {
 
     let file = this.files.get(node.filePath);
     if (file) {
+      await admit?.(file.sourceBytes);
       this.files.delete(node.filePath);
-      this.files.set(node.filePath, file);
+      if (this.cacheBytes > 0) this.files.set(node.filePath, file);
     } else {
       if (
         !node.filePath ||
@@ -107,15 +125,38 @@ export class EmbeddingSourceReader {
         ) {
           throw new Error('source path leaves the repository');
         }
-        const buffer = await readFile(resolved);
+        const { handle, stat } = await openEmbeddingJobFile(resolved);
+        let buffer: Buffer;
+        try {
+          if (!Number.isSafeInteger(stat.size) || stat.size < 0)
+            throw new Error('invalid source file size');
+          await admit?.(stat.size);
+          // Bound the read to the admitted size, plus one byte to detect growth.
+          buffer = Buffer.alloc(stat.size + 1);
+          let offset = 0;
+          while (offset < buffer.length) {
+            const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+            if (!bytesRead) break;
+            offset += bytesRead;
+          }
+          if (offset !== stat.size) throw new Error('source size changed during the read');
+          buffer = buffer.subarray(0, offset);
+        } finally {
+          await handle.close();
+        }
         if (createHash('sha256').update(buffer).digest('hex') !== expectedHash) {
           throw new Error('checkout content differs from the indexed snapshot');
         }
         const content = buffer.toString('utf8');
         const lines = buildLineIndex(content);
-        file = { content, lines, bytes: content.length * 2 + lines.byteLength };
-        if (file.bytes <= CACHE_BYTES) {
-          while (this.files.size >= CACHE_FILES || this.bytes + file.bytes > CACHE_BYTES) {
+        file = {
+          content,
+          lines,
+          bytes: content.length * 2 + lines.byteLength,
+          sourceBytes: buffer.length,
+        };
+        if (file.bytes <= this.cacheBytes) {
+          while (this.files.size >= CACHE_FILES || this.bytes + file.bytes > this.cacheBytes) {
             const entry = this.files.entries().next().value;
             if (!entry) break;
             const [oldest, cached] = entry;

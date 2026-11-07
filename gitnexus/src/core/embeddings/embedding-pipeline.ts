@@ -65,6 +65,7 @@ import {
   needsEmbeddingSource,
   type EmbeddingSourceContext,
 } from './source-reader.js';
+import type { VectorSearchSnapshot } from './vector-generation-search.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -115,7 +116,6 @@ export const contentHashForNode = (
 ): string => {
   // Hash must be deterministic across runs, so exclude methodNames/fieldNames
   // which are populated during the batch loop via AST extraction.
-  // Using only node.content ensures the hash stays stable.
   // NOTE: A change to extractStructuralNames behavior requires bumping EMBEDDING_TEXT_VERSION.
   const hashNode = { ...node, methodNames: undefined, fieldNames: undefined };
   if (node.label === 'Class') hashNode.classDeclaration = undefined;
@@ -181,7 +181,7 @@ export const contentHashForNode = (
   return hash.digest('hex');
 };
 
-const isInputRejection = (error: unknown): boolean =>
+export const isInputRejection = (error: unknown): boolean =>
   error instanceof HttpEmbeddingError &&
   (error.status === 400 || error.status === 413 || error.status === 422);
 
@@ -193,14 +193,15 @@ type EmbeddedRange = { start: number; end: number } & (
 /** Bisect only input rejections, with at most 2n-1 requests per sub-batch.
  * Authentication, throttling, transport and cancellation retain their existing
  * bounded retry/failure policy instead of multiplying requests. */
-async function* embedInputRanges(
+export async function* embedInputRanges(
   texts: string[],
   subBatchSize: number,
   signal?: AbortSignal,
+  provider: typeof embedBatch = embedBatch,
 ): AsyncGenerator<EmbeddedRange> {
   async function* request(start: number, end: number): AsyncGenerator<EmbeddedRange> {
     try {
-      const embeddings = await embedBatch(texts.slice(start, end), { signal });
+      const embeddings = await provider(texts.slice(start, end), { signal });
       yield { start, end, embeddings };
     } catch (error) {
       if (signal?.aborted || isCancellationError(error)) throw error;
@@ -1280,34 +1281,45 @@ export const semanticSearch = async (
   query: string,
   k: number = 10,
   maxDistance: number = getVectorMaxDistance(DEFAULT_VECTOR_MAX_DISTANCE),
+  snapshot?: VectorSearchSnapshot,
+  embedQuery?: (text: string) => Promise<readonly number[]>,
 ): Promise<SemanticSearchResult[]> => {
-  // determinism: probe — existence only. Only `exists.length` is read; which
-  // row LIMIT 1 returns cannot change whether the table is empty.
-  const exists = await executeQuery(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN 1 AS ok LIMIT 1`);
-  if (!exists.length) {
-    return [];
-  }
-
-  if (!isEmbedderReady()) {
-    throw new Error('Embedding model not initialized. Run embedding pipeline first.');
-  }
-
-  const queryEmbedding = await embedText(query);
-  const queryVec = embeddingToArray(queryEmbedding);
-  const queryVecStr = `[${queryVec.join(',')}]`;
-
+  const queryVector = async (): Promise<number[]> => {
+    if (embedQuery) return [...(await embedQuery(query))];
+    if (!isEmbedderReady())
+      throw new Error('Embedding model not initialized. Run embedding pipeline first.');
+    return embeddingToArray(await embedText(query));
+  };
   let bestChunks = new Map<
     string,
     { distance: number; chunkIndex: number; startLine: number; endLine: number }
   >();
-  // Query/read path: NEVER spawn a network INSTALL on a user query. If the
-  // VECTOR extension was not pre-installed, fall back to exact scan rather than
-  // blocking the query on a download (offline-first; see extension-loader.ts
-  // "load-only" — used by all serve/MCP query paths).
-  if (await loadVectorExtension(undefined, { policy: 'load-only' })) {
-    try {
-      bestChunks = await collectBestChunks(k, async (fetchLimit) => {
-        const vectorQuery = `
+  let generationSelected = false;
+  if (snapshot) {
+    const { searchVectorGeneration } = await import('./vector-generation-search.js');
+    const chunks = await searchVectorGeneration(snapshot, queryVector, k, maxDistance);
+    generationSelected = chunks !== null;
+    if (chunks) bestChunks = new Map(chunks.map(({ nodeId, ...chunk }) => [nodeId, chunk]));
+  }
+  if (!generationSelected) {
+    // determinism: probe — existence only. Only `exists.length` is read; which
+    // row LIMIT 1 returns cannot change whether the table is empty.
+    const exists = await executeQuery(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN 1 AS ok LIMIT 1`);
+    if (!exists.length) {
+      return [];
+    }
+
+    const queryVec = await queryVector();
+    const queryVecStr = `[${queryVec.join(',')}]`;
+
+    // Query/read path: NEVER spawn a network INSTALL on a user query. If the
+    // VECTOR extension was not pre-installed, fall back to exact scan rather than
+    // blocking the query on a download (offline-first; see extension-loader.ts
+    // "load-only" — used by all serve/MCP query paths).
+    if (await loadVectorExtension(undefined, { policy: 'load-only' })) {
+      try {
+        bestChunks = await collectBestChunks(k, async (fetchLimit) => {
+          const vectorQuery = `
           CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
             CAST(${queryVecStr} AS FLOAT[${queryVec.length}]), ${fetchLimit})
           YIELD node AS emb, distance
@@ -1318,54 +1330,54 @@ export const semanticSearch = async (
           ORDER BY distance
         `;
 
-        const embResults = await executeQuery(vectorQuery);
-        return embResults.map((row) => ({
-          nodeId: row.nodeId ?? row[0],
-          chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-          startLine: row.startLine ?? row[2] ?? 0,
-          endLine: row.endLine ?? row[3] ?? 0,
-          distance: row.distance ?? row[4],
-        }));
-      });
-    } catch {
-      bestChunks = new Map();
+          const embResults = await executeQuery(vectorQuery);
+          return embResults.map((row) => ({
+            nodeId: row.nodeId ?? row[0],
+            chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+            startLine: row.startLine ?? row[2] ?? 0,
+            endLine: row.endLine ?? row[3] ?? 0,
+            distance: row.distance ?? row[4],
+          }));
+        });
+      } catch {
+        bestChunks = new Map();
+      }
     }
-  }
 
-  if (bestChunks.size === 0) {
-    // NOT `measurePersistedEmbeddingCount`: its tri-state exists so a publisher
-    // never writes a fabricated 0, whereas here `?? 0` is the right answer —
-    // an unknown count simply skips the exact scan.
-    const countRows = await executeQuery(EMBEDDING_COUNT_CYPHER);
-    const embeddingCount = Number(countRows[0]?.cnt ?? countRows[0]?.[0] ?? 0);
-    const exactLimit = getExactScanLimit();
-    if (embeddingCount > 0 && embeddingCount <= exactLimit) {
-      const rows = await executeQuery(`
+    if (bestChunks.size === 0) {
+      // NOT `measurePersistedEmbeddingCount`: its tri-state exists so a publisher
+      // never writes a fabricated 0, whereas here `?? 0` is the right answer —
+      // an unknown count simply skips the exact scan.
+      const countRows = await executeQuery(EMBEDDING_COUNT_CYPHER);
+      const embeddingCount = Number(countRows[0]?.cnt ?? countRows[0]?.[0] ?? 0);
+      const exactLimit = getExactScanLimit();
+      if (embeddingCount > 0 && embeddingCount <= exactLimit) {
+        const rows = await executeQuery(`
         MATCH (e:${EMBEDDING_TABLE_NAME})
         RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex,
                e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding
       `);
-      const exactRows: ExactEmbeddingRow[] = rows.map((row) => ({
-        nodeId: row.nodeId ?? row[0],
-        chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-        startLine: row.startLine ?? row[2] ?? 0,
-        endLine: row.endLine ?? row[3] ?? 0,
-        embedding: row.embedding ?? row[4] ?? [],
-      }));
-      bestChunks = new Map(
-        rankExactEmbeddingRows(exactRows, queryVec, k, maxDistance).map((row) => [
-          row.nodeId,
-          {
-            distance: row.distance,
-            chunkIndex: row.chunkIndex,
-            startLine: row.startLine,
-            endLine: row.endLine,
-          },
-        ]),
-      );
+        const exactRows: ExactEmbeddingRow[] = rows.map((row) => ({
+          nodeId: row.nodeId ?? row[0],
+          chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+          startLine: row.startLine ?? row[2] ?? 0,
+          endLine: row.endLine ?? row[3] ?? 0,
+          embedding: row.embedding ?? row[4] ?? [],
+        }));
+        bestChunks = new Map(
+          rankExactEmbeddingRows(exactRows, queryVec, k, maxDistance).map((row) => [
+            row.nodeId,
+            {
+              distance: row.distance,
+              chunkIndex: row.chunkIndex,
+              startLine: row.startLine,
+              endLine: row.endLine,
+            },
+          ]),
+        );
+      }
     }
   }
-
   if (bestChunks.size === 0) {
     return [];
   }
@@ -1431,8 +1443,9 @@ export const semanticSearchWithContext = async (
   query: string,
   k: number = 5,
   _hops: number = 1,
+  snapshot?: VectorSearchSnapshot,
 ): Promise<any[]> => {
-  const results = await semanticSearch(executeQuery, query, k);
+  const results = await semanticSearch(executeQuery, query, k, undefined, snapshot);
 
   return results.map((r) => ({
     matchId: r.nodeId,

@@ -31,7 +31,8 @@ vi.mock('gitnexus-shared', async (importOriginal) => ({
   getLanguageFromFilename,
 }));
 
-import { chunkNode } from '../../src/core/embeddings/chunker.js';
+import { chunkNode, iterateNodeChunks } from '../../src/core/embeddings/chunker.js';
+import * as lineIndex from '../../src/core/embeddings/line-index.js';
 
 type FakeNode = {
   type: string;
@@ -249,6 +250,37 @@ describe('chunkNode', () => {
     expect(result[0].startLine).toBe(1);
     expect(result[0].endLine).toBe(3);
   });
+
+  it.each(['fixed', 'ast'] as const)(
+    'projects %s class chunks only as the consumer requests them',
+    async (strategy) => {
+      const fields = Array.from({ length: 20 }, (_, i) => `field${i}: string;`);
+      const content = ['class Sample {', ...fields, '}'].join('\n');
+      const tree = makeDeclarationTree('class_declaration', 'class_body', content, fields);
+      const expected = await chunkNode('Class', content, 'sample.ts', 10, 31, 40, 0, {
+        tree,
+        strategy,
+      });
+      expect(expected.length).toBeGreaterThan(3);
+      const lines = vi.spyOn(lineIndex, 'resolveChunkLines');
+      try {
+        const stream = iterateNodeChunks('Class', content, 'sample.ts', 10, 31, 40, 0, {
+          tree,
+          strategy,
+        });
+        expect(lines).not.toHaveBeenCalled();
+        const first = await stream.next();
+        expect(first.value).toEqual(expected[0]);
+        // AST packing also resolves the projected line range before mapping it.
+        expect(lines.mock.calls.length).toBeLessThanOrEqual(2);
+        const actual = [first.value];
+        for await (const chunk of stream) actual.push(chunk);
+        expect(actual).toEqual(expected);
+      } finally {
+        lines.mockRestore();
+      }
+    },
+  );
 
   it('preserves interface signatures via declaration-aware chunking', async () => {
     const content = [

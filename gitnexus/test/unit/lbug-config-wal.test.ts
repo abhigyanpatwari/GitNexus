@@ -220,6 +220,21 @@ describe('createLbugDatabase WAL replay option', () => {
 });
 
 describe('createLbugDatabase buffer pool size (#2557)', () => {
+  it('passes an explicit native-default pool through to the constructor', () => {
+    const Database = vi.fn(function (this: unknown) {});
+    try {
+      vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', '1073741824');
+      createLbugDatabase(
+        { Database } as unknown as Parameters<typeof createLbugDatabase>[0],
+        '/tmp/lbug-zero',
+        { bufferPoolBytes: 0 },
+      );
+      expect(bufferPoolArg(Database)).toBe(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   const GiB = 1024 * 1024 * 1024;
 
   // Pin a 4 KiB page so every expectation below is host-independent — on a

@@ -116,6 +116,8 @@ import {
   embeddingDimsMismatch,
 } from '../../core/lbug/schema.js';
 import { getExactScanLimit } from '../../core/platform/capabilities.js';
+import { metadataMatchesGraph, selectVectorGeneration } from '../../storage/vector-generation.js';
+import { pinRepo } from '../../core/lbug/pool-adapter.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { ftsDegradedWarning, ftsQueryFailedWarning } from '../../core/search/fts-indexes.js';
 import { getFtsDisabledReason, type FtsDisabledReason } from '../../core/search/fts-policy.js';
@@ -1850,6 +1852,17 @@ export class LocalBackend {
     if (!pending) {
       pending = loadOptionalMeta(path.dirname(repo.lbugPath)).then((meta) => {
         if (!meta) return null;
+        if (
+          (meta.graphPath !== undefined || meta.graphGeneration) &&
+          !metadataMatchesGraph(path.dirname(repo.lbugPath), meta, repo.lbugPath)
+        ) {
+          // A newer immutable path was published after this request resolved
+          // its handle. Keep the old reader's metadata, never mix generations.
+          const previous = this.lastObservedPoolState.get(repo.lbugPath);
+          if (previous?.metadata) return previous.metadata;
+          repo.generationUnknown = true;
+          return null;
+        }
         // Readers never use ingestion manifests. Do not keep their per-file
         // hashes/cache keys or pending embedding IDs in an opened snapshot.
         return {
@@ -3562,6 +3575,7 @@ export class LocalBackend {
       chain_depth?: number;
     },
   ): Promise<any> {
+    const release = pinRepo(repo.lbugPath);
     try {
       const result = await this._queryImpl(repo, params);
       if (!result.error) assertResponseIdentities(result);
@@ -3571,6 +3585,8 @@ export class LocalBackend {
         return { error: err.message, recoverySuggestion: SYMBOL_IDENTITY_RECOVERY_SUGGESTION };
       }
       throw err;
+    } finally {
+      release();
     }
   }
 
@@ -4575,55 +4591,103 @@ export class LocalBackend {
     // call's width, and the catch below must only clear an entry it did not set.
     let embeddedDims: number | undefined;
     try {
-      // Check if embedding table exists before loading the model (avoids heavy model init when embeddings are off)
-      // determinism: probe — aggregate singleton. COUNT(*) with no grouping key returns exactly one row, and only
-      // the count is read, to decide whether to load the embedding model at all.
-      const tableCheck = await executeQuery(
-        repo.lbugPath,
-        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
-      );
-      if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) {
+      if (repo.generationUnknown) {
+        if (degraded)
+          degraded.reason =
+            'Semantic search is unavailable because the graph generation is unverified. Run gitnexus analyze; graph and keyword search remain available.';
         this.lastQueryEmbeddingDims.delete(repo.lbugPath);
-        this.logKeywordOnlyEmbeddings();
         return [];
       }
-
-      const { embedQuery, getEmbeddingDims } = await import('../core/embedder.js');
-      const queryVec = await embedQuery(query);
-      const dims = getEmbeddingDims();
-      // #2798: the width this query vector really was produced at — the same
-      // value the CAST below binds against the index's `FLOAT[N]` column, and
-      // therefore the only honest comparand for query()'s drift warning.
-      embeddedDims = dims;
-      this.lastQueryEmbeddingDims.set(repo.lbugPath, dims);
-      const queryVecStr = `[${queryVec.join(',')}]`;
-      const maxDistance = getVectorMaxDistance(DEFAULT_MCP_VECTOR_MAX_DISTANCE);
-      let vectorReady = false;
-      try {
-        vectorReady = await ensureVectorExtension(repo.lbugPath);
-      } catch (err) {
-        rethrowSymbolIdentityError(err);
-        if (!this.warnedVectorLoadFailed) {
-          this.warnedVectorLoadFailed = true;
-          logger.warn(
-            { err },
-            'GitNexus [query:vector]: vector extension load failed; using exact scan fallback',
-          );
-        }
+      const metadata = await this.readToolMetadata(repo);
+      if (repo.generationUnknown) {
+        if (degraded)
+          degraded.reason =
+            'Semantic search is unavailable because the graph generation is unverified. Run gitnexus analyze; graph and keyword search remain available.';
+        this.lastQueryEmbeddingDims.delete(repo.lbugPath);
+        return [];
       }
-
+      const selection = selectVectorGeneration(
+        path.dirname(repo.lbugPath),
+        metadata,
+        repo.lbugPath,
+        getExactScanLimit(),
+      );
+      if (selection.kind === 'unavailable') {
+        if (degraded && selection.reason === 'embedding-pending')
+          degraded.reason =
+            'Semantic search is unavailable while embeddings are pending. Run gitnexus analyze to resume; graph and keyword search remain available.';
+        else if (degraded && selection.reason !== 'embeddings-unavailable')
+          degraded.reason = `Semantic search is unavailable (${selection.reason}). Run gitnexus analyze; graph and keyword search remain available.`;
+        this.lastQueryEmbeddingDims.delete(repo.lbugPath);
+        return [];
+      }
       let bestChunks = new Map<
         string,
         { distance: number; chunkIndex: number; startLine: number; endLine: number }
       >();
-      // Try the vector lane only after its lazy load succeeds. An unavailable
-      // extension is already reported by ExtensionManager; an index/query
-      // failure below gets its own once-per-backend diagnostic before the exact
-      // scan fallback.
-      if (vectorReady) {
+      if (selection.kind === 'ready') {
+        const { searchVectorGeneration } =
+          await import('../../core/embeddings/vector-generation-search.js');
+        const chunks = await searchVectorGeneration(
+          { metadataDirectory: path.dirname(repo.lbugPath), metadata, graphPath: repo.lbugPath },
+          async () => {
+            const { embedQuery, getEmbeddingDims } = await import('../core/embedder.js');
+            const queryVec = await embedQuery(query);
+            embeddedDims = getEmbeddingDims();
+            this.lastQueryEmbeddingDims.set(repo.lbugPath, embeddedDims);
+            return queryVec;
+          },
+          limit,
+          getVectorMaxDistance(DEFAULT_MCP_VECTOR_MAX_DISTANCE),
+        );
+        bestChunks = new Map((chunks ?? []).map(({ nodeId, ...chunk }) => [nodeId, chunk]));
+        if (embeddedDims === undefined) this.lastQueryEmbeddingDims.delete(repo.lbugPath);
+      } else {
+        // Check if embedding table exists before loading the model (avoids heavy model init when embeddings are off)
+        // determinism: probe — aggregate singleton. COUNT(*) with no grouping key returns exactly one row, and only
+        // the count is read, to decide whether to load the embedding model at all.
+        const tableCheck = await executeQuery(
+          repo.lbugPath,
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
+        );
+        if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) {
+          this.lastQueryEmbeddingDims.delete(repo.lbugPath);
+          this.logKeywordOnlyEmbeddings();
+          return [];
+        }
+
+        const { embedQuery, getEmbeddingDims } = await import('../core/embedder.js');
+        const queryVec = await embedQuery(query);
+        const dims = getEmbeddingDims();
+        // #2798: the width this query vector really was produced at — the same
+        // value the CAST below binds against the index's `FLOAT[N]` column, and
+        // therefore the only honest comparand for query()'s drift warning.
+        embeddedDims = dims;
+        this.lastQueryEmbeddingDims.set(repo.lbugPath, dims);
+        const queryVecStr = `[${queryVec.join(',')}]`;
+        const maxDistance = getVectorMaxDistance(DEFAULT_MCP_VECTOR_MAX_DISTANCE);
+        let vectorReady = false;
         try {
-          bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
-            const vectorQuery = `
+          vectorReady = await ensureVectorExtension(repo.lbugPath);
+        } catch (err) {
+          rethrowSymbolIdentityError(err);
+          if (!this.warnedVectorLoadFailed) {
+            this.warnedVectorLoadFailed = true;
+            logger.warn(
+              { err },
+              'GitNexus [query:vector]: vector extension load failed; using exact scan fallback',
+            );
+          }
+        }
+
+        // Try the vector lane only after its lazy load succeeds. An unavailable
+        // extension is already reported by ExtensionManager; an index/query
+        // failure below gets its own once-per-backend diagnostic before the exact
+        // scan fallback.
+        if (vectorReady) {
+          try {
+            bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
+              const vectorQuery = `
             CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
               CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
             YIELD node AS emb, distance
@@ -4634,66 +4698,66 @@ export class LocalBackend {
             ORDER BY distance
           `;
 
-            const embResults = await executeQuery(repo.lbugPath, vectorQuery);
-            for (const row of embResults) assertQueryIdentity(row, 'nodeId', 0);
-            return embResults.map((row) => ({
-              nodeId: row.nodeId ?? row[0],
-              chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-              startLine: row.startLine ?? row[2] ?? 0,
-              endLine: row.endLine ?? row[3] ?? 0,
-              distance: row.distance ?? row[4],
-            }));
-          });
-        } catch (err) {
-          rethrowSymbolIdentityError(err);
-          bestChunks = new Map();
-          if (!this.warnedVectorQueryFailed) {
-            // Rare diagnostic: surface why semantic search fell back to the
-            // exact scan. Emitted once per `LocalBackend` instance lifetime to
-            // avoid noisy stderr on hot semantic-search paths (DoD §2.8).
-            this.warnedVectorQueryFailed = true;
-            logger.warn(
-              { err },
-              'GitNexus [query:vector]: vector index query failed; using exact scan fallback',
-            );
+              const embResults = await executeQuery(repo.lbugPath, vectorQuery);
+              for (const row of embResults) assertQueryIdentity(row, 'nodeId', 0);
+              return embResults.map((row) => ({
+                nodeId: row.nodeId ?? row[0],
+                chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+                startLine: row.startLine ?? row[2] ?? 0,
+                endLine: row.endLine ?? row[3] ?? 0,
+                distance: row.distance ?? row[4],
+              }));
+            });
+          } catch (err) {
+            rethrowSymbolIdentityError(err);
+            bestChunks = new Map();
+            if (!this.warnedVectorQueryFailed) {
+              // Rare diagnostic: surface why semantic search fell back to the
+              // exact scan. Emitted once per `LocalBackend` instance lifetime to
+              // avoid noisy stderr on hot semantic-search paths (DoD §2.8).
+              this.warnedVectorQueryFailed = true;
+              logger.warn(
+                { err },
+                'GitNexus [query:vector]: vector index query failed; using exact scan fallback',
+              );
+            }
           }
         }
-      }
 
-      if (bestChunks.size === 0) {
-        const embeddingCount = Number(tableCheck[0].cnt ?? tableCheck[0][0] ?? 0);
-        const exactLimit = getExactScanLimit();
-        if (embeddingCount > exactLimit) return [];
+        if (bestChunks.size === 0) {
+          const embeddingCount = Number(tableCheck[0].cnt ?? tableCheck[0][0] ?? 0);
+          const exactLimit = getExactScanLimit();
+          if (embeddingCount > exactLimit) return [];
 
-        const rows = await executeQuery(
-          repo.lbugPath,
-          `
+          const rows = await executeQuery(
+            repo.lbugPath,
+            `
           MATCH (e:${EMBEDDING_TABLE_NAME})
           RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex,
                  e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding
         `,
-        );
-        for (const row of rows) assertQueryIdentity(row, 'nodeId', 0);
-        const exactRows: ExactEmbeddingRow[] = rows.map((row) => ({
-          nodeId: row.nodeId ?? row[0],
-          chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-          startLine: row.startLine ?? row[2] ?? 0,
-          endLine: row.endLine ?? row[3] ?? 0,
-          embedding: row.embedding ?? row[4] ?? [],
-        }));
-        bestChunks = new Map(
-          rankExactEmbeddingRows(exactRows, queryVec, limit, maxDistance).map((row) => [
-            row.nodeId,
-            {
-              distance: row.distance,
-              chunkIndex: row.chunkIndex,
-              startLine: row.startLine,
-              endLine: row.endLine,
-            },
-          ]),
-        );
+          );
+          for (const row of rows) assertQueryIdentity(row, 'nodeId', 0);
+          const exactRows: ExactEmbeddingRow[] = rows.map((row) => ({
+            nodeId: row.nodeId ?? row[0],
+            chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+            startLine: row.startLine ?? row[2] ?? 0,
+            endLine: row.endLine ?? row[3] ?? 0,
+            embedding: row.embedding ?? row[4] ?? [],
+          }));
+          bestChunks = new Map(
+            rankExactEmbeddingRows(exactRows, queryVec, limit, maxDistance).map((row) => [
+              row.nodeId,
+              {
+                distance: row.distance,
+                chunkIndex: row.chunkIndex,
+                startLine: row.startLine,
+                endLine: row.endLine,
+              },
+            ]),
+          );
+        }
       }
-
       if (bestChunks.size === 0) return [];
 
       const results: any[] = [];
