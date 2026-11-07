@@ -82,7 +82,8 @@ export async function startLiveBackend(): Promise<LiveBackend> {
       // Serve forks analyze with min(8192, 0.75×RAM) MB. Two parallel specs
       // both getting an 8GB child is what produced `Worker crashed (code null)`.
       GITNEXUS_SERVER_ANALYZE_HEAP_MB: process.env.GITNEXUS_SERVER_ANALYZE_HEAP_MB ?? '512',
-      GITNEXUS_WORKER_HEAP_MB: process.env.GITNEXUS_WORKER_HEAP_MB ?? '256',
+      // The analysis resource policy requires at least 512 MiB per parse worker.
+      GITNEXUS_WORKER_HEAP_MB: process.env.GITNEXUS_WORKER_HEAP_MB ?? '512',
       // Ladybug FTS CREATE_FTS_INDEX SIGSEGVs on this host (CLI exit 139).
       // Graph analyze still runs for real; keyword indexes are the only skip.
       GITNEXUS_SKIP_FTS: process.env.GITNEXUS_SKIP_FTS ?? '1',
