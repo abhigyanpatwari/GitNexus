@@ -76,7 +76,7 @@ describe('MCP generation gate', () => {
         embeddingDims: 4,
         embeddingCheckpoint: checkpoint,
       });
-      const repo = { lbugPath: path.join('/repo/.gitnexus', 'lbug') };
+      const repo = { lbugPath: path.join('/repo/.gitnexus', 'lbug'), generationUnknown: false };
       const snapshot = await backend.readToolMetadata(repo);
       expect(snapshot.embeddingCheckpoint).toMatchObject({ model: 'model', dimensions: 4, kind });
       expect(snapshot.embeddingCheckpoint?.pendingNodeIds).toBeUndefined();
@@ -118,7 +118,7 @@ describe('MCP generation gate', () => {
       ]);
       mocks.embed.mockResolvedValue([1, 0, 0, 0]);
       mocks.parameterized.mockResolvedValue([{ name: 'hello', filePath: 'src/example.ts' }]);
-      const repo = { lbugPath: path.join('/repo/.gitnexus', 'lbug') };
+      const repo = { lbugPath: path.join('/repo/.gitnexus', 'lbug'), generationUnknown: false };
       const snapshot = await backend.readToolMetadata(repo);
       expect(snapshot.embeddingCheckpoint?.kind).toBe('unverified-count');
       expect(snapshot.embeddingCheckpoint?.pendingNodeIds).toBeUndefined();

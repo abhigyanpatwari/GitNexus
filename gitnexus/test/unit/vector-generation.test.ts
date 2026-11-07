@@ -75,6 +75,8 @@ describe('vector generation routing', () => {
         stats: { embeddings: 2 },
         embeddingDims: 4,
         capabilities: {
+          graph: { provider: 'ladybugdb', status: 'available' },
+          fts: { provider: 'ladybugdb-fts', status: 'available' },
           vectorSearch: {
             provider: 'ladybugdb-vector',
             status: 'vector-index',
