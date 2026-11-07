@@ -4,6 +4,10 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`detect_changes` no longer forwards git autocrlf warnings to stderr** — `git diff` stderr is captured, so a `core.autocrlf=true` checkout's "LF will be replaced by CRLF" lines stay out of MCP host logs and `gitnexus detect-changes`. A failing git command still returns `Git diff failed:` with git's own message (#3837)
+
 ### Changed
 
 - **MCP `query` / `context` / `impact` / `cypher` always attach a ref-carrying `staleness` field** — object results include it even when `status` is `current`. Absence is no longer the freshness signal: read `staleness.status` (`behind`/`diverged` vs `current`/`unknown`) and `branch`/`lastCommit` for which index answered. `list_repos` and the HTTP repo routes are unchanged (still omit `staleness` when current; the ref is top-level) (#3291, #3293)
