@@ -310,6 +310,7 @@ export async function runEmbeddingJob(
           const sourceContext = options.sourceContext;
           if (!sourceContext) throw new Error('Missing indexed embedding source context');
           let release: (() => void) | undefined;
+          let admissionAbort: unknown;
           try {
             if (!sourceReader) {
               const cacheBytes = Math.min(16 * 1024 * 1024, Math.floor(budget.limit / 8));
@@ -317,7 +318,10 @@ export async function runEmbeddingJob(
                 await flush();
                 await flushCopies();
               }
-              if (abort) throw abort;
+              if (abort) {
+                admissionAbort = abort;
+                throw abort;
+              }
               releaseSourceCache = budget.reserve(cacheBytes);
               sourceReader = new EmbeddingSourceReader(sourceContext, cacheBytes);
             }
@@ -330,7 +334,10 @@ export async function runEmbeddingJob(
                 await flush();
                 await flushCopies();
               }
-              if (abort) throw abort;
+              if (abort) {
+                admissionAbort = abort;
+                throw abort;
+              }
               if (
                 !Number.isSafeInteger(bytes) ||
                 budget.usedBytes + bytes + minimumUnitBatchBytes > budget.limit
@@ -344,7 +351,7 @@ export async function runEmbeddingJob(
             return { content, release };
           } catch (error) {
             release?.();
-            if (abort) throw abort;
+            if (admissionAbort) throw admissionAbort;
             throw error;
           }
         },
