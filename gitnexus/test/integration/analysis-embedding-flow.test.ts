@@ -189,4 +189,17 @@ it('publishes before HTTP work and resumes without parsing or repeating durable 
   expect(accepted).toHaveLength(261);
   expect(accepted.at(-1)).toContain('return 999;');
   expect((await loadMeta(slot))?.graphGeneration?.id).not.toBe(completed?.graphGeneration?.id);
+
+  // Explicit dropping retires every model space, including the earlier 4D one.
+  const beforeDrop = accepted.length;
+  await runFullAnalysis(repo, { ...options, embeddings: false, dropEmbeddings: true }, callbacks);
+  const dropped = await loadMeta(slot);
+  expect(dropped?.vectorGeneration).toBeUndefined();
+  expect(dropped?.embeddingJob).toBeUndefined();
+  expect(dropped?.stats?.embeddings ?? 0).toBe(0);
+  expect(accepted).toHaveLength(beforeDrop);
+  expect(await fs.readdir(path.join(slot, 'embeddings'))).toEqual([]);
+  await runFullAnalysis(repo, options, callbacks);
+  expect(accepted).toHaveLength(beforeDrop + 130);
+  expect(endpointErrors).toEqual([]);
 }, 120_000);

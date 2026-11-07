@@ -749,6 +749,72 @@ describe('bounded durable embedding runner', () => {
     expect(fixture.provider).not.toHaveBeenCalled();
   });
 
+  it('checkpoints paid peers and rejection attempts when source admission aborts a batch', async () => {
+    const options = await setup();
+    const content = 'function tail() { return 7; }\n//' + ' '.repeat(100_000);
+    await fs.writeFile(path.join(options.directory, 'source.ts'), content);
+    const nodes: EmbeddableNode[] = Array.from({ length: 7 }, (_, i) => ({
+      id: `Function:source.ts:n${i}`,
+      label: 'Function',
+      name: `n${i}`,
+      filePath: 'source.ts',
+      content: i === 6 ? 'function tail() ... [truncated]' : `function n${i}() { return ${i}; }`,
+      startLine: 0,
+      endLine: 0,
+    }));
+    const source = {
+      async *scan(label: string) {
+        if (label !== 'Function') return;
+        for (const node of nodes)
+          yield { id: node.id, contentBytes: Buffer.byteLength(node.content), metadataBytes: 1024 };
+      },
+      async fetch(_label: string, ids: readonly string[]) {
+        return nodes.filter((node) => ids.includes(node.id));
+      },
+    };
+    const manifest = await createEmbeddingWorkManifest(options.directory, 'source', source);
+    const paid: string[] = [];
+    const provider = vi.fn(async (texts: string[]) => {
+      if (texts.some((text) => /function n[1-5]\(/.test(text)))
+        throw new HttpEmbeddingError('bad input', { status: 422 });
+      paid.push(...texts);
+      return texts.map(() => new Float32Array([1, 0, 0, 0]));
+    });
+    let journal = await EmbeddingJobJournal.create(options.directory, options.identity, manifest);
+    const run = () =>
+      runEmbeddingJob({
+        directory: options.directory,
+        manifest,
+        source,
+        journal,
+        store,
+        provider,
+        queueBytes: 2 * 1024 ** 2,
+        config: { subBatchSize: 8, maxInputChars: 1024 },
+        sourceContext: {
+          repoPath: options.directory,
+          fileHashes: { 'source.ts': createHash('sha256').update(content).digest('hex') },
+          contentRetention: 'full',
+        },
+      });
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await expect(run()).rejects.toThrow('five nodes without a success');
+      expect((await store.completedNodes([nodes[0].id])).size).toBe(1);
+      await store.close();
+      store = await VectorStore.open({ ...options, mode: 'resume' });
+      journal = await EmbeddingJobJournal.open(options.directory, options.identity, manifest);
+      const failed = [];
+      for await (const unit of journal.failed()) failed.push(unit);
+      expect(failed).toHaveLength(1);
+      expect(Object.values(failed[0].inputFailures ?? {})).toEqual(Array(5).fill(attempt));
+    }
+    expect(paid).toHaveLength(1);
+    const result = await run();
+    expect(result.state).toMatchObject({ excludedNodes: 5, reusedNodes: 1, completedNodes: 1 });
+    expect(paid).toHaveLength(2);
+    expect(paid[1]).toContain('function tail');
+  });
+
   it('bounds one oversized node by bytes and preserves all generated Unicode input', async () => {
     const content = '漢😀abcdef'.repeat(60000);
     const fixture = await runnerFixture(1, content);
@@ -1206,10 +1272,14 @@ describe('published vector readers', () => {
       });
     }
     store = await VectorStore.open({ ...options, mode: 'resume' });
+    const addedNodeId = 'Function:source.ts:beta';
+    await store.beginNode(addedNodeId, 'added');
+    await store.append(addedNodeId, 'added', [chunk(0)]);
+    await store.finishNode(addedNodeId, 'added', 1);
     await store.beginNode(nodeId, 'new');
     await store.append(nodeId, 'new', [chunk(0), chunk(1)]);
     await store.finishNode(nodeId, 'new', 2);
-    expect(await store.seal(1, 2)).toBe('hnsw');
+    expect(await store.seal(2, 3)).toBe('hnsw');
   });
 
   it('shares one native database across independently pinned vector files', async () => {

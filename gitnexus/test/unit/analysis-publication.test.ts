@@ -161,6 +161,10 @@ describe('durable graph publication', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('Unexpected embedding space entry'));
     expect(await fs.readFile(path.join(job, 'vectors'), 'utf8')).toBe('paid vectors');
     expect(await fs.readFile(path.join(job, 'job.json'), 'utf8')).toContain(identity);
+    await expect(
+      reclaimAnalysisArtifacts(root, metadata, undefined, undefined, true),
+    ).rejects.toThrow('Unexpected embedding space entry');
+    expect(await fs.readFile(path.join(job, 'vectors'), 'utf8')).toBe('paid vectors');
   });
 
   it.each(['pending', 'sealed'] as const)(
@@ -212,19 +216,49 @@ describe('durable graph publication', () => {
       await expect(fs.stat(path.join(root, 'embeddings', orphan))).rejects.toMatchObject({
         code: 'ENOENT',
       });
+      // An explicit drop ignores owners but keeps their receipts until busy
+      // payloads can be removed. A later attempt completes the same operation.
+      const remove = fs.rm.bind(fs);
+      const vectors = path.join(root, 'embeddings', current, 'vectors');
+      const busy = vi.spyOn(fs, 'rm').mockImplementation(async (file, options) => {
+        if (String(file) === vectors) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+        return remove(file, options);
+      });
+      await expect(
+        reclaimAnalysisArtifacts(root, metadata, undefined, undefined, true),
+      ).rejects.toMatchObject({ code: 'EBUSY' });
+      expect(
+        await fs.readFile(path.join(root, 'embeddings', current, 'job.json'), 'utf8'),
+      ).toContain(current);
+      expect(await fs.readdir(path.join(root, 'embeddings', 'spaces'))).toHaveLength(1);
+      busy.mockRestore();
+      await reclaimAnalysisArtifacts(root, metadata, undefined, undefined, true);
+      expect(await fs.readdir(path.join(root, 'embeddings'))).toEqual([]);
     },
   );
 
-  it.each(['job.json', 'artifact.json', 'retained.json'])(
-    'retains %s until its busy vector file can be removed',
-    async (receiptName) => {
+  it.each([
+    { receiptName: 'job.json', prefix: '' },
+    { receiptName: 'artifact.json', prefix: '' },
+    { receiptName: 'retained.json', prefix: '' },
+    { receiptName: 'retained.json', prefix: '.retain-' },
+  ])(
+    'retains $prefix$receiptName until its busy vector file can be removed',
+    async ({ receiptName, prefix }) => {
       const { root } = await fixture();
       const identity = 'e'.repeat(64);
-      const job = path.join(root, 'embeddings', identity);
+      const job = path.join(root, 'embeddings', prefix + identity);
       await fs.mkdir(job, { recursive: true });
       await writeEmbeddingJobRecord(job, receiptName, { version: 1, identity });
       const vectors = path.join(job, 'vectors');
       await fs.writeFile(vectors, 'obsolete vectors');
+      if (prefix) {
+        await reclaimAnalysisArtifacts(root, {
+          ...metadata,
+          embeddingJob: { identity } as NonNullable<RepoMeta['embeddingJob']>,
+        });
+        expect(await fs.readFile(vectors, 'utf8')).toBe('obsolete vectors');
+      }
       const remove = fs.rm.bind(fs);
       const busy = vi.spyOn(fs, 'rm').mockImplementation(async (file, options) => {
         if (String(file) === vectors) throw Object.assign(new Error('busy'), { code: 'EBUSY' });

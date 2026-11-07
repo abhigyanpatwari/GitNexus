@@ -253,9 +253,13 @@ export async function runPublishedEmbeddingJob(
   let artifact = await readEmbeddingArtifactSpace(root, space, validateOwner);
   // A direct legacy receipt survives graph-bound journal replacement. Prefer
   // the newer complete artifact when one exists; never open two reuse readers.
+  // A sealed owner has cleared its fallback before metadata publication. Recover
+  // that crash window from the legacy pointer still recorded in metadata.
   const legacyIdentity =
     artifact?.owner.fallbackLegacy ??
-    (!artifact && !previousCompatible ? metadata.legacyVectorSource : undefined);
+    (artifact?.owner.phase === 'sealed' || (!artifact && !previousCompatible)
+      ? metadata.legacyVectorSource
+      : undefined);
   let legacy = legacyIdentity ? await readLegacyEmbeddingSource(root, legacyIdentity) : undefined;
   if (legacy) {
     const incompatible =

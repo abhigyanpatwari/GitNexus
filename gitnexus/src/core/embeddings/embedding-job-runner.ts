@@ -344,6 +344,7 @@ export async function runEmbeddingJob(
             return { content, release };
           } catch (error) {
             release?.();
+            if (abort) throw abort;
             throw error;
           }
         },
@@ -479,26 +480,36 @@ export async function runEmbeddingJob(
         };
         generated.set(node.id, state);
         const hash = sourceAware(node) ? inputHasher() : undefined;
-        for await (const generatedInput of nodeInputs(node)) {
-          if (failed.has(node.id) || abort) break;
-          hash?.update(
-            JSON.stringify([generatedInput.text, generatedInput.startLine, generatedInput.endLine]),
-          );
-          const bytes = rowBytes(generatedInput.text.length, node.id.length);
-          if (
-            batch.length &&
-            (batch.length >= maximumBatchRows || budget.usedBytes + bytes > budget.limit)
-          )
-            await flush();
-          if (failed.has(node.id) || abort) break;
-          if (copyBatch.length && budget.usedBytes + bytes > budget.limit) await flushCopies();
-          const release = budget.reserve(bytes);
-          batch.push({
-            ...input,
-            chunkIndex: state.chunks++,
-            ...generatedInput,
-            release,
-          });
+        try {
+          for await (const generatedInput of nodeInputs(node)) {
+            if (failed.has(node.id) || abort) break;
+            hash?.update(
+              JSON.stringify([
+                generatedInput.text,
+                generatedInput.startLine,
+                generatedInput.endLine,
+              ]),
+            );
+            const bytes = rowBytes(generatedInput.text.length, node.id.length);
+            if (
+              batch.length &&
+              (batch.length >= maximumBatchRows || budget.usedBytes + bytes > budget.limit)
+            )
+              await flush();
+            if (failed.has(node.id) || abort) break;
+            if (copyBatch.length && budget.usedBytes + bytes > budget.limit) await flushCopies();
+            const release = budget.reserve(bytes);
+            batch.push({
+              ...input,
+              chunkIndex: state.chunks++,
+              ...generatedInput,
+              release,
+            });
+          }
+        } catch (error) {
+          // Source admission can flush a provider batch and raise this unit's
+          // abort. Persist completed peers and rejection attempts before exit.
+          if (!abort || error !== abort) throw error;
         }
         state.ended = !failed.has(node.id) && !abort;
         if (state.ended) state.inputsDigest = hash?.digest('hex');

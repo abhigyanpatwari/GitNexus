@@ -280,6 +280,34 @@ describe('legacy migration through the published job controller', () => {
     expect(f.events[0]).toContain('chunk size/overlap');
     expect(f.events.indexOf('provider')).toBeGreaterThan(0);
   });
+  it('retires the migrated legacy source after publication is interrupted with a sealed owner', async () => {
+    const f = await fixture(3);
+    await expect(
+      f.run({
+        metadata: {
+          loadMetadata: () => loadMeta(f.root),
+          saveMetadata: async (metadata) => {
+            if (metadata.vectorGeneration && !metadata.embeddingJob)
+              throw new Error('interrupted metadata publication');
+            await saveMeta(f.root, metadata);
+          },
+        },
+      }),
+    ).rejects.toThrow('interrupted metadata publication');
+    const pending = await loadMeta(f.root);
+    expect(pending?.legacyVectorSource).toBe(f.legacyIdentity);
+    const owner = (await readEmbeddingJobRecord(
+      path.join(f.root, 'embeddings', 'spaces', pending?.embeddingJob?.spaceKey ?? ''),
+      'space.json',
+    )) as { owner: { phase: string; fallbackLegacy?: string } };
+    expect(owner.owner).toMatchObject({ phase: 'sealed' });
+    expect(owner.owner.fallbackLegacy).toBeUndefined();
+    const result = await f.run();
+    expect(result.phase).toBe('ready');
+    expect(result.metadata.legacyVectorSource).toBeUndefined();
+    await expect(fs.stat(f.sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(f.provider).not.toHaveBeenCalled();
+  });
   it('reports unknown provider provenance before requests and retains its source without opening it', async () => {
     const f = await fixture(3, [], false);
     const open = vi.spyOn(LegacyVectorSource, 'open');

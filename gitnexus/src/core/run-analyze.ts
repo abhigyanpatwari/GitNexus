@@ -1878,6 +1878,16 @@ export async function runFullAnalysis(
         });
       }
       sweepStagingArtifacts(writeTarget.metaDir, log);
+      if (options.dropEmbeddings) {
+        const prior = await loadMeta(writeTarget.metaDir);
+        if (prior) {
+          const { reclaimAnalysisArtifacts } =
+            await import('../storage/analysis-artifact-cleanup.js');
+          await reclaimAnalysisArtifacts(writeTarget.metaDir, prior, undefined, log, true);
+        }
+        // Even an empty or pending vector job must lose its metadata references.
+        options = { ...options, force: true };
+      }
       const result = await runFullAnalysisInner(
         repoPath,
         options,
