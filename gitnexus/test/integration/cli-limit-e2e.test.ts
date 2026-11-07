@@ -24,7 +24,7 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 
 import { cleanupTempDirSync } from '../helpers/test-db.js';
-import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
+import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
@@ -36,10 +36,8 @@ let suiteGitnexusHome: string;
 let ftsIndexed = false;
 
 function cliEnv(extraEnv: Record<string, string> = {}) {
-  return {
-    ...process.env,
+  return cliAnalysisEnv({
     GITNEXUS_HOME: suiteGitnexusHome,
-    NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
     // Cold parse-worker loads every tree-sitter grammar before the ready
     // handshake. The default 5s budget classifies that as a deterministic
     // crash-loop on a loaded WSL/CI host (status 1) or the 60s spawnSync
@@ -47,7 +45,7 @@ function cliEnv(extraEnv: Record<string, string> = {}) {
     // suites pin 60s.
     GITNEXUS_WORKER_READY_TIMEOUT_MS: process.env.GITNEXUS_WORKER_READY_TIMEOUT_MS || '60000',
     ...extraEnv,
-  };
+  });
 }
 
 function runCliRaw(extraArgs: string[], cwd: string, timeoutMs = 30000) {

@@ -13,11 +13,14 @@ export async function readIndexCapabilities(
     !metadata?.graphGeneration &&
     !metadata?.vectorGeneration &&
     !metadata?.embeddingJob &&
+    !metadata?.embeddingCheckpoint &&
     !metadata?.incrementalInProgress &&
     !metadata?.graphWriteCollapsed
   )
     return metadata?.capabilities;
   const exactScanLimit = getExactScanLimit();
+  // Runtime readers can verify the count themselves; stored receipts cannot.
+  const countUnverified = metadata?.embeddingCheckpoint?.kind === 'unverified-count';
   let vectorSearch: NonNullable<RepoMeta['capabilities']>['vectorSearch'];
   try {
     const selection = selectVectorGeneration(
@@ -26,7 +29,7 @@ export async function readIndexCapabilities(
       resolveGraphPath(directory, metadata),
       exactScanLimit,
     );
-    if (selection.kind === 'ready') {
+    if (selection.kind === 'ready' && !countUnverified) {
       await assertOwnedVectorGeneration(
         directory,
         selection.generation.artifactIdentity ?? selection.generation.identity,
@@ -39,7 +42,11 @@ export async function readIndexCapabilities(
         sourceGraphGeneration: selection.generation.graphGeneration,
         ...(selection.generation.excludedNodes ? { reason: 'embedding-inputs-rejected' } : {}),
       };
-    } else if (selection.kind === 'legacy' && metadata?.capabilities?.vectorSearch) {
+    } else if (
+      selection.kind === 'legacy' &&
+      !countUnverified &&
+      metadata?.capabilities?.vectorSearch
+    ) {
       vectorSearch = { ...metadata.capabilities.vectorSearch, coverage: 'preserved' };
     } else {
       vectorSearch = {
@@ -47,7 +54,11 @@ export async function readIndexCapabilities(
         status: 'unavailable',
         exactScanLimit,
         reason:
-          selection.kind === 'unavailable' ? selection.reason : 'vector-generation-unverified',
+          selection.kind === 'unavailable'
+            ? selection.reason
+            : countUnverified
+              ? 'embedding-count-unverified'
+              : 'vector-generation-unverified',
       };
     }
   } catch {

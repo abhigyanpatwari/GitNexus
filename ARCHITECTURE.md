@@ -658,6 +658,16 @@ Unit acknowledgements follow verified, durable WAL commits. Native automatic
 checkpoints bound WAL growth; the final checkpoint prepares the sealed artifact
 for read-only publication without requiring WAL replay.
 
+Automatic resource admission uses 75% of effective process/container RAM as a
+fixed process-family ceiling, divided across concurrent analyses. Each phase
+accounts for the main heap, retained supervisor, native pools and headroom;
+parser workers and embedding model/queues use separate phase reservations.
+Parser workers reserve at least the main-heap allocation because Node's process
+heap flag overrides per-worker V8 limits. Automatic main-heap sizing leaves room
+for required worker reservations. Explicit limits never expand the family
+ceiling; combinations that cannot fit fail admission.
+This bounds reservations, not operating-system RSS.
+
 **Options:** `--force` (rebuild regardless), `--embeddings` (opt-in, resumable), `--skipGit`, `--noStats`.
 
 ## Storage

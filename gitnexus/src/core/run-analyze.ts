@@ -2074,15 +2074,11 @@ async function runFullAnalysisInner(
   const ftsDisabledReason = resolveFtsDisableReason(options.skipFts);
   const initAnalysisLbug = (dbPath: string) => {
     if (options.resources) {
-      // Only an explicit family budget caps the existing page-scaled sizing.
-      // Automatic reservations preserve the COPY floor on large-page hosts.
       const sizedPool = getEffectiveBufferPoolSize();
       const ceiling = options.resources.parse.graphPoolBytes;
       return initLbug(dbPath, {
         skipFts: !!ftsDisabledReason,
-        bufferPoolBytes: options.resources.automatic
-          ? sizedPool
-          : Math.min(sizedPool || ceiling, ceiling),
+        bufferPoolBytes: Math.min(sizedPool || ceiling, ceiling),
         threads: options.resources.parse.nativeThreads,
       });
     }
