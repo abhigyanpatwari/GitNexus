@@ -6983,11 +6983,19 @@ export class LocalBackend {
       // maxBuffer raised from Node's 1MB default to 256MB to avoid ENOBUFS on
       // repos with large unstaged/untracked diffs (e.g. unignored build folders).
       // See issue: spawnSync git ENOBUFS in detect_changes(scope="unstaged").
+      //
+      // Capture stderr. Without an explicit stdio option, execFileSync forwards
+      // the child's stderr to this process (#1172). Under core.autocrlf=true,
+      // git exits 0 while warning once per file that LF will be replaced by
+      // CRLF, and that flood was landing in MCP host logs and CLI stderr
+      // (#3837). Piping keeps those warnings off our stderr; a non-zero exit
+      // still throws, and Node includes the captured stderr in the error.
       diffOutput = execFileSync('git', diffArgs, {
         cwd: diffCwd,
         encoding: 'utf-8',
         maxBuffer: 256 * 1024 * 1024,
         windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err: any) {
       return { error: `Git diff failed: ${err.message}` };
