@@ -25,6 +25,12 @@ async function tarBuffer(source, entries) {
   return Buffer.concat(chunks);
 }
 
+const posixOnly = {
+  skip:
+    process.platform === 'win32' &&
+    'needs POSIX tooling: shebang Docker adapter, Linux helper commands, bash, modes, mkfifo',
+};
+
 test('the host tar omits dependencies and parser caches while preserving indexes and local files', async (t) => {
   const root = temporary(t);
   for (const file of [
@@ -157,24 +163,20 @@ test('the Node tar stream round-trips UTF-8 and long names and empty files', asy
     assert.equal(fs.readFileSync(path.join(target, name), 'utf8'), content, name);
 });
 
-test(
-  'the Node tar stream preserves POSIX modes and omits FIFOs',
-  { skip: process.platform === 'win32' && 'Windows has no POSIX modes or mkfifo' },
-  async (t) => {
-    const root = temporary(t);
-    const source = path.join(root, 'source');
-    const target = path.join(root, 'target');
-    fs.mkdirSync(source);
-    fs.mkdirSync(target);
-    fs.writeFileSync(path.join(source, 'script'), '');
-    fs.chmodSync(path.join(source, 'script'), 0o755);
-    execFileSync('mkfifo', [path.join(source, 'pipe')]);
-    const entries = [...archiveEntries(source, ['.'])];
-    execFileSync('tar', ['-xpf', '-', '-C', target], { input: await tarBuffer(source, entries) });
-    assert.equal(fs.statSync(path.join(target, 'script')).mode & 0o777, 0o755);
-    assert.equal(fs.existsSync(path.join(target, 'pipe')), false);
-  },
-);
+test('the Node tar stream preserves POSIX modes and omits FIFOs', posixOnly, async (t) => {
+  const root = temporary(t);
+  const source = path.join(root, 'source');
+  const target = path.join(root, 'target');
+  fs.mkdirSync(source);
+  fs.mkdirSync(target);
+  fs.writeFileSync(path.join(source, 'script'), '');
+  fs.chmodSync(path.join(source, 'script'), 0o755);
+  execFileSync('mkfifo', [path.join(source, 'pipe')]);
+  const entries = [...archiveEntries(source, ['.'])];
+  execFileSync('tar', ['-xpf', '-', '-C', target], { input: await tarBuffer(source, entries) });
+  assert.equal(fs.statSync(path.join(target, 'script')).mode & 0o777, 0o755);
+  assert.equal(fs.existsSync(path.join(target, 'pipe')), false);
+});
 
 test('a file changed while it is streamed fails the import instead of publishing torn bytes', async (t) => {
   const root = temporary(t);
@@ -303,79 +305,87 @@ switch(args[0]) {
   return { source, home, state, run };
 }
 
-test('host import is one-time, uses only native volumes, preserves edits and cleans its helper', (t) => {
-  const { source, home, state, run } = dockerFixture(t);
-  const first = run();
-  assert.equal(first.status, 0, first.stderr);
-  // The host only stages; the source volume stays untouched until onCreate commits.
-  assert.deepEqual(fs.readdirSync(path.join(state, 'workspace')), []);
-  assert.equal(fs.readFileSync(path.join(state, 'seed/tree/local-edit'), 'utf8'), 'uncommitted');
-  commitStaged(path.join(state, 'seed'), path.join(state, 'workspace'));
-  // Only the host's commit script remains for later container creations.
-  assert.deepEqual(fs.readdirSync(path.join(state, 'seed')), ['seed-workspace.cjs']);
-  assert.equal(fs.readFileSync(path.join(state, 'workspace/local-edit'), 'utf8'), 'uncommitted');
-  assert.equal(fs.readlinkSync(path.join(state, 'workspace/source-link')), 'local-edit');
-  assert.equal(
-    fs.existsSync(path.join(state, 'workspace/.worktrees/topic/.gitnexus/parse-cache')),
-    false,
-  );
-  assert.equal(
-    fs.readFileSync(path.join(state, 'workspace/.worktrees/topic/.gitnexus/lbug'), 'utf8'),
-    'keep graph and embeddings',
-  );
-  assert.equal(
-    fs.existsSync(path.join(state, 'workspace/.worktrees/topic/gitnexus-shared/node_modules')),
-    false,
-  );
-  assert.equal(fs.readlinkSync(path.join(state, 'identity/ssh/test-link')), 'test-key');
-  assert.equal(fs.statSync(path.join(state, 'identity/ssh/test-key')).mode & 0o777, 0o600);
-  assert.equal(fs.lstatSync(path.join(state, 'host/.config/gh')).isDirectory(), true);
-  assert.equal(
-    fs.readFileSync(path.join(state, 'host/.config/gh/hosts.yml'), 'utf8'),
-    'fixture: true',
-  );
-  assert.equal(fs.existsSync(path.join(state, 'active')), false);
-  fs.writeFileSync(path.join(state, 'workspace/local-edit'), 'Linux edits');
-  fs.rmSync(source, { recursive: true });
-  fs.rmSync(home, { recursive: true });
-  const second = run();
-  assert.equal(second.status, 0, second.stderr);
-  commitStaged(path.join(state, 'seed'), path.join(state, 'workspace'));
-  assert.equal(fs.readFileSync(path.join(state, 'workspace/local-edit'), 'utf8'), 'Linux edits');
-  const commands = fs.readFileSync(path.join(state, 'commands'), 'utf8');
-  assert.doesNotMatch(commands, /type=bind|--privileged|SYS_ADMIN/);
-  assert.equal(commands.split('\n').filter((line) => line.startsWith('["cp","-"')).length, 3);
-  assert.match(
-    first.stdout,
-    /Archive to \/seed\/tree: done; .*entries queued.*MiB streamed to Docker/,
-  );
-  assert.match(first.stdout, /Finalizing \/host: done/);
-  assert.match(first.stdout, /Removing temporary import helper: done/);
-});
+test(
+  'host import is one-time, uses only native volumes, preserves edits and cleans its helper',
+  posixOnly,
+  (t) => {
+    const { source, home, state, run } = dockerFixture(t);
+    const first = run();
+    assert.equal(first.status, 0, first.stderr);
+    // The host only stages; the source volume stays untouched until onCreate commits.
+    assert.deepEqual(fs.readdirSync(path.join(state, 'workspace')), []);
+    assert.equal(fs.readFileSync(path.join(state, 'seed/tree/local-edit'), 'utf8'), 'uncommitted');
+    commitStaged(path.join(state, 'seed'), path.join(state, 'workspace'));
+    // Only the host's commit script remains for later container creations.
+    assert.deepEqual(fs.readdirSync(path.join(state, 'seed')), ['seed-workspace.cjs']);
+    assert.equal(fs.readFileSync(path.join(state, 'workspace/local-edit'), 'utf8'), 'uncommitted');
+    assert.equal(fs.readlinkSync(path.join(state, 'workspace/source-link')), 'local-edit');
+    assert.equal(
+      fs.existsSync(path.join(state, 'workspace/.worktrees/topic/.gitnexus/parse-cache')),
+      false,
+    );
+    assert.equal(
+      fs.readFileSync(path.join(state, 'workspace/.worktrees/topic/.gitnexus/lbug'), 'utf8'),
+      'keep graph and embeddings',
+    );
+    assert.equal(
+      fs.existsSync(path.join(state, 'workspace/.worktrees/topic/gitnexus-shared/node_modules')),
+      false,
+    );
+    assert.equal(fs.readlinkSync(path.join(state, 'identity/ssh/test-link')), 'test-key');
+    assert.equal(fs.statSync(path.join(state, 'identity/ssh/test-key')).mode & 0o777, 0o600);
+    assert.equal(fs.lstatSync(path.join(state, 'host/.config/gh')).isDirectory(), true);
+    assert.equal(
+      fs.readFileSync(path.join(state, 'host/.config/gh/hosts.yml'), 'utf8'),
+      'fixture: true',
+    );
+    assert.equal(fs.existsSync(path.join(state, 'active')), false);
+    fs.writeFileSync(path.join(state, 'workspace/local-edit'), 'Linux edits');
+    fs.rmSync(source, { recursive: true });
+    fs.rmSync(home, { recursive: true });
+    const second = run();
+    assert.equal(second.status, 0, second.stderr);
+    commitStaged(path.join(state, 'seed'), path.join(state, 'workspace'));
+    assert.equal(fs.readFileSync(path.join(state, 'workspace/local-edit'), 'utf8'), 'Linux edits');
+    const commands = fs.readFileSync(path.join(state, 'commands'), 'utf8');
+    assert.doesNotMatch(commands, /type=bind|--privileged|SYS_ADMIN/);
+    assert.equal(commands.split('\n').filter((line) => line.startsWith('["cp","-"')).length, 3);
+    assert.match(
+      first.stdout,
+      /Archive to \/seed\/tree: done; .*entries queued.*MiB streamed to Docker/,
+    );
+    assert.match(first.stdout, /Finalizing \/host: done/);
+    assert.match(first.stdout, /Removing temporary import helper: done/);
+  },
+);
 
-test('reopening a pre-volume container restages, so the eventual rebuild commits current work', (t) => {
-  const { source, home, state, run } = dockerFixture(t);
-  assert.equal(run().status, 0); // Old container reopened: stage only, nothing commits.
-  fs.writeFileSync(path.join(source, 'local-edit'), 'days of later host work');
-  fs.writeFileSync(path.join(home, '.codex/auth.json'), '{"refreshed":true}');
-  const rebuild = run();
-  assert.equal(rebuild.status, 0, rebuild.stderr);
-  commitStaged(path.join(state, 'seed'), path.join(state, 'workspace'));
-  assert.equal(
-    fs.readFileSync(path.join(state, 'workspace/local-edit'), 'utf8'),
-    'days of later host work',
-  );
-  assert.equal(
-    fs.readFileSync(path.join(state, 'host/.codex/auth.json'), 'utf8'),
-    '{"refreshed":true}',
-  );
-  assert.throws(
-    () => commitStaged(path.join(state, 'seed'), fs.mkdtempSync(path.join(state, 'empty-'))),
-    /No complete staged checkout/,
-  );
-});
+test(
+  'reopening a pre-volume container restages, so the eventual rebuild commits current work',
+  posixOnly,
+  (t) => {
+    const { source, home, state, run } = dockerFixture(t);
+    assert.equal(run().status, 0); // Old container reopened: stage only, nothing commits.
+    fs.writeFileSync(path.join(source, 'local-edit'), 'days of later host work');
+    fs.writeFileSync(path.join(home, '.codex/auth.json'), '{"refreshed":true}');
+    const rebuild = run();
+    assert.equal(rebuild.status, 0, rebuild.stderr);
+    commitStaged(path.join(state, 'seed'), path.join(state, 'workspace'));
+    assert.equal(
+      fs.readFileSync(path.join(state, 'workspace/local-edit'), 'utf8'),
+      'days of later host work',
+    );
+    assert.equal(
+      fs.readFileSync(path.join(state, 'host/.codex/auth.json'), 'utf8'),
+      '{"refreshed":true}',
+    );
+    assert.throws(
+      () => commitStaged(path.join(state, 'seed'), fs.mkdtempSync(path.join(state, 'empty-'))),
+      /No complete staged checkout/,
+    );
+  },
+);
 
-test('archive progress continues while Docker finishes a slow copy', (t) => {
+test('archive progress continues while Docker finishes a slow copy', posixOnly, (t) => {
   const { run } = dockerFixture(t);
   const result = run('source', { IMPORT_SLOW_COPY: '1' });
   assert.equal(result.status, 0, result.stderr);
@@ -386,16 +396,20 @@ test('archive progress continues while Docker finishes a slow copy', (t) => {
   assert.match(result.stdout, /Archive to \/seed\/tree: done/);
 });
 
-test('native profile imports config without copying or requiring a host checkout', (t) => {
-  const { source, state, run } = dockerFixture(t);
-  fs.rmSync(source, { recursive: true });
-  const result = run('native');
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(fs.existsSync(path.join(state, 'workspace')), false);
-  assert.equal(fs.existsSync(path.join(state, 'host/.codex/auth.json')), true);
-});
+test(
+  'native profile imports config without copying or requiring a host checkout',
+  posixOnly,
+  (t) => {
+    const { source, state, run } = dockerFixture(t);
+    fs.rmSync(source, { recursive: true });
+    const result = run('native');
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.existsSync(path.join(state, 'workspace')), false);
+    assert.equal(fs.existsSync(path.join(state, 'host/.codex/auth.json')), true);
+  },
+);
 
-test('a failed stage never blocks reopening and can never be committed', (t) => {
+test('a failed stage never blocks reopening and can never be committed', posixOnly, (t) => {
   const { state, run } = dockerFixture(t);
   const result = run('source', { IMPORT_FAIL_COPY: '1' });
   assert.equal(result.status, 0, result.stderr); // A busy host must not lock out a reopen.
@@ -414,7 +428,7 @@ test('a failed stage never blocks reopening and can never be committed', (t) => 
   assert.equal(fs.readFileSync(path.join(state, 'workspace/local-edit'), 'utf8'), 'uncommitted');
 });
 
-test('an existing importer is never removed by a competing initialization', (t) => {
+test('an existing importer is never removed by a competing initialization', posixOnly, (t) => {
   const { state, run } = dockerFixture(t);
   fs.writeFileSync(path.join(state, 'active'), 'other importer');
   const result = run();
@@ -423,7 +437,7 @@ test('an existing importer is never removed by a competing initialization', (t) 
   assert.doesNotMatch(fs.readFileSync(path.join(state, 'commands'), 'utf8'), /\["rm"/);
 });
 
-test('failed symlink restoration never publishes a complete stage', (t) => {
+test('failed symlink restoration never publishes a complete stage', posixOnly, (t) => {
   const { state, run } = dockerFixture(t);
   const result = run('source', { IMPORT_FAIL_LINKS: '1' });
   assert.equal(result.status, 0, result.stderr);
@@ -432,30 +446,34 @@ test('failed symlink restoration never publishes a complete stage', (t) => {
   assert.equal(fs.existsSync(path.join(state, 'active')), false);
 });
 
-test('credential bootstrap preserves existing logins and deliberate logout across rebuilds', (t) => {
-  const root = temporary(t);
-  const source = path.join(root, 'host-auth');
-  const dest = path.join(root, 'auth');
-  fs.writeFileSync(source, 'host snapshot');
-  const script = fs
-    .readFileSync(path.join(__dirname, 'post-create.sh'), 'utf8')
-    .match(/^sync_from_host\(\) \{[\s\S]*?^\}/m)[0];
-  const run = () =>
-    execFileSync('bash', [
-      '-eu',
-      '-c',
-      script + '\nsync_from_host "$1" "$2"',
-      'fixture',
-      source,
-      dest,
-    ]);
-  run();
-  assert.equal(fs.readFileSync(dest, 'utf8'), 'host snapshot');
-  fs.writeFileSync(dest, 'refreshed login');
-  run();
-  assert.equal(fs.readFileSync(dest, 'utf8'), 'refreshed login');
-  fs.writeFileSync(path.join(root, '.devcontainer-identity-seeded'), '');
-  fs.rmSync(dest);
-  run();
-  assert.equal(fs.existsSync(dest), false);
-});
+test(
+  'credential bootstrap preserves existing logins and deliberate logout across rebuilds',
+  posixOnly,
+  (t) => {
+    const root = temporary(t);
+    const source = path.join(root, 'host-auth');
+    const dest = path.join(root, 'auth');
+    fs.writeFileSync(source, 'host snapshot');
+    const script = fs
+      .readFileSync(path.join(__dirname, 'post-create.sh'), 'utf8')
+      .match(/^sync_from_host\(\) \{[\s\S]*?^\}/m)[0];
+    const run = () =>
+      execFileSync('bash', [
+        '-eu',
+        '-c',
+        script + '\nsync_from_host "$1" "$2"',
+        'fixture',
+        source,
+        dest,
+      ]);
+    run();
+    assert.equal(fs.readFileSync(dest, 'utf8'), 'host snapshot');
+    fs.writeFileSync(dest, 'refreshed login');
+    run();
+    assert.equal(fs.readFileSync(dest, 'utf8'), 'refreshed login');
+    fs.writeFileSync(path.join(root, '.devcontainer-identity-seeded'), '');
+    fs.rmSync(dest);
+    run();
+    assert.equal(fs.existsSync(dest), false);
+  },
+);
