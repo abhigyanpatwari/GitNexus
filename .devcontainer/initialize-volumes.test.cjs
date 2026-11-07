@@ -26,9 +26,12 @@ async function tarBuffer(source, entries) {
 }
 
 const posixOnly = {
+  skip: process.platform === 'win32' && 'needs POSIX tooling: bash, file modes, mkfifo',
+};
+const linuxHelper = {
   skip:
-    process.platform === 'win32' &&
-    'needs POSIX tooling: shebang Docker adapter, Linux helper commands, bash, modes, mkfifo',
+    process.platform !== 'linux' &&
+    'fake Docker adapter runs Linux helper commands (chown to the container UID, find, tar) as the host user',
 };
 
 test('the host tar omits dependencies and parser caches while preserving indexes and local files', async (t) => {
@@ -311,7 +314,7 @@ switch(args[0]) {
 
 test(
   'host import is one-time, uses only native volumes, preserves edits and cleans its helper',
-  posixOnly,
+  linuxHelper,
   (t) => {
     const { source, home, state, run } = dockerFixture(t);
     const first = run();
@@ -366,7 +369,7 @@ test(
 
 test(
   'reopening a pre-volume container restages, so the eventual rebuild commits current work',
-  posixOnly,
+  linuxHelper,
   (t) => {
     const { source, home, state, run } = dockerFixture(t);
     assert.equal(run().status, 0); // Old container reopened: stage only, nothing commits.
@@ -390,7 +393,7 @@ test(
   },
 );
 
-test('archive progress continues while Docker finishes a slow copy', posixOnly, (t) => {
+test('archive progress continues while Docker finishes a slow copy', linuxHelper, (t) => {
   const { run } = dockerFixture(t);
   const result = run('source', { IMPORT_SLOW_COPY: '1' });
   assert.equal(result.status, 0, result.stderr);
@@ -403,7 +406,7 @@ test('archive progress continues while Docker finishes a slow copy', posixOnly, 
 
 test(
   'native profile imports config without copying or requiring a host checkout',
-  posixOnly,
+  linuxHelper,
   (t) => {
     const { source, state, run } = dockerFixture(t);
     fs.rmSync(source, { recursive: true });
@@ -414,7 +417,7 @@ test(
   },
 );
 
-test('a failed stage never blocks reopening and can never be committed', posixOnly, (t) => {
+test('a failed stage never blocks reopening and can never be committed', linuxHelper, (t) => {
   const { state, run } = dockerFixture(t);
   const result = run('source', { IMPORT_FAIL_COPY: '1' });
   assert.equal(result.status, 0, result.stderr); // A busy host must not lock out a reopen.
@@ -433,7 +436,7 @@ test('a failed stage never blocks reopening and can never be committed', posixOn
   assert.equal(fs.readFileSync(path.join(state, 'workspace/local-edit'), 'utf8'), 'uncommitted');
 });
 
-test('an existing importer is never removed by a competing initialization', posixOnly, (t) => {
+test('an existing importer is never removed by a competing initialization', linuxHelper, (t) => {
   const { state, run } = dockerFixture(t);
   fs.writeFileSync(path.join(state, 'active'), 'other importer');
   const result = run();
@@ -442,7 +445,7 @@ test('an existing importer is never removed by a competing initialization', posi
   assert.doesNotMatch(fs.readFileSync(path.join(state, 'commands'), 'utf8'), /\["rm"/);
 });
 
-test('failed symlink restoration never publishes a complete stage', posixOnly, (t) => {
+test('failed symlink restoration never publishes a complete stage', linuxHelper, (t) => {
   const { state, run } = dockerFixture(t);
   const result = run('source', { IMPORT_FAIL_LINKS: '1' });
   assert.equal(result.status, 0, result.stderr);
