@@ -140,7 +140,7 @@ test('explicit archives restore dangling and directory links without traversing 
   assert.equal(fs.readFileSync(path.join(outside, 'keep'), 'utf8'), 'outside');
 });
 
-test('the Node tar stream round-trips UTF-8 and long names, modes and empty files', async (t) => {
+test('the Node tar stream round-trips UTF-8 and long names and empty files', async (t) => {
   const root = temporary(t);
   const source = path.join(root, 'source');
   const target = path.join(root, 'target');
@@ -150,16 +150,31 @@ test('the Node tar stream round-trips UTF-8 and long names, modes and empty file
     fs.mkdirSync(path.dirname(path.join(source, name)), { recursive: true });
     fs.writeFileSync(path.join(source, name), content);
   }
-  fs.chmodSync(path.join(source, 'empty'), 0o755);
-  execFileSync('mkfifo', [path.join(source, 'pipe')]); // Skipped, as tar skips sockets.
   fs.mkdirSync(target);
   const entries = [...archiveEntries(source, ['.'])];
   execFileSync('tar', ['-xpf', '-', '-C', target], { input: await tarBuffer(source, entries) });
   for (const [name, content] of Object.entries(files))
     assert.equal(fs.readFileSync(path.join(target, name), 'utf8'), content, name);
-  assert.equal(fs.statSync(path.join(target, 'empty')).mode & 0o777, 0o755);
-  assert.equal(fs.existsSync(path.join(target, 'pipe')), false);
 });
+
+test(
+  'the Node tar stream preserves POSIX modes and omits FIFOs',
+  { skip: process.platform === 'win32' && 'Windows has no POSIX modes or mkfifo' },
+  async (t) => {
+    const root = temporary(t);
+    const source = path.join(root, 'source');
+    const target = path.join(root, 'target');
+    fs.mkdirSync(source);
+    fs.mkdirSync(target);
+    fs.writeFileSync(path.join(source, 'script'), '');
+    fs.chmodSync(path.join(source, 'script'), 0o755);
+    execFileSync('mkfifo', [path.join(source, 'pipe')]);
+    const entries = [...archiveEntries(source, ['.'])];
+    execFileSync('tar', ['-xpf', '-', '-C', target], { input: await tarBuffer(source, entries) });
+    assert.equal(fs.statSync(path.join(target, 'script')).mode & 0o777, 0o755);
+    assert.equal(fs.existsSync(path.join(target, 'pipe')), false);
+  },
+);
 
 test('a file changed while it is streamed fails the import instead of publishing torn bytes', async (t) => {
   const root = temporary(t);
