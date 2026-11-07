@@ -291,9 +291,13 @@ task implementations; they remain historical evidence and cannot satisfy this
 isolated comparison contract. Workflow/CLI arms retain their runtime mounts and
 are labeled `readable`.
 
-The [24 October evidence report](measurement-2026-10-24.md) retains the latest
-historical measurements, current tool-accuracy result, and post-merge rerun
-procedure. Those historical agent results do not show an accuracy or cost gain.
+The [1 November isolated comparison](measurement-2026-11-01.md) retains all 48
+candidate/stable measurements and instructions to recompute the results. Both
+arms solved every task. Candidate MCP reported model cost averaged 9.7% less, with higher costs
+on three of four tasks; this does not establish a general saving. The
+[24 October report](measurement-2026-10-24.md) preserves the earlier comparison
+whose MCP arm could read compiled task fixes, plus its separate tool-accuracy
+check. These are workflow measurements, not SWE-bench results.
 
 This corpus uses a **fresh index at each task base**. A nightly stale Hermes
 index is a separate condition and must not be pooled with it. Import the

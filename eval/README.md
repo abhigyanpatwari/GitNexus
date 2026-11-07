@@ -2,6 +2,16 @@
 
 Evaluate whether GitNexus code intelligence improves AI agent performance on real software engineering tasks. Runs SWE-bench instances across multiple models and compares baseline (no graph) vs GitNexus-enhanced configurations.
 
+## Published evidence
+
+The [1 November 2026 comparison](workflow_bench/measurement-2026-11-01.md)
+uses the separate [workflow benchmark](workflow_bench/README.md): four GitNexus
+development tasks with `gpt-5.6-sol`, three repetitions per arm. It reports no
+accuracy gain and mixed cost results against an arm without GitNexus tools.
+It is not a SWE-bench resolve-rate result and does not establish a general
+benefit. The report retains all 48 candidate/stable measurements and explains
+how to recompute them without running paid sessions.
+
 ## What This Tests
 
 **Hypothesis**: Giving AI agents structural code intelligence (call graphs, execution flows, blast radius analysis) improves their ability to resolve real GitHub issues — measured by resolve rate, cost, and efficiency.
