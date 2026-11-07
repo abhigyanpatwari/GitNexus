@@ -283,6 +283,8 @@ describe('POST /api/embed staged recovery preflight', () => {
   it.each([2096, 65536])(
     'rejects a %i MiB running heap before locking or starting embedding work',
     async (heapMb) => {
+      vi.stubEnv('GITNEXUS_EMBEDDING_URL', undefined);
+      vi.stubEnv('GITNEXUS_EMBEDDING_MODEL', undefined);
       mocks.loadMeta.mockResolvedValue({ repoPath: entry.path });
       heap.bytes = heapMb * 1024 ** 2;
       const response = await invoke('/api/embed', {}, {}, 500);
