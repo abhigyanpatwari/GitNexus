@@ -163,4 +163,35 @@ describe('resolveWorkerHeapCapMb (#2649 per-worker heap cap)', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('uses a per-run heap allocation without changing later pools or environment overrides', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-run-limits-'));
+    const workerPath = path.join(tempDir, 'fake-worker.js');
+    fs.writeFileSync(workerPath, '// fake worker');
+    process.env.GITNEXUS_WORKER_HEAP_MB = '256';
+    try {
+      const { createWorkerPool } = await import('../../src/core/ingestion/workers/worker-pool.js');
+      const bounded = createWorkerPool(pathToFileURL(workerPath), 1, { heapLimitMb: 768 });
+      await bounded.terminate();
+      const legacy = createWorkerPool(pathToFileURL(workerPath), 1);
+      await legacy.terminate();
+      expect(workerCtorOptions).toEqual([
+        expect.objectContaining({
+          resourceLimits: { stackSizeMb: 16, maxOldGenerationSizeMb: 768 },
+        }),
+        expect.objectContaining({
+          resourceLimits: { stackSizeMb: 16, maxOldGenerationSizeMb: 256 },
+        }),
+      ]);
+      expect(process.env.GITNEXUS_WORKER_HEAP_MB).toBe('256');
+      for (const heapLimitMb of [0, 511, 512.5, NaN, Infinity]) {
+        expect(() => createWorkerPool(pathToFileURL(workerPath), 1, { heapLimitMb })).toThrow(
+          'heap allocation',
+        );
+      }
+      expect(workerCtorOptions).toHaveLength(2);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });

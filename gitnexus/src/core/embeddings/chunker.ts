@@ -9,7 +9,7 @@
 
 export { type Chunk, characterChunk } from './character-chunk.js';
 
-import { characterChunk } from './character-chunk.js';
+import { iterateCharacterChunks } from './character-chunk.js';
 import type { Chunk } from './character-chunk.js';
 import { ensureAndParse, findDeclarationNode, findFunctionNode } from './ast-utils.js';
 import { buildLineIndex, resolveChunkLines } from './line-index.js';
@@ -81,10 +81,68 @@ export const chunkNode = async (
   filePath: string,
   startLine: number,
   endLine: number,
-  chunkSize: number = 1200,
-  overlap: number = 120,
+  chunkSize = 1200,
+  overlap = 120,
   options?: ChunkOptions,
 ): Promise<EmbeddingChunk[]> => {
+  if (label !== 'Class' && content.length <= chunkSize)
+    return [
+      {
+        text: content,
+        chunkIndex: 0,
+        startOffset: 0,
+        endOffset: content.length,
+        startLine,
+        endLine,
+      },
+    ];
+  return [
+    ...(await prepareNodeChunks(
+      label,
+      content,
+      filePath,
+      startLine,
+      endLine,
+      chunkSize,
+      overlap,
+      options,
+    )),
+  ];
+};
+
+/** Produce one chunk at a time, without retaining generated text for the node. */
+export async function* iterateNodeChunks(
+  label: string,
+  content: string,
+  filePath: string,
+  startLine: number,
+  endLine: number,
+  chunkSize = 1200,
+  overlap = 120,
+  options?: ChunkOptions,
+): AsyncGenerator<EmbeddingChunk> {
+  yield* await prepareNodeChunks(
+    label,
+    content,
+    filePath,
+    startLine,
+    endLine,
+    chunkSize,
+    overlap,
+    options,
+  );
+}
+
+async function prepareNodeChunks(
+  label: string,
+  content: string,
+  filePath: string,
+  startLine: number,
+  endLine: number,
+  chunkSize: number,
+  overlap: number,
+  options?: ChunkOptions,
+): Promise<Iterable<EmbeddingChunk>> {
   // Even a short class contains implementations. Never fall back to raw Class
   // source: an unavailable parser yields identity/name metadata only.
   if (label === 'Class') {
@@ -105,28 +163,17 @@ export const chunkNode = async (
       return [classMetadataChunk(startLine, endLine)];
     }
   }
-  // Content fits in one chunk — no splitting needed
   if (content.length <= chunkSize) {
-    return [
-      {
-        text: content,
-        chunkIndex: 0,
-        startOffset: 0,
-        endOffset: content.length,
-        startLine,
-        endLine,
-      },
-    ];
+    return iterateCharacterChunks(content, startLine, endLine, chunkSize, overlap);
   }
-
   const rule = CHUNKING_RULES[label];
   if (!rule || options?.strategy === 'fixed') {
-    return characterChunk(content, startLine, endLine, chunkSize, overlap);
+    return iterateCharacterChunks(content, startLine, endLine, chunkSize, overlap);
   }
-
+  let chunks: Generator<Chunk> | undefined;
   try {
-    if (rule.mode === CHUNK_MODE_AST_FUNCTION) {
-      const astChunks = await astChunk(
+    if (rule?.mode === CHUNK_MODE_AST_FUNCTION) {
+      chunks = await astChunk(
         content,
         filePath,
         startLine,
@@ -136,11 +183,8 @@ export const chunkNode = async (
         rule,
         options?.name,
       );
-      if (astChunks.length > 0) return astChunks;
-    }
-
-    if (rule.mode === CHUNK_MODE_AST_DECLARATION) {
-      const declarationChunks = await declarationChunk(
+    } else if (rule?.mode === CHUNK_MODE_AST_DECLARATION) {
+      chunks = await declarationChunk(
         content,
         filePath,
         startLine,
@@ -149,15 +193,13 @@ export const chunkNode = async (
         overlap,
         rule,
       );
-      if (declarationChunks.length > 0) return declarationChunks;
     }
   } catch {
-    // AST parsing failed — fall through to character fallback
+    // Only preparation may fall back. Never restart after yielding a chunk:
+    // the consumer may already have durably stored it.
   }
-
-  // Character-based fallback for everything else
-  return characterChunk(content, startLine, endLine, chunkSize, overlap);
-};
+  return chunks ?? iterateCharacterChunks(content, startLine, endLine, chunkSize, overlap);
+}
 
 /**
  * AST-based chunking for Function/Method
@@ -173,9 +215,9 @@ const astChunk = async (
   overlap: number,
   rule: ChunkingRule,
   expectedName?: string,
-): Promise<Chunk[]> => {
+): Promise<Generator<Chunk> | undefined> => {
   const tree = await ensureAndParse(content, filePath);
-  if (!tree) return [];
+  if (!tree) return undefined;
 
   const root = tree.rootNode;
   const lineOffsets = buildLineIndex(content);
@@ -183,11 +225,11 @@ const astChunk = async (
   // Find the function/method declaration in the snippet AST.
   // tree-sitter parses node.content (a snippet), so rows are relative (0-based).
   const targetNode = findFunctionNode(root, expectedName);
-  if (!targetNode) return [];
+  if (!targetNode) return undefined;
 
   // Get the body (statements) via childForFieldName('body')
   const bodyNode = targetNode.childForFieldName('body');
-  if (!bodyNode) return [];
+  if (!bodyNode) return undefined;
 
   // Extract individual statements
   const statements: Array<{ startIndex: number; endIndex: number }> = [];
@@ -208,7 +250,7 @@ const astChunk = async (
     }
   }
 
-  if (statements.length === 0) return [];
+  if (statements.length === 0) return undefined;
 
   // A fitting statement must not fall into character splitting just because
   // its function header or closing delimiters consume the remaining budget.
@@ -397,18 +439,18 @@ const declarationChunk = async (
   chunkSize: number,
   overlap: number,
   rule: ChunkingRule,
-): Promise<Chunk[]> => {
+): Promise<Generator<Chunk> | undefined> => {
   const tree = await ensureAndParse(content, filePath);
-  if (!tree) return [];
+  if (!tree) return undefined;
 
   const targetNode = findDeclarationNode(tree.rootNode);
-  if (!targetNode) return [];
+  if (!targetNode) return undefined;
 
   const bodyNode = getDeclarationBodyNode(targetNode);
-  if (!bodyNode) return [];
+  if (!bodyNode) return undefined;
 
   const members = collectDeclarationUnits(bodyNode, rule.groupFields);
-  if (members.length === 0) return [];
+  if (members.length === 0) return undefined;
 
   return chunkByUnits(
     content,
@@ -443,7 +485,7 @@ const buildChunk = (
   };
 };
 
-const chunkByUnits = (
+function* chunkByUnits(
   content: string,
   lineOffsets: Int32Array,
   baseStartLine: number,
@@ -454,8 +496,8 @@ const chunkByUnits = (
   containerEndOffset: number,
   includeContainerPrefixOnFirstChunk: boolean,
   includeContainerSuffixOnLastChunk: boolean,
-): Chunk[] => {
-  const chunks: Chunk[] = [];
+): Generator<Chunk> {
+  let chunkIndex = 0;
   let chunkStartUnitIdx = 0;
 
   while (chunkStartUnitIdx < units.length) {
@@ -496,32 +538,31 @@ const chunkByUnits = (
         oversizedEndOffset,
         baseStartLine,
       );
-      const oversizedChunks = characterChunk(
+      for (const chunk of iterateCharacterChunks(
         content.slice(oversizedStartOffset, oversizedEndOffset),
         oversizedLineRange.startLine,
         oversizedLineRange.endLine,
         chunkSize,
         overlap,
-      ).map((chunk, offsetIdx) => ({
-        ...chunk,
-        chunkIndex: chunks.length + offsetIdx,
-        startOffset: chunk.startOffset + oversizedStartOffset,
-        endOffset: chunk.endOffset + oversizedStartOffset,
-      }));
-      chunks.push(...oversizedChunks);
+      )) {
+        yield {
+          ...chunk,
+          chunkIndex: chunkIndex++,
+          startOffset: chunk.startOffset + oversizedStartOffset,
+          endOffset: chunk.endOffset + oversizedStartOffset,
+        };
+      }
       chunkStartUnitIdx += 1;
       continue;
     }
 
-    chunks.push(
-      buildChunk(
-        content,
-        lineOffsets,
-        chunks.length,
-        chunkStartOffset,
-        candidateEndOffset,
-        baseStartLine,
-      ),
+    yield buildChunk(
+      content,
+      lineOffsets,
+      chunkIndex++,
+      chunkStartOffset,
+      candidateEndOffset,
+      baseStartLine,
     );
 
     if (chunkEndUnitIdx === units.length - 1) {
@@ -540,9 +581,7 @@ const chunkByUnits = (
       chunkStartUnitIdx = nextChunkStartUnitIdx;
     }
   }
-
-  return chunks;
-};
+}
 
 const findOverlapStartIndex = (
   statements: Array<{ startIndex: number; endIndex: number }>,
@@ -654,7 +693,7 @@ const projectClassChunks = (
   overlap: number,
   strategy: EmbeddingConfig['chunkStrategy'] = 'ast',
   expectedName?: string,
-): EmbeddingChunk[] => {
+): Iterable<EmbeddingChunk> => {
   const target = tree && findDeclarationNode(tree.rootNode, expectedName);
   const body = target && getDeclarationBodyNode(target);
   if (!body || target.hasError) return [classMetadataChunk(startLine, endLine)];
@@ -745,7 +784,7 @@ const projectClassChunks = (
   const projected = pieces.join('');
   const chunks =
     strategy === 'fixed'
-      ? characterChunk(projected, 1, 1, chunkSize, overlap)
+      ? iterateCharacterChunks(projected, 1, 1, chunkSize, overlap)
       : chunkByUnits(
           projected,
           buildLineIndex(projected),
@@ -772,17 +811,19 @@ const projectClassChunks = (
       segment.source + Math.max(0, Math.min(offset - segment.start, segment.end - segment.start))
     );
   };
-  return chunks.map((chunk) => {
-    const startOffset = sourceOffset(chunk.startOffset);
-    const endOffset = sourceOffset(chunk.endOffset - 1) + 1;
-    return {
-      ...chunk,
-      startOffset,
-      endOffset,
-      ...resolveChunkLines(originalLines, startOffset, endOffset, startLine),
-      classDeclaration: header,
-    };
-  });
+  return (function* () {
+    for (const chunk of chunks) {
+      const startOffset = sourceOffset(chunk.startOffset);
+      const endOffset = sourceOffset(chunk.endOffset - 1) + 1;
+      yield {
+        ...chunk,
+        startOffset,
+        endOffset,
+        ...resolveChunkLines(originalLines, startOffset, endOffset, startLine),
+        classDeclaration: header,
+      };
+    }
+  })();
 };
 
 const collectDeclarationUnits = (

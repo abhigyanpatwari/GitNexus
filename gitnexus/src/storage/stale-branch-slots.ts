@@ -9,11 +9,11 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { BRANCHES_DIR } from './branch-index.js';
+import { BRANCHES_DIR, branchSlug } from './branch-index.js';
 import { listLocalHeads } from './git.js';
 import { isMissingFilesystemError, loadMeta } from './repo-meta.js';
 import { mapPool } from './map-pool.js';
-import { getStoragePaths, removeBranchIndex } from './repo-manager.js';
+import { removeBranchIndex } from './repo-manager.js';
 
 export type StaleBranchReason =
   | 'ref-missing'
@@ -40,8 +40,8 @@ export interface ListStaleBranchSlotsInput {
   includeSize?: boolean;
 }
 
-const slotDirForBranch = (repoPath: string, storagePath: string, branch: string): string =>
-  path.dirname(getStoragePaths(repoPath, branch, storagePath).metaPath);
+const slotDirForBranch = (storagePath: string, branch: string): string =>
+  path.join(storagePath, BRANCHES_DIR, branchSlug(branch));
 
 /** Same bound as `listRegisteredRepos`: cap concurrent slot I/O. */
 const STALE_SLOT_IO_CONCURRENCY = 8;
@@ -191,10 +191,7 @@ export const listStaleBranchSlots = async (
 
   const registryByDir = new Map<string, string>();
   for (const row of recorded) {
-    registryByDir.set(
-      path.resolve(slotDirForBranch(input.repoPath, input.storagePath, row.branch)),
-      row.branch,
-    );
+    registryByDir.set(path.resolve(slotDirForBranch(input.storagePath, row.branch)), row.branch);
   }
 
   const branchesProbe = await probeContainedBranchesRoot(input.storagePath);
@@ -519,7 +516,7 @@ export const removeBranchSlot = async (
   }
 
   const dropRegistry =
-    dir === null || isSameNormalizedPath(dir, slotDirForBranch(repoPath, storagePath, branch));
+    dir === null || isSameNormalizedPath(dir, slotDirForBranch(storagePath, branch));
   if (dropRegistry) {
     try {
       await removeBranchIndex(repoPath, branch);

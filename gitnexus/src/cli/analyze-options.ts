@@ -127,6 +127,8 @@ export interface AnalyzeOptions {
    * Integer, minimum 200; CLI-only (not a `.gitnexusrc` key).
    */
   memoryBudget?: string;
+  /** Total process-family reservation, separate from the main V8 heap flag. */
+  resourceBudget?: string;
   /** Parse worker pool size (>=1); 0 is rejected (no sequential mode). */
   workers?: string;
   /** Process-detection process cap. Positive integer string; `0` is invalid. */

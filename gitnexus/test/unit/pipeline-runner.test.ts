@@ -18,6 +18,31 @@ function makeCtx(): PipelineContext {
 }
 
 describe('runPipeline', () => {
+  it('honors cancellation between native phases without entering the next phase', async () => {
+    const controller = new AbortController();
+    const ctx: PipelineContext = { ...makeCtx(), options: { signal: controller.signal } };
+    const entered: string[] = [];
+    const phases: PipelinePhase[] = [
+      {
+        name: 'parse',
+        deps: [],
+        async execute() {
+          entered.push('parse');
+          controller.abort(new Error('cancelled after parse'));
+        },
+      },
+      {
+        name: 'emit',
+        deps: ['parse'],
+        async execute() {
+          entered.push('emit');
+        },
+      },
+    ];
+    await expect(runPipeline(phases, ctx)).rejects.toThrow('cancelled after parse');
+    expect(entered).toEqual(['parse']);
+  });
+
   it('executes phases in dependency order', async () => {
     const order: string[] = [];
 

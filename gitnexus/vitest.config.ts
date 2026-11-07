@@ -1,6 +1,22 @@
 import { defineConfig } from 'vitest/config';
 import PerfSequencer from './test/helpers/perf-sequencer.js';
 
+// Keep native tests in exactly one project (TESTING.md).
+const RESUMABLE_ANALYSIS_NATIVE_TESTS = [
+  'test/integration/embedding-input-isolation.test.ts',
+  'test/integration/embedding-vector-store.test.ts',
+  'test/integration/legacy-vector-reuse-index.test.ts',
+  'test/integration/legacy-vector-export.test.ts',
+  'test/integration/analysis-embedding-flow.test.ts',
+  'test/integration/analysis-generation-routing.test.ts',
+  'test/integration/analysis-publication-flow.test.ts',
+  'test/integration/embedding-job-controller.test.ts',
+  'test/integration/embedding-job-restart.test.ts',
+  'test/integration/embedding-native-release.test.ts',
+  'test/integration/legacy-embedding-controller.test.ts',
+  'test/integration/legacy-vector-source.test.ts',
+];
+
 export default defineConfig({
   test: {
     // Shared settings — inherited by all projects via extends: true
@@ -78,6 +94,7 @@ export default defineConfig({
         test: {
           name: 'lbug-db',
           include: [
+            ...RESUMABLE_ANALYSIS_NATIVE_TESTS,
             'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',
             'test/integration/class-expression-owners.test.ts',
@@ -196,6 +213,7 @@ export default defineConfig({
           sequence: { groupOrder: 3 },
           include: ['test/**/*.test.ts'],
           exclude: [
+            ...RESUMABLE_ANALYSIS_NATIVE_TESTS,
             'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',
             'test/integration/class-expression-owners.test.ts',

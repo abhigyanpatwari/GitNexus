@@ -3,6 +3,7 @@
  *
  * Type definitions for the embedding generation and semantic search system.
  */
+import type { AnalysisPhaseProgress } from '../analysis-progress.js';
 
 export const LABEL_FUNCTION = 'Function' as const;
 export const LABEL_METHOD = 'Method' as const;
@@ -206,7 +207,7 @@ export type EmbeddingPhase =
 /**
  * Progress information for the embedding pipeline
  */
-export interface EmbeddingProgress {
+export interface EmbeddingProgress extends AnalysisPhaseProgress {
   phase: EmbeddingPhase;
   percent: number;
   modelDownloadPercent?: number;

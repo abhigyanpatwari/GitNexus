@@ -10,7 +10,6 @@ import {
   resolveLanguageKey,
 } from '../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
-import { getLanguageForFileContent, getProvider } from '../ingestion/languages/index.js';
 import { extractNotebookPython, isNotebookPath } from '../ingestion/ipynb-extractor.js';
 
 const parserCache = new Map<string, any>();
@@ -20,6 +19,8 @@ const parserCache = new Map<string, any>();
  * Returns null if language is unavailable or parsing fails.
  */
 export const ensureAndParse = async (content: string, filePath: string): Promise<any | null> => {
+  const { getLanguageForFileContent, getProvider } =
+    await import('../ingestion/languages/index.js');
   // Same classifier as ingest. Filename-only maps `.h` → C++, so Objective-C
   // headers (and method snippets from those headers) would parse with the
   // wrong grammar and miss class_interface / protocol_declaration / methods.
