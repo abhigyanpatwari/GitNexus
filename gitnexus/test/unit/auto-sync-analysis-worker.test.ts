@@ -341,6 +341,41 @@ describe('auto-sync analysis worker', () => {
     expect(timers).toHaveLength(1);
   });
 
+  it.each(['complete', 'error'] as const)(
+    'preserves a terminal %s received before the deadline while waiting for exit',
+    async (type) => {
+      vi.useFakeTimers();
+      try {
+        const child = createChild();
+        const run = createAutoSyncAnalysisRunner({
+          forkWorker: vi.fn(() => child as any),
+          setTimeoutFn: setTimeout,
+          clearTimeoutFn: clearTimeout,
+        });
+        const result = run('/tmp/repo', {}, 50).catch((error: unknown) => error);
+        let settled = false;
+        void result.then(() => {
+          settled = true;
+        });
+        await vi.advanceTimersByTimeAsync(49);
+        child.emit(
+          'message',
+          type === 'complete'
+            ? { type, result: { stats: { files: 3 } } }
+            : { type, message: 'worker failed' },
+        );
+        await vi.advanceTimersByTimeAsync(500);
+        expect(settled).toBe(false);
+        expect(child.send).toHaveBeenCalledTimes(1);
+        child.emit('exit', 0, null);
+        if (type === 'complete') await expect(result).resolves.toEqual({ stats: { files: 3 } });
+        else await expect(result).resolves.toMatchObject({ message: 'worker failed' });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it('divides the worker heap by the number of repos analyzed in parallel', async () => {
     // Stubbed timers so neither run leaves a live timeout behind for the rest
     // of the suite, and both promises are settled before the test returns.

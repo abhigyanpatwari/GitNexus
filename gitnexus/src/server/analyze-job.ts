@@ -294,10 +294,8 @@ export class JobManager {
   /**
    * Cancel a running job.
    *
-   * The worker is asked to stop over IPC first (`{ type: 'cancel' }`), which
-   * lets it reach a JS-visible safe point and checkpoint before exiting —
-   * the same cross-platform control path `core/auto-sync` uses. Native work
-   * must reach a safe point even if that takes longer than the grace period.
+   * Request cooperative cancellation over IPC first. A standalone child that
+   * outlasts the grace period is killed; ownership remains held until its exit.
    */
   cancelJob(jobId: string, reason?: string): boolean {
     const job = this.jobs.get(jobId);

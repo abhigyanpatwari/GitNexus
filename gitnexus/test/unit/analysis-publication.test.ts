@@ -99,6 +99,70 @@ describe('durable graph publication', () => {
     expect(graphs).toContain((await loadMeta(root))?.graphPath);
   });
 
+  it('reclaims attempt metadata orphaned before its publication receipt was written', async () => {
+    const { root, stage } = await fixture();
+    const rename = fs.rename.bind(fs);
+    const interrupted = vi.spyOn(fs, 'rename').mockImplementation(async (source, target) => {
+      if (path.basename(String(target)) === 'analysis-publication.json')
+        throw new Error('Interrupted before receipt');
+      await rename(source, target);
+    });
+    await expect(prepareAnalysisPublication(root, stage, metadata, content)).rejects.toThrow(
+      'Interrupted before receipt',
+    );
+    interrupted.mockRestore();
+    const orphan = (await fs.readdir(root)).find((name) =>
+      /^analysis-meta-[a-f0-9]{32}\.json$/.test(name),
+    );
+    expect(orphan).toBeDefined();
+    await fs.writeFile(path.join(root, 'analysis-meta-not-owned.json'), 'keep');
+    await reclaimAnalysisArtifacts(root, metadata);
+    expect(await fs.readdir(root)).not.toContain(orphan);
+    expect(await fs.readFile(path.join(root, 'analysis-meta-not-owned.json'), 'utf8')).toBe('keep');
+    expect(await loadMeta(root)).toEqual(metadata);
+
+    const pending = await prepareAnalysisPublication(root, stage, metadata, content);
+    await reclaimAnalysisArtifacts(root, metadata);
+    expect(await readPreparedAnalysis(root)).toEqual(pending);
+    expect(await fs.readFile(path.join(root, pending.metadataFile), 'utf8')).toContain(content);
+  });
+
+  it('retains paid vectors when an ownership space was renamed', async () => {
+    const { root } = await fixture();
+    const identity = 'a'.repeat(64);
+    const job = path.join(root, 'embeddings', identity);
+    await fs.mkdir(job, { recursive: true });
+    await writeEmbeddingJobRecord(job, 'job.json', { version: 1, identity });
+    await fs.writeFile(path.join(job, 'vectors'), 'paid vectors');
+    const record = await adoptEmbeddingArtifact(
+      root,
+      {
+        vectorIdentity: 'b'.repeat(64),
+        inputIdentity: 'c'.repeat(64),
+        dimensions: 4,
+        schema: 'fixture',
+      },
+      null,
+      {
+        artifactIdentity: identity,
+        jobIdentity: identity,
+        graphGeneration: 'd'.repeat(32),
+        sourceIdentity: 'e'.repeat(64),
+        manifestDigest: 'f'.repeat(64),
+        phase: 'pending',
+        revalidateInputs: false,
+      },
+      async () => {},
+    );
+    const parent = path.join(root, 'embeddings', 'spaces');
+    await fs.rename(path.join(parent, record.spaceKey), path.join(parent, 'renamed-space'));
+    const warn = vi.fn();
+    await reclaimAnalysisArtifacts(root, metadata, undefined, warn);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Unexpected embedding space entry'));
+    expect(await fs.readFile(path.join(job, 'vectors'), 'utf8')).toBe('paid vectors');
+    expect(await fs.readFile(path.join(job, 'job.json'), 'utf8')).toContain(identity);
+  });
+
   it.each(['pending', 'sealed'] as const)(
     'reclaims unreferenced jobs and obsolete graphs for a %s model owner',
     async (phase) => {

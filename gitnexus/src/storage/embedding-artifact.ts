@@ -53,7 +53,8 @@ export async function readEmbeddingArtifactOwners(root: string): Promise<Embeddi
   await embeddingJobDirectory(parent);
   const owners: EmbeddingArtifactOwner[] = [];
   for (const entry of await fs.readdir(parent, { withFileTypes: true })) {
-    if (!DIGEST.test(entry.name)) continue;
+    if (!DIGEST.test(entry.name))
+      throw new Error('Unexpected embedding space entry; artifacts retained');
     const directory = await embeddingJobDirectory(path.join(parent, entry.name));
     const add = (value: unknown) => {
       const raw = value as EmbeddingArtifactRecord;

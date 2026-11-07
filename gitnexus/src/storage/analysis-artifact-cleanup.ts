@@ -8,6 +8,7 @@ import { readLegacyEmbeddingSource } from './legacy-embedding-source.js';
 import { logger } from '../core/logger.js';
 
 const GRAPH = /^lbug\.generation\.[a-f0-9]{32}$/;
+const ATTEMPT_METADATA = /^analysis-meta-[a-f0-9]{32}\.json$/;
 const ID = /^[a-f0-9]{64}$/;
 
 /** Keep the published and previous graph, all model spaces, pending jobs, and
@@ -96,6 +97,10 @@ export async function reclaimAnalysisArtifacts(
         return false;
       }
     };
+    // Without a publication receipt, no attempt metadata is needed for recovery.
+    for (const entry of entries)
+      if (entry.isFile() && ATTEMPT_METADATA.test(entry.name))
+        await remove(path.join(root, entry.name));
     // A busy sidecar may outlive its base graph; include it in the next sweep.
     const candidates = new Set(
       entries

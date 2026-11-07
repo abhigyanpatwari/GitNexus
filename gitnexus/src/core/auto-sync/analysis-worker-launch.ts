@@ -259,6 +259,7 @@ export function createAutoSyncAnalysisRunner(
             return;
           }
           terminalOutcome = message;
+          deps.clearTimeoutFn(timeout);
         });
         child.on('error', (error) => {
           const workerError = new Error(`Auto-sync analyze worker error: ${error.message}`);
