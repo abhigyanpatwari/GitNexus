@@ -475,6 +475,71 @@ describe('selfCommitContextFiles', () => {
     }
   });
 
+  it.each(process.platform === 'win32' ? ['context[1].md'] : ['context[1].md', '*.md'])(
+    'self-commits the literal target %s without touching unrelated staged or unstaged edits',
+    async (target) => {
+      const { selfCommitContextFiles, snapshotSelfCommitSafety } =
+        await import('../../src/storage/git.js');
+      const { generateAIContextFiles } = await import('../../src/cli/ai-context.js');
+      const repoDir = initRepo();
+      const git = (args: string[]) =>
+        execFileSync(gitExecutable, args, { cwd: repoDir, encoding: 'utf8' });
+      try {
+        fs.writeFileSync(path.join(repoDir, 'context1.md'), 'original\n');
+        fs.writeFileSync(path.join(repoDir, 'README.md'), 'original\n');
+        git(['add', '.']);
+        git(['commit', '-q', '-m', 'initial']);
+        fs.writeFileSync(path.join(repoDir, 'context1.md'), 'staged user edit\n');
+        git(['add', 'context1.md']);
+        fs.writeFileSync(path.join(repoDir, 'context1.md'), 'unstaged user edit\n');
+        fs.writeFileSync(path.join(repoDir, 'README.md'), 'unstaged README edit\n');
+        const staged = git(['diff', '--cached']);
+        const unstaged = git(['diff']);
+        const safety = snapshotSelfCommitSafety(repoDir, [target]);
+        expect(safety.get(target)).toBe(true);
+        await generateAIContextFiles(
+          repoDir,
+          path.join(repoDir, '.gitnexus'),
+          'Literal',
+          {},
+          undefined,
+          {
+            contextFile: target,
+            skipSkills: true,
+          },
+        );
+        selfCommitContextFiles(repoDir, [target], safety);
+        expect(commitCount(repoDir)).toBe(2);
+        expect(git(['diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD']).trim()).toBe(
+          target,
+        );
+        expect(git(['diff', '--cached'])).toBe(staged);
+        expect(git(['diff'])).toBe(unstaged);
+
+        // Status must also be literal: a matching dirty sibling must not make
+        // the clean selected file unsafe, nor hide edits to that selected file.
+        expect(snapshotSelfCommitSafety(repoDir, [target]).get(target)).toBe(true);
+        fs.appendFileSync(path.join(repoDir, target), '\nuser note\n');
+        expect(snapshotSelfCommitSafety(repoDir, [target]).get(target)).toBe(false);
+
+        git(['--literal-pathspecs', 'add', '--', target]);
+        git(['--literal-pathspecs', 'commit', '-q', '-m', 'save prompt', '--', target]);
+        const beforeFailure = snapshotSelfCommitSafety(repoDir, [target]);
+        fs.appendFileSync(path.join(repoDir, target), '\ngenerated update\n');
+        // An invalid local signing program fails commit after staging.
+        git(['config', 'commit.gpgsign', 'true']);
+        git(['config', 'gpg.program', path.join(repoDir, 'missing-signing-program')]);
+        selfCommitContextFiles(repoDir, [target], beforeFailure);
+        expect(commitCount(repoDir)).toBe(3);
+        expect(git(['diff', '--cached'])).toBe(staged);
+        expect(git(['--literal-pathspecs', 'diff', '--cached', '--', target])).toBe('');
+        expect(fs.readFileSync(path.join(repoDir, target), 'utf8')).toContain('generated update');
+      } finally {
+        fs.rmSync(repoDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('no-ops (no new commit) when neither candidate file changed', async () => {
     const { selfCommitContextFiles } = await import('../../src/storage/git.js');
     const repoDir = initRepo();

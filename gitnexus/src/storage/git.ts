@@ -152,7 +152,7 @@ export const isWorkingTreePristine = (repoPath: string): boolean => {
 
 /**
  * Snapshot, per candidate file, whether it is safe for `selfCommitContextFiles`
- * to auto-commit — call this BEFORE `analyze` writes AGENTS.md/CLAUDE.md.
+ * to auto-commit — call this BEFORE `analyze` writes the selected context files.
  * A file is safe when it does not exist yet (first-time creation, the normal
  * case) or is currently clean (`git status --porcelain` reports nothing for
  * it). A file that already has an uncommitted user edit is unsafe: without
@@ -172,12 +172,16 @@ export const snapshotSelfCommitSafety = (
       continue;
     }
     try {
-      const status = execFileSync('git', ['status', '--porcelain', '--', name], {
-        cwd: repoPath,
-        stdio: ['ignore', 'pipe', 'ignore'],
-        windowsHide: true,
-        encoding: 'utf8',
-      });
+      const status = execFileSync(
+        'git',
+        ['--literal-pathspecs', 'status', '--porcelain', '--', name],
+        {
+          cwd: repoPath,
+          stdio: ['ignore', 'pipe', 'ignore'],
+          windowsHide: true,
+          encoding: 'utf8',
+        },
+      );
       safety.set(name, status.trim().length === 0);
     } catch {
       safety.set(name, false);
@@ -187,13 +191,13 @@ export const snapshotSelfCommitSafety = (
 };
 
 /**
- * Best-effort auto-commit for the AGENTS.md/CLAUDE.md files `analyze --self-commit`
+ * Best-effort auto-commit for the selected context files `analyze --self-commit`
  * just (re)wrote. Filters `candidateFiles` down to the ones that actually exist
  * under `repoPath` AND were marked safe by `snapshotSelfCommitSafety` — a file
  * that already had an uncommitted edit before this run is skipped (logged),
  * never swept into the generated commit. Never `git add -A`. `git status
  * --porcelain` (not `diff --quiet`) is deliberate: a first-time `analyze` run
- * creates AGENTS.md/CLAUDE.md fresh, and untracked files never show up in
+ * creates the selected context files fresh, and untracked files never show up in
  * `git diff`, only in `git status` — the same reason `isWorkingTreeDirty`
  * above uses `--porcelain`. If `git commit` fails after `git add` already
  * staged the safe files (e.g. missing git identity), the staged files are
@@ -221,19 +225,23 @@ export const selfCommitContextFiles = (
   if (safe.length === 0) return;
 
   try {
-    const status = execFileSync('git', ['status', '--porcelain', '--', ...safe], {
-      cwd: repoPath,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-      encoding: 'utf8',
-    });
+    const status = execFileSync(
+      'git',
+      ['--literal-pathspecs', 'status', '--porcelain', '--', ...safe],
+      {
+        cwd: repoPath,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+        encoding: 'utf8',
+      },
+    );
     if (status.trim().length === 0) return; // nothing to commit
   } catch {
     return; // git failed (not a repo, git missing, etc.) — nothing to do
   }
 
   try {
-    execFileSync('git', ['add', '--', ...safe], {
+    execFileSync('git', ['--literal-pathspecs', 'add', '--', ...safe], {
       cwd: repoPath,
       stdio: 'ignore',
       windowsHide: true,
@@ -246,7 +254,14 @@ export const selfCommitContextFiles = (
   try {
     execFileSync(
       'git',
-      ['commit', '-m', 'chore(gitnexus): refresh index stats [skip ci]', '--', ...safe],
+      [
+        '--literal-pathspecs',
+        'commit',
+        '-m',
+        'chore(gitnexus): refresh index stats [skip ci]',
+        '--',
+        ...safe,
+      ],
       { cwd: repoPath, stdio: 'ignore', windowsHide: true },
     );
   } catch (err) {
@@ -255,7 +270,7 @@ export const selfCommitContextFiles = (
     // files rather than leaving them silently staged — `analyze` reporting
     // "success" must not leave the user's index mutated.
     try {
-      execFileSync('git', ['reset', '--', ...safe], {
+      execFileSync('git', ['--literal-pathspecs', 'reset', '--', ...safe], {
         cwd: repoPath,
         stdio: 'ignore',
         windowsHide: true,
