@@ -251,6 +251,7 @@ describe('#3837 detect_changes git stderr', () => {
       expect(control.summary.changed_count).toBe(1);
 
       execFileSync('git', ['config', 'core.autocrlf', 'true'], { cwd: repoDir });
+      execFileSync('git', ['config', 'core.safecrlf', 'warn'], { cwd: repoDir });
       // Prove this working copy triggers a real Git warning on this platform.
       // spawnSync captures it without forwarding it to the test process.
       const gitDiff = spawnSync('git', diffArgsFor(scope), { cwd: repoDir, encoding: 'utf8' });
