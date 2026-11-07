@@ -178,8 +178,6 @@ describe('pending artifacts across graph generations', () => {
       expect(result.peakQueueBytes).toBeLessThanOrEqual(f.options().resources.queueBytes);
       expect(node.content).toContain('[truncated]');
       if (retention === 'full') {
-        // Live checkout edits do not change the indexed snapshot. Reuse the
-        // completed node in a new graph without opening its now-different file.
         await fs.writeFile(
           path.join(repo, 'sample.ts'),
           content.replace('RECOVERED_TAIL', 'UNINDEXED_TAIL'),

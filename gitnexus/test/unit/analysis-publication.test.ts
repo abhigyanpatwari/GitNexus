@@ -473,7 +473,6 @@ describe('durable graph publication', () => {
       if (state === 'different-platform')
         birth.mockResolvedValue({ kind: 'linux-proc', value: '999' });
       vi.spyOn(process, 'kill').mockReturnValue(true);
-      // Advance only the monotonic deadline; leave filesystem and probe promises real.
       let now = 0;
       vi.spyOn(performance, 'now').mockImplementation(() => (now += 500));
       await expect(publishPreparedAnalysis(root, actions)).rejects.toThrow('has not exited');

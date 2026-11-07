@@ -4303,12 +4303,6 @@ export class LocalBackend {
     // minus its semantic lane beats no answer at all. Same shape as the CJK
     // drift check above — composed into `warnings`, recomputed per query rather
     // than latched, and carrying the fix rather than just the symptom.
-    //
-    // Gated on the width captured by this call so tools that never embed — every other
-    // method on this backend — and every index analyzed without `--embeddings`
-    // stay quiet. ABSENT `embeddingDims` is NOT a mismatch: that is
-    // `embeddingDimsMismatch`'s own rule, reused rather than restated so the
-    // two sides of the guard cannot drift apart.
     const queryEmbeddingDims = vectorDegraded.embeddingDims;
     if (
       queryEmbeddingDims !== undefined &&

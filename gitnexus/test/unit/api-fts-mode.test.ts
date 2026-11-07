@@ -292,7 +292,6 @@ describe('POST /api/embed staged recovery preflight', () => {
       expect(mocks.runAnalysisEmbeddingPhase).not.toHaveBeenCalled();
       expect(mocks.updateJob).not.toHaveBeenCalled();
 
-      // A rejected admission must not leave the server's repository lock held.
       heap.bytes = 1024 ** 3;
       await invoke('/api/embed');
       await vi.waitFor(() => expect(mocks.releaseIndexLock).toHaveBeenCalledOnce());

@@ -94,7 +94,6 @@ it.skipIf(process.platform === 'win32').each([false, true])(
       if (target === path.dirname(path.dirname(retained))) {
         const sync = handle.sync.bind(handle);
         vi.spyOn(handle, 'sync').mockImplementation(async () => {
-          // Only fail the sync after the final directory rename.
           if (
             await fs.stat(retained).then(
               () => true,

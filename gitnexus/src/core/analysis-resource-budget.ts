@@ -140,7 +140,6 @@ export function resolveAnalysisResourceBudget(
     request.mainHeapMb === undefined
       ? Math.min(16_384, maximumMainMb, Math.max(MIN_MAIN_HEAP_MB, Math.floor(totalMb * 0.35)))
       : integer(request.mainHeapMb, 'main heap reservation');
-  // Automatic admission keeps the same fixed family ceiling as explicit admission.
   const totalBytes = bytes(totalMb, 'resource budget');
   // --memory-budget has an established 200 MiB minimum. Preserve that explicit
   // choice; the larger floor is only the automatic sizing policy.
