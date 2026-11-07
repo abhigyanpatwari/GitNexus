@@ -89,7 +89,7 @@ export interface AnalyzeJob {
 const JOB_TTL_MS = 60 * 60 * 1000; // 1 hour
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const JOB_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-/** How long to retain event-loop references after requesting safe cancellation. */
+/** Delay before force-killing an unresponsive standalone child after cancellation. */
 const CANCEL_GRACE_MS = 60_000;
 
 export class JobManager {
