@@ -3,6 +3,7 @@
  *
  * Type definitions for the embedding generation and semantic search system.
  */
+import type { AnalysisPhaseProgress } from '../analysis-progress.js';
 
 export const LABEL_FUNCTION = 'Function' as const;
 export const LABEL_METHOD = 'Method' as const;
@@ -206,7 +207,7 @@ export type EmbeddingPhase =
 /**
  * Progress information for the embedding pipeline
  */
-export interface EmbeddingProgress {
+export interface EmbeddingProgress extends AnalysisPhaseProgress {
   phase: EmbeddingPhase;
   percent: number;
   modelDownloadPercent?: number;
@@ -239,6 +240,8 @@ export interface EmbeddingConfig {
   maxSnippetLength: number;
   /** Maximum code chunk size in characters (for chunking long code) */
   chunkSize: number;
+  /** AST statement boundaries (default), or fixed character windows. */
+  chunkStrategy: 'ast' | 'fixed';
   /** Overlap between chunks in characters */
   overlap: number;
   /** Maximum description length in characters */
@@ -260,6 +263,7 @@ export const DEFAULT_EMBEDDING_CONFIG: EmbeddingConfig = {
   device: 'auto',
   maxSnippetLength: 500,
   chunkSize: 1200,
+  chunkStrategy: 'ast',
   overlap: 120,
   maxDescriptionLength: 150,
 };
@@ -296,6 +300,8 @@ export interface EmbeddableNode {
   serverName?: string;
   methodNames?: string[];
   fieldNames?: string[];
+  /** Safe Class header, set only by structural projection; never raw source. */
+  classDeclaration?: string;
 }
 
 /**

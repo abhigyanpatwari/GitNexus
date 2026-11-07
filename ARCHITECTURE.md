@@ -640,25 +640,35 @@ Inheritance is captured by the `@reference.inherits` tag and emitted by the scop
 
 ```
 CLI (analyze.ts) → runFullAnalysis(repoPath, options, callbacks)
-  1. Early exit if lastCommit == HEAD (unless --force)     [0%]
-  2. Cache existing embeddings from prior index             [0%]
-  3. runPipelineFromRepo() → KnowledgeGraph                [0-60%]
-  4. Clean up legacy KuzuDB files                          [60%]
-  5. initLbug() → loadGraphToLbug() via CSV streaming      [60-85%]
-  6. Create FTS indexes (File, Function, Class, Method...) [85-90%]
-  7. Restore cached embeddings (batch insert)              [88%]
-  8. Generate new embeddings if --embeddings               [90-98%]
-  9. Save metadata + register repo + update .gitignore     [98-100%]
- 10. Generate AI context files (AGENTS.md, CLAUDE.md)      [100%]
+  1. Admit phase resources and recover any prepared graph publication.
+  2. Reuse unchanged graph/parser work where its receipts still match.
+  3. runPipelineFromRepo() → KnowledgeGraph → bounded graph write → FTS.
+  4. Prepare the owned graph and publication receipt; drain native resources.
+  5. Supervisor waits for graph-process exit, verifies and publishes metadata.
+  6. If embeddings are requested/pending, open the resumable embedding job.
+  7. Reuse verified vectors, commit bounded units, then seal/checkpoint/publish.
+  8. Register the repo and generate AI context files.
+
+Graph-only legacy slots keep their existing path until separate publication is
+needed. A ready graph remains queryable while an embedding job is pending;
+semantic search reports degradation until a compatible sealed artifact is ready.
 ```
 
-**Options:** `--force` (rebuild regardless), `--embeddings` (opt-in, skipped if >50k nodes), `--skipGit`, `--noStats`.
+Unit acknowledgements follow verified, durable WAL commits. Native automatic
+checkpoints bound WAL growth; the final checkpoint prepares the sealed artifact
+for read-only publication without requiring WAL replay.
+
+**Options:** `--force` (rebuild regardless), `--embeddings` (opt-in, resumable), `--skipGit`, `--noStats`.
 
 ## Storage
 
 ```
 <repo>/.gitnexus/
-  ├── lbug           # LadybugDB database
+  ├── lbug           # Legacy monolithic database, until first separate publication
+  ├── lbug.generation.<id>  # Owned private graph, selected by graphPath in metadata
+  ├── analysis-publication.json  # Recoverable prepared graph receipt
+  ├── embeddings/<identity>/     # Job journal, manifest and separate vector database
+  ├── embeddings/spaces/         # Model-space ownership/reuse receipts
   ├── lbug.wal       # Write-ahead log
   ├── lbug.shadow    # Shadow sidecar (checkpoint staging)
   ├── lbug.lock      # Single-writer lock
@@ -690,7 +700,11 @@ the read-only open is retried — see `sidecar-recovery.ts`
 (`isReadOnlyCheckpointInProgressError`) and the
 `lbug-interrupted-checkpoint-recovery` integration test.
 
-Managed by `repo-manager.ts`.
+Managed by `repo-manager.ts`. Publication reclaims unreferenced private graphs
+and job artifacts under the slot lock, preserving current jobs, model spaces,
+legacy reuse sources and prepared publications. Busy reader files are retried on
+a later publication. See [MIGRATION.md](MIGRATION.md#resumable-analysis-and-separate-vector-storage-3598)
+before mixing binary versions or rolling back.
 
 ### Automatic parse-cache identity
 

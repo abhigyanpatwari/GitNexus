@@ -117,6 +117,28 @@ export const resolveEmbeddingConfig = (
   overrides: Partial<EmbeddingConfig> = {},
 ): EmbeddingConfig => {
   const env = process.env;
+  const chunkSizeValue = env.GITNEXUS_EMBEDDING_CHUNK_SIZE?.trim();
+  const overlapValue = env.GITNEXUS_EMBEDDING_CHUNK_OVERLAP?.trim();
+  const strategyValue = env.GITNEXUS_EMBEDDING_CHUNK_STRATEGY?.trim();
+  const chunkSize = chunkSizeValue
+    ? Number(chunkSizeValue)
+    : (overrides.chunkSize ?? DEFAULT_EMBEDDING_CONFIG.chunkSize);
+  const overlap = overlapValue
+    ? Number(overlapValue)
+    : (overrides.overlap ?? DEFAULT_EMBEDDING_CONFIG.overlap);
+  const chunkStrategy =
+    strategyValue || (overrides.chunkStrategy ?? DEFAULT_EMBEDDING_CONFIG.chunkStrategy);
+  if (!Number.isSafeInteger(chunkSize) || chunkSize < 2) {
+    throw new Error('GITNEXUS_EMBEDDING_CHUNK_SIZE must be a safe integer of at least 2');
+  }
+  if (!Number.isSafeInteger(overlap) || overlap < 0 || overlap >= chunkSize) {
+    throw new Error(
+      'GITNEXUS_EMBEDDING_CHUNK_OVERLAP must be a safe integer from 0 to chunkSize - 1',
+    );
+  }
+  if (chunkStrategy !== 'ast' && chunkStrategy !== 'fixed') {
+    throw new Error('GITNEXUS_EMBEDDING_CHUNK_STRATEGY must be ast or fixed');
+  }
   const maxInputChars = parsePositiveInt(
     'GITNEXUS_EMBEDDING_MAX_INPUT_CHARS',
     env.GITNEXUS_EMBEDDING_MAX_INPUT_CHARS,
@@ -132,6 +154,9 @@ export const resolveEmbeddingConfig = (
       env.GITNEXUS_EMBEDDING_MODEL_ID,
       overrides.modelId ?? DEFAULT_EMBEDDING_CONFIG.modelId,
     ),
+    chunkSize,
+    overlap,
+    chunkStrategy,
     maxInputChars,
     batchSize: parsePositiveInt(
       'GITNEXUS_EMBEDDING_BATCH_SIZE',

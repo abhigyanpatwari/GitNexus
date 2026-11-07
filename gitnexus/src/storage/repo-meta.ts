@@ -114,11 +114,51 @@ export interface RepoMeta {
   /** Complete index directory selected for this successful analysis. */
   storagePath?: string;
   /**
-   * Shared-store checkouts only (#3352): the graph this slot reads when it is
-   * not `<storagePath>/lbug` — a commit graph under the same store. Resolved
-   * and validated by `resolveGraphPath`.
+   * The graph this slot reads: an owned private generation basename, or an
+   * absolute shared commit graph under the same store (#3352). Resolved and
+   * validated by `resolveGraphPath`. Absent means legacy `<storagePath>/lbug`.
    */
   graphPath?: string;
+  /** A verified logical generation, published independently of optional vectors.
+   * Private incremental writes invalidate this receipt before mutating its file. */
+  graphGeneration?: {
+    version: 1;
+    id: string;
+    /** Digest of covered content, including uncommitted source changes. */
+    coveredContent: string;
+  };
+  /** Checkout-owned durable work. Progress lives in its bounded journal. */
+  embeddingJob?: {
+    version: 1;
+    identity: string;
+    graphGeneration: string;
+    /** Mutable artifact ownership is separate from this graph-bound job. */
+    artifactIdentity?: string;
+    spaceKey?: string;
+  };
+  /** Direct receipt for a retained legacy source; missing historical fields
+   * remain unknown. The source is immutable and separate from graphPath. */
+  legacyVectorSource?: string;
+  /** Published only after complete coverage, native durability and index validation. */
+  vectorGeneration?: {
+    version: 1;
+    identity: string;
+    /** Absent in older separate stores, whose artifact identity equaled the job. */
+    artifactIdentity?: string;
+    graphGeneration: string;
+    /** Explicit permission to serve this completed historical artifact against
+     * a newer graph. graphGeneration remains its original coverage receipt. */
+    preservedForGraph?: string;
+    vectorIdentity: string;
+    inputIdentity: string;
+    dimensions: number;
+    nodes: number;
+    chunks: number;
+    /** Deterministic input failures exhausted three attempts in this job. */
+    excludedNodes?: number;
+    exclusionReason?: 'input-rejected';
+    indexKind: 'hnsw' | 'exact';
+  };
   lastCommit: string;
   indexedAt: string;
   /** Missing on legacy metadata means the upstream-compatible `full` profile. */
@@ -248,6 +288,9 @@ export interface RepoMeta {
       status: 'vector-index' | 'exact-scan' | 'unavailable';
       exactScanLimit: number;
       reason?: string;
+      /** Native availability and coverage of the current selection differ. */
+      coverage?: 'current' | 'preserved' | 'unknown';
+      sourceGraphGeneration?: string;
     };
   };
   /**
@@ -459,6 +502,8 @@ export interface RepoMeta {
    * to a known-good index.
    */
   incrementalInProgress?: {
+    /** Unique ownership fence for a prepared in-place graph publication. */
+    attemptId?: string;
     /** When the run started (epoch ms). */
     startedAt: number;
     /** Last dirty-flag refresh (epoch ms). */

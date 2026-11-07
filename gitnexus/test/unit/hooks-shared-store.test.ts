@@ -5,6 +5,7 @@ import path from 'path';
 import { createRequire } from 'module';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { slotNameForCanonicalPath } from '../../src/storage/storage-slot.js';
+import { branchSlug } from '../../src/storage/branch-index.js';
 
 /**
  * #3352 — the Claude hook resolves a shared-store checkout to the commit
@@ -101,6 +102,83 @@ describe('registry-query shared store graph (#3352)', () => {
     const [primary, ...copies] = HOOK_COPIES.map((f) => fs.readFileSync(f, 'utf-8'));
     for (const copy of copies) expect(copy).toBe(primary);
   });
+
+  it.each(HOOK_COPIES)('resolves a private generation in a registered branch slot (%s)', (file) => {
+    const branch = 'feature/private';
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.invalid',
+        'commit',
+        '--allow-empty',
+        '-m',
+        'fixture',
+      ],
+      { cwd: checkout, stdio: 'ignore' },
+    );
+    execFileSync('git', ['checkout', '-b', branch], { cwd: checkout, stdio: 'ignore' });
+    writeSlot({ graphPath: commitGraph });
+    fs.writeFileSync(
+      path.join(home, 'registry.json'),
+      JSON.stringify([
+        {
+          name: 'wt',
+          path: checkout,
+          storagePath: slot,
+          indexedAt: '',
+          lastCommit: '',
+          branches: [{ branch }],
+        },
+      ]),
+    );
+    const indexDir = path.join(slot, 'branches', branchSlug(branch));
+    const graph = `lbug.generation.${'a'.repeat(32)}`;
+    fs.mkdirSync(indexDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(indexDir, 'gitnexus.json'),
+      JSON.stringify({ repoPath: checkout, graphPath: graph }),
+    );
+    fs.writeFileSync(path.join(indexDir, graph), 'graph');
+    expect(load(file).findRegisteredRepo(checkout)?.lbugPath).toBe(path.join(indexDir, graph));
+  });
+
+  it.each(HOOK_COPIES)('resolves an unregistered local private generation (%s)', (file) => {
+    const indexDir = path.join(checkout, '.gitnexus');
+    const graph = `lbug.generation.${'a'.repeat(32)}`;
+    fs.mkdirSync(indexDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(indexDir, 'gitnexus.json'),
+      JSON.stringify({ repoPath: checkout, graphPath: graph }),
+    );
+    fs.writeFileSync(path.join(indexDir, graph), 'graph');
+    const hook = load(file) as unknown as { findLocalOwnedRepo: (cwd: string) => HookRepo };
+    expect(hook.findLocalOwnedRepo(checkout)?.lbugPath).toBe(path.join(indexDir, graph));
+  });
+
+  it.each(HOOK_COPIES)(
+    'does not fall back to an old local graph after registered generation damage (%s)',
+    (file) => {
+      const graph = `lbug.generation.${'a'.repeat(32)}`;
+      writeSlot({ graphPath: graph });
+      fs.mkdirSync(path.join(slot, graph)); // A directory cannot be a published graph.
+      const local = path.join(checkout, '.gitnexus');
+      fs.mkdirSync(local);
+      fs.writeFileSync(path.join(local, 'gitnexus.json'), JSON.stringify({ repoPath: checkout }));
+      fs.writeFileSync(path.join(local, 'lbug'), 'old local graph');
+      const hook = load(file) as unknown as {
+        findLocalOwnedRepo: (cwd: string) => HookRepo;
+        resolveHookRepo: (cwd: string) => HookRepo;
+      };
+      expect(hook.findLocalOwnedRepo(checkout)?.lbugPath).toBe(path.join(local, 'lbug'));
+      expect(hook.resolveHookRepo(checkout)).toBeNull();
+      fs.rmSync(path.join(slot, graph), { recursive: true });
+      fs.writeFileSync(path.join(slot, graph), 'repaired graph');
+      expect(hook.resolveHookRepo(checkout)?.lbugPath).toBe(path.join(slot, graph));
+    },
+  );
 
   it.each(HOOK_COPIES)('returns the commit graph a shared slot records (%s)', (file) => {
     writeSlot({ graphPath: commitGraph });

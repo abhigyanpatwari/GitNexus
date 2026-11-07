@@ -10,6 +10,7 @@ import type {
   SidecarRequest,
   SidecarResponse,
 } from '../../src/core/embeddings/embedding-sidecar-protocol.js';
+import { resolveEmbeddingConfig } from '../../src/core/embeddings/config.js';
 
 const embeddingsDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -142,6 +143,157 @@ describe('embedding sidecar client', () => {
     expect(first).toHaveLength(1);
     expect(second).toHaveLength(1);
     expect(forkMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reserves lazily, pins the admitted config, and reuses a compatible warm model', async () => {
+    const { reserveEmbeddingSidecar } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    const config = resolveEmbeddingConfig({ threads: 1 });
+    const originalThreads = process.env.GITNEXUS_EMBEDDING_THREADS;
+    const originalNodeOptions = process.env.NODE_OPTIONS;
+    const first = await reserveEmbeddingSidecar(config, 512);
+    expect(forkMock).not.toHaveBeenCalled();
+    await expect(reserveEmbeddingSidecar(config, 512)).rejects.toThrow('busy');
+    try {
+      process.env.GITNEXUS_EMBEDDING_THREADS = '99';
+      process.env.NODE_OPTIONS = '--max-old-space-size=4096';
+      await first.initialize();
+      const opts = forkMock.mock.calls[0][2];
+      expect(opts.execArgv).toEqual(
+        expect.arrayContaining(['--max-old-space-size=512', '--max-semi-space-size=16']),
+      );
+      expect(opts.env?.GITNEXUS_EMBEDDING_THREADS).toBeUndefined();
+      expect(process.env.GITNEXUS_EMBEDDING_THREADS).toBe('99');
+      expect(children[0].send.mock.calls[0][0]).toMatchObject({
+        type: 'init',
+        embeddingConfig: config,
+      });
+      first.release();
+      const second = await reserveEmbeddingSidecar(config, 512);
+      await second.initialize();
+      await expect(second.embedBatch(['warm'])).resolves.toHaveLength(1);
+      second.release();
+      expect(forkMock).toHaveBeenCalledTimes(1);
+      await expect(first.embedBatch(['released'])).rejects.toThrow('reservation was released');
+    } finally {
+      first.release();
+      if (originalThreads === undefined) delete process.env.GITNEXUS_EMBEDDING_THREADS;
+      else process.env.GITNEXUS_EMBEDDING_THREADS = originalThreads;
+      if (originalNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = originalNodeOptions;
+    }
+  });
+
+  it('pins model and chunk settings across environment changes before lazy initialization', async () => {
+    const { reserveEmbeddingSidecar } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    const config = resolveEmbeddingConfig({ threads: 1 });
+    const lease = await reserveEmbeddingSidecar(config, 512);
+    const changed = {
+      MODEL_ID: 'different/model',
+      CHUNK_SIZE: '128',
+      CHUNK_OVERLAP: '32',
+      CHUNK_STRATEGY: 'fixed',
+    };
+    try {
+      for (const [name, value] of Object.entries(changed))
+        vi.stubEnv(`GITNEXUS_EMBEDDING_${name}`, value);
+      await lease.initialize();
+      for (const name of Object.keys(changed))
+        expect(forkMock.mock.calls[0][2].env?.[`GITNEXUS_EMBEDDING_${name}`]).toBeUndefined();
+      expect(children[0].send.mock.calls[0][0]).toMatchObject({ embeddingConfig: config });
+    } finally {
+      lease.release();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('waits for an idle old process to exit before assigning a different budget', async () => {
+    const { reserveEmbeddingSidecar } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    const config = resolveEmbeddingConfig({ threads: 1 });
+    const first = await reserveEmbeddingSidecar(config, 512);
+    await first.initialize();
+    first.release();
+    children[0].kill.mockImplementation(() => true);
+    const next = reserveEmbeddingSidecar(config, 256);
+    await vi.waitFor(() => expect(children[0].kill).toHaveBeenCalled());
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    children[0].emit('close', null, 'SIGKILL');
+    const second = await next;
+    await second.initialize();
+    expect(forkMock).toHaveBeenCalledTimes(2);
+    expect(forkMock.mock.calls[1][2].execArgv).toContain('--max-old-space-size=256');
+    second.release();
+  });
+
+  it('keeps an aborted physical request reserved until the child actually responds', async () => {
+    const { reserveEmbeddingSidecar, drainEmbeddingSidecarForAnalysis } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    const config = resolveEmbeddingConfig({ threads: 1 });
+    const lease = await reserveEmbeddingSidecar(config, 512);
+    await lease.initialize();
+    children[0].send = vi.fn(() => true);
+    const abort = new AbortController();
+    const pendingBatch = lease.embedBatch(['still running'], { signal: abort.signal });
+    await vi.waitFor(() => expect(children[0].send).toHaveBeenCalled());
+    const request = children[0].send.mock.calls[0][0];
+    abort.abort();
+    await expect(pendingBatch).rejects.toThrow();
+    lease.release();
+    await expect(reserveEmbeddingSidecar(config, 256)).rejects.toThrow('busy');
+    await expect(drainEmbeddingSidecarForAnalysis()).rejects.toThrow('busy');
+    expect(children[0].kill).not.toHaveBeenCalled();
+    children[0].emit('message', { type: 'vectors', id: request.id, vectors: [[0.25, 0.5, 0.75]] });
+    await drainEmbeddingSidecarForAnalysis();
+    expect(children[0].kill).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not certify a timed-out reap or allocate another job over the retained process', async () => {
+    vi.useFakeTimers();
+    const { reserveEmbeddingSidecar, ensureEmbeddingSidecar } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    const config = resolveEmbeddingConfig({ threads: 1 });
+    const first = await reserveEmbeddingSidecar(config, 512);
+    await first.initialize();
+    first.release();
+    children[0].kill.mockImplementation(() => true);
+    const rejected = expect(reserveEmbeddingSidecar(config, 256)).rejects.toThrow(
+      'native resource reservation',
+    );
+    await vi.advanceTimersByTimeAsync(5_001);
+    await rejected;
+    await expect(ensureEmbeddingSidecar()).rejects.toThrow('native resource reservation');
+    await expect(reserveEmbeddingSidecar(config, 256)).rejects.toThrow(
+      'native resource reservation',
+    );
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    children[0].emit('close', null, 'SIGKILL');
+    const second = await reserveEmbeddingSidecar(config, 256);
+    second.release();
+  });
+
+  it('rejects config changes while a job owns the runtime and preserves its allocation on respawn', async () => {
+    const { reserveEmbeddingSidecar, ensureEmbeddingSidecar, drainEmbeddingSidecarForAnalysis } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    const config = resolveEmbeddingConfig({ threads: 1, device: 'cpu' });
+    const lease = await reserveEmbeddingSidecar(config, 512);
+    await expect(ensureEmbeddingSidecar({ forceDevice: 'cuda' })).rejects.toThrow('conflicts');
+    expect(forkMock).not.toHaveBeenCalled();
+    await lease.initialize();
+    await expect(ensureEmbeddingSidecar({ embeddingConfig: { threads: 2 } })).rejects.toThrow(
+      'conflicts',
+    );
+    await expect(drainEmbeddingSidecarForAnalysis()).rejects.toThrow('busy');
+    children[0].emit('close', 1, null);
+    await expect(lease.embedBatch(['retry'])).resolves.toHaveLength(1);
+    expect(forkMock.mock.calls[1][2].execArgv).toContain('--max-old-space-size=512');
+    expect(children[1].send.mock.calls[0][0]).toMatchObject({
+      type: 'init',
+      embeddingConfig: config,
+    });
+    lease.release();
+    await drainEmbeddingSidecarForAnalysis();
   });
 
   it('does not fork on darwin/x64', async () => {
