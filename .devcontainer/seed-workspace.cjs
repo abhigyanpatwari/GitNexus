@@ -195,10 +195,11 @@ function normalizeGit(root) {
     if (unset.error || ![0, 5].includes(unset.status))
       throw new Error('Could not detach the copied Git configuration from its host path');
   }
-  if (
-    fs.realpathSync(git(root, 'rev-parse', '--path-format=absolute', '--git-common-dir').trim()) !==
-    gitDir
-  )
+  const commonDirIs = (checkout) =>
+    fs.realpathSync(
+      git(checkout, 'rev-parse', '--path-format=absolute', '--git-common-dir').trim(),
+    ) === gitDir;
+  if (!commonDirIs(root))
     throw new Error('The copied Git common directory is outside the source volume');
 
   const probe = fs.mkdtempSync(path.join(gitDir, 'filesystem-probe-'));
@@ -253,12 +254,7 @@ function normalizeGit(root) {
       if (!checkout) continue; // External worktrees stay registered but unrepaired.
       fs.writeFileSync(pointer, `${path.join(checkout, '.git')}\n`);
       fs.writeFileSync(path.join(checkout, '.git'), `gitdir: ${path.join(registrations, entry)}\n`);
-      if (
-        fs.realpathSync(
-          git(checkout, 'rev-parse', '--path-format=absolute', '--git-common-dir').trim(),
-        ) === gitDir
-      )
-        checkouts.push(checkout);
+      if (commonDirIs(checkout)) checkouts.push(checkout);
     }
   }
   // Read each old setting before changing the common config used by worktrees.
@@ -387,26 +383,25 @@ function workspaceState(target) {
   return 'empty';
 }
 
-function seedWorkspace(source, target) {
-  source = path.resolve(source);
-  target = fs.realpathSync(target);
+function assertSeparate(source, target) {
   if (
     source === target ||
     source.startsWith(target + path.sep) ||
     target.startsWith(source + path.sep)
   )
     throw new Error('Source and destination must be separate directories');
+}
+
+function seedWorkspace(source, target) {
+  source = path.resolve(source);
+  target = fs.realpathSync(target);
+  assertSeparate(source, target);
   if (workspaceState(target) === 'ready') {
     console.log('[workspace] Reusing source volume; host files were not copied.');
     return false;
   }
   source = fs.realpathSync(source);
-  if (
-    source === target ||
-    source.startsWith(target + path.sep) ||
-    target.startsWith(source + path.sep)
-  )
-    throw new Error('Source and destination must be separate directories');
+  assertSeparate(source, target);
   validateGitDirectory(path.join(source, '.git'));
 
   console.log('[workspace] Copying the staged checkout once, including Git and local changes...');
@@ -437,10 +432,7 @@ function seedWorkspace(source, target) {
 module.exports = {
   seedWorkspace,
   commitStaged,
-  normalizeGit,
   validateGitDirectory,
-  prepareWorkspace,
-  workspaceState,
   isWorkspaceExcluded,
   archiveEntries,
   restoreLinks,

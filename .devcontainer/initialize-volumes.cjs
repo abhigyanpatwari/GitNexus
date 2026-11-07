@@ -127,7 +127,12 @@ async function* tarStream(source, names) {
     yield tarHeader(entry, directory ? '5' : '0', size > MAX_OCTAL_SIZE ? 0 : size, mode, mtime);
     if (directory) continue;
     let read = 0;
-    for await (const chunk of fs.createReadStream(file, { highWaterMark: 1 << 20 })) {
+    // Reading a small file whole is ~10x faster than opening a stream for it.
+    const chunks =
+      size <= 1 << 20
+        ? [fs.readFileSync(file)]
+        : fs.createReadStream(file, { highWaterMark: 1 << 20 });
+    for await (const chunk of chunks) {
       read += chunk.length;
       if (read > size) break;
       yield chunk;
@@ -181,10 +186,8 @@ async function runWithProgress(label, args, input) {
   }
 }
 
-async function copyArchive(source, entries, destination, excludes = [], exclude = () => false) {
+async function copyArchive(source, entries, destination, exclude = () => false) {
   if (!entries.length) return;
-  // No shell: spaces, apostrophes and Windows drive letters remain literal arguments.
-  // A failed stream or docker cp must never publish a successful marker.
   const links = [];
   let queued = 0;
   let bytes = 0;
@@ -197,7 +200,7 @@ async function copyArchive(source, entries, destination, excludes = [], exclude 
   const listing = archiveEntries(source, entries, {
     links,
     exclude: (relative) => {
-      const omit = excludes.includes(relative.split(path.sep).join('/')) || exclude(relative);
+      const omit = exclude(relative);
       if (omit) skipped++;
       return omit;
     },
@@ -327,7 +330,7 @@ async function initialize(
         clear('/seed'); // Removes the completion marker before anything else.
         validateGitDirectory(path.join(workspace, '.git'));
         docker('exec', name, 'mkdir', `/seed/${STAGE_TREE}`);
-        await copyArchive(workspace, ['.'], `${name}:/seed/${STAGE_TREE}`, [], isWorkspaceExcluded);
+        await copyArchive(workspace, ['.'], `${name}:/seed/${STAGE_TREE}`, isWorkspaceExcluded);
         docker('exec', name, 'touch', `/seed/${STAGE_COMPLETE}`); // Written last.
       });
     // onCreateCommand runs this host copy, so it matches devcontainer.json and
@@ -352,9 +355,12 @@ async function initialize(
             fs.existsSync(path.join(snapshot.source, entry)),
           );
           console.log(`[volumes] Creating ${snapshot.volume}`);
-          await copyArchive(snapshot.source, entries, `${name}:${snapshot.target}`, [
-            SNAPSHOT_MARKER,
-          ]);
+          await copyArchive(
+            snapshot.source,
+            entries,
+            `${name}:${snapshot.target}`,
+            (relative) => relative === SNAPSHOT_MARKER,
+          );
         }));
       if (fresh && !copied) continue; // Never mark a cleared snapshot complete.
       await runWithProgress(`Finalizing ${snapshot.target}`, [
@@ -378,13 +384,10 @@ async function initialize(
 
 module.exports = {
   initialize,
-  copyArchive,
   tarStream,
   startProgress,
   snapshotState,
-  finishSnapshot,
   HOST_PATHS,
-  IDENTITIES,
 };
 if (require.main === module) {
   (async () => {
