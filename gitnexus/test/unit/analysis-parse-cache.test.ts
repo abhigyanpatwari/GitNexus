@@ -168,6 +168,25 @@ it('flushes memory fallback shards before the child can hand off its cache', asy
   expect(receipt).not.toContain('fileCount');
 });
 
+it.each(['../../escaped', '..\\escaped', 'not-a-digest'])(
+  'rejects an invalid fallback entry before writing any shard (%s)',
+  async (key) => {
+    const cache = emptyParseCache(TEST_PARSE_IDENTITY, { writeStoragePath: stage });
+    cache.entries.set(a, [result(1)]);
+    cache.entries.set(key, [result(2)]);
+    await expect(stageAnalysisParseCache(root, generation, cache)).rejects.toThrow('invalid key');
+    await expect(fs.stat(path.join(stage, 'parse-cache', `${a}.v8`))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(fs.stat(path.resolve(stage, 'parse-cache', `${key}.v8`))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(
+      fs.stat(path.join(root, `analysis-cache-${generation}.json`)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  },
+);
+
 it('does not revive the old shard when a staged repair disappears', async () => {
   await live([[a, 1]]);
   const cache = await loadParseCache(root, TEST_PARSE_IDENTITY, stage);

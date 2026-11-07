@@ -309,6 +309,35 @@ describe('durable graph publication', () => {
     expect(await fs.readFile(path.join(root, sourceFile), 'utf8')).toBe('paid legacy vectors');
   });
 
+  it.each([true, false])(
+    'explicitly drops legacy receipts and exclusions after source retirement (source exists=%s)',
+    async (exists) => {
+      const { root } = await fixture();
+      const sourceFile = `lbug.generation.${'c'.repeat(32)}`;
+      await fs.writeFile(path.join(root, sourceFile), 'legacy vectors');
+      const identity = await recordLegacyEmbeddingSource(
+        root,
+        { sourceFile, schemaFingerprint: 'fixture' },
+        ['Function:a.ts:excluded'],
+      );
+      if (!exists) await fs.unlink(path.join(root, sourceFile));
+      const directory = path.join(root, 'embeddings', 'legacy', identity);
+      const excluded = path.join(directory, 'excluded.jsonl');
+      const remove = fs.rm.bind(fs);
+      const busy = vi.spyOn(fs, 'rm').mockImplementation(async (file, options) => {
+        if (String(file) === excluded) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+        return remove(file, options);
+      });
+      await expect(
+        reclaimAnalysisArtifacts(root, metadata, undefined, undefined, true),
+      ).rejects.toMatchObject({ code: 'EBUSY' });
+      expect(await fs.readFile(path.join(directory, 'legacy.json'), 'utf8')).toContain(sourceFile);
+      busy.mockRestore();
+      await reclaimAnalysisArtifacts(root, metadata, undefined, undefined, true);
+      expect(await fs.readdir(path.join(root, 'embeddings'))).toEqual([]);
+    },
+  );
+
   it('retains everything when an ownership receipt is corrupt and retries busy files later', async () => {
     const { root } = await fixture();
     const graph = path.join(root, `lbug.generation.${'b'.repeat(32)}`);

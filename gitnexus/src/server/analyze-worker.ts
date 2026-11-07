@@ -69,9 +69,9 @@ process.on('unhandledRejection', (reason: unknown) => {
   }
 });
 
-// IPC cancellation is the cross-platform control path. It only records the
-// request while analysis is active; cleanup waits until the analysis promise has
-// returned to JS. SIGTERM is retained only for local process shutdown.
+// IPC cancellation records the request and aborts the analysis signal. Native
+// work drains at safe points before cleanup after the analysis promise settles.
+// SIGTERM is retained only for local process shutdown.
 let cancellationRequested = false;
 let started = false;
 const cancellation = new AbortController();

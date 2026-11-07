@@ -158,6 +158,28 @@ describe('registry-query shared store graph (#3352)', () => {
     expect(hook.findLocalOwnedRepo(checkout)?.lbugPath).toBe(path.join(indexDir, graph));
   });
 
+  it.each(HOOK_COPIES)(
+    'does not fall back to an old local graph after registered generation damage (%s)',
+    (file) => {
+      const graph = `lbug.generation.${'a'.repeat(32)}`;
+      writeSlot({ graphPath: graph });
+      fs.mkdirSync(path.join(slot, graph)); // A directory cannot be a published graph.
+      const local = path.join(checkout, '.gitnexus');
+      fs.mkdirSync(local);
+      fs.writeFileSync(path.join(local, 'gitnexus.json'), JSON.stringify({ repoPath: checkout }));
+      fs.writeFileSync(path.join(local, 'lbug'), 'old local graph');
+      const hook = load(file) as unknown as {
+        findLocalOwnedRepo: (cwd: string) => HookRepo;
+        resolveHookRepo: (cwd: string) => HookRepo;
+      };
+      expect(hook.findLocalOwnedRepo(checkout)?.lbugPath).toBe(path.join(local, 'lbug'));
+      expect(hook.resolveHookRepo(checkout)).toBeNull();
+      fs.rmSync(path.join(slot, graph), { recursive: true });
+      fs.writeFileSync(path.join(slot, graph), 'repaired graph');
+      expect(hook.resolveHookRepo(checkout)?.lbugPath).toBe(path.join(slot, graph));
+    },
+  );
+
   it.each(HOOK_COPIES)('returns the commit graph a shared slot records (%s)', (file) => {
     writeSlot({ graphPath: commitGraph });
     expect(load(file).findRegisteredRepo(checkout)?.lbugPath).toBe(commitGraph);

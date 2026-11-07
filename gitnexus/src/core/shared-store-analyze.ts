@@ -337,11 +337,11 @@ const seedFromLocalIndex = async (
     sourceGraph = resolveGraphPath(source);
     if ((await inspectLbugSidecars(sourceGraph)).kind !== 'clean') return false;
     if (
-      locked.embeddingJob &&
+      (locked.embeddingJob || locked.legacyVectorSource) &&
       registryPathEquals(canonicalizePath(locked.repoPath), canonicalizePath(repoPath))
     )
       throw new Error(
-        "Finish this checkout's pending embedding job in its original storage before shared-store adoption",
+        "Finish or explicitly drop this checkout's pending or legacy embedding work in its original storage before shared-store adoption",
       );
     await fs.mkdir(slot, { recursive: true });
     meta = await retainSharedMetadata(source, slot, locked, true);

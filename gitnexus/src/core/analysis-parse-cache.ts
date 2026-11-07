@@ -147,11 +147,11 @@ export async function stageAnalysisParseCache(
   await ownedStage(root, relative);
   // Bound each selection before copying or serializing it. Unknown/malformed
   // keys cannot become filesystem paths.
-  for (const keys of [cache.usedKeys, cache.stagedKeys, cache.staleKeys]) {
+  for (const keys of [cache.entries, cache.usedKeys, cache.stagedKeys, cache.staleKeys]) {
     if (!keys) continue;
     if (keys.size > Math.floor(MAX_HANDOFF_BYTES / 3 / 70))
       throw new Error('Prepared parser cache key set exceeds its bound');
-    for (const key of keys)
+    for (const key of keys.keys())
       if (!KEY.test(key)) throw new Error('Prepared parser cache contains an invalid key');
   }
   for (const [key, value] of cache.entries) await persistParseCacheChunk(cache, key, value);

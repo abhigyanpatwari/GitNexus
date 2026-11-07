@@ -589,7 +589,8 @@ export async function main(argv = process.argv.slice(2)) {
   --check               Require the baseline corpus/scenarios and reject detected slowdowns
   --keep-stores          Retain owned index/home artifacts (logs and measurements always retained)
 Includes full CLI startup, graph/manifest/native writes and final index work.
-HTTP resume uses a deterministic provider outage, not an unsafe native-process kill.
+HTTP resume requires at least 17 functions to interrupt work after a successful 16-input batch.
+It uses a deterministic provider outage, not an unsafe native-process kill.
 RSS is sampled Linux process-family RSS; other platforms report it unavailable.
 Local scenarios use the installed default model; prewarm its download before timing.
 Live-query latency and platform cases remain separate acceptance requirements.`);
@@ -619,6 +620,10 @@ Live-query latency and platform cases remain separate acceptance requirements.`)
       new Set(scenarios).size === scenarios.length &&
       scenarios.every((x) => SCENARIOS.includes(x)),
     'Invalid or repeated scenario',
+  );
+  assert(
+    !scenarios.includes('http-resume') || numbers.modules * numbers.functions > 16,
+    'http-resume requires --modules × --functions > 16 for a successful batch before the outage',
   );
   if (v.check) {
     assert(numbers.pairs >= 7 && numbers.warmups >= 1, '--check requires seven pairs and a warmup');

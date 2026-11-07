@@ -427,7 +427,6 @@ function findRegisteredRepo(cwd) {
       : storagePath;
     const indexMetadata = branchIsIndexed ? readIndexMetadata(indexDir) : ownershipMetadata;
     const lbugPath = resolveGraphPath(indexDir, indexMetadata);
-    if (!lbugPath) continue;
     if (registeredPath.length > bestLen) {
       bestLen = registeredPath.length;
       best = {
@@ -443,7 +442,9 @@ function findRegisteredRepo(cwd) {
 
 /** Registry row wins (including persisted external storagePath); local owned is fallback. */
 function resolveHookRepo(cwd) {
-  return findRegisteredRepo(cwd) || findLocalOwnedRepo(cwd);
+  const repo = findRegisteredRepo(cwd) || findLocalOwnedRepo(cwd);
+  // A matching owned registry row blocks fallback even when its graph is invalid.
+  return repo && repo.lbugPath ? repo : null;
 }
 
 module.exports = {

@@ -276,16 +276,26 @@ async function* exclusions(
   }
 }
 
-export async function readLegacyEmbeddingSource(
+/** Validate receipt ownership independently of a source that may already be reclaimed. */
+export async function readLegacyEmbeddingSourceReceipt(
   root: string,
   identity: string,
-): Promise<ResolvedLegacyEmbeddingSource> {
+): Promise<LegacyEmbeddingSourceRecord> {
   if (!DIGEST.test(identity)) throw new Error('Invalid legacy source identity');
-  root = await embeddingJobDirectory(root);
   const directory = await embeddingJobDirectory(path.join(await legacyRoot(root, false), identity));
   const receipt = record(await readEmbeddingJobRecord(directory, 'legacy.json'));
   if (hash(receipt) !== identity)
     throw new Error('Legacy source identity mismatch; source retained');
+  return receipt;
+}
+
+export async function readLegacyEmbeddingSource(
+  root: string,
+  identity: string,
+): Promise<ResolvedLegacyEmbeddingSource> {
+  root = await embeddingJobDirectory(root);
+  const receipt = await readLegacyEmbeddingSourceReceipt(root, identity);
+  const directory = path.join(root, 'embeddings', 'legacy', identity);
   return {
     ...receipt,
     identity,

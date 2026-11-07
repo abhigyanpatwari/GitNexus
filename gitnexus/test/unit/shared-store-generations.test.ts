@@ -406,19 +406,28 @@ describe('shared-store logical generations', () => {
     expect(await fs.readFile(resolveGraphPath(slot), 'utf8')).toBe('verified private graph');
   });
 
-  it("refuses to strand this checkout's pending local job during adoption", async () => {
-    const source = path.join(repo, '.gitnexus');
-    await fs.mkdir(source);
-    await fs.writeFile(path.join(source, generation), 'local generation');
-    const job = { version: 1 as const, identity: 'b'.repeat(64), graphGeneration: 'a'.repeat(32) };
-    await saveMeta(
-      source,
-      modern({ storagePath: source, graphPath: generation, embeddingJob: job }),
-    );
-    await expect(seedSharedSlot(layout, repo, () => {})).rejects.toThrow('pending embedding job');
-    expect((await loadMeta(source))?.embeddingJob).toEqual(job);
-    expect(await loadMeta(slot)).toBeNull();
-  });
+  it.each(['embeddingJob', 'legacyVectorSource'] as const)(
+    "refuses to strand this checkout's %s during adoption",
+    async (field) => {
+      const source = path.join(repo, '.gitnexus');
+      await fs.mkdir(source);
+      await fs.writeFile(path.join(source, generation), 'local generation');
+      const job = {
+        version: 1 as const,
+        identity: 'b'.repeat(64),
+        graphGeneration: 'a'.repeat(32),
+      };
+      const retained = field === 'embeddingJob' ? job : 'b'.repeat(64);
+      await saveMeta(
+        source,
+        modern({ storagePath: source, graphPath: generation, [field]: retained }),
+      );
+      await expect(seedSharedSlot(layout, repo, () => {})).rejects.toThrow('embedding work');
+      expect((await loadMeta(source))?.[field]).toEqual(retained);
+      expect(await fs.readFile(path.join(source, generation), 'utf8')).toBe('local generation');
+      expect(await loadMeta(slot)).toBeNull();
+    },
+  );
 
   it.each([true, false])(
     'keeps an owned generation in place without copying or dropping its pointer (copy=%s)',

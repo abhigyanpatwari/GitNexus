@@ -4,7 +4,10 @@ import path from 'node:path';
 import type { RepoMeta } from './repo-meta.js';
 import { embeddingJobDirectory, readEmbeddingJobRecord } from './embedding-job.js';
 import { readEmbeddingArtifactOwners } from './embedding-artifact.js';
-import { readLegacyEmbeddingSource } from './legacy-embedding-source.js';
+import {
+  readLegacyEmbeddingSource,
+  readLegacyEmbeddingSourceReceipt,
+} from './legacy-embedding-source.js';
 import { logger } from '../core/logger.js';
 
 const GRAPH = /^lbug\.generation\.[a-f0-9]{32}$/;
@@ -111,6 +114,13 @@ export async function reclaimAnalysisArtifacts(
       if (dropEmbeddings && !owned && (await fs.readdir(job)).length)
         throw new Error('Embedding artifact has no ownership receipt; artifacts retained');
     }
+    if (dropEmbeddings && jobEntries.includes('legacy')) {
+      const parent = await embeddingJobDirectory(path.join(embeddingRoot, 'legacy'));
+      for (const identity of await fs.readdir(parent)) {
+        await readLegacyEmbeddingSourceReceipt(root, identity);
+        orphanJobs.push({ directory: path.join(parent, identity), receiptName: 'legacy.json' });
+      }
+    }
     const remove = async (file: string, recursive = false): Promise<boolean> => {
       try {
         await fs.rm(file, { force: true, recursive });
@@ -153,6 +163,7 @@ export async function reclaimAnalysisArtifacts(
       if (removed && (await remove(path.join(job, receiptName)))) await fs.rmdir(job);
     }
     if (dropEmbeddings) {
+      if (jobEntries.includes('legacy')) await fs.rmdir(path.join(embeddingRoot, 'legacy'));
       // Every space was validated before deletion. Remove its ownership only
       // after payload removal succeeds, so a busy file can be retried safely.
       for (const space of spaces) {
