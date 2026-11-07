@@ -149,7 +149,8 @@ export function resolveAnalysisResourceBudget(
       Math.max(minimumMainMb, request.mainHeapMb ?? 0) + Math.max(embeddingFixedMb, parseFixedMb);
     throw new Error(
       `Resource budget ${totalMb} MiB cannot admit parser/model work; requires at least ${minimum} MiB for these allocations. ` +
-        'Reduce explicit reservations or concurrent analyses, use an HTTP embedding provider, or increase available RAM.',
+        'Reduce explicit reservations or concurrent analyses, or increase available RAM. ' +
+        'If using a local embedding model, an HTTP embedding provider can reduce its reservation.',
     );
   }
 
