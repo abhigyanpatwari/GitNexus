@@ -48,7 +48,6 @@ export function resolveHostAnalysisResources(
     availableCpus: Math.max(1, Math.floor(os.availableParallelism() / concurrency)),
     totalMb: options.totalMb,
     mainHeapMb: options.mainHeapMb,
-    allowHeapOvercommit: options.mainHeapMb !== undefined && options.totalMb === undefined,
     workers: options.workers ?? positiveEnvironment('GITNEXUS_WORKER_POOL_SIZE'),
     workerHeapMb: positiveEnvironment('GITNEXUS_WORKER_HEAP_MB'),
     embeddingThreads: options.includeEmbeddings

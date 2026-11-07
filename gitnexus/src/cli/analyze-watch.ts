@@ -198,6 +198,7 @@ export async function resolveWatchOptions(
     totalMb: positiveInteger(merged.resourceBudget, '--resource-budget'),
     mainHeapMb:
       positiveInteger(cli.memoryBudget, '--memory-budget') ??
+      positiveInteger(process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB, 'admitted main heap') ??
       Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
     workers: workerPoolSize,
     includeEmbeddings: await analysisMayEmbed(repoPath, { branch }),
@@ -473,6 +474,8 @@ export async function watchCommandWithRunnerIdentity(
   inputPath?: string,
   cliOptions: WatchCliOptions = {},
 ): Promise<void> {
+  const priorMainHeap = process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB;
+  const priorSupervisor = process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES;
   let cancelled = false;
   let stopWatching: (() => void) | undefined;
   const cancel = () => {
@@ -505,7 +508,8 @@ export async function watchCommandWithRunnerIdentity(
         totalMb: positiveInteger(cliOptions.resourceBudget, '--resource-budget'),
         mainHeapMb: manualHeap
           ? Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2)
-          : positiveInteger(cliOptions.memoryBudget, '--memory-budget'),
+          : (positiveInteger(cliOptions.memoryBudget, '--memory-budget') ??
+            positiveInteger(process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB, 'admitted main heap')),
         workers: positiveInteger(cliOptions.workers, '--workers'),
         includeEmbeddings: await analysisMayEmbed(repoPath, { branch: cliOptions.branch }),
         supervisorBytes:
@@ -514,6 +518,8 @@ export async function watchCommandWithRunnerIdentity(
             : Number(process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES),
       });
       if (cancelled) return;
+      process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB = String(admission.mainHeapMb);
+      process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES = String(admission.supervisorBytes);
       if (
         !manualHeap &&
         (await ensureHeap({
@@ -686,6 +692,8 @@ export async function watchCommandWithRunnerIdentity(
       setEnvironment('GITNEXUS_VERBOSE', baselineEnvironment.verbose);
     }
   } finally {
+    setEnvironment('GITNEXUS_ANALYSIS_MAIN_HEAP_MB', priorMainHeap);
+    setEnvironment('GITNEXUS_ANALYSIS_SUPERVISOR_BYTES', priorSupervisor);
     process.removeListener('message', onControlMessage);
     process.removeListener('disconnect', cancel);
   }

@@ -76,11 +76,13 @@ export async function createEmbeddingJobDirectories(
     const next = path.join(directory, component);
     try {
       await fs.mkdir(next, { mode: 0o700 });
-      await syncEmbeddingJobDirectory(directory);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
-    directory = await embeddingJobDirectory(next);
+    const canonical = await embeddingJobDirectory(next);
+    // An earlier attempt may have created the entry but failed its sync.
+    await syncEmbeddingJobDirectory(directory);
+    directory = canonical;
   }
   return directory;
 }

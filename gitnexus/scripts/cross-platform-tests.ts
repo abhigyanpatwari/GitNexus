@@ -28,6 +28,9 @@
 const PLATFORM_LOGIC = [
   'test/unit/embedding-sidecar-lifetime.test.ts',
   'test/unit/analysis-publication.test.ts',
+  'test/unit/analysis-writer-identity.test.ts',
+  'test/unit/analysis-writer-identity-platform.test.ts',
+  'test/integration/parse-impl-round-drain.test.ts',
   'test/unit/analysis-phase-supervisor.test.ts',
   'test/unit/shared-vector-artifact.test.ts',
   'test/unit/embedding-artifact.test.ts',
@@ -384,6 +387,7 @@ const WORKER_THREADS = [
   'test/integration/resolvers/java-overload-jls.test.ts',
   'test/unit/community-processor.test.ts',
   'test/integration/worker-pool.test.ts',
+  'test/integration/worker-pool-admission.test.ts',
   'test/integration/class-expression-owners.test.ts',
   'test/integration/parse-impl-quarantine-cache-skip.test.ts',
   // Real parse workers and both on-disk parse stores must retain lexical

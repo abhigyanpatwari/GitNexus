@@ -1869,7 +1869,9 @@ export class LocalBackend {
           ...meta,
           fileHashes: undefined,
           cacheKeys: undefined,
-          embeddingCheckpoint: undefined,
+          embeddingCheckpoint: meta.embeddingCheckpoint
+            ? { ...meta.embeddingCheckpoint, pendingNodeIds: undefined, recovery: undefined }
+            : undefined,
         };
       });
       this.toolMetadata.set(repo, pending);
@@ -1943,33 +1945,6 @@ export class LocalBackend {
    */
   private warnedMissingEmbeddingStack = false;
   private warnedNoEmbeddingVectors = false;
-
-  /**
-   * Width the semantic lane last produced a QUERY vector at for an index, keyed
-   * by `lbugPath` (like `lastObservedPoolState`, and for the same reason: branch
-   * handles are rebuilt by `applyBranchScope` on every `resolveRepo`, so state
-   * hung off the handle would not survive to the next call).
-   *
-   * Exists so `query()` can raise the vector-column drift warning (#2798) ONLY
-   * where a width actually matters — a call that embedded something. The lane
-   * returns before importing the embedder when the index holds no vectors, and
-   * swallows an unavailable/pruned embedder into `[]`; a width complaint about
-   * either is noise about a comparison that never happened, and every index
-   * analyzed without `--embeddings` would carry it on every query.
-   *
-   * Recorded rather than recomputed at the warning site because the comparand
-   * must be the width the CAST actually binds — `getEmbeddingDims()` (the HTTP
-   * dimensions, else the local model's fixed 384), NOT `schema.ts`'s
-   * env-derived `EMBEDDING_DIMS`. Those two disagree exactly when
-   * `GITNEXUS_EMBEDDING_DIMS` is set on a server embedding LOCALLY, where the
-   * env value is the one the query path ignores — comparing against it would
-   * report drift on a lane that is working fine.
-   *
-   * Written only on definite outcomes (set once a vector exists, deleted where
-   * the lane provably embedded nothing), so concurrent queries against one
-   * index write the same value and an entry never outlives the fact it records.
-   */
-  private lastQueryEmbeddingDims: Map<string, number> = new Map();
 
   /**
    * Cross-repo group tools (CLI). Shares logic with MCP `group_*` handlers.
@@ -3658,7 +3633,7 @@ export class LocalBackend {
     // over a single `current` phase slot.
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
     const ftsDisabledReason = getFtsDisabledReason(meta?.capabilities?.fts);
-    const vectorDegraded = { reason: undefined as string | undefined };
+    const vectorDegraded: { reason?: string; embeddingDims?: number } = {};
     const [bm25Outcome, semanticOutcome] = await Promise.allSettled([
       timer.time('bm25', this.bm25Search(repo, searchQuery, searchLimit, ftsDisabledReason)),
       timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit, vectorDegraded)),
@@ -4328,14 +4303,7 @@ export class LocalBackend {
     // minus its semantic lane beats no answer at all. Same shape as the CJK
     // drift check above — composed into `warnings`, recomputed per query rather
     // than latched, and carrying the fix rather than just the symptom.
-    //
-    // Gated on a width this call actually embedded at (see
-    // `lastQueryEmbeddingDims`) so the tools that never embed — every other
-    // method on this backend — and every index analyzed without `--embeddings`
-    // stay quiet. ABSENT `embeddingDims` is NOT a mismatch: that is
-    // `embeddingDimsMismatch`'s own rule, reused rather than restated so the
-    // two sides of the guard cannot drift apart.
-    const queryEmbeddingDims = this.lastQueryEmbeddingDims.get(repo.lbugPath);
+    const queryEmbeddingDims = vectorDegraded.embeddingDims;
     if (
       queryEmbeddingDims !== undefined &&
       meta &&
@@ -4584,18 +4552,13 @@ export class LocalBackend {
     repo: RepoHandle,
     query: string,
     limit: number,
-    degraded?: { reason?: string },
+    degraded?: { reason?: string; embeddingDims?: number },
   ): Promise<any[]> {
-    // Whether THIS call produced a query vector — see `lastQueryEmbeddingDims`.
-    // A local flag, not a re-read of the map: the map may still hold an earlier
-    // call's width, and the catch below must only clear an entry it did not set.
-    let embeddedDims: number | undefined;
     try {
       if (repo.generationUnknown) {
         if (degraded)
           degraded.reason =
             'Semantic search is unavailable because the graph generation is unverified. Run gitnexus analyze; graph and keyword search remain available.';
-        this.lastQueryEmbeddingDims.delete(repo.lbugPath);
         return [];
       }
       const metadata = await this.readToolMetadata(repo);
@@ -4603,7 +4566,6 @@ export class LocalBackend {
         if (degraded)
           degraded.reason =
             'Semantic search is unavailable because the graph generation is unverified. Run gitnexus analyze; graph and keyword search remain available.';
-        this.lastQueryEmbeddingDims.delete(repo.lbugPath);
         return [];
       }
       const selection = selectVectorGeneration(
@@ -4618,7 +4580,6 @@ export class LocalBackend {
             'Semantic search is unavailable while embeddings are pending. Run gitnexus analyze to resume; graph and keyword search remain available.';
         else if (degraded && selection.reason !== 'embeddings-unavailable')
           degraded.reason = `Semantic search is unavailable (${selection.reason}). Run gitnexus analyze; graph and keyword search remain available.`;
-        this.lastQueryEmbeddingDims.delete(repo.lbugPath);
         return [];
       }
       let bestChunks = new Map<
@@ -4633,15 +4594,13 @@ export class LocalBackend {
           async () => {
             const { embedQuery, getEmbeddingDims } = await import('../core/embedder.js');
             const queryVec = await embedQuery(query);
-            embeddedDims = getEmbeddingDims();
-            this.lastQueryEmbeddingDims.set(repo.lbugPath, embeddedDims);
+            if (degraded) degraded.embeddingDims = getEmbeddingDims();
             return queryVec;
           },
           limit,
           getVectorMaxDistance(DEFAULT_MCP_VECTOR_MAX_DISTANCE),
         );
         bestChunks = new Map((chunks ?? []).map(({ nodeId, ...chunk }) => [nodeId, chunk]));
-        if (embeddedDims === undefined) this.lastQueryEmbeddingDims.delete(repo.lbugPath);
       } else {
         // Check if embedding table exists before loading the model (avoids heavy model init when embeddings are off)
         // determinism: probe — aggregate singleton. COUNT(*) with no grouping key returns exactly one row, and only
@@ -4651,7 +4610,6 @@ export class LocalBackend {
           `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
         );
         if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) {
-          this.lastQueryEmbeddingDims.delete(repo.lbugPath);
           this.logKeywordOnlyEmbeddings();
           return [];
         }
@@ -4662,8 +4620,7 @@ export class LocalBackend {
         // #2798: the width this query vector really was produced at — the same
         // value the CAST below binds against the index's `FLOAT[N]` column, and
         // therefore the only honest comparand for query()'s drift warning.
-        embeddedDims = dims;
-        this.lastQueryEmbeddingDims.set(repo.lbugPath, dims);
+        if (degraded) degraded.embeddingDims = dims;
         const queryVecStr = `[${queryVec.join(',')}]`;
         const maxDistance = getVectorMaxDistance(DEFAULT_MCP_VECTOR_MAX_DISTANCE);
         let vectorReady = false;
@@ -4804,11 +4761,6 @@ export class LocalBackend {
       return results;
     } catch (err) {
       rethrowSymbolIdentityError(err);
-      // Nothing was embedded on this path unless the throw happened after the
-      // vector existed (a failed lookup downstream of a good embedding, where
-      // the width IS still the live one). Clearing only in the former case
-      // keeps the recorded width a fact rather than a leftover (#2798).
-      if (embeddedDims === undefined) this.lastQueryEmbeddingDims.delete(repo.lbugPath);
       // Embeddings disabled is the common, silent case. But a missing or
       // Node-unloadable local stack (#2370/#2372) also lands here — surface it
       // once so semantic search doesn't silently degrade to BM25 with no hint
