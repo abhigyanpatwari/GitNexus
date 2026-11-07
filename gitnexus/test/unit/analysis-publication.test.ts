@@ -456,6 +456,38 @@ describe('durable graph publication', () => {
     },
   );
 
+  it('allows a slow Windows birth probe within the recovery deadline', async () => {
+    const { root, stage, actions } = await fixture();
+    vi.spyOn(os, 'platform').mockReturnValue('win32');
+    vi.spyOn(indexLock, 'readProcStartTime').mockReturnValue(null);
+    const birth = vi
+      .spyOn(writerIdentity, 'readAnalysisWriterBirth')
+      .mockResolvedValue({ kind: 'win32-ticks', value: '12345' });
+    const receipt = await prepareAnalysisPublication(root, stage, metadata, content, {
+      waitForProcessExit: true,
+    });
+    const payload = { ...receipt, writerPid: process.pid + 100000 };
+    await fs.writeFile(
+      path.join(root, 'analysis-publication.json'),
+      JSON.stringify({
+        payload,
+        checksum: createHash('sha256').update(JSON.stringify(payload)).digest('hex'),
+      }),
+    );
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    birth.mockImplementation(async (_pid, remainingMs) => {
+      now = 2500;
+      return remainingMs !== undefined && remainingMs > now
+        ? { kind: 'win32-ticks', value: '12346' }
+        : undefined;
+    });
+    const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    expect((await publishPreparedAnalysis(root, actions))?.graphGeneration?.id).toBe(receipt.id);
+    expect(kill).not.toHaveBeenCalled();
+    expect(birth.mock.lastCall?.[1]).toBeLessThanOrEqual(5000);
+  });
+
   it.each(['equal', 'unknown', 'different-platform', 'legacy'] as const)(
     'retains a live writer when birth identity is %s',
     async (state) => {

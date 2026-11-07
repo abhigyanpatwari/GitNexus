@@ -10,6 +10,7 @@ import { preserveVectorCoverage } from '../storage/vector-generation.js';
 import { embeddingJobDirectory, syncEmbeddingJobDirectory } from '../storage/embedding-job.js';
 import { readProcStartTime } from '../storage/index-lock.js';
 import {
+  getAnalysisWriterProbeTimeoutMs,
   isAnalysisWriterBirth,
   readAnalysisWriterBirth,
   type AnalysisWriterBirth,
@@ -420,7 +421,9 @@ export async function publishPreparedAnalysis(
   const receipt = await readPreparedAnalysis(root);
   if (!receipt) return undefined;
   if (receipt.writerPid !== undefined) {
-    const deadline = performance.now() + 2000;
+    const deadline =
+      performance.now() +
+      Math.max(2000, receipt.writerBirth ? getAnalysisWriterProbeTimeoutMs() : 0);
     for (;;) {
       // A live, recycled PID is not the process that prepared this receipt.
       if (

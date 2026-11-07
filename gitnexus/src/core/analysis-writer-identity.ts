@@ -22,11 +22,15 @@ export function isAnalysisWriterBirth(value: unknown): value is AnalysisWriterBi
   );
 }
 
+export function getAnalysisWriterProbeTimeoutMs(): number {
+  return os.platform() === 'win32' ? 5000 : 1500;
+}
+
 /** Unknown identity never establishes that a writer has exited. External probes
  * use fixed executables, bounded output and the caller's remaining wait budget. */
 export async function readAnalysisWriterBirth(
   pid: number,
-  timeoutMs = 1500,
+  timeoutMs = getAnalysisWriterProbeTimeoutMs(),
 ): Promise<AnalysisWriterBirth | undefined> {
   if (!Number.isSafeInteger(pid) || pid < 1 || timeoutMs <= 0) return undefined;
   try {

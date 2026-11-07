@@ -51,6 +51,25 @@ describe('analysis writer birth identity', () => {
       expect(await readAnalysisWriterBirth(123)).toBeUndefined();
     },
   );
+  it('allows a Windows probe to finish after a slow PowerShell startup', async () => {
+    vi.spyOn(os, 'platform').mockReturnValue('win32');
+    vi.useFakeTimers();
+    try {
+      mocks.execute.mockImplementation((_file, _args, options, callback) => {
+        const timeout = setTimeout(() => callback(new Error('timeout'), '', ''), options.timeout);
+        setTimeout(() => {
+          clearTimeout(timeout);
+          callback(null, '639296533230000000', '');
+        }, 2500);
+      });
+      const birth = readAnalysisWriterBirth(123);
+      await vi.advanceTimersByTimeAsync(2500);
+      expect(await birth).toEqual({ kind: 'win32-ticks', value: '639296533230000000' });
+      expect(mocks.execute.mock.calls[0][2].timeout).toBeLessThanOrEqual(5000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it.each([0, -1, 1.2, NaN, Infinity])(
     'does not launch a probe for invalid PID %s',
     async (pid) => {
