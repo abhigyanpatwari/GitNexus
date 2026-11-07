@@ -406,6 +406,43 @@ describe('shared-store logical generations', () => {
     expect(await fs.readFile(resolveGraphPath(slot), 'utf8')).toBe('verified private graph');
   });
 
+  it('keeps a legacy checkpoint with its owner when seeding a sibling', async () => {
+    const source = path.join(repo, '.gitnexus');
+    await fs.mkdir(source);
+    await fs.writeFile(path.join(source, 'lbug'), 'legacy graph');
+    const checkpoint = {
+      at: '2026-11-07T00:00:00Z',
+      nodesProcessed: 1,
+      totalNodes: 2,
+      chunksProcessed: 1,
+      model: 'fixture',
+      dimensions: 4,
+      provider: 'local',
+    };
+    await saveMeta(source, metadata({ storagePath: source, embeddingCheckpoint: checkpoint }));
+    await expect(seedSharedSlot(layout, repo, () => {})).rejects.toThrow('embedding work');
+    expect(await loadMeta(slot)).toBeNull();
+    const sibling = path.join(root, 'sibling');
+    git('worktree', 'add', '-q', '-b', 'sibling', sibling);
+    const next = {
+      ...sharedStoreLayout(path.basename(layout.root), sibling),
+      canonicalCheckout: repo,
+    };
+    await seedSharedSlot(next, sibling, () => {});
+    expect(await loadMeta(next.checkoutSlot)).toBeNull();
+    await expect(fs.stat(path.join(next.checkoutSlot, 'lbug'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect((await requireMeta(source)).embeddingCheckpoint).toEqual(checkpoint);
+    expect(await fs.readFile(path.join(source, 'lbug'), 'utf8')).toBe('legacy graph');
+    const completed = await requireMeta(source);
+    delete completed.embeddingCheckpoint;
+    await saveMeta(source, completed);
+    await seedSharedSlot(next, sibling, () => {});
+    expect(await fs.readFile(resolveGraphPath(next.checkoutSlot), 'utf8')).toBe('legacy graph');
+    expect((await requireMeta(next.checkoutSlot)).embeddingCheckpoint).toBeUndefined();
+  });
+
   it.each(['embeddingJob', 'legacyVectorSource'] as const)(
     "refuses to strand this checkout's %s during adoption",
     async (field) => {

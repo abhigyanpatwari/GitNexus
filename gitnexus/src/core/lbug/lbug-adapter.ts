@@ -885,9 +885,12 @@ const ensureLbugInitialized = async (
   const skipFts = options.skipFts === true;
   if (
     options.bufferPoolBytes !== undefined &&
-    (!Number.isSafeInteger(options.bufferPoolBytes) || options.bufferPoolBytes < 8 * 1024 * 1024)
+    (!Number.isSafeInteger(options.bufferPoolBytes) ||
+      (options.bufferPoolBytes !== 0 && options.bufferPoolBytes < 8 * 1024 * 1024))
   )
-    throw new Error('Explicit LadybugDB buffer pool must be at least 8 MiB');
+    throw new Error(
+      'Explicit LadybugDB buffer pool must be zero (native default) or at least 8 MiB',
+    );
   if (
     options.threads !== undefined &&
     (!Number.isSafeInteger(options.threads) || options.threads < 1)

@@ -47,6 +47,48 @@ function createChild() {
 }
 
 describe('auto-sync analysis worker', () => {
+  it.each(['timeout', 'abort'] as const)(
+    'covers resource preflight with %s without launching a late worker',
+    async (reason) => {
+      let finish!: (value: boolean) => void;
+      const preflight = new Promise<boolean>((resolve) => {
+        finish = resolve;
+      });
+      const mayEmbed = vi.spyOn(hostResources, 'analysisMayEmbed').mockReturnValue(preflight);
+      const forkWorker = vi.fn();
+      let expire!: () => void;
+      const setTimeoutFn = vi.fn((callback: () => void) => {
+        expire = callback;
+        return 1;
+      });
+      const clearTimeoutFn = vi.fn();
+      const onCancellationRequested = vi.fn();
+      const controller = new AbortController();
+      const run = createRunner({
+        forkWorker,
+        setTimeoutFn: setTimeoutFn as any,
+        clearTimeoutFn: clearTimeoutFn as any,
+      });
+      try {
+        const pending = run('/tmp/repo', {}, 50, controller.signal, onCancellationRequested);
+        expect(mayEmbed).toHaveBeenCalledOnce();
+        expect(setTimeoutFn).toHaveBeenCalledWith(expect.any(Function), 50);
+        if (reason === 'timeout') expire();
+        else controller.abort();
+        await expect(pending).rejects.toThrow(reason === 'timeout' ? 'timed out' : 'cancelled');
+        expect(onCancellationRequested).toHaveBeenCalledOnce();
+        expect(clearTimeoutFn).toHaveBeenCalledWith(1);
+        finish(false);
+        await preflight;
+        expect(forkWorker).not.toHaveBeenCalled();
+        expect(setTimeoutFn).toHaveBeenCalledOnce();
+      } finally {
+        finish(false);
+        mayEmbed.mockRestore();
+      }
+    },
+  );
+
   it.each([
     [1, 8192],
     [4, 3072],

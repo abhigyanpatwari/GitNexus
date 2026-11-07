@@ -73,7 +73,8 @@ describe('analysis database resource allocations', () => {
   it('rejects invalid allocations before creating the database directory or opening native code', async () => {
     const parent = path.join(root, 'not-created');
     for (const options of [
-      { bufferPoolBytes: 0 },
+      { bufferPoolBytes: -1 },
+      { bufferPoolBytes: 0.5 },
       { bufferPoolBytes: 1024 },
       { threads: 0 },
       { threads: 1.5 },
@@ -84,6 +85,12 @@ describe('analysis database resource allocations', () => {
     }
     expect(native.open).not.toHaveBeenCalled();
     await expect(fs.stat(parent)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('preserves the zero override for the native default pool', async () => {
+    await adapter.initLbug(path.join(root, 'lbug'), { skipFts: true, bufferPoolBytes: 0 });
+    expect(native.open).toHaveBeenCalledOnce();
+    expect(native.open.mock.calls[0][2]).toMatchObject({ bufferPoolBytes: 0 });
   });
 
   it.each(['conn', 'db'] as const)(

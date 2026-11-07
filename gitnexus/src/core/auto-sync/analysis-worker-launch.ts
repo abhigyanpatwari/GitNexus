@@ -116,15 +116,6 @@ export function createAutoSyncAnalysisRunner(
     onProgress,
   ) => {
     signal?.throwIfAborted();
-    const resources =
-      options.resources ??
-      resolveHostAnalysisResources({
-        mainHeapMb: resolveWorkerHeapMb(concurrency) + 48,
-        includeEmbeddings: await analysisMayEmbed(repoPath, options),
-        supervisorBytes: Math.ceil(analysisSupervisorReservation() / (concurrency ?? 1)),
-        concurrency,
-      });
-    const analysisOptions = { ...options, graphPublication: 'auto' as const, resources };
     return new Promise<Pick<AnalyzeResult, 'stats' | 'graphWriteCollapsed'>>((resolve, reject) => {
       if (signal?.aborted) {
         reject(new Error('Analysis cancelled.'));
@@ -141,15 +132,8 @@ export function createAutoSyncAnalysisRunner(
         reject(new Error(`Auto-sync analyze worker is missing: ${workerPath}`));
         return;
       }
-      const workerHeapMb = resources.mainHeapMb - 48;
-      const execArgv = isDev
-        ? [
-            '--import',
-            pathToFileURL(_require.resolve('tsx/esm')).href,
-            `--max-old-space-size=${workerHeapMb}`,
-            '--max-semi-space-size=16',
-          ]
-        : [`--max-old-space-size=${workerHeapMb}`, '--max-semi-space-size=16'];
+      let analysisOptions: AnalyzeOptions;
+      let execArgv: string[];
       let child: AnalysisWorker;
 
       let terminalOutcome: WorkerMessage | undefined;
@@ -184,6 +168,11 @@ export function createAutoSyncAnalysisRunner(
         terminationError = error;
         deps.clearTimeoutFn(timeout);
         onCancellationRequested?.();
+        if (!child) {
+          // Preflight owns no native worker; expire immediately and prevent a late launch.
+          settle(error);
+          return;
+        }
         // IPC has the same semantics on macOS and Windows. The worker exits only
         // after reaching a JS-visible safe point; this parent keeps ownership until then.
         try {
@@ -329,11 +318,31 @@ export function createAutoSyncAnalysisRunner(
           settle(startError);
         }
       };
-      try {
+      const start = async () => {
+        let resources = options.resources;
+        if (!resources) {
+          const includeEmbeddings = await analysisMayEmbed(repoPath, options);
+          if (settled) return;
+          resources = resolveHostAnalysisResources({
+            mainHeapMb: resolveWorkerHeapMb(concurrency) + 48,
+            includeEmbeddings,
+            supervisorBytes: Math.ceil(analysisSupervisorReservation() / (concurrency ?? 1)),
+            concurrency,
+          });
+        }
+        analysisOptions = { ...options, graphPublication: 'auto', resources };
+        const workerHeapMb = resources.mainHeapMb - 48;
+        execArgv = isDev
+          ? [
+              '--import',
+              pathToFileURL(_require.resolve('tsx/esm')).href,
+              `--max-old-space-size=${workerHeapMb}`,
+              '--max-semi-space-size=16',
+            ]
+          : [`--max-old-space-size=${workerHeapMb}`, '--max-semi-space-size=16'];
         launch();
-      } catch (error) {
-        settle(error as Error);
-      }
+      };
+      void start().catch((error: Error) => settle(error));
     });
   };
 }

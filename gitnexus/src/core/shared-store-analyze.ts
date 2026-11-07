@@ -147,6 +147,7 @@ async function retainSharedMetadata(
   if (
     !meta.graphGeneration &&
     !meta.embeddingJob &&
+    !meta.embeddingCheckpoint &&
     !meta.vectorGeneration &&
     !meta.legacyVectorSource
   )
@@ -337,12 +338,15 @@ const seedFromLocalIndex = async (
     sourceGraph = resolveGraphPath(source);
     if ((await inspectLbugSidecars(sourceGraph)).kind !== 'clean') return false;
     if (
-      (locked.embeddingJob || locked.legacyVectorSource) &&
+      (locked.embeddingJob || locked.embeddingCheckpoint || locked.legacyVectorSource) &&
       registryPathEquals(canonicalizePath(locked.repoPath), canonicalizePath(repoPath))
     )
       throw new Error(
         "Finish or explicitly drop this checkout's pending or legacy embedding work in its original storage before shared-store adoption",
       );
+    // Legacy checkpoints can mark partial vectors or reference a separate recovery
+    // graph. Neither can be certified by copying only the current graph to a sibling.
+    if (locked.embeddingCheckpoint) return false;
     await fs.mkdir(slot, { recursive: true });
     meta = await retainSharedMetadata(source, slot, locked, true);
     try {
