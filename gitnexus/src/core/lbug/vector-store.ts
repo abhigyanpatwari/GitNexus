@@ -378,12 +378,10 @@ export class VectorStore {
       )
         throw new Error('Cannot select an incomplete vector group');
       await this.ensureSelectionTable();
-      await this.transaction(async () => {
-        await this.query(
-          'UNWIND $ids AS id MERGE (s:EmbeddingSelection {nodeId:id}) SET s.job=$job',
-          { ids: [...ids], job },
-        );
-      });
+      await this.query(
+        'UNWIND $ids AS id MERGE (s:EmbeddingSelection {nodeId:id}) SET s.job=$job',
+        { ids: [...ids], job },
+      );
     }, true);
   }
 
@@ -466,9 +464,7 @@ export class VectorStore {
         let ids: string[] = [];
         const remove = async () => {
           if (!ids.length) return;
-          await this.transaction(async () => {
-            await this.query('UNWIND $ids AS id MATCH (e:CodeEmbedding {id:id}) DELETE e', { ids });
-          });
+          await this.query('UNWIND $ids AS id MATCH (e:CodeEmbedding {id:id}) DELETE e', { ids });
           ids = [];
         };
         for (const receipt of previous.values())
@@ -478,17 +474,15 @@ export class VectorStore {
           }
         await remove();
       }
-      await this.transaction(async () => {
-        await this.query(
-          'UNWIND range(1, size($ids)) AS i MERGE (n:EmbeddingNodeReceipt {nodeId:$ids[i]}) SET n.contentHash=$hashes[i], n.chunks=0, n.complete=false, n.sourceStartLine=$firstLines[i], n.sourceEndLine=$lastLines[i]',
-          {
-            ids: nodes.map((node) => node.nodeId),
-            hashes: nodes.map((node) => node.contentHash),
-            firstLines: nodes.map((node) => node.sourceStartLine ?? 0),
-            lastLines: nodes.map((node) => node.sourceEndLine ?? 0),
-          },
-        );
-      });
+      await this.query(
+        'UNWIND range(1, size($ids)) AS i MERGE (n:EmbeddingNodeReceipt {nodeId:$ids[i]}) SET n.contentHash=$hashes[i], n.chunks=0, n.complete=false, n.sourceStartLine=$firstLines[i], n.sourceEndLine=$lastLines[i]',
+        {
+          ids: nodes.map((node) => node.nodeId),
+          hashes: nodes.map((node) => node.contentHash),
+          firstLines: nodes.map((node) => node.sourceStartLine ?? 0),
+          lastLines: nodes.map((node) => node.sourceEndLine ?? 0),
+        },
+      );
     }, true);
   }
 
