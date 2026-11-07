@@ -243,7 +243,7 @@ describe('durable graph publication', () => {
     { receiptName: 'retained.json', prefix: '' },
     { receiptName: 'retained.json', prefix: '.retain-' },
   ])(
-    'retains $prefix$receiptName until its busy vector file can be removed',
+    'retains $receiptName with prefix "$prefix" until its busy vector file can be removed',
     async ({ receiptName, prefix }) => {
       const { root } = await fixture();
       const identity = 'e'.repeat(64);

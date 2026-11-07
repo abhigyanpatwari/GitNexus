@@ -867,7 +867,7 @@ export class VectorStore {
     });
   }
 
-  /** Durability must precede the filesystem journal's acknowledgement. */
+  /** Verify committed coverage before the filesystem journal acknowledges it. */
   async checkpointUnit(nodes: readonly VectorNodeReceipt[]): Promise<void> {
     if (
       !nodes.length ||
@@ -887,15 +887,11 @@ export class VectorStore {
         )
           throw new Error('Cannot acknowledge incomplete vector unit');
       }
-      // An already sealed artifact has a durable final checkpoint. Recovery may
-      // rebuild a damaged filesystem cursor using its verified complete groups.
-      if (this.sealed) return;
-      try {
-        await this.query('CHECKPOINT');
-      } catch (error) {
-        this.poisoned = true;
-        throw error;
-      }
+      // Ladybug commits fsync the WAL and its directory before returning:
+      // https://github.com/LadybugDB/ladybug/blob/v0.22.0/src/storage/wal/wal.cpp
+      // Rewriting the database after every unit adds no durability. Native
+      // automatic checkpoints bound the WAL; seal() checkpoints before readers
+      // can open the published artifact without WAL replay.
     }, !this.sealed);
   }
 

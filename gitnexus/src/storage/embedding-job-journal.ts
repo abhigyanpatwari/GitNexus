@@ -344,7 +344,7 @@ export class EmbeddingJobJournal {
     });
   }
 
-  /** Call only after the vector store has verified and checkpointed this unit. */
+  /** Call only after the vector store has verified this unit's committed receipts. */
   async acknowledge(result: { reusedNodes: number; chunks: number }): Promise<void> {
     await this.mutate(async (next) => {
       const active = next.active;

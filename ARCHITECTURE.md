@@ -646,13 +646,17 @@ CLI (analyze.ts) → runFullAnalysis(repoPath, options, callbacks)
   4. Prepare the owned graph and publication receipt; drain native resources.
   5. Supervisor waits for graph-process exit, verifies and publishes metadata.
   6. If embeddings are requested/pending, open the resumable embedding job.
-  7. Reuse verified vectors, checkpoint bounded units, then seal/publish vectors.
+  7. Reuse verified vectors, commit bounded units, then seal/checkpoint/publish.
   8. Register the repo and generate AI context files.
 
 Graph-only legacy slots keep their existing path until separate publication is
 needed. A ready graph remains queryable while an embedding job is pending;
 semantic search reports degradation until a compatible sealed artifact is ready.
 ```
+
+Unit acknowledgements follow verified, durable WAL commits. Native automatic
+checkpoints bound WAL growth; the final checkpoint prepares the sealed artifact
+for read-only publication without requiring WAL replay.
 
 **Options:** `--force` (rebuild regardless), `--embeddings` (opt-in, resumable), `--skipGit`, `--noStats`.
 

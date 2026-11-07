@@ -32,6 +32,7 @@ it.each(boundaries)(
       GITNEXUS_HOME: path.join(root, 'home'),
       GITNEXUS_SHARED_STORE: 'off',
       GITNEXUS_LBUG_EXTENSION_INSTALL: 'never',
+      GITNEXUS_WAL_CHECKPOINT_THRESHOLD: String(64 * 1024 ** 2),
     };
     let store: VectorStore | undefined;
     try {
@@ -77,6 +78,19 @@ it.each(boundaries)(
         (error: NodeJS.ErrnoException & { stderr?: string }) => error,
       );
       expect(stopped.code, stopped.stderr).toBe(73);
+      if (boundary === 'checkpointUnit-after' || boundary === 'cursor-after') {
+        // Prove recovery uses committed WAL, not a clean close or a forced
+        // database checkpoint that could hide missing transaction durability.
+        const pending = (await loadMeta(root))?.embeddingJob;
+        if (!pending) throw new Error('Missing interrupted embedding job');
+        const wal = path.join(
+          root,
+          'embeddings',
+          pending.artifactIdentity ?? pending.identity,
+          'vectors.wal',
+        );
+        expect((await fs.stat(wal)).size).toBeGreaterThan(0);
+      }
       await execute(process.execPath, [helper, root, 'resume'], { env });
       const readInputs = async (
         phase: string,
