@@ -24,6 +24,8 @@ Evaluate whether GitNexus code intelligence improves AI agent performance on rea
 - DeepSeek
 - Any model supported by litellm (add a YAML config)
 
+For long-horizon tasks, [`deepswe/`](deepswe/README.md) runs a paired baseline vs GitNexus CLI comparison on [DeepSWE](https://deepswe.datacurve.ai/) with its own harness (pier) on a dedicated EC2 instance.
+
 ## Prerequisites
 
 - Python 3.11+
