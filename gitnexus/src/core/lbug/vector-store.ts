@@ -668,7 +668,11 @@ export class VectorStore {
         );
       };
       if (nodes.some((node) => node.inputsDigest)) await this.transaction(finalize);
-      else await finalize();
+      else
+        await this.query(
+          'UNWIND $ids AS id MATCH (n:EmbeddingNodeReceipt {nodeId:id}) SET n.complete=true',
+          { ids: nodes.map((node) => node.nodeId) },
+        );
       return verified.map((receipt) => ({ ...receipt, complete: true }));
     }, true);
   }
