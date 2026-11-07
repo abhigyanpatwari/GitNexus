@@ -50,6 +50,15 @@ const symlinks = {
 const containerSide = {
   skip: process.platform !== 'linux' && 'runs only inside the Linux dev container and helper',
 };
+// Python's tarfile reads PAX independently of the host tar. Windows tar.exe
+// cannot extract names outside the ANSI code page; Docker's extractor can.
+const python = ['python3', 'python'].find(
+  (command) => spawnSync(command, ['-c', 'import tarfile'], { stdio: 'ignore' }).status === 0,
+);
+const pythonTar = { skip: !python && 'needs Python 3 tarfile as an independent PAX reader' };
+const READ_TAR = `import json, sys, tarfile
+with tarfile.open(fileobj=sys.stdin.buffer, mode='r|') as archive:
+    print(json.dumps({m.name: archive.extractfile(m).read().decode() for m in archive if m.isfile()}))`;
 
 test('the host tar omits dependencies and parser caches while preserving indexes and local files', async (t) => {
   const root = temporary(t);
@@ -170,23 +179,30 @@ test(
   },
 );
 
-test('the Node tar stream round-trips UTF-8 and long names and empty files', async (t) => {
-  const root = temporary(t);
-  const source = path.join(root, 'source');
-  const target = path.join(root, 'target');
-  // Over 100 bytes needs a PAX path record; under Windows MAX_PATH once extracted.
-  const long = `${'nested-directory/'.repeat(3)}${'x'.repeat(60)}.md`;
-  const files = { 'jegyzet-ő.md': 'ő', 'emoji-🚀/notes.txt': 'rocket', [long]: 'long', empty: '' };
-  for (const [name, content] of Object.entries(files)) {
-    fs.mkdirSync(path.dirname(path.join(source, name)), { recursive: true });
-    fs.writeFileSync(path.join(source, name), content);
-  }
-  fs.mkdirSync(target);
-  const entries = [...archiveEntries(source, ['.'])];
-  execFileSync('tar', ['-xpf', '-', '-C', target], { input: await tarBuffer(source, entries) });
-  for (const [name, content] of Object.entries(files))
-    assert.equal(fs.readFileSync(path.join(target, name), 'utf8'), content, name);
-});
+test(
+  'the Node tar stream round-trips UTF-8 and long names and empty files',
+  pythonTar,
+  async (t) => {
+    const source = temporary(t);
+    // Over 100 bytes needs a PAX path record; short enough for Windows MAX_PATH.
+    const long = `${'nested-directory/'.repeat(3)}${'x'.repeat(60)}.md`;
+    const files = {
+      'jegyzet-ő.md': 'ő',
+      'emoji-🚀/notes.txt': 'rocket',
+      [long]: 'long',
+      empty: '',
+    };
+    for (const [name, content] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(source, name)), { recursive: true });
+      fs.writeFileSync(path.join(source, name), content);
+    }
+    const entries = [...archiveEntries(source, ['.'])];
+    const input = await tarBuffer(source, entries);
+    const read = JSON.parse(execFileSync(python, ['-c', READ_TAR], { input, encoding: 'utf8' }));
+    for (const [name, content] of Object.entries(files))
+      assert.equal(read[`./${name}`], content, name);
+  },
+);
 
 test('the Node tar stream preserves POSIX modes and omits FIFOs', posixOnly, async (t) => {
   const root = temporary(t);
