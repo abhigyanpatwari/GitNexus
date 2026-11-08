@@ -163,20 +163,20 @@ specify the "repo" parameter explicitly.`,
   },
   {
     name: 'query',
-    description: `Query the code knowledge graph for execution flows related to a concept.
+    description: `Find execution flows related to a concept.
 Returns ranked processes plus a flat process_symbols list. Join processes[].id to process_symbols[].process_id.
 
-WHEN TO USE: Understanding how code works together. Use this when you need execution flows and relationships, not just file matches. Complements grep/IDE search.
-AFTER THIS: Use context() on a specific symbol for 360-degree view (callers, callees, categorized refs). With include_content, context() also returns that symbol's source.
+WHEN TO USE: Execution flows and relationships for a concept; complements grep/IDE search.
+AFTER THIS: Use context() for a symbol's callers, callees and categorized refs. With include_content, context() also returns that symbol's source.
 
 Returns results grouped by process (execution flow):
-- processes: ranked execution flows with relevance priority. When a process has an HTTP endpoint, each item includes route and method string aliases plus routes: [{ url, method? }] (same shape as context). When chain_depth > 0, each item also includes chain — layered upstream callers + downstream callees from the process entry symbol (same BFS as context({chain_depth})).
+- processes: ranked flows with relevance priority. HTTP endpoints add route, method and routes: [{ url, method? }] as in context. With chain_depth > 0, chain contains layered callers/callees from the process entry, using context's BFS.
 - process_symbols: search-hit symbols in those flows with file locations and module (functional area). On the single-repo envelope { processes, process_symbols, definitions }: One row per (id, process_id) — the same symbol id may appear under more than one process. Join a process to its rows by process_id; symbol_count is the number of those rows. When the process entry is among those hits, it is marked is_entry_point: true. With include_content, content appears only on the first row for each symbol id across the whole process_symbols array, not per process; later rows for that id omit it, even under a different process_id. To get content for a row without it, find the earlier row with the same id, or call context({uid: "<id>", include_content: true}). A repo of "@<group>" returns { group, query, results, per_repo } and does not include process_symbols. results[].symbol_count is the member's post-slice attach count; when service is set, it counts only attaches under that prefix. To get process_symbols for one member, query again with repo "@<group>/<memberPath>" (member path from group.yaml, or results[]._repo).
-- definitions: standalone types/interfaces not in any process. Keyword hits on Route URLs (route_fts) are bridged to their handler via HANDLES_ROUTE (handlerSymbolId, routes) when the edge exists; use route_map({route}) for the full HTTP surface.
+- definitions: types/interfaces outside processes. Route URL hits (route_fts) link to handlers through HANDLES_ROUTE when present (handlerSymbolId, routes); route_map({route}) gives the full HTTP surface.
 
 Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.
 
-MULTIPLE REPOSITORIES: pass repo as a non-empty array of up to ${QUERY_MAX_REPOSITORIES} indexed names or paths. No @group entries. Aliases of one checkout are searched once. Array mode (even one repository) returns { repos, processes, process_symbols, definitions, per_repo, partial }. Rows carry _repo as the canonical checkout path; join on (_repo, process_id), and follow up with context({uid: "<id>", repo: "<row._repo>"}). Process chains inherit their enclosing _repo. Results merge by local rank, with a global process limit and at most 20 definitions. per_repo preserves each member's errors, warnings, timing, content availability and staleness; partial signals failed or degraded members. No global staleness is synthesized. Ordinary arrays work in MCP read-only mode and every entry must satisfy the server allowlist.
+ARRAY MODE: repo accepts 1-${QUERY_MAX_REPOSITORIES} names/paths without @ entries; checkout aliases deduplicate. Even one member returns { repos, processes, process_symbols, definitions, per_repo, partial }. Rows carry canonical-path _repo: join (_repo, process_id) and pass repo: "<row._repo>" to context. Chains inherit _repo. Local ranks merge under a global process limit and 20-definition cap. Errors, warnings, timing, content availability and staleness stay in per_repo; partial flags failed/degraded members. Arrays obey allowlists and work in read-only mode.
 
 GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that group (merged via RRF), or "@<groupName>/<groupRepoPath>" to run against a single member (same path keys as in group.yaml). If you use "@<groupName>" only, the member repo defaults to the lexicographically first key in group.yaml "repos". Prefer resources for contracts/status (see migration from legacy group_* tools).
 
@@ -206,14 +206,14 @@ ${HOT_READ_STALENESS_NOTE}`,
         },
         limit: {
           type: 'number',
-          description: `Max processes to return (default: ${QUERY_DEFAULT_LIMIT}, min: 1, max: ${QUERY_MAX_LIMIT}). Values outside [1, ${QUERY_MAX_LIMIT}] are rejected.`,
+          description: `Max processes across the response (default: ${QUERY_DEFAULT_LIMIT}, range: 1-${QUERY_MAX_LIMIT}). Invalid bounds are rejected.`,
           default: QUERY_DEFAULT_LIMIT,
           minimum: 1,
           maximum: QUERY_MAX_LIMIT,
         },
         max_symbols: {
           type: 'number',
-          description: `Max symbols per process (default: ${QUERY_DEFAULT_MAX_SYMBOLS}, min: 1, max: ${QUERY_MAX_MAX_SYMBOLS}). Values outside [1, ${QUERY_MAX_MAX_SYMBOLS}] are rejected.`,
+          description: `Max symbols per process (default: ${QUERY_DEFAULT_MAX_SYMBOLS}, range: 1-${QUERY_MAX_MAX_SYMBOLS}). Invalid bounds are rejected.`,
           default: QUERY_DEFAULT_MAX_SYMBOLS,
           minimum: 1,
           maximum: QUERY_MAX_MAX_SYMBOLS,
@@ -224,11 +224,11 @@ ${HOT_READ_STALENESS_NOTE}`,
           minItems: 1,
           maxItems: QUERY_RESPONSE_SECTIONS.length,
           description:
-            'Optional output view for a scalar repository or an array: select processes, process_symbols, and/or definitions. For symbol discovery use ["process_symbols", "definitions"] with include_content:false and chain_depth:0. Warnings, staleness and per_repo metadata always remain; response_filter identifies omitted sections, not absent evidence. Does not change ranking or existing search limits. Omit for existing full output. Not supported for @group routing.',
+            'Select processes, process_symbols and/or definitions; omit for full output. Scalar or array mode, not @group. Metadata stays; response_filter records omissions. Ranking/limits stay unchanged. For symbol discovery use ["process_symbols", "definitions"], include_content:false, chain_depth:0.',
         },
         include_content: {
           type: 'boolean',
-          description: `Include retained source previews (default: false), sharing ${QUERY_CONTENT_MAX_CHARS} characters across unique returned symbols in the complete response, including array mode. content_truncated marks incomplete previews; all matches remain present. Content appears once per (repository, symbol id), on its first surviving row. Use context({uid: "<id>", repo: "<row._repo>", include_content: true}) in array mode, or read_file line ranges for large sources. contentAvailability reports index retention (inside per_repo in array mode). Query next is JSON guidance.`,
+          description: `Include source text retained for matching symbols. Shared ${QUERY_CONTENT_MAX_CHARS}-character preview budget across the whole response. Content appears once per (repository, symbol id), on its first surviving row; content_truncated marks incomplete text. Use context({uid: "<id>", include_content: true}) for more; in array mode add repo: "<row._repo>". contentAvailability reports retention (per_repo in array mode).`,
           default: false,
         },
         chain_depth: {
@@ -236,7 +236,7 @@ ${HOT_READ_STALENESS_NOTE}`,
           minimum: 0,
           maximum: CONTEXT_CHAIN_MAX_DEPTH,
           default: 0,
-          description: `Optional: walk CALLS edges up to N hops (0-${CONTEXT_CHAIN_MAX_DEPTH}) from each returned process's entry symbol and attach the layered result as a per-process chain field (upstream callers + downstream callees). 0 = disabled (default). Same BFS semantics as context({chain_depth}) — exposes the procedure→workflow→helper flow behind a concept in one call.`,
+          description: `Walk CALLS up to N hops (0-${CONTEXT_CHAIN_MAX_DEPTH}) from each process entry. Attach layered upstream callers/downstream callees as chain, using context({chain_depth}) BFS. 0 disables (default).`,
         },
         maxTokens: {
           type: 'integer',
