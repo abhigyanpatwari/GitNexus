@@ -103,6 +103,8 @@ export const QUERY_MAX_LIMIT = 100;
 export const QUERY_MAX_MAX_SYMBOLS = 200;
 /** Source preview characters shared across unique symbols on a query result page. */
 export const QUERY_CONTENT_MAX_CHARS = 16_000;
+/** Maximum explicit repositories searched by one array-mode query. */
+export const QUERY_MAX_REPOSITORIES = 10;
 export const CONTEXT_CHAIN_MAX_DEPTH = 3;
 
 const CWD_AWARE_REPO_OMISSION =
