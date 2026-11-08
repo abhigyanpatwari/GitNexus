@@ -88,6 +88,9 @@
       "path-to-regexp": "6.3.0",
       "undici": "6.29.0"
     },
+    "@vercel/nft": {
+      "glob": "^14.0.2"
+    },
     "@vercel/python-analysis": {
       "minimatch": "10.2.3",
       "smol-toml": "1.6.1"
