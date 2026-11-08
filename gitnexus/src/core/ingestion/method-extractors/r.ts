@@ -13,7 +13,7 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { isRLeftAssignment } from '../languages/r/assignment.js';
-import { getRMatchedArgument } from '../languages/r/naming-argument.js';
+import { getRMatchedArgument, rArgumentName } from '../languages/r/naming-argument.js';
 import { getRClassNameArgument } from '../field-extractors/r.js';
 import type {
   MethodExtractor,
@@ -103,7 +103,8 @@ function extractR6Methods(
     const arg = args.namedChild(i);
     if (!arg || arg.type !== 'argument') continue;
 
-    const section = arg.childForFieldName('name')?.text;
+    const sectionNode = arg.childForFieldName('name');
+    const section = sectionNode ? rArgumentName(sectionNode) : undefined;
     if (section !== 'public' && section !== 'private' && section !== 'active') continue;
 
     const visibility: MethodVisibility = section === 'private' ? 'private' : 'public';
@@ -165,8 +166,8 @@ function extractRefClassMethods(
     const arg = args.namedChild(i);
     if (!arg || arg.type !== 'argument') continue;
 
-    const paramName = arg.childForFieldName('name')?.text;
-    if (paramName !== 'methods') continue;
+    const paramNode = arg.childForFieldName('name');
+    if (!paramNode || rArgumentName(paramNode) !== 'methods') continue;
 
     const listCall = arg.childForFieldName('value');
     if (!listCall || listCall.type !== 'call') continue;

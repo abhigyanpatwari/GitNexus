@@ -116,3 +116,32 @@ describe('R method extractor: setRefClass owner is the Class argument', () => {
     expect(refClassOwner(`setRefClass(contains = "Base", Class = cls, ${METHODS})`)).toBeNull();
   });
 });
+
+describe('R method extractor: section formals spelled in backticks or quotes', () => {
+  const methodNames = (source: string, callee: string): string[] =>
+    (rMethodExtractor.extract(callTo(source, callee) as never, context)?.methods ?? []).map(
+      (m) => m.name,
+    );
+
+  it.each([
+    ['plain', 'methods'],
+    ['backticked', '`methods`'],
+    ['double-quoted', '"methods"'],
+    ['single-quoted', "'methods'"],
+  ])('finds setRefClass methods under a %s methods formal', (_label, formal) => {
+    expect(
+      methodNames(`setRefClass("Acc", ${formal} = list(go = function() 1))`, 'setRefClass'),
+    ).toEqual(['go']);
+  });
+
+  it.each([
+    ['plain', 'public'],
+    ['backticked', '`public`'],
+    ['double-quoted', '"public"'],
+  ])('finds R6 methods under a %s public formal', (_label, formal) => {
+    const tree = parser.parse(`Acc <- R6Class("Acc", ${formal} = list(go = function() 1))`);
+    const assignment = tree.rootNode.namedChild(0);
+    const methods = rMethodExtractor.extract(assignment as never, context)?.methods ?? [];
+    expect(methods.map((m) => m.name)).toEqual(['go']);
+  });
+});

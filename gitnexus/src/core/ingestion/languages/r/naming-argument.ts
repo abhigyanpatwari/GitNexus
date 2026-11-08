@@ -53,6 +53,14 @@ function argumentNameText(name: SyntaxNode): string {
 }
 
 /**
+ * The formal an argument's name node spells, with one pair of surrounding backticks or quotes
+ * removed: `methods`, `` `methods` `` and `"methods"` are the same name to R.
+ */
+export function rArgumentName(name: SyntaxNode): string {
+  return argumentNameText(name);
+}
+
+/**
  * Per tree, per (argument list, formal): the id of the unnamed argument that takes
  * the formal, or null when none does. One pass over the argument list answers every
  * later match in that list in constant time. Looking backwards from each match
