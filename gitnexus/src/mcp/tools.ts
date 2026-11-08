@@ -236,7 +236,7 @@ ${HOT_READ_STALENESS_NOTE}`,
         },
         include_content: {
           type: 'boolean',
-          description: `Include source text retained for matching symbols. Shared ${QUERY_CONTENT_MAX_CHARS}-character preview budget across the whole response. Content appears once per (repository, symbol id), on its first surviving row; content_truncated marks incomplete text. Use context({uid: "<id>", include_content: true}) for more; in array mode add repo: "<row._repo>". contentAvailability reports retention (per_repo in array mode).`,
+          description: `Include source text retained for matching symbols. @group omits previews. Shared ${QUERY_CONTENT_MAX_CHARS}-character preview budget across the whole response. Content appears once per (repository, symbol id), on its first surviving row; content_truncated marks incomplete text. Use context({uid: "<id>", include_content: true}) for more; in array mode add repo: "<row._repo>". contentAvailability reports retention (per_repo in array mode).`,
           default: false,
         },
         chain_depth: {
