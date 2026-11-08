@@ -17,6 +17,7 @@ const {
   runFullAnalysisMock,
   generateAIContextFilesMock,
   refreshBaseRefLineMock,
+  refreshStatsLineMock,
   generateSkillFilesMock,
   cliErrorMock,
   getDefaultBranchMock,
@@ -28,6 +29,7 @@ const {
   refreshBaseRefLineMock: vi.fn<typeof import('../../src/cli/ai-context.js').refreshBaseRefLine>(
     async () => ({ files: [] as string[] }),
   ),
+  refreshStatsLineMock: vi.fn(async () => ({ files: [] as string[] })),
   generateSkillFilesMock: vi.fn(async () => ({
     skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
     outputPath: '/repo/.claude/skills',
@@ -40,6 +42,7 @@ vi.mock('../../src/core/run-analyze.js', () => ({ runFullAnalysis: runFullAnalys
 vi.mock('../../src/cli/ai-context.js', () => ({
   generateAIContextFiles: generateAIContextFilesMock,
   refreshBaseRefLine: refreshBaseRefLineMock,
+  refreshStatsLine: refreshStatsLineMock,
 }));
 vi.mock('../../src/cli/skill-gen.js', () => ({ generateSkillFiles: generateSkillFilesMock }));
 vi.mock('../../src/cli/cli-message.js', () => ({ cliError: cliErrorMock }));
@@ -91,6 +94,8 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
     generateAIContextFilesMock.mockResolvedValue({ files: [] });
     refreshBaseRefLineMock.mockReset();
     refreshBaseRefLineMock.mockResolvedValue({ files: [] });
+    refreshStatsLineMock.mockReset();
+    refreshStatsLineMock.mockResolvedValue({ files: [] });
     generateSkillFilesMock.mockReset();
     generateSkillFilesMock.mockResolvedValue({
       skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
