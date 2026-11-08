@@ -142,7 +142,7 @@ describe('R method extractor: section formals spelled in backticks or quotes', (
     ['backticked', '`private`'],
     ['plain', 'active'],
     ['double-quoted', '"active"'],
-  ])('finds R6 methods under a %s public formal', (_label, formal) => {
+  ])('finds R6 methods under a %s %s formal', (_label, formal) => {
     const tree = parser.parse(`Acc <- R6Class("Acc", ${formal} = list(go = function() 1))`);
     const assignment = tree.rootNode.namedChild(0);
     const methods = rMethodExtractor.extract(assignment as never, context)?.methods ?? [];
