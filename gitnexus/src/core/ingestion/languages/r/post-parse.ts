@@ -26,6 +26,7 @@ import type { PostParseContext } from '../../language-provider.js';
 import {
   loadRPackageConfig,
   reportRExportPatternProblems,
+  rExportPatternsIncomplete,
   rNamespaceExports,
   type RNamespaceInfo,
   type RPackageConfig,
@@ -191,6 +192,12 @@ export const refineRExportStatus = (
     return info;
   };
 
+  // A name no NAMESPACE entry exports is private only when the NAMESPACE was fully read and no
+  // `exportPattern()` was dropped or cut short. Completeness depends on the work budget the
+  // matching spends, so it is read once per package AFTER every node has been tested (the same
+  // two-pass shape as `rBuildSymbolVisibilityMemo`), not per node.
+  const unexported: { node: GraphNode; info: RNamespaceInfo }[] = [];
+
   graph.forEachNode((node: GraphNode) => {
     if (node.properties.language !== SupportedLanguages.R) return;
     const filePath = typeof node.properties.filePath === 'string' ? node.properties.filePath : '';
@@ -211,9 +218,19 @@ export const refineRExportStatus = (
     const bare = rBareName(name);
     if (rNamespaceExports(nsInfo, bare) || nsInfo.s3Registered?.has(bare) === true) return;
 
-    // Not in NAMESPACE → not exported.
-    node.properties.isExported = false;
+    // Not in NAMESPACE: private, unless the completeness check below cannot prove it.
+    unexported.push({ node, info: nsInfo });
   });
+
+  const incompleteByInfo = new Map<RNamespaceInfo, boolean>();
+  for (const { node, info } of unexported) {
+    let notProvenPrivate = incompleteByInfo.get(info);
+    if (notProvenPrivate === undefined) {
+      notProvenPrivate = info.exportsUnreadable === true || rExportPatternsIncomplete(info);
+      incompleteByInfo.set(info, notProvenPrivate);
+    }
+    if (!notProvenPrivate) node.properties.isExported = false;
+  }
 };
 
 /**

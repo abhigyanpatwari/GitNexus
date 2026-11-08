@@ -1,8 +1,12 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { refineRExportStatus } from '../../src/core/ingestion/languages/r/post-parse.js';
-import type {
-  RNamespaceInfo,
+import {
+  loadRPackageConfig,
+  type RNamespaceInfo,
   RPackageConfig,
 } from '../../src/core/ingestion/languages/r/package-config.js';
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -131,5 +135,56 @@ describe('refineRExportStatus: nested packages', () => {
     expect(out.get('R/o.R:shared')).toBe(true);
     expect(out.get('pkgs/inner/R/i.R:shared')).toBe(false);
     expect(out.get('pkgs/inner/R/i.R:inner_pub')).toBe(true);
+  });
+});
+
+// A name the NAMESPACE does not list is private only when the NAMESPACE was fully read. A
+// conditional `if (...) export(cond)` makes it unreadable (so `cond` may well be exported), and a
+// dropped `exportPattern()` may have covered the name: neither proves the name private.
+describe('refineRExportStatus: NAMESPACE that cannot prove a name private', () => {
+  const configWith = (over: Partial<RNamespaceInfo>): RPackageConfig => ({
+    packages: new Map([['foo', '']]),
+    namespaceInfoByPackageDir: new Map([['', info({ namedExports: new Set(['pub']), ...over })]]),
+  });
+  const defs = [
+    { name: 'pub', filePath: 'R/a.R' },
+    { name: 'cond', filePath: 'R/a.R' },
+  ];
+
+  it('keeps every name public when the exports are unreadable (if (...) export(cond))', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-r-unreadable-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'DESCRIPTION'), 'Package: foo\n');
+      fs.writeFileSync(
+        path.join(dir, 'NAMESPACE'),
+        'export(pub)\nif (getRversion() >= "4.0.0") export(cond)\n',
+      );
+      const config = await loadRPackageConfig(dir);
+      expect(config.namespaceInfoByPackageDir.get('')?.exportsUnreadable).toBe(true);
+      const out = run(config, defs);
+      expect(out.get('R/a.R:pub')).toBe(true);
+      expect(out.get('R/a.R:cond')).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps unexported names public when exports are flagged unreadable', () => {
+    const out = run(configWith({ exportsUnreadable: true }), defs);
+    expect(out.get('R/a.R:cond')).toBe(true);
+  });
+
+  it('keeps unexported names public when an exportPattern() was dropped', () => {
+    const out = run(
+      configWith({ droppedExportPatterns: [{ pattern: '(a+)+', reason: 'nested' }] as never }),
+      defs,
+    );
+    expect(out.get('R/a.R:cond')).toBe(true);
+  });
+
+  it('still flips an unexported name when the NAMESPACE is complete', () => {
+    const out = run(configWith({}), defs);
+    expect(out.get('R/a.R:pub')).toBe(true);
+    expect(out.get('R/a.R:cond')).toBe(false);
   });
 });

@@ -14,6 +14,7 @@ import {
   rExportPatternsIncomplete,
   rNamespaceExports,
   recordedRPackageConfig,
+  type RNamespaceInfo,
 } from './package-config.js';
 import {
   canonicalizeRenameBindings,
@@ -922,11 +923,24 @@ export const rRenameProvider: RenameProvider = {
       )
         exported = true;
     });
-    if (exported)
+    const current = currentNamespaceIssue(files.get(file)?.parsed, file, name, newName);
+    if (exported) {
+      // The persisted flag is also left true when the NAMESPACE could not be fully applied
+      // (an unreadable export directive, a dropped exportPattern()); that is the more precise
+      // answer, so it wins over the generic export refusal.
+      // Only when a NAMESPACE was read but not fully applied; a missing or unrecorded NAMESPACE
+      // keeps the generic refusal.
+      if (
+        current &&
+        current.code === 'incomplete_semantics' &&
+        readNamespaceInfo(files.get(file)?.parsed, file)
+      )
+        return current;
       return unsupported(
         'A package function that NAMESPACE exports, or that the index cannot prove private, may have an export entry that is not renamed.',
       );
-    return currentNamespaceIssue(files.get(file)?.parsed, file, name, newName);
+    }
+    return current;
   },
   // A second line of defence for generated files (see `checkSafety`): never edit one.
   validateRewrite({ source, edits }) {
@@ -955,6 +969,16 @@ function hasRoxygenExportTag(root: Parser.SyntaxNode, name: string): boolean {
     }
   }
   return false;
+}
+
+/** The NAMESPACE info the planner loaded for the file's package, when a NAMESPACE file was read. */
+function readNamespaceInfo(parsed: object | undefined, file: string): RNamespaceInfo | undefined {
+  const config = recordedRPackageConfig(parsed);
+  if (config === undefined) return undefined;
+  const packageDir = rOwningPackageDir(file, config);
+  const info =
+    packageDir === undefined ? undefined : config.namespaceInfoByPackageDir.get(packageDir);
+  return info?.hasNamespaceFile ? info : undefined;
 }
 
 /**

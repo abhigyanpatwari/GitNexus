@@ -357,9 +357,10 @@ describe('loadRPackageConfig shares one work budget across every package it disc
     const total = all.reduce((sum, m) => sum + m.work, 0);
     // One package: it may spend its own share of the load's budget, no more.
     expect(total).toBeLessThanOrEqual(MAX_PACKAGE_WORK + 4 * 16384);
-    // Nothing matched, so every name reads as unexported; every compiled pattern the
-    // package's budget cut short is reported once.
-    expect(exportedNames(graph)).toEqual([]);
+    // Nothing matched, but patterns were dropped or cut short, so no name is proven private:
+    // every name keeps its default export status. Every compiled pattern the package's budget
+    // cut short is reported once.
+    expect(exportedNames(graph)).toEqual([...names].sort());
     // At most MAX_LISTED_DROPPED_PATTERNS are named; the rest are summed in one line.
     expect(messages.filter((m) => m.includes('exceeded its work budget'))).toHaveLength(
       Math.min(all.length, MAX_LISTED_DROPPED_PATTERNS),
@@ -487,7 +488,8 @@ describe('loadRPackageConfig shares one work budget across every package it disc
     // Warnings are bounded too: a listed few per package plus one summary line each.
     expect(messages.length).toBeLessThanOrEqual(2 * MAX_LISTED_DROPPED_PATTERNS + 4);
     expect(messages.some((m) => m.includes('further exportPattern()'))).toBe(true);
-    expect(exportedNames(graph)).toEqual([]);
+    // Dropped patterns mean no name is proven private: all keep their default export status.
+    expect(exportedNames(graph)).toEqual([...names].sort());
   }, 60_000);
 
   it('bounds the NFA states many packages of maximum-size patterns may keep', async () => {
@@ -571,8 +573,9 @@ describe('loadRPackageConfig shares one work budget across every package it disc
         expect(status.get(`pub_${dir}${i}`), `pub_${dir}${i}`).toBe(true);
       for (let i = 0; i < 10; i++) expect(status.get(`internal_${dir}${i}`)).toBe(false);
     }
-    // The hostile package's own names read as unexported, and it is reported pattern by pattern.
-    for (const name of distinctNames(600)) expect(status.get(name)).toBe(false);
+    // The hostile package's patterns were cut short, so none of its names is proven private and
+    // all keep their default export status; it is reported pattern by pattern.
+    for (const name of distinctNames(600)) expect(status.get(name)).toBe(true);
     const messages = captured(() => reportRExportPatternProblems(config));
     expect(messages).toHaveLength(30);
     expect(messages.every((m) => m.includes('R package a:'))).toBe(true);
