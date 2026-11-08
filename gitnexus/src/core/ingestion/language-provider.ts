@@ -335,6 +335,12 @@ interface LanguageProviderConfig {
    */
   readonly preprocessSource?: (sourceText: string, filePath: string) => string;
 
+  /** Buffer whose coordinates appear in reference-edge identities, when they
+   * are not original-file coordinates. The ingestion guard checks bounds in
+   * this buffer but reports original source provenance as unverified.
+   * Return undefined for references already expressed in the original file. */
+  readonly referenceSourceText?: (sourceText: string, filePath: string) => string | undefined;
+
   /** Select the native grammar for a pre-extracted embedded script. */
   readonly selectEmbeddedGrammar?: (scriptLanguage: string) => Parser.Language;
 

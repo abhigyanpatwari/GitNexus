@@ -1,4 +1,5 @@
 import type { KnowledgeGraph } from '../core/graph/types.js';
+import type { RelationshipIntegrityReceipt } from '../core/graph/relationship-integrity.js';
 import { CommunityDetectionResult } from '../core/ingestion/community-processor.js';
 import { ProcessDetectionResult } from '../core/ingestion/process-processor.js';
 import type { ResolutionOutcome } from '../core/ingestion/scope-resolution/resolution-outcome.js';
@@ -8,6 +9,7 @@ import type { GraphEmitManifest } from '../core/lbug/graph-emit-sink.js';
 
 // CLI-specific: in-memory result with graph + detection results
 export interface PipelineResult {
+  relationshipIntegrity?: RelationshipIntegrityReceipt;
   graph: KnowledgeGraph;
   /** Absolute path to the repo root — used for lazy file reads during LadybugDB loading */
   repoPath: string;

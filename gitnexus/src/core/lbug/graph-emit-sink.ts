@@ -28,7 +28,7 @@
  *
  * That is well short of the ~2.9x a naive `0.17 + 0.83 * 0.21` retained-share
  * calculation suggests, and the gap is deliberate: this sink is *lossless*, so
- * it pays for the {@link streamedIds} dedup Set (one unique id string per
+ * it pays for the {@link streamedIds} dedup Map (one unique id string per
  * streamed edge) and the columns above. An earlier revision hit a bigger number
  * by disabling community detection, process extraction and the taint fixpoint —
  * which is why it could not be the default. 1.3x with nothing traded away is the
@@ -267,7 +267,7 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
    * a per-pair sorted-run dedup on disk, or hashing ids into a Bloom filter
    * with an exact fallback.
    */
-  private readonly streamedIds = new Set<string>();
+  private readonly streamedIds = new Map<string, number>();
   /**
    * Streamed edges, kept as parallel columns so the sink can still answer a
    * COMPLETE relationship read (see {@link iterRelationships}). Only the four
@@ -377,19 +377,19 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
    * so the 200-character id would never be freed and the memory saving would
    * silently fail to materialize. Parsing to numbers severs that link.
    *
-   * Falls back to the full id when the tail is not a numeric `:a:b` form (other
+   * Numeric tails retain up to four coordinates (a complete source span).
+   * Falls back to the full id when the tail is not numeric (other
    * id shapes exist, e.g. `rel:contains:` has no tail). Correctness first: an
    * unrecognized shape is stored exactly, just without the saving.
    */
   private dedupKey(rel: GraphRelationship, srcIx: number, tgtIx: number): string {
-    const afterTarget = rel.id.lastIndexOf(rel.targetId);
-    if (afterTarget >= 0) {
-      const tail = rel.id.slice(afterTarget + rel.targetId.length);
+    const pair = `rel:${rel.type}:${rel.sourceId}->${rel.targetId}`;
+    if (rel.id.startsWith(pair)) {
+      const tail = rel.id.slice(pair.length);
       if (tail.length === 0) return `${srcIx}|${tgtIx}|${rel.type}`;
-      // `:1483:6` -> two integers. Any non-numeric segment falls through.
+      // Point or full span -> integers. Any non-numeric segment falls through.
       if (tail.charCodeAt(0) === 58 /* ':' */) {
-        let a = 0;
-        let b = 0;
+        const coordinates: number[] = [];
         let seen = 0;
         let ok = true;
         for (const part of tail.slice(1).split(':')) {
@@ -398,19 +398,16 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
             ok = false;
             break;
           }
-          if (seen === 0) a = n;
-          else if (seen === 1) b = n;
-          else {
+          if (seen >= 4) {
             ok = false;
             break;
           }
+          coordinates.push(n);
           seen++;
         }
-        // `seen` is part of the key: without it a one-segment tail `:7` (b
-        // defaults to 0) and a two-segment `:7:0` produce the same key, and the
-        // second edge is silently discarded as a duplicate. Distinct ids must
-        // never collapse — that is a lost relationship with no error.
-        if (ok) return `${srcIx}|${tgtIx}|${rel.type}|${seen}|${a}|${b}`;
+        // Preserve segment count as well as values: point and span identities
+        // must never collapse even when trailing coordinates are zero.
+        if (ok) return `${srcIx}|${tgtIx}|${rel.type}|${seen}|${coordinates.join('|')}`;
       }
     }
     return rel.id;
@@ -442,6 +439,21 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
       return;
     }
     // Mirror KnowledgeGraph.addRelationship's first-writer-wins dedup.
+    const srcIx = this.internNode(relationship.sourceId);
+    const tgtIx = this.internNode(relationship.targetId);
+    const key = this.dedupKey(relationship, srcIx, tgtIx);
+    const previous = this.streamedIds.get(key);
+    const duplicate = previous !== undefined;
+    const conflictingIdentity =
+      previous !== undefined &&
+      (this.srcIx[previous] !== srcIx ||
+        this.tgtIx[previous] !== tgtIx ||
+        this.relTypes[previous] !== relationship.type);
+    this.real.inspectRelationship?.(relationship, duplicate, conflictingIdentity);
+    if (conflictingIdentity) {
+      throw new Error(`Conflicting graph relationship identity: ${relationship.id}`);
+    }
+    if (duplicate) return;
 
     // Classify + skip via the SHARED `relPairKeyFor`, not a local copy of its
     // three lines, so the streamed set cannot drift from the whole-graph set
@@ -478,12 +490,8 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
       }
       this.relWriters.set(pairKey, writer);
     }
-    // Intern first so the dedup key can reuse the indices.
-    const srcIx = this.internNode(relationship.sourceId);
-    const tgtIx = this.internNode(relationship.targetId);
-    const key = this.dedupKey(relationship, srcIx, tgtIx);
-    if (this.streamedIds.has(key)) return;
-    this.streamedIds.add(key);
+    // Retain the row index to detect conflicting reuse of an opaque id.
+    this.streamedIds.set(key, this.srcIx.length);
 
     writer.addRow(buildRelRow(relationship));
     if (!PDG_EDGE_TYPES.has(relationship.type)) this.structuralRows++;
@@ -678,7 +686,7 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     return this.real.removeNodesByFile(filePath);
   }
   /**
-   * Deliberately conservative. The dedup Set holds compact keys derived from a
+   * Deliberately conservative. The dedup Map holds compact keys derived from a
    * relationship's endpoints ({@link dedupKey}), and a bare id alone cannot be
    * turned back into one — so a streamed edge is not directly identifiable here.
    *

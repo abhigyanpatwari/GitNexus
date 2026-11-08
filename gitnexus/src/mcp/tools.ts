@@ -172,6 +172,8 @@ specify the "repo" parameter explicitly.`,
     description: `Query the code knowledge graph for execution flows related to a concept.
 Returns ranked processes plus a flat process_symbols list. Join processes[].id to process_symbols[].process_id.
 
+INGESTION: graph_integrity reports repository-wide source-reference checks. "unverified" includes missing or extracted-buffer provenance; it is independent of query completeness.
+
 WHEN TO USE: Understanding how code works together. Use this when you need execution flows and relationships, not just file matches. Complements grep/IDE search.
 AFTER THIS: Use context() on a specific symbol for 360-degree view (callers, callees, categorized refs). With include_content, context() also returns that symbol's source.
 
@@ -266,6 +268,8 @@ ${HOT_READ_STALENESS_NOTE}`,
     name: 'cypher',
     description: `Execute Cypher query against the code knowledge graph.
 
+INGESTION: graph_integrity reports repository-wide source-reference checks. Stored relationships omit source-site IDs; identical returned rows alone cannot establish whether the original sites differ.
+
 WHEN TO USE: Complex structural queries that search/explore can't answer. READ gitnexus://repo/{name}/schema first for the full schema.
 AFTER THIS: Use context() on result symbols for deeper context.
 
@@ -347,6 +351,7 @@ Use uid, or name with file_path/kind. Ambiguous results return ranked candidates
 include_content returns retained source. Leave chain_depth:0 unless layered CALLS neighbours are needed. routes:[{url,method?}] and is_entry_point describe HTTP handlers and process entries. ACCESSES references carry reason "read"/"write"; CALLS can follow field and method chains.
 
 COMPLETENESS: epistemic "lower-bound" means incoming is a floor (missed callers/failed probes). Read boundaries; branch on causes. Empty callers do not prove safety.
+INGESTION: graph_integrity reports repository-wide source-reference identity/span checks. "unverified" includes legacy, collapsed or incomplete provenance; DISTINCT output does not prove distinct source sites. "verified" covers ingestion only, not resolution accuracy or completeness.
 - scopeExtractionFiles: files missing scope edges; analyze --force, inspect warnings.
 - receiverTyping: sites with unknown receiver types; corroborate by text search.
 - overloadResolution: unique unresolved overload/implementation sites matched by symbol/declaring owner. Missing/invalid/capped receipts imply lower-bound even at 0; analyze --force.
@@ -554,6 +559,7 @@ RESULTS: target, impactedCount, summary, affected_processes, affected_modules, b
 - affected_routes and row routes:[{url,method?}] are callgraph-only HTTP enrichment, not risk inputs.
 
 COMPLETENESS: epistemic "lower-bound" makes impactedCount a floor (missed callers/failed probes). Read boundaries; branch on causes. Ambiguous/group results may omit this envelope.
+INGESTION: graph_integrity is separate from completeness. "unverified" means source-site distinctness was not fully checked. "verified" covers source-reference identity/span checks at ingestion, not resolution accuracy or completeness.
 - scopeExtractionFiles: files missing scope edges; analyze --force, inspect warnings.
 - receiverTyping: sites with unknown receiver types; corroborate before deletion/rename.
 - overloadResolution: when traversing CALLS, unique unresolved overload/implementation sites in the expanded traversal before pagination. Missing/invalid/capped receipts imply lower-bound even at 0; analyze --force.

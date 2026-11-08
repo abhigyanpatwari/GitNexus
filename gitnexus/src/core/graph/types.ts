@@ -10,6 +10,12 @@ import type { GraphNode, GraphRelationship, RelationshipType } from 'gitnexus-sh
 
 // CLI-specific: full KnowledgeGraph with mutation methods for incremental updates
 export interface KnowledgeGraph {
+  /** Shared pre-write check used by in-memory and streaming relationship writers. */
+  inspectRelationship?: (
+    relationship: GraphRelationship,
+    duplicate: boolean,
+    conflictingIdentity?: boolean,
+  ) => void;
   nodes: GraphNode[];
   relationships: GraphRelationship[];
   iterNodes: () => IterableIterator<GraphNode>;

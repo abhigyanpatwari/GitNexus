@@ -1586,7 +1586,10 @@ describe('LocalBackend.callTool', () => {
         .map((c: unknown[]) => String(c[1]))
         // The single-relType ADVISED_BY windows are keyed `ORDER BY uid` alone
         // (one category, nothing to starve) and are excluded by `r.type IN [`.
-        .filter((q: string) => /RETURN r\.type AS relType/.test(q) && /r\.type IN \[/.test(q));
+        .filter(
+          (q: string) =>
+            /RETURN (?:DISTINCT )?r\.type AS relType/.test(q) && /r\.type IN \[/.test(q),
+        );
       expect(windows).toHaveLength(5);
       expect(windows.filter((q: string) => /ORDER BY uid, relType/.test(q))).toHaveLength(5);
     });

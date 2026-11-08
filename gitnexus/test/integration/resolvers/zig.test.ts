@@ -32,11 +32,17 @@ describeGrammarPresence(zig);
 
 /** The CALLS / ACCESSES / USES edges the reference site at `file:line:col`
  *  produced, as `<TYPE> <source id> -> <target id> | <reason>`. A site edge's
- *  id ends with the site's `:<line>:<col>` (see `tryEmitEdge`). */
+ *  id carries the site's start and optional end coordinates (see `tryEmitEdge`). */
 function edgesAtSite(result: PipelineResult, file: string, line: number, col: number): string[] {
   return ['CALLS', 'ACCESSES', 'USES']
     .flatMap((type) => getRelationships(result, type))
-    .filter((e) => e.sourceFilePath === file && e.rel.id.endsWith(`:${line}:${col}`))
+    .filter(
+      (e) =>
+        e.sourceFilePath === file &&
+        new RegExp(`^:(?:read:|write:)?${line}:${col}(?::\\d+:\\d+)?$`).test(
+          e.rel.id.slice(e.rel.id.lastIndexOf(e.rel.targetId) + e.rel.targetId.length),
+        ),
+    )
     .map((e) => `${e.rel.type} ${e.rel.sourceId} -> ${e.rel.targetId} | ${e.rel.reason}`)
     .sort();
 }

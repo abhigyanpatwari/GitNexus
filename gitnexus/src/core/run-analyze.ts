@@ -6029,6 +6029,7 @@ async function runFullAnalysisInner(
         pipelineResult.resolutionOutcomes !== undefined,
       ),
       nameFallbackEdges: nameFallbackSummary,
+      relationshipIntegrity: pipelineResult.relationshipIntegrity,
       scopeExtractionFailures: summarizeScopeExtractionFailures(
         pipelineResult.scopeExtractionFailures,
       ),

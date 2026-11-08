@@ -306,7 +306,13 @@ function callableCallSiteLines(
         edge.target === target &&
         edge.rel.reason === 'callable-value-flow',
     )
-    .map((edge) => Number(edge.rel.id.match(/:(\d+):(\d+)$/)?.[1]))
+    .map((edge) =>
+      Number(
+        edge.rel.id
+          .slice(edge.rel.id.lastIndexOf(edge.rel.targetId) + edge.rel.targetId.length)
+          .match(/^:(\d+):\d+(?::\d+:\d+)?$/)?.[1],
+      ),
+    )
     .sort((left, right) => left - right);
 }
 
@@ -369,6 +375,9 @@ describe('callable value flow', () => {
         target,
         reason: 'callable-value-flow',
       });
+      if (extension === 'vue') {
+        expect(result.relationshipIntegrity?.unverifiedEdges).toBeGreaterThan(0);
+      }
     },
     90_000,
   );

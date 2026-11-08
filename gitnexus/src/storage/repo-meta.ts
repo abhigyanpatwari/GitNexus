@@ -110,6 +110,7 @@ export type PersistedFtsSkipReason =
   | 'tuple-missing';
 
 export interface RepoMeta {
+  relationshipIntegrity?: import('../core/graph/relationship-integrity.js').RelationshipIntegrityReceipt;
   repoPath: string;
   /** Complete index directory selected for this successful analysis. */
   storagePath?: string;

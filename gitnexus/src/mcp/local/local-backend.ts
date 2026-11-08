@@ -7,6 +7,7 @@
  */
 
 import { resolveGraphPath } from '../../storage/shared-store.js';
+import { relationshipIntegrityForCaller } from '../../core/graph/relationship-integrity.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
@@ -927,6 +928,7 @@ export interface EpistemicCauses {
 }
 
 type EpistemicBoundary = {
+  graph_integrity?: ReturnType<typeof relationshipIntegrityForCaller>;
   epistemic: 'exact' | 'lower-bound';
   boundaries?: string[];
   causes?: EpistemicCauses;
@@ -3089,8 +3091,24 @@ export class LocalBackend {
    * and is legitimately absent for a detached HEAD or a legacy index; the
    * always-present `lastCommit` is what identifies the index in that case.
    */
-  private async withToolStaleness(repo: RepoHandle, result: unknown): Promise<unknown> {
+  private async withToolStaleness(
+    repo: RepoHandle,
+    result: unknown,
+    graphResult = false,
+  ): Promise<unknown> {
     if (!canCarryStaleness(result)) return result;
+    // Install the TTL entry before metadata I/O can yield to another call.
+    const stalenessPromise = repo.generationUnknown
+      ? Promise.resolve(undefined)
+      : this.stalenessForTool(repo).catch(() => undefined);
+    // This envelope covers query/cypher too; context/impact also carry it for
+    // direct backend callers. Read failure or a mixed generation is unknown.
+    let integrityMeta: Awaited<ReturnType<typeof loadMeta>> | undefined;
+    try {
+      if (graphResult) integrityMeta = (await this.readToolMetadata(repo)) ?? undefined;
+    } catch {
+      integrityMeta = undefined;
+    }
     // Defensive: `checkStalenessAsync` self-catches today, but a rejection here
     // must never fail the tool — degrade to no-staleness. Paired with the
     // evict-on-reject in `stalenessForTool`, a transient failure also can't
@@ -3104,7 +3122,9 @@ export class LocalBackend {
       dbIdentityChanged(repo.poolIdentity, getLbugDbIdentity(repo.lbugPath));
     if (repo.generationUnknown || changedDuringTool) {
       return attachToolStaleness(
-        result,
+        graphResult
+          ? { ...result, graph_integrity: relationshipIntegrityForCaller(undefined) }
+          : result,
         { status: 'unknown', isStale: false, commitsBehind: 0 },
         {
           lastCommit: '',
@@ -3112,12 +3132,21 @@ export class LocalBackend {
         },
       );
     }
-    const staleness = await this.stalenessForTool(repo).catch(() => undefined);
-    return attachToolStaleness(result, staleness, {
-      branch: repo.branch,
-      lastCommit: repo.lastCommit,
-      indexedAt: repo.indexedAt,
-    });
+    const staleness = await stalenessPromise;
+    return attachToolStaleness(
+      graphResult
+        ? {
+            ...result,
+            graph_integrity: relationshipIntegrityForCaller(integrityMeta?.relationshipIntegrity),
+          }
+        : result,
+      staleness,
+      {
+        branch: repo.branch,
+        lastCommit: repo.lastCommit,
+        indexedAt: repo.indexedAt,
+      },
+    );
   }
 
   /**
@@ -3228,19 +3257,23 @@ export class LocalBackend {
 
     switch (method) {
       case 'query':
-        return this.withToolStaleness(repo, await this.query(repo, p));
+        return this.withToolStaleness(repo, await this.query(repo, p), true);
       case 'cypher': {
         const raw = await this.cypher(repo, p);
-        return this.withToolStaleness(repo, this.formatCypherAsMarkdown(raw));
+        return this.withToolStaleness(repo, this.formatCypherAsMarkdown(raw), true);
       }
       case 'context':
-        return this.withToolStaleness(repo, await this.context(repo, p));
+        return this.withToolStaleness(repo, await this.context(repo, p), true);
       case 'explain':
         return this.explain(repo, p);
       case 'pdg_query':
         return this.pdgQuery(repo, p);
       case 'impact':
-        return this.withToolStaleness(repo, await this.impact(repo, p as unknown as ImpactParams));
+        return this.withToolStaleness(
+          repo,
+          await this.impact(repo, p as unknown as ImpactParams),
+          true,
+        );
       case 'detect_changes':
         return this.detectChanges(repo, p);
       case 'check':
@@ -8472,7 +8505,11 @@ export class LocalBackend {
       scopeExtraction: scopeExtractionDrops.files,
       callableValueReferences: valueRefDrops.referrers,
     };
-    const baseEpistemic = { ...epistemicFrom(droppedBoundaries), ...crossLanguageAnchor };
+    const baseEpistemic = {
+      ...epistemicFrom(droppedBoundaries),
+      ...crossLanguageAnchor,
+      graph_integrity: relationshipIntegrityForCaller(meta?.relationshipIntegrity),
+    };
     try {
       // Discover the interface / abstract supertypes on the target's boundary.
       // If the target is itself an interface, it is its own boundary node.
