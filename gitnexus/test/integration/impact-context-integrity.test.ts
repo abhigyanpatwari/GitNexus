@@ -12,7 +12,7 @@ import lbug from '@ladybugdb/core';
 import * as adapter from '../../src/core/lbug/lbug-adapter.js';
 import { executeParameterized } from '../../src/core/lbug/pool-adapter.js';
 import { closeQueryResults } from '../../src/core/lbug/query-result-utils.js';
-import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { LocalBackend, VALID_NODE_LABELS } from '../../src/mcp/local/local-backend.js';
 import { retryRename } from '../../src/storage/fs-atomic.js';
 import { getStoragePaths, registerRepo, saveMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
@@ -117,6 +117,20 @@ describe.each([false, true])(
           scope: 'source-reference-ingestion',
           checkedSites: meta!.relationshipIntegrity!.checkedSites,
         });
+        const query = await backend.callTool('query', {
+          repo: temp.dbPath,
+          search_query: 'ping',
+        });
+        expect(query.error).toBeUndefined();
+        expect(query.graph_integrity).toEqual(context.graph_integrity);
+        const impact = await backend.callTool('impact', {
+          repo: temp.dbPath,
+          target: 'ping',
+          direction: 'upstream',
+        });
+        expect(impact.error).toBeUndefined();
+        expect(impact.target.name).toBe('ping');
+        expect(impact.graph_integrity).toEqual(context.graph_integrity);
         await backend.dispose();
         backend = undefined;
         return meta!.relationshipIntegrity;
@@ -338,6 +352,56 @@ describe('context distinct reference windows (#3500)', () => {
       expect(result[direction].advised_by.map((ref: ContextRef) => ref.uid)).toEqual(expected);
     },
   );
+});
+
+it('keeps native context references when the resolved label is unavailable', async () => {
+  const temp = await createTempDir();
+  vi.stubEnv('GITNEXUS_HOME', path.join(temp.dbPath, 'home'));
+  vi.stubEnv('GITNEXUS_STORAGE_PATH', path.join(temp.dbPath, 'index'));
+  vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
+  const paths = getStoragePaths(temp.dbPath);
+  const target = 'Property:src/unknown.ts:target';
+  const caller = 'Function:src/a.ts:caller';
+  let backend: LocalBackend | undefined;
+  try {
+    await adapter.initLbug(paths.lbugPath);
+    await adapter.executeQuery(
+      `CREATE (:Property {id: '${target}', name: 'target', filePath: 'src/unknown.ts'})`,
+    );
+    await adapter.executeQuery(
+      `CREATE (:Function {id: '${caller}', name: 'caller', filePath: 'src/a.ts'})`,
+    );
+    await adapter.executeQuery(
+      `MATCH (a:Function {id: '${caller}'}), (b:Property {id: '${target}'})
+       UNWIND range(1, 35) AS site
+       CREATE (a)-[:CodeRelation {type: 'CALLS', step: site}]->(b),
+              (b)-[:CodeRelation {type: 'CALLS', step: site}]->(a)`,
+    );
+    await adapter.flushWAL();
+    await adapter.closeLbug();
+    const meta = {
+      repoPath: temp.dbPath,
+      storagePath: paths.storagePath,
+      lastCommit: 'unknown-label-fixture',
+      indexedAt: new Date().toISOString(),
+      scopeExtractionReceipt: 1 as const,
+      stats: { files: 2, nodes: 2, processes: 0, communities: 0 },
+    };
+    await saveMeta(paths.storagePath, meta);
+    await registerRepo(temp.dbPath, meta, { name: REPO });
+    backend = new LocalBackend();
+    expect(await backend.init()).toBe(true);
+    const result = await backend.callTool('context', { repo: REPO, uid: target });
+    expect(result.error).toBeUndefined();
+    expect(VALID_NODE_LABELS.has(result.symbol.kind)).toBe(false);
+    expect(result.incoming.calls.map((ref: ContextRef) => ref.uid)).toEqual([caller]);
+    expect(result.outgoing.calls.map((ref: ContextRef) => ref.uid)).toEqual([caller]);
+  } finally {
+    await backend?.dispose();
+    await adapter.closeLbug();
+    vi.unstubAllEnvs();
+    await temp.cleanup();
+  }
 });
 
 describe.each(['current', 'without staticGated'] as const)('native impact schema: %s', (schema) => {

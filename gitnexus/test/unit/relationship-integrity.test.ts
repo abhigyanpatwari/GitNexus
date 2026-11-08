@@ -165,6 +165,40 @@ describe.each(['memory', 'streaming'] as const)('ingestion relationship integrit
     }
   });
 
+  it('rejects reversed mapped lines and latches the failure', () => {
+    const { writer, collector, close } = fixture(() => null);
+    try {
+      const invalid = { ...edge(), id: `rel:CALLS:${sourceId}->${targetId}:3:2:2:16` };
+      expect(() => writer.addRelationship(invalid)).toThrow(/invalid source coordinate ordering/);
+      expect(writer.relationshipCount).toBe(0);
+      expect(() => collector.snapshot()).toThrow(/invalid source coordinate ordering/);
+    } finally {
+      close();
+    }
+  });
+
+  it('escapes controls in rejection messages while preserving structured diagnostic fields', () => {
+    const { writer, collector, close } = fixture();
+    try {
+      const unsafeSource = 'Function:unsafe\n\x1b[31m\u202e.ts:caller';
+      const id = `rel:CALLS:${unsafeSource}->${targetId}:2:2:2:16`;
+      const invalid = { ...edge(), id, sourceId: unsafeSource };
+      let message = '';
+      try {
+        writer.addRelationship(invalid);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain('unsafe\\u000a\\u001b[31m\\u202e.ts');
+      expect(message).not.toMatch(/[\p{Cc}\p{Cf}\u2028\u2029]/u);
+      expect(writer.relationshipCount).toBe(0);
+      expect(() => collector.snapshot()).toThrow(message);
+      expect(logs.records()[0]).toMatchObject({ relationshipId: id, sourceId: unsafeSource });
+    } finally {
+      close();
+    }
+  });
+
   it.each([
     ':0:2:2:16',
     ':2:-1:2:16',

@@ -336,7 +336,7 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
   private readonly undeclared = new UndeclaredPairCollector();
 
   constructor(
-    private readonly real: KnowledgeGraph,
+    private readonly real: KnowledgeGraph & Required<Pick<KnowledgeGraph, 'getRelationship'>>,
     private readonly csvDir: string,
     private readonly chunkRows: number = DEFAULT_EMIT_CHUNK_ROWS,
   ) {
@@ -384,20 +384,66 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
    */
   private dedupKey(rel: GraphRelationship, srcIx: number, tgtIx: number): string {
     const pair = `rel:${rel.type}:${rel.sourceId}->${rel.targetId}`;
-    if (!rel.id.startsWith(pair)) return rel.id;
+    if (!rel.id.startsWith(pair)) return `r|${rel.id}`;
     const tail = rel.id.slice(pair.length);
-    if (tail.length === 0) return `${srcIx}|${tgtIx}|${rel.type}`;
-    if (tail.charCodeAt(0) !== 58 /* ':' */) return rel.id;
+    if (tail.length === 0) return `c|${srcIx}|${tgtIx}|${rel.type}`;
+    if (tail.charCodeAt(0) !== 58 /* ':' */) return `r|${rel.id}`;
 
     const coordinates: number[] = [];
     for (const part of tail.slice(1).split(':')) {
       const n = Number(part);
-      if (part.length === 0 || !Number.isInteger(n) || coordinates.length >= 4) return rel.id;
+      if (
+        part.length === 0 ||
+        !Number.isSafeInteger(n) ||
+        n < 0 ||
+        String(n) !== part ||
+        coordinates.length >= 4
+      )
+        return `r|${rel.id}`;
       coordinates.push(n);
     }
     // Preserve segment count as well as values: point and span identities
     // must never collapse even when trailing coordinates are zero.
-    return `${srcIx}|${tgtIx}|${rel.type}|${coordinates.length}|${coordinates.join('|')}`;
+    return `c|${srcIx}|${tgtIx}|${rel.type}|${coordinates.length}|${coordinates.join('|')}`;
+  }
+
+  /** Probe alternate compact keys after a direct lookup misses. IDs can be
+   * ambiguous when an endpoint itself ends in numeric segments. */
+  private streamedIdentity(rel: GraphRelationship): number | undefined {
+    const src = this.nodeIds.get(rel.sourceId);
+    const tgt = this.nodeIds.get(rel.targetId);
+    if (src !== undefined && tgt !== undefined) {
+      const found = this.streamedIds.get(this.dedupKey(rel, src, tgt));
+      if (found !== undefined) return found;
+    }
+    const opaque = this.streamedIds.get(`r|${rel.id}`);
+    if (opaque !== undefined || !rel.id.startsWith('rel:')) return opaque;
+    const typeEnd = rel.id.indexOf(':', 4);
+    if (typeEnd < 0) return undefined;
+    const type = rel.id.slice(4, typeEnd) as RelationshipType;
+    for (
+      let arrow = rel.id.indexOf('->', typeEnd + 1);
+      arrow >= 0;
+      arrow = rel.id.indexOf('->', arrow + 2)
+    ) {
+      const sourceId = rel.id.slice(typeEnd + 1, arrow);
+      const sourceIx = this.nodeIds.get(sourceId);
+      if (sourceIx === undefined) continue;
+      let end = rel.id.length;
+      for (let parts = 0; parts <= 4; parts++) {
+        const targetId = rel.id.slice(arrow + 2, end);
+        const targetIx = this.nodeIds.get(targetId);
+        if (targetIx !== undefined) {
+          const key = this.dedupKey({ ...rel, sourceId, targetId, type }, sourceIx, targetIx);
+          const found = this.streamedIds.get(key);
+          if (found !== undefined) return found;
+        }
+        const colon = rel.id.lastIndexOf(':', end - 1);
+        if (colon <= arrow + 2 || !/^\d+$/.test(rel.id.slice(colon + 1, end))) break;
+        end = colon;
+      }
+    }
+    return undefined;
   }
 
   private internNode(id: string): number {
@@ -421,7 +467,29 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
   }
 
   addRelationship(relationship: GraphRelationship): void {
-    if (!this.armed || RETAINED_REL_TYPES.has(relationship.type)) {
+    if (!this.armed) {
+      this.real.addRelationship(relationship);
+      return;
+    }
+    const retained = this.real.getRelationship(relationship.id);
+    if (retained !== undefined) {
+      // The real graph owns validation and duplicate accounting in this case.
+      this.real.addRelationship(relationship);
+      return;
+    }
+    const previous = this.streamedIdentity(relationship);
+    if (previous !== undefined) {
+      const conflictingIdentity =
+        this.nodeIdByIx[this.srcIx[previous]] !== relationship.sourceId ||
+        this.nodeIdByIx[this.tgtIx[previous]] !== relationship.targetId ||
+        this.relTypes[previous] !== relationship.type;
+      this.real.inspectRelationship?.(relationship, true, conflictingIdentity);
+      if (conflictingIdentity) {
+        throw new Error(`Conflicting graph relationship identity: ${relationship.id}`);
+      }
+      return;
+    }
+    if (RETAINED_REL_TYPES.has(relationship.type)) {
       this.real.addRelationship(relationship);
       return;
     }
@@ -429,18 +497,7 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     const srcIx = this.internNode(relationship.sourceId);
     const tgtIx = this.internNode(relationship.targetId);
     const key = this.dedupKey(relationship, srcIx, tgtIx);
-    const previous = this.streamedIds.get(key);
-    const duplicate = previous !== undefined;
-    const conflictingIdentity =
-      previous !== undefined &&
-      (this.srcIx[previous] !== srcIx ||
-        this.tgtIx[previous] !== tgtIx ||
-        this.relTypes[previous] !== relationship.type);
-    this.real.inspectRelationship?.(relationship, duplicate, conflictingIdentity);
-    if (conflictingIdentity) {
-      throw new Error(`Conflicting graph relationship identity: ${relationship.id}`);
-    }
-    if (duplicate) return;
+    this.real.inspectRelationship?.(relationship, false, false);
 
     // Classify + skip via the SHARED `relPairKeyFor`, not a local copy of its
     // three lines, so the streamed set cannot drift from the whole-graph set

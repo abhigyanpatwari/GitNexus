@@ -79,7 +79,10 @@ export function referenceEdgeKey(
   targetGraphId: string,
   site: {
     readonly kind: string;
-    readonly atRange: { startLine: number; startCol: number; endLine?: number; endCol?: number };
+    readonly atRange: { startLine: number; startCol: number } & (
+      | { endLine: number; endCol: number }
+      | { endLine?: never; endCol?: never }
+    );
   },
   collapseByCallerTarget = false,
 ): string {

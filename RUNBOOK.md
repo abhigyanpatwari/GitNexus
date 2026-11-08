@@ -163,7 +163,9 @@ Compare target inclusion and ranking against the default; a broader cutoff also 
 
 ## Debugging reference provenance
 
-Analysis emits a structured `graph_reference_integrity` summary to stderr with checked sites, suppressed duplicates, and unverified counts by reason. These describe ingestion checks, not persisted database totals or resolution accuracy. MCP graph responses expose the corresponding `graph_integrity` status.
+Analysis emits a structured `graph_reference_integrity` summary to stderr with checked sites, suppressed duplicates, and unverified counts by reason. These describe ingestion checks, not persisted database totals, query completeness, or resolution accuracy. Successful single-repository MCP graph object responses expose the corresponding `graph_integrity` status. Empty and non-tabular Cypher results retain their raw array shape without a receipt. A missing `graph_integrity` field means provenance is unverified.
+
+Run `gitnexus analyze --force` to replace an index with a missing or invalid receipt. This checks the new ingestion; it does not certify historical indexes or measurements. A fresh receipt can still be unverified when emitters lack original-file provenance. Responses that span mismatched database generations also remain unverified.
 
 For examples of unverified identities, enable debug logging:
 

@@ -10,7 +10,7 @@ function emptyRelIter(): IterableIterator<GraphRelationship> {
 
 export const createKnowledgeGraph = (
   inspectRelationship?: KnowledgeGraph['inspectRelationship'],
-): KnowledgeGraph => {
+): KnowledgeGraph & Required<Pick<KnowledgeGraph, 'getRelationship'>> => {
   const nodeMap = new Map<string, GraphNode>();
   const relationshipMap = new Map<string, GraphRelationship>();
   // Per-type index maintained alongside `relationshipMap`. Bucket
@@ -189,6 +189,7 @@ export const createKnowledgeGraph = (
       );
     },
     getNode: (id: string) => nodeMap.get(id),
+    getRelationship: (id: string) => relationshipMap.get(id),
 
     // O(1) count getters - avoid creating arrays just for length
     get nodeCount() {

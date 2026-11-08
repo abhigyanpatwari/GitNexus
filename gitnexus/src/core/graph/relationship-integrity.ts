@@ -82,7 +82,13 @@ export function createRelationshipIntegrityCollector(
     const fail = (reason: string): never => {
       // The stack identifies the emitting pass as well as the writer.
       failure ??= new Error(
-        `Invalid graph reference ${rel.id}: ${reason}; source=${rel.sourceId}; target=${rel.targetId}`,
+        `Invalid graph reference ${rel.id}: ${reason}; source=${rel.sourceId}; target=${rel.targetId}`.replace(
+          /[\p{Cc}\p{Cf}\u2028\u2029]/gu,
+          (char) => {
+            const hex = char.codePointAt(0)!.toString(16);
+            return hex.length <= 4 ? `\\u${hex.padStart(4, '0')}` : `\\u{${hex}}`;
+          },
+        ),
       );
       logger.error(
         {
@@ -169,14 +175,16 @@ export function createRelationshipIntegrityCollector(
       sourceLines.set(fullPath, sourceBuffer!);
     }
     const { byteLengths, originalCoordinates } = sourceBuffer!;
+    // Notebook line mapping preserves line order, even when several extracted
+    // lines map to one JSON line and their columns cannot be compared.
+    if (endLine < line) fail('invalid source coordinate ordering');
     // Partially mapped coordinates do not describe a range in one buffer.
-    // Keep their identity, but never certify their ordering or source bounds.
+    // Keep their identity, but never certify their columns or source bounds.
     if (byteLengths === null) {
       unverified(rel, duplicate, 'partialMapping');
       return;
     }
-    if (endLine < line || (endLine === line && endCol < col))
-      fail('invalid source coordinate ordering');
+    if (endLine === line && endCol < col) fail('invalid source coordinate ordering');
     if (
       endLine > byteLengths.length ||
       col > (byteLengths[line - 1] ?? 0) ||

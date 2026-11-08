@@ -5589,6 +5589,13 @@ export class LocalBackend {
     const sym = outcome.symbol;
     const resolvedLabel = outcome.resolvedLabel;
     const symId = sym.id;
+    // A known label lets LadybugDB anchor the traversal on one primary-key
+    // index instead of scanning every node table. Labels can be absent on
+    // legacy indexes, so retain the unlabeled query in that case.
+    const referenceLabel = resolvedLabel || sym.type;
+    const referenceAnchor = VALID_NODE_LABELS.has(referenceLabel)
+      ? `(n:\`${referenceLabel}\` {id: $symId})`
+      : '(n {id: $symId})';
 
     // Categorized incoming refs.
     // Collapse repeated call sites in each query before LIMIT: the response
@@ -5609,7 +5616,7 @@ export class LocalBackend {
       executeParameterized(
         repo.lbugPath,
         `
-      MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
+      MATCH (caller)-[r:CodeRelation]->${referenceAnchor}
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'USES', 'DECLARES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
         AND (r.type <> 'MEMBER_OF' OR labels(n) <> 'Community')
       RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
@@ -5627,7 +5634,7 @@ export class LocalBackend {
       executeParameterized(
         repo.lbugPath,
         `
-      MATCH (caller)-[r:CodeRelation {type: 'ADVISED_BY'}]->(n {id: $symId})
+      MATCH (caller)-[r:CodeRelation {type: 'ADVISED_BY'}]->${referenceAnchor}
       RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       ORDER BY uid
       LIMIT 30
@@ -5680,8 +5687,8 @@ export class LocalBackend {
             executeParameterized(
               repo.lbugPath,
               `
-            MATCH (n)-[hm:CodeRelation]->(ctor:Constructor)
-            WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
+            MATCH ${referenceAnchor}-[hm:CodeRelation]->(ctor:Constructor)
+            WHERE hm.type = 'HAS_METHOD'
             MATCH (caller)-[r:CodeRelation]->(ctor)
             WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'ACCESSES']
             RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
@@ -5693,8 +5700,8 @@ export class LocalBackend {
             executeParameterized(
               repo.lbugPath,
               `
-            MATCH (f:File)-[rel:CodeRelation]->(n)
-            WHERE n.id = $symId AND rel.type = 'DEFINES'
+            MATCH (f:File)-[rel:CodeRelation]->${referenceAnchor}
+            WHERE rel.type = 'DEFINES'
             MATCH (caller)-[r:CodeRelation]->(f)
             WHERE r.type IN ['CALLS', 'IMPORTS']
             RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
@@ -5778,7 +5785,7 @@ export class LocalBackend {
       executeParameterized(
         repo.lbugPath,
         `
-      MATCH (n {id: $symId})-[r:CodeRelation]->(target)
+      MATCH ${referenceAnchor}-[r:CodeRelation]->(target)
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'USES', 'DECLARES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
         AND (r.type <> 'MEMBER_OF' OR labels(target) <> 'Community')
       RETURN DISTINCT r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
@@ -5790,7 +5797,7 @@ export class LocalBackend {
       executeParameterized(
         repo.lbugPath,
         `
-      MATCH (n {id: $symId})-[r:CodeRelation {type: 'ADVISED_BY'}]->(target)
+      MATCH ${referenceAnchor}-[r:CodeRelation {type: 'ADVISED_BY'}]->(target)
       RETURN DISTINCT r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       ORDER BY uid
       LIMIT 30

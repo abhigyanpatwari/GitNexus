@@ -1594,6 +1594,36 @@ describe('LocalBackend.callTool', () => {
       expect(windows.filter((q: string) => /ORDER BY uid, relType/.test(q))).toHaveLength(5);
     });
 
+    it.each([
+      ['Function', '(n:`Function` {id: $symId})'],
+      ['', '(n {id: $symId})'],
+      ['UnrecognizedLabel', '(n {id: $symId})'],
+    ])('anchors context reference windows safely for label %j', async (type, anchor) => {
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) =>
+        query.includes('$uid')
+          ? [
+              {
+                id: 'Function:src/a.ts:target',
+                name: 'target',
+                type,
+                filePath: 'src/a.ts',
+                startLine: 1,
+                endLine: 9,
+              },
+            ]
+          : [],
+      );
+      await backend.callTool('context', { uid: 'Function:src/a.ts:target' });
+      const windows = (executeParameterized as any).mock.calls
+        .map((call: unknown[]) => String(call[1]))
+        .filter((query: string) => query.includes('RETURN DISTINCT r.type AS relType'));
+      expect(windows).toHaveLength(4);
+      for (const query of windows) {
+        expect(query).toContain(anchor);
+        expect(query.indexOf('RETURN DISTINCT')).toBeLessThan(query.indexOf('LIMIT 30'));
+      }
+    });
+
     it('marks the match total as a LOWER BOUND when only the COUNT leg fails (#2787 review F3)', async () => {
       // The COUNT rides alongside the window so the response can report the TRUE
       // match count instead of the cap. When that leg fails the code falls back to
@@ -5803,7 +5833,87 @@ describe('LocalBackend tool-staleness signal (#2655 review)', () => {
     const raw = await backend.callTool('cypher', { statement: 'MATCH (n) RETURN n', repo: 'r' });
     expect(Array.isArray(raw)).toBe(true);
     expect(raw).toHaveLength(0);
+    expect(raw).not.toHaveProperty('graph_integrity');
+    expect(JSON.stringify(raw)).toBe('[]');
+    for (const rows of [[1, null, 'legacy'], [{}]]) {
+      lbugMocks.executeParameterized.mockResolvedValueOnce(rows);
+      const nonTabular = await backend.callTool('cypher', {
+        statement: 'MATCH (n) RETURN n',
+        repo: 'r',
+      });
+      expect(Array.isArray(nonTabular)).toBe(true);
+      expect(nonTabular).toEqual(rows);
+      expect(nonTabular).not.toHaveProperty('graph_integrity');
+    }
   });
+
+  it.each(['query', 'impact'] as const)(
+    'delivers the ingestion receipt on %s and leaves missing or mismatched provenance unverified',
+    async (method) => {
+      const storagePath = mkdtempSync(path.join(os.tmpdir(), 'gn-integrity-dispatch-'));
+      const receipt = { version: 1, checkedSites: 7, unverifiedEdges: 0, duplicatesSuppressed: 2 };
+      vi.spyOn(backend as any, method).mockResolvedValue({ ok: true });
+      try {
+        for (const state of [
+          'verified',
+          'missing',
+          'malformed',
+          'generation-unknown',
+          'replaced',
+        ]) {
+          const selected = {
+            ...handle,
+            storagePath,
+            lbugPath: path.join(storagePath, 'lbug'),
+            generationUnknown: state === 'generation-unknown',
+          };
+          writeFileSync(
+            path.join(storagePath, 'meta.json'),
+            JSON.stringify({
+              repoPath: selected.repoPath,
+              indexedAt: selected.indexedAt,
+              lastCommit: selected.lastCommit,
+              ...(state === 'missing'
+                ? {}
+                : {
+                    relationshipIntegrity:
+                      state === 'malformed' ? { ...receipt, checkedSites: -1 } : receipt,
+                  }),
+              ...(state === 'replaced' ? { graphPath: 'generations/new/lbug' } : {}),
+            }),
+          );
+          vi.spyOn(backend, 'selectToolRepository').mockResolvedValue(selected as any);
+          const result = await backend.callTool(method, {
+            repo: 'r',
+            search_query: 'x',
+            target: 'x',
+            direction: 'upstream',
+          });
+          expect(result).toMatchObject({
+            ok: true,
+            graph_integrity: {
+              status: state === 'verified' ? 'verified' : 'unverified',
+              scope: 'source-reference-ingestion',
+            },
+          });
+          if (state === 'verified') {
+            expect(result.graph_integrity).toMatchObject({
+              checkedSites: 7,
+              unverifiedEdges: 0,
+              duplicatesSuppressed: 2,
+            });
+          } else {
+            expect(result.graph_integrity).not.toHaveProperty('checkedSites');
+          }
+          if (state === 'generation-unknown' || state === 'replaced') {
+            expect(result.staleness).toMatchObject({ status: 'unknown', lastCommit: '' });
+          }
+        }
+      } finally {
+        rmSync(storagePath, { recursive: true, force: true });
+      }
+    },
+  );
 
   // F3: drift guard — exactly the four read tools route through stalenessForTool;
   // the adjacent read-ish tools must not, so a future tool added without staleness

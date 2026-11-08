@@ -9,7 +9,7 @@
  */
 
 import type { NodeLabel } from 'gitnexus-shared';
-import { SupportedLanguages } from 'gitnexus-shared';
+import { isNotebookFilename, SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { pythonClassConfig } from '../class-extractors/configs/python.js';
 import { defineLanguage } from '../language-provider.js';
@@ -222,7 +222,7 @@ export const pythonProvider = defineLanguage({
   id: SupportedLanguages.Python,
   rename: pythonRenameProvider,
   // Notebook captures map JSON rows but retain extracted Python columns.
-  referenceSourceText: (_text, filePath) => (filePath.endsWith('.ipynb') ? null : undefined),
+  referenceSourceText: (_text, filePath) => (isNotebookFilename(filePath) ? null : undefined),
   extensions: ['.py', '.ipynb'],
   entryPointPatterns: [/^app$/, /^(get|post|put|delete|patch)_/i, /^api_/, /^view_/],
   astFrameworkPatterns: [

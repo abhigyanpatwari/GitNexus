@@ -59,6 +59,8 @@ export interface KnowledgeGraph {
     ) => void,
   ) => void;
   getNode: (id: string) => GraphNode | undefined;
+  /** Optional direct lookup for graphs that retain relationship identities. */
+  getRelationship?: (id: string) => GraphRelationship | undefined;
   nodeCount: number;
   relationshipCount: number;
   addNode: (node: GraphNode) => void;

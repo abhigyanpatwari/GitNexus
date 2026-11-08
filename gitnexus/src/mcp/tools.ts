@@ -114,13 +114,13 @@ export const QUERY_CONTENT_MAX_CHARS = 16_000;
 export const CONTEXT_CHAIN_MAX_DEPTH = 3;
 
 const CWD_AWARE_REPO_OMISSION =
-  'Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly.';
+  'Omit for one indexed repo, MCP default, or process cwd in a registered path without crossing an unindexed nested Git checkout; else specify it.';
 const MUTATING_REPO_OMISSION =
   'Omit only when one repo is indexed or an MCP default is configured; otherwise mutating tools require an explicit repo. A preview (dry_run omitted or true) may also omit it when the GitNexus process cwd is inside a registered path; dry_run:false always needs one of the first two.';
 
 /** Always-on identity+freshness field on query/context/impact/cypher object results (#3291). */
 const HOT_READ_STALENESS_NOTE =
-  "Object results attach `staleness` even when current. Read `staleness.branch`/`lastCommit` for which index answered and `status` for freshness. Re-analyze only for `behind` or `diverged` — `current` is this clone's HEAD, not necessarily the default branch; `unknown` is unmeasurable, not stale. Field is only on object results (not raw-array cypher, error envelopes, or `@group` calls).";
+  "Object results include `staleness` even when current. Read `branch`/`lastCommit` for the index and `status` for freshness. Re-analyze only for `behind` or `diverged`; `current` means this clone's HEAD, not necessarily the default branch, and `unknown` means unmeasurable, not stale. Raw-array cypher, error envelopes, and `@group` calls omit it.";
 
 const RENAME_PROPERTIES: ToolDefinition['inputSchema']['properties'] = {
   symbol_name: { type: 'string', description: 'Current symbol name to rename' },
@@ -268,7 +268,7 @@ ${HOT_READ_STALENESS_NOTE}`,
     name: 'cypher',
     description: `Execute Cypher query against the code knowledge graph.
 
-INGESTION: graph_integrity reports repository-wide source-reference checks. Stored relationships omit source-site IDs; identical returned rows alone cannot establish whether the original sites differ.
+INGESTION: Object responses include graph_integrity with repository-wide source-reference checks. Empty and non-tabular results retain their raw array shape without a receipt. A missing graph_integrity field means provenance is unverified. Stored relationships omit source-site IDs; identical returned rows alone cannot establish whether the original sites differ.
 
 WHEN TO USE: Complex structural queries that search/explore can't answer. READ gitnexus://repo/{name}/schema first for the full schema.
 AFTER THIS: Use context() on result symbols for deeper context.
