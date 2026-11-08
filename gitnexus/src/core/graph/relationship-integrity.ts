@@ -12,6 +12,7 @@ export interface RelationshipIntegrityReceipt {
 }
 
 const REFERENCE_TYPES = new Set(['CALLS', 'ACCESSES', 'USES', 'EXTENDS', 'IMPLEMENTS', 'INHERITS']);
+const REFERENCE_ID_PREFIX = new RegExp(`^rel:(${[...REFERENCE_TYPES].join('|')}):`);
 
 /** Validate before either writer discards the source span encoded in a reference ID.
  * Non-reference and legacy/derived IDs have no source-site claim to validate.
@@ -101,14 +102,11 @@ export function createRelationshipIntegrityCollector(
       throw failure;
     };
     if (conflictingIdentity) fail('relationship identity contradicts an existing record');
-    if (
-      !REFERENCE_TYPES.has(rel.type) &&
-      !/^rel:(CALLS|ACCESSES|USES|EXTENDS|IMPLEMENTS|INHERITS):/.test(rel.id)
-    )
-      return;
+    const hasReferenceIdentity = REFERENCE_ID_PREFIX.test(rel.id);
+    if (!REFERENCE_TYPES.has(rel.type) && !hasReferenceIdentity) return;
     const prefix = `rel:${rel.type}:`;
     if (!rel.id.startsWith(prefix)) {
-      if (/^rel:(CALLS|ACCESSES|USES|EXTENDS|IMPLEMENTS|INHERITS):/.test(rel.id)) {
+      if (hasReferenceIdentity) {
         fail('relationship identity contradicts its type');
       }
       unverified(rel, duplicate, 'opaqueIdentity');

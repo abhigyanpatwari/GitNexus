@@ -384,33 +384,20 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
    */
   private dedupKey(rel: GraphRelationship, srcIx: number, tgtIx: number): string {
     const pair = `rel:${rel.type}:${rel.sourceId}->${rel.targetId}`;
-    if (rel.id.startsWith(pair)) {
-      const tail = rel.id.slice(pair.length);
-      if (tail.length === 0) return `${srcIx}|${tgtIx}|${rel.type}`;
-      // Point or full span -> integers. Any non-numeric segment falls through.
-      if (tail.charCodeAt(0) === 58 /* ':' */) {
-        const coordinates: number[] = [];
-        let seen = 0;
-        let ok = true;
-        for (const part of tail.slice(1).split(':')) {
-          const n = Number(part);
-          if (part.length === 0 || !Number.isInteger(n)) {
-            ok = false;
-            break;
-          }
-          if (seen >= 4) {
-            ok = false;
-            break;
-          }
-          coordinates.push(n);
-          seen++;
-        }
-        // Preserve segment count as well as values: point and span identities
-        // must never collapse even when trailing coordinates are zero.
-        if (ok) return `${srcIx}|${tgtIx}|${rel.type}|${seen}|${coordinates.join('|')}`;
-      }
+    if (!rel.id.startsWith(pair)) return rel.id;
+    const tail = rel.id.slice(pair.length);
+    if (tail.length === 0) return `${srcIx}|${tgtIx}|${rel.type}`;
+    if (tail.charCodeAt(0) !== 58 /* ':' */) return rel.id;
+
+    const coordinates: number[] = [];
+    for (const part of tail.slice(1).split(':')) {
+      const n = Number(part);
+      if (part.length === 0 || !Number.isInteger(n) || coordinates.length >= 4) return rel.id;
+      coordinates.push(n);
     }
-    return rel.id;
+    // Preserve segment count as well as values: point and span identities
+    // must never collapse even when trailing coordinates are zero.
+    return `${srcIx}|${tgtIx}|${rel.type}|${coordinates.length}|${coordinates.join('|')}`;
   }
 
   private internNode(id: string): number {

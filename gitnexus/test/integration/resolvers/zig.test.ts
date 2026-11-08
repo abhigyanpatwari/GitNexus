@@ -34,12 +34,13 @@ describeGrammarPresence(zig);
  *  produced, as `<TYPE> <source id> -> <target id> | <reason>`. A site edge's
  *  id carries the site's start and optional end coordinates (see `tryEmitEdge`). */
 function edgesAtSite(result: PipelineResult, file: string, line: number, col: number): string[] {
+  const sitePattern = new RegExp(`^:(?:read:|write:)?${line}:${col}(?::\\d+:\\d+)?$`);
   return ['CALLS', 'ACCESSES', 'USES']
     .flatMap((type) => getRelationships(result, type))
     .filter(
       (e) =>
         e.sourceFilePath === file &&
-        new RegExp(`^:(?:read:|write:)?${line}:${col}(?::\\d+:\\d+)?$`).test(
+        sitePattern.test(
           e.rel.id.slice(e.rel.id.lastIndexOf(e.rel.targetId) + e.rel.targetId.length),
         ),
     )
