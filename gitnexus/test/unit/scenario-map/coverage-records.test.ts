@@ -247,6 +247,23 @@ describe('attribution (design §5.2)', () => {
 });
 
 describe('buildWorkFile: block ids', () => {
+  it('retains a failed test’s diagnostics even when its coverage window is missing', () => {
+    const result = work(
+      [],
+      [
+        rt('failed', 'fails', 3, {
+          state: 'failed',
+          errors: ['AssertionError: expected 1 to equal 0'],
+        }),
+      ],
+    );
+    expect(result.tests[0]).toMatchObject({
+      state: 'failed',
+      errors: ['AssertionError: expected 1 to equal 0'],
+      attempts: 0,
+    });
+  });
+
   const record = new FileRun()
     .load()
     .start('t1', ['f'])

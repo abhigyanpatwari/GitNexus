@@ -507,6 +507,25 @@ describe('wikiCommand provider switch persistence', () => {
     });
   });
 
+  it('fills in the Anthropic endpoint and default model when switching to anthropic', async () => {
+    const saveCLIConfig = await saveProviderSwitch(
+      {
+        provider: 'minimax',
+        apiKey: 'old-minimax-key',
+        baseUrl: 'https://api.minimax.io/v1',
+        model: 'MiniMax-M3',
+      },
+      { provider: 'anthropic', apiKey: 'sk-ant-new' },
+    );
+
+    expect(saveCLIConfig).toHaveBeenCalledWith({
+      provider: 'anthropic',
+      apiKey: 'sk-ant-new',
+      baseUrl: 'https://api.anthropic.com/v1',
+      model: 'claude-opus-5-5',
+    });
+  });
+
   it('saves grok model to grokModel instead of the HTTP model field', async () => {
     const saveCLIConfig = await saveProviderSwitch(
       {
@@ -939,6 +958,75 @@ describe('wikiCommand --timeout mapping', () => {
 
     expect(harness.generatorCtor).toHaveBeenCalledTimes(1);
     expect(harness.getCapturedConfig()?.maxAttempts).toBe(5);
+  });
+
+  it('passes --max-completion-tokens through to the LLM config', async () => {
+    const harness = await loadWikiCommandHarness();
+
+    await harness.wikiCommand('/tmp/repo', { maxCompletionTokens: '131072' });
+
+    expect(harness.resolveLLMConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ maxTokens: 131072 }),
+    );
+    expect(harness.generatorCtor).toHaveBeenCalledTimes(1);
+    expect(harness.getCapturedConfig()?.maxTokens).toBe(131072);
+  });
+
+  it.each([false, true])(
+    'reports incomplete generation as failure (review: %s)',
+    async (review) => {
+      const harness = await loadWikiCommandHarness();
+      const run = vi.fn().mockResolvedValue({
+        mode: 'full',
+        pagesGenerated: 1,
+        failedModules: ['Billing'],
+      });
+      if (review) {
+        run.mockResolvedValueOnce({ mode: 'full', pagesGenerated: 0, moduleTree: [] });
+      }
+      harness.generatorCtor.mockImplementation(function () {
+        return { run };
+      });
+
+      await harness.wikiCommand('/tmp/repo', { review, gist: true });
+
+      expect(process.exitCode).toBe(1);
+      expect(run).toHaveBeenCalledTimes(review ? 2 : 1);
+      expect(harness.consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Wiki generation incomplete'),
+      );
+      expect(harness.consoleSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('Wiki generated successfully'),
+      );
+      expect(harness.consoleSpy).toHaveBeenCalledWith('    - Billing');
+    },
+  );
+
+  it('reports invalid environment or saved limits before starting generation', async () => {
+    const harness = await loadWikiCommandHarness();
+    harness.resolveLLMConfig.mockRejectedValueOnce(
+      new Error('GITNEXUS_MAX_COMPLETION_TOKENS must be a positive integer'),
+    );
+
+    await harness.wikiCommand('/tmp/repo');
+
+    expect(process.exitCode).toBe(1);
+    expect(harness.generatorCtor).not.toHaveBeenCalled();
+    expect(harness.consoleSpy).toHaveBeenCalledWith(
+      '  Error: GITNEXUS_MAX_COMPLETION_TOKENS must be a positive integer\n',
+    );
+  });
+
+  it('rejects a non-integer --max-completion-tokens value before starting generation', async () => {
+    const harness = await loadWikiCommandHarness();
+
+    await harness.wikiCommand('/tmp/repo', { maxCompletionTokens: 'abc' });
+
+    expect(process.exitCode).toBe(1);
+    expect(harness.generatorCtor).not.toHaveBeenCalled();
+    expect(harness.consoleSpy).toHaveBeenCalledWith(
+      '  Error: --max-completion-tokens must be a positive integer\n',
+    );
   });
 
   it('maps --allow-insecure-connection to allowedInsecureHttpHosts', async () => {

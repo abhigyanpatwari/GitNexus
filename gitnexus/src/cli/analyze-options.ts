@@ -14,6 +14,8 @@
  * back the other way put the two files, plus `core/run-analyze.ts`, in an
  * import cycle. `analyze.ts` re-exports the type for existing importers.
  */
+import type { RouteFrameworkAlias } from '../core/ingestion/language-provider.js';
+
 export interface AnalyzeOptions {
   /** Keep this repository current with serialized incremental refreshes. */
   watch?: boolean;
@@ -125,6 +127,8 @@ export interface AnalyzeOptions {
    * Integer, minimum 200; CLI-only (not a `.gitnexusrc` key).
    */
   memoryBudget?: string;
+  /** Total process-family reservation, separate from the main V8 heap flag. */
+  resourceBudget?: string;
   /** Parse worker pool size (>=1); 0 is rejected (no sequential mode). */
   workers?: string;
   /** Process-detection process cap. Positive integer string; `0` is invalid. */
@@ -147,6 +151,16 @@ export interface AnalyzeOptions {
    * outside the built-in convention still produces `route_map` consumers.
    */
   fetchWrappers?: string[];
+  /**
+   * Router types reached through a wrapper package that are a framework's
+   * router root. Supplied via `.gitnexusrc` / `GITNEXUS_RC` `goRouterAliases`.
+   */
+  routeFrameworkAliases?: RouteFrameworkAlias[];
+  /**
+   * Handler-wrapper callees whose first argument is the route handler.
+   * Supplied via `.gitnexusrc` / `GITNEXUS_RC` `goHandlerWrappers`.
+   */
+  routeHandlerWrappers?: string[];
   /**
    * Explicit local Spring Boot Actuator snapshot input (#2418). Accepts a JSON
    * bundle or a directory containing endpoint JSON files. Disabled by default.

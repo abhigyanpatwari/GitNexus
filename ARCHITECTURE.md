@@ -432,6 +432,60 @@ Wire format is **v2**: `2|<base>|<step>|<step>…`, one-character version prefix
 
 Receivers the resolver could not type are not silently dropped. Each records a `ResolutionOutcome` (`scope-resolution/resolution-outcome.ts`) carrying the receiver's *shape* (`classifyReceiverShape`: `chain-call` / `chain-field` / `chain-mixed` / `chain-unwrap` / `no-chain` — the bench censuses these) and its *origin* (`in-program` / `external` / `unknown`). `scope-resolution/unresolved-receivers.ts` aggregates them per member name into the index-persisted `unresolvedReceiverMembers` summary, keeping in-program and external counts under separate keys. Only in-program drops make a count short: an external-rooted call (`System.out.println`, `fetch(...)`) has no in-graph node an edge could have reached, so it is reported but does not hedge. `impact` / `context` read that summary and publish `epistemic: 'exact' | 'lower-bound'`, prose `boundaries`, and the machine-readable `causes` split (`EpistemicCauses` in `mcp/local/local-backend.ts`).
 
+Python's provider classifies attribute reads and assignment targets separately; augmented assignments produce both read and write references. Constructor assignments on a proven instance receiver also create `Property` nodes without requiring a value type annotation. Annotation-only targets do not assign a value. These rules follow the [Python attribute-reference](https://docs.python.org/3/reference/expressions.html#attribute-references) and [assignment](https://docs.python.org/3/reference/simple_stmts.html#assignment-statements) semantics.
+
+Property references declined across language boundaries are recorded in `crossLanguageProperties`. Both `context` and upstream `impact` on an affected property report `epistemic: 'lower-bound'`, with the explanation in `boundaries` and `unresolved`, and the definition languages in `anchorLanguages`. This evidence does not fabricate cross-language edges and does not qualify a downstream walk.
+
+### Java overload selection and missing call edges (#3789)
+
+Java resolves an overload family through provider hooks before the shared passes
+prune candidates by owner or conversion rank. The provider gathers eligible
+members across the receiver's compile-time hierarchy, removes overridden
+signatures, and applies the JLS 15.12.2 phases in order: strict invocation, loose
+invocation, then variable arity. Within the first applicable phase it compares
+parameter types pairwise for specificity. Boxing, primitive widening, arrays,
+null, and concrete invariant generic arguments retain their distinct meanings.
+Lexically scoped argument facts travel in Java's existing `captureSideChannel`,
+so parse workers and durable cache replay make the same decisions.
+Static imports use accessible overload families; an explicit import shadows only
+the same signature from an on-demand import. Enum constant bodies and implicit
+record accessors reuse the provider's existing synthetic identities. Field,
+hierarchy, and subtype walks memoize shared ancestors while preserving cycle and
+depth bounds.
+
+The provider models a bounded set of qualified JDK type relationships and
+`Arrays.asList` / `Collections.singletonList` calls. These factories are poly
+expressions: their type arguments depend on the candidate's parameter type.
+Source declarations and lexical shadowing take precedence over these summaries.
+Unsupported generic inference, unavailable argument types, and incomplete
+inherited inventories leave an overload unresolved. A complete original family
+containing only one declaration may retain the existing unique-member inference
+for opaque arguments; this exception does not apply to a family narrowed to one
+candidate. Runtime implementation dispatch follows the selected signature.
+It preserves the original receiver's subtype bound and excludes static and private
+methods from virtual dispatch.
+
+Captures also retain callable-owned return annotations and structural identities
+for `var` initializers. The shared passes keep the selected compile-time method
+separate from runtime dispatch targets, then propagate owned return types to
+untyped assignments and revisit waiting receiver calls through a dependency
+queue. Sequential assignments have no expression-depth cutoff. Unresolved producers
+cannot restore an earlier name-based return guess. Generic implementation
+signatures substitute a whole formal type parameter only when concrete source
+heritage proves its binding; unsupported substitutions remain unknown.
+
+Suppressed overload calls record graph identities for their candidate methods,
+declaring owners, and caller. `unresolved-overloads.ts` reconciles decisions per
+call site and resolution phase and persists a bounded `unresolvedOverloads`
+receipt, including an explicit complete-empty receipt. `impact` and `context`
+report matching omitted sites through `causes.overloadResolution` and
+`epistemic: 'lower-bound'`; possible callers never become ordinary `CALLS`
+edges or inflate known caller counts. Impact checks the nodes whose neighbors
+were actually expanded before pagination, using candidate identities upstream
+and caller identities downstream. Missing, malformed, or capped receipts retain
+an uncertainty boundary. Re-analyze with the current build (`--force` when
+repairing metadata) to replace a legacy receipt.
+
 ### Optional CFG/PDG emission (`--pdg`, #2081–#2086)
 
 On a `--pdg` run providers build control-flow graphs through `LanguageProvider.cfgVisitor` (Tree-sitter ASTs) or `collectSourceCfgs` (standalone source processing). Every supported language supplies one of these hooks; Vue covers executable scripts. AST visitors run in the parse worker, while source-backed providers run during fresh scope extraction. Both produce plain `ParsedFile.cfgSideChannel` data. Scope-resolution emits the program-dependence layers **inside Phase 4 of `runScopeResolution`, while the disk-backed ParsedFile store is still live**. The store is cleared after that phase, so a later standalone phase cannot consume it.
@@ -586,25 +640,45 @@ Inheritance is captured by the `@reference.inherits` tag and emitted by the scop
 
 ```
 CLI (analyze.ts) → runFullAnalysis(repoPath, options, callbacks)
-  1. Early exit if lastCommit == HEAD (unless --force)     [0%]
-  2. Cache existing embeddings from prior index             [0%]
-  3. runPipelineFromRepo() → KnowledgeGraph                [0-60%]
-  4. Clean up legacy KuzuDB files                          [60%]
-  5. initLbug() → loadGraphToLbug() via CSV streaming      [60-85%]
-  6. Create FTS indexes (File, Function, Class, Method...) [85-90%]
-  7. Restore cached embeddings (batch insert)              [88%]
-  8. Generate new embeddings if --embeddings               [90-98%]
-  9. Save metadata + register repo + update .gitignore     [98-100%]
- 10. Generate AI context files (AGENTS.md, CLAUDE.md)      [100%]
+  1. Admit phase resources and recover any prepared graph publication.
+  2. Reuse unchanged graph/parser work where its receipts still match.
+  3. runPipelineFromRepo() → KnowledgeGraph → bounded graph write → FTS.
+  4. Prepare the owned graph and publication receipt; drain native resources.
+  5. Supervisor waits for graph-process exit, verifies and publishes metadata.
+  6. If embeddings are requested/pending, open the resumable embedding job.
+  7. Reuse verified vectors, commit bounded units, then seal/checkpoint/publish.
+  8. Register the repo and generate AI context files.
+
+Graph-only legacy slots keep their existing path until separate publication is
+needed. A ready graph remains queryable while an embedding job is pending;
+semantic search reports degradation until a compatible sealed artifact is ready.
 ```
 
-**Options:** `--force` (rebuild regardless), `--embeddings` (opt-in, skipped if >50k nodes), `--skipGit`, `--noStats`.
+Unit acknowledgements follow verified, durable WAL commits. Native automatic
+checkpoints bound WAL growth; the final checkpoint prepares the sealed artifact
+for read-only publication without requiring WAL replay.
+
+Automatic resource admission uses 75% of effective process/container RAM as a
+fixed process-family ceiling, divided across concurrent analyses. Each phase
+accounts for the main heap, retained supervisor, native pools and headroom;
+parser workers and embedding model/queues use separate phase reservations.
+Parser workers reserve at least the main-heap allocation because Node's process
+heap flag overrides per-worker V8 limits. Automatic main-heap sizing leaves room
+for required worker reservations. Explicit limits never expand the family
+ceiling; combinations that cannot fit fail admission.
+This bounds reservations, not operating-system RSS.
+
+**Options:** `--force` (rebuild regardless), `--embeddings` (opt-in, resumable), `--skipGit`, `--noStats`.
 
 ## Storage
 
 ```
 <repo>/.gitnexus/
-  ├── lbug           # LadybugDB database
+  ├── lbug           # Legacy monolithic database, until first separate publication
+  ├── lbug.generation.<id>  # Owned private graph, selected by graphPath in metadata
+  ├── analysis-publication.json  # Recoverable prepared graph receipt
+  ├── embeddings/<identity>/     # Job journal, manifest and separate vector database
+  ├── embeddings/spaces/         # Model-space ownership/reuse receipts
   ├── lbug.wal       # Write-ahead log
   ├── lbug.shadow    # Shadow sidecar (checkpoint staging)
   ├── lbug.lock      # Single-writer lock
@@ -636,7 +710,11 @@ the read-only open is retried — see `sidecar-recovery.ts`
 (`isReadOnlyCheckpointInProgressError`) and the
 `lbug-interrupted-checkpoint-recovery` integration test.
 
-Managed by `repo-manager.ts`.
+Managed by `repo-manager.ts`. Publication reclaims unreferenced private graphs
+and job artifacts under the slot lock, preserving current jobs, model spaces,
+legacy reuse sources and prepared publications. Busy reader files are retried on
+a later publication. See [MIGRATION.md](MIGRATION.md#resumable-analysis-and-separate-vector-storage-3598)
+before mixing binary versions or rolling back.
 
 ### Automatic parse-cache identity
 

@@ -22,6 +22,7 @@ interface InvocationResolver {
   // no argument.
   resolveInvocationMode: (
     probe?: (command: string, gitnexusWrapper?: boolean) => string | null,
+    deps?: { readonly npmMajor?: number | null },
   ) => InvocationMode;
   formatDocumentationDlxCommand: (
     gitnexusArgs: string,
@@ -91,8 +92,17 @@ export function getNpmMajorVersion(): number | null {
  * cannot run.
  */
 export function warnIfNpm11NpxRisk(): void {
-  if (resolveInvocationMode() !== 'npx') return;
-  const major = getNpmMajorVersion();
+  // The resolver and warning need the same version. Probe once, lazily: a
+  // preferred global binary or forced alternative still needs no npm spawn.
+  let cachedMajor: number | null | undefined;
+  const deps = {
+    get npmMajor(): number | null {
+      if (cachedMajor === undefined) cachedMajor = getNpmMajorVersion();
+      return cachedMajor;
+    },
+  };
+  if (resolveInvocationMode(undefined, deps) !== 'npx') return;
+  const major = deps.npmMajor;
   if (major === null || major < 11) return;
   process.stderr.write(
     `Warning: npm ${major}.x can crash while installing gitnexus via npx ` +

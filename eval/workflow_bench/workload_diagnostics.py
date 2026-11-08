@@ -211,6 +211,11 @@ def workload_metrics(
                     counts["edits"] += 1
                     counts["edits_after_verification"] += verified
     counts["usage_snapshots"] = len(usage)
+    # Some CLI/provider adapters emit all-zero placeholders for completed
+    # assistant turns. They are not evidence of an empty model context.
+    usage = [u if any(type(u.get(f)) is int and u[f] > 0 for f in (
+        "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens",
+    )) else {"event_index": u["event_index"]} for u in usage]
     input_fields = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
     totals = [sum(u[f] for f in input_fields)
               if all(type(u.get(f)) is int and u[f] >= 0 for f in input_fields) else None for u in usage]

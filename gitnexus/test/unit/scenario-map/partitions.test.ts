@@ -5,6 +5,7 @@
  * glob matching, the split, the merge of partial runs, the partitioned runner and the build output
  * copied into a prepared package.
  */
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -182,6 +183,73 @@ describe('copyBuildOutput', () => {
     for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
+  it('gives inventory guards a private index without sharing Git configuration or writes', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'scenario-map-git-inventory-'));
+    temps.push(base);
+    const checkout = path.join(base, 'checkout');
+    const prepared = path.join(base, 'prepared');
+    for (const root of [checkout, prepared]) {
+      mkdirSync(path.join(root, 'gitnexus'), { recursive: true });
+      writeFileSync(path.join(root, 'gitnexus', 'case.ts'), 'export const value = 1;');
+    }
+    writeFileSync(path.join(checkout, 'public-manifest.json'), '{}');
+    writeFileSync(path.join(checkout, '.env'), 'fixture-only-private-value');
+    writeFileSync(path.join(prepared, 'gitnexus', 'case.ts'), 'export const value = 2;');
+    execFileSync('git', ['init', '--quiet', checkout]);
+    const git = (root: string, ...args: string[]) =>
+      execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+    git(checkout, 'add', '--force', '--', 'gitnexus/case.ts', 'public-manifest.json', '.env');
+    git(checkout, 'remote', 'add', 'origin', 'https://example.com/source.git');
+    copyBuildOutput('normal', path.join(checkout, 'gitnexus'), path.join(prepared, 'gitnexus'));
+    expect(git(prepared, 'rev-parse', '--show-toplevel')).toBe(prepared.split(path.sep).join('/'));
+    expect(git(prepared, 'ls-files', '--stage')).toBe(
+      git(checkout, 'ls-files', '--stage', '--', 'gitnexus/case.ts', 'public-manifest.json'),
+    );
+    expect(git(prepared, 'remote')).toBe('');
+    expect(existsSync(path.join(prepared, '.env'))).toBe(false);
+    expect(readFileSync(path.join(prepared, 'public-manifest.json'), 'utf8')).toBe('{}');
+    expect(readFileSync(path.join(prepared, 'gitnexus', 'case.ts'), 'utf8')).toContain('value = 2');
+    git(prepared, 'update-index', '--force-remove', 'gitnexus/case.ts');
+    expect(git(checkout, 'ls-files').split('\n')).toEqual([
+      '.env',
+      'gitnexus/case.ts',
+      'public-manifest.json',
+    ]);
+  });
+
+  it('preserves repository contract fixtures needed during test collection', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'scenario-map-contract-fixtures-'));
+    temps.push(base);
+    const checkout = path.join(base, 'checkout', 'gitnexus');
+    const prepared = path.join(base, 'prepared', 'gitnexus');
+    mkdirSync(checkout, { recursive: true });
+    mkdirSync(prepared, { recursive: true });
+    const fixtures = [
+      '.github/workflows/ci-tests.yml',
+      '.claude/skills/gitnexus-plan/SKILL.md',
+      'gitnexus-factory-plugin/.factory-plugin/plugin.json',
+      'Dockerfile.cli',
+      'render.yaml',
+      'AGENTS.md',
+      'CLAUDE.md',
+      'eval/workflow_bench/run-evolution.sh',
+      'gitnexus/prebuilds/bundled/manifest.json',
+    ];
+    for (const file of fixtures) {
+      const target = path.join(checkout, '..', file);
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, file);
+    }
+    writeFileSync(path.join(checkout, '..', '.env'), 'private');
+    execFileSync('git', ['init', '--quiet', path.dirname(checkout)]);
+    execFileSync('git', ['add', '--force', '--', ...fixtures], { cwd: path.dirname(checkout) });
+    copyBuildOutput('normal', checkout, prepared);
+    expect(fixtures.map((file) => readFileSync(path.join(prepared, '..', file), 'utf8'))).toEqual(
+      fixtures,
+    );
+    expect(existsSync(path.join(prepared, '..', '.env'))).toBe(false);
+  });
+
   it('copies vendor/ and dist/ that the checkout has into a normal-mode copy only', () => {
     const base = mkdtempSync(path.join(os.tmpdir(), 'scenario-map-build-output-'));
     temps.push(base);
@@ -218,6 +286,8 @@ describe('copyBuildOutput', () => {
       mkdirSync(dir, { recursive: true });
       writeFileSync(path.join(dir, 'registry-query.cjs'), plugin);
     }
+    execFileSync('git', ['init', '--quiet', path.dirname(checkout)]);
+    execFileSync('git', ['add', '--', ...hooks], { cwd: path.dirname(checkout) });
     copyBuildOutput('normal', checkout, prepared);
     expect(
       hooks.map((plugin) =>

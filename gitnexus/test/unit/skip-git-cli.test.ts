@@ -165,8 +165,10 @@ describe('--skip-git CLI flag', () => {
           env,
         },
       );
-      expect(keepContext).toContain('"status": "found"');
-      expect(keepContext).toContain('"filePath": "src/keep.ts"');
+      expect(JSON.parse(keepContext)).toMatchObject({
+        status: 'found',
+        symbol: { filePath: 'src/keep.ts' },
+      });
 
       // Since #2470 a backend error payload also exits non-zero, so capture
       // the payload from the exec failure instead of expecting exit 0.
@@ -187,7 +189,7 @@ describe('--skip-git CLI flag', () => {
         leakedContext = String(execErr.stdout ?? '');
       }
       expect(leakedStatus).toBe(1);
-      expect(leakedContext).toContain(`"error": "Symbol 'leaked' not found"`);
+      expect(JSON.parse(leakedContext).error).toBe("Symbol 'leaked' not found");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
       fs.rmSync(gitnexusHome, { recursive: true, force: true });

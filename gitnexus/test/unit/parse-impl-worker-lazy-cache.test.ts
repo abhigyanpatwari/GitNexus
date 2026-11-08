@@ -341,6 +341,88 @@ describe('parse-impl worker pool lazy startup', () => {
     }
   });
 
+  it('accepts a zero-worker budget when there are no parseable files', async () => {
+    const result = await runChunkedParseAndResolve(
+      createKnowledgeGraph(),
+      [],
+      [],
+      0,
+      repoDir,
+      Date.now(),
+      () => {},
+      {
+        workerPoolSize: 0,
+        workerResources: { workers: 0, workerHeapMb: 512 },
+        workerUrlForTest: pathToFileURL(path.join(tempDir, 'must-not-spawn.cjs')),
+      },
+    );
+    expect(result.usedWorkerPool).toBe(false);
+  });
+
+  it('keeps tiny-repository automatic sizing inside the admitted worker ceiling', async () => {
+    const saved = process.env.GITNEXUS_WORKER_POOL_SIZE;
+    delete process.env.GITNEXUS_WORKER_POOL_SIZE;
+    try {
+      const rels = ['a.ts', 'b.ts', 'c.ts', 'd.ts'];
+      const scanned = rels.map((rel) => {
+        fs.writeFileSync(path.join(repoDir, rel), 'export const value = 1;');
+        return { path: rel, size: 23 };
+      });
+      const markerDir = path.join(tempDir, 'budget-markers');
+      const workerPath = path.join(tempDir, 'budget-worker.cjs');
+      // Real worker reports V8's assigned old-generation limit. The generous
+      // default is several GiB on this host; this run must stay at 512 MiB.
+      fs.writeFileSync(
+        workerPath,
+        `
+const fs = require('node:fs');
+const { parentPort, resourceLimits, threadId } = require('node:worker_threads');
+fs.mkdirSync(${JSON.stringify(markerDir)}, { recursive: true });
+fs.writeFileSync(${JSON.stringify(markerDir)} + '/' + threadId, String(resourceLimits.maxOldGenerationSizeMb));
+parentPort.postMessage({ type: 'ready' });
+parentPort.on('message', (msg) => {
+  if (msg.type === 'sub-batch') parentPort.postMessage({ type: 'sub-batch-done' });
+  if (msg.type === 'flush') parentPort.postMessage({ type: 'result', data: ${JSON.stringify(emptyWorkerResult('a.ts', 'value'))} });
+});
+`,
+      );
+      await runChunkedParseAndResolve(
+        createKnowledgeGraph(),
+        scanned,
+        rels,
+        4,
+        repoDir,
+        Date.now(),
+        () => {},
+        {
+          workerUrlForTest: pathToFileURL(workerPath),
+          workerResources: { workers: 3, workerHeapMb: 512 },
+        },
+      );
+      const markers = fs.readdirSync(markerDir);
+      expect(markers).toHaveLength(1);
+      expect(Number(fs.readFileSync(path.join(markerDir, markers[0]), 'utf8'))).toBe(512);
+      await expect(
+        runChunkedParseAndResolve(
+          createKnowledgeGraph(),
+          scanned,
+          rels,
+          4,
+          repoDir,
+          Date.now(),
+          () => {},
+          {
+            workerPoolSize: 4,
+            workerResources: { workers: 3, workerHeapMb: 512 },
+          },
+        ),
+      ).rejects.toThrow('admitted resource budget');
+    } finally {
+      if (saved === undefined) delete process.env.GITNEXUS_WORKER_POOL_SIZE;
+      else process.env.GITNEXUS_WORKER_POOL_SIZE = saved;
+    }
+  });
+
   it('throws when GITNEXUS_WORKER_POOL_SIZE=0 and no --workers flag (sequential parsing removed)', async () => {
     const saved = process.env.GITNEXUS_WORKER_POOL_SIZE;
     process.env.GITNEXUS_WORKER_POOL_SIZE = '0';

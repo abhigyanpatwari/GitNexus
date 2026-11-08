@@ -18,7 +18,8 @@
  * Library only; pure but for {@link sequentialMatcherFor}, which reads the base config module,
  * {@link runVitestPartitioned}, which runs the injected Vitest runner, and {@link copyBuildOutput}.
  */
-import { cpSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import baseConfig from '../../../vitest.config.js';
 import { parseTestId } from '../../mutation/runner/test-ids.js';
@@ -118,7 +119,53 @@ export async function runVitestPartitioned(
 }
 
 /** Package entries the prepare step leaves out and integration tests load (E6). */
-const BUILD_OUTPUT = ['vendor', 'dist'] as const;
+const BUILD_OUTPUT = ['vendor', 'prebuilds', 'dist'] as const;
+
+/** Restore tracked inventory inputs without sharing the checkout's writable Git state. */
+function copyGitInventory(checkoutRoot: string, preparedRoot: string): void {
+  if (!existsSync(path.join(checkoutRoot, '.git'))) return;
+  const env = { ...process.env };
+  for (const key of [
+    'GIT_DIR',
+    'GIT_COMMON_DIR',
+    'GIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  ])
+    delete env[key];
+  const listing = execFileSync('git', ['ls-files', '--stage', '-z'], {
+    cwd: checkoutRoot,
+    env,
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  const entries: string[] = [];
+  for (const entry of listing.split('\0')) {
+    const tab = entry.indexOf('\t');
+    if (tab < 0 || entry.startsWith('160000 ')) continue; // Do not enter submodule repositories.
+    const file = entry.slice(tab + 1);
+    const basename = path.basename(file);
+    if (basename.startsWith('.env') && !basename.endsWith('.example')) continue;
+    const from = path.join(checkoutRoot, file);
+    const to = path.join(preparedRoot, file);
+    // Repo-wide source guards need the public files outside the prepared package too.
+    // Existing prepared files may be mutated: never overwrite them with checkout bytes.
+    if (!existsSync(to) && existsSync(from)) {
+      mkdirSync(path.dirname(to), { recursive: true });
+      cpSync(from, to, { verbatimSymlinks: true });
+    }
+    if (existsSync(to)) entries.push(entry);
+  }
+  execFileSync('git', ['init', '--quiet', '--template=', preparedRoot], { env });
+  execFileSync('git', ['read-tree', '--empty'], { cwd: preparedRoot, env });
+  // Index metadata only: no source object store, history, hooks or remote configuration.
+  execFileSync('git', ['update-index', '-z', '--index-info'], {
+    cwd: preparedRoot,
+    env,
+    input: entries.length === 0 ? '' : `${entries.join('\0')}\0`,
+  });
+}
 
 /**
  * Copies {@link BUILD_OUTPUT} from the checkout's package into a prepared package of a normal-mode
@@ -135,15 +182,5 @@ export function copyBuildOutput(
     const from = path.join(checkoutPackage, entry);
     if (existsSync(from)) cpSync(from, path.join(preparedPackage, entry), { recursive: true });
   }
-  // Package tests compare and execute the shipped copies of the registry hook.
-  for (const plugin of [
-    'gitnexus-claude-plugin',
-    'gitnexus-cursor-integration',
-    'gitnexus-factory-plugin',
-  ]) {
-    const from = path.join(checkoutPackage, '..', plugin, 'hooks');
-    if (existsSync(from)) {
-      cpSync(from, path.join(preparedPackage, '..', plugin, 'hooks'), { recursive: true });
-    }
-  }
+  copyGitInventory(path.resolve(checkoutPackage, '..'), path.resolve(preparedPackage, '..'));
 }

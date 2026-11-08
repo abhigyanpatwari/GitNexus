@@ -138,7 +138,7 @@ describe('incremental graph identity before publication', () => {
       );
       await adapter.tryFlushWAL();
       await expect(
-        reconcileGraphNodeIdentities(graph, adapter.executeQuery, 'native CSV parity'),
+        reconcileGraphNodeIdentities(graph, adapter.forEachQueryRow, 'native CSV parity'),
       ).resolves.toMatchObject({ nodes: 5 });
     } finally {
       await adapter.closeLbug();
@@ -264,7 +264,7 @@ describe('incremental graph identity before publication', () => {
           await expect(
             reconcileGraphNodeIdentities(
               recovered.pipelineResult.graph,
-              adapter.executeQuery,
+              adapter.forEachQueryRow,
               'recovered/reopened',
             ),
           ).resolves.toMatchObject({ nodes: expect.any(Number) });
@@ -278,6 +278,9 @@ describe('incremental graph identity before publication', () => {
         await repo.cleanup();
       }
     },
-    120_000,
+    // Windows takes the in-place recovery path for every row: five analysis
+    // calls including repair refusal, full recovery, and the final no-op.
+    // Allow slow native checkpoints to finish before the test runner times out.
+    process.platform === 'win32' ? 240_000 : 120_000,
   );
 });

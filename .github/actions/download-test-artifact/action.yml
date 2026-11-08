@@ -1,0 +1,53 @@
+name: Download test artifact
+description: Download a required artifact from this run with bounded transport retries
+
+inputs:
+  name:
+    description: Exact artifact name to download from this workflow run
+    required: true
+  path:
+    description: Destination directory
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Restart the whole action after its internal retries are exhausted, so
+    # each attempt obtains a fresh download URL for the same required artifact.
+    - name: Download
+      id: first
+      continue-on-error: true
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        digest-mismatch: error
+
+    - name: Wait before retry
+      if: ${{ !cancelled() && steps.first.outcome == 'failure' }}
+      shell: bash
+      run: sleep 10
+
+    - name: Retry download
+      id: second
+      if: ${{ !cancelled() && steps.first.outcome == 'failure' }}
+      continue-on-error: true
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        digest-mismatch: error
+
+    - name: Wait before final attempt
+      if: ${{ !cancelled() && steps.second.outcome == 'failure' }}
+      shell: bash
+      run: sleep 30
+
+    # Keep the final failure fatal: shards must never run without the snapshot.
+    - name: Final download attempt
+      if: ${{ !cancelled() && steps.second.outcome == 'failure' }}
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        digest-mismatch: error

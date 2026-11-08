@@ -138,6 +138,7 @@ import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
+import { createOwnerEdgeGuard, type OwnerEdgeGuard } from './owner-edge-guard.js';
 import { defaultExportNameCollides } from '../languages/typescript/cjs-export-assignment.js';
 import {
   extractVueScript,
@@ -424,6 +425,18 @@ export interface ExtractedDecoratorRoute {
    * `LanguageProvider.resolveRouteHandler`; absent when nothing was inferred.
    */
   handlerReceiver?: RouteHandlerReceiver;
+  /**
+   * The handler slot held a call `callee(inner, …)` instead of a designator.
+   * `callee` is the call's designator as written (`common.Wrapper`); the inner
+   * argument's designator and receiver hint travel alongside. A provider uses
+   * it only when the user configured `callee` as a handler wrapper; otherwise
+   * the route keeps no handler, as before.
+   */
+  handlerWrapper?: {
+    callee: string;
+    handlerName: string;
+    handlerReceiver?: RouteHandlerReceiver;
+  };
   /**
    * Provenance for the `HANDLES_ROUTE` edge, overriding the default
    * `decorator-<decoratorName>`. Present when the route was extracted from a
@@ -1596,6 +1609,23 @@ const processFileGroup = (
   result: ParseWorkerResult,
   onFileProcessed?: () => void,
 ): void => {
+  const ownerEdgeGuard = createOwnerEdgeGuard(result);
+  try {
+    processFileGroupFiles(files, language, queryString, result, ownerEdgeGuard, onFileProcessed);
+  } finally {
+    // Also on a throw: processBatch keeps the partial result of a failed group.
+    ownerEdgeGuard.settle();
+  }
+};
+
+const processFileGroupFiles = (
+  files: ParseWorkerInput[],
+  language: SupportedLanguages,
+  queryString: string,
+  result: ParseWorkerResult,
+  ownerEdgeGuard: OwnerEdgeGuard,
+  onFileProcessed?: () => void,
+): void => {
   let query: Parser.Query;
   try {
     const lang = parser.getLanguage();
@@ -1615,6 +1645,8 @@ const processFileGroup = (
   }
 
   for (const file of files) {
+    // Settles the previous file, so every `continue` below still gets checked.
+    ownerEdgeGuard.open(file.path);
     // Skip files larger than the max tree-sitter buffer (32 MB)
     if (getTreeSitterContentByteLength(file.content) > TREE_SITTER_MAX_BUFFER) continue;
 
@@ -3402,7 +3434,18 @@ const processFileGroup = (
     if (provider.synthesizeStructureMembers) {
       const synthetic = provider.synthesizeStructureMembers(tree, file.path, classOwnersByNodeId);
       for (const node of synthetic.nodes) {
-        result.nodes.push(node as ParsedNode);
+        result.nodes.push({
+          ...node,
+          properties: {
+            ...node.properties,
+            ...(typeof node.properties.startLine === 'number'
+              ? { startLine: mapRow(node.properties.startLine) }
+              : {}),
+            ...(typeof node.properties.endLine === 'number'
+              ? { endLine: mapRow(node.properties.endLine) }
+              : {}),
+          },
+        } as ParsedNode);
       }
       for (const sym of synthetic.symbols) {
         result.symbols.push(sym as ParsedSymbol);

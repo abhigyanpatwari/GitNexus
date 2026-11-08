@@ -31,7 +31,7 @@
  * (rather than the exact engine error wording) keeps this test stable.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
+import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
@@ -80,14 +80,11 @@ const runAnalyze = (walCheckpointThreshold: string) =>
     // first failing checkpoint, and CI runners are slow.
     timeout: process.env.CI ? 120_000 : 60_000,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
+    env: cliAnalysisEnv({
       GITNEXUS_HOME: suiteGitnexusHome,
-      // Skip ensureHeap re-exec (which drops the tsx loader).
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
       GITNEXUS_WAL_CHECKPOINT_THRESHOLD: walCheckpointThreshold,
       CI: '1',
-    },
+    }),
   });
 
 describe('analyze WAL auto-checkpoint rename failure (real lbug, no mocks)', () => {

@@ -319,7 +319,13 @@ export type ArityVerdict = 'compatible' | 'unknown' | 'incompatible';
 
 export type ReceiverMemberResolution =
   | { readonly kind: 'resolved'; readonly definition: SymbolDefinition }
-  | { readonly kind: 'ambiguous'; readonly candidateIds: readonly string[] };
+  | {
+      readonly kind: 'ambiguous' | 'unknown' | 'inapplicable';
+      readonly candidateIds: readonly string[];
+      /** False when candidate enumeration itself could not be completed. */
+      readonly candidateSetComplete?: boolean;
+      readonly detail?: string;
+    };
 
 export interface ImportResolutionContext {
   readonly parsedFiles: readonly ParsedFile[];
@@ -1407,7 +1413,10 @@ export interface ScopeResolver {
       readonly name: string;
       readonly arity?: number;
       readonly argumentTypes?: readonly string[];
-      readonly atRange: { readonly startLine: number; readonly startCol: number };
+      readonly atRange: {
+        readonly startLine: number;
+        readonly startCol: number;
+      };
     },
     callerParsed: ParsedFile,
     scopes: ScopeResolutionIndexes,
@@ -1659,6 +1668,38 @@ export interface ScopeResolver {
     ownerDef: SymbolDefinition,
     memberName: string,
     callsite: ReferenceSite,
+    scopes: ScopeResolutionIndexes,
+    model: SemanticModel,
+  ) => ReceiverMemberResolution | undefined;
+
+  /** Opt this member lookup into compound, super and chained call receivers.
+   * Existing providers retain their historical simple-receiver paths. */
+  readonly receiverMemberLookupCoversAllCalls?: boolean;
+
+  /** Source identity of a call whose result is this site's immediate receiver.
+   * Captured from the AST, never inferred by comparing expression strings.
+   * Enables typing from the selected compile-time declaration; an unresolved
+   * producer must not fall back to a name-based return-type guess. */
+  readonly receiverCallSite?: (
+    callsite: ReferenceSite,
+    scopes: ScopeResolutionIndexes,
+  ) => { readonly name: string; readonly range: ReferenceSite['atRange'] } | undefined;
+
+  /** Resolve an unqualified call before implicit-receiver owner pruning.
+   * Undefined declines handling; every returned result is authoritative and
+   * must not resume first-match or global-name fallback. */
+  readonly resolveUnqualifiedCall?: (
+    callsite: ReferenceSite,
+    scopes: ScopeResolutionIndexes,
+    model: SemanticModel,
+  ) => ReceiverMemberResolution | undefined;
+
+  /** Find an implementation of an already selected compile-time signature.
+   * This is override matching, not overload applicability at a runtime subtype.
+   * Undefined means no matching implementation; unknown retains a boundary. */
+  readonly resolveSelectedMethodImplementation?: (
+    selected: SymbolDefinition,
+    owner: SymbolDefinition,
     scopes: ScopeResolutionIndexes,
     model: SemanticModel,
   ) => ReceiverMemberResolution | undefined;

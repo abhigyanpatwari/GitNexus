@@ -32,6 +32,7 @@ import { assignShards, specWeight } from '../../../test/helpers/shard-balance.js
 import { readJsonFile } from '../../mutation/shared/fs.js';
 import { MUTATION_SCOPES, type MutationScope } from '../types.js';
 import { byText, isRecord, sameList, sortedUnique } from '../util.js';
+import { mergeFixtureSources } from '../consolidation/fixture-sources.js';
 import {
   WORK_FILE_SCHEMA_VERSION,
   unknownProvenance,
@@ -118,6 +119,7 @@ export function mergeCoverageSlices(
       slice.revision !== first.revision ||
       mode !== first.work.mode ||
       repeats !== first.work.repeats ||
+      slice.work.fixtureCaptureVersion !== first.work.fixtureCaptureVersion ||
       !sameList(extraRoots, first.work.extraRoots)
     ) {
       throw new Error(`coverage: slice ${slice.index} is not the run of slice ${first.index}`);
@@ -150,6 +152,12 @@ export function mergeCoverageSlices(
   );
   return {
     schemaVersion: WORK_FILE_SCHEMA_VERSION,
+    ...(slices.some((slice) => slice.work.fixtureSources !== undefined)
+      ? { fixtureSources: mergeFixtureSources(slices.map((slice) => slice.work.fixtureSources)) }
+      : {}),
+    ...(first.work.fixtureCaptureVersion === undefined
+      ? {}
+      : { fixtureCaptureVersion: first.work.fixtureCaptureVersion }),
     mode: first.work.mode,
     extraRoots: [...first.work.extraRoots],
     repeats: first.work.repeats,

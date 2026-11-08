@@ -74,13 +74,18 @@ const reportArgs = reportName
   : [];
 try {
   execFileSync(
-    'npx',
-    ['vitest', 'run', ...ALL_CROSS_PLATFORM, ...(shardArg ? [shardArg] : []), ...reportArgs],
+    process.execPath,
+    [
+      fileURLToPath(new URL('../node_modules/vitest/vitest.mjs', import.meta.url)),
+      'run',
+      ...ALL_CROSS_PLATFORM,
+      ...(shardArg ? [shardArg] : []),
+      ...reportArgs,
+    ],
     {
       cwd: ROOT,
       stdio: 'inherit',
       timeout: timeoutMs,
-      shell: true,
     },
   );
 } catch (err) {

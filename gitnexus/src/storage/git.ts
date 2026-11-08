@@ -1,5 +1,5 @@
 import { execFileSync, execSync, spawnSync } from 'child_process';
-import { statSync, existsSync } from 'fs';
+import { statSync, existsSync, lstatSync, realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { logger } from '../core/logger.js';
@@ -585,6 +585,21 @@ export const getCoreExcludesFilePath = (fromPath: string): string => {
  */
 export const resolveRepoIdentityRoot = (fromPath: string): string => {
   const resolved = path.resolve(fromPath);
+  // An ordinary checkout is its own identity root. Let Git interpret worktrees,
+  // symlinks, common-directory indirection and environment overrides as before.
+  try {
+    const gitDir = path.join(resolved, '.git');
+    if (
+      process.env.GIT_DIR === undefined &&
+      process.env.GIT_COMMON_DIR === undefined &&
+      lstatSync(gitDir).isDirectory() &&
+      !existsSync(path.join(gitDir, 'commondir')) &&
+      realpathSync.native(resolved) === resolved
+    )
+      return resolved;
+  } catch {
+    // Missing or unreadable paths retain the existing Git/fallback behavior.
+  }
   const canonical = getCanonicalRepoRoot(resolved);
   if (!canonical) return resolved; // non-git → use as-is
   if (canonical === resolved) return canonical; // canonical checkout
@@ -717,6 +732,26 @@ export const getCurrentBranch = (repoPath: string): string | null => {
   } catch {
     return null;
   }
+};
+
+/** Read HEAD and its branch together; callers must refresh after waiting for a lock. */
+export const getCurrentCheckout = (repoPath: string): { commit: string; branch: string | null } => {
+  try {
+    const lines = execFileSync('git', ['rev-parse', 'HEAD', '--abbrev-ref', 'HEAD'], {
+      cwd: repoPath,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    })
+      .trim()
+      .split(/\r?\n/);
+    if (lines.length === 2 && lines[0] && lines[1]) {
+      return { commit: lines[0], branch: lines[1] === 'HEAD' ? null : lines[1] };
+    }
+  } catch {
+    // Preserve independent results if Git can resolve only one of the values.
+  }
+  return { commit: getCurrentCommit(repoPath), branch: getCurrentBranch(repoPath) };
 };
 
 /**

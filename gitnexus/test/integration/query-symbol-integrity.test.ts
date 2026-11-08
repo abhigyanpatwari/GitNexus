@@ -62,6 +62,14 @@ describe('query identity boundary through the real MCP server', () => {
     await fs.mkdir(path.join(repo, 'src'), { recursive: true });
     await fs.writeFile(path.join(repo, '.gitignore'), '.gitnexus/\n');
     await fs.writeFile(path.join(repo, 'src/fixture.ts'), SOURCE);
+    await fs.writeFile(
+      path.join(repo, 'src/fixture.py'),
+      'class Fixture:\n    def integrityNeedle(self):\n        return 42\n',
+    );
+    await fs.writeFile(
+      path.join(repo, 'src/fixture.swift'),
+      'struct IntegrityNeedle {\n    let value = 42\n}\n',
+    );
     initGitRepo(repo);
     execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: repo });
     commitAll(repo, 'source-derived query fixture');
@@ -148,7 +156,7 @@ describe('query identity boundary through the real MCP server', () => {
     'bounds source previews in native queries without losing matches (%#)',
     async (source) => {
       const setSource = async () => {
-        for (const label of ['Function', 'File']) {
+        for (const label of ['Function', 'Class', 'Method', 'Struct', 'File']) {
           await adapter.executePrepared(`MATCH (n:${label}) SET n.content = $source`, { source });
         }
       };
@@ -188,6 +196,11 @@ describe('query identity boundary through the real MCP server', () => {
   );
 
   it.each([
+    [
+      'path inconsistent with the symbol UID',
+      'MATCH (n:Function {id: $uid}) SET n.filePath = $value',
+      'Sources/Unrelated.swift',
+    ],
     ['NUL symbol name', 'MATCH (n:Function {id: $uid}) SET n.name = $value', 'invalid\0name'],
     ['NUL symbol path', 'MATCH (n:Function {id: $uid}) SET n.filePath = $value', 'invalid\0path'],
     ['NUL process label', 'MATCH (p:Process) SET p.label = $value', 'invalid\0process'],
@@ -212,6 +225,35 @@ describe('query identity boundary through the real MCP server', () => {
       );
       await adapter.dropFTSIndex('Function', 'function_fts');
       await adapter.createFTSIndex('Function', 'function_fts', ['name', 'content', 'description']);
+    });
+    expect(result.error).toContain('invalid symbol identity');
+    expect(result.recoverySuggestion).toBe(SYMBOL_IDENTITY_RECOVERY_SUGGESTION);
+    expect(result).not.toHaveProperty('definitions');
+  });
+
+  it.each([
+    {
+      table: 'Method',
+      uid: 'Method:src/fixture.py:Fixture.integrityNeedle#0',
+      field: 'filePath',
+      value: 'src/fixture.swift',
+    },
+    {
+      table: 'Struct',
+      uid: 'Struct:src/fixture.swift:IntegrityNeedle',
+      field: 'name',
+      value: '\0\0\0\0',
+    },
+  ])('rejects the injected #3527 $table/$field shape', async ({ table, uid, field, value }) => {
+    const result = await query(async () => {
+      // Prove the source-derived fixture contains the target before injecting the fault.
+      expect(
+        await adapter.executePrepared(`MATCH (n:${table} {id: $uid}) RETURN n.id AS id`, { uid }),
+      ).toEqual([{ id: uid }]);
+      await adapter.executePrepared(`MATCH (n:${table} {id: $uid}) SET n.${field} = $value`, {
+        uid,
+        value,
+      });
     });
     expect(result.error).toContain('invalid symbol identity');
     expect(result.recoverySuggestion).toBe(SYMBOL_IDENTITY_RECOVERY_SUGGESTION);

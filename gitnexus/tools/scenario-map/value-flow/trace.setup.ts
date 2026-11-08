@@ -7,10 +7,10 @@
  *
  *  - It wraps every entry of the context's wrap list (builtins.ts) on the global object with
  *    trace-records.ts `TraceRecorder`: pass-through proxies that record calls from production
- *    frames per current test (`TestRunner.getCurrentTest()`), and never change what the wrapped
- *    function does. Nothing is restored: the fork ends with the file.
+ *    frames for candidate tests only. Siblings execute without stack capture or serialization.
+ *    Nothing is restored: the fork ends with the file.
  *  - The file-level `aroundEach` is the outermost wrapper of every attempt (repeat or retry): each
- *    attempt starts the test's calls over, and a test that ran is listed even with no call.
+ *    candidate attempt starts its calls over and is listed even with no call.
  *  - The file-level `aroundAll` writes the raw record when the file's run ends, after every
  *    `afterAll` hook, even a failing one.
  *
@@ -19,6 +19,8 @@
  */
 import { createHash } from 'node:crypto';
 import { TestRunner, aroundAll, aroundEach, inject, type RunnerTestCase } from 'vitest';
+import { FIXTURE_CAPTURE_KEY } from '../path-coverage/fixture-capture.js';
+import { TraceFixtureRoots } from './trace-fixtures.js';
 import {
   TRACE_KEY,
   TraceRecorder,
@@ -33,14 +35,22 @@ if (context === undefined || context === null) {
   throw new Error('scenario-map trace: no context was provided (run it through trace.ts)');
 }
 
+const candidateTaskIds = new Set(context.taskIds);
 const currentTest = (): CurrentTest | null => {
   const test = TestRunner.getCurrentTest<RunnerTestCase | undefined>();
-  return test === undefined ? null : { id: test.id, concurrent: test.concurrent === true };
+  return test === undefined || !candidateTaskIds.has(test.id)
+    ? null
+    : { id: test.id, concurrent: test.concurrent === true };
 };
 
+const fixtures = new TraceFixtureRoots();
+Reflect.set(globalThis, FIXTURE_CAPTURE_KEY, (root: unknown) => {
+  if (currentTest() !== null) fixtures.capture(root);
+});
 const recorder = new TraceRecorder({
   currentTest,
   production: productionResolver(context.preparedRoot, context.extraRoots),
+  fixtureRoots: fixtures.roots,
 });
 recorder.install(globalThis, context.wrap);
 
@@ -57,6 +67,7 @@ aroundAll(async (runSuite, {}, suite) => {
 
 // The `{}` is required: Vitest parses this parameter as a fixture pattern.
 aroundEach(async (runTest, {}) => {
+  fixtures.clear();
   const test = currentTest();
   if (test !== null) recorder.testStarted(test);
   await runTest();

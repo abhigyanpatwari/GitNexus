@@ -356,6 +356,8 @@ GITNEXUS_READ_ONLY_TOOLS = (
     "mcp__gitnexus__list_repos",
     "mcp__gitnexus__query",
     "mcp__gitnexus__context",
+    "mcp__gitnexus__grep",
+    "mcp__gitnexus__read_file",
     "mcp__gitnexus__check",
     "mcp__gitnexus__impact",
     "mcp__gitnexus__explain",

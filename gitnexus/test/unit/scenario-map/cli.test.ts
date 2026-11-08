@@ -93,19 +93,19 @@ describe('trace selection', () => {
     'excludes configured retries from %s traces even when coverage passed',
     (mutation) => {
       const pairs = [
-        { a: 'a', b: 'b' },
-        { a: 'a', b: 'retry' },
-        { a: 'a', b: 'failed' },
-        { a: 'a', b: 'failed-retry' },
+        { a: 'a.ts#a', b: 'b.ts#b' },
+        { a: 'a.ts#a', b: 'retry.ts#retry' },
+        { a: 'a.ts#a', b: 'failed.ts#failed' },
+        { a: 'a.ts#a', b: 'failed-retry.ts#failed-retry' },
       ];
       expect(
         passingTracePairs(
           [
-            { id: 'a', state: 'passed', retry: 0 },
-            { id: 'b', state: 'passed' },
-            { id: 'retry', state: 'passed', retry: 1 },
-            { id: 'failed', state: 'failed' },
-            { id: 'failed-retry', state: 'failed', retry: 2 },
+            { id: 'a.ts#a', state: 'passed', retry: 0 },
+            { id: 'b.ts#b', state: 'passed' },
+            { id: 'retry.ts#retry', state: 'passed', retry: 1 },
+            { id: 'failed.ts#failed', state: 'failed' },
+            { id: 'failed-retry.ts#failed-retry', state: 'failed', retry: 2 },
           ],
           pairs,
           mutation,
@@ -116,24 +116,43 @@ describe('trace selection', () => {
 
   it('keeps non-passing coverage tests out of the shared trace without losing valid pairs', () => {
     const pairs = [
-      { a: 'a', b: 'b' },
-      { a: 'a', b: 'failed' },
-      { a: 'skipped', b: 'b' },
-      { a: 'pending', b: 'b' },
-      { a: 'missing', b: 'b' },
+      { a: 'a.ts#a', b: 'b.ts#b' },
+      { a: 'a.ts#a', b: 'failed.ts#failed' },
+      { a: 'skipped.ts#skipped', b: 'b.ts#b' },
+      { a: 'pending.ts#pending', b: 'b.ts#b' },
+      { a: 'missing.ts#missing', b: 'b.ts#b' },
     ];
     expect(
       passingTracePairs(
         [
-          { id: 'a', state: 'passed' },
-          { id: 'b', state: 'passed' },
-          { id: 'failed', state: 'failed' },
-          { id: 'skipped', state: 'skipped' },
-          { id: 'pending', state: 'pending' },
+          { id: 'a.ts#a', state: 'passed' },
+          { id: 'b.ts#b', state: 'passed' },
+          { id: 'failed.ts#failed', state: 'failed' },
+          { id: 'skipped.ts#skipped', state: 'skipped' },
+          { id: 'pending.ts#pending', state: 'pending' },
         ],
         pairs,
       ),
     ).toEqual([pairs[0]]);
+  });
+
+  it('keeps an entire file inconclusive when a runnable sibling uses retries', () => {
+    const pairs = [
+      { a: 'retry.ts#passing', b: 'stable.ts#a' },
+      { a: 'stable.ts#a', b: 'stable.ts#b' },
+    ];
+    expect(
+      passingTracePairs(
+        [
+          { id: 'retry.ts#passing', state: 'passed' },
+          { id: 'retry.ts#sibling', state: 'passed', retry: 1 },
+          { id: 'stable.ts#a', state: 'passed' },
+          { id: 'stable.ts#b', state: 'passed' },
+          { id: 'stable.ts#skipped', state: 'skipped', retry: 1 },
+        ],
+        pairs,
+      ),
+    ).toEqual([pairs[1]]);
   });
 });
 const tempDir = (): string => {
@@ -335,16 +354,9 @@ describe('runCli usage', () => {
     ).toEqual(['HEAD^1', 'HEAD^1', 'HEAD^1']);
   });
 
-  it.each([
-    { mutation: 'all' as const, kind: 'normal', mode: { kind: 'normal' as const } },
-    {
-      mutation: 'none' as const,
-      kind: 'controls',
-      mode: { kind: 'controls' as const, fixtureRoot: 'gitnexus/test/fixtures/x' },
-    },
-  ])('runs every file in Layer 1 for mutation $mutation in $kind mode', ({ mutation, mode }) => {
+  it('runs every file in Layer 1 for a whole-suite run', () => {
     const files = ['test/unit/a.test.ts', 'test/unit/b.test.ts'];
-    expect(layer1FilesOf('/no-repo', files, mutation, mode)).toEqual(files);
+    expect(layer1FilesOf('/no-repo', files)).toEqual(files);
   });
 
   it('exits 2 for a work directory inside the checkout', async () => {
@@ -531,7 +543,18 @@ function writeTwoShardRun(work: string, replan: ShardReplan | null = null): void
     extraRoots: [],
     repeats: 1,
     blocks: ['gitnexus/src/a.ts#f@0'],
-    files: [],
+    files: plan.eligibility.fingerprintFiles.map((file) => ({
+      file,
+      recorded: true,
+      errors: [],
+      unattributed: {
+        known: true,
+        executedFiles: [],
+        nativeEntries: [],
+        workerSpawns: [],
+        excludedCandidates: [],
+      },
+    })),
     tests: tests.map((id, i) => coverageTest(id, i + 1)),
     unhandledErrors: [],
   };
@@ -620,6 +643,46 @@ function writeTwoShardRun(work: string, replan: ShardReplan | null = null): void
 }
 
 describe('merge stage', () => {
+  it('keeps a fully collected run partial when a captured test failed', async () => {
+    const { deps, work } = setup();
+    writeTwoShardRun(work, ONE_SHARD_REPLAN);
+    const layout = workLayout(work);
+    const coverage = JSON.parse(readFileSync(layout.coverage, 'utf8')) as CoverageWorkFile;
+    coverage.tests[0].state = 'failed';
+    coverage.tests[0].errors = ['AssertionError: unexpected capture result'];
+    writeFileSync(layout.coverage, JSON.stringify(coverage));
+    expect(await runCli(['merge', '--work', work], deps)).toBe(1);
+    const report = JSON.parse(readFileSync(layout.reportJson, 'utf8')) as ScenarioMapReport;
+    expect(report.inventory?.collectionComplete).toBe(true);
+    expect(report.completeness.shards.incomplete).toContainEqual({
+      shard: 'coverage tests',
+      reason: '1 failed; 0 unfinished',
+    });
+    expect(report.completeness.complete).toBe(false);
+  });
+
+  it('marks missing coverage partial and reports cases independently of candidate pairs', async () => {
+    const { deps, work } = setup();
+    writeTwoShardRun(work, ONE_SHARD_REPLAN);
+    const layout = workLayout(work);
+    const coverage = JSON.parse(readFileSync(layout.coverage, 'utf8')) as CoverageWorkFile;
+    coverage.files[0].recorded = false;
+    writeFileSync(layout.coverage, JSON.stringify(coverage));
+    const code = await runCli(['merge', '--work', work], deps);
+    const report = JSON.parse(readFileSync(layout.reportJson, 'utf8')) as ScenarioMapReport;
+    expect(code).toBe(1);
+    expect(report.completeness.partial).toBe(true);
+    expect(report.completeness.shards.incomplete).toContainEqual({
+      shard: 'coverage',
+      reason: '1 files missing or errored; 0 unhandled errors',
+    });
+    expect(report.inventory?.tests.collected).toBe(6);
+    expect(report.inventory?.files.unrecorded).toEqual(['test/unit/a.test.ts']);
+    expect(readFileSync(layout.reportMarkdown, 'utf8')).toContain(
+      'Runtime inventory: 6 test cases collected',
+    );
+  });
+
   it('reports the fingerprint of every pair and no mutation verdict for a fingerprint-only run', async () => {
     const { deps, work } = setup();
     writeTwoShardRun(work);

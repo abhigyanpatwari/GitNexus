@@ -48,6 +48,8 @@ const truncateDescription = (text: string, maxLength: number): string => {
  * Clean code content for embedding
  */
 const cleanContent = (content: string): string => {
+  // Keep this hot function small enough for V8 to inline ordinary snippets.
+  if (content.length >= 16 * 1024) return cleanLargeContent(content);
   return content
     .replace(/\r\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
@@ -56,6 +58,46 @@ const cleanContent = (content: string): string => {
     .join('\n')
     .trim();
 };
+
+const cleanLargeContent = (content: string): string => {
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n');
+  const output = new TextBlocks();
+  for (const line of contentLines(normalized)) output.append(line.trimEnd());
+  return output.finish().trim();
+};
+
+/** Output-sized storage with a bounded number of temporary line strings. */
+class TextBlocks {
+  private pending: string[] = [];
+  private output = '';
+  count = 0;
+  append(line: string): void {
+    if (this.count++) this.pending.push('\n');
+    this.pending.push(line);
+    if (this.pending.length >= 1024) this.flush();
+  }
+  private flush(): void {
+    this.output += this.pending.join('');
+    this.pending = [];
+  }
+  finish(): string {
+    this.flush();
+    return this.output;
+  }
+}
+
+function* contentLines(content: string): Generator<string> {
+  let start = 0;
+  for (;;) {
+    const end = content.indexOf('\n', start);
+    if (end < 0) {
+      yield content.slice(start);
+      return;
+    }
+    yield content.slice(start, end);
+    start = end + 1;
+  }
+}
 
 /**
  * Compact location signal for the embedding header: the last 1-2 path segments
@@ -139,6 +181,18 @@ const generateCodeBodyText = (
   return parts.join('\n');
 };
 
+/** Keep preceding context that is not already present in the overlapping chunk. */
+export const withoutOverlappingContext = (
+  previousTail: string,
+  previousEndOffset: number | undefined,
+  currentStartOffset: number | undefined,
+): string => {
+  if (!previousTail || previousEndOffset === undefined || currentStartOffset === undefined)
+    return previousTail;
+  const shared = Math.max(0, previousEndOffset - currentStartOffset);
+  return shared ? previousTail.slice(0, Math.max(0, previousTail.length - shared)) : previousTail;
+};
+
 const getCompactContainerContext = (
   cleanedContent: string,
   declarationOnly: string,
@@ -161,6 +215,18 @@ const generateStructuralTypeText = (
   const header = buildEmbeddingHeader(node, config);
   const parts: string[] = [header];
   const isFirstChunk = chunkIndex === undefined || chunkIndex === 0;
+  if (node.label === 'Class') {
+    // Only chunkNode's projection is trusted as Class code. Raw source and
+    // preceding context may contain method bodies, including on one-line classes.
+    const container = getCompactContainerContext('', node.classDeclaration || `Class ${node.name}`);
+    if (container) parts.push(container);
+    if (isFirstChunk && node.methodNames?.length)
+      parts.push(`Methods: ${node.methodNames.join(', ')}`);
+    if (isFirstChunk && node.fieldNames?.length)
+      parts.push(`Properties: ${node.fieldNames.join(', ')}`);
+    if (node.classDeclaration !== undefined && codeBody) parts.push('', cleanContent(codeBody));
+    return parts.join('\n');
+  }
   // Only the first chunk needs the whole declaration. Later chunks must not
   // repeatedly scan and allocate the complete container's source.
   const cleanedContent = isFirstChunk ? cleanContent(node.content) : undefined;
@@ -230,25 +296,34 @@ const DECL_START_RE =
  * - Non-brace languages (Python/Ruby): returns empty string (patterns handle extraction).
  */
 export const extractDeclarationOnly = (content: string): string => {
-  const lines = content.split('\n');
-  const declLines: string[] = [];
+  const declLines = new TextBlocks();
   let depth = 0;
   let started = false;
   let classDepth = 0;
   let skipDepth = 0;
 
-  for (const [idx, line] of lines.entries()) {
+  let nextLineStart = 0;
+  for (const line of contentLines(content)) {
+    nextLineStart += line.length + 1;
     const trimmed = line.trim();
 
     if (!started) {
       if (DECL_START_RE.test(trimmed)) {
         // Non-brace language check: current line or next 3 lines must have `{`
-        const nextLines = lines.slice(idx + 1, idx + 4);
-        if (!trimmed.includes('{') && !nextLines.some((l) => l.includes('{'))) {
-          return '';
+        if (!trimmed.includes('{')) {
+          let lookaheadEnd = nextLineStart;
+          for (let i = 0; i < 3; i++) {
+            const end = content.indexOf('\n', lookaheadEnd);
+            if (end < 0) {
+              lookaheadEnd = content.length;
+              break;
+            }
+            lookaheadEnd = end + 1;
+          }
+          if (!content.slice(nextLineStart, lookaheadEnd).includes('{')) return '';
         }
         started = true;
-        declLines.push(trimmed);
+        declLines.append(trimmed);
         for (const ch of trimmed) {
           if (ch === '{') depth++;
           else if (ch === '}') depth--;
@@ -259,8 +334,12 @@ export const extractDeclarationOnly = (content: string): string => {
     }
 
     // Always update depth (even when skipping)
-    const opens = (trimmed.match(/{/g) || []).length;
-    const closes = (trimmed.match(/}/g) || []).length;
+    let opens = 0;
+    let closes = 0;
+    for (let i = 0; i < trimmed.length; i++) {
+      if (trimmed.charCodeAt(i) === 123) opens++;
+      else if (trimmed.charCodeAt(i) === 125) closes++;
+    }
     const prevDepth = depth;
     depth += opens - closes;
 
@@ -269,7 +348,7 @@ export const extractDeclarationOnly = (content: string): string => {
         skipDepth = 0;
         // Closing brace of class
         if (depth <= 0) {
-          declLines.push(trimmed);
+          declLines.append(trimmed);
           break;
         }
       }
@@ -282,7 +361,7 @@ export const extractDeclarationOnly = (content: string): string => {
     if (hasParens && hasOpenBrace && prevDepth + opens > classDepth) {
       if (opens === closes && trimmed.endsWith(';')) {
         // Property with function/object initializer like `config = { timeout: 5000 };` — keep
-        declLines.push(trimmed);
+        declLines.append(trimmed);
       }
       // else: single-line or multi-line method — skip entirely
       if (opens !== closes) {
@@ -291,12 +370,12 @@ export const extractDeclarationOnly = (content: string): string => {
       continue;
     }
 
-    declLines.push(trimmed);
+    declLines.append(trimmed);
 
-    if (depth <= 0 && declLines.length > 1) break;
+    if (depth <= 0 && declLines.count > 1) break;
   }
 
-  return declLines.join('\n').trim();
+  return declLines.finish().trim();
 };
 
 /**

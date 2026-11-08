@@ -1889,9 +1889,8 @@ describe('runFullAnalysis re-resolves git state under the lock (#2658 review H2)
       );
       return {
         ...actual,
-        getCurrentCommit,
+        getCurrentCheckout: () => ({ commit: getCurrentCommit(), branch: 'main' }),
         hasGitDir: () => true,
-        getCurrentBranch: () => 'main',
         isWorkingTreeDirty: () => false,
       };
     });
@@ -1947,7 +1946,7 @@ describe('runFullAnalysis re-resolves git state under the lock (#2658 review H2)
         })),
       };
     });
-    // getCurrentCommit succeeds on the pre-lock resolve, then throws on the
+    // getCurrentCheckout succeeds on the pre-lock resolve, then throws on the
     // under-lock re-resolve — the exact shape a mid-wait git change produces.
     let call = 0;
     vi.doMock('../../src/storage/git.js', async () => {
@@ -1957,10 +1956,9 @@ describe('runFullAnalysis re-resolves git state under the lock (#2658 review H2)
       return {
         ...actual,
         hasGitDir: () => true,
-        getCurrentBranch: () => 'main',
         isWorkingTreeDirty: () => false,
-        getCurrentCommit: () => {
-          if (call++ === 0) return 'c1';
+        getCurrentCheckout: () => {
+          if (call++ === 0) return { commit: 'c1', branch: 'main' };
           throw new Error('git HEAD read failed mid-wait');
         },
       };

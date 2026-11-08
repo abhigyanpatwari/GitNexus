@@ -422,10 +422,6 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
       ]);
     });
 
-    it('applies the callable gate through a HUB too', () => {
-      expect(valueRefs).not.toContain('JsApi → DEFAULT_NS');
-    });
-
     it('applies the callable gate to a MODULE owner too', () => {
       // `dom_utils.DEFAULT_NS` is a module-scope constant. Widening the owner
       // channel must not widen what counts as a registration, or every

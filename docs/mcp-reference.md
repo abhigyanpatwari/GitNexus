@@ -30,6 +30,40 @@
 
 > Per-repo read-only tools take an optional `repo` parameter. Omit it when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout; otherwise pass it explicitly. Mutating tools require `repo` when multiple repos are indexed and no MCP default exists. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`, except `read_file` and `grep`, which read the checkout and do not accept `branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree — switching branches and re-running `gitnexus analyze` updates it incrementally. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
 
+### AdonisJS taint coverage
+
+The TypeScript/JavaScript model recognizes directly assigned or destructured results of `input`, `qs`,
+`header`, `param`, `cookie`, `all`, `body`, `params`, `headers`, `only`, `except`,
+and `validateUsing` calls on `req`, `request`, or `ctx.request`. The request call
+must supply the entire assigned value; `await`, parentheses, and TypeScript
+`as`, `satisfies`, and non-null assertions may wrap it. For example:
+
+```ts
+const name = request.input('name');
+await db.rawQuery('select * from users where name = ' + name); // SQL injection finding
+await db.rawQuery('select * from users where name = ?', [name]); // value binding
+```
+
+`rawQuery` consumes SQL at argument 0. The model recognizes `db`, `database`, and
+`trx` receivers, plus aliases imported from `@adonisjs/lucid/services/db`.
+`Model.query()` without arguments starts a query builder and is not itself a
+SQL injection sink. `validateUsing()` remains a source: schema validation can
+accept strings that are unsafe when concatenated into SQL or executable code.
+
+Request receiver matching is conventional and exact; arbitrary aliases are not
+modeled. The call-result rules also do not cover inline calls, concatenation,
+template interpolation, method chains, `??` / `||` expressions, or wrapper calls
+such as `String(request.input('name'))`, even when the containing expression is
+assigned to a variable. For example, neither of these introduces a modeled source:
+
+```ts
+db.rawQuery(request.input('sql'));
+const name = request.input('name', '').trim();
+```
+
+A zero-finding result does not establish safety. Re-run
+`gitnexus analyze --pdg` after upgrading to rebuild findings with the new model.
+
 ### Resources for instant context
 
 | Resource                                | Purpose                                              |
@@ -77,6 +111,17 @@ Set `GITNEXUS_MCP_READ_ONLY=1` before starting the MCP server to expose only the
 
 The default is unchanged when the variable is unset or `0`. Any other value fails server startup rather than silently weakening the policy.
 
+## MCP index refresh
+
+A local server started with `GITNEXUS_MCP_ENABLE_REFRESH=1` also lists `refresh_index`, which rebuilds one registered repository's index from its working tree. It is meant for agents that can see a stale index (`staleness.status` of `behind` or `diverged`) but cannot run `gitnexus analyze` themselves.
+
+- **Index-only.** The rebuild runs in the same forked analyze worker auto-sync uses, with `--skip-agents-md --skip-skills`: no `AGENTS.md`, `CLAUDE.md`, skill, hook, or other repository file is written. It is incremental where it can be and keeps existing embeddings and PDG mode.
+- **Local only.** `gitnexus serve` (and so the Docker `/api/mcp` surface) never lists it, whatever its environment. With `GITNEXUS_MCP_READ_ONLY=1` it is hidden from discovery and rejected before dispatch.
+- **Bounded.** Before starting, the server counts the repository's working tree the way analyze scans it (same patterns and ignore rules, stopping one past the limit) and refuses it when that count exceeds `GITNEXUS_MCP_REFRESH_MAX_FILES` (default `5000`; `0` for no limit, and no count). The count is taken before size filtering, so it can exceed what analyze then indexes. `dry_run` reports it as `estimatedFiles` (`null` when over the limit or with no limit) next to the last index's `lastIndexedFiles`. After `GITNEXUS_MCP_REFRESH_TIMEOUT_MS` (default ten minutes) the call stops waiting and returns an error. The analyze worker never interrupts an analysis it has started, so it finishes and publishes in the background, holding the index lock until then. Cancelling the request does not stop a started rebuild either. After timeout or cancellation, a new call gets "already running" and `dry_run` reports `inProgress` until the worker exits. Only one refresh per repository runs at a time. The file limit does not bound embedding generation, which `.gitnexusrc` can request.
+- **Observable.** `dry_run: true` reports staleness, the indexed file count, whether `.gitnexusrc` makes the rebuild generate embeddings, and whether a refresh would run. A real call waits for the rebuild and returns `indexedAt`, `lastCommit`, `stats`, and `staleness`, with the values before the refresh under `previous`. A rebuild whose graph write collapsed is reported as an error, as `gitnexus analyze` and `serve` report it. Clients that send a progress token receive progress notifications; the MCP TypeScript SDK client gives up on a request after 60 seconds by default unless it resets that timeout on progress.
+
+The tool takes `repo` and `dry_run` only. Like an applied `rename`, it needs an explicit `repo` unless one repository is indexed or an MCP default is configured.
+
 ## MCP repository policy
 
 Set `GITNEXUS_MCP_ALLOWED_REPOS` to a comma-separated list of canonical registry names or absolute indexed paths. Entries are trimmed, resolved against the registry, and deduplicated at startup. When exactly one repository is allowed it becomes the implicit default; when several are allowed, callers must select one unless `GITNEXUS_MCP_DEFAULT_REPO` is also set.
@@ -101,9 +146,13 @@ data; omission does not mean absence. Remove filters for a broader view. For
 impact, existing `summaryOnly`, `limit` and `offset` already provide focused views.
 Omitting these filters preserves the existing response.
 
-The `query`, `context`, and `impact` tools accept an optional positive-integer `maxTokens` argument. It bounds the complete formatted MCP response, including hints and error text, using a deterministic four-UTF-8-bytes-per-token estimate. When truncation is required, the response ends with `…` and remains valid UTF-8.
+The `query`, `context`, and `impact` tools accept an optional positive-integer `maxTokens` argument. It bounds the complete formatted MCP response, including hints and error text, using a deterministic four-UTF-8-bytes-per-token estimate. For `query` and `context`, truncation ends the response with `…` and preserves valid UTF-8.
 
-Set `GITNEXUS_MCP_DEFAULT_MAX_TOKENS` to apply the same guardrail when callers do not send `maxTokens`. An explicit tool argument takes precedence. Leaving both unset preserves the existing response byte-for-byte; this is a transport guardrail, not semantic pagination or an exact model-specific tokenizer limit.
+Set `GITNEXUS_MCP_DEFAULT_MAX_TOKENS` to apply the budget when callers do not send `maxTokens`. An explicit tool argument takes precedence. Leaving both unset disables token budgeting. The estimate is not an exact model-specific tokenizer limit.
+
+For single-repo callgraph results, `impact` removes whole symbols from the deepest levels first. Counts, risk and completeness warnings remain intact, and `pagination.trimmedForBudget.shownByDepth` records the returned counts. If metadata alone cannot fit, it returns a JSON error with MCP `isError: true`; increase `maxTokens` or narrow the request. Budgets too small for an error object return JSON `null` with `isError: true`. Group and PDG results are not paginated or trimmed by this mechanism; an oversized result also returns a budget error.
+
+Without explicit pagination, single-repo callgraph impact returns up to 30 symbols per depth. Client-supplied `offset: 0` and `summaryOnly: false` still use this default. Set `GITNEXUS_IMPACT_DEFAULT_LIMIT=0` for an unpaged result, or set `limit` and `offset` for explicit pages. Each symbol lists at most three processes; `processCount` records the full count when the list is shortened. Backend results used by the web UI and internal callers are unchanged.
 
 ## Tool Examples
 
@@ -248,7 +297,7 @@ affected_processes: [LoginFlow, RegistrationFlow, ...]
 ### Rename (Graph and Semantic Layer)
 
 ```js
-rename({symbol_name: "validateUser", new_name: "verifyUser", repo: "my-app", dry_run: true})
+rename({ symbol_name: 'validateUser', new_name: 'verifyUser', repo: 'my-app', dry_run: true });
 // Omitting dry_run also previews. For an ambiguous name, repeat with the symbol_uid from context().
 ```
 

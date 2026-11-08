@@ -11,6 +11,8 @@ import subprocess
 import sys
 from typing import Any
 
+from . import diagnostic_experiments
+
 MODEL = "gpt-5.6-sol"
 TASK = "trivial-status-json-alias"
 BUDGET_USD = 5.0
@@ -66,8 +68,16 @@ def _validated_cells(plan_path: Path, runtime: Path) -> tuple[dict[str, Any], li
         tasks = document.get("tasks") if isinstance(document, dict) else None
         if not isinstance(tasks, list) or len(tasks) != 1 or not isinstance(tasks[0], dict) or tasks[0].get("id") != TASK:
             raise ValueError("trial manifest must contain only the authorized task")
+        task_repo = tasks[0].get("repo")
+        if (not isinstance(task_repo, str) or task_repo != plan.get("task_repository")
+                or _head(Path(task_repo)) != tasks[0].get("ref")):
+            raise ValueError("task source and dependencies must come from the pinned task checkout")
         if output.exists() or output.is_symlink() or ledger.exists() or ledger.is_symlink():
             raise ValueError("trial results already exist; refusing to repeat paid work")
+        bindings = cell.get("task_bindings")
+        if not isinstance(bindings, list) or len(bindings) != 1 or not isinstance(bindings[0], dict):
+            raise ValueError("trial plan must pin task dependency bindings before execution")
+        diagnostic_experiments.trial_task_bindings(tasks, bindings)
     return plan, cells
 
 
@@ -86,7 +96,8 @@ def execute_trial(plan_path: Path, runtime: Path, claude_bin: str) -> int:
         stream.write(json.dumps(state, indent=2) + "\n")
     failed = False
     for cell in cells:
-        command = [sys.executable, *cell["argv"][4:], "--timeout", "900", "--claude-bin", claude_bin]
+        command = [sys.executable, *cell["argv"][4:], "--timeout", "900", "--claude-bin", claude_bin,
+                   "--task-bindings-json", json.dumps(cell["task_bindings"])]
         item: dict[str, Any] = {"cell_id": cell["cell_id"], "variant": cell["variant"], "status": "started"}
         state["cells"].append(item)
         receipt.write_text(json.dumps(state, indent=2) + "\n")

@@ -18,11 +18,9 @@
  *   plan        eligibility (R1); the Layer 0 scan (test-dupes over the `--all` corpus plus the
  *               eligible files, findings on eligible files kept); a prepared copy and the run
  *               manifest built right after it (KTD14); Layer 1 over {@link layer1FilesOf}: every
- *               fingerprint file for `--mutation all` and controls, otherwise only the files with a
- *               test whose static checks-and-context key another test shares or that has none
- *               (path-coverage/prefilter.ts; E7), or with `--changed-since <ref>` (a diff-scoped
+ *               fingerprint file in whole-suite mode, or with `--changed-since <ref>` (a diff-scoped
  *               run, E8: the test files added or modified since the merge base of `ref` and HEAD)
- *               only those files and the files sharing their tests' keys, the candidate pairs
+ *               only those files and the files sharing their tests' context or body keys, the candidate pairs
  *               then kept only when they have a test of a changed file (path-coverage `runCoverage`, or
  *               with `--coverage <dir>` the merge of the coverage stage's slice files in that
  *               directory, read before the work directory is emptied and checked against the
@@ -30,7 +28,7 @@
  *               prefilter, and a slice that did not report leaves its files unrecorded); the
  *               static inventory and runtime join (U3); checks and context (U5, with the file
  *               snapshot and helper-module readers); input facets (U6); candidates (U4, Jaccard
- *               and checks-and-context sources); each group's KTD7 mutate scope (U7); the
+ *               checks-and-context and body sources); each group's KTD7 mutate scope (U7); the
  *               row-deletion plans of the facet-equal pairs (U9); the mutation target of
  *               `--mutation` ({@link mutationTarget}: every group, none, or the groups with a
  *               possible duplicate on the fingerprint before the trace, trimmed to its tests and the
@@ -294,6 +292,13 @@ import {
   type ManifestCheck,
   type ScenarioRunManifest,
 } from './mutation/run-group.js';
+import { bodyKeyOf } from './facet/body-key.js';
+import { FixtureInputs, withFixtureIdentity } from './facet/fixture-inputs.js';
+import { fixtureSimilarityReport, type FixtureProfile } from './facet/fixture-profile.js';
+import { assertionEvidence, type AssertionEvidence } from './consolidation/assertions.js';
+import { runConsolidation } from './consolidation/run.js';
+import { renderConsolidationReport } from './consolidation/report.js';
+import { coverageInventory } from './inventory/coverage-inventory.js';
 import { findCandidates, type CandidatePair } from './path-coverage/candidates.js';
 import {
   DEFAULT_FIXTURE_ROOT,
@@ -317,6 +322,7 @@ import {
 import { fingerprintMutants } from './report/anchors.js';
 import { UnreadableBaseline } from './report/baseline.js';
 import { renderIssueBody } from './report/issue-body.js';
+import { readReportFields, writeReportJson } from './report/json.js';
 import { renderMarkdown } from './report/markdown.js';
 import {
   buildReport,
@@ -895,6 +901,14 @@ export interface Layer2Test {
   joinProblems: JoinProblem[];
   inventoryUnresolved: string[];
   checksContext: string | null;
+  /** Assertion-only key and body retrieval hint; absent in older work files. */
+  checks?: string | null;
+  bodyKey?: string | null;
+  /** Fixture content and structural retrieval evidence; absent in older artifacts. */
+  fixture?: FixtureProfile | null;
+  assertionEvidence?: AssertionEvidence;
+  /** File and exact declaration location, independent of the table row. */
+  declarationKey?: string | null;
   unsupportedForms: UnsupportedForm[];
   unresolvedSelectors: string[];
   facet: InputFacet | null;
@@ -1507,6 +1521,9 @@ export function assembleVerdictInput(input: VerdictAssembly): VerdictInput {
         concurrent: test.concurrent,
         excludedFiles: excluded.get(test.id) ?? [],
         checksContext: record.checksContext,
+        checks: record.checks,
+        assertionEvidence: record.assertionEvidence,
+        declarationKey: record.declarationKey,
         unsupportedForms: record.unsupportedForms,
         unresolvedSelectors: record.unresolvedSelectors,
         facet: record.facet,
@@ -1673,6 +1690,7 @@ const BEST_TRACE: VerdictPairInput['trace'] = { status: 'clean', reasons: [] };
 function layer2Maps(tests: readonly Layer2Test[]): {
   facets: Map<string, InputFacet>;
   checksContext: Map<string, string | null>;
+  bodyKeys: Map<string, string | null>;
 } {
   return {
     facets: new Map(
@@ -1681,6 +1699,7 @@ function layer2Maps(tests: readonly Layer2Test[]): {
       ),
     ),
     checksContext: new Map(tests.map((test) => [test.id, test.checksContext])),
+    bodyKeys: new Map(tests.map((test) => [test.id, test.bodyKey ?? null])),
   };
 }
 
@@ -1777,13 +1796,39 @@ async function computeLayer2(repoRoot: string, work: CoverageWorkFile): Promise<
     verdicts,
   });
   const provenance = new Map(work.tests.map((test) => [test.id, test.provenance]));
+  const runtimeFixtures = new Map(work.tests.map((test) => [test.id, test.runtimeFixture]));
   const subjects = new Map<string, FacetSubject>();
   const tests: Layer2Test[] = [];
+  const fixtureInputs = new FixtureInputs(fsFacetSources(repoRoot));
   for (const instance of instances) {
     const checkSubject = subjectOf(instance);
     const checks = checkSubject === null ? null : computeChecks(checkSubject, checkOptions);
+    const hasChecks =
+      checks !== null && (checks.checks.length > 0 || checks.unsupported.length > 0);
     const facetSubject = facetSubjectOf(instance, provenance.get(instance.id) ?? null);
     if (facetSubject !== null) subjects.set(instance.id, facetSubject);
+    const staticFixture = facetSubject === null ? null : await fixtureInputs.profile(facetSubject);
+    const runtimeFixture = runtimeFixtures.get(instance.id) ?? null;
+    const fixture = runtimeFixture ?? staticFixture;
+    let facet =
+      facetSubject === null
+        ? null
+        : withFixtureIdentity(await computeFacet(facetSubject, facetContext), staticFixture);
+    if (facet !== null && runtimeFixture !== null) {
+      facet = withFixtureIdentity(facet, runtimeFixture);
+      // Runtime observation retrieves inputs static analysis cannot name. It does not
+      // prove every input API (streams, descriptors, child processes) was observed.
+      if (
+        staticFixture?.contentKey == null ||
+        staticFixture.contentKey !== runtimeFixture.contentKey ||
+        staticFixture.unresolved.length > 0
+      ) {
+        facet.unresolved = sortedUnique([
+          ...facet.unresolved,
+          'fixture: runtime input coverage is not exhaustive',
+        ]);
+      }
+    }
     tests.push({
       id: instance.id,
       file: instance.file,
@@ -1793,9 +1838,23 @@ async function computeLayer2(repoRoot: string, work: CoverageWorkFile): Promise<
       joinProblems: instance.unsupported,
       inventoryUnresolved: instance.unresolved,
       checksContext: checksContextKey(instance, checkOptions),
+      checks: hasChecks ? checks.fingerprint : null,
+      declarationKey:
+        instance.site === null
+          ? null
+          : JSON.stringify([
+              instance.file,
+              instance.site.location.line,
+              instance.site.location.column,
+            ]),
+      bodyKey: checkSubject === null || !hasChecks ? null : bodyKeyOf(checkSubject.record),
       unsupportedForms: checks?.unsupported ?? [],
       unresolvedSelectors: checks?.unresolved ?? [],
-      facet: facetSubject === null ? null : await computeFacet(facetSubject, facetContext),
+      fixture,
+      ...(checkSubject === null || checks === null
+        ? {}
+        : { assertionEvidence: assertionEvidence(checkSubject, checks) }),
+      facet,
     });
   }
   return { tests, facetContext, subjects, verdicts };
@@ -1808,28 +1867,25 @@ const facetEqual = (facets: ReadonlyMap<string, InputFacet>, pair: CandidatePair
 };
 
 /**
- * The test files Layer 1 runs (E7): path-coverage/prefilter.ts's for a diff-scoped run (E8, the
- * changed files and their key partners) and for mutation scope `none` and `possible-duplicates`;
- * every fingerprint file for scope `all` and in controls mode (every candidate group's evidence).
+ * Whole-suite runs execute every fingerprint file. Static context uniqueness is not proof that
+ * no duplicate scenario exists: cleanup hooks and re-exported imports can change that key.
+ * Diff-scoped runs retain the prefilter's changed-file and candidate-partner selection.
  */
 export function layer1FilesOf(
   repoRoot: string,
   files: readonly string[],
-  mutation: MutationScope,
-  mode: RunMode,
   changed: ReadonlySet<string> | null = null,
 ): string[] {
-  if (changed === null && (mutation === 'all' || mode.kind === 'controls')) return [...files];
+  if (changed === null) return [...files];
   return layer1Files(repoRoot, files, changed).files;
 }
 
 /** Why Layer 1 left `skipped` files out (the plan's log); empty when it left none. */
 function skippedNote(skipped: number, diffScoped: boolean): string {
   if (skipped === 0) return '';
-  if (diffScoped) return `; the other ${skipped} can hold no finding with a changed test`;
   return (
-    `; the other ${skipped} hold only tests whose checks-and-context key no other test shares, ` +
-    'so none of their pairs can be a duplicate'
+    `; ${skipped} files excluded by ${diffScoped ? 'diff' : 'imported coverage'} selection; ` +
+    'excluded tests have not been compared'
   );
 }
 
@@ -1924,8 +1980,8 @@ export interface CoverageStageOptions {
 
 /**
  * The coverage stage: Layer 1 over slice `index` of `of` (path-coverage/slices.ts), written as
- * the slice file the plan stage's `--coverage` merges. True when every file of the slice was
- * recorded without errors.
+ * the slice file the plan stage's `--coverage` merges. True when every slice file is accounted
+ * for without file or unhandled runner errors. Fully skipped modules need no execution record.
  */
 export async function runCoverageStage(
   ctx: StageContext,
@@ -1941,8 +1997,6 @@ export async function runCoverageStage(
   const layer1 = layer1FilesOf(
     repoRoot,
     fingerprintFiles,
-    options.mutation,
-    options.mode,
     changed === null ? null : new Set(changed),
   );
   const assignment = coverageSlices(
@@ -1974,12 +2028,13 @@ export async function runCoverageStage(
     work,
   };
   writeJson(layout.coverageSlice(options.index), slice);
-  const failed = work.files.filter((file) => !file.recorded || file.errors.length > 0);
+  const inventory = coverageInventory(work, files);
+  const failed = sortedUnique([...inventory.files.unrecorded, ...inventory.files.errors]);
   log(
     `coverage: ${work.tests.length} tests, ${failed.length} files failed or unrecorded, ` +
       minutes(wallClockMs),
   );
-  return failed.length === 0;
+  return failed.length === 0 && work.unhandledErrors.length === 0;
 }
 
 /**
@@ -2083,13 +2138,7 @@ export async function runPlanStage(
   const layer1 =
     slices?.[0].layer1 ??
     (await timed('layer 1 files', () =>
-      layer1FilesOf(
-        repoRoot,
-        eligibility.fingerprintFiles,
-        options.mutation,
-        options.mode,
-        changed,
-      ),
+      layer1FilesOf(repoRoot, eligibility.fingerprintFiles, changed),
     ));
   log(
     `plan: Layer 1 runs ${layer1.length} of ${eligibility.fingerprintFiles.length} test files` +
@@ -2114,14 +2163,37 @@ export async function runPlanStage(
   writeScenarioRunManifest(layout.root, manifest);
 
   const layer2 = await timed('layer 2', () => computeLayer2(repoRoot, work));
-  const { facets, checksContext } = layer2Maps(layer2.tests);
+  const consolidation = await timed('fixture consolidation', () =>
+    runConsolidation(work, layer2.tests, path.join(layout.root, 'fixture-clones')),
+  );
+  writeJson(path.join(layout.root, 'consolidation.json'), consolidation);
+  writeFileSync(
+    path.join(layout.root, 'consolidation.html'),
+    renderConsolidationReport(consolidation),
+  );
+  log(
+    `plan: consolidation: ${consolidation.summary.opportunities} groups representing ${consolidation.summary.representedPairs} pairs; ${consolidation.summary.eligibleTests} cases have fixture/path/assertion evidence`,
+  );
+  const { facets, checksContext, bodyKeys } = layer2Maps(layer2.tests);
+  const fixtureTests = new Map(layer2.tests.map((test) => [test.id, test]));
   const candidates = await timed('candidates', () =>
     findCandidates(
-      candidateTestsOf(work, checksContext),
+      candidateTestsOf(work, checksContext, bodyKeys).map((test) => ({
+        ...test,
+        checks: fixtureTests.get(test.id)?.checks,
+        fixture: fixtureTests.get(test.id)?.fixture,
+      })),
       (id) => changed === null || changed.has(parseTestId(id).file),
     ),
   );
   writeJson(layout.candidates, { schemaVersion: WORK_FILE_SCHEMA_VERSION, ...candidates });
+  const fixtureReport = fixtureSimilarityReport(layer2.tests, candidates.pairs);
+  writeJson(path.join(layout.root, 'fixtures.json'), fixtureReport);
+  log(
+    `plan: fixture similarity: ${fixtureReport.summary.withFixtureInputs} tests with inputs, ` +
+      `${fixtureReport.summary.matches} pairs (${fixtureReport.summary.crossLanguageMatches} cross-language), ` +
+      `${fixtureReport.summary.unresolvedTests} tests with unresolved inputs`,
+  );
 
   const scopes = await timed('scopes', () => {
     // The verdicts layer 2 classified (the same test files).
@@ -3007,17 +3079,27 @@ export interface ValueFlowStageOptions {
 }
 
 /**
- * Retries make a trace inconclusive even when coverage passed. Full mutation runs still admit
- * non-passing tests to investigate order dependence; fingerprint runs cannot promote them.
+ * Retries make a trace inconclusive even when coverage passed. Trace runs need every runnable
+ * sibling, so keep the whole file inconclusive if one uses retries. Full mutation runs still
+ * admit non-passing tests to investigate order dependence; fingerprint runs cannot promote them.
  */
 export function passingTracePairs<T extends { a: string; b: string }>(
   tests: readonly Pick<CoverageTest, 'id' | 'state' | 'retry'>[],
   pairs: readonly T[],
   mutation: MutationScope = 'none',
 ): T[] {
+  const retryFiles = new Set(
+    tests
+      .filter((test) => test.state !== 'skipped' && (test.retry ?? 0) > 0)
+      .map((test) => parseTestId(test.id).file),
+  );
   const eligible = new Set(
     tests
-      .filter((test) => (mutation === 'all' || test.state === 'passed') && (test.retry ?? 0) === 0)
+      .filter(
+        (test) =>
+          (mutation === 'all' || test.state === 'passed') &&
+          !retryFiles.has(parseTestId(test.id).file),
+      )
       .map((test) => test.id),
   );
   return pairs.filter((pair) => eligible.has(pair.a) && eligible.has(pair.b));
@@ -3146,6 +3228,7 @@ export async function runValueFlowStage(
     workDir: layout.root,
     manifest,
     pairs: tracePairs.map(({ a, b }) => ({ a, b })),
+    skippedTestIds: work.tests.filter((test) => test.state === 'skipped').map((test) => test.id),
     opaqueCallees: sortedUnique(
       staticRun.pairs.flatMap((pair) => pair.opaqueSinks.map((sink) => sink.callee)),
     ),
@@ -3252,7 +3335,7 @@ export async function runMergeStage(
   let baseline: unknown = null;
   if (options.baseline !== null) {
     try {
-      baseline = readJsonFile(options.baseline);
+      baseline = await readReportFields(options.baseline, ['schemaVersion', 'run', 'continuity']);
     } catch (error) {
       baseline = new UnreadableBaseline(errorMessage(error));
     }
@@ -3362,6 +3445,24 @@ export async function runMergeStage(
   });
   const fingerprint = computeFingerprints(evidence);
   const verdicts = computeVerdicts(mutationEvidence(plan.mutation, evidence, shardPlan.groups));
+  const inventory = coverageInventory(work, plan.eligibility.fingerprintFiles);
+  const missingCoverage = sortedUnique([
+    ...inventory.files.unrecorded,
+    ...inventory.files.errors,
+    ...(plan.changedFiles === null ? inventory.files.notScheduled : []),
+  ]);
+  if (missingCoverage.length > 0 || work.unhandledErrors.length > 0) {
+    incomplete.push({
+      shard: 'coverage',
+      reason: `${missingCoverage.length} files missing or errored; ${work.unhandledErrors.length} unhandled errors`,
+    });
+  }
+  if (inventory.tests.failed > 0 || inventory.tests.pending > 0) {
+    incomplete.push({
+      shard: 'coverage tests',
+      reason: `${inventory.tests.failed} failed; ${inventory.tests.pending} unfinished`,
+    });
+  }
 
   const read = (file: string): string | null => {
     try {
@@ -3381,13 +3482,14 @@ export async function runMergeStage(
       sourceRevision: ctx.sourceRevision(),
     }),
     eligibility: plan.eligibility,
+    inventory,
     // The M of "N of M eligible tests evaluated": the mutation-eligible tests.
     eligibleTests: work.tests
       .filter((test) => mutationEligible.has(test.file))
       .map((test) => test.id),
     shards: { planned: shardPlan.shards.length, complete: completeShards, incomplete },
     layer1Files: work.files.length,
-    unrecordedFiles: work.files.filter((file) => !file.recorded).length,
+    unrecordedFiles: inventory.files.unrecorded.length,
     changedFiles: plan.changedFiles,
     notRun: {
       skipped: work.tests.filter((test) => test.state === 'skipped').length,
@@ -3410,7 +3512,7 @@ export async function runMergeStage(
     );
   }
   // The work directory exists: the plan was read from it.
-  writeJson(layout.reportJson, report, true);
+  await writeReportJson(layout.reportJson, report);
   writeFileSync(layout.reportMarkdown, renderMarkdown(report));
   writeFileSync(layout.issueBody, renderIssueBody(report));
   log(

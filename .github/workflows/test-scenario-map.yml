@@ -226,6 +226,9 @@ jobs:
           ls "$dest"
       - name: Plan the run
         env:
+          # Full-suite Layer 2 exceeds Node's default ~4 GiB heap. Budget 8 GiB
+          # for this step, leaving room on the 16 GB runner for native memory.
+          NODE_OPTIONS: --max-old-space-size=8192
           SEED: ${{ inputs.seed || github.run_id }}
           SHARDS: ${{ inputs.shards }}
           MUTATION: ${{ steps.scope.outputs.mutation }}
@@ -246,6 +249,9 @@ jobs:
             ${{ runner.temp }}/scenario-map/scenario-run-manifest.json
             ${{ runner.temp }}/scenario-map/layer0.json
             ${{ runner.temp }}/scenario-map/layer2.json
+            ${{ runner.temp }}/scenario-map/consolidation.json
+            ${{ runner.temp }}/scenario-map/consolidation.html
+            ${{ runner.temp }}/scenario-map/fixtures.json
             ${{ runner.temp }}/scenario-map/coverage/coverage.json
           if-no-files-found: error
           retention-days: 14
@@ -261,9 +267,9 @@ jobs:
     needs: plan
     if: ${{ !cancelled() && needs.plan.outputs.artifact != '' }}
     runs-on: ubuntu-latest
-    # Locally: PDG index about 3 min (peak RSS about 8.4 GB of the runner's 16 GB), the whole
-    # stage about 5 min.
-    timeout-minutes: 60
+    # Full-suite tracing runs candidate files twice, including their runnable siblings.
+    # The 31k-case inventory exceeded 50 minutes; leave room for both passes and uploads.
+    timeout-minutes: 100
     continue-on-error: true
     permissions:
       contents: read
@@ -283,7 +289,7 @@ jobs:
           name: ${{ needs.plan.outputs.artifact }}
           path: ${{ runner.temp }}/scenario-map
       - name: Run value flow
-        timeout-minutes: 50
+        timeout-minutes: 90
         env:
           GITNEXUS_WORKER_READY_TIMEOUT_MS: '120000'
         run: |
@@ -660,13 +666,14 @@ jobs:
           import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
           import path from 'node:path';
           import { shouldUpdateIssue } from './tools/scenario-map/report/issue-body.ts';
+          import { readReportFields } from './tools/scenario-map/report/json.ts';
           import { completenessLine, degradedLine, runLink } from './tools/scenario-map/report/markdown.ts';
 
           const { ISSUE_NUMBER, GITHUB_OUTPUT, RUNNER_TEMP } = process.env;
           const reportDir = path.join(RUNNER_TEMP, 'scenario-map-report');
           const issueDir = path.join(RUNNER_TEMP, 'scenario-map-issue');
-          const report = JSON.parse(
-            readFileSync(path.join(reportDir, 'scenario-map-report.json'), 'utf8'),
+          const report = await readReportFields(
+            path.join(reportDir, 'scenario-map-report.json'), ['run', 'completeness'],
           );
           const existing = ISSUE_NUMBER
             ? readFileSync(path.join(issueDir, 'existing-body.md'), 'utf8')
