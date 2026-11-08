@@ -454,6 +454,7 @@ export async function runChunkedParseAndResolve(
   onProgress: ProgressFn,
   options?: PipelineOptions,
   capturedResolutionConfigs?: ReadonlyMap<SupportedLanguages, unknown>,
+  recordSourceHash?: (filePath: string, hash: string) => void,
 ): Promise<{
   exportedTypeMap: ExportedTypeMap;
   allFetchCalls: ExtractedFetchCall[];
@@ -1355,11 +1356,15 @@ export async function runChunkedParseAndResolve(
 
       // Compute the chunk's content-hash signature (if cache available).
       let chunkHash: string | null = null;
+      const entries =
+        parseCache || recordSourceHash
+          ? chunkFiles.map((f) => ({
+              filePath: f.path,
+              contentHash: fileContentHash(f.content),
+            }))
+          : [];
+      for (const entry of entries) recordSourceHash?.(entry.filePath, entry.contentHash);
       if (parseCache) {
-        const entries = chunkFiles.map((f) => ({
-          filePath: f.path,
-          contentHash: fileContentHash(f.content),
-        }));
         chunkHash = computeChunkHash(
           entries,
           parseCache.identity,

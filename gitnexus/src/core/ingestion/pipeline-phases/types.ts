@@ -39,6 +39,8 @@ export interface PipelineContext {
    * `hasStreamedSemanticEdge()`. Absent ⇒ everything stays in the graph.
    */
   readonly graphEmit?: GraphEmitControl;
+  /** Exact source hashes supplied to worker parsing or cache replay. */
+  readonly recordSourceHash?: (filePath: string, hash: string) => void;
 }
 
 // ── Phase result wrapper ───────────────────────────────────────────────────

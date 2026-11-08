@@ -98,6 +98,41 @@ describe('cache interning performance gate', () => {
     },
   );
 
+  it('requires pair-bound validated projection receipts when graph IDs migrate', () => {
+    const report = indexing();
+    const candidate = report.results.find((sample) => sample.name === 'candidate-1')!;
+    candidate.graph.edges.sha256 = 'full-span-edges';
+    expect(() => indexingMetrics(report, 'fresh')).toThrow(/without a parity receipt/);
+    const graphParity = Array.from({ length: 10 }, (_, i) => {
+      const suffix = i || 'seed';
+      const baseline = report.results.find((sample) => sample.name === `baseline-${suffix}`)!;
+      const after = report.results.find((sample) => sample.name === `candidate-${suffix}`)!;
+      return {
+        version: 1,
+        mode: i === 1 ? 'point-to-span' : 'exact',
+        baselineName: baseline.name,
+        candidateName: after.name,
+        baseline: structuredClone(baseline.graph),
+        candidate: structuredClone(after.graph),
+        comparison: structuredClone(baseline.graph),
+      };
+    });
+    expect(() => indexingMetrics({ ...report, graphParity }, 'fresh')).not.toThrow();
+    expect(() =>
+      indexingMetrics({ ...report, graphParity: graphParity.slice(1) }, 'fresh'),
+    ).toThrow(/Incomplete graph parity/);
+    const modified = structuredClone(graphParity);
+    modified[1].comparison.edges.sha256 = 'invented';
+    expect(() => indexingMetrics({ ...report, graphParity: modified }, 'fresh')).toThrow(
+      /projection differs/,
+    );
+    const misbound = structuredClone(graphParity);
+    misbound[1].candidate.edges.sha256 = 'other';
+    expect(() => indexingMetrics({ ...report, graphParity: misbound }, 'fresh')).toThrow(
+      /candidate does not match/,
+    );
+  });
+
   it('rejects missing, duplicate, or non-equivalent shard measurements', () => {
     const report = interning();
     expect(interningMetrics(report)).toHaveLength(3);

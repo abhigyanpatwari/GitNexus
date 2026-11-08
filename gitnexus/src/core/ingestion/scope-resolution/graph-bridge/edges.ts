@@ -7,7 +7,7 @@
  *   - `tryEmitEdge` — given a reference site + target def, resolve
  *     caller + target to graph ids and emit the edge with
  *     language-provided reason text, dedup-keyed by
- *     `(edgeType, callerId, targetId, accessKind, line, col)`.
+ *     `(edgeType, callerId, targetId, accessKind, line, col, endLine?, endCol?)`.
  *
  * Next-consumer contract: any language provider can call `tryEmitEdge`
  * from its own post-pass to emit edges it resolves Python-specific
@@ -77,13 +77,24 @@ export function referenceEdgeKey(
   edgeType: string,
   callerGraphId: string,
   targetGraphId: string,
-  site: { readonly kind: string; readonly atRange: { startLine: number; startCol: number } },
+  site: {
+    readonly kind: string;
+    readonly atRange: { startLine: number; startCol: number } & (
+      | { endLine: number; endCol: number }
+      | { endLine?: never; endCol?: never }
+    );
+  },
   collapseByCallerTarget = false,
 ): string {
   const pair = `${edgeType}:${callerGraphId}->${targetGraphId}`;
   if (collapseByCallerTarget && edgeType === 'CALLS') return pair;
   const accessKind = edgeType === 'ACCESSES' ? `:${site.kind}` : '';
-  return `${pair}${accessKind}:${site.atRange.startLine}:${site.atRange.startCol}`;
+  const { startLine, startCol, endLine, endCol } = site.atRange;
+  // A chained expression can contain distinct AST sites with the same start.
+  // Keep the complete span when available; legacy point-only sites remain
+  // distinguishable as unverified by the ingestion integrity guard.
+  const end = endLine === undefined && endCol === undefined ? '' : `:${endLine}:${endCol}`;
+  return `${pair}${accessKind}:${startLine}:${startCol}${end}`;
 }
 
 /**

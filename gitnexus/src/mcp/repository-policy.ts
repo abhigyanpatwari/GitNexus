@@ -1,6 +1,7 @@
 import path from 'node:path';
 import type { LocalBackend, McpToolCallContext, RepoListing } from './local/local-backend.js';
 import { parseListReposPagination } from './local/local-backend.js';
+import { parseQueryRepositories } from './local/multi-repo-query.js';
 import { scrubGroupDescription } from './read-only-policy.js';
 import { LIST_REPOS_DEFAULT_LIMIT, LIST_REPOS_MAX_LIMIT } from './tools.js';
 import type { GITNEXUS_TOOLS } from './tools.js';
@@ -158,6 +159,13 @@ export class McpRepositoryPolicy {
   ): Record<string, unknown> | undefined {
     if (!this.configured) return args;
     if (!this.restricted && args?.repo !== undefined) return args;
+    if (Array.isArray(args?.repo)) {
+      // Authorize every entry before the raw backend can start any member search.
+      const repos = parseQueryRepositories(args.repo).map(
+        (repo) => this.resolveRuntimeRepo(repo).path,
+      );
+      return { ...args, repo: repos };
+    }
     const selected = this.repoForArgs(args);
     if (!selected) return args;
     return { ...(args ?? {}), repo: selected.path };
@@ -260,6 +268,9 @@ export class McpRepositoryPolicy {
     params: Record<string, unknown> | undefined,
     ...context: [McpToolCallContext?]
   ): Promise<unknown> {
+    if (Array.isArray(params?.repo) && method !== 'query' && method !== 'search') {
+      throw new Error('Repository arrays are supported only by query (and legacy search).');
+    }
     if (!this.configured) return backend.callTool(method, params, ...context);
     if (method === 'list_repos') return this.listReposPage(backend, params);
     if (this.restricted && method.startsWith('group_')) {
@@ -342,7 +353,9 @@ export class McpRepositoryPolicy {
     const repo = properties.repo;
     if (repo && typeof repo === 'object') {
       const description = this.restricted
-        ? 'Allowed indexed repository name or path. Group-mode values are unavailable.'
+        ? tool.name === 'query'
+          ? 'Allowed indexed repository name or path, or a list of allowed repositories. Group-mode values are unavailable.'
+          : 'Allowed indexed repository name or path. Group-mode values are unavailable.'
         : repo.description;
       properties.repo = {
         ...repo,

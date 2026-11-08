@@ -18,6 +18,7 @@ const context = {
   chain: [{ depth: 1, upstream: [{ uid: 'Function:src/buy.ts:buy' }] }],
   typed_properties: [{ uid: 'Property:src/pay.ts:currency' }],
   epistemic: 'lower-bound',
+  graph_integrity: { status: 'unverified', scope: 'source-reference-ingestion' },
   boundaries: ['Dynamic dispatch is unresolved'],
   causes: { callableValueReferences: 1, overloadResolution: 2 },
   warning: 'Source extraction incomplete',
@@ -51,6 +52,7 @@ describe('opt-in MCP response filters', () => {
     expect(result.symbol).toEqual(context.symbol);
     for (const key of [
       'epistemic',
+      'graph_integrity',
       'boundaries',
       'causes',
       'warning',

@@ -12,19 +12,21 @@
  *    avoid pruning a node that a streamed edge still references;
  *  - fails loudly rather than handing a truncated CSV to the bulk COPY.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
+import { createRelationshipIntegrityCollector } from '../../../src/core/graph/relationship-integrity.js';
 import {
   GraphEmitSink,
   RETAINED_REL_TYPES,
   StreamedRelationshipRemovalError,
 } from '../../../src/core/lbug/graph-emit-sink.js';
 import { UndeclaredRelationPairError } from '../../../src/core/lbug/rel-pair-routing.js';
+import { SyncCsvWriter } from '../../../src/core/lbug/sync-csv-writer.js';
 import type { GraphRelationship } from 'gitnexus-shared';
 
 const fnId = (name: string): string => `Function:src/a.ts:${name}`;
@@ -64,6 +66,33 @@ afterEach(() => {
 });
 
 describe('GraphEmitSink routing', () => {
+  it('does not retain an identity whose CSV write failed', () => {
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
+    sink.beginStreaming();
+    const write = vi.spyOn(SyncCsvWriter.prototype, 'addRow').mockImplementationOnce(() => {
+      throw new Error('disk full');
+    });
+    try {
+      expect(() => sink.addRelationship(rel('CALLS', 'a', 'b'))).toThrow('disk full');
+      sink.addRelationship(rel('CALLS', 'a', 'b'));
+      expect(write).toHaveBeenCalledTimes(2);
+      expect(sink.finalize().totalRows).toBe(1);
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it('bounds alternate identity probes for arrow-heavy endpoints and still rejects conflicts', () => {
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
+    sink.beginStreaming();
+    const edge = rel('CALLS', 'a' + '->segment'.repeat(4000), 'b');
+    edge.id = `rel:CALLS:${edge.sourceId}->${edge.targetId}:1:2:1:3`;
+    const key = vi.spyOn(sink as any, 'dedupKey');
+    sink.addRelationship(edge);
+    expect(key).toHaveBeenCalledTimes(1);
+    expect(() => sink.addRelationship({ ...edge, type: 'EXTENDS' })).toThrow(/Conflicting/);
+    expect(sink.finalize().totalRows).toBe(1);
+  });
   it('streams a non-retained type to CSV and keeps it out of the graph', async () => {
     const real = createKnowledgeGraph();
     const sink = new GraphEmitSink(real, csvDir);
@@ -127,6 +156,8 @@ describe('GraphEmitSink routing', () => {
 
     expect(manifest).toMatchObject({ totalRows: 0 });
     expect(real.relationshipCount).toBe(0);
+    expect(Reflect.get(sink, 'nodeIds').size).toBe(0);
+    expect(Reflect.get(sink, 'nodeIdByIx')).toHaveLength(0);
   });
 
   it('fails at finalize, with every undeclared endpoint-label pair, rather than dropping them (#2769, #2797)', async () => {
@@ -168,6 +199,8 @@ describe('GraphEmitSink routing', () => {
     // The declared edge was still streamed; the undeclared ones were not.
     expect(await dataRows(path.join(csvDir, 'rel_Function_Function.csv'))).toHaveLength(1);
     expect(fs.existsSync(path.join(csvDir, 'rel_Static_Static.csv'))).toBe(false);
+    expect(Reflect.get(sink, 'nodeIds').size).toBe(2);
+    expect(Reflect.get(sink, 'nodeIdByIx')).toHaveLength(2);
   });
 });
 
@@ -214,6 +247,90 @@ describe('GraphEmitSink dedup', () => {
     expect(manifest).toMatchObject({ totalRows: 1 });
     expect(await dataRows(manifest.relsByPair.get('Function|Function')!.csvPath)).toHaveLength(1);
   });
+
+  it('suppresses a pre-stream relationship repeated after streaming starts', () => {
+    const real = createKnowledgeGraph();
+    const sink = new GraphEmitSink(real, csvDir);
+    const edge = rel('CALLS', 'a', 'b');
+    sink.addRelationship(edge);
+    sink.beginStreaming();
+    sink.addRelationship({ ...edge });
+    expect(sink.relationshipCount).toBe(1);
+    expect(sink.finalize().totalRows).toBe(0);
+  });
+
+  it.each([
+    ['retained then streamed', 'EXTENDS', 'CALLS'],
+    ['streamed then retained', 'CALLS', 'EXTENDS'],
+    ['streamed then streamed', 'CALLS', 'USES'],
+  ] as const)('rejects conflicting opaque IDs: %s', (_name, firstType, secondType) => {
+    const collector = createRelationshipIntegrityCollector(tmpRoot, (id) => real.getNode(id));
+    const real = createKnowledgeGraph(collector.inspect);
+    const sink = new GraphEmitSink(real, csvDir);
+    sink.beginStreaming();
+    sink.addRelationship({ ...rel(firstType, 'a', 'b'), id: 'opaque-id' });
+    expect(() => sink.addRelationship({ ...rel(secondType, 'a', 'c'), id: 'opaque-id' })).toThrow(
+      /contradicts/,
+    );
+    expect(() => collector.snapshot()).toThrow(/contradicts/);
+    expect(sink.relationshipCount).toBe(1);
+    sink.finalize();
+  });
+
+  it('rejects changed endpoints across the pre-stream boundary', () => {
+    const real = createKnowledgeGraph();
+    const sink = new GraphEmitSink(real, csvDir);
+    const edge = { ...rel('CALLS', 'a', 'b'), id: 'opaque-id' };
+    sink.addRelationship(edge);
+    sink.beginStreaming();
+    expect(() => sink.addRelationship({ ...edge, targetId: fnId('c') })).toThrow(/Conflicting/);
+    expect(sink.relationshipCount).toBe(1);
+    sink.finalize();
+  });
+
+  it('finds a compact streamed identity when a later edge contradicts it', () => {
+    const real = createKnowledgeGraph();
+    const sink = new GraphEmitSink(real, csvDir);
+    sink.beginStreaming();
+    const edge = rel('CALLS', 'a', 'b');
+    edge.id = `rel:${edge.type}:${edge.sourceId}->${edge.targetId}:1:2:1:3`;
+    sink.addRelationship(edge);
+    expect(() => sink.addRelationship({ ...edge, type: 'EXTENDS' })).toThrow(/Conflicting/);
+    expect(sink.relationshipCount).toBe(1);
+    sink.finalize();
+  });
+
+  it('rejects ambiguous compact identities when a target ends in a numeric segment', () => {
+    const real = createKnowledgeGraph();
+    const sink = new GraphEmitSink(real, csvDir);
+    sink.beginStreaming();
+    const edge = rel('CALLS', 'a', 'b:1');
+    edge.id = `rel:${edge.type}:${edge.sourceId}->${edge.targetId}:1:2`;
+    sink.addRelationship(edge);
+    expect(() => sink.addRelationship({ ...edge, targetId: fnId('b') })).toThrow(/Conflicting/);
+    expect(sink.relationshipCount).toBe(1);
+    sink.finalize();
+  });
+
+  it.each(['-1', '9007199254740992'])(
+    'rejects reused noncanonical numeric ID in either order: %s',
+    (tail) => {
+      for (const retainedFirst of [true, false]) {
+        const real = createKnowledgeGraph();
+        const sink = new GraphEmitSink(real, path.join(csvDir, String(retainedFirst)));
+        sink.beginStreaming();
+        const streamed = rel('CALLS', 'a', 'b');
+        streamed.id = `rel:${streamed.type}:${streamed.sourceId}->${streamed.targetId}:${tail}`;
+        const retained = { ...streamed, type: 'EXTENDS' as const };
+        sink.addRelationship(retainedFirst ? retained : streamed);
+        expect(() => sink.addRelationship(retainedFirst ? streamed : retained)).toThrow(
+          /Conflicting/,
+        );
+        expect(sink.relationshipCount).toBe(1);
+        sink.finalize();
+      }
+    },
+  );
 });
 
 describe('GraphEmitSink removal safety', () => {

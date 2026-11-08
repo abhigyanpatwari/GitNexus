@@ -10,6 +10,7 @@ import { performance } from 'node:perf_hooks';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { summarize, formatReport } from './statistics.mjs';
+import { parityBody } from './integrity-parity.mjs';
 
 const { values } = parseArgs({
   options: {
@@ -165,6 +166,7 @@ function inspect(response, entry, variant) {
   if (entry.tool === 'context') {
     assert(body.symbol?.content?.length > 4096, 'Context must preserve the indexed source snippet');
   }
+  const comparable = parityBody(body, variant, report.indexes);
   return {
     bytes: Buffer.byteLength(text),
     rows: rows.length,
@@ -173,8 +175,8 @@ function inspect(response, entry, variant) {
     digest: hash(
       JSON.stringify(
         entry.tool === 'context'
-          ? { ...canonical(body), content: body.symbol.content }
-          : canonical(body),
+          ? { ...canonical(comparable), content: body.symbol.content }
+          : canonical(comparable),
       ),
     ),
   };
@@ -249,7 +251,7 @@ const records = [],
 const report = {
   version: 1,
   harnessSha256: hash(
-    ['measure.mjs', 'statistics.mjs']
+    ['measure.mjs', 'statistics.mjs', 'integrity-parity.mjs']
       .map((file) => fs.readFileSync(new URL(file, import.meta.url), 'utf8'))
       .join('\n'),
   ),
