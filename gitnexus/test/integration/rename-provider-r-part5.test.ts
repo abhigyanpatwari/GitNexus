@@ -12,7 +12,7 @@ describe('R rename fixtures, part 5', () => {
     const part = renameCases.filter(
       (fixture) => fixture.language === 'r' && renameFixturePart(fixture.id) === 5,
     );
-    expect(part).toHaveLength(22);
+    expect(part).toHaveLength(23);
   });
 });
 

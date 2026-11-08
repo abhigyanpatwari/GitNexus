@@ -13,7 +13,7 @@ import {
 // rename-provider-r-part5.test.ts (Linux only: the Windows command line has no room for them).
 describe('R rename fixtures', () => {
   it('are all discovered', () => {
-    expect(renameCases.filter((fixture) => fixture.language === 'r')).toHaveLength(114);
+    expect(renameCases.filter((fixture) => fixture.language === 'r')).toHaveLength(115);
   });
 
   it('split evenly into five parts, each fixture in exactly one', () => {
@@ -22,7 +22,7 @@ describe('R rename fixtures', () => {
     const counts = [1, 2, 3, 4, 5].map(
       (part) => ids.filter((id) => renameFixturePart(id) === part).length,
     );
-    expect(counts).toEqual([23, 23, 23, 23, 22]);
+    expect(counts).toEqual([23, 23, 23, 23, 23]);
     expect(counts.reduce((sum, count) => sum + count, 0)).toBe(ids.length);
   });
 });

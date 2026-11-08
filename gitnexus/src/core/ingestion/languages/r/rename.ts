@@ -788,7 +788,7 @@ export const rRenameProvider: RenameProvider = {
         // A top-level variable of the new name (or a `<<-` to it) would be replaced by the
         // renamed function, or would replace it, depending on which assignment runs last.
         if (
-          (rBoundName(node) === newName && !insideFunction(node)) ||
+          (rBoundName(node) === newName && bindsAtTopLevel(source.parsed, node)) ||
           superassignedName(node) === newName
         )
           return collision('The new name is already assigned as a variable at top level.');

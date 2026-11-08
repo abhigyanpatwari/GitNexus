@@ -33,6 +33,15 @@ describe('R rename: a new name that already exists', () => {
     }
   });
 
+  it('accepts a new name bound only inside a function (block scopes are covered by the rename-integration case r/new-name-block-local)', () => {
+    for (const source of ['f <- function() { assist <- 1 }\n']) {
+      expect(
+        rIssue({ files: { 'a.R': HELPER + source }, newName: 'assist' })?.code,
+        source,
+      ).not.toBe('name_collision');
+    }
+  });
+
   it('refuses a variable of the new name in another file', () => {
     expect(
       rIssue({ files: { 'a.R': HELPER, 'b.R': 'assist <- 3\n' }, newName: 'assist' })?.code,
