@@ -375,12 +375,28 @@ describe('callable value flow', () => {
         target,
         reason: 'callable-value-flow',
       });
-      if (extension === 'vue') {
-        expect(result.relationshipIntegrity?.unverifiedEdges).toBeGreaterThan(0);
-      }
     },
     90_000,
   );
+
+  it('keeps template-first Vue source coordinates unverified', async () => {
+    const fixture = PROVIDER_FLOW_CASES.find(({ extension }) => extension === 'vue')!;
+    const result = await runSource(
+      'vue',
+      '<template><div>Example</div></template>\n' + fixture.source,
+    );
+    expect(result.relationshipIntegrity?.unverifiedEdges).toBeGreaterThan(0);
+    expect(result.relationshipIntegrity?.checkedSites).toBe(0);
+  }, 90_000);
+
+  it('verifies complete Python call spans in original source coordinates', async () => {
+    const result = await runSource(
+      'py',
+      'class Service:\n    def ping(self):\n        pass\n\ndef caller(service: Service):\n    service.ping()\n',
+    );
+    expect(result.relationshipIntegrity?.checkedSites).toBeGreaterThan(0);
+    expect(result.relationshipIntegrity?.unverifiedEdges).toBe(0);
+  }, 90_000);
 
   it('resolves C function pointers, pointer copies, pointer-to-pointer loads, and two wrappers', async () => {
     const result = await runSource(

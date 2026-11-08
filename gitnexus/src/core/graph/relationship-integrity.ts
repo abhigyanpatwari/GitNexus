@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { logger } from '../logger.js';
 
@@ -13,6 +14,8 @@ export interface RelationshipIntegrityReceipt {
 
 const REFERENCE_TYPES = new Set(['CALLS', 'ACCESSES', 'USES', 'EXTENDS', 'IMPLEMENTS', 'INHERITS']);
 const REFERENCE_ID_PREFIX = new RegExp(`^rel:(${[...REFERENCE_TYPES].join('|')}):`);
+
+export class GraphReferenceIntegrityError extends Error {}
 
 /** Validate before either writer discards the source span encoded in a reference ID.
  * Non-reference and legacy/derived IDs have no source-site claim to validate.
@@ -35,11 +38,15 @@ export function createRelationshipIntegrityCollector(
     pointOnly: 0,
     extractedCoordinates: 0,
     partialMapping: 0,
+    sourceChanged: 0,
+    sourceUnavailable: 0,
+    missingSourceSnapshot: 0,
   };
   const unverified = (
     rel: GraphRelationship,
     duplicate: boolean,
     reason: keyof typeof unverifiedByReason,
+    readErrorCode?: string,
   ) => {
     if (duplicate) {
       receipt.duplicatesSuppressed++;
@@ -60,6 +67,7 @@ export function createRelationshipIntegrityCollector(
           targetId: rel.targetId,
           sourceFile: getNode(rel.sourceId)?.properties.filePath,
           emissionReason: rel.reason,
+          readErrorCode,
         },
         'Source-reference provenance is unverified',
       );
@@ -69,6 +77,14 @@ export function createRelationshipIntegrityCollector(
   const sourceLines = new Map<
     string,
     { columnLengths: number[] | null; originalCoordinates: boolean }
+  >();
+  // Hash the exact worker/cache input, never a later scan of the working tree.
+  // Bounds remain a bounded cache; retaining every source line would scale
+  // memory with the entire repository.
+  const sourceHashes = new Map<string, string>();
+  const unavailableSources = new Map<
+    string,
+    { reason: 'sourceChanged' | 'sourceUnavailable'; code?: string }
   >();
   const root = path.resolve(repoPath);
   let failure: Error | undefined;
@@ -81,7 +97,7 @@ export function createRelationshipIntegrityCollector(
     if (failure) throw failure;
     const fail = (reason: string): never => {
       // The stack identifies the emitting pass as well as the writer.
-      failure ??= new Error(
+      failure ??= new GraphReferenceIntegrityError(
         `Invalid graph reference ${rel.id}: ${reason}; source=${rel.sourceId}; target=${rel.targetId}`.replace(
           /[\p{Cc}\p{Cf}\u2028\u2029]/gu,
           (char) => {
@@ -156,26 +172,44 @@ export function createRelationshipIntegrityCollector(
     if (relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) {
       fail('source file is outside the indexed repository');
     }
+    // Even partially mapped coordinates must preserve line order.
+    if (endLine < line) fail('invalid source coordinate ordering');
+    const sourceHash = sourceHashes.get(filePath!);
+    if (sourceHash === undefined) {
+      unverified(rel, duplicate, 'missingSourceSnapshot');
+      return;
+    }
+    const unavailable = unavailableSources.get(fullPath);
+    if (unavailable) {
+      unverified(rel, duplicate, unavailable.reason, unavailable.code);
+      return;
+    }
     let sourceBuffer = sourceLines.get(fullPath);
     if (!sourceBuffer) {
+      let text: string;
       try {
-        const text = fs.readFileSync(fullPath, 'utf8');
-        const extracted = referenceSourceText?.(filePath!, text);
-        sourceBuffer = {
-          columnLengths:
-            extracted === null ? null : (extracted ?? text).split('\n').map((line) => line.length),
-          originalCoordinates: extracted === undefined,
-        };
-      } catch {
-        fail(`source file cannot be read: ${filePath}`);
+        text = fs.readFileSync(fullPath, 'utf8');
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        unavailableSources.set(fullPath, { reason: 'sourceUnavailable', code });
+        unverified(rel, duplicate, 'sourceUnavailable', code);
+        return;
       }
+      if (createHash('sha256').update(text).digest('hex') !== sourceHash) {
+        unavailableSources.set(fullPath, { reason: 'sourceChanged' });
+        unverified(rel, duplicate, 'sourceChanged');
+        return;
+      }
+      const extracted = referenceSourceText?.(filePath!, text);
+      sourceBuffer = {
+        columnLengths:
+          extracted === null ? null : (extracted ?? text).split('\n').map((line) => line.length),
+        originalCoordinates: extracted === undefined,
+      };
       if (sourceLines.size >= 4) sourceLines.delete(sourceLines.keys().next().value!);
       sourceLines.set(fullPath, sourceBuffer!);
     }
     const { columnLengths, originalCoordinates } = sourceBuffer!;
-    // Notebook line mapping preserves line order, even when several extracted
-    // lines map to one JSON line and their columns cannot be compared.
-    if (endLine < line) fail('invalid source coordinate ordering');
     // Partially mapped coordinates do not describe a range in one buffer.
     // Keep their identity, but never certify their columns or source bounds.
     if (columnLengths === null) {
@@ -196,6 +230,11 @@ export function createRelationshipIntegrityCollector(
   };
   return {
     inspect,
+    recordSourceHash: (filePath: string, hash: string): void => {
+      sourceHashes.set(filePath, hash);
+      sourceLines.delete(path.resolve(root, filePath));
+      unavailableSources.delete(path.resolve(root, filePath));
+    },
     logSummary: (): void => {
       if (failure) throw failure;
       logger.info(
@@ -219,7 +258,20 @@ export function createRelationshipIntegrityCollector(
 }
 
 /** Old/malformed receipts must not turn absent provenance into an all-clear. */
-export function relationshipIntegrityForCaller(value: unknown) {
+export function relationshipIntegrityForCaller(
+  value: unknown,
+  unavailable?: 'generation-changed' | 'metadata-unreadable',
+) {
+  if (unavailable) {
+    return {
+      status: 'unverified' as const,
+      scope: 'source-reference-ingestion' as const,
+      note:
+        unavailable === 'generation-changed'
+          ? 'The index generation changed during this call. Retry the tool to obtain a result and provenance receipt from the same generation.'
+          : 'The ingestion provenance metadata could not be read. Retry the tool; if this persists, inspect the index metadata and filesystem permissions.',
+    };
+  }
   const record = value as Partial<RelationshipIntegrityReceipt> | null | undefined;
   const valid =
     record?.version === 1 &&

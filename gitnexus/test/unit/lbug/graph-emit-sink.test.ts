@@ -12,7 +12,7 @@
  *    avoid pruning a node that a streamed edge still references;
  *  - fails loudly rather than handing a truncated CSV to the bulk COPY.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
@@ -26,6 +26,7 @@ import {
   StreamedRelationshipRemovalError,
 } from '../../../src/core/lbug/graph-emit-sink.js';
 import { UndeclaredRelationPairError } from '../../../src/core/lbug/rel-pair-routing.js';
+import { SyncCsvWriter } from '../../../src/core/lbug/sync-csv-writer.js';
 import type { GraphRelationship } from 'gitnexus-shared';
 
 const fnId = (name: string): string => `Function:src/a.ts:${name}`;
@@ -65,6 +66,33 @@ afterEach(() => {
 });
 
 describe('GraphEmitSink routing', () => {
+  it('does not retain an identity whose CSV write failed', () => {
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
+    sink.beginStreaming();
+    const write = vi.spyOn(SyncCsvWriter.prototype, 'addRow').mockImplementationOnce(() => {
+      throw new Error('disk full');
+    });
+    try {
+      expect(() => sink.addRelationship(rel('CALLS', 'a', 'b'))).toThrow('disk full');
+      sink.addRelationship(rel('CALLS', 'a', 'b'));
+      expect(write).toHaveBeenCalledTimes(2);
+      expect(sink.finalize().totalRows).toBe(1);
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it('bounds alternate identity probes for arrow-heavy endpoints and still rejects conflicts', () => {
+    const sink = new GraphEmitSink(createKnowledgeGraph(), csvDir);
+    sink.beginStreaming();
+    const edge = rel('CALLS', 'a' + '->segment'.repeat(4000), 'b');
+    edge.id = `rel:CALLS:${edge.sourceId}->${edge.targetId}:1:2:1:3`;
+    const key = vi.spyOn(sink as any, 'dedupKey');
+    sink.addRelationship(edge);
+    expect(key).toHaveBeenCalledTimes(1);
+    expect(() => sink.addRelationship({ ...edge, type: 'EXTENDS' })).toThrow(/Conflicting/);
+    expect(sink.finalize().totalRows).toBe(1);
+  });
   it('streams a non-retained type to CSV and keeps it out of the graph', async () => {
     const real = createKnowledgeGraph();
     const sink = new GraphEmitSink(real, csvDir);

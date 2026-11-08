@@ -1,7 +1,7 @@
 import { summarizeUnresolvedOverloads } from '../../src/core/ingestion/scope-resolution/unresolved-overloads.js';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
-import nativeFs from 'node:fs';
+import * as integrityModule from '../../src/core/graph/relationship-integrity.js';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
@@ -16,34 +16,40 @@ import { LocalBackend, VALID_NODE_LABELS } from '../../src/mcp/local/local-backe
 import { retryRename } from '../../src/storage/fs-atomic.js';
 import { getStoragePaths, registerRepo, saveMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
+import { distWorkerExists } from '../helpers/worker-parse.js';
 
 const REPO = 'query-integrity';
+const itIfWorkerBuilt = distWorkerExists() ? it : it.skip;
+const describeIfWorkerBuilt = distWorkerExists() ? describe : describe.skip;
 
-it('retains nested calls sharing a start position when their full source spans differ', async () => {
-  const temp = await createTempDir();
-  try {
-    await fs.writeFile(
-      path.join(temp.dbPath, 'sample.ts'),
-      'export class Service { ping(): Service { return this; } }\n' +
-        'export function caller(service: Service) {\n  service.ping().ping();\n}\n',
-    );
-    const result = await runPipelineFromRepo(temp.dbPath, () => {}, {
-      skipGraphPhases: true,
-      workerPoolSize: 1,
-    });
-    const calls = result.graph.relationships.filter((r) => r.type === 'CALLS');
-    expect(calls).toHaveLength(2);
-    expect(new Set(calls.map((r) => `${r.sourceId}->${r.targetId}`)).size).toBe(1);
-    expect(
-      calls.map((r) => r.id.slice(r.id.lastIndexOf(r.targetId) + r.targetId.length)).sort(),
-    ).toEqual([':3:2:3:16', ':3:2:3:23']);
-    expect(result.relationshipIntegrity).toMatchObject({ unverifiedEdges: 0 });
-  } finally {
-    await temp.cleanup();
-  }
-});
+itIfWorkerBuilt(
+  'retains nested calls sharing a start position when their full source spans differ',
+  async () => {
+    const temp = await createTempDir();
+    try {
+      await fs.writeFile(
+        path.join(temp.dbPath, 'sample.ts'),
+        'export class Service { ping(): Service { return this; } }\n' +
+          'export function caller(service: Service) {\n  service.ping().ping();\n}\n',
+      );
+      const result = await runPipelineFromRepo(temp.dbPath, () => {}, {
+        skipGraphPhases: true,
+        workerPoolSize: 1,
+      });
+      const calls = result.graph.relationships.filter((r) => r.type === 'CALLS');
+      expect(calls).toHaveLength(2);
+      expect(new Set(calls.map((r) => `${r.sourceId}->${r.targetId}`)).size).toBe(1);
+      expect(
+        calls.map((r) => r.id.slice(r.id.lastIndexOf(r.targetId) + r.targetId.length)).sort(),
+      ).toEqual([':3:2:3:16', ':3:2:3:23']);
+      expect(result.relationshipIntegrity).toMatchObject({ unverifiedEdges: 0 });
+    } finally {
+      await temp.cleanup();
+    }
+  },
+);
 
-describe.each([false, true])(
+describeIfWorkerBuilt.each([false, true])(
   'source-site integrity across indexing (streaming=%s)',
   (streamGraphEmit) => {
     it('preserves source sites, replaces receipts, and never accumulates edges on warm/repeated runs', async () => {
@@ -150,13 +156,22 @@ describe.each([false, true])(
         expect(cold.pipelineResult?.reparsedFileCount).toBeGreaterThan(0);
         expect(Boolean(cold.pipelineResult?.graphEmitManifest)).toBe(streamGraphEmit);
         const firstReceipt = await inspect(2);
-        // The worker parses the real file; the seeding guard sees impossible
-        // provenance. Rejection must leave the previous published graph usable.
-        const readFileSync = nativeFs.readFileSync;
-        const brokenSource = vi.spyOn(nativeFs, 'readFileSync').mockImplementation((...args) => {
-          if (String(args[0]) === path.join(temp.dbPath, 'sample.ts')) return '';
-          return Reflect.apply(readFileSync, nativeFs, args);
-        });
+        // Inject an impossible emitted identity, independent of working-tree edits.
+        const createCollector = integrityModule.createRelationshipIntegrityCollector;
+        const brokenSource = vi
+          .spyOn(integrityModule, 'createRelationshipIntegrityCollector')
+          .mockImplementation((...args) => {
+            const collector = createCollector(...args);
+            return {
+              ...collector,
+              inspect: (rel, duplicate, conflict) =>
+                collector.inspect(
+                  rel.type === 'CALLS' ? { ...rel, id: 'rel:CALLS:wrong->endpoints:1:0:1:1' } : rel,
+                  duplicate,
+                  conflict,
+                ),
+            };
+          });
         try {
           await expect(
             runFullAnalysis(temp.dbPath, { ...options, force: true }, { onProgress() {} }),

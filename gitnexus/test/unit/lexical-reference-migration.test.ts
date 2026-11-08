@@ -87,13 +87,21 @@ describe('lexical benchmark reference migration parity', () => {
     },
   );
   it.each([
-    ['wrong endpoint', edge(`${prefix}:1:0:1:5`, { targetId: 'different' })],
-    ['changed property', edge(`${prefix}:1:0:1:5`, { confidence: 0.5 })],
-    ['invented end', edge(`${prefix}:1:0:1:4`)],
-    ['outside source', edge(`${prefix}:1:0:1:999`)],
-    ['unknown edge', edge(`${prefix}:1:1:1:5`)],
-  ])('rejects %s', (_case, changed) => {
-    expect(() => compare([edge(`${prefix}:1:0`)], [changed])).toThrow();
+    [
+      'wrong endpoint',
+      edge(`${prefix}:1:0:1:5`, { targetId: 'different' }),
+      /Unknown candidate identity/,
+    ],
+    [
+      'changed property',
+      edge(`${prefix}:1:0:1:5`, { confidence: 0.5 }),
+      /Relationship properties changed/,
+    ],
+    ['invented end', edge(`${prefix}:1:0:1:4`), /not an expected AST site/],
+    ['outside source', edge(`${prefix}:1:0:1:999`), /Invalid source bounds/],
+    ['unknown edge', edge(`${prefix}:1:1:1:5`), /No legacy point identity/],
+  ] as const)('rejects %s', (_case, changed, error) => {
+    expect(() => compare([edge(`${prefix}:1:0`)], [changed])).toThrow(error);
   });
   it('rejects duplicate spans and unapproved expansion', () => {
     const old = [edge(`${prefix}:1:0`)];

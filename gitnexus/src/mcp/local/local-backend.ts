@@ -3091,8 +3091,8 @@ export class LocalBackend {
    * error-returning call pays nothing.
    *
    * #3291: the ref comes straight off the already-resolved handle, so naming
-   * the index costs no extra I/O — no git spawn, no metadata read, and the
-   * `stalenessForTool` TTL cache is untouched. `branch` is passed through as-is
+   * the index ref costs no extra I/O. Graph results also read ingestion
+   * metadata below; the `stalenessForTool` TTL cache is untouched. `branch` is passed through as-is
    * and is legitimately absent for a detached HEAD or a legacy index; the
    * always-present `lastCommit` is what identifies the index in that case.
    */
@@ -3109,10 +3109,14 @@ export class LocalBackend {
     // This envelope covers query/cypher too; context/impact also carry it for
     // direct backend callers. Read failure or a mixed generation is unknown.
     let integrityMeta: Awaited<ReturnType<typeof loadMeta>> | undefined;
+    let metadataUnreadable = false;
     try {
-      if (graphResult) integrityMeta = (await this.readToolMetadata(repo)) ?? undefined;
+      if (graphResult) {
+        integrityMeta = (await this.readToolMetadata(repo)) ?? undefined;
+        metadataUnreadable = integrityMeta === undefined;
+      }
     } catch {
-      integrityMeta = undefined;
+      metadataUnreadable = true;
     }
     // Defensive: `checkStalenessAsync` self-catches today, but a rejection here
     // must never fail the tool — degrade to no-staleness. Paired with the
@@ -3128,7 +3132,10 @@ export class LocalBackend {
     if (repo.generationUnknown || changedDuringTool) {
       return attachToolStaleness(
         graphResult
-          ? { ...result, graph_integrity: relationshipIntegrityForCaller(undefined) }
+          ? {
+              ...result,
+              graph_integrity: relationshipIntegrityForCaller(undefined, 'generation-changed'),
+            }
           : result,
         { status: 'unknown', isStale: false, commitsBehind: 0 },
         {
@@ -3142,7 +3149,10 @@ export class LocalBackend {
       graphResult
         ? {
             ...result,
-            graph_integrity: relationshipIntegrityForCaller(integrityMeta?.relationshipIntegrity),
+            graph_integrity: relationshipIntegrityForCaller(
+              integrityMeta?.relationshipIntegrity,
+              metadataUnreadable ? 'metadata-unreadable' : undefined,
+            ),
           }
         : result,
       staleness,

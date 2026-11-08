@@ -173,7 +173,7 @@ For examples of unverified identities, enable debug logging:
 GITNEXUS_LOG_LEVEL=debug npx gitnexus analyze --force 2>gitnexus-debug.log
 ```
 
-`graph_reference_unverified` includes at most one example per reason per analysis: opaque IDs, collapsed IDs, point-only sites, extracted coordinates, and partial mappings. `graph_reference_rejected` identifies the invalid relationship, endpoints, source file, emission reason, and stack before the write is rejected. Raw source text is not logged. A rejected record prevents a successful ingestion summary; the previous published index remains available when the failed run used staging.
+`graph_reference_unverified` includes at most one example per reason per analysis: opaque IDs, collapsed IDs, point-only sites, extracted coordinates, and partial mappings. `graph_reference_rejected` identifies the invalid relationship, endpoints, source file, emission reason, and stack before the write is rejected. Source buffers are not logged; diagnostic IDs and emission reasons can contain source-derived names or literals. Concurrent edits and unreadable sources remain unverified (`sourceChanged` / `sourceUnavailable`, with the read error code); they do not abort analysis. A rejected record prevents a successful ingestion summary; the previous published index remains available when the failed run used staging.
 
 ## MCP: no repos / empty tools
 

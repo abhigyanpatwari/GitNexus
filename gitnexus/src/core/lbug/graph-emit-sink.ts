@@ -383,6 +383,10 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
    * unrecognized shape is stored exactly, just without the saving.
    */
   private dedupKey(rel: GraphRelationship, srcIx: number, tgtIx: number): string {
+    // Multiple arrows make the endpoint boundary ambiguous. Preserve the ID
+    // exactly instead of searching every possible split on each insertion.
+    const arrow = rel.id.indexOf('->');
+    if (arrow >= 0 && rel.id.indexOf('->', arrow + 2) >= 0) return `r|${rel.id}`;
     const pair = `rel:${rel.type}:${rel.sourceId}->${rel.targetId}`;
     if (!rel.id.startsWith(pair)) return `r|${rel.id}`;
     const tail = rel.id.slice(pair.length);
@@ -409,31 +413,27 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
 
   /** Probe alternate compact keys after a direct lookup misses. IDs can be
    * ambiguous when an endpoint itself ends in numeric segments. */
-  private streamedIdentity(rel: GraphRelationship): number | undefined {
-    const src = this.nodeIds.get(rel.sourceId);
-    const tgt = this.nodeIds.get(rel.targetId);
-    if (src !== undefined && tgt !== undefined) {
-      const found = this.streamedIds.get(this.dedupKey(rel, src, tgt));
-      if (found !== undefined) return found;
-    }
+  private streamedIdentity(rel: GraphRelationship, key: string | undefined): number | undefined {
+    const direct = key === undefined ? undefined : this.streamedIds.get(key);
+    if (direct !== undefined) return direct;
     const opaque = this.streamedIds.get(`r|${rel.id}`);
     if (opaque !== undefined || !rel.id.startsWith('rel:')) return opaque;
     const typeEnd = rel.id.indexOf(':', 4);
     if (typeEnd < 0) return undefined;
     const type = rel.id.slice(4, typeEnd) as RelationshipType;
-    for (
-      let arrow = rel.id.indexOf('->', typeEnd + 1);
-      arrow >= 0;
-      arrow = rel.id.indexOf('->', arrow + 2)
-    ) {
+    const arrow = rel.id.indexOf('->', typeEnd + 1);
+    if (arrow >= 0 && rel.id.indexOf('->', arrow + 2) < 0) {
       const sourceId = rel.id.slice(typeEnd + 1, arrow);
       const sourceIx = this.nodeIds.get(sourceId);
-      if (sourceIx === undefined) continue;
+      if (sourceIx === undefined) return undefined;
       let end = rel.id.length;
       for (let parts = 0; parts <= 4; parts++) {
         const targetId = rel.id.slice(arrow + 2, end);
         const targetIx = this.nodeIds.get(targetId);
-        if (targetIx !== undefined) {
+        if (
+          targetIx !== undefined &&
+          (sourceId !== rel.sourceId || targetId !== rel.targetId || type !== rel.type)
+        ) {
           const key = this.dedupKey({ ...rel, sourceId, targetId, type }, sourceIx, targetIx);
           const found = this.streamedIds.get(key);
           if (found !== undefined) return found;
@@ -477,7 +477,13 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
       this.real.addRelationship(relationship);
       return;
     }
-    const previous = this.streamedIdentity(relationship);
+    const knownSrc = this.nodeIds.get(relationship.sourceId);
+    const knownTgt = this.nodeIds.get(relationship.targetId);
+    const key =
+      knownSrc === undefined || knownTgt === undefined
+        ? undefined
+        : this.dedupKey(relationship, knownSrc, knownTgt);
+    const previous = this.streamedIdentity(relationship, key);
     if (previous !== undefined) {
       const conflictingIdentity =
         this.nodeIdByIx[this.srcIx[previous]] !== relationship.sourceId ||
@@ -494,9 +500,9 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
       return;
     }
     // Mirror KnowledgeGraph.addRelationship's first-writer-wins dedup.
-    const srcIx = this.internNode(relationship.sourceId);
-    const tgtIx = this.internNode(relationship.targetId);
-    const key = this.dedupKey(relationship, srcIx, tgtIx);
+    const srcIx = knownSrc ?? this.internNode(relationship.sourceId);
+    const tgtIx = knownTgt ?? this.internNode(relationship.targetId);
+    const streamKey = key ?? this.dedupKey(relationship, srcIx, tgtIx);
     this.real.inspectRelationship?.(relationship, false, false);
 
     // Classify + skip via the SHARED `relPairKeyFor`, not a local copy of its
@@ -534,10 +540,9 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
       }
       this.relWriters.set(pairKey, writer);
     }
-    // Retain the row index to detect conflicting reuse of an opaque id.
-    this.streamedIds.set(key, this.srcIx.length);
-
     writer.addRow(buildRelRow(relationship));
+    // Publish identity only after the row was accepted by the writer.
+    this.streamedIds.set(streamKey, this.srcIx.length);
     if (!PDG_EDGE_TYPES.has(relationship.type)) this.structuralRows++;
     this.srcIx.push(srcIx);
     this.tgtIx.push(tgtIx);

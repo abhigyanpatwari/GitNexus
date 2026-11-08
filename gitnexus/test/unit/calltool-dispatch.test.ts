@@ -5847,73 +5847,103 @@ describe('LocalBackend tool-staleness signal (#2655 review)', () => {
     }
   });
 
-  it.each(['query', 'impact'] as const)(
-    'delivers the ingestion receipt on %s and leaves missing or mismatched provenance unverified',
-    async (method) => {
+  describe.each(['query', 'impact'] as const)('%s ingestion provenance', (method) => {
+    it.each([
+      [
+        'verified',
+        {
+          status: 'verified',
+          scope: 'source-reference-ingestion',
+          checkedSites: 7,
+          unverifiedEdges: 0,
+          duplicatesSuppressed: 2,
+          note: expect.stringContaining('checked before writing'),
+        },
+      ],
+      [
+        'missing',
+        {
+          status: 'unverified',
+          scope: 'source-reference-ingestion',
+          note: expect.stringContaining('analyze --force'),
+        },
+      ],
+      [
+        'malformed',
+        {
+          status: 'unverified',
+          scope: 'source-reference-ingestion',
+          note: expect.stringContaining('analyze --force'),
+        },
+      ],
+      [
+        'generation-unknown',
+        {
+          status: 'unverified',
+          scope: 'source-reference-ingestion',
+          note: expect.stringContaining('Retry the tool'),
+        },
+      ],
+      [
+        'replaced',
+        {
+          status: 'unverified',
+          scope: 'source-reference-ingestion',
+          note: expect.stringContaining('Retry the tool'),
+        },
+      ],
+      [
+        'metadata-unreadable',
+        {
+          status: 'unverified',
+          scope: 'source-reference-ingestion',
+          note: expect.stringContaining('metadata could not be read. Retry the tool'),
+        },
+      ],
+    ] as const)('reports %s with the correct recovery action', async (state, expected) => {
       const storagePath = mkdtempSync(path.join(os.tmpdir(), 'gn-integrity-dispatch-'));
       const receipt = { version: 1, checkedSites: 7, unverifiedEdges: 0, duplicatesSuppressed: 2 };
       vi.spyOn(backend as any, method).mockResolvedValue({ ok: true });
+      const selected = {
+        ...handle,
+        storagePath,
+        lbugPath: path.join(storagePath, 'lbug'),
+        generationUnknown: state === 'generation-unknown',
+      };
       try {
-        for (const state of [
-          'verified',
-          'missing',
-          'malformed',
-          'generation-unknown',
-          'replaced',
-        ]) {
-          const selected = {
-            ...handle,
-            storagePath,
-            lbugPath: path.join(storagePath, 'lbug'),
-            generationUnknown: state === 'generation-unknown',
-          };
-          writeFileSync(
-            path.join(storagePath, 'meta.json'),
-            JSON.stringify({
-              repoPath: selected.repoPath,
-              indexedAt: selected.indexedAt,
-              lastCommit: selected.lastCommit,
-              ...(state === 'missing'
-                ? {}
-                : {
-                    relationshipIntegrity:
-                      state === 'malformed' ? { ...receipt, checkedSites: -1 } : receipt,
-                  }),
-              ...(state === 'replaced' ? { graphPath: 'generations/new/lbug' } : {}),
-            }),
-          );
-          vi.spyOn(backend, 'selectToolRepository').mockResolvedValue(selected as any);
-          const result = await backend.callTool(method, {
-            repo: 'r',
-            search_query: 'x',
-            target: 'x',
-            direction: 'upstream',
-          });
-          expect(result).toMatchObject({
-            ok: true,
-            graph_integrity: {
-              status: state === 'verified' ? 'verified' : 'unverified',
-              scope: 'source-reference-ingestion',
-            },
-          });
-          if (state === 'verified') {
-            expect(result.graph_integrity).toMatchObject({
-              checkedSites: 7,
-              unverifiedEdges: 0,
-              duplicatesSuppressed: 2,
-            });
-          } else {
-            expect(result.graph_integrity).not.toHaveProperty('checkedSites');
-          }
-          if (state === 'generation-unknown' || state === 'replaced') {
-            expect(result.staleness).toMatchObject({ status: 'unknown', lastCommit: '' });
-          }
-        }
+        writeFileSync(
+          path.join(storagePath, 'meta.json'),
+          JSON.stringify({
+            repoPath: selected.repoPath,
+            indexedAt: selected.indexedAt,
+            lastCommit: selected.lastCommit,
+            ...(state === 'missing'
+              ? {}
+              : {
+                  relationshipIntegrity:
+                    state === 'malformed' ? { ...receipt, checkedSites: -1 } : receipt,
+                }),
+            ...(state === 'replaced' ? { graphPath: 'generations/new/lbug' } : {}),
+          }),
+        );
+        if (state === 'metadata-unreadable')
+          writeFileSync(path.join(storagePath, 'meta.json'), '{invalid json');
+        vi.spyOn(backend, 'selectToolRepository').mockResolvedValue(selected as any);
+        const result = await backend.callTool(method, {
+          repo: 'r',
+          search_query: 'x',
+          target: 'x',
+          direction: 'upstream',
+        });
+        expect(result.graph_integrity).toEqual(expected);
+        expect(result.staleness?.lastCommit).toBe(
+          ['generation-unknown', 'replaced'].includes(state) ? '' : handle.lastCommit,
+        );
       } finally {
         rmSync(storagePath, { recursive: true, force: true });
       }
-    },
-  );
+    });
+  });
 
   // F3: drift guard — exactly the four read tools route through stalenessForTool;
   // the adjacent read-ish tools must not, so a future tool added without staleness

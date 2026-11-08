@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Parser from 'tree-sitter';
+import { createHash } from 'node:crypto';
 import TypeScript from 'tree-sitter-typescript';
 import type { GraphRelationship } from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
@@ -53,6 +54,12 @@ describe.each(['memory', 'streaming'] as const)('ingestion relationship integrit
       referenceSourceText,
     );
     const graph = createKnowledgeGraph(collector.inspect);
+    collector.recordSourceHash(
+      'sample.ts',
+      createHash('sha256')
+        .update(fs.readFileSync(path.join(root, 'sample.ts'), 'utf8'))
+        .digest('hex'),
+    );
     for (const id of [sourceId, targetId, `${targetId}Other`]) {
       graph.addNode({
         id,
@@ -81,6 +88,46 @@ describe.each(['memory', 'streaming'] as const)('ingestion relationship integrit
         unverifiedEdges: 0,
         duplicatesSuppressed: 1,
       });
+    } finally {
+      close();
+    }
+  });
+
+  it.each(['truncate', 'lengthen', 'rename', 'delete'] as const)(
+    'does not validate a parsed span against a later source %s',
+    (change) => {
+      const { collector, writer, close } = fixture();
+      const file = path.join(root, 'sample.ts');
+      const changes = {
+        truncate: () => fs.writeFileSync(file, ''),
+        lengthen: () => fs.appendFileSync(file, '// newer source\n'),
+        rename: () => fs.renameSync(file, `${file}.old`),
+        delete: () => fs.unlinkSync(file),
+      };
+      changes[change]();
+      try {
+        writer.addRelationship(edge());
+        expect(collector.snapshot()).toMatchObject({ checkedSites: 0, unverifiedEdges: 1 });
+        expect(logs.records()[0]).toMatchObject({
+          event: 'graph_reference_unverified',
+          reason:
+            change === 'delete' || change === 'rename' ? 'sourceUnavailable' : 'sourceChanged',
+        });
+        expect(() => writer.addRelationship({ ...edge(), targetId: 'wrong' })).toThrow(
+          /contradicts an existing record/,
+        );
+      } finally {
+        close();
+      }
+    },
+  );
+
+  it('rejects sources outside the repository before attempting to read them', () => {
+    const { collector, writer, close } = fixture();
+    writer.getNode(sourceId)!.properties.filePath = '../outside.ts';
+    try {
+      expect(() => writer.addRelationship(edge())).toThrow(/outside the indexed repository/);
+      expect(() => collector.snapshot()).toThrow(/outside the indexed repository/);
     } finally {
       close();
     }

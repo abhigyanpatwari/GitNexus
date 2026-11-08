@@ -433,6 +433,7 @@ export const runPipelineFromRepo = async (
     options,
     pipelineStart,
     graphEmit: graphEmitSink,
+    recordSourceHash: integrity.recordSourceHash,
   };
 
   let graphEmitManifest: GraphEmitManifest | undefined;
