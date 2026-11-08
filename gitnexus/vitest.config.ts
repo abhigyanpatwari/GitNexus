@@ -1,6 +1,9 @@
 import { defineConfig } from 'vitest/config';
 import PerfSequencer from './test/helpers/perf-sequencer.js';
 
+// Keep the native suite's serial include and parallel exclude in sync.
+const multiRepoQueryTest = 'test/integration/mcp-multi-repo-query.test.ts';
+
 // Keep native tests in exactly one project (TESTING.md).
 const RESUMABLE_ANALYSIS_NATIVE_TESTS = [
   'test/integration/embedding-input-isolation.test.ts',
@@ -111,6 +114,7 @@ export default defineConfig({
             'test/integration/server-route-hook-config.test.ts',
             'test/integration/query-symbol-integrity.test.ts',
             'test/integration/mcp-index-generation.test.ts',
+            multiRepoQueryTest,
             'test/integration/mcp-refresh-index-e2e.test.ts',
             'test/integration/fts-repair-warm-session.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
@@ -230,6 +234,7 @@ export default defineConfig({
             'test/integration/server-route-hook-config.test.ts',
             'test/integration/query-symbol-integrity.test.ts',
             'test/integration/mcp-index-generation.test.ts',
+            multiRepoQueryTest,
             'test/integration/mcp-refresh-index-e2e.test.ts',
             'test/integration/fts-repair-warm-session.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',

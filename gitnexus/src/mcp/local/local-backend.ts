@@ -30,7 +30,13 @@ import {
   statDbIdentity,
   dbIdentityChanged,
   getLbugDbIdentity,
+  pinRepo,
 } from '../../core/lbug/pool-adapter.js';
+import {
+  parseQueryRepositories,
+  mergeRepositoryQueries,
+  type RepositoryQueryResult,
+} from './multi-repo-query.js';
 import { queryClassBeanMetadata } from './bean-metadata.js';
 import { GUARD_TAINT_LIMITATION } from '../taint-limitations.js';
 import { querySpringAopMetadata } from './aop-metadata.js';
@@ -117,7 +123,6 @@ import {
 } from '../../core/lbug/schema.js';
 import { getExactScanLimit } from '../../core/platform/capabilities.js';
 import { metadataMatchesGraph, selectVectorGeneration } from '../../storage/vector-generation.js';
-import { pinRepo } from '../../core/lbug/pool-adapter.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { ftsDegradedWarning, ftsQueryFailedWarning } from '../../core/search/fts-indexes.js';
 import { getFtsDisabledReason, type FtsDisabledReason } from '../../core/search/fts-policy.js';
@@ -3168,6 +3173,9 @@ export class LocalBackend {
   }
 
   async callTool(method: string, params: any, context: McpToolCallContext = {}): Promise<any> {
+    if (Array.isArray(params?.repo) && method !== 'query' && method !== 'search') {
+      return { error: 'Repository arrays are supported only by query (and legacy search).' };
+    }
     if (method === 'list_repos') {
       // Paginated tool surface (#2119). `listRepos()` is unchanged for internal
       // callers; the tool wraps it in { repositories, pagination } and forwards
@@ -3182,6 +3190,8 @@ export class LocalBackend {
     const normalized = normalizeToolParams(method, params);
     if ('error' in normalized) return { error: normalized.error };
     const p = normalized.params;
+
+    if (Array.isArray(p.repo)) return this.queryRepositories(p);
 
     // #2175: Claude Code drops a tool-call argument named exactly "query", so the
     // query/cypher tools advertise "search_query"/"statement" while still accepting the
@@ -3527,6 +3537,85 @@ export class LocalBackend {
       componentCount: report.componentCount,
       cycles,
     };
+  }
+
+  /** Resolve the whole selection before opening a database, then lease only active members. */
+  private async queryRepositories(params: Record<string, unknown>) {
+    let specifiers: string[];
+    try {
+      specifiers = parseQueryRepositories(params.repo);
+    } catch (error) {
+      return { error: (error as Error).message };
+    }
+    const rawQuery = resolveAliasString(params.search_query, params.query);
+    if (!rawQuery?.trim()) {
+      return { error: 'search_query (or legacy query) parameter is required and cannot be empty.' };
+    }
+    const limit = parseQueryPageBound(params.limit, 'limit', QUERY_DEFAULT_LIMIT, QUERY_MAX_LIMIT);
+    if (limit.ok === false) return { error: limit.error };
+    const maxSymbols = parseQueryPageBound(
+      params.max_symbols,
+      'max_symbols',
+      QUERY_DEFAULT_MAX_SYMBOLS,
+      QUERY_MAX_MAX_SYMBOLS,
+    );
+    if (maxSymbols.ok === false) return { error: maxSymbols.error };
+    const chainDepth = parseChainDepth(params.chain_depth);
+    if (chainDepth.ok === false) return { error: chainDepth.error };
+
+    const selected = new Map<string, RepoHandle>();
+    for (const specifier of specifiers) {
+      const repo = await this.selectToolRepository(specifier, params.branch as string | undefined);
+      const repoPath = canonicalizePath(repo.repoPath);
+      const key = process.platform === 'win32' ? repoPath.toLowerCase() : repoPath;
+      // Shared databases can serve distinct checkouts; deduplicate checkout identity only.
+      if (!selected.has(key)) selected.set(key, { ...repo, repoPath });
+    }
+    const repos = [...selected.values()];
+    const results = await mapConcurrent(
+      repos,
+      async (repo): Promise<RepositoryQueryResult> => {
+        const release = pinRepo(repo.lbugPath);
+        try {
+          const result = (await this.withToolStaleness(
+            repo,
+            await this.query(repo, params),
+          )) as RepositoryQueryResult['result'];
+          return { repo: repo.repoPath, name: repo.name, result };
+        } catch (error) {
+          return {
+            repo: repo.repoPath,
+            name: repo.name,
+            result:
+              error instanceof SymbolIdentityError
+                ? { error: error.message, recoverySuggestion: SYMBOL_IDENTITY_RECOVERY_SUGGESTION }
+                : {
+                    error:
+                      'Repository search failed; retry this repository individually for details.',
+                  },
+          };
+        } finally {
+          release();
+        }
+      },
+      { concurrency: 4 },
+    );
+    // mapConcurrent retains a slot for a rejected callback; never misreport one as empty success.
+    return mergeRepositoryQueries(
+      results.map(
+        (result, i) =>
+          result ?? {
+            repo: repos[i].repoPath,
+            name: repos[i].name,
+            result: { error: 'Repository search did not complete.' },
+          },
+      ),
+      {
+        limit: limit.value,
+        maxSymbols: maxSymbols.value,
+        includeContent: params.include_content === true,
+      },
+    );
   }
 
   /**
