@@ -33,13 +33,14 @@ describe('R rename: a new name that already exists', () => {
     }
   });
 
-  it('accepts a new name bound only inside a function (block scopes are covered by the rename-integration case r/new-name-block-local)', () => {
-    for (const source of ['f <- function() { assist <- 1 }\n']) {
-      expect(
-        rIssue({ files: { 'a.R': HELPER + source }, newName: 'assist' })?.code,
-        source,
-      ).not.toBe('name_collision');
-    }
+  // A hand-built source has no scopes, so a `local({})` or `test_that()` body reads as top level
+  // here; the block-scope rules are pinned by the rename-integration cases
+  // r/new-name-block-local and r/new-name-block-function.
+  it('accepts a new name bound only inside a function body', () => {
+    expect(
+      rIssue({ files: { 'a.R': HELPER + 'f <- function() { assist <- 1 }\n' }, newName: 'assist' })
+        ?.code,
+    ).not.toBe('name_collision');
   });
 
   it('refuses a variable of the new name in another file', () => {

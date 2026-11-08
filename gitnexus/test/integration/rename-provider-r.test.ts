@@ -10,19 +10,20 @@ import {
 // would define no test and stay green. Pin the number of R cases: adding one means raising it.
 // A shard holds about a fifth of them, so the sorted ids are dealt into five parts: part 1 runs
 // here (also on Windows and macOS), parts 2 to 5 from rename-provider-r-part2.test.ts to
-// rename-provider-r-part5.test.ts (Linux only: the cross-platform list carries part 1 alone; see scripts/cross-platform-tests.ts).
+// rename-provider-r-part5.test.ts (Linux only: the cross-platform list carries part 1 alone;
+// see scripts/cross-platform-tests.ts).
 describe('R rename fixtures', () => {
   it('are all discovered', () => {
-    expect(renameCases.filter((fixture) => fixture.language === 'r')).toHaveLength(115);
+    expect(renameCases.filter((fixture) => fixture.language === 'r')).toHaveLength(117);
   });
 
-  it('split evenly into five parts, each fixture in exactly one', () => {
+  it('split into five balanced parts, each fixture in exactly one', () => {
     const ids = renameCases.filter((fixture) => fixture.language === 'r').map((f) => f.id);
     expect(renameFixtureParts.r).toBe(5);
     const counts = [1, 2, 3, 4, 5].map(
       (part) => ids.filter((id) => renameFixturePart(id) === part).length,
     );
-    expect(counts).toEqual([23, 23, 23, 23, 23]);
+    expect(counts).toEqual([24, 24, 23, 23, 23]);
     expect(counts.reduce((sum, count) => sum + count, 0)).toBe(ids.length);
   });
 });

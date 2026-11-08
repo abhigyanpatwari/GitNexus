@@ -301,6 +301,21 @@ function locallyAssignedValue(node: Parser.SyntaxNode, name: string): Parser.Syn
   return null;
 }
 
+const LITERAL_VALUE_TYPES = new Set([
+  'float',
+  'integer',
+  'complex',
+  'string',
+  'true',
+  'false',
+  'null',
+]);
+
+/** Whether `value` is a constant literal, which can never be called as a function. */
+function isLiteralValue(value: Parser.SyntaxNode | null): boolean {
+  return value !== null && LITERAL_VALUE_TYPES.has(value.type);
+}
+
 /** The calls of `name` (an identifier callee) under `root`. */
 function callsOf(root: Parser.SyntaxNode, name: string): Parser.SyntaxNode[] {
   const calls: Parser.SyntaxNode[] = [];
@@ -792,6 +807,17 @@ export const rRenameProvider: RenameProvider = {
           superassignedName(node) === newName
         )
           return collision('The new name is already assigned as a variable at top level.');
+        // A block-local binding (`local({})`, `test_that()`) of the new name is harmless only when
+        // it provably holds a non-function value: R's function lookup skips such a value, but a
+        // function (or a value not shown to be a constant) would capture the renamed calls.
+        if (
+          rBoundName(node) === newName &&
+          !insideFunction(node) &&
+          !isLiteralValue(locallyAssignedValue(node, newName))
+        )
+          return collision(
+            'The new name is already assigned in a block here and may hold a function; the renamed calls would reach it.',
+          );
         if (
           node.type === 'identifier' &&
           rBareName(node.text) === newName &&
@@ -925,10 +951,9 @@ export const rRenameProvider: RenameProvider = {
     });
     const current = currentNamespaceIssue(files.get(file)?.parsed, file, name, newName);
     if (exported) {
-      // The persisted flag is also left true when the NAMESPACE could not be fully applied
+      // The persisted flag is also left true when a NAMESPACE was read but not fully applied
       // (an unreadable export directive, a dropped exportPattern()); that is the more precise
-      // answer, so it wins over the generic export refusal.
-      // Only when a NAMESPACE was read but not fully applied; a missing or unrecorded NAMESPACE
+      // answer, so it wins over the generic export refusal. A missing or unrecorded NAMESPACE
       // keeps the generic refusal.
       if (
         current &&
