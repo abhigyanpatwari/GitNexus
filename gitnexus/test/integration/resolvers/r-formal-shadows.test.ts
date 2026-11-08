@@ -32,10 +32,11 @@ describe('R calls through a formal or a loop variable', () => {
 
   it('does not bind a call through a for variable or an anonymous function formal', () => {
     expect(targets('each_cb')).toEqual([]);
-    expect(targets('via_lapply')).toEqual(
-      ['lapply'].filter((n) => targets('via_lapply').includes(n)),
-    );
-    expect(targets('via_lapply')).not.toContain('handler');
+    // The fixture defines `lapply`, so the call site is resolved (the edge exists), while the
+    // anonymous function's `handler` formal shadows the top-level `handler`: no edge to it.
+    expect(targets('via_lapply')).toEqual(['lapply']);
+    // Positive control: the same shape with no shadowing formal does reach `handler`.
+    expect(targets('via_lapply_unshadowed')).toEqual(['handler', 'lapply']);
   });
 
   it('does not bind a call through a formal with a constant default: a default proves nothing about the argument', () => {
