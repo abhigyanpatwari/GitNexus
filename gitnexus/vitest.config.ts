@@ -1,6 +1,9 @@
 import { defineConfig } from 'vitest/config';
 import PerfSequencer from './test/helpers/perf-sequencer.js';
 
+// Keep the native suite's serial include and parallel exclude in sync.
+const multiRepoQueryTest = 'test/integration/mcp-multi-repo-query.test.ts';
+
 export default defineConfig({
   test: {
     // Shared settings — inherited by all projects via extends: true
@@ -85,6 +88,7 @@ export default defineConfig({
             'test/integration/go-incremental-method-owners.test.ts',
             'test/integration/query-symbol-integrity.test.ts',
             'test/integration/mcp-index-generation.test.ts',
+            multiRepoQueryTest,
             'test/integration/fts-repair-warm-session.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
@@ -196,6 +200,7 @@ export default defineConfig({
             'test/integration/go-incremental-method-owners.test.ts',
             'test/integration/query-symbol-integrity.test.ts',
             'test/integration/mcp-index-generation.test.ts',
+            multiRepoQueryTest,
             'test/integration/fts-repair-warm-session.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
