@@ -142,8 +142,13 @@ describe.each([false, true])(
           '\nhome/\n.gitnexus/\n',
         );
         await writeSource(2);
-        const cold = await runFullAnalysis(temp.dbPath, options, { onProgress() {} });
+        const cold = await runFullAnalysis(
+          temp.dbPath,
+          { ...options, force: streamGraphEmit },
+          { onProgress() {} },
+        );
         expect(cold.pipelineResult?.reparsedFileCount).toBeGreaterThan(0);
+        expect(Boolean(cold.pipelineResult?.graphEmitManifest)).toBe(streamGraphEmit);
         const firstReceipt = await inspect(2);
         // The worker parses the real file; the seeding guard sees impossible
         // provenance. Rejection must leave the previous published graph usable.
@@ -169,7 +174,12 @@ describe.each([false, true])(
         expect(warm.pipelineResult?.reparsedFileCount).toBe(0);
         expect(await inspect(2)).toEqual(firstReceipt);
         await writeSource(3);
-        await runFullAnalysis(temp.dbPath, options, { onProgress() {} });
+        const changed = await runFullAnalysis(
+          temp.dbPath,
+          { ...options, force: streamGraphEmit },
+          { onProgress() {} },
+        );
+        expect(Boolean(changed.pipelineResult?.graphEmitManifest)).toBe(streamGraphEmit);
         const changedReceipt = await inspect(3);
         expect(changedReceipt!.checkedSites).toBeGreaterThan(firstReceipt!.checkedSites);
         const unchanged = await runFullAnalysis(temp.dbPath, options, { onProgress() {} });

@@ -7,7 +7,7 @@
  *   - `tryEmitEdge` — given a reference site + target def, resolve
  *     caller + target to graph ids and emit the edge with
  *     language-provided reason text, dedup-keyed by
- *     `(edgeType, callerId, targetId, accessKind, line, col)`.
+ *     `(edgeType, callerId, targetId, accessKind, line, col, endLine?, endCol?)`.
  *
  * Next-consumer contract: any language provider can call `tryEmitEdge`
  * from its own post-pass to emit edges it resolves Python-specific

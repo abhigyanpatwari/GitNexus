@@ -275,7 +275,7 @@ ${HOT_READ_STALENESS_NOTE}`,
     name: 'cypher',
     description: `Execute Cypher query against the code knowledge graph.
 
-INGESTION: Object responses include graph_integrity with repository-wide source-reference checks. Empty and non-tabular results retain their raw array shape without a receipt. A missing graph_integrity field means provenance is unverified. Stored relationships omit source-site IDs; identical returned rows alone cannot establish whether the original sites differ.
+INGESTION: Successful object responses include graph_integrity with repository-wide source-reference checks. Empty and non-tabular results retain their raw array shape without a receipt. A missing graph_integrity field means provenance is unverified. Stored relationships omit source-site IDs; identical returned rows alone cannot establish whether the original sites differ.
 
 WHEN TO USE: Complex structural queries that search/explore can't answer. READ gitnexus://repo/{name}/schema first for the full schema.
 AFTER THIS: Use context() on result symbols for deeper context.
