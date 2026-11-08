@@ -37,18 +37,18 @@ describe('query repository list validation', () => {
     ]);
   });
   it.each([
-    [],
-    [''],
-    ['   '],
-    [1],
-    [['a']],
-    ['a', null],
-    ['@group'],
-    [' @group/a '],
-    Array(11).fill('a'),
-    'a',
-    null,
-  ])('rejects malformed or unsupported selection %j', (value) => {
+    { name: 'empty list', value: [] },
+    { name: 'empty selector', value: [''] },
+    { name: 'blank selector', value: ['   '] },
+    { name: 'numeric selector', value: [1] },
+    { name: 'nested list', value: [['a']] },
+    { name: 'mixed selector types', value: ['a', null] },
+    { name: 'group selector', value: ['@group'] },
+    { name: 'padded subgroup selector', value: [' @group/a '] },
+    { name: 'eleven selectors', value: Array(11).fill('a') },
+    { name: 'scalar selector', value: 'a' },
+    { name: 'null selection', value: null },
+  ])('rejects malformed or unsupported selection: $name', ({ value }) => {
     expect(() => parseQueryRepositories(value)).toThrow(/query.repo/);
   });
   it('accepts ten selectors', () =>

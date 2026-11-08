@@ -237,18 +237,21 @@ describe('MCP array query policy and wire contract', () => {
     { tool: 'context', repo: [] },
     { tool: 'context', repo: ['@group'] },
     { tool: 'list_repos', repo: ['alpha'] },
-  ])('rejects repository arrays for $tool before policy selection', async ({ tool, repo }) => {
-    const h = harness();
-    const policy = await createMcpRepositoryPolicy(h.backend, {
-      GITNEXUS_MCP_ALLOWED_REPOS: 'alpha,beta',
-    });
-    const dispatch = vi.spyOn(h.backend, 'callTool');
-    await expect(policy.scopeBackend(h.backend).callTool(tool, { repo })).rejects.toThrow(
-      'Repository arrays are supported only by query (and legacy search).',
-    );
-    expect(dispatch).not.toHaveBeenCalled();
-    expect(h.selection).not.toHaveBeenCalled();
-  });
+  ])(
+    'rejects repository arrays for $tool before policy selection ($repo)',
+    async ({ tool, repo }) => {
+      const h = harness();
+      const policy = await createMcpRepositoryPolicy(h.backend, {
+        GITNEXUS_MCP_ALLOWED_REPOS: 'alpha,beta',
+      });
+      const dispatch = vi.spyOn(h.backend, 'callTool');
+      await expect(policy.scopeBackend(h.backend).callTool(tool, { repo })).rejects.toThrow(
+        'Repository arrays are supported only by query (and legacy search).',
+      );
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(h.selection).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(['query', 'search'])(
     'gives %s error recovery guidance without a result-row follow-up',
