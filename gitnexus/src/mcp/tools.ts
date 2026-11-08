@@ -23,10 +23,10 @@ export interface ToolDefinition {
     properties: Record<
       string,
       {
-        type: string;
+        type: string | string[];
         description?: string;
         default?: unknown;
-        items?: { type: string; enum?: string[] };
+        items?: { type: string; enum?: string[]; minLength?: number };
         minItems?: number;
         maxItems?: number;
         enum?: string[];
@@ -176,6 +176,8 @@ Returns results grouped by process (execution flow):
 
 Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.
 
+MULTIPLE REPOSITORIES: pass repo as a non-empty array of up to ${QUERY_MAX_REPOSITORIES} indexed names or paths. No @group entries. Aliases of one checkout are searched once. Array mode (even one repository) returns { repos, processes, process_symbols, definitions, per_repo, partial }. Rows carry _repo as the canonical checkout path; join on (_repo, process_id), and follow up with context({uid: "<id>", repo: "<row._repo>"}). Process chains inherit their enclosing _repo. Results merge by local rank, with a global process limit and at most 20 definitions. per_repo preserves each member's errors, warnings, timing, content availability and staleness; partial signals failed or degraded members. No global staleness is synthesized. Ordinary arrays work in MCP read-only mode and every entry must satisfy the server allowlist.
+
 GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that group (merged via RRF), or "@<groupName>/<groupRepoPath>" to run against a single member (same path keys as in group.yaml). If you use "@<groupName>" only, the member repo defaults to the lexicographically first key in group.yaml "repos". Prefer resources for contracts/status (see migration from legacy group_* tools).
 
 SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). When "repo" starts with "@", only processes whose symbols fall under that prefix are included. For a normal indexed repo name (no leading @), this field is currently ignored by the server.
@@ -222,11 +224,11 @@ ${HOT_READ_STALENESS_NOTE}`,
           minItems: 1,
           maxItems: QUERY_RESPONSE_SECTIONS.length,
           description:
-            'Optional single-repo output view: select processes, process_symbols, and/or definitions. For symbol discovery use ["process_symbols", "definitions"] with include_content:false and chain_depth:0. Warnings and staleness always remain; response_filter identifies omitted sections, not absent evidence. Does not change ranking or existing search limits. Omit for existing full output. Not supported for @group routing.',
+            'Optional output view for a scalar repository or an array: select processes, process_symbols, and/or definitions. For symbol discovery use ["process_symbols", "definitions"] with include_content:false and chain_depth:0. Warnings, staleness and per_repo metadata always remain; response_filter identifies omitted sections, not absent evidence. Does not change ranking or existing search limits. Omit for existing full output. Not supported for @group routing.',
         },
         include_content: {
           type: 'boolean',
-          description: `Include source text retained for matching symbols as previews (default: false), sharing ${QUERY_CONTENT_MAX_CHARS} characters equally across unique returned symbols per repository. content_truncated marks incomplete previews; all matches remain present. Content is sent once per symbol id, on its first process_symbols row; context({uid: "<id>", include_content: true}) returns it for any row. Use read_file line ranges for large sources. contentAvailability reports index retention. Query next is JSON guidance.`,
+          description: `Include retained source previews (default: false), sharing ${QUERY_CONTENT_MAX_CHARS} characters across unique returned symbols in the complete response, including array mode. content_truncated marks incomplete previews; all matches remain present. Content appears once per (repository, symbol id), on its first surviving row. Use context({uid: "<id>", repo: "<row._repo>", include_content: true}) in array mode, or read_file line ranges for large sources. contentAvailability reports index retention (inside per_repo in array mode). Query next is JSON guidance.`,
           default: false,
         },
         chain_depth: {
@@ -243,8 +245,11 @@ ${HOT_READ_STALENESS_NOTE}`,
             'Maximum estimated tokens in the complete formatted MCP response. Explicit request overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS.',
         },
         repo: {
-          type: 'string',
-          description: `Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>" (member path keys from group.yaml). ${CWD_AWARE_REPO_OMISSION}`,
+          type: ['string', 'array'],
+          items: { type: 'string', minLength: 1 },
+          minItems: 1,
+          maxItems: QUERY_MAX_REPOSITORIES,
+          description: `Indexed repository name or path, or a list of 1-${QUERY_MAX_REPOSITORIES} names/paths. Array entries must not use @group routing. Scalar group mode remains "@<groupName>" / "@<groupName>/<memberPath>" (member path keys from group.yaml). ${CWD_AWARE_REPO_OMISSION}`,
         },
         service: {
           type: 'string',

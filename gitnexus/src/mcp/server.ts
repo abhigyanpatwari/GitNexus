@@ -73,6 +73,9 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** READ gitnexus://repo/{name}/context for any repo above to get its overview and check staleness. If pagination.hasMore is true, call list_repos again with offset set to pagination.nextOffset to fetch the rest.`;
 
     case 'query':
+      if (Array.isArray(repo)) {
+        return `Use context({uid: "<id>", repo: "<row._repo>"}) for a symbol's references and processes.${args?.include_content === true ? ' Source previews marked content_truncated are incomplete; use context({uid: "<id>", repo: "<row._repo>", include_content: true}) or read_file with a bounded line range for more.' : ''}`;
+      }
       return `Use context({uid: "<id>"${repoParam}}) for a symbol's references and processes.${args?.include_content === true ? ` Source previews marked content_truncated are incomplete; use context({uid: "<id>", include_content: true${repoParam}}) or read_file with a bounded line range for more.` : ''}`;
 
     case 'context':
