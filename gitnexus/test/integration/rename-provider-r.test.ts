@@ -10,7 +10,7 @@ import {
 // would define no test and stay green. Pin the number of R cases: adding one means raising it.
 // A shard holds about a fifth of them, so the sorted ids are dealt into five parts: part 1 runs
 // here (also on Windows and macOS), parts 2 to 5 from rename-provider-r-part2.test.ts to
-// rename-provider-r-part5.test.ts (Linux only: the Windows command line has no room for them).
+// rename-provider-r-part5.test.ts (Linux only: the cross-platform list carries part 1 alone; see scripts/cross-platform-tests.ts).
 describe('R rename fixtures', () => {
   it('are all discovered', () => {
     expect(renameCases.filter((fixture) => fixture.language === 'r')).toHaveLength(115);
