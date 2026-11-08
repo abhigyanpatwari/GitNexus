@@ -10,18 +10,24 @@ import {
 } from '../../src/core/graph/relationship-integrity.js';
 import { GraphEmitSink } from '../../src/core/lbug/graph-emit-sink.js';
 import { referenceEdgeKey } from '../../src/core/ingestion/scope-resolution/graph-bridge/edges.js';
+import { _captureLogger, type LoggerCapture } from '../../src/core/logger.js';
 
 const sourceId = 'Function:sample.ts:caller';
 const targetId = 'Method:sample.ts:Service.ping';
 let root: string;
+let logs: LoggerCapture;
 beforeEach(() => {
+  logs = _captureLogger('debug');
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'graph-integrity-'));
   fs.writeFileSync(
     path.join(root, 'sample.ts'),
     'function caller(service) {\n  service.ping(); service.ping();\n}\n',
   );
 });
-afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+afterEach(() => {
+  logs.restore();
+  fs.rmSync(root, { recursive: true, force: true });
+});
 
 function edge(startCol = 2, endCol = 16, kind = 'call', target = targetId): GraphRelationship {
   const type = kind === 'call' ? 'CALLS' : 'ACCESSES';
@@ -86,6 +92,50 @@ describe.each(['memory', 'streaming'] as const)('ingestion relationship integrit
       writer.addRelationship(edge(2, 16, 'read'));
       writer.addRelationship(edge(2, 16, 'write'));
       expect(writer.relationshipCount).toBe(4);
+    } finally {
+      close();
+    }
+  });
+
+  it('summarizes counts and bounds debug examples instead of logging every unknown edge', () => {
+    const { writer, collector, close } = fixture();
+    try {
+      for (let i = 0; i < 100; i++) writer.addRelationship({ ...edge(), id: `opaque-${i}` });
+      writer.addRelationship({ ...edge(), id: 'opaque-0' });
+      collector.logSummary();
+      const records = logs.records();
+      expect(records.filter((r) => r.event === 'graph_reference_unverified')).toHaveLength(1);
+      expect(records.find((r) => r.event === 'graph_reference_integrity')).toMatchObject({
+        level: 30,
+        repoPath: root,
+        status: 'unverified',
+        checkedSites: 0,
+        unverifiedEdges: 100,
+        duplicatesSuppressed: 1,
+        unverifiedByReason: { opaqueIdentity: 100 },
+      });
+    } finally {
+      close();
+    }
+  });
+
+  it('logs one actionable rejection with the emitting stack and no success summary', () => {
+    const { writer, collector, close } = fixture();
+    try {
+      expect(() => writer.addRelationship(edge(2, 999))).toThrow(/outside/);
+      expect(() => writer.addRelationship(edge())).toThrow(/outside/);
+      expect(() => collector.logSummary()).toThrow(/outside/);
+      expect(logs.records()).toHaveLength(1);
+      expect(logs.records()[0]).toMatchObject({
+        level: 50,
+        event: 'graph_reference_rejected',
+        sourceId,
+        targetId,
+        sourceFile: 'sample.ts',
+        emissionReason: 'resolved',
+        reason: expect.stringContaining('outside'),
+        err: { stack: expect.stringContaining('relationship-integrity') },
+      });
     } finally {
       close();
     }

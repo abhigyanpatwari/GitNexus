@@ -500,6 +500,7 @@ export const runPipelineFromRepo = async (
     },
   });
 
+  integrity.logSummary();
   const result: PipelineResult = {
     // The RAW graph, deliberately — NOT `graphEmitSink`. Phases above received
     // the sink so their reads are complete, but `loadGraphToLbug` feeds this to

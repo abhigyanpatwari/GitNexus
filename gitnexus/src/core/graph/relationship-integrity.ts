@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
+import { logger } from '../logger.js';
 
 /** Counts describe ingestion checks, not final database row counts. */
 export interface RelationshipIntegrityReceipt {
@@ -27,6 +28,41 @@ export function createRelationshipIntegrityCollector(
     unverifiedEdges: 0,
     duplicatesSuppressed: 0,
   };
+  const unverifiedByReason = {
+    opaqueIdentity: 0,
+    collapsedIdentity: 0,
+    pointOnly: 0,
+    extractedCoordinates: 0,
+    partialMapping: 0,
+  };
+  const unverified = (
+    rel: GraphRelationship,
+    duplicate: boolean,
+    reason: keyof typeof unverifiedByReason,
+  ) => {
+    if (duplicate) {
+      receipt.duplicatesSuppressed++;
+      return;
+    }
+    receipt.unverifiedEdges++;
+    unverifiedByReason[reason]++;
+    // At most one example per reason per analysis, even with debug enabled.
+    if (unverifiedByReason[reason] === 1)
+      logger.debug(
+        {
+          event: 'graph_reference_unverified',
+          repoPath,
+          reason,
+          relationshipId: rel.id,
+          relationshipType: rel.type,
+          sourceId: rel.sourceId,
+          targetId: rel.targetId,
+          sourceFile: getNode(rel.sourceId)?.properties.filePath,
+          emissionReason: rel.reason,
+        },
+        'Source-reference provenance is unverified',
+      );
+  };
   // Emission is normally grouped by source file. Keep only bounded line-size
   // metadata, and compute UTF-8 lengths once even for long/minified lines.
   const sourceLines = new Map<
@@ -47,6 +83,21 @@ export function createRelationshipIntegrityCollector(
       failure ??= new Error(
         `Invalid graph reference ${rel.id}: ${reason}; source=${rel.sourceId}; target=${rel.targetId}`,
       );
+      logger.error(
+        {
+          event: 'graph_reference_rejected',
+          repoPath,
+          reason,
+          relationshipId: rel.id,
+          relationshipType: rel.type,
+          sourceId: rel.sourceId,
+          targetId: rel.targetId,
+          sourceFile: getNode(rel.sourceId)?.properties.filePath,
+          emissionReason: rel.reason,
+          err: failure,
+        },
+        'Rejected invalid graph relationship before writing',
+      );
       throw failure;
     };
     if (conflictingIdentity) fail('relationship identity contradicts an existing record');
@@ -60,8 +111,7 @@ export function createRelationshipIntegrityCollector(
       if (/^rel:(CALLS|ACCESSES|USES|EXTENDS|IMPLEMENTS|INHERITS):/.test(rel.id)) {
         fail('relationship identity contradicts its type');
       }
-      if (duplicate) receipt.duplicatesSuppressed++;
-      else receipt.unverifiedEdges++;
+      unverified(rel, duplicate, 'opaqueIdentity');
       return;
     }
     const pair = `${prefix}${rel.sourceId}->${rel.targetId}`;
@@ -77,8 +127,7 @@ export function createRelationshipIntegrityCollector(
     // Explicit caller/target aggregation has no site span. Existing indexes
     // and emitters with only a start position also remain unverified.
     if (!tail) {
-      if (duplicate) receipt.duplicatesSuppressed++;
-      else receipt.unverifiedEdges++;
+      unverified(rel, duplicate, 'collapsedIdentity');
       return;
     }
     const parts = tail.slice(1).split(':');
@@ -125,8 +174,7 @@ export function createRelationshipIntegrityCollector(
     // Partially mapped coordinates do not describe a range in one buffer.
     // Keep their identity, but never certify their ordering or source bounds.
     if (byteLengths === null) {
-      if (duplicate) receipt.duplicatesSuppressed++;
-      else receipt.unverifiedEdges++;
+      unverified(rel, duplicate, 'partialMapping');
       return;
     }
     if (endLine < line || (endLine === line && endCol < col))
@@ -137,12 +185,26 @@ export function createRelationshipIntegrityCollector(
       endCol > (byteLengths[endLine - 1] ?? 0)
     )
       fail(`source span is outside ${filePath}:${line}:${col}-${endLine}:${endCol}`);
-    if (duplicate) receipt.duplicatesSuppressed++;
-    else if (parts.length === 4 && originalCoordinates) receipt.checkedSites++;
-    else receipt.unverifiedEdges++;
+    if (parts.length !== 4 || !originalCoordinates) {
+      unverified(rel, duplicate, originalCoordinates ? 'pointOnly' : 'extractedCoordinates');
+    } else if (duplicate) receipt.duplicatesSuppressed++;
+    else receipt.checkedSites++;
   };
   return {
     inspect,
+    logSummary: (): void => {
+      if (failure) throw failure;
+      logger.info(
+        {
+          event: 'graph_reference_integrity',
+          repoPath,
+          ...receipt,
+          status: receipt.unverifiedEdges === 0 ? 'verified' : 'unverified',
+          unverifiedByReason: { ...unverifiedByReason },
+        },
+        'Source-reference ingestion checks completed (not a database publication receipt)',
+      );
+    },
     snapshot: (): RelationshipIntegrityReceipt => {
       // A caller may isolate a failed pass. It still cannot publish a clean
       // receipt for a graph whose validator rejected a record.
