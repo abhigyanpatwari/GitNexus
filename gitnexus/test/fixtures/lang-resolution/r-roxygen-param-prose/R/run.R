@@ -1,3 +1,9 @@
+Data <- R6::R6Class("Data",
+  public = list(
+    fit = function() 1
+  )
+)
+
 #' Fit a model.
 #'
 #' @param df Data frame of observations
