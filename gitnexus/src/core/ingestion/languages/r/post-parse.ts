@@ -170,7 +170,9 @@ export const attachDeferredROwners = (
  * Refine R export status based on NAMESPACE files. A file belongs to the package whose
  * `R/` directory contains it (the nearest enclosing discovered package; R loads nothing else
  * into a package namespace), so only `R/` symbols are tested against that package's NAMESPACE:
- * a symbol that package does not export is flipped to `isExported: false`. Files outside every
+ * a symbol that package does not export is flipped to `isExported: false`, unless the NAMESPACE
+ * was not fully read (an unreadable directive) or an `exportPattern()` was dropped or cut short,
+ * in which case no name is proven private and the default is kept. Files outside every
  * package's `R/` (`tests/`, `vignettes/`, `inst/`, scripts, ...) and packages without a
  * NAMESPACE file keep the default public behaviour; a nested package without a NAMESPACE does
  * not inherit its enclosing package's.

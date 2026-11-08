@@ -3,8 +3,8 @@
  * environment is the only place a roxygen type is held, and no graph edge
  * consumes it, so this pins the end-to-end outcome: a function documented
  * `@param df Data frame ...` is not linked to the R6 class `Data`, which is defined in the
- * same file as the documented function, so the local-class guard cannot be what stops it.
- * The type-environment unit tests (type-env-r) pin the anchored-type rule itself.
+ * same file as the documented function. This is an end-to-end control only: it does not fail if
+ * the anchored-type rule is loosened. The type-environment unit tests (type-env-r) pin that rule.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'path';
