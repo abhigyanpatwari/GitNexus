@@ -4,8 +4,8 @@ Short, copy-paste operations for **local development**, **MCP**, and **CI**. Com
 
 ## Prerequisites
 
-- **Node.js** ≥ 20 (`gitnexus-web/package.json` `engines`).  
-- **Git** (analyze requires a git repository).  
+- **Node.js** ≥ 20 (`gitnexus-web/package.json` `engines`).
+- **Git** (analyze requires a git repository).
 - From repo root, install and build the CLI package:
 
 ```bash
@@ -161,6 +161,20 @@ Compare target inclusion and ranking against the default; a broader cutoff also 
 
 ---
 
+## Debugging reference provenance
+
+Analysis emits a structured `graph_reference_integrity` summary to stderr with checked sites, suppressed duplicates, and unverified counts by reason. These describe ingestion checks, not persisted database totals, query completeness, or resolution accuracy. Successful single-repository MCP graph object responses expose the corresponding `graph_integrity` status. Empty and non-tabular Cypher results retain their raw array shape without a receipt. A missing `graph_integrity` field means provenance is unverified.
+
+Run `gitnexus analyze --force` to replace an index with a missing or invalid receipt. This checks the new ingestion; it does not certify historical indexes or measurements. A fresh receipt can still be unverified when emitters lack original-file provenance. Responses that span mismatched database generations also remain unverified.
+
+For examples of unverified identities, enable debug logging:
+
+```bash
+GITNEXUS_LOG_LEVEL=debug npx gitnexus analyze --force 2>gitnexus-debug.log
+```
+
+`graph_reference_unverified` includes at most one example per reason per analysis: opaque IDs, collapsed IDs, point-only sites, extracted coordinates, and partial mappings. `graph_reference_rejected` identifies the invalid relationship, endpoints, source file, emission reason, and stack before the write is rejected. Source buffers are not logged; diagnostic IDs and emission reasons can contain source-derived names or literals. Concurrent edits and unreadable sources remain unverified (`sourceChanged` / `sourceUnavailable`, with the read error code); they do not abort analysis. A rejected record prevents a successful ingestion summary; the previous published index remains available when the failed run used staging.
+
 ## MCP: no repos / empty tools
 
 **Symptom:** `GitNexus: No indexed repos yet` on stderr when starting MCP.
@@ -232,12 +246,12 @@ npx gitnexus cypher "MATCH (n) RETURN count(n) LIMIT 1" --repo MyRepo
 
 Orchestrator: `.github/workflows/ci.yml`.
 
-| Job | Typical local repro |
-|-----|---------------------|
-| **quality** | `cd gitnexus && npx tsc --noEmit` |
-| **unit-tests** | `cd gitnexus && npx vitest run test/unit` |
-| **integration** | `cd gitnexus && npx vitest run test/integration` (see workflow matrix for groups) |
-| **e2e** | Triggered when `gitnexus-web/` changes; `cd gitnexus-web && E2E=1 npx playwright test` (requires `gitnexus serve` + `npm run dev`) |
+| Job             | Typical local repro                                                                                                                |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| **quality**     | `cd gitnexus && npx tsc --noEmit`                                                                                                  |
+| **unit-tests**  | `cd gitnexus && npx vitest run test/unit`                                                                                          |
+| **integration** | `cd gitnexus && npx vitest run test/integration` (see workflow matrix for groups)                                                  |
+| **e2e**         | Triggered when `gitnexus-web/` changes; `cd gitnexus-web && E2E=1 npx playwright test` (requires `gitnexus serve` + `npm run dev`) |
 
 **Note:** Pushes that touch only certain markdown paths may be skipped by `paths-ignore` in CI — see workflow file for exact patterns.
 
@@ -393,6 +407,6 @@ recovery procedure above; never delete a possibly active successor's record.
 
 ## Where to dig deeper
 
-- Architecture overview: [ARCHITECTURE.md](ARCHITECTURE.md)  
-- Agent safety rules: [GUARDRAILS.md](GUARDRAILS.md)  
+- Architecture overview: [ARCHITECTURE.md](ARCHITECTURE.md)
+- Agent safety rules: [GUARDRAILS.md](GUARDRAILS.md)
 - Tests: [TESTING.md](TESTING.md)

@@ -1,17 +1,433 @@
 import { summarizeUnresolvedOverloads } from '../../src/core/ingestion/scope-resolution/unresolved-overloads.js';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
+import * as integrityModule from '../../src/core/graph/relationship-integrity.js';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { runFullAnalysis } from '../../src/core/run-analyze.js';
+import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
+import { resolveAnalysisResourceBudget } from '../../src/core/analysis-resource-budget.js';
+import { loadMeta } from '../../src/storage/repo-manager.js';
 import lbug from '@ladybugdb/core';
 import * as adapter from '../../src/core/lbug/lbug-adapter.js';
 import { executeParameterized } from '../../src/core/lbug/pool-adapter.js';
 import { closeQueryResults } from '../../src/core/lbug/query-result-utils.js';
-import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { LocalBackend, VALID_NODE_LABELS } from '../../src/mcp/local/local-backend.js';
 import { retryRename } from '../../src/storage/fs-atomic.js';
 import { getStoragePaths, registerRepo, saveMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
+import { distWorkerExists } from '../helpers/worker-parse.js';
 
 const REPO = 'query-integrity';
+const itIfWorkerBuilt = distWorkerExists() ? it : it.skip;
+const describeIfWorkerBuilt = distWorkerExists() ? describe : describe.skip;
+
+itIfWorkerBuilt(
+  'retains nested calls sharing a start position when their full source spans differ',
+  async () => {
+    const temp = await createTempDir();
+    try {
+      await fs.writeFile(
+        path.join(temp.dbPath, 'sample.ts'),
+        'export class Service { ping(): Service { return this; } }\n' +
+          'export function caller(service: Service) {\n  service.ping().ping();\n}\n',
+      );
+      const result = await runPipelineFromRepo(temp.dbPath, () => {}, {
+        skipGraphPhases: true,
+        workerPoolSize: 1,
+      });
+      const calls = result.graph.relationships.filter((r) => r.type === 'CALLS');
+      expect(calls).toHaveLength(2);
+      expect(new Set(calls.map((r) => `${r.sourceId}->${r.targetId}`)).size).toBe(1);
+      expect(
+        calls.map((r) => r.id.slice(r.id.lastIndexOf(r.targetId) + r.targetId.length)).sort(),
+      ).toEqual([':3:2:3:16', ':3:2:3:23']);
+      expect(result.relationshipIntegrity).toMatchObject({ unverifiedEdges: 0 });
+    } finally {
+      await temp.cleanup();
+    }
+  },
+);
+
+describeIfWorkerBuilt.each([false, true])(
+  'source-site integrity across indexing (streaming=%s)',
+  (streamGraphEmit) => {
+    it('preserves source sites, replaces receipts, and never accumulates edges on warm/repeated runs', async () => {
+      const temp = await createTempDir();
+      vi.stubEnv('GITNEXUS_HOME', path.join(temp.dbPath, 'home'));
+      vi.stubEnv('GITNEXUS_STORAGE_PATH', path.join(temp.dbPath, '.gitnexus'));
+      vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
+      let backend: LocalBackend | undefined;
+      const git = (...args: string[]) =>
+        execFileSync('git', args, { cwd: temp.dbPath, stdio: 'pipe' });
+      const writeSource = async (count: number) => {
+        await fs.writeFile(
+          path.join(temp.dbPath, 'sample.ts'),
+          [
+            'export class Service { ping() { return 1; } }',
+            'export function caller(service: Service) {',
+            `  ${Array.from({ length: count }, () => 'service.ping();').join(' ')}`,
+            '}',
+            '',
+          ].join('\n'),
+        );
+        git('add', 'sample.ts');
+        git(
+          '-c',
+          'user.name=test',
+          '-c',
+          'user.email=t@t',
+          '-c',
+          'commit.gpgsign=false',
+          'commit',
+          '-qm',
+          `calls ${count}`,
+        );
+      };
+      const options = {
+        skipAgentsMd: true,
+        skipSkills: true,
+        skipFts: true,
+        streamGraphEmit,
+        resources: resolveAnalysisResourceBudget({
+          effectiveMemoryBytes: 4 * 1024 ** 3,
+          availableCpus: 2,
+          totalMb: 2048,
+          workers: 1,
+          graphPoolBytes: 128 * 1024 ** 2,
+          modelMemoryMb: 0,
+        }),
+      };
+      const inspect = async (count: number) => {
+        const meta = await loadMeta(getStoragePaths(temp.dbPath).storagePath);
+        expect(meta?.relationshipIntegrity?.checkedSites).toBeGreaterThanOrEqual(count);
+        await registerRepo(temp.dbPath, meta!, { name: REPO });
+        backend = new LocalBackend();
+        await backend.init();
+        const refs = await backend.callTool('cypher', {
+          repo: temp.dbPath,
+          statement:
+            "MATCH (a:Function {name: 'caller'})-[r:CodeRelation {type: 'CALLS'}]->(b:Method {name: 'ping'}) RETURN r",
+        });
+        expect(refs.row_count).toBe(count);
+        expect(refs.graph_integrity).toMatchObject({
+          checkedSites: meta!.relationshipIntegrity!.checkedSites,
+        });
+        const context = await backend.callTool('context', {
+          repo: temp.dbPath,
+          name: 'ping',
+          file_path: 'sample.ts',
+        });
+        expect(context.incoming.calls).toHaveLength(1);
+        expect(context.graph_integrity).toMatchObject({
+          scope: 'source-reference-ingestion',
+          checkedSites: meta!.relationshipIntegrity!.checkedSites,
+        });
+        const query = await backend.callTool('query', {
+          repo: temp.dbPath,
+          search_query: 'ping',
+        });
+        expect(query.error).toBeUndefined();
+        expect(query.graph_integrity).toEqual(context.graph_integrity);
+        const impact = await backend.callTool('impact', {
+          repo: temp.dbPath,
+          target: 'ping',
+          direction: 'upstream',
+        });
+        expect(impact.error).toBeUndefined();
+        expect(impact.target.name).toBe('ping');
+        expect(impact.graph_integrity).toEqual(context.graph_integrity);
+        await backend.dispose();
+        backend = undefined;
+        return meta!.relationshipIntegrity;
+      };
+      try {
+        git('init', '-q');
+        await fs.appendFile(
+          path.join(temp.dbPath, '.git', 'info', 'exclude'),
+          '\nhome/\n.gitnexus/\n',
+        );
+        await writeSource(2);
+        const cold = await runFullAnalysis(
+          temp.dbPath,
+          { ...options, force: streamGraphEmit },
+          { onProgress() {} },
+        );
+        expect(cold.pipelineResult?.reparsedFileCount).toBeGreaterThan(0);
+        expect(Boolean(cold.pipelineResult?.graphEmitManifest)).toBe(streamGraphEmit);
+        const firstReceipt = await inspect(2);
+        // Inject an impossible emitted identity, independent of working-tree edits.
+        const createCollector = integrityModule.createRelationshipIntegrityCollector;
+        const brokenSource = vi
+          .spyOn(integrityModule, 'createRelationshipIntegrityCollector')
+          .mockImplementation((...args) => {
+            const collector = createCollector(...args);
+            return {
+              ...collector,
+              inspect: (rel, duplicate, conflict) =>
+                collector.inspect(
+                  rel.type === 'CALLS' ? { ...rel, id: 'rel:CALLS:wrong->endpoints:1:0:1:1' } : rel,
+                  duplicate,
+                  conflict,
+                ),
+            };
+          });
+        try {
+          await expect(
+            runFullAnalysis(temp.dbPath, { ...options, force: true }, { onProgress() {} }),
+          ).rejects.toThrow(/Invalid graph reference/);
+        } finally {
+          brokenSource.mockRestore();
+        }
+        expect(await inspect(2)).toEqual(firstReceipt);
+        const warm = await runFullAnalysis(
+          temp.dbPath,
+          { ...options, force: true },
+          { onProgress() {} },
+        );
+        expect(warm.pipelineResult?.parseCacheHitFileCount).toBeGreaterThan(0);
+        expect(warm.pipelineResult?.reparsedFileCount).toBe(0);
+        expect(await inspect(2)).toEqual(firstReceipt);
+        await writeSource(3);
+        const changed = await runFullAnalysis(
+          temp.dbPath,
+          { ...options, force: streamGraphEmit },
+          { onProgress() {} },
+        );
+        expect(Boolean(changed.pipelineResult?.graphEmitManifest)).toBe(streamGraphEmit);
+        const changedReceipt = await inspect(3);
+        expect(changedReceipt!.checkedSites).toBeGreaterThan(firstReceipt!.checkedSites);
+        const unchanged = await runFullAnalysis(temp.dbPath, options, { onProgress() {} });
+        expect(unchanged.alreadyUpToDate).toBe(true);
+        expect(await inspect(3)).toEqual(changedReceipt);
+      } finally {
+        await backend?.dispose();
+        await adapter.closeLbug();
+        vi.unstubAllEnvs();
+        await temp.cleanup();
+      }
+    }, 300_000);
+  },
+);
+
+describe('context distinct reference windows (#3500)', () => {
+  let temp: Awaited<ReturnType<typeof createTempDir>>;
+  let backend: LocalBackend;
+  const focus = 'Function:src/focus.ts:focus';
+  const first = 'Function:src/a.ts:first';
+  const last = 'Function:src/z.ts:last';
+  const bounded = 'Function:src/bounded.ts:bounded';
+  const neighbors = Array.from({ length: 35 }, (_, i) => `neighbor${String(i).padStart(2, '0')}`);
+  const classes = [
+    ['ConstructorTarget', 'Constructor', 'CALLS'],
+    ['FileTarget', 'File', 'IMPORTS'],
+    ['PropertyTarget', 'Property', 'ACCESSES'],
+  ] as const;
+
+  beforeAll(async () => {
+    temp = await createTempDir();
+    vi.stubEnv('GITNEXUS_HOME', path.join(temp.dbPath, 'home'));
+    vi.stubEnv('GITNEXUS_STORAGE_PATH', path.join(temp.dbPath, 'index'));
+    vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
+    const paths = getStoragePaths(temp.dbPath);
+    await adapter.initLbug(paths.lbugPath);
+    try {
+      for (const [id, name] of [
+        [focus, 'focus'],
+        [first, 'first'],
+        [last, 'last'],
+      ]) {
+        await adapter.executeQuery(
+          `CREATE (:Function {id: '${id}', name: '${name}', filePath: '${id.split(':')[1]}', startLine: 1, endLine: 3})`,
+        );
+      }
+      // More than one page of call sites to the same neighbor must consume
+      // only one reference slot. Both directions and advice have their own windows.
+      for (const type of ['CALLS', 'ADVISED_BY']) {
+        for (const [source, target, count] of [
+          [first, focus, 35],
+          [last, focus, 1],
+          [focus, first, 35],
+          [focus, last, 1],
+        ]) {
+          await adapter.executeQuery(
+            `MATCH (a:Function {id: '${source}'}), (b:Function {id: '${target}'})
+             UNWIND range(1, ${count}) AS site
+             CREATE (a)-[:CodeRelation {type: '${type}', confidence: 1.0, step: site}]->(b)`,
+          );
+        }
+      }
+      for (const [source, target] of [
+        [first, focus],
+        [focus, first],
+      ]) {
+        await adapter.executeQuery(
+          `MATCH (a:Function {id: '${source}'}), (b:Function {id: '${target}'})
+           CREATE (a)-[:CodeRelation {type: 'ACCESSES', confidence: 1.0}]->(b)`,
+        );
+      }
+      for (const name of ['bounded', ...neighbors]) {
+        await adapter.executeQuery(
+          `CREATE (:Function {id: 'Function:src/bounded.ts:${name}', name: '${name}', filePath: 'src/bounded.ts', startLine: 1, endLine: 3})`,
+        );
+      }
+      for (const type of ['CALLS', 'ADVISED_BY']) {
+        await adapter.executeQuery(
+          `MATCH (a:Function {id: '${bounded}'}), (b:Function)
+           WHERE b.id STARTS WITH 'Function:src/bounded.ts:neighbor'
+           UNWIND range(1, 2) AS site
+           CREATE (a)-[:CodeRelation {type: '${type}', confidence: 1.0, step: site}]->(b),
+                  (b)-[:CodeRelation {type: '${type}', confidence: 1.0, step: site}]->(a)`,
+        );
+      }
+      for (const [name, label, type] of classes) {
+        await adapter.executeQuery(
+          `CREATE (:Class {id: 'Class:src/types.ts:${name}', name: '${name}', filePath: 'src/types.ts', startLine: 1, endLine: 3})`,
+        );
+        await adapter.executeQuery(
+          `CREATE (:\`${label}\` {id: '${label}:src/types.ts${label === 'File' ? '' : `:${name}`}', name: '${name}', filePath: 'src/types.ts'${label === 'Property' ? `, declaredType: '${name}'` : ''}})`,
+        );
+        if (label !== 'Property') {
+          await adapter.executeQuery(
+            `MATCH (c:Class {name: '${name}'}), (n:\`${label}\` {name: '${name}'})
+             CREATE ${label === 'File' ? "(n)-[:CodeRelation {type: 'DEFINES'}]->(c)" : "(c)-[:CodeRelation {type: 'HAS_METHOD'}]->(n)"}`,
+          );
+        }
+        for (const [caller, count] of [
+          [first, 35],
+          [last, 1],
+        ]) {
+          await adapter.executeQuery(
+            `MATCH (a:Function {id: '${caller}'}), (b:\`${label}\` {name: '${name}'})
+             UNWIND range(1, ${count}) AS site
+             CREATE (a)-[:CodeRelation {type: '${type}', confidence: 1.0, step: site}]->(b)`,
+          );
+        }
+      }
+      await adapter.flushWAL();
+    } finally {
+      await adapter.closeLbug();
+    }
+    const meta = {
+      repoPath: temp.dbPath,
+      storagePath: paths.storagePath,
+      lastCommit: 'distinct-reference-fixture',
+      indexedAt: new Date().toISOString(),
+      scopeExtractionReceipt: 1 as const,
+      stats: { files: 5, nodes: 45, processes: 0, communities: 0 },
+    };
+    await saveMeta(paths.storagePath, meta);
+    await registerRepo(temp.dbPath, meta, { name: REPO });
+    backend = new LocalBackend();
+    expect(await backend.init()).toBe(true);
+  });
+
+  afterAll(async () => {
+    try {
+      await backend?.dispose();
+    } finally {
+      await adapter.closeLbug();
+      vi.unstubAllEnvs();
+      await temp?.cleanup();
+    }
+  });
+
+  it.each(['incoming', 'outgoing'] as const)(
+    'keeps distinct %s references before the row limit without merging relation types',
+    async (direction) => {
+      const result = await backend.callTool('context', { repo: REPO, uid: focus });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe('found');
+      expect(result.graph_integrity).toMatchObject({ status: 'unverified' });
+      const refs = result[direction];
+      expect(refs.calls.map((ref: ContextRef) => ref.uid)).toEqual([first, last]);
+      expect(refs.accesses.map((ref: ContextRef) => ref.uid)).toEqual([first]);
+    },
+  );
+
+  it.each(['incoming', 'outgoing'] as const)(
+    'keeps distinct %s advice references',
+    async (direction) => {
+      const result = await backend.callTool('context', { repo: REPO, uid: focus });
+      expect(result.error).toBeUndefined();
+      expect(result[direction].advised_by.map((ref: ContextRef) => ref.uid)).toEqual([first, last]);
+    },
+  );
+
+  it.each(classes)('keeps distinct callers through the %s bridge', async (name, _label, type) => {
+    const result = await backend.callTool('context', {
+      repo: REPO,
+      uid: `Class:src/types.ts:${name}`,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe('found');
+    expect(result.incoming[type.toLowerCase()].map((ref: ContextRef) => ref.uid)).toEqual([
+      first,
+      last,
+    ]);
+  });
+
+  it.each(['incoming', 'outgoing'] as const)(
+    'still caps each %s reference window at 30 distinct entries in UID order',
+    async (direction) => {
+      const result = await backend.callTool('context', { repo: REPO, uid: bounded });
+      expect(result.error).toBeUndefined();
+      const expected = neighbors.slice(0, 30).map((name) => `Function:src/bounded.ts:${name}`);
+      expect(result[direction].calls.map((ref: ContextRef) => ref.uid)).toEqual(expected);
+      expect(result[direction].advised_by.map((ref: ContextRef) => ref.uid)).toEqual(expected);
+    },
+  );
+});
+
+it('keeps native context references when the resolved label is unavailable', async () => {
+  const temp = await createTempDir();
+  vi.stubEnv('GITNEXUS_HOME', path.join(temp.dbPath, 'home'));
+  vi.stubEnv('GITNEXUS_STORAGE_PATH', path.join(temp.dbPath, 'index'));
+  vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
+  const paths = getStoragePaths(temp.dbPath);
+  const target = 'Property:src/unknown.ts:target';
+  const caller = 'Function:src/a.ts:caller';
+  let backend: LocalBackend | undefined;
+  try {
+    await adapter.initLbug(paths.lbugPath);
+    await adapter.executeQuery(
+      `CREATE (:Property {id: '${target}', name: 'target', filePath: 'src/unknown.ts'})`,
+    );
+    await adapter.executeQuery(
+      `CREATE (:Function {id: '${caller}', name: 'caller', filePath: 'src/a.ts'})`,
+    );
+    await adapter.executeQuery(
+      `MATCH (a:Function {id: '${caller}'}), (b:Property {id: '${target}'})
+       UNWIND range(1, 35) AS site
+       CREATE (a)-[:CodeRelation {type: 'CALLS', step: site}]->(b),
+              (b)-[:CodeRelation {type: 'CALLS', step: site}]->(a)`,
+    );
+    await adapter.flushWAL();
+    await adapter.closeLbug();
+    const meta = {
+      repoPath: temp.dbPath,
+      storagePath: paths.storagePath,
+      lastCommit: 'unknown-label-fixture',
+      indexedAt: new Date().toISOString(),
+      scopeExtractionReceipt: 1 as const,
+      stats: { files: 2, nodes: 2, processes: 0, communities: 0 },
+    };
+    await saveMeta(paths.storagePath, meta);
+    await registerRepo(temp.dbPath, meta, { name: REPO });
+    backend = new LocalBackend();
+    expect(await backend.init()).toBe(true);
+    const result = await backend.callTool('context', { repo: REPO, uid: target });
+    expect(result.error).toBeUndefined();
+    expect(VALID_NODE_LABELS.has(result.symbol.kind)).toBe(false);
+    expect(result.incoming.calls.map((ref: ContextRef) => ref.uid)).toEqual([caller]);
+    expect(result.outgoing.calls.map((ref: ContextRef) => ref.uid)).toEqual([caller]);
+  } finally {
+    await backend?.dispose();
+    await adapter.closeLbug();
+    vi.unstubAllEnvs();
+    await temp.cleanup();
+  }
+});
 
 describe.each(['current', 'without staticGated'] as const)('native impact schema: %s', (schema) => {
   let temp: Awaited<ReturnType<typeof createTempDir>>;

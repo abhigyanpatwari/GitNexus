@@ -7,6 +7,7 @@
  */
 
 import { resolveGraphPath } from '../../storage/shared-store.js';
+import { relationshipIntegrityForCaller } from '../../core/graph/relationship-integrity.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
@@ -932,6 +933,7 @@ export interface EpistemicCauses {
 }
 
 type EpistemicBoundary = {
+  graph_integrity?: ReturnType<typeof relationshipIntegrityForCaller>;
   epistemic: 'exact' | 'lower-bound';
   boundaries?: string[];
   causes?: EpistemicCauses;
@@ -3089,13 +3091,33 @@ export class LocalBackend {
    * error-returning call pays nothing.
    *
    * #3291: the ref comes straight off the already-resolved handle, so naming
-   * the index costs no extra I/O — no git spawn, no metadata read, and the
-   * `stalenessForTool` TTL cache is untouched. `branch` is passed through as-is
+   * the index ref costs no extra I/O. Graph results also read ingestion
+   * metadata below; the `stalenessForTool` TTL cache is untouched. `branch` is passed through as-is
    * and is legitimately absent for a detached HEAD or a legacy index; the
    * always-present `lastCommit` is what identifies the index in that case.
    */
-  private async withToolStaleness(repo: RepoHandle, result: unknown): Promise<unknown> {
+  private async withToolStaleness(
+    repo: RepoHandle,
+    result: unknown,
+    graphResult = false,
+  ): Promise<unknown> {
     if (!canCarryStaleness(result)) return result;
+    // Install the TTL entry before metadata I/O can yield to another call.
+    const stalenessPromise = repo.generationUnknown
+      ? Promise.resolve(undefined)
+      : this.stalenessForTool(repo).catch(() => undefined);
+    // This envelope covers query/cypher too; context/impact also carry it for
+    // direct backend callers. Read failure or a mixed generation is unknown.
+    let integrityMeta: Awaited<ReturnType<typeof loadMeta>> | undefined;
+    let metadataUnreadable = false;
+    try {
+      if (graphResult) {
+        integrityMeta = (await this.readToolMetadata(repo)) ?? undefined;
+        metadataUnreadable = integrityMeta === undefined;
+      }
+    } catch {
+      metadataUnreadable = true;
+    }
     // Defensive: `checkStalenessAsync` self-catches today, but a rejection here
     // must never fail the tool — degrade to no-staleness. Paired with the
     // evict-on-reject in `stalenessForTool`, a transient failure also can't
@@ -3109,7 +3131,12 @@ export class LocalBackend {
       dbIdentityChanged(repo.poolIdentity, getLbugDbIdentity(repo.lbugPath));
     if (repo.generationUnknown || changedDuringTool) {
       return attachToolStaleness(
-        result,
+        graphResult
+          ? {
+              ...result,
+              graph_integrity: relationshipIntegrityForCaller(undefined, 'generation-changed'),
+            }
+          : result,
         { status: 'unknown', isStale: false, commitsBehind: 0 },
         {
           lastCommit: '',
@@ -3117,12 +3144,24 @@ export class LocalBackend {
         },
       );
     }
-    const staleness = await this.stalenessForTool(repo).catch(() => undefined);
-    return attachToolStaleness(result, staleness, {
-      branch: repo.branch,
-      lastCommit: repo.lastCommit,
-      indexedAt: repo.indexedAt,
-    });
+    const staleness = await stalenessPromise;
+    return attachToolStaleness(
+      graphResult
+        ? {
+            ...result,
+            graph_integrity: relationshipIntegrityForCaller(
+              integrityMeta?.relationshipIntegrity,
+              metadataUnreadable ? 'metadata-unreadable' : undefined,
+            ),
+          }
+        : result,
+      staleness,
+      {
+        branch: repo.branch,
+        lastCommit: repo.lastCommit,
+        indexedAt: repo.indexedAt,
+      },
+    );
   }
 
   /**
@@ -3238,19 +3277,23 @@ export class LocalBackend {
 
     switch (method) {
       case 'query':
-        return this.withToolStaleness(repo, await this.query(repo, p));
+        return this.withToolStaleness(repo, await this.query(repo, p), true);
       case 'cypher': {
         const raw = await this.cypher(repo, p);
-        return this.withToolStaleness(repo, this.formatCypherAsMarkdown(raw));
+        return this.withToolStaleness(repo, this.formatCypherAsMarkdown(raw), true);
       }
       case 'context':
-        return this.withToolStaleness(repo, await this.context(repo, p));
+        return this.withToolStaleness(repo, await this.context(repo, p), true);
       case 'explain':
         return this.explain(repo, p);
       case 'pdg_query':
         return this.pdgQuery(repo, p);
       case 'impact':
-        return this.withToolStaleness(repo, await this.impact(repo, p as unknown as ImpactParams));
+        return this.withToolStaleness(
+          repo,
+          await this.impact(repo, p as unknown as ImpactParams),
+          true,
+        );
       case 'detect_changes':
         return this.detectChanges(repo, p);
       case 'check':
@@ -5645,8 +5688,18 @@ export class LocalBackend {
     const sym = outcome.symbol;
     const resolvedLabel = outcome.resolvedLabel;
     const symId = sym.id;
+    // A known label lets LadybugDB anchor the traversal on one primary-key
+    // index instead of scanning every node table. Labels can be absent on
+    // legacy indexes, so retain the unlabeled query in that case.
+    const referenceLabel = resolvedLabel || sym.type;
+    const referenceAnchor = VALID_NODE_LABELS.has(referenceLabel)
+      ? `(n:\`${referenceLabel}\` {id: $symId})`
+      : '(n {id: $symId})';
 
     // Categorized incoming refs.
+    // Collapse repeated call sites in each query before LIMIT: the response
+    // lists symbol references, and duplicates must not crowd out other symbols.
+    // Keep relType in the projection so CALLS and ACCESSES remain distinct.
     //
     // ORDER BY uid, relType — the CATEGORY column must NOT lead (#2787 review
     // F1). With `relType` first the 30-row window fills in alphabetical
@@ -5662,10 +5715,10 @@ export class LocalBackend {
       executeParameterized(
         repo.lbugPath,
         `
-      MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
+      MATCH (caller)-[r:CodeRelation]->${referenceAnchor}
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'USES', 'DECLARES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
         AND (r.type <> 'MEMBER_OF' OR labels(n) <> 'Community')
-      RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+      RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       ORDER BY uid, relType
       LIMIT 30
     `,
@@ -5680,8 +5733,8 @@ export class LocalBackend {
       executeParameterized(
         repo.lbugPath,
         `
-      MATCH (caller)-[r:CodeRelation {type: 'ADVISED_BY'}]->(n {id: $symId})
-      RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+      MATCH (caller)-[r:CodeRelation {type: 'ADVISED_BY'}]->${referenceAnchor}
+      RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       ORDER BY uid
       LIMIT 30
     `,
@@ -5733,11 +5786,11 @@ export class LocalBackend {
             executeParameterized(
               repo.lbugPath,
               `
-            MATCH (n)-[hm:CodeRelation]->(ctor:Constructor)
-            WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
+            MATCH ${referenceAnchor}-[hm:CodeRelation]->(ctor:Constructor)
+            WHERE hm.type = 'HAS_METHOD'
             MATCH (caller)-[r:CodeRelation]->(ctor)
             WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'ACCESSES']
-            RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+            RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             ORDER BY uid, relType
             LIMIT 30
           `,
@@ -5746,11 +5799,11 @@ export class LocalBackend {
             executeParameterized(
               repo.lbugPath,
               `
-            MATCH (f:File)-[rel:CodeRelation]->(n)
-            WHERE n.id = $symId AND rel.type = 'DEFINES'
+            MATCH (f:File)-[rel:CodeRelation]->${referenceAnchor}
+            WHERE rel.type = 'DEFINES'
             MATCH (caller)-[r:CodeRelation]->(f)
             WHERE r.type IN ['CALLS', 'IMPORTS']
-            RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+            RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             ORDER BY uid, relType
             LIMIT 30
           `,
@@ -5765,7 +5818,7 @@ export class LocalBackend {
                OR p.declaredType CONTAINS $genericArg
             MATCH (caller)-[r:CodeRelation]->(p)
             WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'ACCESSES']
-            RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+            RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             ORDER BY uid, relType
             LIMIT 30
           `,
@@ -5831,10 +5884,10 @@ export class LocalBackend {
       executeParameterized(
         repo.lbugPath,
         `
-      MATCH (n {id: $symId})-[r:CodeRelation]->(target)
+      MATCH ${referenceAnchor}-[r:CodeRelation]->(target)
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'USES', 'DECLARES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
         AND (r.type <> 'MEMBER_OF' OR labels(target) <> 'Community')
-      RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
+      RETURN DISTINCT r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       ORDER BY uid, relType
       LIMIT 30
     `,
@@ -5843,8 +5896,8 @@ export class LocalBackend {
       executeParameterized(
         repo.lbugPath,
         `
-      MATCH (n {id: $symId})-[r:CodeRelation {type: 'ADVISED_BY'}]->(target)
-      RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
+      MATCH ${referenceAnchor}-[r:CodeRelation {type: 'ADVISED_BY'}]->(target)
+      RETURN DISTINCT r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       ORDER BY uid
       LIMIT 30
     `,
@@ -8558,7 +8611,11 @@ export class LocalBackend {
       scopeExtraction: scopeExtractionDrops.files,
       callableValueReferences: valueRefDrops.referrers,
     };
-    const baseEpistemic = { ...epistemicFrom(droppedBoundaries), ...crossLanguageAnchor };
+    const baseEpistemic = {
+      ...epistemicFrom(droppedBoundaries),
+      ...crossLanguageAnchor,
+      graph_integrity: relationshipIntegrityForCaller(meta?.relationshipIntegrity),
+    };
     try {
       // Discover the interface / abstract supertypes on the target's boundary.
       // If the target is itself an interface, it is its own boundary node.
