@@ -81,7 +81,14 @@ export function getNextStepHint(
   const repoPath = repo || '{name}';
 
   if ((toolName === 'query' || toolName === 'search') && Array.isArray(repo)) {
-    const hint = `Use context({uid: "<id>", repo: "<row._repo>"}) for a symbol's references and processes.${args?.include_content === true ? ' Source previews marked content_truncated are incomplete; use context({uid: "<id>", repo: "<row._repo>", include_content: true}) or read_file with a bounded line range for more.' : ''}`;
+    const failed =
+      toolResult !== null &&
+      typeof toolResult === 'object' &&
+      'error' in toolResult &&
+      toolResult.error !== undefined;
+    const hint = failed
+      ? 'Resolve the reported error before retrying this search.'
+      : `For a returned symbol, use context({uid: "<id>", repo: "<row._repo>"}) to inspect its references and processes.${args?.include_content === true ? ' Source previews marked content_truncated are incomplete; use context({uid: "<id>", repo: "<row._repo>", include_content: true}) or read_file with a bounded line range for more.' : ''}`;
     return toolName === 'search' ? `\n\n---\n**Next:** ${hint}` : hint;
   }
 

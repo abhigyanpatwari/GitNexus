@@ -234,6 +234,51 @@ describe('array query routing', () => {
 
 describe('MCP array query policy and wire contract', () => {
   it.each([
+    { tool: 'context', repo: [] },
+    { tool: 'context', repo: ['@group'] },
+    { tool: 'list_repos', repo: ['alpha'] },
+  ])('rejects repository arrays for $tool before policy selection', async ({ tool, repo }) => {
+    const h = harness();
+    const policy = await createMcpRepositoryPolicy(h.backend, {
+      GITNEXUS_MCP_ALLOWED_REPOS: 'alpha,beta',
+    });
+    const dispatch = vi.spyOn(h.backend, 'callTool');
+    await expect(policy.scopeBackend(h.backend).callTool(tool, { repo })).rejects.toThrow(
+      'Repository arrays are supported only by query (and legacy search).',
+    );
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(h.selection).not.toHaveBeenCalled();
+  });
+
+  it.each(['query', 'search'])(
+    'gives %s error recovery guidance without a result-row follow-up',
+    async (name) => {
+      const h = harness();
+      const server = createMCPServer(h.backend);
+      const client = new Client({ name: 'multi-repo-error-hint-test', version: '1' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      try {
+        await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+        const response = await client.callTool({
+          name,
+          arguments: { repo: [], search_query: 'auth' },
+        });
+        const text = (response.content as { text: string }[])[0]!.text;
+        const [body, legacyHint] = text.split('\n\n---\n**Next:** ');
+        const result = JSON.parse(body!);
+        expect(result.error).toContain('query.repo');
+        expect(name === 'query' ? result.next : legacyHint).toMatch(/error.*retry/i);
+        expect(text).not.toContain('context(');
+        expect(text).not.toContain('<row._repo>');
+        expect(h.query).not.toHaveBeenCalled();
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    },
+  );
+
+  it.each([
     ['query', false],
     ['query', true],
     ['search', false],

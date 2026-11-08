@@ -268,6 +268,9 @@ export class McpRepositoryPolicy {
     params: Record<string, unknown> | undefined,
     ...context: [McpToolCallContext?]
   ): Promise<unknown> {
+    if (Array.isArray(params?.repo) && method !== 'query' && method !== 'search') {
+      throw new Error('Repository arrays are supported only by query (and legacy search).');
+    }
     if (!this.configured) return backend.callTool(method, params, ...context);
     if (method === 'list_repos') return this.listReposPage(backend, params);
     if (this.restricted && method.startsWith('group_')) {

@@ -147,7 +147,7 @@ export function mergeRepositoryQueries(
       let content = preview.content.slice(0, budget);
       // A preview boundary must not split a UTF-16 surrogate pair.
       if (/[\uD800-\uDBFF]$/u.test(content)) content = content.slice(0, -1);
-      row.content = content;
+      if (content.length > 0) row.content = content;
       if (preview.truncated || content.length < preview.content.length)
         row.content_truncated = true;
     }

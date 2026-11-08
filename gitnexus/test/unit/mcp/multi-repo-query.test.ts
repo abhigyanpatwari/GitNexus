@@ -146,6 +146,29 @@ describe('multi-repository query merge', () => {
       expect(String(row.content)).not.toMatch(/[\uD800-\uDBFF]$/u);
     }
   });
+  it.each([160, 200])(
+    'omits empty previews at the content-budget boundary (%i symbols per process)',
+    (count) => {
+      const result = merged(
+        [
+          member('/large', {
+            processes: Array.from({ length: 100 }, (_, i) => ({ id: `p${i}` })),
+            process_symbols: Array.from({ length: 100 * count }, (_, i) => ({
+              id: `s${i}`,
+              process_id: `p${Math.floor(i / count)}`,
+              content: '😀',
+            })),
+            definitions: [],
+          }),
+        ],
+        { limit: 100, maxSymbols: count },
+      );
+      expect(result.process_symbols).toHaveLength(100 * count);
+      expect(result.process_symbols.some((row) => Object.hasOwn(row, 'content'))).toBe(false);
+      expect(result.process_symbols.every((row) => row.content_truncated === true)).toBe(true);
+    },
+  );
+
   it('does not invent unavailable source and strips previews when not requested', () => {
     const a = member('/a');
     const b = member('/b', {
