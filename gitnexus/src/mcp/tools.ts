@@ -172,7 +172,7 @@ specify the "repo" parameter explicitly.`,
   {
     name: 'query',
     description: `Find execution flows for a concept.
-Returns ranked processes and process_symbols. Join processes[].id to process_symbols[].process_id.
+Join processes[].id to process_symbols[].process_id; in array mode also match _repo.
 
 WHEN TO USE: Find flows and relationships; complements grep/IDE search.
 AFTER THIS: Use context() for a symbol's callers, callees and categorized refs. With include_content, context() also returns that symbol's source.
