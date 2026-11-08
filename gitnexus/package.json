@@ -156,6 +156,9 @@
     "vitest-shard-balancer": "0.1.0"
   },
   "overrides": {
+    "@stryker-mutator/core": {
+      "minimatch": "^11.0.1"
+    },
     "adm-zip": ">=0.6.0",
     "sharp": ">=0.35.0",
     "tree-sitter": "0.25.1"
