@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Parser from 'tree-sitter';
+import TypeScript from 'tree-sitter-typescript';
 import type { GraphRelationship } from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import {
@@ -96,6 +98,47 @@ describe.each(['memory', 'streaming'] as const)('ingestion relationship integrit
       close();
     }
   });
+
+  it.each(['readX2', 'writeX2', 'reader2', 'writer2'])(
+    'rejects malformed access kind %s before recording it',
+    (kind) => {
+      const { writer, collector, close } = fixture();
+      try {
+        writer.addRelationship(edge(2, 16, 'read'));
+        const invalid = {
+          ...edge(2, 16, 'read'),
+          id: `rel:ACCESSES:${sourceId}->${targetId}:${kind}:2:2:16`,
+        };
+        expect(() => writer.addRelationship(invalid)).toThrow(/read\/write kind/);
+        expect(writer.relationshipCount).toBe(1);
+        expect(() => collector.snapshot()).toThrow(/read\/write kind/);
+      } finally {
+        close();
+      }
+    },
+  );
+
+  it.each(['\u00e9()', '"\ud83d\ude00"; \u00e9()'])(
+    'uses parser column units for non-ASCII source %s',
+    (source) => {
+      fs.writeFileSync(path.join(root, 'sample.ts'), `\n${source}`);
+      const parser = new Parser();
+      parser.setLanguage(TypeScript.typescript);
+      const call = parser.parse(`\n${source}`).rootNode.lastNamedChild!.firstNamedChild!;
+      expect(call.type).toBe('call_expression');
+      expect(call.endPosition.column).toBe(source.length);
+      const { writer, collector, close } = fixture();
+      try {
+        writer.addRelationship(edge(call.startPosition.column, call.endPosition.column));
+        expect(collector.snapshot()).toMatchObject({ checkedSites: 1, unverifiedEdges: 0 });
+        expect(() => writer.addRelationship(edge(0, source.length + 1))).toThrow(/outside/);
+        expect(writer.relationshipCount).toBe(1);
+        expect(() => collector.snapshot()).toThrow(/outside/);
+      } finally {
+        close();
+      }
+    },
+  );
 
   it('summarizes counts and bounds debug examples instead of logging every unknown edge', () => {
     const { writer, collector, close } = fixture();

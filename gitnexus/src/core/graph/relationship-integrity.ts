@@ -65,10 +65,10 @@ export function createRelationshipIntegrityCollector(
       );
   };
   // Emission is normally grouped by source file. Keep only bounded line-size
-  // metadata, and compute UTF-8 lengths once even for long/minified lines.
+  // metadata in node-tree-sitter's UTF-16 column units.
   const sourceLines = new Map<
     string,
-    { byteLengths: number[] | null; originalCoordinates: boolean }
+    { columnLengths: number[] | null; originalCoordinates: boolean }
   >();
   const root = path.resolve(repoPath);
   let failure: Error | undefined;
@@ -124,7 +124,7 @@ export function createRelationshipIntegrityCollector(
     }
     let tail = rel.id.slice(pair.length);
     if (rel.type === 'ACCESSES') {
-      const access = /^:(read|write)/.exec(tail);
+      const access = /^:(read|write)(?=:|$)/.exec(tail);
       if (access) tail = tail.slice(access[0].length);
       else if (tail) fail('source access identity is missing its read/write kind');
     }
@@ -162,10 +162,8 @@ export function createRelationshipIntegrityCollector(
         const text = fs.readFileSync(fullPath, 'utf8');
         const extracted = referenceSourceText?.(filePath!, text);
         sourceBuffer = {
-          byteLengths:
-            extracted === null
-              ? null
-              : (extracted ?? text).split('\n').map((line) => Buffer.byteLength(line, 'utf8')),
+          columnLengths:
+            extracted === null ? null : (extracted ?? text).split('\n').map((line) => line.length),
           originalCoordinates: extracted === undefined,
         };
       } catch {
@@ -174,21 +172,21 @@ export function createRelationshipIntegrityCollector(
       if (sourceLines.size >= 4) sourceLines.delete(sourceLines.keys().next().value!);
       sourceLines.set(fullPath, sourceBuffer!);
     }
-    const { byteLengths, originalCoordinates } = sourceBuffer!;
+    const { columnLengths, originalCoordinates } = sourceBuffer!;
     // Notebook line mapping preserves line order, even when several extracted
     // lines map to one JSON line and their columns cannot be compared.
     if (endLine < line) fail('invalid source coordinate ordering');
     // Partially mapped coordinates do not describe a range in one buffer.
     // Keep their identity, but never certify their columns or source bounds.
-    if (byteLengths === null) {
+    if (columnLengths === null) {
       unverified(rel, duplicate, 'partialMapping');
       return;
     }
     if (endLine === line && endCol < col) fail('invalid source coordinate ordering');
     if (
-      endLine > byteLengths.length ||
-      col > (byteLengths[line - 1] ?? 0) ||
-      endCol > (byteLengths[endLine - 1] ?? 0)
+      endLine > columnLengths.length ||
+      col > (columnLengths[line - 1] ?? 0) ||
+      endCol > (columnLengths[endLine - 1] ?? 0)
     )
       fail(`source span is outside ${filePath}:${line}:${col}-${endLine}:${endCol}`);
     if (parts.length !== 4 || !originalCoordinates) {
