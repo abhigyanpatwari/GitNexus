@@ -5558,6 +5558,9 @@ export class LocalBackend {
     const symId = sym.id;
 
     // Categorized incoming refs.
+    // Collapse repeated call sites in each query before LIMIT: the response
+    // lists symbol references, and duplicates must not crowd out other symbols.
+    // Keep relType in the projection so CALLS and ACCESSES remain distinct.
     //
     // ORDER BY uid, relType — the CATEGORY column must NOT lead (#2787 review
     // F1). With `relType` first the 30-row window fills in alphabetical
@@ -5576,7 +5579,7 @@ export class LocalBackend {
       MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'USES', 'DECLARES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
         AND (r.type <> 'MEMBER_OF' OR labels(n) <> 'Community')
-      RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+      RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       ORDER BY uid, relType
       LIMIT 30
     `,
@@ -5592,7 +5595,7 @@ export class LocalBackend {
         repo.lbugPath,
         `
       MATCH (caller)-[r:CodeRelation {type: 'ADVISED_BY'}]->(n {id: $symId})
-      RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+      RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       ORDER BY uid
       LIMIT 30
     `,
@@ -5648,7 +5651,7 @@ export class LocalBackend {
             WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
             MATCH (caller)-[r:CodeRelation]->(ctor)
             WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'ACCESSES']
-            RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+            RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             ORDER BY uid, relType
             LIMIT 30
           `,
@@ -5661,7 +5664,7 @@ export class LocalBackend {
             WHERE n.id = $symId AND rel.type = 'DEFINES'
             MATCH (caller)-[r:CodeRelation]->(f)
             WHERE r.type IN ['CALLS', 'IMPORTS']
-            RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+            RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             ORDER BY uid, relType
             LIMIT 30
           `,
@@ -5676,7 +5679,7 @@ export class LocalBackend {
                OR p.declaredType CONTAINS $genericArg
             MATCH (caller)-[r:CodeRelation]->(p)
             WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'ACCESSES']
-            RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+            RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             ORDER BY uid, relType
             LIMIT 30
           `,
@@ -5745,7 +5748,7 @@ export class LocalBackend {
       MATCH (n {id: $symId})-[r:CodeRelation]->(target)
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'USES', 'DECLARES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
         AND (r.type <> 'MEMBER_OF' OR labels(target) <> 'Community')
-      RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
+      RETURN DISTINCT r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       ORDER BY uid, relType
       LIMIT 30
     `,
@@ -5755,7 +5758,7 @@ export class LocalBackend {
         repo.lbugPath,
         `
       MATCH (n {id: $symId})-[r:CodeRelation {type: 'ADVISED_BY'}]->(target)
-      RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
+      RETURN DISTINCT r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       ORDER BY uid
       LIMIT 30
     `,

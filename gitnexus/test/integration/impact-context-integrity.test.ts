@@ -13,6 +13,174 @@ import { createTempDir } from '../helpers/test-db.js';
 
 const REPO = 'query-integrity';
 
+describe('context distinct reference windows (#3500)', () => {
+  let temp: Awaited<ReturnType<typeof createTempDir>>;
+  let backend: LocalBackend;
+  const focus = 'Function:src/focus.ts:focus';
+  const first = 'Function:src/a.ts:first';
+  const last = 'Function:src/z.ts:last';
+  const bounded = 'Function:src/bounded.ts:bounded';
+  const neighbors = Array.from({ length: 35 }, (_, i) => `neighbor${String(i).padStart(2, '0')}`);
+  const classes = [
+    ['ConstructorTarget', 'Constructor', 'CALLS'],
+    ['FileTarget', 'File', 'IMPORTS'],
+    ['PropertyTarget', 'Property', 'ACCESSES'],
+  ] as const;
+
+  beforeAll(async () => {
+    temp = await createTempDir();
+    vi.stubEnv('GITNEXUS_HOME', path.join(temp.dbPath, 'home'));
+    vi.stubEnv('GITNEXUS_STORAGE_PATH', path.join(temp.dbPath, 'index'));
+    vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
+    const paths = getStoragePaths(temp.dbPath);
+    await adapter.initLbug(paths.lbugPath);
+    try {
+      for (const [id, name] of [
+        [focus, 'focus'],
+        [first, 'first'],
+        [last, 'last'],
+      ]) {
+        await adapter.executeQuery(
+          `CREATE (:Function {id: '${id}', name: '${name}', filePath: '${id.split(':')[1]}', startLine: 1, endLine: 3})`,
+        );
+      }
+      // More than one page of call sites to the same neighbor must consume
+      // only one reference slot. Both directions and advice have their own windows.
+      for (const type of ['CALLS', 'ADVISED_BY']) {
+        for (const [source, target, count] of [
+          [first, focus, 35],
+          [last, focus, 1],
+          [focus, first, 35],
+          [focus, last, 1],
+        ]) {
+          await adapter.executeQuery(
+            `MATCH (a:Function {id: '${source}'}), (b:Function {id: '${target}'})
+             UNWIND range(1, ${count}) AS site
+             CREATE (a)-[:CodeRelation {type: '${type}', confidence: 1.0, step: site}]->(b)`,
+          );
+        }
+      }
+      for (const [source, target] of [
+        [first, focus],
+        [focus, first],
+      ]) {
+        await adapter.executeQuery(
+          `MATCH (a:Function {id: '${source}'}), (b:Function {id: '${target}'})
+           CREATE (a)-[:CodeRelation {type: 'ACCESSES', confidence: 1.0}]->(b)`,
+        );
+      }
+      for (const name of ['bounded', ...neighbors]) {
+        await adapter.executeQuery(
+          `CREATE (:Function {id: 'Function:src/bounded.ts:${name}', name: '${name}', filePath: 'src/bounded.ts', startLine: 1, endLine: 3})`,
+        );
+      }
+      for (const type of ['CALLS', 'ADVISED_BY']) {
+        await adapter.executeQuery(
+          `MATCH (a:Function {id: '${bounded}'}), (b:Function)
+           WHERE b.id STARTS WITH 'Function:src/bounded.ts:neighbor'
+           UNWIND range(1, 2) AS site
+           CREATE (a)-[:CodeRelation {type: '${type}', confidence: 1.0, step: site}]->(b),
+                  (b)-[:CodeRelation {type: '${type}', confidence: 1.0, step: site}]->(a)`,
+        );
+      }
+      for (const [name, label, type] of classes) {
+        await adapter.executeQuery(
+          `CREATE (:Class {id: 'Class:src/types.ts:${name}', name: '${name}', filePath: 'src/types.ts', startLine: 1, endLine: 3})`,
+        );
+        await adapter.executeQuery(
+          `CREATE (:\`${label}\` {id: '${label}:src/types.ts${label === 'File' ? '' : `:${name}`}', name: '${name}', filePath: 'src/types.ts'${label === 'Property' ? `, declaredType: '${name}'` : ''}})`,
+        );
+        if (label !== 'Property') {
+          await adapter.executeQuery(
+            `MATCH (c:Class {name: '${name}'}), (n:\`${label}\` {name: '${name}'})
+             CREATE ${label === 'File' ? "(n)-[:CodeRelation {type: 'DEFINES'}]->(c)" : "(c)-[:CodeRelation {type: 'HAS_METHOD'}]->(n)"}`,
+          );
+        }
+        for (const [caller, count] of [
+          [first, 35],
+          [last, 1],
+        ]) {
+          await adapter.executeQuery(
+            `MATCH (a:Function {id: '${caller}'}), (b:\`${label}\` {name: '${name}'})
+             UNWIND range(1, ${count}) AS site
+             CREATE (a)-[:CodeRelation {type: '${type}', confidence: 1.0, step: site}]->(b)`,
+          );
+        }
+      }
+      await adapter.flushWAL();
+    } finally {
+      await adapter.closeLbug();
+    }
+    const meta = {
+      repoPath: temp.dbPath,
+      storagePath: paths.storagePath,
+      lastCommit: 'distinct-reference-fixture',
+      indexedAt: new Date().toISOString(),
+      scopeExtractionReceipt: 1 as const,
+      stats: { files: 5, nodes: 45, processes: 0, communities: 0 },
+    };
+    await saveMeta(paths.storagePath, meta);
+    await registerRepo(temp.dbPath, meta, { name: REPO });
+    backend = new LocalBackend();
+    expect(await backend.init()).toBe(true);
+  });
+
+  afterAll(async () => {
+    try {
+      await backend?.dispose();
+    } finally {
+      await adapter.closeLbug();
+      vi.unstubAllEnvs();
+      await temp?.cleanup();
+    }
+  });
+
+  it.each(['incoming', 'outgoing'] as const)(
+    'keeps distinct %s references before the row limit without merging relation types',
+    async (direction) => {
+      const result = await backend.callTool('context', { repo: REPO, uid: focus });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe('found');
+      const refs = result[direction];
+      expect(refs.calls.map((ref: ContextRef) => ref.uid)).toEqual([first, last]);
+      expect(refs.accesses.map((ref: ContextRef) => ref.uid)).toEqual([first]);
+    },
+  );
+
+  it.each(['incoming', 'outgoing'] as const)(
+    'keeps distinct %s advice references',
+    async (direction) => {
+      const result = await backend.callTool('context', { repo: REPO, uid: focus });
+      expect(result.error).toBeUndefined();
+      expect(result[direction].advised_by.map((ref: ContextRef) => ref.uid)).toEqual([first, last]);
+    },
+  );
+
+  it.each(classes)('keeps distinct callers through the %s bridge', async (name, _label, type) => {
+    const result = await backend.callTool('context', {
+      repo: REPO,
+      uid: `Class:src/types.ts:${name}`,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe('found');
+    expect(result.incoming[type.toLowerCase()].map((ref: ContextRef) => ref.uid)).toEqual([
+      first,
+      last,
+    ]);
+  });
+
+  it.each(['incoming', 'outgoing'] as const)(
+    'still caps each %s reference window at 30 distinct entries in UID order',
+    async (direction) => {
+      const result = await backend.callTool('context', { repo: REPO, uid: bounded });
+      expect(result.error).toBeUndefined();
+      const expected = neighbors.slice(0, 30).map((name) => `Function:src/bounded.ts:${name}`);
+      expect(result[direction].calls.map((ref: ContextRef) => ref.uid)).toEqual(expected);
+      expect(result[direction].advised_by.map((ref: ContextRef) => ref.uid)).toEqual(expected);
+    },
+  );
+});
+
 describe.each(['current', 'without staticGated'] as const)('native impact schema: %s', (schema) => {
   let temp: Awaited<ReturnType<typeof createTempDir>>;
   let backend: LocalBackend;
