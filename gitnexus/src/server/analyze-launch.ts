@@ -17,7 +17,6 @@ import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
 import { INDEX_METADATA_FILE } from '../storage/repo-manager.js';
-import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import {
   ANALYZE_FORCE_STORAGE_REQUIREMENTS,
   ANALYZE_STORAGE_REQUIREMENTS,
@@ -25,11 +24,18 @@ import {
 } from '../storage/storage-resolver.js';
 import { BRANCHES_DIR, branchSlug } from '../storage/branch-index.js';
 import { logger } from '../core/logger.js';
+import {
+  analysisMayEmbed,
+  analysisSupervisorReservation,
+  resolveHostAnalysisResources,
+} from '../core/analysis-host-resources.js';
+import { projectPreparedAnalysisHandoff } from '../core/analysis-phase-supervisor.js';
+import type { ContinueMessage, GraphPreparedMessage } from './analyze-worker-protocol.js';
 import { loadAnalyzeConfig } from '../cli/analyze-config.js';
 import type { RouteHookConfig } from '../core/ingestion/language-provider.js';
-import { autoHeapCapMb } from '../core/ingestion/utils/effective-ram.js';
 import { isTerminalJobStatus, type JobManager } from './analyze-job.js';
 import type { WorkerMessage } from './analyze-worker.js';
+import { projectAnalysisPhaseProgress } from '../core/analysis-progress.js';
 
 const _require = createRequire(import.meta.url);
 
@@ -164,7 +170,7 @@ const waitForSettledIndex = async (
         }
       }
 
-      const lbugPath = path.resolve(probeRoot, LBUG_DIRECTORY);
+      const lbugPath = path.resolve(resolveGraphPath(probeRoot));
       const lbugRel = path.relative(storageRoot, lbugPath);
       if (lbugRel.startsWith('..') || path.isAbsolute(lbugRel)) {
         return false;
@@ -172,8 +178,8 @@ const waitForSettledIndex = async (
       const lbugStat = statSync(lbugPath);
       if (lbugStat.mtimeMs < jobStartMs) return false;
 
-      return ['lbug.wal', 'lbug.shadow', 'lbug.wal.checkpoint'].every((name) => {
-        const sidePath = path.resolve(probeRoot, name);
+      return ['.wal', '.shadow', '.wal.checkpoint'].every((suffix) => {
+        const sidePath = path.resolve(`${lbugPath}${suffix}`);
         const sideRel = path.relative(storageRoot, sidePath);
         if (sideRel.startsWith('..') || path.isAbsolute(sideRel)) {
           return false;
@@ -220,13 +226,27 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
     targetPath: string,
     opts: LaunchOptions,
   ): Promise<void> {
+    const launchAborted = (jobId: string): boolean => {
+      const current = jobManager.getJob(jobId);
+      return !current || isTerminalJobStatus(current.status) || jobManager.hasPendingCancel(jobId);
+    };
+    if (launchAborted(job.id)) return;
     // For waitForSettledIndex: files (re)written by this job have mtimes at or
     // after this instant. Taken before the fork so no worker write predates it.
     const jobStartMs = Date.now();
+    const envHeapMb = Number(process.env.GITNEXUS_SERVER_ANALYZE_HEAP_MB);
+    const includeEmbeddings = await analysisMayEmbed(targetPath, opts);
+    if (launchAborted(job.id)) return;
+    const resources = resolveHostAnalysisResources({
+      mainHeapMb: Number.isInteger(envHeapMb) && envHeapMb > 0 ? envHeapMb + 48 : undefined,
+      includeEmbeddings,
+      supervisorBytes: analysisSupervisorReservation(),
+    });
     const analyzeLockKey = await requireStoragePath(
       targetPath,
       opts.force ? ANALYZE_FORCE_STORAGE_REQUIREMENTS : ANALYZE_STORAGE_REQUIREMENTS,
     );
+    if (launchAborted(job.id)) return;
     // Acquire shared repo lock only after ownership validation. The same
     // resolved path is retained for finalization instead of being looked up
     // again through the registry after the worker exits.
@@ -270,6 +290,13 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       'analyze launch: forwarding route configuration to the worker',
     );
 
+    const analysisOptions = {
+      ...opts,
+      graphPublication: 'auto' as const,
+      resources,
+      routeHookConfig,
+    };
+
     jobManager.updateJob(job.id, { repoPath: targetPath, status: 'analyzing' });
 
     // ── Worker fork with auto-retry ──────────────────────────────
@@ -281,20 +308,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       ? ['--import', pathToFileURL(_require.resolve('tsx/esm')).href]
       : [];
 
-    // Worker heap: 8192MB historical default, but never above what this
-    // machine/container actually has (#2649 review — a fixed 8192 inside a
-    // smaller cgroup limit died to the kernel with a misleading remedy).
-    // GITNEXUS_SERVER_ANALYZE_HEAP_MB overrides as an absolute value.
-    const envHeapMb = Number(process.env.GITNEXUS_SERVER_ANALYZE_HEAP_MB);
-    const workerHeapMb =
-      Number.isInteger(envHeapMb) && envHeapMb > 0 ? envHeapMb : Math.min(8192, autoHeapCapMb());
-
-    const launchAborted = (jobId: string): boolean => {
-      const current = jobManager.getJob(jobId);
-      return !current || isTerminalJobStatus(current.status) || jobManager.hasPendingCancel(jobId);
-    };
-
-    const forkWorker = () => {
+    const forkWorker = (continuation?: ContinueMessage) => {
       if (launchAborted(job.id)) {
         // Cancelled (or timed out) between lock acquisition and the fork, or
         // during a crash-retry delay. A pending-cancel job stays non-terminal
@@ -305,7 +319,11 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       }
 
       const child = fork(workerPath, [], {
-        execArgv: [...tsxHookArgs, `--max-old-space-size=${workerHeapMb}`],
+        execArgv: [
+          ...tsxHookArgs,
+          `--max-old-space-size=${resources.mainHeapMb - 48}`,
+          '--max-semi-space-size=16',
+        ],
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       });
 
@@ -325,12 +343,15 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       // "don't release on cancel error" would leak the lock.
       let holdLockUntilExit = false;
       let childExited = false;
+      let graphVisible = false;
+      let prepared: GraphPreparedMessage | undefined;
+      let terminalMessage: Extract<WorkerMessage, { type: 'complete' | 'error' }> | undefined;
       child.stderr?.on('data', (chunk: Buffer) => {
         stderrChunks += chunk.toString();
         if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
       });
 
-      child.on('message', (msg: WorkerMessage) => {
+      const handleMessage = (msg: WorkerMessage) => {
         // Ignore any message once the job is terminal — a late worker message (a
         // SIGTERM-driven `error` after `complete`, or vice versa) must not
         // re-release the repo lock or flip the reported status. Mirrors the `exit`
@@ -338,12 +359,64 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
         const current = jobManager.getJob(job.id);
         if (!current || isTerminalJobStatus(current.status)) return;
 
+        if ((msg.type === 'complete' || msg.type === 'error') && !childExited) {
+          terminalIpcSeen = true;
+          terminalMessage ??= msg;
+          if (jobManager.applyPendingCancel(job.id)) holdLockUntilExit = true;
+          return;
+        }
+        if (msg.type === 'graph-prepared') {
+          try {
+            if (prepared || continuation) throw new Error('Repeated graph preparation');
+            prepared = { ...msg, handoff: projectPreparedAnalysisHandoff(msg.handoff) };
+          } catch (error) {
+            terminalMessage = { type: 'error', message: (error as Error).message };
+            terminalIpcSeen = true;
+            child.send({ type: 'cancel' });
+          }
+          return;
+        }
+        if (msg.type === 'graph-ready') {
+          // Core has closed the writer and verified publication. Refresh readers
+          // while this job is still active, then admit the independent vector phase.
+          void closeDbHandle()
+            .then(() => backend.init())
+            .then(() => {
+              if (childExited) return;
+              if (launchAborted(job.id)) child.send({ type: 'cancel' });
+              else {
+                graphVisible = true;
+                child.send({ type: 'graph-visible' });
+              }
+            })
+            .catch((error) => {
+              if (childExited) return;
+              terminalMessage = {
+                type: 'error',
+                message: `Server failed to reload the published graph: ${(error as Error).message}`,
+              };
+              terminalIpcSeen = true;
+              try {
+                child.send({ type: 'cancel' });
+              } catch {
+                /* Wait for actual exit. */
+              }
+            });
+          return;
+        }
+
         if (msg.type === 'complete' || msg.type === 'error') terminalIpcSeen = true;
 
         if (msg.type === 'progress') {
           jobManager.updateJob(job.id, {
             status: 'analyzing',
-            progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
+            progress: {
+              ...projectAnalysisPhaseProgress(current.progress),
+              ...projectAnalysisPhaseProgress(msg),
+              phase: msg.phase,
+              percent: msg.percent,
+              message: msg.message,
+            },
           });
         } else if (msg.type === 'complete') {
           if (jobManager.applyPendingCancel(job.id)) {
@@ -374,20 +447,21 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           // would spin the full 60s and hold the single global analyze slot.
           // ftsRepairedOnly DOES rewrite `lbug` (initLbug + createSearchFTSIndexes)
           // so it still waits.
-          const settle = msg.result.alreadyUpToDate
-            ? Promise.resolve(true)
-            : waitForSettledIndex(
-                // A checkout's first analyze may write a shared-store slot the
-                // launcher's pre-run lookup could not see yet (#3352); the
-                // worker reports it.
-                (msg.result.storagePath && storeRootOfCheckoutSlot(msg.result.storagePath)
-                  ? msg.result.storagePath
-                  : null) ?? analyzeLockKey,
-                jobStartMs,
-                opts.branch,
-                msg.result.isPrimaryBranch,
-                () => launchAborted(job.id),
-              );
+          const settle =
+            continuation || graphVisible || msg.result.alreadyUpToDate
+              ? Promise.resolve(true)
+              : waitForSettledIndex(
+                  // A checkout's first analyze may write a shared-store slot the
+                  // launcher's pre-run lookup could not see yet (#3352); the
+                  // worker reports it.
+                  (msg.result.storagePath && storeRootOfCheckoutSlot(msg.result.storagePath)
+                    ? msg.result.storagePath
+                    : null) ?? analyzeLockKey,
+                  jobStartMs,
+                  opts.branch,
+                  msg.result.isPrimaryBranch,
+                  () => launchAborted(job.id),
+                );
           settle
             .then((settled) => {
               if (launchAborted(job.id)) {
@@ -508,7 +582,8 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
             jobManager.updateJob(job.id, { status: 'failed', error: msg.message });
           }
         }
-      });
+      };
+      child.on('message', handleMessage);
 
       child.on('error', (err) => {
         // Fake test children have no `pid`. Treat that as pre-spawn so the
@@ -532,6 +607,18 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
 
       child.on('exit', (code) => {
         childExited = true;
+        if (terminalMessage) {
+          handleMessage(
+            code === 0
+              ? terminalMessage
+              : {
+                  type: 'error',
+                  message: `Analyze worker exited unsuccessfully (${code ?? 'signal'})`,
+                },
+          );
+          if (launchAborted(job.id)) releaseLockOnce();
+          return;
+        }
         const j = jobManager.getJob(job.id);
         if (!j || isTerminalJobStatus(j.status) || jobManager.hasPendingCancel(job.id)) {
           // (a) complete/error IPC is in flight (`terminalIpcSeen`) — that
@@ -553,6 +640,17 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
         // finished, successful analysis.
         if (terminalIpcSeen) return;
 
+        if (prepared && code === 0 && child.pid) {
+          forkWorker({
+            type: 'continue',
+            repoPath: targetPath,
+            options: analysisOptions,
+            writerPid: child.pid,
+            prepared,
+          });
+          return;
+        }
+
         // Worker crashed — attempt retry if under the limit
         if (j.retryCount < MAX_WORKER_RETRIES) {
           j.retryCount++;
@@ -571,7 +669,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
             },
           });
           stderrChunks = '';
-          setTimeout(forkWorker, delay);
+          setTimeout(() => forkWorker(), delay);
         } else {
           // Exhausted retries — permanent failure
           releaseLockOnce();
@@ -586,20 +684,13 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       jobManager.registerChild(job.id, child);
 
       // Send start command to child
-      child.send({
-        type: 'start',
-        repoPath: targetPath,
-        options: {
-          force: !!opts.force,
-          embeddings: !!opts.embeddings,
-          dropEmbeddings: !!opts.dropEmbeddings,
-          ...(opts.springActuatorPath ? { springActuatorPath: opts.springActuatorPath } : {}),
-          ...(opts.asyncApiSpecPath ? { asyncApiSpecPath: opts.asyncApiSpecPath } : {}),
-          ...(opts.registryName ? { registryName: opts.registryName } : {}),
-          ...(opts.branch ? { branch: opts.branch } : {}),
-          routeHookConfig,
+      child.send(
+        continuation ?? {
+          type: 'start',
+          repoPath: targetPath,
+          options: analysisOptions,
         },
-      });
+      );
     };
 
     try {

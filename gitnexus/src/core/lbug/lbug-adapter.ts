@@ -3,6 +3,7 @@ import { createReadStream, createWriteStream, existsSync, constants as fsConstan
 import { createInterface } from 'readline';
 import { once } from 'events';
 import { finished } from 'stream/promises';
+import { setImmediate as yieldQueryRows } from 'node:timers/promises';
 import path from 'path';
 import lbug from '@ladybugdb/core';
 import { closeQueryResults } from './query-result-utils.js';
@@ -58,6 +59,7 @@ import { resolveFtsVersionPair } from './vendored-extension-path.js';
 import {
   classifyDeleteAllError,
   closeLbugConnection,
+  drainLbugResourceReleases,
   HANDLE_RELEASE_PROBE_ATTEMPTS,
   HANDLE_RELEASE_PROBE_DELAY_MS,
   isDbBusyError,
@@ -623,6 +625,7 @@ const writableFtsCrashWalEvidence = async (
 const reopenWritableAfterMissingShadow = async (
   dbPath: string,
   err: unknown,
+  options: LbugInitOptions = {},
 ): Promise<LbugConnectionHandle> => {
   // Analyze writers may park a leftover in-place FTS abort WAL. Serve/embed
   // refuse first via assertReadOnlyFtsCrashSafe and must not pass this
@@ -643,7 +646,12 @@ const reopenWritableAfterMissingShadow = async (
     throw new Error(renameFailureMessage(dbPath, renameErr));
   }
 
-  return await openLbugConnection(lbug, dbPath);
+  return options.bufferPoolBytes !== undefined || options.threads !== undefined
+    ? await openLbugConnection(lbug, dbPath, {
+        bufferPoolBytes: options.bufferPoolBytes,
+        threads: options.threads,
+      })
+    : await openLbugConnection(lbug, dbPath);
 };
 
 const ensureReadOnlyConnectionUsable = async (
@@ -801,8 +809,18 @@ const runSchemaCreationQueries = async (dbPath: string): Promise<unknown | null>
   return null;
 };
 
-export const initLbug = async (dbPath: string, options: { skipFts?: boolean } = {}) => {
-  return runWithSessionLock(() => ensureLbugInitialized(dbPath, options));
+export interface LbugInitOptions {
+  skipFts?: boolean;
+  bufferPoolBytes?: number;
+  threads?: number;
+}
+
+export const initLbug = async (dbPath: string, options: LbugInitOptions = {}) => {
+  return runWithSessionLock(async () => {
+    if (options.bufferPoolBytes !== undefined || options.threads !== undefined)
+      await drainLbugResourceReleases();
+    return ensureLbugInitialized(dbPath, options);
+  });
 };
 
 /**
@@ -855,34 +873,54 @@ export const withLbugDb = async <T>(
 };
 
 let currentDbSkipFts = false;
+let currentDbBufferPoolBytes: number | undefined;
+let currentDbThreads: number | undefined;
+let nativeCloseUnverified = false;
 
 const ensureLbugInitialized = async (
   dbPath: string,
-  options: { readOnly?: boolean; skipFts?: boolean } = {},
+  options: LbugInitOptions & { readOnly?: boolean } = {},
 ) => {
   const readOnly = options.readOnly === true;
   const skipFts = options.skipFts === true;
   if (
+    options.bufferPoolBytes !== undefined &&
+    (!Number.isSafeInteger(options.bufferPoolBytes) ||
+      (options.bufferPoolBytes !== 0 && options.bufferPoolBytes < 8 * 1024 * 1024))
+  )
+    throw new Error(
+      'Explicit LadybugDB buffer pool must be zero (native default) or at least 8 MiB',
+    );
+  if (
+    options.threads !== undefined &&
+    (!Number.isSafeInteger(options.threads) || options.threads < 1)
+  )
+    throw new Error('Explicit LadybugDB thread allocation must be a positive integer');
+  if (
     conn &&
+    !nativeCloseUnverified &&
     currentDbPath === dbPath &&
     currentDbReadOnly === readOnly &&
-    currentDbSkipFts === skipFts
+    currentDbSkipFts === skipFts &&
+    currentDbBufferPoolBytes === options.bufferPoolBytes &&
+    currentDbThreads === options.threads
   ) {
     return { db, conn };
   }
-  await doInitLbug(dbPath, { readOnly, skipFts });
+  await doInitLbug(dbPath, { ...options, readOnly, skipFts });
   return { db, conn };
 };
 
 const doInitLbug = async (
   dbPath: string,
-  options: { readOnly?: boolean; skipFts?: boolean } = {},
+  options: LbugInitOptions & { readOnly?: boolean } = {},
 ) => {
   const readOnly = options.readOnly === true;
   const skipFts = options.skipFts === true;
   // Different database requested — close the old one first
-  if (conn || db) {
-    await safeClose();
+  const resourceBound = options.bufferPoolBytes !== undefined || options.threads !== undefined;
+  if (conn || db || nativeCloseUnverified || (resourceBound && currentDbPath)) {
+    await safeClose({ strict: resourceBound });
     currentDbPath = null;
     ftsLoaded = false;
     vectorExtensionLoaded = false;
@@ -1044,10 +1082,19 @@ const doInitLbug = async (
       });
 
       try {
-        const opened = await openLbugConnection(lbug, dbPath);
+        const opened = resourceBound
+          ? await openLbugConnection(lbug, dbPath, {
+              bufferPoolBytes: options.bufferPoolBytes,
+              threads: options.threads,
+            })
+          : await openLbugConnection(lbug, dbPath);
         db = opened.db;
         conn = opened.conn;
         currentDbReadOnly = false;
+        // Record the live allocation before schema work, so an initialization
+        // failure must also prove release before another native open.
+        currentDbBufferPoolBytes = options.bufferPoolBytes;
+        currentDbThreads = options.threads;
       } catch (err) {
         // Incremental analyze can hit a storage-version mismatch on construct
         // or (more often) on the first schema query below. Fail immediately
@@ -1065,7 +1112,7 @@ const doInitLbug = async (
     if (missingShadowError) {
       await safeClose();
       resetOpenConnectionState();
-      const reopened = await reopenWritableAfterMissingShadow(dbPath, missingShadowError);
+      const reopened = await reopenWritableAfterMissingShadow(dbPath, missingShadowError, options);
       db = reopened.db;
       conn = reopened.conn;
       currentDbReadOnly = false;
@@ -1093,6 +1140,8 @@ const doInitLbug = async (
   }
 
   currentDbSkipFts = skipFts;
+  currentDbBufferPoolBytes = options.bufferPoolBytes;
+  currentDbThreads = options.threads;
   currentDbPath = dbPath;
   return { db, conn };
 };
@@ -1956,6 +2005,57 @@ export const executeQuery = async (cypher: string): Promise<any[]> => {
   return await executePrepared(cypher, {});
 };
 
+/**
+ * Visit a single trusted, parameter-free query without retaining a JS row array.
+ * The visitor must be synchronous and must not issue another connection query.
+ * Keep the connection locked through yields and cursor close so a checkpoint
+ * cannot interleave with reading. Use direct execution: repeated prepared reads
+ * exhausted the native pool in the normal-GC identity scaling probe.
+ */
+export const forEachQueryRow = async (
+  cypher: string,
+  onRow: (row: any) => undefined,
+): Promise<void> => {
+  warnIfQueryTextUnbounded(cypher, 'forEachQueryRow', (message) => logger.warn(message));
+  const c = conn;
+  if (!c) throw new Error('LadybugDB not initialized. Call initLbug first.');
+
+  await withConnLock(async () => {
+    const queryResult = await c.query(cypher);
+    const results = Array.isArray(queryResult) ? queryResult : [queryResult];
+    let failed = false;
+    let failure: unknown;
+    try {
+      if (results.length !== 1 || !results[0]) {
+        throw new Error('forEachQueryRow requires exactly one query result');
+      }
+      const result = results[0];
+      let rows = 0;
+      while (result.hasNext()) {
+        const row = result.getNextSync();
+        if (row === null) throw new Error('Query cursor ended before its advertised next row');
+        onRow(row);
+        if (++rows % 1024 === 0) await yieldQueryRows();
+      }
+    } catch (error) {
+      failed = true;
+      failure = error;
+    } finally {
+      for (const result of results) {
+        try {
+          result?.close();
+        } catch (error) {
+          if (!failed) {
+            failed = true;
+            failure = error;
+          }
+        }
+      }
+    }
+    if (failed) throw failure;
+  });
+};
+
 export const streamQuery = async (
   cypher: string,
   onRow: (row: any) => void | Promise<void>,
@@ -2347,7 +2447,9 @@ export const fetchExistingEmbeddingHashes = async (
  */
 export const flushWAL = async (): Promise<void> => {
   const c = conn;
-  if (!c) return;
+  // CHECKPOINT on a read-only connection can leave LadybugDB's checkpoint
+  // marker set even though the write is rejected, poisoning the next reader.
+  if (!c || currentDbReadOnly) return;
   try {
     await withConnLock(async () => {
       const checkpointResult = await c.query('CHECKPOINT');
@@ -2376,7 +2478,7 @@ export const flushWAL = async (): Promise<void> => {
  */
 export const tryFlushWAL = async (): Promise<boolean> => {
   const c = conn;
-  if (!c) return false;
+  if (!c || currentDbReadOnly) return false;
   // Runs on the periodic WAL-checkpoint driver. The lock makes this CHECKPOINT
   // wait for any in-flight COPY / writeback on the singleton connection instead
   // of executing concurrently with it (the `analyze --pdg` heap-corruption bug).
@@ -2397,7 +2499,13 @@ export const tryFlushWAL = async (): Promise<boolean> => {
  * @see flushWAL — CHECKPOINT-only (connection stays open)
  * @see closeLbug — safeClose + module state reset (full teardown)
  */
-export const safeClose = async (): Promise<void> => {
+export const safeClose = async (options: { strict?: boolean } = {}): Promise<void> => {
+  const strict =
+    options.strict === true ||
+    nativeCloseUnverified ||
+    currentDbBufferPoolBytes !== undefined ||
+    currentDbThreads !== undefined;
+  if (strict) nativeCloseUnverified = true;
   await flushWAL();
   // Capture before close — currentDbPath stays set so the Windows post-close
   // probe below knows which file to wait on.
@@ -2406,7 +2514,8 @@ export const safeClose = async (): Promise<void> => {
     try {
       // eslint-disable-next-line no-restricted-syntax -- sole authorised close site
       await conn.close();
-    } catch {
+    } catch (error) {
+      if (strict) throw error;
       /* best-effort */
     }
     conn = null;
@@ -2415,7 +2524,8 @@ export const safeClose = async (): Promise<void> => {
     try {
       // eslint-disable-next-line no-restricted-syntax -- sole authorised close site
       await db.close();
-    } catch {
+    } catch (error) {
+      if (strict) throw error;
       /* best-effort */
     }
     db = null;
@@ -2428,6 +2538,7 @@ export const safeClose = async (): Promise<void> => {
   if (process.platform === 'win32' && closingDbPath) {
     const released = await waitForWindowsHandleRelease(closingDbPath);
     if (!released) {
+      if (strict) throw new Error('LadybugDB native resource reservation has not been released');
       // Probe exhausted with a lock code still in flight. The next
       // openLbugConnection will absorb whatever residual lag remains, but
       // a chronic warning helps operators spot AV interference (Windows
@@ -2441,6 +2552,7 @@ export const safeClose = async (): Promise<void> => {
   if (closingDbPath) {
     await finalizeLbugSidecarsAfterClose(closingDbPath, { logger });
   }
+  nativeCloseUnverified = false;
 };
 
 /**
@@ -2476,13 +2588,24 @@ export const closeLbugBeforeExit = async (): Promise<void> => {
   // double-free.
 };
 
-export const closeLbug = async (): Promise<void> => {
-  await safeClose();
+export const closeLbug = async (options: { strict?: boolean } = {}): Promise<void> => {
+  await safeClose(options);
   currentDbPath = null;
+  currentDbBufferPoolBytes = undefined;
+  currentDbThreads = undefined;
   ftsLoaded = false;
   vectorExtensionLoaded = false;
   vectorIndexEnsured = false;
   ensuredFTSIndexes.clear();
+};
+
+/** A new analysis phase may reuse the prior phase's reservation only after its
+ * native handles are gone. Wait for session work; never close an active query. */
+export const drainAnalysisNativeResources = async (): Promise<void> => {
+  await runWithSessionLock(async () => {
+    if (conn || db || nativeCloseUnverified) await closeLbug({ strict: true });
+    await drainLbugResourceReleases();
+  });
 };
 
 /**

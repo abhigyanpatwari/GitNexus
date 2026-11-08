@@ -376,6 +376,7 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
 describe('warnIfNpm11NpxRisk (#1939 npm-11 nudge)', () => {
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     delete process.env.GITNEXUS_INVOCATION;
   });
 
@@ -452,12 +453,30 @@ describe('warnIfNpm11NpxRisk (#1939 npm-11 nudge)', () => {
     write.mockRestore();
   });
 
+  it.each(['11.0.0\n', '10.9.0\n', 'unreadable\n'])(
+    'shares one npm probe with automatic runner selection for %s',
+    (version) => {
+      vi.stubEnv('GITNEXUS_INVOCATION', '');
+      vi.stubEnv('PATH', '');
+      mockedExec.mockReturnValue(version);
+      const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        warnIfNpm11NpxRisk();
+        expect(mockedExec).toHaveBeenCalledOnce();
+        expect(write).toHaveBeenCalledTimes(version.startsWith('11.') ? 1 : 0);
+      } finally {
+        write.mockRestore();
+      }
+    },
+  );
+
   it('does not warn when a global gitnexus or pnpm is preferred', () => {
     process.env.GITNEXUS_INVOCATION = 'pnpm';
     mockedExec.mockReturnValue('11.0.0\n');
     const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     warnIfNpm11NpxRisk();
     expect(write).not.toHaveBeenCalled();
+    expect(mockedExec).not.toHaveBeenCalled();
     write.mockRestore();
   });
 

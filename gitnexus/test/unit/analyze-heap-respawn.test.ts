@@ -3,6 +3,11 @@ import { EventEmitter } from 'node:events';
 
 const spawnMock = vi.fn();
 const getHeapStatisticsMock = vi.fn();
+const npmWarningMock = vi.hoisted(() => vi.fn());
+
+vi.mock('../../src/cli/resolve-invocation.js', () => ({
+  warnIfNpm11NpxRisk: npmWarningMock,
+}));
 
 vi.mock('child_process', async () => {
   const actual = await vi.importActual<typeof import('child_process')>('child_process');
@@ -105,7 +110,37 @@ describe('analyzeCommand heap respawn', () => {
     else process.env.NODE_OPTIONS = initialNodeOptions;
   });
 
-  it('re-execs analyze with the auto-sized heap cap (16GB-clamped) + larger semi-space and bridges progress redraw when parent is a TTY', async () => {
+  it('defers npm subprocess probes until the admitted working process', async () => {
+    delete process.env.NODE_OPTIONS;
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
+    mockSpawnExit();
+    npmWarningMock.mockClear();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, {});
+    expect(spawnMock).toHaveBeenCalledOnce();
+    expect(npmWarningMock).not.toHaveBeenCalled();
+  });
+
+  it('leaves the analysis pipeline unloaded in the heap supervisor', async () => {
+    delete process.env.NODE_OPTIONS;
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
+    mockSpawnExit();
+    const load = vi.fn(() => ({
+      runFullAnalysis: vi.fn(),
+      continuePreparedAnalysis: vi.fn(),
+    }));
+    vi.doMock('../../src/core/run-analyze.js', load);
+    try {
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+      await analyzeCommand(undefined, {});
+      expect(spawnMock).toHaveBeenCalledOnce();
+      expect(load).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock('../../src/core/run-analyze.js');
+    }
+  });
+
+  it('re-execs with the admitted main heap and bridges progress redraw when parent is a TTY', async () => {
     delete process.env.NODE_OPTIONS;
     restoreStderrIsTTY = setStreamIsTTY(process.stderr, true);
     getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 512 * 1024 * 1024 });
@@ -116,9 +151,10 @@ describe('analyzeCommand heap respawn', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [, args, opts] = spawnMock.mock.calls[0];
-    expect(args).toContain('--max-old-space-size=13107');
+    expect(args).toContain('--max-old-space-size=3916');
     expect(args).toContain('--max-semi-space-size=128');
-    expect(opts.env.NODE_OPTIONS).toContain('--max-old-space-size=13107');
+    expect(opts.env.NODE_OPTIONS).toContain('--max-old-space-size=3916');
+    expect(opts.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB).toBe('4300');
     expect(opts.env.NODE_OPTIONS).toContain('--max-semi-space-size=128');
     expect(opts.env.GITNEXUS_RESPAWN_PROGRESS_TTY).toBe('1');
   });
@@ -161,14 +197,14 @@ describe('analyzeCommand heap respawn', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [, args, opts] = spawnMock.mock.calls[0];
-    expect(args).toContain('--max-old-space-size=13107');
+    expect(args).toContain('--max-old-space-size=3916');
     // The auto flag is appended after the ambient value, so V8's
-    // later-flag-wins semantics resolve to the larger cap.
-    expect(opts.env.NODE_OPTIONS.indexOf('--max-old-space-size=13107')).toBeGreaterThan(
+    // later-flag-wins semantics resolve to the admitted whole-heap cap.
+    expect(opts.env.NODE_OPTIONS.indexOf('--max-old-space-size=3916')).toBeGreaterThan(
       opts.env.NODE_OPTIONS.indexOf('--max-old-space-size=4096'),
     );
     const warn = cap.records().find((r) => r.msg.includes('pins the heap to 4096MB'));
-    expect(warn?.msg).toContain('Re-running analyze with the larger auto-sized cap');
+    expect(warn?.msg).toContain('Re-running analyze with the admitted 4300MB main heap');
   });
 
   it('honors GITNEXUS_MEMORY=off: keeps the small ambient heap, silently (#2649)', async () => {
@@ -228,6 +264,47 @@ describe('analyzeCommand heap respawn', () => {
     expect(forwardedSignalExitCode('SIGTERM', true)).toBe(0);
     expect(forwardedSignalExitCode('SIGABRT', false)).toBe(1);
   });
+
+  it.each(['analysis-ready', 'analysis-watch-ready'])(
+    'resends startup cancellation on %s and waits for child exit',
+    async (ready) => {
+      delete process.env.NODE_OPTIONS;
+      const child = Object.assign(new EventEmitter(), {
+        connected: true,
+        exitCode: null,
+        signalCode: null,
+        kill: vi.fn(),
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+        send: vi.fn((_message, callback) => callback(null)),
+      });
+      spawnMock.mockReturnValueOnce(child);
+      const { ensureHeap } = await import('../../src/cli/analyze.js');
+      let settled = false;
+      const pending = ensureHeap({ memoryBudget: '2048' }).then(() => {
+        settled = true;
+      });
+      try {
+        await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledOnce());
+        process.emit('SIGTERM');
+        expect(child.send).toHaveBeenCalledExactlyOnceWith(
+          { type: 'cancel' },
+          expect.any(Function),
+        );
+        process.emit('SIGTERM');
+        expect(process.listenerCount('SIGTERM')).toBeGreaterThan(0);
+        expect(child.kill).not.toHaveBeenCalled();
+        child.emit('message', { type: ready });
+        await Promise.resolve();
+        expect(child.send).toHaveBeenCalledTimes(3);
+        expect(settled).toBe(false);
+      } finally {
+        child.emit('close', 0, null);
+        await pending;
+      }
+      expect(process.exitCode).toBe(143);
+    },
+  );
 
   it('GITNEXUS_MEMORY=off also disables the default (unpinned) respawn (#2649 review)', async () => {
     delete process.env.NODE_OPTIONS;
@@ -298,9 +375,9 @@ describe('analyzeCommand heap respawn', () => {
       .find((r) => r.msg.includes('Analysis likely ran out of memory'));
     expect(oomGuidance).toBeDefined();
     const msg = oomGuidance?.msg ?? '';
-    expect(msg).toContain('auto-sized to 13107MB');
-    expect(msg).toContain('NODE_OPTIONS="--max-old-space-size=<MB>"');
-    expect(msg).toContain('[your-args]');
+    expect(msg).toContain('admitted main heap');
+    expect(msg).toContain('--resource-budget');
+    expect(msg).toContain('reduce the analysis scope');
     expect(msg).toContain('native crash unrelated to heap size');
     cap.restore();
   });
@@ -537,25 +614,18 @@ describe('ensureHeap --memory-budget (#3137)', () => {
     }).toEqual({ old: true, semi: true, recordCount: 1, namesPin: true, namesAutoCap: false });
   });
 
-  it('a 12000MB budget above a 6000MB auto cap respawns at 12000 with a swap-risk warning', async () => {
-    // 7500MB cgroup limit -> auto cap floor(0.8 × 7500) = 6000MB.
+  it('rejects a heap-only budget that exceeds the cgroup family allowance before respawning', async () => {
     constrainTo(7500);
-    mockSpawnExit();
     const { _captureLogger } = await import('../../src/core/logger.js');
     const cap = _captureLogger();
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
     await analyzeCommand(undefined, { memoryBudget: '12000' });
     cap.restore();
-
-    expect(spawnMock).toHaveBeenCalledTimes(1);
-    const [, args] = spawnMock.mock.calls[0];
-    const records = cap.records();
-    expect({
-      old: args.includes('--max-old-space-size=11616'),
-      recordCount: records.length,
-      namesAutoCap: records[0]?.msg.includes('6000MB'),
-      warnsSwap: /swap/i.test(records[0]?.msg ?? ''),
-    }).toEqual({ old: true, recordCount: 1, namesAutoCap: true, warnsSwap: true });
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    expect(
+      cap.records().some((record) => record.msg.includes('Resource budget 5625 MiB cannot admit')),
+    ).toBe(true);
   });
 
   it('a budget-respawned child (8192 pin, then the budget flags) proceeds silently', async () => {
@@ -704,7 +774,7 @@ describe('ensureHeap --memory-budget (#3137)', () => {
     expect({ args, source: opts.env.GITNEXUS_HEAP_LIMIT_SOURCE, records: cap.records() }).toEqual({
       args: [
         ...preserved,
-        '--max-old-space-size=13107',
+        '--max-old-space-size=3916',
         '--max-semi-space-size=128',
         '--stack-size=4096',
         ...process.argv.slice(1),
@@ -723,6 +793,20 @@ describe('ensureHeap --memory-budget (#3137)', () => {
       respawned: false,
       source: 'auto',
     });
+  });
+
+  it('the admitted automatic-heap OOM message names both heap and family overrides', async () => {
+    mockSpawnExit({ status: null, signal: 'SIGABRT' });
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { ensureHeap } = await import('../../src/cli/analyze.js');
+    await ensureHeap({ admittedHeapMb: 4300 });
+    cap.restore();
+
+    const oom = cap.records().find((r) => r.recoveryHint === 'heap-oom-respawn');
+    expect(oom?.msg).toContain('--memory-budget');
+    expect(oom?.msg).toContain('--resource-budget');
+    expect(oom?.msg).toContain('within available RAM');
   });
 
   it('the respawn OOM message names the budget and --memory-budget instead of NODE_OPTIONS', async () => {

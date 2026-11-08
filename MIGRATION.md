@@ -1,5 +1,69 @@
 # Migration Guide
 
+## Resumable analysis and separate vector storage (#3598)
+
+Analysis with embeddings publishes a private `lbug.generation.<id>` graph and
+stores resumable vector artifacts under `embeddings/<identity>/`. Metadata names
+the active graph and sealed vector generation. Once a slot uses this layout,
+plain analysis, watch and hooks continue using it. Pending embedding work resumes
+on the next plain `gitnexus analyze`; `--force` rebuilds the graph while retaining
+compatible vectors for reuse. `--drop-embeddings` explicitly abandons embeddings.
+
+Upgrade every CLI, MCP/serve process and installed hook that accesses the slot.
+Restart long-running clients and rerun `gitnexus setup` with the upgraded binary.
+Older versions do not understand the private graph pointer or separate vectors.
+Do not run an older analyzer against the migrated slot.
+
+Before upgrading, stop readers and writers and back up the complete storage
+slot, including metadata, graph files, `embeddings/`, and any referenced shared
+store. To roll back, stop clients again and restore that complete backup with
+the matching older binaries. Renaming a generation file to `lbug` does not move
+vectors back into it. There is no reverse conversion for separate vector
+artifacts; without a backup, rebuilding with an older version requires generating
+embeddings again and can incur provider charges.
+
+A graph can be ready while embeddings remain pending. Embedding failure after
+graph publication exits nonzero; the graph remains usable and the next analyze
+resumes paid work. HTTP clients should read `embeddingProgress` and capability
+reasons rather than relying on the former terminal SSE `partial` field. After
+three deterministic input rejections, the job publishes healthy nodes and records
+`excludedNodes` with reason `input-rejected`; status reports the omission.
+On Windows, a legacy reader can prevent retirement of `lbug`. Stop that reader
+and rerun analyze; the prepared publication and vector artifacts are retained.
+
+Legacy source receipts now include the file's change time as well as its size
+and modification time. Receipts from earlier previews without that guard are
+retained but cannot certify reuse. Keep them with the original source when
+recovering from a backup or re-exporting a verified source; do not fill in a
+missing guard from the current file, which may have changed since retirement.
+
+`GITNEXUS_LBUG_BUFFER_POOL_SIZE=0` is no longer accepted by analysis: it asks
+the native engine to allocate an unbounded pool. Remove this setting from CLI,
+server and auto-sync environments to use automatic sizing, or set a positive
+byte limit. An explicit `--resource-budget` must also fit the page-size-scaled
+COPY floor; increase the budget if admission rejects it.
+
+Automatic analysis now admits all phase reservations within 75% of effective
+process/container RAM. Earlier versions could expand the reported total above
+RAM to preserve independently chosen heap and worker limits. Explicit heap,
+worker and pool overrides that do not fit now fail before work starts. Reduce
+those overrides, reduce concurrent analyses, use an HTTP embedding provider, or
+increase available RAM. `--memory-budget` remains a main-heap limit;
+`--resource-budget` sets the process-family ceiling and cannot exceed RAM.
+Node's process heap flag also overrides parser-worker limits. Admission now
+reserves at least the main-heap allocation for each worker, even when
+`GITNEXUS_WORKER_HEAP_MB` requests less. Automatic concurrency can decrease;
+explicit worker counts must fit those inherited limits.
+
+If a superseded or unverifiable `analysis-publication.json` blocks recovery,
+stop every reader and writer and back up the complete storage slot first.
+Move only that receipt into the backup, outside the slot, then run
+`gitnexus analyze --force`. Keep the staged graphs and embedding artifacts until
+the replacement graph and vectors are verified. A valid receipt should normally
+be recovered by plain analysis; discarding it abandons its prepared graph work.
+For an interrupted in-place write, keep clients stopped until the forced rebuild
+completes; removing the receipt does not make the old graph healthy.
+
 ## LadybugDB 0.22.0 storage and extensions
 
 LadybugDB 0.22.0 reads indexes written by 0.21.1, but a write/checkpoint upgrades

@@ -20,7 +20,7 @@
  *  - auto:    same vendor survivorship under the install policy
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
-import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
+import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
@@ -163,17 +163,14 @@ const runCli = (
     encoding: 'utf8',
     timeout: timeoutMs,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
+    env: cliAnalysisEnv({
       HOME: home,
       USERPROFILE: home,
       GITNEXUS_HOME: path.join(home, '.gitnexus'),
       GITNEXUS_LANG: 'en',
       GITNEXUS_LBUG_EXTENSION_INSTALL: policy,
       GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS: '60000',
-      // Skip analyzeCommand's ensureHeap re-exec, which would drop the tsx loader.
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-    },
+    }),
   });
   return {
     status: result.status,

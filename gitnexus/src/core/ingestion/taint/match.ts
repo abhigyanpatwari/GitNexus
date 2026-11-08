@@ -449,9 +449,9 @@ export function matchFunctionSites(
             for (const entry of spec.sources) {
               if (!isCallResultSource(entry)) continue;
               if (
-                resolved.path.length === 2 &&
-                entry.receivers.includes(resolved.path[0]) &&
-                entry.methods.includes(resolved.path[1])
+                resolved.path.length >= 2 &&
+                entry.receivers.includes(resolved.path.slice(0, -1).join('.')) &&
+                entry.methods.includes(resolved.path[resolved.path.length - 1])
               ) {
                 sources.push({
                   type: 'call-result',

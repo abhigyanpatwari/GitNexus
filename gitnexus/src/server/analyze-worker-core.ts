@@ -13,19 +13,24 @@
  * worker — only the lightweight `analyze-worker-ipc` projection helper.
  */
 import type { AnalyzeOptions } from '../core/run-analyze.js';
+import { projectAnalysisPhaseProgress } from '../core/analysis-progress.js';
 // The IPC message protocol lives in a declarations-only leaf, NOT in the
 // `analyze-worker.ts` entry module: importing it from the entry made this
 // module depend on the very module that depends on it (#cycle). Erased at
 // runtime either way; this way the graph is acyclic too.
-import type { WorkerMessage } from './analyze-worker-protocol.js';
+import type { WorkerMessage, ContinueMessage } from './analyze-worker-protocol.js';
 import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
 import { projectAnalyzeResultForIpc } from './analyze-worker-ipc.js';
+import { projectPreparedAnalysisHandoff } from '../core/analysis-phase-supervisor.js';
 // Value import (instanceof): index-lock is a lightweight storage primitive
 // (node:fs/net/crypto only), so this does NOT pull in run-analyze/repo-manager.
 import { IndexLockTimeoutError, isIndexLockGuardTimeout } from '../storage/index-lock.js';
 
 export interface WorkerAnalysisDeps {
   runFullAnalysis: typeof import('../core/run-analyze.js').runFullAnalysis;
+  continuePreparedAnalysis?: typeof import('../core/run-analyze.js').continuePreparedAnalysis;
+  onGraphPublished?: () => Promise<void>;
+  signal?: AbortSignal;
   assertAnalysisFinalized: typeof import('../storage/repo-manager.js').assertAnalysisFinalized;
   send: (msg: WorkerMessage) => void;
   /**
@@ -35,6 +40,9 @@ export interface WorkerAnalysisDeps {
    * both report a terminal outcome (#2264 P3). See {@link createTerminalClaim}.
    */
   claimTerminal: () => boolean;
+  /** Required for nonterminal graph handoff; never claim the final outcome just
+   * to test whether cancellation already owns it. */
+  isCancelled?: () => boolean;
 }
 
 /**
@@ -48,25 +56,66 @@ export async function runWorkerAnalysis(
   options: AnalyzeOptions,
   deps: WorkerAnalysisDeps,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
+  continuation?: ContinueMessage,
 ): Promise<void> {
   let terminal: WorkerMessage;
   try {
     const bootstrapArgs: [] | [AnalyzerRunnerIdentity] = runnerIdentityAtBootstrap
       ? [runnerIdentityAtBootstrap]
       : [];
-    const result = await deps.runFullAnalysis(
-      repoPath,
-      // This worker force-exits right after reporting, so skip the native close
-      // (it can double-free in LadybugDB's ClientContext destructor after --pdg
-      // writes); flushWAL still persists the index, process.exit reclaims handles.
-      { ...options, skipNativeCloseOnExit: true },
-      {
-        onProgress: (phase, percent, message) =>
-          deps.send({ type: 'progress', phase, percent, message }),
-        onLog: (message) => deps.send({ type: 'progress', phase: 'log', percent: -1, message }),
-      },
-      ...bootstrapArgs,
-    );
+    const callbacks: import('../core/run-analyze.js').AnalyzeCallbacks = {
+      signal: deps.signal,
+      onGraphPublished: deps.onGraphPublished,
+      onProgress: (phase, percent, message, details) =>
+        deps.send({
+          type: 'progress',
+          phase,
+          percent,
+          message,
+          ...projectAnalysisPhaseProgress(details),
+        }),
+      onLog: (message) => deps.send({ type: 'progress', phase: 'log', percent: -1, message }),
+    };
+    let result: import('../core/run-analyze.js').AnalyzeResult;
+    if (continuation) {
+      if (!deps.continuePreparedAnalysis) throw new Error('Missing analysis continuation');
+      const handoff = projectPreparedAnalysisHandoff(continuation.prepared.handoff);
+      if (handoff.repoPath !== repoPath || continuation.prepared.result.repoPath !== repoPath)
+        throw new Error('Continuation belongs to a different repository');
+      const metadata = await deps.continuePreparedAnalysis(
+        handoff,
+        continuation.writerPid,
+        options,
+        callbacks,
+        deps.signal,
+      );
+      result = {
+        ...continuation.prepared.result,
+        stats: metadata.stats ?? {},
+        rebuildReasons: [],
+      };
+    } else {
+      // Native allocations belong to this exit-only graph process.
+      result = await deps.runFullAnalysis(
+        repoPath,
+        { ...options, skipNativeCloseOnExit: true },
+        callbacks,
+        ...bootstrapArgs,
+      );
+    }
+    if (result.preparedGraph) {
+      if (!deps.isCancelled) throw new Error('Graph handoff requires cancellation state');
+      if (result.graphWriteCollapsed)
+        throw new Error('Collapsed graph cannot be prepared for publication');
+      if (!deps.isCancelled()) {
+        deps.send({
+          type: 'graph-prepared',
+          handoff: projectPreparedAnalysisHandoff(result.preparedGraph),
+          result: projectAnalyzeResultForIpc(result),
+        });
+      }
+      return;
+    }
     // P2 (#2264): a half-finalized repo — meta.json written but the global
     // registry entry missing (e.g. a prior collision-aborted run, or a wiped
     // registry) — must NOT be reported as a successful analysis. Mirror the CLI's

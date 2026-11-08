@@ -7,6 +7,204 @@ permissions:
   contents: read
 
 jobs:
+  analyze-resume-benchmark:
+    name: analyze / resumable performance (${{ matrix.resources }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        resources: [explicit, default]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Pin comparison revision
+        id: baseline
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ -n "$PR_BASE_SHA" ]]; then
+            comparison_sha="$PR_BASE_SHA"
+          else
+            comparison_sha="$(git rev-parse --verify HEAD^1)"
+          fi
+          printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.baseline.outputs.sha }}
+          path: baseline
+          persist-credentials: false
+      - name: Build baseline runtime
+        working-directory: baseline/gitnexus
+        run: |
+          npm ci
+          npm run build
+          npx tsx scripts/ensure-fts.ts
+      - name: Install candidate search extensions
+        working-directory: gitnexus
+        run: npx tsx scripts/ensure-fts.ts
+      - name: Profile fresh HTTP analysis separately from acceptance timings
+        if: matrix.resources == 'explicit'
+        working-directory: gitnexus
+        run: |
+          mkdir -p "$RUNNER_TEMP/analyze-profile"
+          node bench/analyze-resume/measure.mjs --cpu-profile --allow-dependency-changes \
+            --scenarios http-fresh --pairs 1 --warmups 0 \
+            --baseline "$GITHUB_WORKSPACE/baseline/gitnexus/dist/cli/index.js" \
+            --output "$RUNNER_TEMP/analyze-profile/results.json"
+      - name: Retain diagnostic CPU profiles before the full comparison
+        if: always() && matrix.resources == 'explicit'
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: analyze-resume-cpu-profile-${{ matrix.resources }}
+          path: |
+            ${{ runner.temp }}/analyze-profile/**/*.cpuprofile
+            ${{ runner.temp }}/analyze-profile/**/*.json
+            ${{ runner.temp }}/analyze-profile/**/*.log
+          retention-days: 7
+      - name: Check paired analyze and resume performance
+        working-directory: gitnexus
+        shell: bash
+        env:
+          RESOURCE_PROFILE: ${{ matrix.resources }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/analyze-resume"
+          resource_args=()
+          if [[ "$RESOURCE_PROFILE" == default ]]; then
+            resource_args+=(--default-resources)
+          fi
+          node bench/analyze-resume/measure.mjs --validate-gate
+          node bench/analyze-resume/measure.mjs --check --allow-dependency-changes \
+            --baseline "$GITHUB_WORKSPACE/baseline/gitnexus/dist/cli/index.js" \
+            --output "$RUNNER_TEMP/analyze-resume/results.json" \
+            "${resource_args[@]}" 2>&1 | tee "$RUNNER_TEMP/analyze-resume/run.log"
+      - name: Retain paired measurements and analyzer logs
+        if: always()
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: analyze-resume-performance-${{ matrix.resources }}
+          path: |
+            ${{ runner.temp }}/analyze-resume/*.json
+            ${{ runner.temp }}/analyze-resume/*.log
+            ${{ runner.temp }}/analyze-resume/analyze-pairs-*/*/*.json
+            ${{ runner.temp }}/analyze-resume/analyze-pairs-*/*/*.log
+          retention-days: 30
+
+  lexical-lookup-benchmark:
+    name: indexing / lexical lookup and cache interning
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      GITNEXUS_LEXICAL_BENCH_WORKERS: '2'
+      GITNEXUS_LEXICAL_BENCH_HEAP_MIB: '4096'
+      GITNEXUS_LEXICAL_BENCH_SCREEN: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Pin comparison revision
+        id: baseline
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ -n "$PR_BASE_SHA" ]]; then
+            comparison_sha="$PR_BASE_SHA"
+          else
+            comparison_sha="$(git rev-parse --verify HEAD^1)"
+          fi
+          printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.baseline.outputs.sha }}
+          path: baseline
+          persist-credentials: false
+      - name: Build baseline runtime and install search extensions
+        working-directory: baseline/gitnexus
+        run: |
+          npm ci
+          npm run build
+          npx tsx scripts/ensure-fts.ts
+      - name: Install candidate search extensions
+        working-directory: gitnexus
+        run: npx tsx scripts/ensure-fts.ts
+      - name: Prepare identical source corpora
+        shell: bash
+        env:
+          BASE_SHA: ${{ steps.baseline.outputs.sha }}
+        run: |
+          mkdir "$RUNNER_TEMP/lexical-lookup"
+          for variant in baseline candidate; do
+            corpus="$RUNNER_TEMP/lexical-lookup/corpus-$variant"
+            git clone --quiet --no-checkout --no-hardlinks "$GITHUB_WORKSPACE/baseline" "$corpus"
+            git -C "$corpus" sparse-checkout set gitnexus/src/core/ingestion gitnexus-shared/src/scope-resolution
+            git -C "$corpus" checkout --quiet --detach "$BASE_SHA"
+          done
+      - name: Compare lexical lookup semantics
+        run: node gitnexus/bench/lexical-lookup/differential.mjs "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE" | tee "$RUNNER_TEMP/lexical-lookup/differential.log"
+        shell: bash
+      - name: Measure separate processes
+        shell: bash
+        run: >-
+          node gitnexus/bench/lexical-lookup/measure.mjs
+          "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/lexical-lookup/corpus-baseline" "$RUNNER_TEMP/lexical-lookup/corpus-candidate"
+          "$RUNNER_TEMP/lexical-lookup/fresh" fresh 9
+          2>&1 | tee "$RUNNER_TEMP/lexical-lookup/fresh.log"
+      - name: Measure repeated processes
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: >-
+          node gitnexus/bench/lexical-lookup/measure.mjs
+          "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/lexical-lookup/corpus-baseline" "$RUNNER_TEMP/lexical-lookup/corpus-candidate"
+          "$RUNNER_TEMP/lexical-lookup/persistent" persistent 9
+          2>&1 | tee "$RUNNER_TEMP/lexical-lookup/persistent.log"
+      - name: Compare real cache shard interning
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: >-
+          node --expose-gc --max-old-space-size=4096 gitnexus/bench/v8-sidecar/intern.mjs
+          "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/lexical-lookup/fresh/results.json"
+          "$RUNNER_TEMP/lexical-lookup/interner.json"
+          2>&1 | tee "$RUNNER_TEMP/lexical-lookup/interner.log"
+      - name: Enforce indexing and cache interning performance budget
+        if: ${{ !cancelled() }}
+        run: node gitnexus/bench/v8-sidecar/check.mjs "$RUNNER_TEMP/lexical-lookup"
+      - name: Publish indexing performance summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f "$RUNNER_TEMP/lexical-lookup/report.md" ]]; then
+            cat "$RUNNER_TEMP/lexical-lookup/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Retain lexical lookup measurements
+        if: always()
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: lexical-lookup-performance
+          path: |
+            ${{ runner.temp }}/lexical-lookup/fresh/results.json
+            ${{ runner.temp }}/lexical-lookup/persistent/results.json
+            ${{ runner.temp }}/lexical-lookup/interner.json
+            ${{ runner.temp }}/lexical-lookup/report.json
+            ${{ runner.temp }}/lexical-lookup/report.md
+            ${{ runner.temp }}/lexical-lookup/*.log
+          retention-days: 30
+
   mcp-query-benchmark:
     name: MCP query performance
     runs-on: ubuntu-latest
@@ -850,6 +1048,67 @@ jobs:
           done
         working-directory: gitnexus
 
+  embedding-chunking-benchmark:
+    name: embedding chunking benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Pin comparison revision
+        id: baseline
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ -n "$PR_BASE_SHA" ]]; then
+            comparison_sha="$PR_BASE_SHA"
+          else
+            comparison_sha="$(git rev-parse --verify HEAD^1)"
+          fi
+          printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.baseline.outputs.sha }}
+          path: baseline
+          persist-credentials: false
+      - name: Build baseline runtime
+        working-directory: baseline/gitnexus
+        run: |
+          npm ci
+          npm run build
+      - name: Install local embedding runtime
+        working-directory: gitnexus
+        env:
+          GITNEXUS_EMBEDDING_RUNTIME_DIR: ${{ runner.temp }}/embedding-chunking-runtime
+        run: node dist/cli/index.js embeddings install
+      - name: Measure paired embedding chunking
+        working-directory: gitnexus
+        shell: bash
+        env:
+          GITNEXUS_EMBEDDING_RUNTIME_DIR: ${{ runner.temp }}/embedding-chunking-runtime
+        run: >-
+          node --expose-gc bench/embedding-chunking/measure.mjs
+          "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/embedding-chunking.json" --source
+          2>&1 | tee "$RUNNER_TEMP/embedding-chunking.log"
+      - name: Retain embedding chunking measurements
+        if: always()
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: embedding-chunking-performance
+          path: |
+            ${{ runner.temp }}/embedding-chunking.json
+            ${{ runner.temp }}/embedding-chunking.log
+          retention-days: 30
+
   # Native embedding replacement measures real COPY, writes and cold reopens.
   # Keep it outside the 25-minute language benchmark job: four trials at each
   # size take several minutes even on the development baseline machine.
@@ -1359,6 +1618,9 @@ jobs:
         shell: bash
         run: node --expose-gc --import tsx bench/scope-resolution/call-signature-memory.mts 500000 --check | tee scope-resolution-call-signature-memory.json
         working-directory: gitnexus
+      - name: Check import-emission memory and output baseline
+        run: node bench/import-emission/measure.mjs --check --output import-emission/measure.json
+        working-directory: gitnexus
       - name: Measure dense Java and check its graph baseline
         shell: bash
         env:
@@ -1376,6 +1638,7 @@ jobs:
           path: |
             gitnexus/scope-resolution-benchmark.json
             gitnexus/scope-resolution-call-signature-memory.json
+            gitnexus/import-emission/measure.json
             gitnexus/scope-resolution-dense-java.log
             gitnexus/java-overload-resolution-benchmark.json
           retention-days: 5
@@ -1391,7 +1654,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: '0.11.23'
           python-version: '3.13'
@@ -1504,7 +1767,7 @@ jobs:
           cache-dependency-path: |
             gitnexus/package-lock.json
             gitnexus-shared/package-lock.json
-      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: '0.11.23'
           python-version: '3.13'
@@ -1593,7 +1856,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: '0.11.23'
           python-version: '3.13'

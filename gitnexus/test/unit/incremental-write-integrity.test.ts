@@ -138,7 +138,7 @@ describe('incremental graph identity before publication', () => {
       );
       await adapter.tryFlushWAL();
       await expect(
-        reconcileGraphNodeIdentities(graph, adapter.executeQuery, 'native CSV parity'),
+        reconcileGraphNodeIdentities(graph, adapter.forEachQueryRow, 'native CSV parity'),
       ).resolves.toMatchObject({ nodes: 5 });
     } finally {
       await adapter.closeLbug();
@@ -264,7 +264,7 @@ describe('incremental graph identity before publication', () => {
           await expect(
             reconcileGraphNodeIdentities(
               recovered.pipelineResult.graph,
-              adapter.executeQuery,
+              adapter.forEachQueryRow,
               'recovered/reopened',
             ),
           ).resolves.toMatchObject({ nodes: expect.any(Number) });

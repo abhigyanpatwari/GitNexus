@@ -12,7 +12,7 @@ import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:net';
-import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
+import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -266,7 +266,7 @@ describe('FTS opt-out analysis lifecycle (#3091)', () => {
     const cli = (args: string[]) =>
       promisify(execFile)(process.execPath, [...CLI_SPAWN_PREFIX, ...args], {
         cwd: repo.dbPath,
-        env: { ...process.env, GITNEXUS_MEMORY: 'off' },
+        env: cliAnalysisEnv(),
         timeout: 120_000,
         maxBuffer: 2_000_000,
       });

@@ -11,7 +11,7 @@
 
 import {
   detectGraphWriteCollapse,
-  getIndexIncompleteReasons,
+  getGraphIncompleteReasons,
   type GraphWriteCollapseVerdict,
 } from './index-freshness.js';
 import {
@@ -38,15 +38,12 @@ import { PDG_EDGE_TYPES } from './lbug/pdg-emit-sink.js';
 import path from 'path';
 import fs from 'fs/promises';
 import { constants as fsConstants, existsSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { retryRename } from '../storage/fs-atomic.js';
 import { assertLbugPublicationReady, consolidateLbugForPublication } from './lbug/publication.js';
-import {
-  acquireIndexLock,
-  requireExclusiveIndexLock,
-  sweepStagingArtifacts,
-} from '../storage/index-lock.js';
+import { requireExclusiveIndexLock, sweepStagingArtifacts } from '../storage/index-lock.js';
+import { acquireAnalysisSlotLock } from '../storage/analysis-slot-lock.js';
 import { resolveEmbeddingRecovery } from '../storage/embedding-recovery.js';
 import { invalidateNodeWorkspacePackages } from './ingestion/languages/typescript/workspace-packages.js';
 import {
@@ -54,7 +51,6 @@ import {
   summarizeNameFallback,
   countCallsByLanguage,
 } from './ingestion/scope-resolution/name-fallback-summary.js';
-import { runPipelineFromRepo } from './ingestion/pipeline.js';
 import type { RouteHookConfig } from './ingestion/language-provider.js';
 import { routeHookConfigKey } from './ingestion/route-hook-config.js';
 import {
@@ -65,6 +61,11 @@ import { summarizeUndecidedSatisfaction } from './ingestion/scope-resolution/und
 import { summarizeScopeExtractionFailures } from './ingestion/scope-resolution/scope-extraction-failures.js';
 import { summarizeUnresolvedOverloads } from './ingestion/scope-resolution/unresolved-overloads.js';
 import type { KnowledgeGraph } from './graph/types.js';
+import {
+  publishAnalysisAfterProcessExit,
+  type AnalysisPhaseTarget,
+  type PreparedAnalysisHandoff,
+} from './analysis-phase-supervisor.js';
 import { reconcileGraphNodeIdentities } from './incremental/write-reconciliation.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
@@ -73,8 +74,10 @@ import {
   loadGraphToLbug,
   getLbugStats,
   executeQuery,
+  forEachQueryRow,
   executeWithReusedStatement,
   closeLbug,
+  drainAnalysisNativeResources,
   closeLbugBeforeExit,
   loadCachedEmbeddings,
   deleteNodesForFiles,
@@ -173,6 +176,8 @@ import {
   loadMeta,
   ensureGitNexusIgnored,
   registerRepo,
+  readRegistry,
+  findRegistryEntryByRepoPath,
   setShareOptOut,
   adoptFlatBranchLabel,
   isReadOnlyFilesystemError,
@@ -198,6 +203,7 @@ import {
 import {
   isSharedStoreDisabled,
   resolveGraphPath,
+  resolveGraphWritePath,
   resolveSharedStore,
   storeRootOfCheckoutSlot,
   type SharedStoreLayout,
@@ -205,7 +211,6 @@ import {
 import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import {
   ensurePrivateSharedGraph,
-  listStoreMetaRoots,
   leaveSharedStore,
   optedInSlotToLeave,
   registerLeftStore,
@@ -213,7 +218,17 @@ import {
   resolveOptedInStore,
   seedSharedSlot,
 } from './shared-store-analyze.js';
-import { withStoreLock } from '../storage/shared-store-lifecycle.js';
+import {
+  publishAnalysisParseCache,
+  loadAnalysisParseCache,
+  stageAnalysisParseCache,
+} from './analysis-parse-cache.js';
+import {
+  beginInPlaceAnalysis,
+  prepareAnalysisPublication,
+  publishPreparedAnalysis,
+  readPreparedAnalysis,
+} from './analysis-publication.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from './ingestion/cfg/collect.js';
 import {
   DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
@@ -241,7 +256,6 @@ import {
   type PersistedSpringConfigConsumerRow,
 } from './incremental/spring-config-drift.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
-import { collectResolutionGroupFiles } from './incremental/resolution-groups.js';
 import { shouldEscalateIncrementalWrite } from './incremental/escalation-gate.js';
 import {
   ftsTablesAmong,
@@ -265,17 +279,13 @@ import {
 } from './parse-cache-identity.js';
 import {
   loadParseCache,
-  saveParseCache,
-  pruneCache,
   createColdParseRebuildDir,
   getColdParseRebuildDir,
   emptyParseCache,
   forgetCreatedParseCacheDir,
 } from '../storage/parse-cache.js';
-import { mergeStagedDurableParsedFileStore } from '../storage/parsedfile-store.js';
 import {
-  getCurrentCommit,
-  getCurrentBranch,
+  getCurrentCheckout,
   getRemoteUrl,
   hasGitDir,
   getInferredRepoName,
@@ -457,11 +467,27 @@ function collectSpringBeanDeclarationDriftFiles(
 // ---------------------------------------------------------------------------
 
 export interface AnalyzeCallbacks {
-  onProgress: (phase: string, percent: number, message: string) => void;
+  /** Process-local cancellation; never serialized through options/IPC. */
+  signal?: AbortSignal;
+  /** Exit-only frontends admit their supervisor before opening a graph writer. */
+  onGraphWork?: () => void | Promise<void>;
+  /** Let a serving parent refresh graph readers before paid embedding work. */
+  onGraphPublished?: () => Promise<void>;
+  onProgress: (
+    phase: string,
+    percent: number,
+    message: string,
+    details?: import('./analysis-progress.js').AnalysisPhaseProgress,
+  ) => void;
   onLog?: (message: string) => void;
 }
 
 export interface AnalyzeOptions {
+  /** Internal phase coordination. Entry points activate this together with
+   * the published embedding continuation; never a user-facing mode switch. */
+  graphPublication?: 'auto' | 'inline' | 'after-exit';
+  /** Frozen per-invocation allocations; entrypoints resolve these before destructive work. */
+  resources?: import('./analysis-resource-budget.js').AnalysisResourceBudget;
   /**
    * Rebuild the graph and FTS. Parser output is still reused from the
    * content-addressed parse cache unless `useParseCache` is false.
@@ -789,6 +815,8 @@ export function analyzeFailureMayHaveMutatedLiveIndex(error: unknown): boolean {
 }
 
 export interface AnalyzeResult {
+  /** Exit-only graph phase awaiting its supervisor's verified publication. */
+  preparedGraph?: PreparedAnalysisHandoff;
   repoName: string;
   repoPath: string;
   /** The exact storage slot selected and validated for this analysis. */
@@ -1281,6 +1309,35 @@ interface WriteTarget {
   sharedStore?: SharedStoreLayout;
 }
 
+/** Adoption must not move the checkout away from its unfinished private work.
+ * Only inspected during a local-to-shared transition; established shared slots
+ * keep their existing fast path. Branch jobs belong to the same local root. */
+async function hasRetainedAnalysisWork(root: string): Promise<boolean> {
+  const pending = async (slot: string): Promise<boolean> => {
+    try {
+      await fs.lstat(path.join(slot, 'analysis-publication.json'));
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    const meta = await loadMeta(slot);
+    return Boolean(meta?.incrementalInProgress || meta?.embeddingJob || meta?.embeddingCheckpoint);
+  };
+  if (await pending(root)) return true;
+  let branches;
+  try {
+    branches = await fs.opendir(path.join(root, 'branches'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  for await (const branch of branches) {
+    if (branch.isDirectory() && (await pending(path.join(root, 'branches', branch.name))))
+      return true;
+  }
+  return false;
+}
+
 /**
  * Resolve which storage slot this analyze writes to, including branch
  * placement (#2106/#2354). Extracted from the top of the pipeline so the lock
@@ -1313,15 +1370,29 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
     );
   }
   const sharingOff = options.noShare || isSharedStoreDisabled();
-  const sharedStore = sharingOff
+  let sharedStore = sharingOff
     ? undefined
     : (resolveSharedStore(repoPath) ?? (await resolveOptedInStore(repoPath, options.shareWith)));
+  const previousStorage = resolveStoragePath(repoPath);
+  let retainedStorage: string | undefined;
+  if (
+    sharedStore &&
+    path.resolve(previousStorage) !== path.resolve(sharedStore.checkoutSlot) &&
+    !storeRootOfCheckoutSlot(previousStorage) &&
+    (await hasRetainedAnalysisWork(previousStorage))
+  ) {
+    // Re-resolved after ordinary lock acquisition as well: if the previous
+    // writer completes while we wait, adoption can proceed on the next lock.
+    retainedStorage = previousStorage;
+    sharedStore = undefined;
+  }
   // A checkout still registered in a store after sharing was turned off
   // indexes into its own `.gitnexus` again; its slot is left for `clean --gc`.
-  const leavingStore =
-    !sharedStore && storeRootOfCheckoutSlot(resolveStoragePath(repoPath)) !== null;
+  const leavingStore = !sharedStore && storeRootOfCheckoutSlot(previousStorage) !== null;
   const explicitStorage =
-    sharedStore?.checkoutSlot ?? (leavingStore ? defaultStoragePath(repoPath) : undefined);
+    retainedStorage ??
+    sharedStore?.checkoutSlot ??
+    (leavingStore ? defaultStoragePath(repoPath) : undefined);
   const storagePath = explicitStorage
     ? await requireRegisteredStoragePath(
         { path: repoPath, storagePath: explicitStorage },
@@ -1329,14 +1400,15 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
       )
     : await requireStoragePath(repoPath, storageRequirements);
   const repoHasGit = hasGitDir(repoPath);
-  const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
+  const checkout = repoHasGit ? getCurrentCheckout(repoPath) : { commit: '', branch: null };
+  const currentCommit = checkout.commit;
   // Normalize the auto-detected branch the same way an explicit `--branch` is
   // validated (#2106 R1): a git ref the branch-name rules forbid becomes `null`
   // → the flat slot, matching that a later `--branch <that-ref>` query would
   // also be rejected. A normal ref round-trips index-time/query-time labels.
   // Keep the raw rejected name so `runFullAnalysis` can warn once after the
   // lock settles. Detached / non-git / empty detect stay `null` here and silent.
-  const rawDetectedBranch = repoHasGit ? getCurrentBranch(repoPath) : null;
+  const rawDetectedBranch = checkout.branch;
   const checkedOutBranch = sanitizeDetectedBranch(rawDetectedBranch) ?? null;
   const rejectedDetectedBranch =
     rawDetectedBranch != null && checkedOutBranch === null ? rawDetectedBranch : null;
@@ -1356,10 +1428,10 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
     : {};
   const paths = getStoragePaths(repoPath, placement.branch, storagePath);
   const { metaPath } = paths;
-  // Analyze always writes a store slot's own graph; a recorded `graphPath`
-  // (an immutable commit graph) only redirects readers.
+  // Owned generation files stay writable in place. Only an immutable shared
+  // commit pointer resolves to a fresh slot-local write target.
   const lbugPath = storeRootOfCheckoutSlot(storagePath)
-    ? path.join(path.dirname(metaPath), LBUG_DIRECTORY)
+    ? resolveGraphWritePath(path.dirname(metaPath))
     : paths.lbugPath;
   return {
     storagePath,
@@ -1392,6 +1464,240 @@ interface ParseIdentityRun {
   resolve(): ParseCacheIdentityResolution;
   /** Slot-owned staging parent; includes any late writes to a retired run's child. */
   storagePath?: string;
+}
+
+async function retainsPreparedGraph(metadataDirectory: string): Promise<boolean> {
+  return fs.lstat(path.join(metadataDirectory, 'analysis-publication.json')).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => error.code !== 'ENOENT',
+  );
+}
+
+/** Preview the registry's existing name precedence without advancing freshness.
+ * The continuation checks it again under the slot lock before publication. */
+async function preparedAnalysisName(repoPath: string, options: AnalyzeOptions): Promise<string> {
+  if (options.registryName !== undefined) return options.registryName;
+  const existing = findRegistryEntryByRepoPath(await readRegistry(), repoPath);
+  const inferred = getInferredRepoName(repoPath);
+  if (
+    existing &&
+    existing.name !== path.basename(path.resolve(existing.path)) &&
+    existing.name !== inferred &&
+    existing.name !== path.basename(resolveRepoIdentityRoot(existing.path))
+  )
+    return existing.name;
+  return inferred ?? path.basename(resolveRepoIdentityRoot(repoPath));
+}
+
+async function recoverPreparedGraph(
+  target: WriteTarget,
+  repoPath: string,
+  options: AnalyzeOptions,
+  log: (message: string) => void,
+): Promise<RepoMeta | undefined> {
+  const prepared = await retainsPreparedGraph(target.metaDir);
+  if (prepared && !(await readPreparedAnalysis(target.metaDir))) return undefined;
+  // Publication removes the graph receipt before the optional cache is merged.
+  // Recover that crash window using only the currently published generation.
+  const alreadyPublished = prepared ? undefined : await loadMeta(target.metaDir);
+  let pendingCache: Awaited<ReturnType<typeof loadAnalysisParseCache>>;
+  if (!prepared) {
+    if (!alreadyPublished?.graphGeneration || alreadyPublished.incrementalInProgress)
+      return undefined;
+    try {
+      pendingCache = await loadAnalysisParseCache(target.metaDir, alreadyPublished);
+    } catch (error) {
+      log(`Warning: could not recover the prepared parse cache (${(error as Error).message}).`);
+      return undefined;
+    }
+    if (!pendingCache) return undefined;
+  }
+  if (!options.resources) throw new Error('Graph publication requires admitted resources');
+  const metadata =
+    alreadyPublished ??
+    (await publishPreparedAnalysis(target.metaDir, {
+      saveMetadata: (meta) => saveMeta(target.metaDir, meta),
+      verify: async (file, meta) => {
+        if (meta.repoPath !== repoPath)
+          throw new Error('Prepared graph belongs to another checkout');
+        const { drainEmbeddingSidecarForAnalysis } =
+          await import('./embeddings/embedding-sidecar-client.js');
+        await drainEmbeddingSidecarForAnalysis();
+        await drainAnalysisNativeResources();
+        const { verifyPublishedAnalysisGraph } = await import('./analysis-graph-verification.js');
+        await verifyPublishedAnalysisGraph(file, meta, {
+          bufferPoolBytes: options.resources!.parse.graphPoolBytes,
+          threads: options.resources!.parse.nativeThreads,
+        });
+      },
+    }));
+  if (!metadata) throw new Error('Prepared graph disappeared under its writer lock');
+  await registerRepo(repoPath, metadata, {
+    name: options.registryName,
+    allowDuplicateName: options.allowDuplicateName,
+    branch: target.placement.branch,
+    storagePath: target.storagePath,
+  });
+  try {
+    const cache = pendingCache ?? (await loadAnalysisParseCache(target.metaDir, metadata));
+    if (cache)
+      await publishAnalysisParseCache(cache, {
+        storagePath: target.storagePath,
+        metadataDirectory: target.metaDir,
+        cacheRoot: target.sharedStore?.cachesDir ?? target.storagePath,
+        publishedGeneration: metadata.graphGeneration?.id,
+        sharedStore: target.sharedStore,
+        collectBranchKeys: collectBranchCacheKeys,
+        log,
+      });
+  } catch (error) {
+    log(
+      `Warning: could not publish the prepared parse cache (${(error as Error).message}); continuing.`,
+    );
+  }
+  return metadata;
+}
+
+/** Complete an exit-only writer's exact attempt, without invoking the parser or
+ * regenerating context/skills. The launcher must wait for actual process exit
+ * before starting this continuation in its separately admitted process. */
+export async function continuePreparedAnalysis(
+  handoff: PreparedAnalysisHandoff,
+  writerPid: number,
+  options: AnalyzeOptions,
+  callbacks: AnalyzeCallbacks,
+  signal?: AbortSignal,
+): Promise<RepoMeta> {
+  const resources = options.resources;
+  if (!resources) throw new Error('Graph continuation requires admitted resources');
+  const log = (message: string) => callbacks.onLog?.(stripControlCharacters(message));
+  // Publication resolves the target before locking and again under the lock.
+  // Retain that verified target for its callbacks; an extra snapshot here is
+  // overwritten before use and adds synchronous Git probes to every handoff.
+  let target: Awaited<ReturnType<typeof resolveWriteTarget>>;
+  const resolveTarget = async (): Promise<AnalysisPhaseTarget> => {
+    target = await resolveWriteTarget(handoff.repoPath, options);
+    return {
+      repoPath: handoff.repoPath,
+      storagePath: target.storagePath,
+      metadataDirectory: target.metaDir,
+      repoName: await preparedAnalysisName(handoff.repoPath, options),
+      commit: target.currentCommit,
+    };
+  };
+  const finalize = async (metadata: RepoMeta): Promise<RepoMeta> => {
+    const prior = options.noShare ? await optedInSlotToLeave(handoff.repoPath) : undefined;
+    await registerRepo(handoff.repoPath, metadata, {
+      name: options.registryName,
+      allowDuplicateName: options.allowDuplicateName,
+      branch: target.placement.branch,
+      storagePath: target.storagePath,
+    });
+    if (!target.placement.branch && target.branchLabel) {
+      try {
+        await adoptFlatBranchLabel(handoff.repoPath, target.branchLabel, target.storagePath);
+      } catch (error) {
+        log(`Warning: could not sync the workspace branch label (${(error as Error).message}).`);
+      }
+    }
+    if (target.sharedStore && !target.placement.branch) {
+      await publishSharedGraph(target.sharedStore, handoff.repoPath, target.currentCommit, log, {
+        name: options.registryName,
+        allowDuplicateName: options.allowDuplicateName,
+      });
+    } else if (!target.sharedStore) {
+      if (prior) await leaveSharedStore(handoff.repoPath, prior, target.storagePath, log);
+      else await registerLeftStore(handoff.repoPath, target.storagePath);
+    }
+    if (options.noShare) await setShareOptOut(handoff.repoPath, true);
+    else if (options.shareWith) await setShareOptOut(handoff.repoPath, false);
+    return (await loadMeta(target.metaDir)) ?? metadata;
+  };
+  let metadata = await publishAnalysisAfterProcessExit(handoff, writerPid, {
+    resolveTarget,
+    saveMetadata: (meta) => saveMeta(target.metaDir, meta),
+    verify: async (file, meta) => {
+      const { drainEmbeddingSidecarForAnalysis } =
+        await import('./embeddings/embedding-sidecar-client.js');
+      await drainEmbeddingSidecarForAnalysis();
+      await drainAnalysisNativeResources();
+      const { verifyPublishedAnalysisGraph } = await import('./analysis-graph-verification.js');
+      await verifyPublishedAnalysisGraph(file, meta, {
+        bufferPoolBytes: resources.embedding.graphPoolBytes,
+        threads: resources.embedding.nativeThreads,
+      });
+    },
+    finalizeGraph: async (meta) => {
+      const published = await finalize(meta);
+      try {
+        const cache = await loadAnalysisParseCache(target.metaDir, published);
+        if (cache)
+          await publishAnalysisParseCache(cache, {
+            storagePath: target.storagePath,
+            metadataDirectory: target.metaDir,
+            cacheRoot: target.sharedStore?.cachesDir ?? target.storagePath,
+            publishedGeneration: published.graphGeneration?.id,
+            sharedStore: target.sharedStore,
+            collectBranchKeys: collectBranchCacheKeys,
+            log,
+          });
+        await removeColdParseRebuildDir(getColdParseRebuildDir(target.metaDir), false);
+      } catch (error) {
+        log(`Warning: could not publish the prepared parse cache (${(error as Error).message}).`);
+      }
+      callbacks.onProgress('graph-ready', 90, 'Graph published', { graphPhase: 'ready' });
+      if (
+        !_deriveEmbeddingMode(options, published.stats?.embeddings ?? 0).shouldGenerateEmbeddings &&
+        !published.embeddingJob &&
+        !published.embeddingCheckpoint
+      )
+        await callbacks.onGraphPublished?.();
+      return published;
+    },
+    signal,
+    log,
+    onWaitStart: () => callbacks.onProgress('lock', 0, 'Waiting to publish the prepared graph…'),
+  });
+  const generate = _deriveEmbeddingMode(
+    options,
+    metadata.stats?.embeddings ?? 0,
+  ).shouldGenerateEmbeddings;
+  if (generate || metadata.embeddingJob || metadata.embeddingCheckpoint) {
+    signal?.throwIfAborted();
+    const lock = await acquireAnalysisSlotLock(handoff.metadataDirectory, { sweep: false, log });
+    try {
+      requireExclusiveIndexLock(lock, 'Embedding continuation requires exclusive index ownership');
+      const current = await resolveTarget();
+      for (const key of [
+        'repoPath',
+        'storagePath',
+        'metadataDirectory',
+        'repoName',
+        'commit',
+      ] as const)
+        if (current[key] !== handoff[key])
+          throw new Error('Analysis target changed before embedding; retry analysis.');
+      const { runAnalysisEmbeddingPhase } = await import('./analysis-embedding-phase.js');
+      metadata = await runAnalysisEmbeddingPhase({
+        metadataDirectory: target.metaDir,
+        graphPath: resolveGraphPath(target.metaDir),
+        resources,
+        callbacks,
+        nodeLimit: options.embeddingsNodeLimit,
+        expectedGeneration: handoff.publicationId,
+        signal,
+      });
+      metadata = await finalize(metadata);
+      // The graph writer deliberately retained staging files across its exit.
+      // Reclaim them only after the replacement vectors are published, while
+      // still holding the ordinary slot lock.
+      sweepStagingArtifacts(target.metaDir, log);
+    } finally {
+      lock.release();
+    }
+  }
+  callbacks.onProgress('done', 100, 'Done', { graphPhase: 'ready' });
+  return metadata;
 }
 
 function effectiveParseCacheIdentity(
@@ -1431,6 +1737,13 @@ export async function runFullAnalysis(
   callbacks: AnalyzeCallbacks,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
+  callbacks.signal?.throwIfAborted();
+  if (options.graphPublication && !options.resources)
+    throw new Error('Graph publication requires admitted resources');
+  if (options.graphPublication === 'after-exit' && !options.skipNativeCloseOnExit)
+    throw new Error('Deferred publication requires an exit-only graph writer');
+  if (options.graphPublication === 'inline' && options.skipNativeCloseOnExit)
+    throw new Error('Inline publication requires physical native release');
   // Validate operator-provided FTS config before anything else — a typo fails
   // here in ms, without taking the lock. (createSearchFTSIndexes reuses the
   // cached value via getSearchFTSStemmer.)
@@ -1462,7 +1775,8 @@ export async function runFullAnalysis(
   };
 
   let writeTarget = await resolveWriteTarget(repoPath, options);
-  let lock = await acquireIndexLock(writeTarget.metaDir, acquireOpts);
+  let lock = await acquireAnalysisSlotLock(writeTarget.metaDir, acquireOpts);
+  let retainParseStage = false;
   return withEmbeddingSpillScope(async () => {
     try {
       requireExclusiveIndexLock(
@@ -1497,7 +1811,7 @@ export async function runFullAnalysis(
         );
         lock.release();
         writeTarget = fresh;
-        lock = await acquireIndexLock(fresh.metaDir, acquireOpts);
+        lock = await acquireAnalysisSlotLock(fresh.metaDir, acquireOpts);
         requireExclusiveIndexLock(
           lock,
           `Cannot acquire the index lock at ${fresh.metaDir}; refusing an unlocked analysis.`,
@@ -1513,10 +1827,37 @@ export async function runFullAnalysis(
           `Warning: checkout "${formatRejectedBranchForLog(writeTarget.rejectedDetectedBranch)}" is not a usable index label; continuing.`,
         );
       }
+      if (options.graphPublication === 'auto') {
+        const prior = await loadMeta(writeTarget.metaDir);
+        const separate = Boolean(
+          (await retainsPreparedGraph(writeTarget.metaDir)) ||
+          prior?.graphGeneration ||
+          prior?.embeddingJob ||
+          (!options.dropEmbeddings && prior?.embeddingCheckpoint) ||
+          _deriveEmbeddingMode(options, prior?.stats?.embeddings ?? 0).shouldGenerateEmbeddings,
+        );
+        options = {
+          ...options,
+          graphPublication: separate
+            ? options.skipNativeCloseOnExit
+              ? 'after-exit'
+              : 'inline'
+            : undefined,
+        };
+      }
       // Only this canonical slot is locked. Its deterministic parser stage
       // can only belong to an interrupted predecessor; sibling stages live
       // under their own meta directories and must remain untouched. Reclaim
       // before freshness/FTS-only early returns as well as parsing runs.
+      const slotToLeave = options.noShare ? await optedInSlotToLeave(repoPath) : undefined;
+      if (options.graphPublication) {
+        const recovered = await recoverPreparedGraph(writeTarget, repoPath, options, log);
+        if (recovered?.graphPath)
+          writeTarget = {
+            ...writeTarget,
+            lbugPath: resolveGraphWritePath(writeTarget.metaDir),
+          };
+      }
       await removeColdParseRebuildDir(getColdParseRebuildDir(writeTarget.metaDir), false);
       const flatShared = writeTarget.placement.branch ? undefined : writeTarget.sharedStore;
       if (flatShared) {
@@ -1537,7 +1878,16 @@ export async function runFullAnalysis(
         });
       }
       sweepStagingArtifacts(writeTarget.metaDir, log);
-      const slotToLeave = options.noShare ? await optedInSlotToLeave(repoPath) : undefined;
+      if (options.dropEmbeddings) {
+        const prior = await loadMeta(writeTarget.metaDir);
+        if (prior) {
+          const { reclaimAnalysisArtifacts } =
+            await import('../storage/analysis-artifact-cleanup.js');
+          await reclaimAnalysisArtifacts(writeTarget.metaDir, prior, undefined, log, true);
+        }
+        // Even an empty or pending vector job must lose its metadata references.
+        options = { ...options, force: true };
+      }
       const result = await runFullAnalysisInner(
         repoPath,
         options,
@@ -1547,6 +1897,10 @@ export async function runFullAnalysis(
         parseRun,
         runnerIdentityAtBootstrap,
       );
+      if (result.preparedGraph) {
+        retainParseStage = true;
+        return result;
+      }
       if (flatShared) {
         await publishSharedGraph(flatShared, repoPath, writeTarget.currentCommit, log, {
           name: options.registryName,
@@ -1567,11 +1921,83 @@ export async function runFullAnalysis(
       // A clone that left stays out of sibling stores until `--share-with`.
       if (options.noShare) await setShareOptOut(repoPath, true);
       else if (options.shareWith) await setShareOptOut(repoPath, false);
+      if (
+        options.graphPublication === 'inline' ||
+        (options.graphPublication === 'after-exit' && result.alreadyUpToDate)
+      ) {
+        let published = await loadMeta(writeTarget.metaDir);
+        const generate = _deriveEmbeddingMode(
+          options,
+          published?.stats?.embeddings ?? 0,
+        ).shouldGenerateEmbeddings;
+        if (published && (generate || published.embeddingJob || published.embeddingCheckpoint)) {
+          if (flatShared && !published.graphGeneration) {
+            if (!(await ensurePrivateSharedGraph(writeTarget.metaDir, log)))
+              throw new Error('The shared graph is unavailable; re-run analyze to rebuild it.');
+            published = (await loadMeta(writeTarget.metaDir)) ?? published;
+          }
+          const { runAnalysisEmbeddingPhase } = await import('./analysis-embedding-phase.js');
+          const metadata = await runAnalysisEmbeddingPhase({
+            metadataDirectory: writeTarget.metaDir,
+            graphPath: resolveGraphPath(writeTarget.metaDir, published),
+            resources: options.resources!,
+            callbacks,
+            nodeLimit: options.embeddingsNodeLimit,
+            expectedGeneration: published.graphGeneration?.id,
+            signal: callbacks.signal,
+          });
+          // A matching completed artifact performs no writes. Preserve the
+          // graph's no-op result and avoid republishing identical registry and
+          // shared-store metadata on every cached embedding invocation.
+          const unchangedVectors =
+            result.alreadyUpToDate &&
+            !published.embeddingJob &&
+            !published.embeddingCheckpoint &&
+            published.vectorGeneration &&
+            metadata.vectorGeneration?.identity === published.vectorGeneration.identity;
+          if (!unchangedVectors) {
+            await registerRepo(repoPath, metadata, {
+              name: options.registryName,
+              allowDuplicateName: options.allowDuplicateName,
+              branch: writeTarget.placement.branch,
+              storagePath: writeTarget.storagePath,
+            });
+            if (flatShared)
+              await publishSharedGraph(flatShared, repoPath, writeTarget.currentCommit, log, {
+                name: options.registryName,
+                allowDuplicateName: options.allowDuplicateName,
+              });
+            result.alreadyUpToDate = false;
+          }
+          result.stats = metadata.stats ?? {};
+          callbacks.onProgress('done', 100, 'Done', {
+            graphPhase: 'ready',
+            embeddingProgress: {
+              phase:
+                metadata.vectorGeneration?.graphGeneration === metadata.graphGeneration?.id &&
+                !metadata.embeddingJob &&
+                metadata.vectorGeneration
+                  ? 'ready'
+                  : metadata.stats?.embeddings
+                    ? 'preserved'
+                    : 'unverified',
+            },
+          });
+        } else {
+          await callbacks.onGraphPublished?.();
+        }
+      }
       return result;
     } finally {
       // Readers opened after analyze must not inherit its smaller write budget.
       setBufferPoolSizeHint(undefined);
-      await removeColdParseRebuildDir(parseRun.storagePath, true);
+      if (options.graphPublication && !retainParseStage) {
+        // A close/publication failure can occur after the durable handoff was
+        // written but before an AnalyzeResult is returned. Preserve its cache
+        // even when the receipt itself is unreadable.
+        retainParseStage = await retainsPreparedGraph(writeTarget.metaDir);
+      }
+      if (!retainParseStage) await removeColdParseRebuildDir(parseRun.storagePath, true);
       discardScopedEmbeddingSpills();
       lock.release();
     }
@@ -1587,7 +2013,7 @@ async function matchesIndexedDirtyWorktree(repoPath: string, meta: RepoMeta): Pr
     !Array.isArray(indexedDirtyPaths) ||
     indexedDirtyPaths.length === 0 ||
     indexedDirtyPaths.some((rel) => typeof rel !== 'string') ||
-    getIndexIncompleteReasons(meta).length > 0 ||
+    getGraphIncompleteReasons(meta).length > 0 ||
     indexCoverage?.maxFileSizeBytes !== getMaxFileSizeBytes()
   ) {
     return false;
@@ -1646,8 +2072,18 @@ async function runFullAnalysisInner(
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
   const ftsDisabledReason = resolveFtsDisableReason(options.skipFts);
-  const initAnalysisLbug = (dbPath: string) =>
-    ftsDisabledReason ? initLbug(dbPath, { skipFts: true }) : initLbug(dbPath);
+  const initAnalysisLbug = (dbPath: string) => {
+    if (options.resources) {
+      const sizedPool = getEffectiveBufferPoolSize();
+      const ceiling = options.resources.parse.graphPoolBytes;
+      return initLbug(dbPath, {
+        skipFts: !!ftsDisabledReason,
+        bufferPoolBytes: Math.min(sizedPool || ceiling, ceiling),
+        threads: options.resources.parse.nativeThreads,
+      });
+    }
+    return ftsDisabledReason ? initLbug(dbPath, { skipFts: true }) : initLbug(dbPath);
+  };
   const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
@@ -1722,6 +2158,17 @@ async function runFullAnalysisInner(
   };
   const ftsProfile = ftsProfileForContentRetention(contentRetention);
   const ftsIndexes = getFtsIndexes(ftsProfile);
+  let graphResourcesAdmitted = false;
+  const admitGraphResources = async (): Promise<void> => {
+    if (graphResourcesAdmitted) return;
+    if (options.graphPublication === 'after-exit') await callbacks.onGraphWork?.();
+    if (!options.resources) return;
+    const { drainEmbeddingSidecarForAnalysis } =
+      await import('./embeddings/embedding-sidecar-client.js');
+    await drainEmbeddingSidecarForAnalysis();
+    await drainAnalysisNativeResources();
+    graphResourcesAdmitted = true;
+  };
 
   // Start each analyze with a clean buffer-pool hint: any pre-pipeline DB open
   // (e.g. the embeddings-cache open) falls back to the default until the hint is
@@ -1750,6 +2197,7 @@ async function runFullAnalysisInner(
   // first graph open: here for the paths that open it before the up-to-date
   // check, and below once that check falls through.
   const ensurePrivateGraph = async (copy = true): Promise<void> => {
+    await admitGraphResources();
     if (!writeTarget.sharedStore || placement.branch) return;
     if (!(await ensurePrivateSharedGraph(metaDir, log, { copy }))) {
       collector.add({
@@ -1759,7 +2207,7 @@ async function runFullAnalysisInner(
     }
     // Later dirty-flag writes spread the in-memory metadata; keep them from
     // re-recording the pointer this slot just left.
-    delete loadedMeta?.graphPath;
+    if (loadedMeta?.graphPath !== path.basename(lbugPath)) delete loadedMeta?.graphPath;
   };
   const loadedMeta = await loadMeta(metaDir);
   if (loadedMeta?.incrementalInProgress || options.repairFts) await ensurePrivateGraph();
@@ -1887,6 +2335,7 @@ async function runFullAnalysisInner(
           'Run `gitnexus analyze` (full) to rebuild from scratch.',
       );
     }
+    await admitGraphResources();
     await ensureWritableStorage();
     // P1 R8: park a poisoned live WAL before opening. Staging never parks —
     // the live index next to an unpublished staging file must replay its WAL.
@@ -2516,7 +2965,13 @@ async function runFullAnalysisInner(
   // it means an index predating the field, whose width is unknown but was
   // consistent with the env that wrote it, and which the fingerprint guard
   // above already rebuilds — that rebuild is where the stamp lands.
-  if (existingMeta && embeddingDimsMismatch(existingMeta.embeddingDims, EMBEDDING_DIMS)) {
+  // Published generations keep vectors in their own typed artifact. Changing
+  // that artifact's width must not invalidate the independently versioned graph.
+  if (
+    existingMeta &&
+    !(options.graphPublication && existingMeta.graphGeneration) &&
+    embeddingDimsMismatch(existingMeta.embeddingDims, EMBEDDING_DIMS)
+  ) {
     // Only NAME a recorded width that could be one, for the reason the
     // fingerprint guard gates its stamp on `isSchemaFingerprintShaped`:
     // meta.json is a schema-less JSON.parse of on-disk state, so a value that
@@ -2668,7 +3123,10 @@ async function runFullAnalysisInner(
     JSON.stringify(getIncludeDotDirs());
   if (
     existingMeta &&
-    !existingMeta.embeddingCheckpoint &&
+    (!existingMeta.embeddingCheckpoint ||
+      (options.graphPublication &&
+        resumeEmbeddingCheckpoint &&
+        !existingMeta.embeddingCheckpoint.recovery)) &&
     !options.force &&
     existingMeta.lastCommit === currentCommit &&
     !ftsModeChanged &&
@@ -2886,6 +3344,7 @@ async function runFullAnalysisInner(
     }
   }
 
+  await admitGraphResources();
   await ensureWritableStorage();
   // A forced rebuild reads the old graph only to carry embeddings over; with
   // none to carry, copying the shared graph would be thrown away unread.
@@ -2893,7 +3352,7 @@ async function runFullAnalysisInner(
     resumeEmbeddingCheckpoint ||
     _deriveEmbeddingMode(options, existingMeta?.stats?.embeddings ?? 0).shouldLoadCache;
   await ensurePrivateGraph(!options.force || forcedRebuildReadsOldGraph);
-  delete existingMeta?.graphPath;
+  if (existingMeta?.graphPath !== path.basename(lbugPath)) delete existingMeta?.graphPath;
   // Checkpoint 1, final read: a graph copy that just failed forces the rebuild
   // before the embedding plan, the parse cache, and the emit mode are decided.
   applyCollectedForce();
@@ -2912,8 +3371,8 @@ async function runFullAnalysisInner(
   // proven in-place path; enable it only to test the Windows swap.
   const windowsSwapOk =
     process.platform === 'win32' &&
-    options.pdg !== true &&
-    process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
+    (options.graphPublication !== undefined ||
+      (options.pdg !== true && process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1'));
 
   // ── Cache embeddings from existing index before rebuild ────────────
   // Four modes:
@@ -2952,7 +3411,16 @@ async function runFullAnalysisInner(
     shouldLoadCache: derivedShouldLoadCache,
   } = _deriveEmbeddingMode(options, existingEmbeddingCount);
   const shouldGenerateEmbeddings = derivedShouldGenerateEmbeddings || resumeEmbeddingCheckpoint;
-  const shouldLoadCache = derivedShouldLoadCache || resumeEmbeddingCheckpoint;
+  const shouldLoadCache =
+    !(options.graphPublication && (existingMeta?.vectorGeneration || existingMeta?.embeddingJob)) &&
+    (derivedShouldLoadCache || resumeEmbeddingCheckpoint);
+
+  const stagedRecovery = resolveEmbeddingRecovery(metaDir, existingMeta?.embeddingCheckpoint);
+  const stagedCheckpoint = existingMeta?.embeddingCheckpoint;
+  const inheritedUnsafeNodeIds = new Set([
+    ...pendingEmbeddingNodeIds,
+    ...(stagedRecovery?.unsafeNodeIds ?? []),
+  ]);
 
   if (options.dropEmbeddings && existingEmbeddingCount > 0) {
     log(
@@ -2988,6 +3456,42 @@ async function runFullAnalysisInner(
   // possible the dirty block above already threw a LbugWipeError, so this
   // open is replay-free by construction (FIX 1 of this shipping review).
   if (shouldLoadCache && existingMeta) {
+    if (
+      options.graphPublication &&
+      !options.dropEmbeddings &&
+      !existingMeta.graphGeneration &&
+      !existingMeta.legacyVectorSource &&
+      // A supervisor handoff may leave only placeholder metadata on a first
+      // run. Missing storage is an error only when it claims paid vectors.
+      (existingEmbeddingCount > 0 || existsSync(lbugPath))
+    ) {
+      const { exportLegacyVectorsFromFile } = await import('./lbug/legacy-vector-export.js');
+      const historical = existingMeta.embeddingCheckpoint;
+      const legacy = await exportLegacyVectorsFromFile(lbugPath, {
+        metadataDirectory: metaDir,
+        provenance: {
+          schemaFingerprint: existingMeta.schemaFingerprint ?? SCHEMA_FINGERPRINT,
+          ...(historical
+            ? {
+                recordedIdentity: {
+                  provider: historical.provider,
+                  model: historical.model,
+                  dimensions: historical.dimensions,
+                },
+              }
+            : {}),
+        },
+        excluded: inheritedUnsafeNodeIds,
+        sourcePoolBytes: options.resources!.embedding.graphPoolBytes,
+        bufferPoolBytes: options.resources!.embedding.vectorPoolBytes,
+        threads: options.resources!.embedding.nativeThreads,
+        signal: callbacks.signal,
+      });
+      if (legacy) {
+        await saveMeta(metaDir, { ...existingMeta, legacyVectorSource: legacy });
+        existingMeta.legacyVectorSource = legacy;
+      }
+    }
     // Cache initialization is writable and may discard quarantined WALs.
     // Preserve the live family before this first open, including runs whose
     // incremental write later escalates to a staged full rebuild. Keep this
@@ -3020,12 +3524,6 @@ async function runFullAnalysisInner(
   // A checkpoint's pending decision and its paid, complete vectors are
   // independent: --force discards the former but can still reuse the latter.
   // Select only the explicitly referenced generation, never an orphan by age.
-  const stagedRecovery = resolveEmbeddingRecovery(metaDir, existingMeta?.embeddingCheckpoint);
-  const stagedCheckpoint = existingMeta?.embeddingCheckpoint;
-  const inheritedUnsafeNodeIds = new Set([
-    ...pendingEmbeddingNodeIds,
-    ...(stagedRecovery?.unsafeNodeIds ?? []),
-  ]);
   if (shouldLoadCache && !options.dropEmbeddings && stagedRecovery && stagedCheckpoint) {
     if (!embeddingIdentityForRun) {
       const { resolveEmbeddingIdentity } = await import('./embeddings/embedding-identity.js');
@@ -3160,6 +3658,8 @@ async function runFullAnalysisInner(
         inputs.map((file) => file.path),
       );
     }
+    callbacks.signal?.throwIfAborted();
+    const { runPipelineFromRepo } = await import('./ingestion/pipeline.js');
     pipelineResult = await runPipelineFromRepo(
       repoPath,
       (p) => {
@@ -3171,10 +3671,12 @@ async function runFullAnalysisInner(
         progress(p.phase, scaled, message);
       },
       {
+        signal: callbacks.signal,
         parseCache,
         parsedFileStorePath: coldParseRebuildDir,
         parseWorkerUrl: parseIdentityResolution.ok ? parseIdentityResolution.workerUrl : undefined,
         workerPoolSize: options.workerPoolSize,
+        ...(options.resources ? { workerResources: options.resources.parse } : {}),
         maxProcesses: processDetectionBudget.maxProcesses,
         maxProcessBranching: processDetectionBudget.overridden.maxProcessBranching
           ? processDetectionBudget.maxProcessBranching
@@ -3240,6 +3742,7 @@ async function runFullAnalysisInner(
   }
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
+  callbacks.signal?.throwIfAborted();
   progress('lbug', 60, 'Loading into LadybugDB...');
 
   // Parsing and graph construction always see the original source. Apply the
@@ -3414,6 +3917,33 @@ async function runFullAnalysisInner(
   // orphan sweep (sweepStagingArtifacts) reclaims stragglers on the next
   // acquire. The `.staging.` prefix is what that sweep matches.
   let buildPath = useAtomicSwap ? `${lbugPath}.staging.${randomUUID()}` : lbugPath;
+  let inPlaceAttempt: string | undefined;
+  let inPlaceVectorCoverage: RepoMeta['vectorGeneration'];
+  const saveGraphDirtyState = async (metadata: RepoMeta): Promise<void> => {
+    if (!options.graphPublication || buildPath !== lbugPath) {
+      await saveMeta(metaDir, metadata);
+      return;
+    }
+    if (!inPlaceAttempt) {
+      const dirty = await beginInPlaceAnalysis(metaDir, metadata, (meta) =>
+        saveMeta(metaDir, meta),
+      );
+      inPlaceAttempt = dirty.incrementalInProgress?.attemptId;
+      inPlaceVectorCoverage = dirty.vectorGeneration;
+      return;
+    }
+    if (!metadata.incrementalInProgress) throw new Error('Missing in-place write state');
+    await saveMeta(metaDir, {
+      ...metadata,
+      graphGeneration: undefined,
+      vectorGeneration: inPlaceVectorCoverage,
+      incrementalInProgress: {
+        ...metadata.incrementalInProgress,
+        attemptId: inPlaceAttempt,
+        writePlan: 'in-place',
+      },
+    });
+  };
 
   if (isIncremental && hashDiff) {
     log(
@@ -3430,7 +3960,7 @@ async function runFullAnalysisInner(
     // force-rebuild a healthy index after a crash before swap.
     if (!atomicIncremental) {
       const now = Date.now();
-      await saveMeta(metaDir, {
+      await saveGraphDirtyState({
         ...existingMeta!,
         incrementalInProgress: {
           startedAt: now,
@@ -3465,9 +3995,9 @@ async function runFullAnalysisInner(
     // clean-tree run's fast path would certify a destroyed DB (or, after a
     // pdg flip, certify zombie/missing BasicBlock rows indefinitely).
     // toWriteCount: 0 is the full-path sentinel (no incremental write set).
-    if (existingMeta) {
+    if (existingMeta && (!options.graphPublication || !useAtomicSwap)) {
       const now = Date.now();
-      await saveMeta(metaDir, {
+      await saveGraphDirtyState({
         ...existingMeta,
         incrementalInProgress: {
           startedAt: now,
@@ -3639,6 +4169,7 @@ async function runFullAnalysisInner(
       // Resolution groups can change edges between unchanged files without an
       // import or a new-graph edge touching the changed/deleted member. Expand
       // before the importer walk so dependents of these siblings refresh too.
+      const { collectResolutionGroupFiles } = await import('./incremental/resolution-groups.js');
       for (const filePath of collectResolutionGroupFiles(
         [...hashDiff.toWrite, ...hashDiff.deleted],
         allFilePaths,
@@ -3670,7 +4201,7 @@ async function runFullAnalysisInner(
       ): Promise<void> => {
         // Do not stamp live metadata while writing a staging database.
         if (buildPath !== lbugPath) return;
-        await saveMeta(metaDir, {
+        await saveGraphDirtyState({
           ...existingMeta!,
           incrementalInProgress: {
             startedAt: dirtyStartedAt,
@@ -4419,7 +4950,7 @@ async function runFullAnalysisInner(
       await markIncrementalGraphVerification();
       await reconcileGraphNodeIdentities(
         pipelineResult.graph,
-        executeQuery,
+        forEachQueryRow,
         'post-COPY/checkpoint',
       );
     }
@@ -4438,7 +4969,7 @@ async function runFullAnalysisInner(
       // shipped defaults is a match, so a budget-mismatch derived rewrite that
       // dies in FTS would otherwise recertify the rewritten Community/Process
       // rows on a flagless retry.
-      await saveMeta(metaDir, {
+      await saveGraphDirtyState({
         ...base,
         incrementalInProgress: buildFtsDirtyStamp({
           prior: base.incrementalInProgress,
@@ -4454,6 +4985,7 @@ async function runFullAnalysisInner(
     }
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
+    callbacks.signal?.throwIfAborted();
     // The analyze (write) path owns building the search indexes, so it uses
     // the `auto` install policy (LOAD-first, then one bounded INSTALL) —
     // symmetric with the VECTOR/embeddings path below and consistent with the
@@ -4967,7 +5499,7 @@ async function runFullAnalysisInner(
     }
 
     let stagedCheckpointEmbeddingCount: number | undefined;
-    if (!embeddingSkipped) {
+    if (!embeddingSkipped && !options.graphPublication) {
       const { isHttpMode } = await import('./embeddings/http-client.js');
       const httpMode = isHttpMode();
       progress(
@@ -5106,6 +5638,7 @@ async function runFullAnalysisInner(
         cachedSnapshot.embeddingNodeIds.size > 0 ? cachedSnapshot.embeddingNodeIds : undefined,
         existingEmbeddings,
         {
+          source: { repoPath, fileHashes: newFileHashes, contentRetention },
           forceReembedNodeIds: pendingEmbeddingNodeIds,
           onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
             const handoff = stagedRecoveryEnabled && !recoveryGenerationDurable;
@@ -5189,6 +5722,7 @@ async function runFullAnalysisInner(
     }
 
     // ── Phase 5: Finalize (98–100%) ───────────────────────────────────
+    callbacks.signal?.throwIfAborted();
     progress('done', 98, 'Saving metadata...');
 
     // Count embeddings in the index (cached + newly generated). Tri-state, and
@@ -5304,10 +5838,13 @@ async function runFullAnalysisInner(
     // final meta, written after the swap; never publish it at a checkpoint.
     const latestMetaForCount =
       embeddingCount === undefined ? ((await loadMeta(metaDir)) ?? existingMeta) : undefined;
-    const persistedEmbeddingCount = resolvePersistedEmbeddingCount(
-      measuredEmbeddingCount,
-      stagedCheckpointEmbeddingCount ?? latestMetaForCount?.stats?.embeddings,
-    );
+    const persistedEmbeddingCount =
+      options.graphPublication && existingMeta?.vectorGeneration && !options.dropEmbeddings
+        ? existingMeta.vectorGeneration.chunks
+        : resolvePersistedEmbeddingCount(
+            measuredEmbeddingCount,
+            stagedCheckpointEmbeddingCount ?? latestMetaForCount?.stats?.embeddings,
+          );
 
     const { getRuntimeCapabilities } = await import('./platform/capabilities.js');
     const runtimeCapabilities = getRuntimeCapabilities();
@@ -5352,9 +5889,18 @@ async function runFullAnalysisInner(
     // RepoMeta's status unions (tri-review 4669518496 P1/U3) — an unannotated
     // literal widens the vectorSearch.status ternary to `string` and the
     // honesty contract silently decays to "whatever interpolates".
-    const meta: RepoMeta = {
+    let meta: RepoMeta = {
       repoPath,
       storagePath,
+      ...(options.graphPublication && !options.dropEmbeddings
+        ? {
+            graphGeneration: existingMeta?.graphGeneration,
+            vectorGeneration: existingMeta?.vectorGeneration,
+            embeddingJob: existingMeta?.embeddingJob,
+            legacyVectorSource: existingMeta?.legacyVectorSource,
+          }
+        : {}),
+      ...(path.basename(lbugPath) !== LBUG_DIRECTORY ? { graphPath: path.basename(lbugPath) } : {}),
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
       contentRetention,
@@ -5473,7 +6019,8 @@ async function runFullAnalysisInner(
       // dirty flag (full and incremental success paths converge here).
       // Derived digest of the DDL this run created the tables from (#2798).
       // Git-only: non-git repos never take the incremental path.
-      schemaFingerprint: hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
+      schemaFingerprint:
+        options.graphPublication || hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
       unresolvedReceiverMembers: summarizeUnresolvedReceivers(resolutionOutcomes),
       // Resolution runs again on warm parse-cache hits. Replace the receipt,
       // including complete-empty, so corrected/deleted source clears old gaps.
@@ -5511,7 +6058,9 @@ async function runFullAnalysisInner(
       // the CodeEmbedding table is created for every index, git or not, so
       // absence has exactly one meaning — an index older than the field.
       embeddingDims: EMBEDDING_DIMS,
-      fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
+      // Embedding sync also needs snapshot identity for non-git checkouts.
+      // Incremental DB eligibility still independently requires repoHasGit.
+      fileHashes: newFileHashesRecord,
       indexCoverage: hasGitDir(repoPath)
         ? {
             maxFileSizeBytes: getMaxFileSizeBytes(),
@@ -5533,7 +6082,12 @@ async function runFullAnalysisInner(
       incrementalInProgress: undefined as RepoMeta['incrementalInProgress'],
       // Cleared on a clean run; otherwise the marker Phase 4/5 minted above
       // (see the `kind` doc in repo-manager.ts).
-      embeddingCheckpoint: pendingEmbeddingCheckpoint,
+      embeddingCheckpoint:
+        options.graphPublication && !options.dropEmbeddings
+          ? resumeEmbeddingCheckpoint
+            ? existingMeta?.embeddingCheckpoint
+            : undefined
+          : pendingEmbeddingCheckpoint,
       // The effective pdg config this run's DB rows were built under
       // (#2099 F1). `undefined` on pdg-off runs — this meta is a fresh
       // literal (no spread of existingMeta), so omission is what CLEARS the
@@ -5573,7 +6127,7 @@ async function runFullAnalysisInner(
       }
       await reconcileGraphNodeIdentities(
         pipelineResult.graph,
-        executeQuery,
+        forEachQueryRow,
         'pre-publish/checkpoint',
       );
     }
@@ -5584,10 +6138,87 @@ async function runFullAnalysisInner(
     // Stop the manual checkpoint driver before closeLbug so its
     // in-flight CHECKPOINT cannot race the `safeClose` CHECKPOINT.
     await walCheckpointDriver.stop();
-    if (useAtomicSwap && !wroteChangedSubgraphOnly && !(await runCheckpointWithRetry()).flushed) {
+    if (
+      (useAtomicSwap || options.graphPublication) &&
+      !wroteChangedSubgraphOnly &&
+      !(await runCheckpointWithRetry()).flushed
+    ) {
       // Publication requires durability even when periodic/manual checkpoints
       // are disabled. A best-effort close cannot certify the staged file.
       throw new Error('Cannot publish staged index: final checkpoint could not be verified.');
+    }
+    let preparedGraph: PreparedAnalysisHandoff | undefined;
+    if (options.graphPublication) {
+      if (!meta.parseCacheIdentity)
+        throw new Error('Graph publication requires verified parser provenance');
+      if (!existingMeta?.graphGeneration && !options.dropEmbeddings && !meta.legacyVectorSource) {
+        const { exportLegacyVectors } = await import('./lbug/legacy-vector-export.js');
+        const historical = existingMeta?.embeddingCheckpoint;
+        meta.legacyVectorSource = await exportLegacyVectors({
+          metadataDirectory: metaDir,
+          query: executeQuery,
+          provenance: {
+            schemaFingerprint: existingMeta?.schemaFingerprint ?? SCHEMA_FINGERPRINT,
+            ...(historical
+              ? {
+                  recordedIdentity: {
+                    provider: historical.provider,
+                    model: historical.model,
+                    dimensions: historical.dimensions,
+                  },
+                }
+              : {}),
+          },
+          excluded: new Set([
+            ...pendingEmbeddingNodeIds,
+            ...inheritedUnsafeNodeIds,
+            ...restoreFailedNodeIds,
+          ]),
+          bufferPoolBytes: options.resources!.embedding.vectorPoolBytes,
+          threads: options.resources!.embedding.nativeThreads,
+        });
+      }
+      if (meta.embeddingCheckpoint?.recovery) {
+        // The complete staged groups now live in the independent legacy source.
+        // Publish the remaining retry decision without the retired staging
+        // pointer; the embedding continuation consumes the durable source.
+        meta.embeddingCheckpoint = { ...meta.embeddingCheckpoint };
+        delete meta.embeddingCheckpoint.recovery;
+      }
+      const content = createHash('sha256');
+      for (const entry of [...newFileHashes].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+        content.update(JSON.stringify(entry)).update('\0');
+      const receipt = await prepareAnalysisPublication(
+        metaDir,
+        buildPath,
+        meta,
+        content.digest('hex'),
+        useAtomicSwap
+          ? { waitForProcessExit: options.graphPublication === 'after-exit' }
+          : {
+              mode: 'in-place',
+              attemptId: inPlaceAttempt!,
+              waitForProcessExit: options.graphPublication === 'after-exit',
+            },
+      );
+      if (parseCache) {
+        try {
+          await stageAnalysisParseCache(metaDir, receipt.id, parseCache);
+        } catch (error) {
+          log(`Warning: could not stage parser cache (${(error as Error).message}); continuing.`);
+        }
+      }
+      if (options.graphPublication === 'after-exit') {
+        preparedGraph = {
+          version: 1,
+          publicationId: receipt.id,
+          repoPath,
+          storagePath,
+          metadataDirectory: metaDir,
+          repoName: await preparedAnalysisName(repoPath, options),
+          commit: currentCommit,
+        };
+      }
     }
     // CLI callers (about to process.exit) skip the native close to dodge a
     // LadybugDB destructor double-free after --pdg writes — closeLbugBeforeExit
@@ -5598,7 +6229,8 @@ async function runFullAnalysisInner(
     // same-process open file can't be renamed), so it forces a real close —
     // safe because windowsSwapOk excludes --pdg (the #2264 case). POSIX renames
     // an open file, so it keeps the skip-native-close there.
-    const forceRealCloseForSwap = useAtomicSwap && process.platform === 'win32';
+    const forceRealCloseForSwap =
+      useAtomicSwap && process.platform === 'win32' && !options.graphPublication;
     await (options.skipNativeCloseOnExit && !forceRealCloseForSwap
       ? closeLbugBeforeExit()
       : closeLbug());
@@ -5622,7 +6254,7 @@ async function runFullAnalysisInner(
           () => false,
         )
       : false;
-    if (useAtomicSwap && builtDbExists) {
+    if (!options.graphPublication && useAtomicSwap && builtDbExists) {
       await assertLbugPublicationReady(buildPath);
       const releaseInitLock = await acquireInitLock(lbugPath);
       try {
@@ -5640,8 +6272,22 @@ async function runFullAnalysisInner(
     // than latching on the old one. Leaving the dirty flag set across the swap
     // is a crash-safety improvement: a failed swap leaves the previous index
     // live and the next run recovers via the full-rebuild path.
-    await saveMeta(metaDir, meta);
-    sweepStagingArtifacts(metaDir, log);
+    if (options.graphPublication === 'inline') {
+      const { verifyPublishedAnalysisGraph } = await import('./analysis-graph-verification.js');
+      const published = await publishPreparedAnalysis(metaDir, {
+        saveMetadata: (metadata) => saveMeta(metaDir, metadata),
+        verify: (file, metadata) =>
+          verifyPublishedAnalysisGraph(file, metadata, {
+            bufferPoolBytes: options.resources!.parse.graphPoolBytes,
+            threads: options.resources!.parse.nativeThreads,
+          }),
+      });
+      if (!published) throw new Error('Prepared graph disappeared before publication');
+      meta = published;
+    } else if (!preparedGraph) {
+      await saveMeta(metaDir, meta);
+    }
+    if (!preparedGraph) sweepStagingArtifacts(metaDir, log);
 
     // Registry freshness is published only after the graph and its metadata.
     // A failed close, swap, or metadata save must leave the previous registry
@@ -5655,17 +6301,19 @@ async function runFullAnalysisInner(
     // (after applying the precedence chain in registerRepo) — reuse it
     // so AGENTS.md / skill files reference the same name MCP clients
     // will look up (#979).
-    const projectName = await registerRepo(repoPath, meta, {
-      name: options.registryName,
-      onRename: (previousName, nextName) =>
-        log(`Registry name changed: "${previousName}" -> "${nextName}".`),
-      allowDuplicateName: options.allowDuplicateName,
-      // Non-primary branch runs upsert into the entry's branches[]; the
-      // primary/flat run (placement.branch === undefined) refreshes the
-      // top-level fields (#2106).
-      branch: placement.branch,
-      storagePath,
-    });
+    const projectName =
+      preparedGraph?.repoName ??
+      (await registerRepo(repoPath, meta, {
+        name: options.registryName,
+        onRename: (previousName, nextName) =>
+          log(`Registry name changed: "${previousName}" -> "${nextName}".`),
+        allowDuplicateName: options.allowDuplicateName,
+        // Non-primary branch runs upsert into the entry's branches[]; the
+        // primary/flat run (placement.branch === undefined) refreshes the
+        // top-level fields (#2106).
+        branch: placement.branch,
+        storagePath,
+      }));
 
     // ── #2354: the flat workspace slot has adopted this run's branch ──────
     // Drop a now-shadowed `branches/<slug>/` sub-index for the same label
@@ -5677,7 +6325,7 @@ async function runFullAnalysisInner(
     // what applyBranchScope trusts. Retried by the next content-changing run
     // (same-commit fast-path runs skip it: their guard compares the
     // already-stamped meta label).
-    if (!placement.branch && branchLabel) {
+    if (!preparedGraph && !placement.branch && branchLabel) {
       try {
         await adoptFlatBranchLabel(repoPath, branchLabel, storagePath);
       } catch (e) {
@@ -5739,96 +6387,29 @@ async function runFullAnalysisInner(
     // so the cache file size stays bounded across runs (chunks whose
     // composition no longer matches anything in the current scan are dead
     // weight; the parse phase populates `usedKeys` as it processes chunks).
-    const saveCaches = async (): Promise<void> => {
-      if (!parseCache) return;
-      // #2106 R6: the parse cache + durable store are shared across branches.
-      // Before pruning to this run's keys, fold in the OTHER branches' recorded
-      // chunk keys so a branch switch doesn't evict their still-live shards.
-      // Adding to usedKeys makes them survive pruneCache AND land in the saved
-      // index (saveParseCache builds the index from usedKeys). Excludes this
-      // run's own meta dir, so a single-branch repo folds in nothing → prune
-      // set byte-identical to today. A shared store (#3352) folds in every
-      // member checkout and commit graph the same way.
-      // An unlistable store directory starts the fold incomplete, so the
-      // retention branch below keeps other slots' chunks.
-      const listing = writeTarget.sharedStore
-        ? await listStoreMetaRoots(writeTarget.sharedStore)
-        : { roots: [storagePath], complete: true };
-      const siblingKeys = new Set<string>();
-      let complete = listing.complete;
-      for (const root of listing.roots) {
-        const folded = await collectBranchCacheKeys(root, metaDir);
-        for (const k of folded.keys) siblingKeys.add(k);
-        if (!folded.complete) complete = false;
-      }
-      // Another slot may have published since this run loaded its cache.
-      // Refresh eligibility inside the publication lock for EVERY run. This
-      // is also the first persistent read for a bypass run, after parsing.
-      // Metadata alone cannot admit foreign shards, and live entries cannot
-      // replace this run's staged repairs or revive its retired chunks.
-      const retained = await loadParseCache(cacheRoot, parseCache.identity, coldParseRebuildDir);
-      parseCache.storagePath = cacheRoot;
-      parseCache.onDiskKeys = new Set();
-      for (const key of retained.onDiskKeys ?? []) {
-        if (
-          !parseCache.stagedKeys?.has(key) &&
-          !parseCache.staleKeys?.has(key) &&
-          (parseCache.usedKeys.has(key) || !complete || siblingKeys.has(key))
-        ) {
-          parseCache.onDiskKeys.add(key);
-        }
-      }
-      for (const [key, value] of retained.entries) {
-        if (
-          !parseCache.usedKeys.has(key) &&
-          !parseCache.stagedKeys?.has(key) &&
-          !parseCache.staleKeys?.has(key) &&
-          (!complete || siblingKeys.has(key))
-        ) {
-          parseCache.entries.set(key, value);
-        }
-      }
-      if (complete) {
-        for (const k of siblingKeys) parseCache.usedKeys.add(k);
-      } else {
-        // Fail-safe toward retention: a sibling meta was unreadable, so keep
-        // everything currently loaded rather than evict on incomplete info.
-        log('Parse cache: a branch meta was unreadable — retaining all cached chunks (#2106).');
-        for (const k of parseCache.entries.keys()) parseCache.usedKeys.add(k);
-        for (const k of parseCache.onDiskKeys ?? []) parseCache.usedKeys.add(k);
-      }
-      const pruned = pruneCache(parseCache, parseCache.usedKeys);
-      if (pruned > 0) {
-        log(`Parse cache: pruned ${pruned} stale chunk entries`);
-      }
-      const savedKeys = await saveParseCache(cacheRoot, parseCache);
-      // Prune the durable ParsedFile store to EXACTLY the parse cache's
-      // surviving keys (#2038 warm-cache coverage), so the two content-addressed
-      // stores stay coherent: a chunk is "cached" iff both its parse-cache shard
-      // and its durable shards exist. A retired chunk — worker-quarantined, or
-      // one whose failed durable reset left an uncleared generation behind
-      // (#3204) — is filtered out of `savedKeys`, so it drops out of the
-      // durable index here and re-dispatches next run. Same try/catch — a
-      // durable-store write must never
-      // break an otherwise successful run (next run treats it as a miss).
-      await mergeStagedDurableParsedFileStore(
-        cacheRoot,
-        parseCache.writeStoragePath ?? cacheRoot,
-        parseCache.identity.base,
-        new Set(savedKeys),
-      );
-    };
     try {
-      await (writeTarget.sharedStore
-        ? withStoreLock(writeTarget.sharedStore, 'cache', saveCaches)
-        : saveCaches());
+      if (parseCache && !preparedGraph) {
+        await publishAnalysisParseCache(parseCache, {
+          storagePath,
+          metadataDirectory: metaDir,
+          cacheRoot,
+          publishedGeneration: meta.graphGeneration?.id,
+          sharedStore: writeTarget.sharedStore,
+          collectBranchKeys: collectBranchCacheKeys,
+          log,
+        });
+      }
     } catch (e) {
       log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
     }
 
-    progress('done', 100, 'Done');
+    if (preparedGraph)
+      progress('graph-prepared', 98, 'Graph checkpointed; awaiting process release');
+    else if (options.graphPublication)
+      callbacks.onProgress('graph-ready', 98, 'Graph published', { graphPhase: 'ready' });
+    else progress('done', 100, 'Done');
 
-    await removeColdParseRebuildDir(coldParseRebuildDir, true);
+    if (!preparedGraph) await removeColdParseRebuildDir(coldParseRebuildDir, true);
 
     return {
       repoName: projectName,
@@ -5837,6 +6418,7 @@ async function runFullAnalysisInner(
       stats: meta.stats,
       rebuildReasons: collector.keys(),
       pipelineResult,
+      ...(preparedGraph ? { preparedGraph } : {}),
       ...(graphWriteCollapsed ? { graphWriteCollapsed } : {}),
       ftsSkipped: !ftsReady,
       ftsSkipReason: ftsReady ? undefined : ftsSkipReason,
@@ -5891,7 +6473,8 @@ async function runFullAnalysisInner(
     // differs from `lbugPath` exactly when the atomic-swap plan is in effect,
     // and the live index is never that path. Best-effort by construction — the
     // rethrow below is the surface, and the lock's sweep remains the backstop.
-    if (stagedBuild) {
+    const retainPrepared = options.graphPublication && (await retainsPreparedGraph(metaDir));
+    if (stagedBuild && !retainPrepared) {
       try {
         const recovery = resolveEmbeddingRecovery(
           metaDir,
@@ -5904,7 +6487,7 @@ async function runFullAnalysisInner(
         /* swallow — orphan reclamation must never mask the real failure */
       }
     }
-    await removeColdParseRebuildDir(coldParseRebuildDir, true);
+    if (!retainPrepared) await removeColdParseRebuildDir(coldParseRebuildDir, true);
     discardCachedEmbeddingSpill();
     // What the caller sees: `err` itself (identity and prototype preserved, callers
     // tell IndexLockTimeoutError and other domain failures apart with `instanceof`),

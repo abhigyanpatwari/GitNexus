@@ -1,0 +1,256 @@
+{
+  "schemaVersion": 1,
+  "maxPairedRatio": 1,
+  "settings": {
+    "pairs": 7,
+    "warmups": 1,
+    "modules": 64,
+    "functions": 16,
+    "heap-mb": 2048,
+    "workers": 2,
+    "sample-ms": 25
+  },
+  "reference": {
+    "measuredAt": "2026-11-05T19:17:51.910Z",
+    "baselineCommit": "a0586d967f391f6f78e24d8c7162abfe350ae195",
+    "candidateCommit": "8c1b489c962a223b77567c21dcd1a9f2c9788851",
+    "environment": {
+      "node": "v22.23.3",
+      "platform": "linux",
+      "architecture": "x64",
+      "cpu": "12th Gen Intel(R) Core(TM) i9-12900K",
+      "resourceProfile": "explicit-heap-workers-pool"
+    },
+    "note": "Historical samples are provenance, not portable wall-clock limits. CI compares the current PR base and candidate on the same runner. An interval crossing 1 remains inconclusive."
+  },
+  "scenarios": {
+    "graph-only": {
+      "pairs": 7,
+      "baselineMedianMs": 11254.142376000003,
+      "candidateMedianMs": 10191.042332999998,
+      "geometricRatio": 1.0582904590478737,
+      "pairedBootstrap95": [0.9484949043112423, 1.2159205271380682],
+      "evidence": "inconclusive",
+      "samplesMs": [
+        {
+          "baseline": 11254.142376000003,
+          "candidate": 10144.616939999996
+        },
+        {
+          "baseline": 10671.354456000001,
+          "candidate": 9944.314222
+        },
+        {
+          "baseline": 10188.076402000006,
+          "candidate": 10191.042332999998
+        },
+        {
+          "baseline": 11853.487859999994,
+          "candidate": 17919.62693900001
+        },
+        {
+          "baseline": 11739.811645999987,
+          "candidate": 14308.022194000005
+        },
+        {
+          "baseline": 10668.565815000009,
+          "candidate": 10129.661259000015
+        },
+        {
+          "baseline": 11425.665953999996,
+          "candidate": 11556.346957000002
+        }
+      ]
+    },
+    "noop": {
+      "pairs": 7,
+      "baselineMedianMs": 2184.29468500003,
+      "candidateMedianMs": 1950.1828749999986,
+      "geometricRatio": 0.8930352942528001,
+      "pairedBootstrap95": [0.8795970798771887, 0.905936077701467],
+      "evidence": "no-detected-regression",
+      "samplesMs": [
+        {
+          "baseline": 2198.722995999997,
+          "candidate": 1915.772708000004
+        },
+        {
+          "baseline": 2239.4145290000015,
+          "candidate": 1939.7219499999774
+        },
+        {
+          "baseline": 2176.4498259999673,
+          "candidate": 1950.1828749999986
+        },
+        {
+          "baseline": 2184.29468500003,
+          "candidate": 2005.5672990000458
+        },
+        {
+          "baseline": 2179.4396279999637,
+          "candidate": 1966.6888930000132
+        },
+        {
+          "baseline": 2128.4910190000082,
+          "candidate": 1891.617927000043
+        },
+        {
+          "baseline": 2208.1911739999778,
+          "candidate": 2008.7850609999732
+        }
+      ]
+    },
+    "incremental": {
+      "pairs": 7,
+      "baselineMedianMs": 5783.258446000051,
+      "candidateMedianMs": 5541.312566999986,
+      "geometricRatio": 0.9674187960203702,
+      "pairedBootstrap95": [0.9561405967756264, 0.9816590666894027],
+      "evidence": "no-detected-regression",
+      "samplesMs": [
+        {
+          "baseline": 5779.961653999984,
+          "candidate": 5672.744095000031
+        },
+        {
+          "baseline": 5806.2170550000155,
+          "candidate": 5541.312566999986
+        },
+        {
+          "baseline": 5861.75522000005,
+          "candidate": 5892.487050000054
+        },
+        {
+          "baseline": 5720.598826000001,
+          "candidate": 5503.345939000021
+        },
+        {
+          "baseline": 5744.461226000101,
+          "candidate": 5528.829626999912
+        },
+        {
+          "baseline": 5783.258446000051,
+          "candidate": 5528.050583000062
+        },
+        {
+          "baseline": 5888.105557000032,
+          "candidate": 5603.379379000049
+        }
+      ]
+    },
+    "http-fresh": {
+      "pairs": 7,
+      "baselineMedianMs": 15511.024734000093,
+      "candidateMedianMs": 14335.91775100003,
+      "geometricRatio": 0.9272010938503702,
+      "pairedBootstrap95": [0.918360962384628, 0.9365473751189902],
+      "evidence": "no-detected-regression",
+      "samplesMs": [
+        {
+          "baseline": 15511.024734000093,
+          "candidate": 14335.91775100003
+        },
+        {
+          "baseline": 15510.167916000006,
+          "candidate": 14261.329035999952
+        },
+        {
+          "baseline": 15609.408870000043,
+          "candidate": 14153.163587999996
+        },
+        {
+          "baseline": 15409.513349999906,
+          "candidate": 14634.943147000042
+        },
+        {
+          "baseline": 15519.041560999933,
+          "candidate": 14481.790279999957
+        },
+        {
+          "baseline": 15767.326278000022,
+          "candidate": 14690.776563999942
+        },
+        {
+          "baseline": 15408.597242999938,
+          "candidate": 14267.204865999985
+        }
+      ]
+    },
+    "http-cached": {
+      "pairs": 7,
+      "baselineMedianMs": 2149.4189200000837,
+      "candidateMedianMs": 1919.7719739999156,
+      "geometricRatio": 0.8972216499596883,
+      "pairedBootstrap95": [0.8876158802568739, 0.9067963765721975],
+      "evidence": "no-detected-regression",
+      "samplesMs": [
+        {
+          "baseline": 2165.3657219999004,
+          "candidate": 1909.4434619999956
+        },
+        {
+          "baseline": 2132.151501000044,
+          "candidate": 1941.053768999991
+        },
+        {
+          "baseline": 2141.9542270000093,
+          "candidate": 1934.437436999986
+        },
+        {
+          "baseline": 2155.985989000066,
+          "candidate": 1919.7719739999156
+        },
+        {
+          "baseline": 2113.9462319999,
+          "candidate": 1902.646522999974
+        },
+        {
+          "baseline": 2149.4189200000837,
+          "candidate": 1968.86528300005
+        },
+        {
+          "baseline": 2152.111167999916,
+          "candidate": 1892.6074149999768
+        }
+      ]
+    },
+    "http-resume": {
+      "pairs": 7,
+      "baselineMedianMs": 15869.910479000071,
+      "candidateMedianMs": 4004.7973079998046,
+      "geometricRatio": 0.2485479851486286,
+      "pairedBootstrap95": [0.24355429100174475, 0.25278581390854993],
+      "evidence": "no-detected-regression",
+      "samplesMs": [
+        {
+          "baseline": 15779.565613000188,
+          "candidate": 4038.0054809998255
+        },
+        {
+          "baseline": 15869.910479000071,
+          "candidate": 4017.237259999849
+        },
+        {
+          "baseline": 15861.843901999993,
+          "candidate": 3971.7236019999254
+        },
+        {
+          "baseline": 15861.11537200003,
+          "candidate": 3973.9850310001057
+        },
+        {
+          "baseline": 17113.716924000066,
+          "candidate": 4044.0885320000816
+        },
+        {
+          "baseline": 16508.58412100002,
+          "candidate": 4004.7973079998046
+        },
+        {
+          "baseline": 15901.872792999959,
+          "candidate": 3999.7262199998368
+        }
+      ]
+    }
+  }
+}

@@ -50,7 +50,6 @@ import {
   type AnalyzerRunnerIdentity,
   type RepoMeta,
 } from './repo-meta.js';
-import { LBUG_DIRECTORY } from './storage-constants.js';
 import { resolveGraphPath } from './shared-store.js';
 import {
   defaultStoragePath,
@@ -218,10 +217,10 @@ const GITNEXUS_EXCLUDE_ENTRY = `${GITNEXUS_DIR}/`;
  * `storagePath` is ALWAYS the flat `<repo>/.gitnexus` — content-addressed
  * caches (`parse-cache/`, `parsedfile-store/`) live there and are shared
  * across branches (#2106 KTD7). When `branch` is provided, both `lbugPath`
- * and `metaPath` are scoped under `branches/<slug>/`. For the flat call
- * (no `branch`), `storagePath` and `lbugPath` remain byte-identical to the
- * pre-multi-branch behavior (#2106), except that a shared-store checkout slot
- * (#3352) returns the commit graph its metadata records (`resolveGraphPath`).
+ * and `metaPath` are scoped under `branches/<slug>/`. `lbugPath` resolves an
+ * owned private generation when metadata names one, otherwise the slot's
+ * `lbug`. A flat shared-store checkout slot can also resolve the immutable
+ * commit graph recorded in its metadata (`resolveGraphPath`, #3352).
  * `metaPath`'s FILENAME changed from `meta.json` to `gitnexus.json`
  * (PR #2363) — `saveMeta` keeps a `meta.json` mirror in sync for consumers
  * that still read the legacy name.
@@ -243,9 +242,9 @@ export const getStoragePaths = (
   const baseDir = branch ? path.join(storagePath, BRANCHES_DIR, branchSlug(branch)) : storagePath;
   return {
     storagePath,
-    // Branch slots are always private; a flat shared-store slot may read a
-    // commit graph (#3352).
-    lbugPath: branch ? path.join(baseDir, LBUG_DIRECTORY) : resolveGraphPath(storagePath),
+    // Private generations also work in branch slots. Only a flat shared-store
+    // slot may resolve to an immutable commit graph (#3352).
+    lbugPath: resolveGraphPath(baseDir),
     metaPath: path.join(baseDir, INDEX_METADATA_FILE), // Branch-specific metadata file
   };
 };
@@ -945,6 +944,7 @@ export class RegistryNameCollisionError extends Error {
 const hasCustomAlias = (entry: RegistryEntry, inferredName: string | null): boolean => {
   const resolved = path.resolve(entry.path);
   if (entry.name === path.basename(resolved)) return false;
+  if (inferredName && entry.name === inferredName) return false;
   // Canonical-root-derived names are not user aliases either (#1259):
   // a worktree registered under the canonical repo's basename
   // (e.g. `{name: 'repo', path: '/repo/wt-feature'}`) must re-register
@@ -956,7 +956,6 @@ const hasCustomAlias = (entry: RegistryEntry, inferredName: string | null): bool
   // — analyze canonical, then analyze worktree, then re-analyze worktree
   // — would break on the third call.
   if (entry.name === path.basename(resolveRepoIdentityRoot(resolved))) return false;
-  if (inferredName && entry.name === inferredName) return false;
   return true;
 };
 
@@ -1838,7 +1837,8 @@ export interface CLIConfig {
     | 'codex'
     | 'opencode'
     | 'grok'
-    | 'minimax';
+    | 'minimax'
+    | 'anthropic';
   cursorModel?: string;
   claudeModel?: string;
   codexModel?: string;

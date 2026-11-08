@@ -39,7 +39,10 @@ vi.mock('../../src/core/run-analyze.js', () => ({
     return { alreadyUpToDate: true };
   }),
 }));
-vi.mock('../../src/cli/analyze.js', () => ({ ensureHeap: async () => false }));
+vi.mock('../../src/cli/analyze.js', () => ({
+  ensureHeap: async () => false,
+  usesManualAnalysisHeap: () => false,
+}));
 vi.mock('../../src/storage/storage-resolver.js', async (importActual) => ({
   ...(await importActual<typeof import('../../src/storage/storage-resolver.js')>()),
   requireStoragePath: async () => undefined,

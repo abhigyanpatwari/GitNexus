@@ -617,10 +617,23 @@ export async function runChunkedParseAndResolve(
   // shrink an incremental re-analyze: `totalParseable` counts every parseable
   // file in the scan, not the changed ones, so a warm run of a large repo still
   // spawns the full requested pool.
-  const effectivePoolSize =
+  const workerResources = options?.workerResources;
+  if (
+    totalParseable > 0 &&
+    workerResources &&
+    (!Number.isSafeInteger(workerResources.workers) ||
+      workerResources.workers < 1 ||
+      !Number.isSafeInteger(workerResources.workerHeapMb) ||
+      workerResources.workerHeapMb < 512 ||
+      (explicitPoolSize !== undefined && explicitPoolSize > workerResources.workers))
+  )
+    throw new Error('Parser worker configuration exceeds its admitted resource budget');
+  const effectivePoolSize = Math.min(
     explicitPoolSize && explicitPoolSize > 0
       ? Math.min(explicitPoolSize, Math.max(1, totalParseable))
-      : Math.min(resolveAutoPoolSize(), workProportionalCap);
+      : Math.min(resolveAutoPoolSize(), workProportionalCap),
+    workerResources?.workers ?? Infinity,
+  );
   // Deliberate over-subscription is the operator's call, so this warns rather
   // than caps — silently capping is what the override exists to stop. But an
   // exported `GITNEXUS_WORKER_POOL_SIZE` applies to EVERY analyze in a
@@ -726,6 +739,9 @@ export async function runChunkedParseAndResolve(
       // after it is initialized; `undefined` drives the worker no-store
       // fallback (return ParsedFiles in the result).
       workerPool = createWorkerPool(workerUrl, effectivePoolSize, {
+        ...(workerResources
+          ? { heapLimitMb: workerResources.workerHeapMb, requireDrain: true }
+          : {}),
         parsedFileStoreStoragePath: parsedFileStorePath,
         // Durable, content-addressed shard dir for warm-cache reuse (#2038).
         // Initialized below before the chunk loop (same deferred-init pattern
@@ -818,6 +834,8 @@ export async function runChunkedParseAndResolve(
   let chunkCacheMisses = 0;
   let parseCacheHitFileCount = 0;
   let reparsedFileCount = 0;
+  let parseFailure: unknown;
+  let parsingFailed = false;
 
   try {
     // U1 — bounded chunk concurrency (B1 from PR #1693 review): pre-fetch
@@ -1228,6 +1246,7 @@ export async function runChunkedParseAndResolve(
       }
       let missIdx = 0;
       for (const entry of round.entries) {
+        options?.signal?.throwIfAborted();
         if (entry.kind === 'hit') {
           const chunkWorkerData = mergeChunkResults(
             graph,
@@ -1258,6 +1277,7 @@ export async function runChunkedParseAndResolve(
      * park it resolved for the next close to merge.
      */
     const closeRound = async (): Promise<void> => {
+      options?.signal?.throwIfAborted();
       const started = await startRound(roundEntries);
       roundEntries = [];
       roundBudget.reset();
@@ -1292,6 +1312,7 @@ export async function runChunkedParseAndResolve(
     };
 
     for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
+      options?.signal?.throwIfAborted();
       if (heapProbeEveryN > 0 && chunkIdx > 0 && chunkIdx % heapProbeEveryN === 0) {
         logHeapProbe(
           `parse-chunk-${chunkIdx}`,
@@ -1526,8 +1547,23 @@ export async function runChunkedParseAndResolve(
           `processRoutesFromExtracted: ${ms.toFixed(0)}ms (${allExtractedRoutes.length} routes)`,
       );
     }
+  } catch (error) {
+    parseFailure = error;
+    parsingFailed = true;
+    throw error;
   } finally {
-    await workerPool?.terminate();
+    try {
+      await workerPool?.terminate();
+    } catch (drainError) {
+      if (parsingFailed) {
+        throw new AggregateError(
+          [parseFailure, drainError],
+          `Parsing failed (${parseFailure instanceof Error ? parseFailure.message : String(parseFailure)}) and native workers have not drained`,
+          { cause: parseFailure },
+        );
+      }
+      throw drainError;
+    }
   }
 
   // Fetch calls + ORM queries were already extracted inside each worker

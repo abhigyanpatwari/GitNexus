@@ -84,3 +84,46 @@ An in-place verification failure keeps a non-FTS dirty phase: an FTS-only
 repair cannot clear the marker and recertify the inconsistent graph.
 The same protection applies when FTS returns but analyzer finalization fails
 before the final identity scan: recovery still rebuilds the graph.
+
+## Memory scaling
+
+`memory.mjs` measures the compiled production reader in a fresh process, without
+forcing GC between reads. It records full identity verification, elapsed time,
+sampled heap/RSS, the process RSS high-water mark, and initial/final retained heap.
+The native pool is 512 MiB for measurements and 1 GiB for fixture creation.
+
+Build the runtime with `npm run build`. Save this configuration outside the repo:
+
+```json
+{
+  "runtime": "/absolute/path/to/GitNexus",
+  "storage": "/tmp/gnx-identity-memory",
+  "output": "/tmp/gnx-identity-memory/seed.json",
+  "count": 1048576,
+  "width": 0,
+  "mode": "seed",
+  "reader": "stream",
+  "iterations": 40
+}
+```
+
+Run from `gitnexus/`:
+
+```sh
+node --expose-gc --max-old-space-size=4096 bench/incremental-write-integrity/memory.mjs /tmp/config.json
+```
+
+Then change `mode` to `measure` and choose a new output file. Run each measurement
+in a new process and use one process per database at a time. To compare the
+original array-based implementation, set `runtime` to its separately built
+checkout and `reader` to `baseline`; keep the same fixture and memory limits.
+
+Vary `count` with separate fixtures to measure node scaling. `width` adds that
+many ASCII bytes to each of ID, name and path, so it measures identity size
+independently of node count. Repeat each point and hold the largest size out of
+the fitted curve. A finite RSS fit is evidence over that range, not a guarantee
+about every native allocator or the rest of the indexing pipeline.
+
+The streaming verifier retains expected-node maps and one decoded row rather
+than a full table of JavaScript rows. The expected maps grow linearly with graph
+size; the native query result and the original graph still consume memory.

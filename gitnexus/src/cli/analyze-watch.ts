@@ -1,6 +1,7 @@
 /** Local incremental watch (`gitnexus analyze --watch`). Remote auto-sync lives in `auto-sync.ts`. */
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { getHeapStatistics } from 'node:v8';
 import { watchFile, unwatchFile } from 'node:fs';
 import { watch, type FSWatcher } from 'chokidar';
 import { createWatchIgnorePredicate } from '../config/ignore-service.js';
@@ -23,9 +24,14 @@ import {
 } from './analyze-config.js';
 import { logger } from '../core/logger.js';
 import type { AnalyzeOptions } from './analyze-options.js';
-import { ensureHeap } from './analyze.js';
+import { ensureHeap, usesManualAnalysisHeap } from './analyze.js';
 import { cliError, cliInfo, cliWarn } from './cli-message.js';
 import { parseIntegerOption } from './int-option.js';
+import {
+  analysisMayEmbed,
+  analysisSupervisorReservation,
+  resolveHostAnalysisResources,
+} from '../core/analysis-host-resources.js';
 import {
   formatInvalidProcessDetectionOverride,
   parseProcessDetectionBudgetStrings,
@@ -188,6 +194,19 @@ export async function resolveWatchOptions(
       cliWarn(formatInvalidProcessDetectionOverride(flag, raw));
     },
   );
+  const resources = resolveHostAnalysisResources({
+    totalMb: positiveInteger(merged.resourceBudget, '--resource-budget'),
+    mainHeapMb:
+      positiveInteger(cli.memoryBudget, '--memory-budget') ??
+      positiveInteger(process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB, 'admitted main heap') ??
+      Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
+    workers: workerPoolSize,
+    includeEmbeddings: await analysisMayEmbed(repoPath, { branch }),
+    supervisorBytes:
+      process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES === undefined
+        ? analysisSupervisorReservation()
+        : Number(process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES),
+  });
 
   setEnvironment(
     'GITNEXUS_MAX_FILE_SIZE',
@@ -201,6 +220,8 @@ export async function resolveWatchOptions(
   setEnvironment('GITNEXUS_VERBOSE', merged.verbose ? '1' : baseline.verbose);
 
   return {
+    resources,
+    graphPublication: 'auto',
     pdg: merged.pdg,
     skipFts: merged.skipFts,
     branch,
@@ -453,182 +474,227 @@ export async function watchCommandWithRunnerIdentity(
   inputPath?: string,
   cliOptions: WatchCliOptions = {},
 ): Promise<void> {
-  if (
-    await ensureHeap({ cleanForwardedTermination: true, memoryBudget: cliOptions.memoryBudget })
-  ) {
-    return;
-  }
-
-  const requestedRepoPath = inputPath ? path.resolve(inputPath) : getGitRoot(process.cwd());
-  if (requestedRepoPath === null || !hasGitDir(requestedRepoPath)) {
-    cliError('  gitnexus analyze --watch requires a Git repository.');
-    process.exitCode = 1;
-    return;
-  }
-  const repoPath = await fs.realpath(requestedRepoPath);
-  try {
-    await requireStoragePath(repoPath, ANALYZE_STORAGE_REQUIREMENTS);
-  } catch (error) {
-    cliError(`  ${error instanceof Error ? error.message : String(error)}`);
-    process.exitCode = 1;
-    return;
-  }
-  const baselineEnvironment: WatchEnvironmentBaseline = {
-    maxFileSize: process.env.GITNEXUS_MAX_FILE_SIZE,
-    workerTimeout: process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS,
-    verbose: process.env.GITNEXUS_VERBOSE,
+  const priorMainHeap = process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB;
+  const priorSupervisor = process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES;
+  let cancelled = false;
+  let stopWatching: (() => void) | undefined;
+  const cancel = () => {
+    cancelled = true;
+    stopWatching?.();
   };
+  const onControlMessage = (message: unknown) => {
+    if ((message as { type?: unknown } | null)?.type === 'cancel') cancel();
+  };
+  process.on('message', onControlMessage);
+  process.once('disconnect', cancel);
   try {
-    let ignoredConfigSignature: string | undefined;
-    const reportIgnoredConfig = (names: readonly string[]) => {
-      const signature = [...names].sort().join(',');
-      if (signature === ignoredConfigSignature) return;
-      ignoredConfigSignature = signature;
-      if (names.length > 0) {
-        cliWarn(`Watch mode ignores unsupported .gitnexusrc settings: ${names.join(', ')}.`);
-      }
-    };
-    let debounceMs: number;
-    let analyzeOptions: CoreAnalyzeOptions;
+    if (process.send) {
+      if (!process.connected) cancel();
+      else
+        process.send({ type: 'analysis-watch-ready' }, (error) => {
+          if (error) cancel();
+        });
+    }
+    const requestedRepoPath = inputPath ? path.resolve(inputPath) : getGitRoot(process.cwd());
+    if (requestedRepoPath === null || !hasGitDir(requestedRepoPath)) {
+      cliError('  gitnexus analyze --watch requires a Git repository.');
+      process.exitCode = 1;
+      return;
+    }
+    const repoPath = await fs.realpath(requestedRepoPath);
     try {
-      debounceMs =
-        positiveInteger(
-          cliOptions.debounce ?? String(DEFAULT_DEBOUNCE_MS),
-          '--debounce',
-          MAX_TIMER_DELAY_MS,
-        ) ?? DEFAULT_DEBOUNCE_MS;
-      analyzeOptions = await resolveWatchOptions(
-        repoPath,
-        cliOptions,
-        baselineEnvironment,
-        reportIgnoredConfig,
-      );
+      const manualHeap = usesManualAnalysisHeap(cliOptions.memoryBudget);
+      const admission = resolveHostAnalysisResources({
+        totalMb: positiveInteger(cliOptions.resourceBudget, '--resource-budget'),
+        mainHeapMb: manualHeap
+          ? Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2)
+          : (positiveInteger(cliOptions.memoryBudget, '--memory-budget') ??
+            positiveInteger(process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB, 'admitted main heap')),
+        workers: positiveInteger(cliOptions.workers, '--workers'),
+        includeEmbeddings: await analysisMayEmbed(repoPath, { branch: cliOptions.branch }),
+        supervisorBytes:
+          process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES === undefined
+            ? analysisSupervisorReservation()
+            : Number(process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES),
+      });
+      if (cancelled) return;
+      process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB = String(admission.mainHeapMb);
+      process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES = String(admission.supervisorBytes);
+      if (
+        !manualHeap &&
+        (await ensureHeap({
+          cleanForwardedTermination: true,
+          memoryBudget: cliOptions.memoryBudget,
+          admittedHeapMb: admission.mainHeapMb,
+        }))
+      )
+        return;
+      await requireStoragePath(repoPath, ANALYZE_STORAGE_REQUIREMENTS);
     } catch (error) {
       cliError(`  ${error instanceof Error ? error.message : String(error)}`);
       process.exitCode = 1;
       return;
     }
-
-    let stopWatching!: () => void;
-    const stopped = new Promise<void>((resolve) => {
-      stopWatching = resolve;
-    });
-    const stop = () => stopWatching();
-    process.once('SIGINT', stop);
-    process.once('SIGTERM', stop);
+    const baselineEnvironment: WatchEnvironmentBaseline = {
+      maxFileSize: process.env.GITNEXUS_MAX_FILE_SIZE,
+      workerTimeout: process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS,
+      verbose: process.env.GITNEXUS_VERBOSE,
+    };
     try {
-      let loop: WatchFileLoop;
-      let fatalRefreshError: unknown;
-      let configControlValid = true;
-      let lastSuccessfulRefreshAt: string | undefined;
+      let ignoredConfigSignature: string | undefined;
+      const reportIgnoredConfig = (names: readonly string[]) => {
+        const signature = [...names].sort().join(',');
+        if (signature === ignoredConfigSignature) return;
+        ignoredConfigSignature = signature;
+        if (names.length > 0) {
+          cliWarn(`Watch mode ignores unsupported .gitnexusrc settings: ${names.join(', ')}.`);
+        }
+      };
+      let debounceMs: number;
+      let analyzeOptions: CoreAnalyzeOptions;
       try {
-        loop = await startWatchFileLoop(
+        debounceMs =
+          positiveInteger(
+            cliOptions.debounce ?? String(DEFAULT_DEBOUNCE_MS),
+            '--debounce',
+            MAX_TIMER_DELAY_MS,
+          ) ?? DEFAULT_DEBOUNCE_MS;
+        analyzeOptions = await resolveWatchOptions(
           repoPath,
-          debounceMs,
-          async (paths) => {
-            // Initial validation precedes watcher setup. Read again after it is
-            // armed so a change during startup cannot leave stale options live.
-            if (paths.length === 0 || paths.some(isConfigControlPath) || !configControlValid) {
-              const retryingInvalidConfig = !configControlValid;
-              try {
-                analyzeOptions = await resolveWatchOptions(
-                  repoPath,
-                  cliOptions,
-                  baselineEnvironment,
-                  reportIgnoredConfig,
-                );
-                configControlValid = true;
-              } catch (error) {
-                configControlValid = false;
-                throw new WatchControlReloadError(
-                  retryingInvalidConfig
-                    ? new Error(
-                        'Configuration remains invalid; fix it before indexing more changes.',
-                        {
-                          cause: error,
-                        },
-                      )
-                    : error,
-                );
-              }
-            }
-            const startedAt = Date.now();
-            const result = await runFullAnalysis(
-              repoPath,
-              analyzeOptions,
-              {
-                onProgress: () => {},
-                onLog:
-                  process.env.GITNEXUS_VERBOSE === '1'
-                    ? (message) => cliInfo(`  ${message}`)
-                    : undefined,
-              },
-              runnerIdentityAtBootstrap,
-            );
-            lastSuccessfulRefreshAt = new Date().toISOString();
-            if (paths.length === 0) {
-              cliInfo(
-                result.alreadyUpToDate
-                  ? `Watching ${repoPath}; index is up to date.`
-                  : `Watching ${repoPath}; initial index ready in ${Date.now() - startedAt}ms.`,
-              );
-            } else {
-              cliInfo(
-                refreshSummary(result, paths, Date.now() - startedAt, lastSuccessfulRefreshAt),
-              );
-            }
-          },
-          (error, paths) => {
-            const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
-            if (shouldStopAfterWatchRefreshFailure(error, paths)) {
-              fatalRefreshError = error;
-              const guardTimeout = isIndexLockGuardTimeout(error);
-              cliError(
-                `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +
-                  (guardTimeout
-                    ? 'Watch mode is stopping because the acquisition guard needs quiesced recovery; see RUNBOOK.md.'
-                    : 'Watch mode is stopping because the live index may have been updated in place.'),
-                guardTimeout
-                  ? { recoveryHint: 'index-lock-guard-recovery', guardPath: error.guardPath }
-                  : undefined,
-              );
-              stopWatching();
-              return;
-            }
-            const lastSuccess = lastSuccessfulRefreshAt ?? 'none yet';
-            cliWarn(
-              `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +
-                `Retry scheduled; last success ${lastSuccess}.`,
-            );
-          },
-          (error) => {
-            fatalRefreshError = error;
-            cliError(
-              `Watcher failed: ${error instanceof Error ? error.message : String(error)}. ` +
-                'Watch mode is stopping.',
-            );
-            stopWatching();
-          },
-          process.env[GITNEXUS_RC_ENV]?.trim() || undefined,
+          cliOptions,
+          baselineEnvironment,
+          reportIgnoredConfig,
         );
       } catch (error) {
-        cliError(
-          `  Unable to start watcher: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        cliError(`  ${error instanceof Error ? error.message : String(error)}`);
         process.exitCode = 1;
         return;
       }
 
-      await stopped;
-      await loop.close();
-      if (fatalRefreshError !== undefined) process.exitCode = 1;
+      if (cancelled) return;
+      const stopped = new Promise<void>((resolve) => {
+        stopWatching = resolve;
+      });
+      const stop = cancel;
+      process.once('SIGINT', stop);
+      process.once('SIGTERM', stop);
+      try {
+        let loop: WatchFileLoop;
+        let fatalRefreshError: unknown;
+        let configControlValid = true;
+        let lastSuccessfulRefreshAt: string | undefined;
+        try {
+          loop = await startWatchFileLoop(
+            repoPath,
+            debounceMs,
+            async (paths) => {
+              if (paths.length === 0 || paths.some(isConfigControlPath) || !configControlValid) {
+                const retryingInvalidConfig = !configControlValid;
+                try {
+                  analyzeOptions = await resolveWatchOptions(
+                    repoPath,
+                    cliOptions,
+                    baselineEnvironment,
+                    reportIgnoredConfig,
+                  );
+                  configControlValid = true;
+                } catch (error) {
+                  configControlValid = false;
+                  throw new WatchControlReloadError(
+                    retryingInvalidConfig
+                      ? new Error(
+                          'Configuration remains invalid; fix it before indexing more changes.',
+                          {
+                            cause: error,
+                          },
+                        )
+                      : error,
+                  );
+                }
+              }
+              const startedAt = Date.now();
+              const result = await runFullAnalysis(
+                repoPath,
+                analyzeOptions,
+                {
+                  onProgress: () => {},
+                  onLog:
+                    process.env.GITNEXUS_VERBOSE === '1'
+                      ? (message) => cliInfo(`  ${message}`)
+                      : undefined,
+                },
+                runnerIdentityAtBootstrap,
+              );
+              lastSuccessfulRefreshAt = new Date().toISOString();
+              if (paths.length === 0) {
+                cliInfo(
+                  result.alreadyUpToDate
+                    ? `Watching ${repoPath}; index is up to date.`
+                    : `Watching ${repoPath}; initial index ready in ${Date.now() - startedAt}ms.`,
+                );
+              } else {
+                cliInfo(
+                  refreshSummary(result, paths, Date.now() - startedAt, lastSuccessfulRefreshAt),
+                );
+              }
+            },
+            (error, paths) => {
+              const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
+              if (shouldStopAfterWatchRefreshFailure(error, paths)) {
+                fatalRefreshError = error;
+                const guardTimeout = isIndexLockGuardTimeout(error);
+                cliError(
+                  `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +
+                    (guardTimeout
+                      ? 'Watch mode is stopping because the acquisition guard needs quiesced recovery; see RUNBOOK.md.'
+                      : 'Watch mode is stopping because the live index may have been updated in place.'),
+                  guardTimeout
+                    ? { recoveryHint: 'index-lock-guard-recovery', guardPath: error.guardPath }
+                    : undefined,
+                );
+                stopWatching();
+                return;
+              }
+              const lastSuccess = lastSuccessfulRefreshAt ?? 'none yet';
+              cliWarn(
+                `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +
+                  `Retry scheduled; last success ${lastSuccess}.`,
+              );
+            },
+            (error) => {
+              fatalRefreshError = error;
+              cliError(
+                `Watcher failed: ${error instanceof Error ? error.message : String(error)}. ` +
+                  'Watch mode is stopping.',
+              );
+              stopWatching();
+            },
+            process.env[GITNEXUS_RC_ENV]?.trim() || undefined,
+          );
+        } catch (error) {
+          cliError(
+            `  Unable to start watcher: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          process.exitCode = 1;
+          return;
+        }
+
+        await stopped;
+        await loop.close();
+        if (fatalRefreshError !== undefined) process.exitCode = 1;
+      } finally {
+        process.removeListener('SIGINT', stop);
+        process.removeListener('SIGTERM', stop);
+      }
     } finally {
-      process.removeListener('SIGINT', stop);
-      process.removeListener('SIGTERM', stop);
+      setEnvironment('GITNEXUS_MAX_FILE_SIZE', baselineEnvironment.maxFileSize);
+      setEnvironment('GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS', baselineEnvironment.workerTimeout);
+      setEnvironment('GITNEXUS_VERBOSE', baselineEnvironment.verbose);
     }
   } finally {
-    setEnvironment('GITNEXUS_MAX_FILE_SIZE', baselineEnvironment.maxFileSize);
-    setEnvironment('GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS', baselineEnvironment.workerTimeout);
-    setEnvironment('GITNEXUS_VERBOSE', baselineEnvironment.verbose);
+    setEnvironment('GITNEXUS_ANALYSIS_MAIN_HEAP_MB', priorMainHeap);
+    setEnvironment('GITNEXUS_ANALYSIS_SUPERVISOR_BYTES', priorSupervisor);
+    process.removeListener('message', onControlMessage);
+    process.removeListener('disconnect', cancel);
   }
 }

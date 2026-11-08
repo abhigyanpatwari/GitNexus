@@ -17,10 +17,43 @@ import { describe, it, expect } from 'vitest';
 import {
   detectGraphWriteCollapse,
   getIndexIncompleteReasons,
+  getGraphIncompleteReasons,
   GRAPH_WRITE_COLLAPSE_MIN_EDGES,
   GRAPH_WRITE_COLLAPSE_RATIO,
   INDEX_INCOMPLETE_REASONS,
 } from '../../src/core/index-freshness.js';
+
+it('keeps graph failures visible while separating legacy and durable embedding debt', () => {
+  const metadata = {
+    scopeExtractionReceipt: 1 as const,
+    embeddingJob: {
+      version: 1 as const,
+      identity: 'a'.repeat(64),
+      graphGeneration: 'b'.repeat(32),
+    },
+    graphWriteCollapsed: { expected: 100, persisted: 0 },
+  };
+  expect(getIndexIncompleteReasons(metadata)).toEqual([
+    'graph-write-collapsed',
+    'embedding-job-pending',
+  ]);
+  expect(getGraphIncompleteReasons(metadata)).toEqual(['graph-write-collapsed']);
+  expect(
+    getGraphIncompleteReasons({
+      scopeExtractionReceipt: 1,
+      embeddingCheckpoint: {
+        at: '',
+        model: 'fixture',
+        dimensions: 3,
+        provider: 'local',
+        nodesProcessed: 0,
+        totalNodes: 1,
+        chunksProcessed: 0,
+      },
+    }),
+  ).toEqual([]);
+  expect(getGraphIncompleteReasons(null)).toEqual(['scope-extraction-unverified']);
+});
 
 describe('detectGraphWriteCollapse (B2 detection)', () => {
   it('flags the reported field failure (23009 built, 2170 persisted)', () => {

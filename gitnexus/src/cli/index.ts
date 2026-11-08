@@ -17,6 +17,7 @@ import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
 import { writeCommandBanner } from './command-banner.js';
 import { runProcessCliUpdateNotice } from './update-notice.js';
+import { memoryAutopilotDisabled } from '../core/ingestion/utils/effective-ram.js';
 
 const program = new Command();
 
@@ -179,6 +180,10 @@ program
       'pin; parse workers keep their own heap caps.',
   )
   .option(
+    '--resource-budget <mb>',
+    'Total analysis resource budget in MiB, including native pools, workers, model and supervisor.',
+  )
+  .option(
     '--workers <n>',
     'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
   )
@@ -286,14 +291,48 @@ program
       process.env.GITNEXUS_EMBEDDING_DIMS = dimsEnvBaseline;
     }
   })
-  .action(
-    createAnalyzerLbugLazyAction(
+  .action(async (inputPath, options) => {
+    // The connected continuation only publishes the writer's prepared graph
+    // and embeds it. Its analyzer receipt is never used: the graph writer has
+    // already finalized provenance. Keep the native check, without repeating
+    // the complete analyzer identity snapshot in this separate process.
+    // An explicit heap budget without the budget-child marker always re-execs
+    // in ensureHeap before runFullAnalysis. Its parent receipt is unused too;
+    // the child still captures provenance before importing the analyzer.
+    const budgetSupervisor =
+      !options.watch &&
+      options.memoryBudget !== undefined &&
+      process.env.GITNEXUS_HEAP_LIMIT_SOURCE !== 'budget';
+    // An unconfigured automatic-heap parent also always re-execs with the
+    // admitted old/semi-space flags. Keep conservative capture for custom Node
+    // flags, manual heaps, test overrides and every analyzing child.
+    const autoSupervisor =
+      !options.watch &&
+      options.memoryBudget === undefined &&
+      process.env.GITNEXUS_ANALYSIS_SUPERVISED !== '1' &&
+      process.env.GITNEXUS_ANALYSIS_MANUAL_HEAP !== '1' &&
+      !memoryAutopilotDisabled() &&
+      process.env.GITNEXUS_TEST_RESPAWN_HEAP_MB === undefined &&
+      process.execArgv.length === 0 &&
+      !(process.env.NODE_OPTIONS ?? '').trim();
+    if (
+      budgetSupervisor ||
+      autoSupervisor ||
+      (process.env.GITNEXUS_ANALYSIS_CONTINUATION === '1' && process.connected)
+    ) {
+      await createLbugLazyAction(() => import('./analyze.js'), 'analyzeCommand')(
+        inputPath,
+        options,
+      );
+      return;
+    }
+    await createAnalyzerLbugLazyAction(
       () => import('../core/analyzer-identity.js'),
       () => import('./analyze.js'),
       'analyzeOrWatchCommandWithRunnerIdentity',
       import.meta.url,
-    ),
-  );
+    )(inputPath, options);
+  });
 
 program
   .command('index [path...]')
@@ -410,7 +449,7 @@ program
   .option('-f, --force', 'Force full regeneration even if up to date')
   .option(
     '--provider <provider>',
-    'LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax)',
+    'LLM provider: minimax, anthropic, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax)',
   )
   .option('--model <model>', 'LLM model or deployment name (default: MiniMax-M3)')
   .option(
