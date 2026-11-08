@@ -189,6 +189,21 @@ describe('multi-repository query merge', () => {
       ]),
     );
   });
+  it('marks warning-only semantic degradation as partial without discarding keyword hits', () => {
+    const warning = 'Semantic search unavailable: embedding provider is not configured.';
+    const result = merged([member('/healthy'), member('/degraded', { warning })]);
+    expect(result.partial).toBe(true);
+    expect(result.processes.map((row) => row._repo)).toEqual(['/degraded', '/healthy']);
+    expect(result.per_repo).toContainEqual(
+      expect.objectContaining({ repo: '/degraded', status: 'ok', warning }),
+    );
+  });
+  it('does not treat unavailable retained source or an empty warning as degraded search', () => {
+    const result = merged([
+      member('/symbol-only', { contentAvailability: { available: false }, warning: '' }),
+    ]);
+    expect(result.partial).toBe(false);
+  });
   it('returns a complete empty result when every member searched successfully', () => {
     expect(
       merged([member('/empty', { processes: [], definitions: [], process_symbols: [] })]),

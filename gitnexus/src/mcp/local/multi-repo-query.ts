@@ -162,6 +162,11 @@ export function mergeRepositoryQueries(
     process_symbols,
     definitions,
     per_repo,
-    partial: members.some(({ result }) => result.error !== undefined || result.partial === true),
+    partial: members.some(
+      ({ result }) =>
+        result.error !== undefined ||
+        result.partial === true ||
+        (typeof result.warning === 'string' && result.warning.length > 0),
+    ),
   };
 }

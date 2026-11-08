@@ -233,6 +233,45 @@ describe('array query routing', () => {
 });
 
 describe('MCP array query policy and wire contract', () => {
+  it.each([
+    ['query', false],
+    ['query', true],
+    ['search', false],
+    ['search', true],
+  ] as const)(
+    'routes %s follow-up hints to the result repository (include_content=%s)',
+    async (name, includeContent) => {
+      const h = harness();
+      const server = createMCPServer(h.backend);
+      const client = new Client({ name: 'multi-repo-hint-test', version: '1' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      try {
+        await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+        const response = await client.callTool({
+          name,
+          arguments: {
+            search_query: 'auth',
+            repo: ['alpha', 'beta'],
+            include_content: includeContent,
+          },
+        });
+        expect(response.isError).not.toBe(true);
+        const text = (response.content as { text: string }[])[0]!.text;
+        const [body, legacyHint] = text.split('\n\n---\n**Next:** ');
+        const result = JSON.parse(body!);
+        const hint = name === 'query' ? result.next : legacyHint;
+        expect(result.process_symbols).toHaveLength(2);
+        expect(hint).toContain('context({uid: "<id>", repo: "<row._repo>"})');
+        expect(hint).not.toContain('alpha,beta');
+        expect(hint.includes('content_truncated')).toBe(includeContent);
+        expect(hint.includes('repo: "<row._repo>", include_content: true')).toBe(includeContent);
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    },
+  );
+
   it('authorizes the whole list before dispatch and keeps explicit arrays ahead of defaults', async () => {
     const h = harness();
     const policy = await createMcpRepositoryPolicy(h.backend, {
