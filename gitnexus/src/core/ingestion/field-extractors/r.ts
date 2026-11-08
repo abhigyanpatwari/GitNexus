@@ -15,7 +15,7 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { BaseFieldExtractor } from '../field-extractor.js';
 import { isRLeftAssignment } from '../languages/r/assignment.js';
-import { isRNamingArgument } from '../languages/r/naming-argument.js';
+import { isRNamingArgument, rArgumentName } from '../languages/r/naming-argument.js';
 import type {
   FieldExtractorContext,
   ExtractedFields,
@@ -63,7 +63,8 @@ export class RFieldExtractor extends BaseFieldExtractor {
       const arg = args.namedChild(i);
       if (!arg || arg.type !== 'argument') continue;
 
-      const section = arg.childForFieldName('name')?.text;
+      const sectionNode = arg.childForFieldName('name');
+      const section = sectionNode ? rArgumentName(sectionNode) : undefined;
       if (section !== 'public' && section !== 'private') continue;
 
       const visibility: FieldVisibility = section === 'private' ? 'private' : 'public';
@@ -120,7 +121,8 @@ export class RFieldExtractor extends BaseFieldExtractor {
       const arg = args.namedChild(i);
       if (!arg || arg.type !== 'argument') continue;
 
-      const paramName = arg.childForFieldName('name')?.text;
+      const paramNode = arg.childForFieldName('name');
+      const paramName = paramNode ? rArgumentName(paramNode) : undefined;
       if (paramName !== 'representation' && paramName !== 'slots' && paramName !== 'fields')
         continue;
 

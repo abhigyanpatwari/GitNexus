@@ -193,3 +193,32 @@ describe('RFieldExtractor: the type of an R6 field default that is an NA constan
     ]);
   });
 });
+
+describe('R field extractor: section formals spelled in backticks or quotes', () => {
+  it.each([
+    ['plain', 'fields'],
+    ['backticked', '`fields`'],
+    ['double-quoted', '"fields"'],
+    ['plain', 'slots'],
+    ['backticked', '`slots`'],
+    ['double-quoted', '"representation"'],
+  ])('finds the %s %s formal of a class', (_label, formal) => {
+    const call = formal.includes('fields')
+      ? `setRefClass("Acc", ${formal} = list(balance = "numeric"))`
+      : `setClass("Acc", ${formal} = list(balance = "numeric"))`;
+    expect(extracted(call)?.fields).toEqual(['balance']);
+  });
+
+  it.each([
+    ['plain', 'public'],
+    ['backticked', '`public`'],
+    ['double-quoted', '"public"'],
+    ['plain', 'private'],
+    ['backticked', '`private`'],
+    ['double-quoted', '"private"'],
+  ])('finds R6 fields under the %s %s formal', (_label, formal) => {
+    const tree = parser.parse(`Acc <- R6Class("Acc", ${formal} = list(balance = 0))`);
+    const result = extractor.extract(tree.rootNode.namedChild(0) as never, context);
+    expect(result?.fields.map((f) => f.name)).toEqual(['balance']);
+  });
+});
