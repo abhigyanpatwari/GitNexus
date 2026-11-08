@@ -156,6 +156,8 @@ describe('GraphEmitSink routing', () => {
 
     expect(manifest).toMatchObject({ totalRows: 0 });
     expect(real.relationshipCount).toBe(0);
+    expect(Reflect.get(sink, 'nodeIds').size).toBe(0);
+    expect(Reflect.get(sink, 'nodeIdByIx')).toHaveLength(0);
   });
 
   it('fails at finalize, with every undeclared endpoint-label pair, rather than dropping them (#2769, #2797)', async () => {
@@ -197,6 +199,8 @@ describe('GraphEmitSink routing', () => {
     // The declared edge was still streamed; the undeclared ones were not.
     expect(await dataRows(path.join(csvDir, 'rel_Function_Function.csv'))).toHaveLength(1);
     expect(fs.existsSync(path.join(csvDir, 'rel_Static_Static.csv'))).toBe(false);
+    expect(Reflect.get(sink, 'nodeIds').size).toBe(2);
+    expect(Reflect.get(sink, 'nodeIdByIx')).toHaveLength(2);
   });
 });
 

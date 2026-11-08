@@ -28,11 +28,12 @@ describeIfWorkerBuilt.each([
     it.each(['truncate', 'lengthen', 'rename', 'delete'] as const)(
       'keeps %s unverified on cold and cached parsing',
       async (change) => {
+        const identity = await runtimeParseIdentity();
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-integrity-race-'));
         const file = path.join(root, 'sample.ts');
         const storage = path.join(root, '.gitnexus');
         let cache: ParseCache = {
-          identity: await runtimeParseIdentity(),
+          identity,
           entries: new Map(),
           usedKeys: new Set(),
           storagePath: storage,

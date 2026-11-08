@@ -499,10 +499,6 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
       this.real.addRelationship(relationship);
       return;
     }
-    // Mirror KnowledgeGraph.addRelationship's first-writer-wins dedup.
-    const srcIx = knownSrc ?? this.internNode(relationship.sourceId);
-    const tgtIx = knownTgt ?? this.internNode(relationship.targetId);
-    const streamKey = key ?? this.dedupKey(relationship, srcIx, tgtIx);
     this.real.inspectRelationship?.(relationship, false, false);
 
     // Classify + skip via the SHARED `relPairKeyFor`, not a local copy of its
@@ -540,6 +536,10 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
       }
       this.relWriters.set(pairKey, writer);
     }
+    // Keep endpoint IDs only for edges that passed the routing gates.
+    const srcIx = knownSrc ?? this.internNode(relationship.sourceId);
+    const tgtIx = knownTgt ?? this.internNode(relationship.targetId);
+    const streamKey = key ?? this.dedupKey(relationship, srcIx, tgtIx);
     writer.addRow(buildRelRow(relationship));
     // Publish identity only after the row was accepted by the writer.
     this.streamedIds.set(streamKey, this.srcIx.length);
