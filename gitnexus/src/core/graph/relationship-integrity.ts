@@ -19,7 +19,7 @@ const REFERENCE_TYPES = new Set(['CALLS', 'ACCESSES', 'USES', 'EXTENDS', 'IMPLEM
 export function createRelationshipIntegrityCollector(
   repoPath: string,
   getNode: (id: string) => GraphNode | undefined,
-  referenceSourceText?: (filePath: string, sourceText: string) => string | undefined,
+  referenceSourceText?: (filePath: string, sourceText: string) => string | null | undefined,
 ) {
   const receipt: RelationshipIntegrityReceipt = {
     version: 1,
@@ -29,7 +29,10 @@ export function createRelationshipIntegrityCollector(
   };
   // Emission is normally grouped by source file. Keep only bounded line-size
   // metadata, and compute UTF-8 lengths once even for long/minified lines.
-  const sourceLines = new Map<string, { byteLengths: number[]; originalCoordinates: boolean }>();
+  const sourceLines = new Map<
+    string,
+    { byteLengths: number[] | null; originalCoordinates: boolean }
+  >();
   const root = path.resolve(repoPath);
   let failure: Error | undefined;
 
@@ -88,9 +91,8 @@ export function createRelationshipIntegrityCollector(
       ![line, col, endLine, endCol].every(Number.isSafeInteger) ||
       line < 1 ||
       col < 0 ||
-      endLine < line ||
-      endCol < 0 ||
-      (endLine === line && endCol < col)
+      endLine < 1 ||
+      endCol < 0
     )
       fail('invalid source coordinates (lines are one-based, columns zero-based)');
     const source = getNode(rel.sourceId);
@@ -107,9 +109,10 @@ export function createRelationshipIntegrityCollector(
         const text = fs.readFileSync(fullPath, 'utf8');
         const extracted = referenceSourceText?.(filePath!, text);
         sourceBuffer = {
-          byteLengths: (extracted ?? text)
-            .split('\n')
-            .map((line) => Buffer.byteLength(line, 'utf8')),
+          byteLengths:
+            extracted === null
+              ? null
+              : (extracted ?? text).split('\n').map((line) => Buffer.byteLength(line, 'utf8')),
           originalCoordinates: extracted === undefined,
         };
       } catch {
@@ -119,6 +122,15 @@ export function createRelationshipIntegrityCollector(
       sourceLines.set(fullPath, sourceBuffer!);
     }
     const { byteLengths, originalCoordinates } = sourceBuffer!;
+    // Partially mapped coordinates do not describe a range in one buffer.
+    // Keep their identity, but never certify their ordering or source bounds.
+    if (byteLengths === null) {
+      if (duplicate) receipt.duplicatesSuppressed++;
+      else receipt.unverifiedEdges++;
+      return;
+    }
+    if (endLine < line || (endLine === line && endCol < col))
+      fail('invalid source coordinate ordering');
     if (
       endLine > byteLengths.length ||
       col > (byteLengths[line - 1] ?? 0) ||

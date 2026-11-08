@@ -221,6 +221,8 @@ function normalizePythonStringLiteral(text: string): string | undefined {
 export const pythonProvider = defineLanguage({
   id: SupportedLanguages.Python,
   rename: pythonRenameProvider,
+  // Notebook captures map JSON rows but retain extracted Python columns.
+  referenceSourceText: (_text, filePath) => (filePath.endsWith('.ipynb') ? null : undefined),
   extensions: ['.py', '.ipynb'],
   entryPointPatterns: [/^app$/, /^(get|post|put|delete|patch)_/i, /^api_/, /^view_/],
   astFrameworkPatterns: [

@@ -36,7 +36,9 @@ function edge(startCol = 2, endCol = 16, kind = 'call', target = targetId): Grap
 }
 
 describe.each(['memory', 'streaming'] as const)('ingestion relationship integrity: %s', (mode) => {
-  function fixture(referenceSourceText?: (filePath: string, text: string) => string | undefined) {
+  function fixture(
+    referenceSourceText?: (filePath: string, text: string) => string | null | undefined,
+  ) {
     const collector = createRelationshipIntegrityCollector(
       root,
       (id) => graph.getNode(id),
@@ -97,6 +99,17 @@ describe.each(['memory', 'streaming'] as const)('ingestion relationship integrit
       // This span fits the original file, but not the actual reference buffer.
       expect(() => writer.addRelationship(edge(18, 32))).toThrow(/outside/);
       expect(writer.relationshipCount).toBe(1);
+    } finally {
+      close();
+    }
+  });
+
+  it('does not certify a span whose rows and columns have only been partly mapped', () => {
+    const { writer, collector, close } = fixture(() => null);
+    try {
+      writer.addRelationship(edge(18, 2));
+      expect(collector.snapshot()).toMatchObject({ checkedSites: 0, unverifiedEdges: 1 });
+      expect(relationshipIntegrityForCaller(collector.snapshot()).status).toBe('unverified');
     } finally {
       close();
     }

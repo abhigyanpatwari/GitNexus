@@ -49,6 +49,8 @@ describe('Jupyter notebook Python pipeline', () => {
         ]);
         writeFixtureRepo(root, { 'fields.ipynb': notebook });
         const result = await runPipelineFromRepo(root, () => {}, { skipGraphPhases: true });
+        expect(result.relationshipIntegrity).toMatchObject({ checkedSites: 0 });
+        expect(result.relationshipIntegrity?.unverifiedEdges).toBeGreaterThan(0);
         const sourceRow = notebook.split('\n').findIndex((line) => line.includes('self.value = 1'));
         expect(result.graph.getNode('Property:fields.ipynb:Box.value')).toMatchObject({
           properties: { startLine: sourceRow, endLine: sourceRow },
