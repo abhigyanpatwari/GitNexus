@@ -6940,6 +6940,8 @@ export class LocalBackend {
         encoding: 'utf-8',
         maxBuffer: 256 * 1024 * 1024,
         windowsHide: true,
+        // Keep Git warnings out of CLI/MCP stderr; failures retain stderr in err.message.
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err: any) {
       return { error: `Git diff failed: ${err.message}` };
