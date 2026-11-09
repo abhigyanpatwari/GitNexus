@@ -28,81 +28,86 @@ for (const [key, value] of Object.entries(counts)) {
   assert(Number.isSafeInteger(value) && value > 0, `${key} must be a positive integer`);
 }
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-compact-writes-'));
-process.env.GITNEXUS_HOME = path.join(temporary, 'home');
-process.env.GITNEXUS_SHARED_STORE = 'off';
-process.env.GITNEXUS_MEMORY = 'off';
-process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE = String(256 * 1024 ** 2);
-let repo;
-const runtime = path.resolve(values.runtime);
-const adapter = await import(
-  pathToFileURL(path.join(runtime, 'gitnexus/dist/core/lbug/lbug-adapter.js'))
-);
-const { runFullAnalysis } = await import(
-  pathToFileURL(path.join(runtime, 'gitnexus/dist/core/run-analyze.js'))
-);
-const { getStoragePaths, loadMeta } = await import(
-  pathToFileURL(path.join(runtime, 'gitnexus/dist/storage/repo-manager.js'))
-);
-const runs = [];
-const options = { skipAgentsMd: true, skipSkills: true, workerPoolSize: 1 };
-
-async function run(name, extra = {}) {
-  const start = performance.now();
-  const phaseTimingsMs = {};
-  let phase = 'preflight';
-  let phaseStart = start;
-  const recordPhase = (nextPhase) => {
-    if (!values.profile) return;
-    const now = performance.now();
-    phaseTimingsMs[phase] = (phaseTimingsMs[phase] ?? 0) + now - phaseStart;
-    phase = nextPhase;
-    phaseStart = now;
-  };
-  const result = await runFullAnalysis(repo, { ...options, ...extra }, { onProgress: recordPhase });
-  recordPhase('complete');
-  const { lbugPath, storagePath } = getStoragePaths(repo);
-  const stat = await fs.stat(lbugPath);
-  const sample = {
-    name,
-    repo: path.basename(repo),
-    elapsedMs: performance.now() - start,
-    bytes: stat.size,
-    inode: stat.ino,
-    stats: result.stats,
-    incrementalStats: result.incrementalStats,
-    alreadyUpToDate: result.alreadyUpToDate,
-    ftsSkipped: result.ftsSkipped,
-    graphCompaction: (await loadMeta(storagePath))?.graphCompaction,
-    ...(values.profile ? { phaseTimingsMs } : {}),
-  };
-  runs.push(sample);
-  return sample;
-}
-
-async function fingerprint() {
-  const { lbugPath } = getStoragePaths(repo);
-  await adapter.initLbug(lbugPath);
-  try {
-    const nodes = await adapter.executeQuery(
-      'MATCH (n) RETURN label(n) AS label, n.id AS id ORDER BY label, id',
-    );
-    const edges = await adapter.executeQuery(
-      'MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS src, b.id AS dst, r.type AS type, r.reason AS reason ORDER BY src, dst, type, reason',
-    );
-    return {
-      nodes: nodes.length,
-      edges: edges.length,
-      sha256: createHash('sha256')
-        .update(JSON.stringify(nodes))
-        .update(JSON.stringify(edges))
-        .digest('hex'),
-    };
-  } finally {
-    await adapter.closeLbug();
-  }
-}
-
+let adapter;
 try {
+  process.env.GITNEXUS_HOME = path.join(temporary, 'home');
+  process.env.GITNEXUS_SHARED_STORE = 'off';
+  process.env.GITNEXUS_MEMORY = 'off';
+  process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE = String(256 * 1024 ** 2);
+  let repo;
+  const runtime = path.resolve(values.runtime);
+  adapter = await import(
+    pathToFileURL(path.join(runtime, 'gitnexus/dist/core/lbug/lbug-adapter.js'))
+  );
+  const { runFullAnalysis } = await import(
+    pathToFileURL(path.join(runtime, 'gitnexus/dist/core/run-analyze.js'))
+  );
+  const { getStoragePaths, loadMeta } = await import(
+    pathToFileURL(path.join(runtime, 'gitnexus/dist/storage/repo-manager.js'))
+  );
+  const runs = [];
+  const options = { skipAgentsMd: true, skipSkills: true, workerPoolSize: 1 };
+
+  async function run(name, extra = {}) {
+    const start = performance.now();
+    const phaseTimingsMs = {};
+    let phase = 'preflight';
+    let phaseStart = start;
+    const recordPhase = (nextPhase) => {
+      if (!values.profile) return;
+      const now = performance.now();
+      phaseTimingsMs[phase] = (phaseTimingsMs[phase] ?? 0) + now - phaseStart;
+      phase = nextPhase;
+      phaseStart = now;
+    };
+    const result = await runFullAnalysis(
+      repo,
+      { ...options, ...extra },
+      { onProgress: recordPhase },
+    );
+    recordPhase('complete');
+    const { lbugPath, storagePath } = getStoragePaths(repo);
+    const stat = await fs.stat(lbugPath);
+    const sample = {
+      name,
+      repo: path.basename(repo),
+      elapsedMs: performance.now() - start,
+      bytes: stat.size,
+      inode: stat.ino,
+      stats: result.stats,
+      incrementalStats: result.incrementalStats,
+      alreadyUpToDate: result.alreadyUpToDate,
+      ftsSkipped: result.ftsSkipped,
+      graphCompaction: (await loadMeta(storagePath))?.graphCompaction,
+      ...(values.profile ? { phaseTimingsMs } : {}),
+    };
+    runs.push(sample);
+    return sample;
+  }
+
+  async function fingerprint() {
+    const { lbugPath } = getStoragePaths(repo);
+    await adapter.initLbug(lbugPath);
+    try {
+      const nodes = await adapter.executeQuery(
+        'MATCH (n) RETURN label(n) AS label, n.id AS id ORDER BY label, id',
+      );
+      const edges = await adapter.executeQuery(
+        'MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS src, b.id AS dst, r.type AS type, r.reason AS reason ORDER BY src, dst, type, reason',
+      );
+      return {
+        nodes: nodes.length,
+        edges: edges.length,
+        sha256: createHash('sha256')
+          .update(JSON.stringify(nodes))
+          .update(JSON.stringify(edges))
+          .digest('hex'),
+      };
+    } finally {
+      await adapter.closeLbug();
+    }
+  }
+
   const comparisons = [];
   for (let repository = 0; repository < counts.repos; repository++) {
     repo = path.join(temporary, `repo-${repository}`);
@@ -171,6 +176,9 @@ try {
   if (values.output) await fs.writeFile(values.output, json);
   else console.log(json);
 } finally {
-  await adapter.closeLbug();
-  if (!values.keep) await fs.rm(temporary, { recursive: true, force: true });
+  try {
+    await adapter?.closeLbug();
+  } finally {
+    if (!values.keep) await fs.rm(temporary, { recursive: true, force: true });
+  }
 }

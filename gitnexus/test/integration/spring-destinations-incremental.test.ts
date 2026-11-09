@@ -186,8 +186,8 @@ describe.skipIf(isWin)('Destination across a second, incremental analyze', () =>
   }, 180_000);
 
   it('REMOVES a destination whose last referrer is gone, leaving no orphan', async () => {
-    // Keep the source file so this exercises selective orphan cleanup, rather
-    // than the compact rebuild selected for source-file deletion (#3852).
+    // Remove the last topic reference while retaining its source file to
+    // exercise selective orphan cleanup after a source modification.
     await fs.writeFile(
       path.join(srcDir(), 'ShipmentPublisher.java'),
       LATE_PUBLISHER.replace('kafkaTemplate.send("shipments.v1", payload);', ''),

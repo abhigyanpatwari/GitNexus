@@ -109,8 +109,9 @@ const expectPopulatedFtsIndexes = async (lbugPath: string): Promise<void> => {
       const rows = await lbugAdapter.executeQuery(
         `MATCH (n:\`${table}\`) RETURN count(n) AS total`,
       );
-      expect(rows).toEqual([{ total: expect.any(Number) }]);
-      if (rows[0].total === 0) continue;
+      expect(rows).toHaveLength(1);
+      expect(['number', 'bigint']).toContain(typeof rows[0].total);
+      if (Number(rows[0].total) === 0) continue;
       expected.push(indexName);
       expect(actual).toContainEqual(
         expect.objectContaining({
