@@ -14,6 +14,7 @@ const { values } = parseArgs({
     runtime: { type: 'string', default: fileURLToPath(new URL('../../../', import.meta.url)) },
     output: { type: 'string' },
     keep: { type: 'boolean', default: false },
+    profile: { type: 'boolean', default: false },
   },
 });
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-compact-writes-'));
@@ -37,7 +38,18 @@ const options = { skipAgentsMd: true, skipSkills: true, workerPoolSize: 1 };
 
 async function run(name, extra = {}) {
   const start = performance.now();
-  const result = await runFullAnalysis(repo, { ...options, ...extra }, { onProgress() {} });
+  const phaseTimingsMs = {};
+  let phase = 'preflight';
+  let phaseStart = start;
+  const recordPhase = (nextPhase) => {
+    if (!values.profile) return;
+    const now = performance.now();
+    phaseTimingsMs[phase] = (phaseTimingsMs[phase] ?? 0) + now - phaseStart;
+    phase = nextPhase;
+    phaseStart = now;
+  };
+  const result = await runFullAnalysis(repo, { ...options, ...extra }, { onProgress: recordPhase });
+  recordPhase('complete');
   const { lbugPath } = getStoragePaths(repo);
   const stat = await fs.stat(lbugPath);
   const sample = {
@@ -49,6 +61,7 @@ async function run(name, extra = {}) {
     incrementalStats: result.incrementalStats,
     alreadyUpToDate: result.alreadyUpToDate,
     ftsSkipped: result.ftsSkipped,
+    ...(values.profile ? { phaseTimingsMs } : {}),
   };
   runs.push(sample);
   return sample;

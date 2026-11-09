@@ -1,6 +1,6 @@
 /**
  * Fresh graph COPY runs before FTS indexes are built (#2589, #3852), without
- * dropping or mutating the prior published graph's search indexes.
+ * dropping or mutating the prior published graph's search indexes on staged builds.
  */
 import { readFile, writeFile } from 'fs/promises';
 import { execSync } from 'child_process';
@@ -61,13 +61,13 @@ describe('runFullAnalysis compact writeback — fresh FTS ordering (#2589, #3852
     vi.resetModules();
   });
 
-  it('loads a fresh graph before building every configured FTS index', async () => {
+  it('loads a fresh graph before building every populated FTS index', async () => {
     const lbugAdapter = await import('../../src/core/lbug/lbug-adapter.js');
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
 
     const repo = await setupMiniRepo('gitnexus-2589-fts-order-');
     try {
-      // First run: full rebuild, builds every FTS index for real.
+      // First run: full rebuild, builds FTS indexes for populated tables.
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
 
       // runFullAnalysis closes its own connection on return — open a fresh
@@ -82,12 +82,24 @@ describe('runFullAnalysis compact writeback — fresh FTS ordering (#2589, #3852
         return rows.map((r) => r.index_name).filter((n): n is string => typeof n === 'string');
       };
       const beforeChange = await showIndexNames();
+      // Independent native counts, without the production empty-table helper.
+      const populated: string[] = [];
+      for (const { table, indexName } of FTS_INDEXES) {
+        const rows = await lbugAdapter.executeQuery(
+          `MATCH (n:\`${table}\`) RETURN count(n) AS total`,
+        );
+        expect(rows).toEqual([{ total: expect.any(Number) }]);
+        if (rows[0].total > 0) populated.push(indexName);
+      }
+      expect(populated).toContain('file_fts');
+      expect(populated).toContain('function_fts');
+      expect(populated).not.toContain('protocol_fts');
       await lbugAdapter.closeLbug();
 
       // Hard assertion, not a soft skip: the beforeEach gate already proved
       // the extension loads, so every index failing to build here is a real
       // bug in the full-rebuild FTS phase, not an environment gap.
-      for (const { indexName } of FTS_INDEXES) {
+      for (const indexName of populated) {
         expect(beforeChange).toContain(indexName);
       }
 
@@ -123,7 +135,7 @@ describe('runFullAnalysis compact writeback — fresh FTS ordering (#2589, #3852
       await lbugAdapter.initLbug(lbugPath);
       try {
         const after = await showIndexNames();
-        expect(after.filter((name) => configured.includes(name)).sort()).toEqual(configured.sort());
+        expect(after.filter((name) => configured.includes(name)).sort()).toEqual(populated.sort());
       } finally {
         await lbugAdapter.closeLbug();
       }

@@ -14,13 +14,14 @@ Run the native reduction and the production analyzer comparison from `gitnexus/`
 node bench/incremental-write-integrity/reproduce-growth.cjs
 node bench/incremental-write-integrity/reproduce-growth.cjs --large
 npm run build
-node bench/incremental-write-integrity/measure-compact-writes.mjs --output /tmp/compact-writes.json
+node bench/incremental-write-integrity/measure-compact-writes.mjs --profile --output /tmp/compact-writes.json
 ```
 
 Both harnesses create isolated temporary fixtures and remove them by default;
 `--keep` retains them. The analyzer harness also accepts `--runtime /path/to/repo`
-to compare another checkout's compiled runtime. Timing and file sizes are
-measurements, not CI pass/fail thresholds.
+to compare another checkout's compiled runtime. `--profile` records elapsed time
+by analyzer progress phase. Timing and file sizes are measurements, not CI
+pass/fail thresholds.
 
 The native reduction uses serial uncompressed COPY, a Function node table and
 three relationships per node, with no parser, FTS or GitNexus adapter. It measures
@@ -42,20 +43,46 @@ functions each, FTS enabled and no generated embeddings. It checks no-op inode
 stability and compares sorted node identities plus relationship endpoints,
 types and reasons against a forced rebuild of the final source state.
 
-| Three one-file comment edits | Previous row writes | Fresh-file writes |
-| --- | ---: | ---: |
-| Final database | 24.85 MiB | 22.52 MiB |
-| Fresh rebuild control | 22.52 MiB | 22.52 MiB |
-| Per-edit elapsed time | 6.2–6.5 s | 12.3–13.0 s |
-| Node/edge fingerprint matches control | yes | yes |
+| Three one-file comment edits          | Previous row writes | Fresh-file writes |
+| ------------------------------------- | ------------------: | ----------------: |
+| Final database                        |           24.85 MiB |         22.52 MiB |
+| Fresh rebuild control                 |           22.52 MiB |         22.52 MiB |
+| Per-edit elapsed time                 |           6.2–6.5 s |       11.5–13.0 s |
+| Node/edge fingerprint matches control |                 yes |               yes |
 
 Fresh-file writes trade additional indexing work and temporary disk space for
 compact published storage. These timings came from a shared development host;
 they are not an isolated throughput benchmark or a claim of universal speedup.
 A repeat on the final build while the full test suite was running took 18.2–19.4 s
 per edit, with the same 22.52 MiB size and exact graph fingerprint.
-The native harness measures query latency separately. Neither harness proves
-bounded memory use or Windows native close/swap behavior.
+These measurements preceded the empty-table FTS optimization. Profiling showed
+that native FTS creation incurs substantial fixed cost even for empty tables.
+Analysis now builds indexes only for populated tables. Verification and search
+accept an absent index only when a fresh native count proves that table empty;
+failed or incomplete count reads retain the normal build/query checks. No table
+counts are cached across requests or mutations.
+
+Two serial paired runs compared the initial fresh-file implementation
+(`a329a1095`) with this optimization, reversing the order for the second pair.
+No tests or repository indexing ran concurrently. Across six one-file edits
+per version on the same fixture:
+
+| Measurement                           | All 23 FTS indexes | Only 2 populated indexes |
+| ------------------------------------- | -----------------: | -----------------------: |
+| Median changed-analysis time          |             8.89 s |                   3.99 s |
+| Changed-analysis range                |        8.66–9.73 s |              3.84–4.03 s |
+| FTS phase                             |        5.43–6.33 s |              0.72–0.79 s |
+| No-op time                            |        0.35–0.37 s |              0.33–0.34 s |
+| Final database / fresh control        |  22.52 / 22.52 MiB |        22.52 / 22.52 MiB |
+| Node/edge fingerprint matches control |                yes |                      yes |
+
+That is a 55% reduction in median changed-analysis time for this fixture.
+Populated tables still require full re-tokenization, and repositories using more
+node-table types will save less. Native integration tests compare ranked core
+and pooled search results with an independent all-indexes control and exercise
+empty-to-populated transitions. The native harness measures query latency
+separately. Neither harness proves bounded memory use or Windows native
+close/swap behavior.
 
 For the native cause of #3421/#3423 and regressions covering both missing
 context results and Unicode Property FTS, see [search-root-cause.md](search-root-cause.md).
