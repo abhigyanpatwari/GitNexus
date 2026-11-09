@@ -11,7 +11,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { GraphNode, NodeLabel, RelationshipType } from 'gitnexus-shared';
+import type { NodeLabel, RelationshipType } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import { isHeuristicEdgeReason } from '../graph/edge-reasons.js';
 import { CommunityMembership } from './community-processor.js';
@@ -167,8 +167,6 @@ export const processProcesses = async (
 
   const callsEdges = buildCallsGraph(knowledgeGraph);
   const reverseCallsEdges = buildReverseCallsGraph(knowledgeGraph);
-  const nodeMap = new Map<string, GraphNode>();
-  for (const n of knowledgeGraph.iterNodes()) nodeMap.set(n.id, n);
 
   // Declared before Step 1 because `findEntryPoints` has a ceiling of its own
   // (`cfg.maxEntryPointCandidates`, default 200) and reports it through the same record.
@@ -364,8 +362,8 @@ export const processProcesses = async (
       communities.length > 1 ? 'cross_community' : 'intra_community';
 
     // Generate label
-    const entryNode = nodeMap.get(entryPointId);
-    const terminalNode = nodeMap.get(terminalId);
+    const entryNode = knowledgeGraph.getNode(entryPointId);
+    const terminalNode = knowledgeGraph.getNode(terminalId);
     const entryName = entryNode?.properties.name || 'Unknown';
     const terminalName = terminalNode?.properties.name || 'Unknown';
     const heuristicLabel = `${capitalize(entryName)} → ${capitalize(terminalName)}`;

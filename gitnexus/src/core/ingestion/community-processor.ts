@@ -256,7 +256,6 @@ export const processCommunities = async (
     details.communities as Record<string, number>,
     communityIds,
     graph,
-    knowledgeGraph,
   );
 
   onProgress?.('Creating membership edges...', 80);
@@ -266,12 +265,13 @@ export const processCommunities = async (
   const retainedCommunityIds = new Set(communityNodes.map((community) => community.id));
   const memberships: CommunityMembership[] = [];
   const rawMemberships: CommunityMembership[] = [];
-  Object.entries(details.communities).forEach(([nodeId, communityNum]) => {
+  for (const nodeId of Object.keys(details.communities)) {
+    const communityNum = details.communities[nodeId];
     const communityId = communityIds.get(communityNum)!;
     const membership = { nodeId, communityId };
     rawMemberships.push(membership);
     if (retainedCommunityIds.has(communityId)) memberships.push(membership);
-  });
+  }
 
   onProgress?.('Community detection complete!', 100);
 
@@ -797,24 +797,15 @@ const createCommunityNodes = (
   communities: Record<string, number>,
   communityIds: ReadonlyMap<number, string>,
   graph: GraphInstance,
-  knowledgeGraph: KnowledgeGraph,
 ): CommunityNode[] => {
   // Group node IDs by community
   const communityMembers = new Map<number, string[]>();
 
-  Object.entries(communities).forEach(([nodeId, commNum]) => {
-    if (!communityMembers.has(commNum)) {
-      communityMembers.set(commNum, []);
-    }
-    communityMembers.get(commNum)!.push(nodeId);
-  });
-
-  // Build node lookup for file paths
-  const nodePathMap = new Map<string, string>();
-  for (const node of knowledgeGraph.iterNodes()) {
-    if (node.properties.filePath) {
-      nodePathMap.set(node.id, node.properties.filePath);
-    }
+  for (const nodeId of Object.keys(communities)) {
+    const commNum = communities[nodeId];
+    const members = communityMembers.get(commNum);
+    if (members) members.push(nodeId);
+    else communityMembers.set(commNum, [nodeId]);
   }
 
   // Create community nodes - SKIP SINGLETONS (isolated nodes)
@@ -825,13 +816,13 @@ const createCommunityNodes = (
     if (memberIds.length < 2) return;
 
     const communityId = communityIds.get(commNum)!;
-    const heuristicLabel = generateHeuristicLabel(memberIds, nodePathMap, graph, communityId);
+    const heuristicLabel = generateHeuristicLabel(memberIds, graph, communityId);
 
     communityNodes.push({
       id: communityId,
       label: heuristicLabel,
       heuristicLabel,
-      cohesion: calculateCohesion(memberIds, graph),
+      cohesion: calculateCohesion(memberIds, graph, communities, commNum),
       symbolCount: memberIds.length,
     });
   });
@@ -851,7 +842,6 @@ const createCommunityNodes = (
  */
 const generateHeuristicLabel = (
   memberIds: string[],
-  nodePathMap: Map<string, string>,
   graph: GraphInstance,
   communityId: string,
 ): string => {
@@ -859,7 +849,7 @@ const generateHeuristicLabel = (
   const folderCounts = new Map<string, number>();
 
   memberIds.forEach((nodeId) => {
-    const filePath = nodePathMap.get(nodeId) || '';
+    const filePath: string = graph.getNodeAttribute(nodeId, 'filePath') || '';
     const parts = filePath.split('/').filter(Boolean);
 
     // Get the most specific folder (parent directory)
@@ -937,10 +927,13 @@ const findCommonPrefix = (strings: string[]): string => {
  * Estimate cohesion score (0-1) based on internal edge density.
  * Uses sampling for large communities to avoid O(N^2) cost.
  */
-const calculateCohesion = (memberIds: string[], graph: GraphInstance): number => {
+const calculateCohesion = (
+  memberIds: string[],
+  graph: GraphInstance,
+  communities: Record<string, number>,
+  communityNum: number,
+): number => {
   if (memberIds.length <= 1) return 1.0;
-
-  const memberSet = new Set(memberIds);
 
   // Sample up to 50 members for large communities
   const SAMPLE_SIZE = 50;
@@ -953,7 +946,7 @@ const calculateCohesion = (memberIds: string[], graph: GraphInstance): number =>
     if (!graph.hasNode(nodeId)) continue;
     graph.forEachNeighbor(nodeId, (neighbor: string) => {
       totalEdges++;
-      if (memberSet.has(neighbor)) {
+      if (communities[neighbor] === communityNum) {
         internalEdges++;
       }
     });

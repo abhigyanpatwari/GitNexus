@@ -125,7 +125,8 @@ export const knowledgeGraphToGraphology = (
   });
 
   // Create node lookup
-  const nodeMap = new Map(knowledgeGraph.nodes.map((n) => [n.id, n]));
+  const nodeMap = new Map<string, (typeof knowledgeGraph.nodes)[number]>();
+  for (const node of knowledgeGraph.nodes) nodeMap.set(node.id, node);
 
   if (!communityMemberships) {
     communityMemberships = new Map();
@@ -209,6 +210,7 @@ export const knowledgeGraphToGraphology = (
 
   // Process remaining nodes in HIERARCHY ORDER (parents before children)
   // Use BFS starting from structural nodes to ensure parents are positioned first
+  const symbolTypes = new Set(['Function', 'Class', 'Method', 'Interface']);
   const addNodeWithPosition = (nodeId: string) => {
     if (graph.hasNode(nodeId)) return;
 
@@ -219,7 +221,6 @@ export const knowledgeGraphToGraphology = (
 
     // Check if this is a symbol node with a community assignment
     const communityIndex = communityMemberships?.get(nodeId);
-    const symbolTypes = new Set(['Function', 'Class', 'Method', 'Interface']);
     const clusterCenter = communityIndex !== undefined ? clusterCenters.get(communityIndex) : null;
 
     if (clusterCenter && symbolTypes.has(node.label)) {
@@ -273,19 +274,17 @@ export const knowledgeGraphToGraphology = (
   };
 
   // BFS from structural nodes - this ensures parent is ALWAYS positioned before child
-  const queue: string[] = [...structuralNodes.map((n) => n.id)];
-  const visited = new Set<string>(queue);
+  const visited = new Set(structuralNodes.map((n) => n.id));
 
-  while (queue.length > 0) {
-    const currentId = queue.shift()!;
-
+  // Set iteration visits appended children in insertion order, serving as the
+  // BFS queue without shifting an array or retaining a second list of node IDs.
+  for (const currentId of visited) {
     // Get children of current node and add them
     const children = parentToChildren.get(currentId) || [];
     for (const childId of children) {
       if (!visited.has(childId)) {
         visited.add(childId);
         addNodeWithPosition(childId);
-        queue.push(childId); // Add to queue so its children are processed too
       }
     }
   }
