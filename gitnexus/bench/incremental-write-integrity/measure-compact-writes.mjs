@@ -89,18 +89,36 @@ try {
     const { lbugPath } = getStoragePaths(repo);
     await adapter.initLbug(lbugPath);
     try {
-      const nodes = await adapter.executeQuery(
-        'MATCH (n) RETURN label(n) AS label, n.id AS id ORDER BY label, id',
-      );
+      const nodes = await adapter.executeQuery('MATCH (n) RETURN n AS node');
       const edges = await adapter.executeQuery(
-        'MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS src, b.id AS dst, r.type AS type, r.reason AS reason ORDER BY src, dst, type, reason',
+        'MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS src, b.id AS dst, r AS edge',
       );
+      // Native row offsets change after COPY. Keep every persisted property
+      // and the label, replacing internal endpoints with stable node IDs.
+      const properties = (entity) =>
+        Object.fromEntries(
+          Object.entries(entity).filter(([key]) => !['_id', '_src', '_dst'].includes(key)),
+        );
+      const canonical = (value) =>
+        JSON.stringify(value, (_key, entry) => {
+          if (typeof entry === 'bigint') return { bigint: entry.toString() };
+          if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+            return Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b)));
+          }
+          return entry;
+        });
       return {
         nodes: nodes.length,
         edges: edges.length,
         sha256: createHash('sha256')
-          .update(JSON.stringify(nodes))
-          .update(JSON.stringify(edges))
+          .update(JSON.stringify(nodes.map(({ node }) => canonical(properties(node))).sort()))
+          .update(
+            JSON.stringify(
+              edges
+                .map(({ src, dst, edge }) => canonical({ src, dst, edge: properties(edge) }))
+                .sort(),
+            ),
+          )
           .digest('hex'),
       };
     } finally {
@@ -160,7 +178,7 @@ try {
     assert.deepEqual(
       modified,
       control,
-      'modified and forced graphs must have identical node/edge identities',
+      'modified and forced graphs must have identical node/edge properties',
     );
     comparisons.push({ repo: path.basename(repo), modified, control });
   }

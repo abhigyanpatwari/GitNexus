@@ -19,6 +19,7 @@ withTestLbugDB(
   'fts-empty-tables',
   (handle) => {
     it('omits empty indexes, preserves core/pool search, and indexes newly populated tables', async () => {
+      expect(await createSearchFTSIndexes()).toEqual([]);
       const catalog = await executeQuery('CALL SHOW_INDEXES() RETURN *');
       expect(
         catalog
@@ -94,8 +95,5 @@ withTestLbugDB(
     ftsIndexes: [
       { table: 'Function', indexName: 'function_fts', columns: ['name', 'content', 'description'] },
     ],
-    afterSetup: async () => {
-      expect(await createSearchFTSIndexes()).toEqual([]);
-    },
   },
 );

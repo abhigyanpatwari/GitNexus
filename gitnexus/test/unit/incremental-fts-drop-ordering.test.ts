@@ -98,7 +98,7 @@ describe('runFullAnalysis incremental writeback — FTS drop-before-delete order
       await lbugAdapter.closeLbug();
 
       // Hard assertion, not a soft skip: the beforeEach gate already proved
-      // the extension loads, so every index failing to build here is a real
+      // the extension loads, so a populated table's index failing to build is a real
       // bug in the full-rebuild FTS phase, not an environment gap.
       expect(populated.length).toBeGreaterThan(0);
       const configured = FTS_INDEXES.map((i) => i.indexName);
