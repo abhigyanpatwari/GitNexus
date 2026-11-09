@@ -1,5 +1,66 @@
 # Incremental node identity reconciliation
 
+## Hybrid graph writes (#3852)
+
+Small edits replace only affected rows. A fresh bulk COPY compacts the graph when
+any of these conditions applies:
+
+- 16 successful incremental writes have accumulated.
+- Physical growth exceeds the larger of 50% of the compact baseline or 16 MiB.
+- The effective write set touches the larger of 2,000 nodes and relationships
+  or 5% of the graph. The threshold scales with monorepo size and also catches
+  large mutations contained in a single source file.
+- Existing file-fraction or extension safety gates require a rebuild.
+
+The footprint uses the larger old/new source-file estimate. Capped native reads
+measure removed symbols and deleted files; small deletions and renames remain
+selective. This is a source-footprint heuristic, not a total DML-operation budget.
+
+Each index records its own compact size and update counter after a durable,
+verified publication. Missing or malformed metadata establishes a fresh baseline
+once. An unchanged source snapshot can still compact when its storage deadline
+is due. Parse-cache reuse, compatible vectors, identity checks, dirty recovery
+and the existing platform-specific publication policy apply to both write paths.
+
+Run from `gitnexus/`:
+
+```sh
+node bench/incremental-write-integrity/reproduce-growth.cjs
+node bench/incremental-write-integrity/reproduce-growth.cjs --large
+npm run build
+node bench/incremental-write-integrity/measure-compact-writes.mjs --profile --output /tmp/hybrid-writes.json
+node bench/incremental-write-integrity/measure-compact-writes.mjs --repos 3 --files 8 --functions 4 --output /tmp/hybrid-small-repos.json
+```
+
+Both harnesses create isolated temporary fixtures and remove them by default;
+`--keep` retains them. The analyzer harness accepts `--runtime /path/to/repo` for
+another compiled checkout and `--files`, `--functions`, `--edits`, and `--repos`
+for different workload shapes. Defaults are 128 files, 32 functions per file,
+18 edits, and one repository. `--profile` records analyzer phase timings.
+It checks no-op inode stability, compaction receipts, and exact node/edge identity
+fingerprints against a forced rebuild of each repository's final source state.
+Timing and file sizes are measurements, not machine-specific CI thresholds.
+
+The native reduction uses serial uncompressed COPY, a Function node table and
+three relationships per node, with no parser, FTS or GitNexus adapter. It measures
+individual DELETE/CREATE/SET operations and twelve identical one-file rewrites.
+Every rewrite and fresh reload must preserve an exact node/edge tuple fingerprint.
+The default fixture has 32,768 nodes, 98,304 edges and repeated 1 KiB content;
+`--large` doubles the graph and uses distinct content. It reports checkpointed,
+reopened sizes, free-page counts and warm scan medians. These isolate native
+storage amplification without establishing a particular C++ allocation defect.
+
+On Linux x64, Node 22.23.3 and `@ladybugdb/core` 0.22.0, the default fixture grew
+from 18.93 MiB to 32.07 MiB after one rewrite (1.69×), then plateaued over the
+remaining cycles. A fresh COPY returned it to 18.92 MiB with identical tuples.
+The larger fixture grew from 98.64 MiB to 123.36 MiB (1.25×). The smaller fixture
+used a 256 MiB native pool; the larger required 1 GiB.
+
+FTS creation skips tables proven empty by fresh native counts. Incomplete or
+failed count reads retain the normal index checks. No table counts are cached
+across requests or mutations. Native tests compare core and pooled ranked search
+with an independent all-indexes control, including empty-to-populated transitions.
+
 For the native cause of #3421/#3423 and regressions covering both missing
 context results and Unicode Property FTS, see [search-root-cause.md](search-root-cause.md).
 

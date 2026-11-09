@@ -144,9 +144,10 @@ describe('lexical benchmark sample collection', () => {
           export async function runFullAnalysis(repo) {
             clock += ${duration};
             const target = fs.readFileSync(path.join(repo, 'gitnexus/src/semantic-bench-control.ts'), 'utf8').includes('s.load()') ? 'load' : 'save';
+            const compact = ${duration !== 1} && (target === 'save' || process.env.GITNEXUS_TEST_ALWAYS_FULL === '1');
             return {
-              storagePath: repo, stats: {}, rebuildReasons: [],
-              incrementalStats: {writeMode: 'incremental', changedFiles: 1},
+              storagePath: repo, stats: {}, rebuildReasons: compact ? ['escalated-full-write'] : [],
+              incrementalStats: {writeMode: compact ? 'full' : 'incremental', changedFiles: 1},
               pipelineResult: {graph: {
                 *iterNodes() { yield {id: 'semanticBenchUse', label: 'Function'}; },
                 *iterRelationships() { yield {sourceId: 'semanticBenchUse', targetId: target, type: 'CALLS'}; }
@@ -223,6 +224,22 @@ describe('lexical benchmark sample collection', () => {
             false,
           );
       }
+      const alwaysFull = spawnSync(
+        process.execPath,
+        [harness, ...runtimes, ...corpora, path.join(root, 'always-full'), lifecycle, '1'],
+        {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            GITNEXUS_LEXICAL_BENCH_WORKER: '0',
+            GITNEXUS_LEXICAL_BENCH_WORKERS: '2',
+            GITNEXUS_LEXICAL_BENCH_HEAP_MIB: '256',
+            GITNEXUS_TEST_ALWAYS_FULL: '1',
+          },
+        },
+      );
+      expect(alwaysFull.status).not.toBe(0);
+      expect(alwaysFull.stderr).toContain('First cached edit must stay selective');
     },
   );
 });

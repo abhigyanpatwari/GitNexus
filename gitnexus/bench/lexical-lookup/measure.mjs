@@ -321,10 +321,31 @@ if (isWorker) {
         before = await beforeWorker.run(`baseline-${pair}`);
       }
       verifyPair(before, after, candidate);
+      // The seed established a compact baseline; this tiny cached edit must
+      // exercise the selective path. Periodic compaction is covered separately.
+      if (pair === 1) {
+        assert.equal(
+          after.incremental?.writeMode,
+          'incremental',
+          'First cached edit must stay selective',
+        );
+      }
       for (const entry of [before, after]) {
-        assert.equal(entry.incremental?.writeMode, 'incremental');
+        // Cached one-file edits may use row writes in an older baseline or a
+        // compact full COPY in a newer runtime (#3852). Both are timed in full.
+        assert(
+          ['incremental', 'full'].includes(entry.incremental?.writeMode),
+          'Invalid physical write mode for a cached edit',
+        );
         assert.equal(entry.incremental?.changedFiles, 1);
-        assert.deepEqual(entry.rebuildReasons, []);
+        // A compact COPY is reported as a non-forcing write-plan change;
+        // cache/schema invalidations must still be absent from measured edits.
+        assert.deepEqual(
+          entry.rebuildReasons.filter(
+            (reason) => entry.incremental.writeMode !== 'full' || reason !== 'escalated-full-write',
+          ),
+          [],
+        );
       }
       if (screen && pair === 1 && after.ms >= before.ms) {
         console.log('SCREEN REJECTED: no end-to-end improvement; stopping after one pair.');

@@ -77,6 +77,7 @@ const incrementalMeta = (repoPath: string): RepoMeta => {
     lastCommit: 'stale-not-head',
     indexedAt: new Date().toISOString(),
     stats: {},
+    graphCompaction: { version: 1, compactBytes: 7, incrementalWrites: 0 },
     fileHashes: { [REL_FILE]: 'stale-hash' },
     schemaFingerprint: SCHEMA_FINGERPRINT,
     analysisFeatures: resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, [REL_FILE]),
@@ -121,6 +122,16 @@ const mockLbugAdapter = async () => {
     loadGraphToLbug: vi.fn(async () => undefined),
     getLbugStats: vi.fn(async () => ({ nodes: 1, edges: 0, communities: 0, processes: 0 })),
     executeQuery: vi.fn(async () => []),
+    // The stored fixture contains one File node and no incident edges.
+    executePrepared: vi.fn<typeof actual.executePrepared>(async (query) => {
+      if (query.endsWith('WITH n LIMIT $limit RETURN count(*) AS rowCount')) {
+        return [{ rowCount: 1 }];
+      }
+      if (query.endsWith('WITH r LIMIT $limit RETURN count(*) AS rowCount')) {
+        return [{ rowCount: 0 }];
+      }
+      throw new Error(`Unexpected prepared query in FTS fixture: ${query}`);
+    }),
     // The policy fixture has one stored File row. Publication now reconciles
     // that identity instead of trusting the synthetic node count alone.
     forEachQueryRow: vi.fn<typeof actual.forEachQueryRow>(async (query, onRow) => {
@@ -408,6 +419,7 @@ describe('runFullAnalysis FTS crash marker', () => {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(
@@ -478,6 +490,7 @@ describe('runFullAnalysis FTS crash marker', () => {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       await runFullAnalysis(
@@ -654,6 +667,7 @@ describe('runFullAnalysis FTS crash marker', () => {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       await expect(
@@ -697,6 +711,7 @@ describe('runFullAnalysis FTS crash marker', () => {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(
@@ -1069,6 +1084,7 @@ describe('runFullAnalysis FTS crash marker', () => {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(
@@ -1711,6 +1727,7 @@ describe('runFullAnalysis rebuild reasons on the crash marker', () => {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
       const options = { skipAgentsMd: true, skipSkills: true };
       const callbacks = { onProgress: () => {}, onLog: () => {} };
 
@@ -1727,6 +1744,7 @@ describe('runFullAnalysis rebuild reasons on the crash marker', () => {
 
       // A clean rerun with a live escalation hands the reason to the FTS stamp.
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
       writes.length = 0;
       await runFullAnalysis(tmpRepo.dbPath, options, callbacks);
       const escalated = markersInPhase(writes, 'escalated-full-write');
@@ -1750,6 +1768,7 @@ describe('runFullAnalysis rebuild reasons on the crash marker', () => {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       await expect(

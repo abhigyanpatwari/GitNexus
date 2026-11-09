@@ -325,17 +325,27 @@ describe('shared-store logical generations', () => {
 
   it('adds completed vectors to an already published graph without replacing that graph', async () => {
     await fs.writeFile(path.join(slot, generation), 'ready graph');
-    await saveMeta(slot, modern({ graphPath: generation }));
+    const receipt = { version: 1 as const, compactBytes: 11, incrementalWrites: 15 };
+    await saveMeta(slot, modern({ graphPath: generation, graphCompaction: receipt }));
     await publishSharedGraph(layout, repo, head, () => {});
     const graph = resolveGraphPath(slot);
     const graphInode = (await fs.stat(graph)).ino;
     const original = await writeVector(slot);
     const before = await requireMeta(slot);
-    await saveMeta(slot, { ...before, vectorGeneration: vector(), stats: { embeddings: 1 } });
+    await fs.writeFile(path.join(slot, generation), 'fresh private graph');
+    await saveMeta(slot, {
+      ...before,
+      graphPath: generation,
+      graphCompaction: { version: 1, compactBytes: 19, incrementalWrites: 0 },
+      vectorGeneration: vector(),
+      stats: { embeddings: 1 },
+    });
     await publishSharedGraph(layout, repo, head, () => {});
     expect(resolveGraphPath(slot)).toBe(graph);
     expect((await fs.stat(graph)).ino).toBe(graphInode);
     expect((await loadMeta(path.dirname(graph)))?.vectorGeneration).toEqual(vector());
+    expect((await loadMeta(path.dirname(graph)))?.graphCompaction).toEqual(receipt);
+    expect((await loadMeta(slot))?.graphCompaction).toEqual(receipt);
     expect((await fs.stat(vectorFile(path.dirname(graph)))).ino).toBe(
       (await fs.stat(original)).ino,
     );

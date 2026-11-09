@@ -73,7 +73,7 @@ describe('runFullAnalysis incremental writeback — FTS drop-before-delete order
 
     const repo = await setupMiniRepo('gitnexus-2589-fts-order-');
     try {
-      // First run: full rebuild, builds every FTS index for real.
+      // First run: full rebuild, builds FTS indexes for populated tables.
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
 
       // runFullAnalysis closes its own connection on return — open a fresh
@@ -88,14 +88,23 @@ describe('runFullAnalysis incremental writeback — FTS drop-before-delete order
         return rows.map((r) => r.index_name).filter((n): n is string => typeof n === 'string');
       };
       const beforeChange = await showIndexNames();
+      const populated: string[] = [];
+      for (const { table, indexName } of FTS_INDEXES) {
+        const [row] = await lbugAdapter.executeQuery(
+          `MATCH (n:\`${table}\`) RETURN count(n) AS count`,
+        );
+        if (Number(row.count) > 0) populated.push(indexName);
+      }
       await lbugAdapter.closeLbug();
 
       // Hard assertion, not a soft skip: the beforeEach gate already proved
-      // the extension loads, so every index failing to build here is a real
+      // the extension loads, so a populated table's index failing to build is a real
       // bug in the full-rebuild FTS phase, not an environment gap.
-      for (const { indexName } of FTS_INDEXES) {
-        expect(beforeChange).toContain(indexName);
-      }
+      expect(populated.length).toBeGreaterThan(0);
+      const configured = FTS_INDEXES.map((i) => i.indexName);
+      expect(beforeChange.filter((name) => configured.includes(name)).sort()).toEqual(
+        populated.sort(),
+      );
 
       // Spy on the real deleteNodesForFiles, recording the FTS index list at
       // the exact moment it's invoked (before it does anything), then
@@ -132,7 +141,7 @@ describe('runFullAnalysis incremental writeback — FTS drop-before-delete order
       // also pulls importer-expanded mini-repo files (index.ts re-exports
       // handler; validator.ts holds Interface + Property), so those FTS
       // indexes must be down before DETACH DELETE (#2589). Every other
-      // configured FTS index must still be live (#3016 narrowing).
+      // populated FTS index must still be live (#3016 narrowing).
       const down = new Set([
         'file_fts',
         'function_fts',
@@ -141,9 +150,8 @@ describe('runFullAnalysis incremental writeback — FTS drop-before-delete order
         'interface_fts',
         'property_fts',
       ]);
-      const configured = FTS_INDEXES.map((i) => i.indexName);
       const ftsAtDelete = indexNamesAtDeleteTime!.filter((name) => configured.includes(name));
-      expect([...ftsAtDelete].sort()).toEqual(configured.filter((name) => !down.has(name)).sort());
+      expect([...ftsAtDelete].sort()).toEqual(populated.filter((name) => !down.has(name)).sort());
       for (const name of down) {
         expect(ftsAtDelete).not.toContain(name);
       }

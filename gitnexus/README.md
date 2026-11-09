@@ -626,6 +626,8 @@ when opted out:
 Eval harnesses running a global install can set `GITNEXUS_NO_UPDATE_NOTIFIER`
 for a quiet registry.
 
+Small edits, deletions and renames use selective graph writes. To limit native storage growth, analysis periodically compacts the graph: after 16 incremental writes, excessive file growth, or an old/new source-file footprint reaching the larger of 2,000 graph rows or 5% of the graph. Compaction reuses the parse cache and preserves compatible embeddings. An older index establishes its size baseline with one fresh build.
+
 ## Troubleshooting
 
 ### `Cannot destructure property 'package' of 'node.target' as it is null`
