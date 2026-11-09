@@ -772,7 +772,9 @@ const normalizePartition = (
  */
 export const stableCommunityIds = (communities: Record<string, number>): Map<number, string> => {
   const smallest = new Map<number, string>();
-  for (const [nodeId, communityNum] of Object.entries(communities)) {
+  // Avoid allocating an entry tuple for every symbol in the partition.
+  for (const nodeId of Object.keys(communities)) {
+    const communityNum = communities[nodeId];
     const current = smallest.get(communityNum);
     if (current === undefined || nodeId < current) smallest.set(communityNum, nodeId);
   }

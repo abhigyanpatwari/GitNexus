@@ -147,7 +147,7 @@ export const knowledgeGraphToGraphology = (
 
   // === CLUSTER-BASED POSITIONING ===
   // Calculate cluster centers - each cluster gets a region of the graph
-  const clusterCenters = new Map<string | number, { x: number; y: number }>();
+  const clusterCenters = new Map<string | number, { x: number; y: number; color: string }>();
   if (communityMemberships && communityMemberships.size > 0) {
     // Find unique community IDs
     const communities = new Set(communityMemberships.values());
@@ -163,6 +163,7 @@ export const knowledgeGraphToGraphology = (
       clusterCenters.set(communityId, {
         x: radius * Math.cos(angle),
         y: radius * Math.sin(angle),
+        color: getCommunityColor(communityId),
       });
       idx++;
     });
@@ -251,7 +252,7 @@ export const knowledgeGraphToGraphology = (
     // Symbol nodes get colored by community if available
     const usesCommunityColor = hasCommunity && symbolTypes.has(node.label);
     const nodeColor = usesCommunityColor
-      ? getCommunityColor(communityIndex!)
+      ? clusterCenter!.color
       : NODE_COLORS[node.label] || '#9ca3af';
 
     graph.addNode(nodeId, {
@@ -267,7 +268,7 @@ export const knowledgeGraphToGraphology = (
       hidden: false,
       mass: getNodeMass(node.label, nodeCount),
       community: communityIndex,
-      communityColor: hasCommunity ? getCommunityColor(communityIndex!) : undefined,
+      communityColor: clusterCenter?.color,
     });
   };
 
