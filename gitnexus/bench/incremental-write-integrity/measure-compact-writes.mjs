@@ -15,14 +15,24 @@ const { values } = parseArgs({
     output: { type: 'string' },
     keep: { type: 'boolean', default: false },
     profile: { type: 'boolean', default: false },
+    files: { type: 'string', default: '128' },
+    functions: { type: 'string', default: '32' },
+    edits: { type: 'string', default: '18' },
+    repos: { type: 'string', default: '1' },
   },
 });
+const counts = Object.fromEntries(
+  ['files', 'functions', 'edits', 'repos'].map((key) => [key, Number(values[key])]),
+);
+for (const [key, value] of Object.entries(counts)) {
+  assert(Number.isSafeInteger(value) && value > 0, `${key} must be a positive integer`);
+}
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-compact-writes-'));
 process.env.GITNEXUS_HOME = path.join(temporary, 'home');
 process.env.GITNEXUS_SHARED_STORE = 'off';
 process.env.GITNEXUS_MEMORY = 'off';
 process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE = String(256 * 1024 ** 2);
-const repo = path.join(temporary, 'repo');
+let repo;
 const runtime = path.resolve(values.runtime);
 const adapter = await import(
   pathToFileURL(path.join(runtime, 'gitnexus/dist/core/lbug/lbug-adapter.js'))
@@ -30,7 +40,7 @@ const adapter = await import(
 const { runFullAnalysis } = await import(
   pathToFileURL(path.join(runtime, 'gitnexus/dist/core/run-analyze.js'))
 );
-const { getStoragePaths } = await import(
+const { getStoragePaths, loadMeta } = await import(
   pathToFileURL(path.join(runtime, 'gitnexus/dist/storage/repo-manager.js'))
 );
 const runs = [];
@@ -50,10 +60,11 @@ async function run(name, extra = {}) {
   };
   const result = await runFullAnalysis(repo, { ...options, ...extra }, { onProgress: recordPhase });
   recordPhase('complete');
-  const { lbugPath } = getStoragePaths(repo);
+  const { lbugPath, storagePath } = getStoragePaths(repo);
   const stat = await fs.stat(lbugPath);
   const sample = {
     name,
+    repo: path.basename(repo),
     elapsedMs: performance.now() - start,
     bytes: stat.size,
     inode: stat.ino,
@@ -61,6 +72,7 @@ async function run(name, extra = {}) {
     incrementalStats: result.incrementalStats,
     alreadyUpToDate: result.alreadyUpToDate,
     ftsSkipped: result.ftsSkipped,
+    graphCompaction: (await loadMeta(storagePath))?.graphCompaction,
     ...(values.profile ? { phaseTimingsMs } : {}),
   };
   runs.push(sample);
@@ -91,50 +103,68 @@ async function fingerprint() {
 }
 
 try {
-  await fs.mkdir(path.join(repo, 'src'), { recursive: true });
-  for (let file = 0; file < 128; file++) {
-    let source = '';
-    for (let fn = 0; fn < 32; fn++) {
-      source += `export function fn${fn}(x: number): number { return x > 0 ? fn${(fn + 1) % 32}(x - 1) : ${fn}; }\n`;
+  const comparisons = [];
+  for (let repository = 0; repository < counts.repos; repository++) {
+    repo = path.join(temporary, `repo-${repository}`);
+    await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+    for (let file = 0; file < counts.files; file++) {
+      let source = '';
+      for (let fn = 0; fn < counts.functions; fn++) {
+        source += `export function fn${fn}(x: number): number { return x > 0 ? fn${(fn + 1) % counts.functions}(x - 1) : ${fn}; }\n`;
+      }
+      await fs.writeFile(path.join(repo, 'src', `file${file}.ts`), source);
     }
-    await fs.writeFile(path.join(repo, 'src', `file${file}.ts`), source);
+    const git = (...args) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
+    git('init', '-q');
+    git('add', '.');
+    git(
+      '-c',
+      'user.name=test',
+      '-c',
+      'user.email=test@example.com',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '-qm',
+      'fixture',
+    );
+    const first = await run('fresh');
+    const unchanged = await run('no-op');
+    assert.equal(unchanged.alreadyUpToDate, true);
+    assert.equal(unchanged.inode, first.inode);
+    for (let edit = 0; edit < counts.edits; edit++) {
+      await fs.appendFile(
+        path.join(repo, 'src', `file${edit % counts.files}.ts`),
+        '\n// equivalent-source edit\n',
+      );
+      const sample = await run(`edit-${edit + 1}`);
+      if (sample.graphCompaction) {
+        assert(
+          sample.graphCompaction.incrementalWrites <= 16,
+          'incremental writes must be bounded',
+        );
+        if (sample.incrementalStats?.writeMode === 'full') {
+          assert.equal(sample.graphCompaction.incrementalWrites, 0);
+          assert.equal(sample.graphCompaction.compactBytes, sample.bytes);
+        }
+      }
+    }
+    const modified = await fingerprint();
+    await run('force-control', { force: true });
+    const control = await fingerprint();
+    assert.deepEqual(
+      modified,
+      control,
+      'modified and forced graphs must have identical node/edge identities',
+    );
+    comparisons.push({ repo: path.basename(repo), modified, control });
   }
-  const git = (...args) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
-  git('init', '-q');
-  git('add', '.');
-  git(
-    '-c',
-    'user.name=test',
-    '-c',
-    'user.email=test@example.com',
-    '-c',
-    'commit.gpgsign=false',
-    'commit',
-    '-qm',
-    'fixture',
-  );
-  const first = await run('fresh');
-  const unchanged = await run('no-op');
-  assert.equal(unchanged.alreadyUpToDate, true);
-  assert.equal(unchanged.inode, first.inode);
-  for (let file = 0; file < 3; file++) {
-    await fs.appendFile(path.join(repo, 'src', `file${file}.ts`), '\n// equivalent-source edit\n');
-    await run(`edit-${file + 1}`);
-  }
-  const modified = await fingerprint();
-  await run('force-control', { force: true });
-  const control = await fingerprint();
-  assert.deepEqual(
-    modified,
-    control,
-    'modified and forced graphs must have identical node/edge identities',
-  );
   const report = {
     runtime,
     node: process.version,
     runs,
-    modified,
-    control,
+    counts,
+    comparisons,
     ...(values.keep ? { directory: temporary } : {}),
   };
   const json = JSON.stringify(report, null, 2) + '\n';

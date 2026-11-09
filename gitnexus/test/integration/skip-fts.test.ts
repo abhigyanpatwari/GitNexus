@@ -166,29 +166,30 @@ describe('FTS opt-out analysis lifecycle (#3091)', () => {
     expect(afterEnable.embeddings.embeddings).toEqual([embedding]);
     const ensure = vi.spyOn(extensionManager, 'ensure');
     const enabledMeta = (await loadMeta(storagePath))!;
-    let metadataDuringDisable: Promise<Awaited<ReturnType<typeof loadMeta>>> | undefined;
+    let dirtyDuringDisable: Promise<Awaited<ReturnType<typeof loadMeta>>> | undefined;
     const disabledAgain = await runFullAnalysis(
       repo.dbPath,
       { ...options, skipFts: true },
       {
-        onProgress(phase) {
-          // Capture the publication receipt after COPY, before finalization.
-          if (!metadataDuringDisable && phase === 'fts') {
-            metadataDuringDisable = loadMeta(storagePath);
+        onProgress() {},
+        onLog(msg) {
+          // vi.spyOn cannot intercept run-analyze's ESM saveMeta binding.
+          // The escalation log is emitted after the dirty stamp and before wipe.
+          if (
+            !dirtyDuringDisable &&
+            msg.includes('FTS is explicitly disabled and existing search indexes')
+          ) {
+            dirtyDuringDisable = loadMeta(storagePath);
           }
         },
       },
     );
     expect(disabledAgain.ftsSkipReason).toBe('disabled-by-flag');
-    expect(metadataDuringDisable).toBeDefined();
-    const during = await metadataDuringDisable!;
-    if (process.platform === 'win32' && process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP !== '1') {
-      expect(during?.incrementalInProgress).toBeDefined();
-      expect(during?.indexedAt).toBe(enabledMeta.indexedAt);
-    } else {
-      expect(during).toEqual(enabledMeta);
-    }
-    expect((await loadMeta(storagePath))?.capabilities?.fts).toEqual({
+    expect(dirtyDuringDisable).toBeDefined();
+    const dirty = await dirtyDuringDisable!;
+    expect(dirty?.incrementalInProgress).toBeDefined();
+    expect(dirty?.indexedAt).toBe(enabledMeta.indexedAt);
+    expect(dirty?.capabilities?.fts).toEqual({
       provider: 'ladybugdb-fts',
       status: 'unavailable',
       skipReason: 'disabled-by-flag',

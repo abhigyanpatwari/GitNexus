@@ -129,7 +129,7 @@ describe('MCP index generation freshness', () => {
     commitAll(repo, 'updated function');
     const update = await analyze();
     expect(update.incrementalStats).toMatchObject({
-      writeMode: 'full',
+      writeMode: 'incremental',
       changedFiles: 1,
       deletedFiles: 0,
     });
@@ -224,7 +224,7 @@ describe('MCP index generation freshness', () => {
         await fs.writeFile(path.join(repo, 'unit_0.py'), 'def newest_zero():\n    return 9002\n');
         commitAll(repo, 'newer function');
         const update = await analyze();
-        expect(update.incrementalStats?.writeMode).toBe('full');
+        expect(update.incrementalStats?.writeMode).toBe('incremental');
         const busyRead = await read();
         expect(JSON.stringify(busyRead)).toContain(baselineName);
         expect(busyRead.staleness).toMatchObject({

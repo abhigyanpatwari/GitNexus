@@ -1,7 +1,46 @@
 /**
- * Fresh graph writes do not require the old graph's FTS/VECTOR extensions to
- * load (#2841, #3852). Preserve paid vectors, honor explicit drops, publish
- * safely, and rebuild search indexes when the extension becomes available.
+ * #2841: an incremental writeback must decide whether row-level DML is even
+ * legal BEFORE it mutates a row. LadybugDB refuses every write to a table
+ * carrying an FTS index while the FTS extension is unloaded — at BIND time, so
+ * a DETACH DELETE matching zero rows fails exactly as hard as one matching
+ * thousands:
+ *
+ *   Binder exception: Trying to delete from an index on table File but its
+ *   extension is not loaded.
+ *
+ * and the indexes cannot be cleared in place either (`DROP_FTS_INDEX` is itself
+ * an FTS-extension function; LadybugDB has no SQL `DROP INDEX`). So a DB that
+ * carries FTS indexes on a machine where the extension stopped loading used to
+ * kill every incremental analyze mid-writeback, with an engine message that
+ * never mentions FTS.
+ *
+ * The fix mirrors the VECTOR gate (#2623): probe the index catalog first, load
+ * FTS with the analyze policy only when an index actually gates DML, and fall
+ * through to the escalation valve's wipe-and-bulk-COPY plan when it cannot be
+ * loaded. The VECTOR half of that behaviour is covered by
+ * `incremental-vector-extension-ordering.test.ts`; this suite covers the FTS
+ * half plus the both-extensions-blocked case, where the reason log has to name
+ * both causes rather than only the first one checked.
+ *
+ * The escalation is a valve, not a wipe switch, so three of its consequences
+ * are pinned here as well:
+ *   - it must NOT rescue embeddings on the one run whose purpose is to destroy
+ *     them (`--drop-embeddings`, review H1) — and must rescue them on every
+ *     other forced rebuild (the complement, asserted in the both-blocked case);
+ *   - it must be ONE-SHOT: the next run on a machine where FTS loads again goes
+ *     back to surgery and rebuilds the search indexes, rather than escalating
+ *     forever;
+ *   - an extension-forced rebuild is environmental, not repo churn, so it builds
+ *     into a staging file beside the live index and publishes it with one rename
+ *     (review H2) — an interrupted rebuild must leave the current index intact.
+ *
+ * That rebuild stamps `lastCommit`, so a plain rerun on an unchanged tree takes
+ * the `alreadyUpToDate` fast path and the search indexes stay missing. That is
+ * addressed in the CLI's advice (`--repair-fts`, which rebuilds the indexes
+ * without re-parsing), NOT by an auto-heal probe here — one was tried and
+ * reverted for re-analyzing the whole repo on every run in the build-failed
+ * case, for opening the live index on the millisecond fast path, and for
+ * breaking the fast-path invariant `analyzer-identity-cli.test.ts` pins.
  */
 import { readFile, readdir, writeFile } from 'fs/promises';
 import { execSync } from 'child_process';
@@ -10,7 +49,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type { TestContext } from 'vitest';
 import { setupMiniRepo } from '../helpers/mini-repo.js';
 import { seedEmbeddingsForFiles } from '../helpers/embedding-seed.js';
-import { getStoragePaths, loadMeta } from '../../src/storage/repo-manager.js';
+import { getStoragePaths } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 import { FTS_INDEXES } from '../../src/core/search/fts-schema.js';
 import { EMBEDDING_TABLE_NAME } from '../../src/core/lbug/schema.js';
@@ -234,7 +273,7 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
     ctx.skip();
   };
 
-  it('rebuilds the compact graph and search indexes when FTS is available', async () => {
+  it('keeps the surgical write plan (and the indexes) when FTS is available', async () => {
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
 
     const repo = await setupMiniRepo('gitnexus-2841-fts-available-');
@@ -251,8 +290,9 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
         ),
       ).resolves.toBeDefined();
 
-      // Healthy extensions use the same fresh-file write policy.
-      expect(logs.some((m) => m.includes('full DB write'))).toBe(true);
+      // No escalation: a one-file write set on a 7-file repo stays surgical,
+      // and the gate must not manufacture a rebuild when FTS loads fine.
+      expect(logs.some((m) => m.includes('full DB write'))).toBe(false);
       const { lbugPath } = getStoragePaths(repo.dbPath);
       await expectPopulatedFtsIndexes(lbugPath);
     } finally {
@@ -260,7 +300,7 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
     }
   }, 300_000);
 
-  it('writes the complete graph when the prior database never carried FTS indexes', async () => {
+  it('does not escalate — or touch the extension machinery — when the DB never carried FTS indexes', async () => {
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
 
     const repo = await setupMiniRepo('gitnexus-2841-fts-never-built-');
@@ -285,10 +325,10 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
           { onProgress: () => {}, onLog: (m: string) => logs.push(m) },
         ),
       ).resolves.toBeDefined();
-      expect(logs.some((m) => m.includes('full DB write'))).toBe(true);
+      expect(logs.some((m) => m.includes('full DB write'))).toBe(false);
 
-      // A write-plan log alone would also pass if the write silently did
-      // nothing. Prove the changed graph actually landed — the same
+      // Test gap 7: "no escalation log" alone would also pass if the surgical
+      // write silently did nothing. Prove the write actually landed — the same
       // File.content check the blocked-path case makes. REVERSION: make
       // `ensureFtsRowDmlSafe` fall OPEN on an index row whose type cannot be
       // read (`indexType === undefined || indexType === 'FTS'` → `=== 'FTS'`,
@@ -302,7 +342,7 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
     }
   }, 300_000);
 
-  it('preserves vectors and reports degraded search when both extensions are unavailable', async (ctx) => {
+  it('names every blocked extension when both FTS and VECTOR gate the write', async (ctx) => {
     skipUnlessVectorAvailable(ctx);
     const lbugAdapter = await import('../../src/core/lbug/lbug-adapter.js');
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -341,13 +381,12 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
         ),
       ).resolves.toBeDefined();
 
-      // Physical writes stay compact; search capability reports the actual
-      // fallback rather than inheriting the prior database's vector index.
+      // One escalation, both causes named. Reporting only the first checked
+      // extension is how a half-diagnosed failure survives a bug report.
       const escalation = logs.filter((m) => m.includes('full DB write'));
       expect(escalation.length).toBe(1);
-      expect(logs.join('\n')).toContain('FTS');
-      const metadata = await loadMeta(getStoragePaths(repo.dbPath).storagePath);
-      expect(metadata?.capabilities?.vectorSearch.status).toBe('exact-scan');
+      expect(escalation[0]).toContain('FTS');
+      expect(escalation[0]).toContain('VECTOR');
 
       // Test gap 5 — the COMPLEMENT of the `--drop-embeddings` case below: this
       // run never asked to touch embeddings, so the wipe must not eat the rows
@@ -411,7 +450,7 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
     }
   }, 300_000);
 
-  it('rebuilds FTS on the next changed run after the extension becomes available', async () => {
+  it('escalates once: the next run on a healthy host goes back to surgery and rebuilds the FTS indexes', async () => {
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
 
     const repo = await setupMiniRepo('gitnexus-2841-one-shot-');
@@ -463,12 +502,19 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
         ),
       ).resolves.toBeDefined();
 
-      // A prior unavailable stamp must not prevent rebuilding keyword search
-      // once the extension can load again.
-      expect(healedLogs.some((m) => m.includes('full DB write'))).toBe(true);
+      // The property that makes the whole design a one-shot rebuild rather than
+      // a permanent regression: no second escalation, and keyword search is
+      // whole again. REVERSION: make the extension-forced escalation sticky
+      // (e.g. keep escalating while `capabilities.fts.status === 'unavailable'`,
+      // or have `ensureFtsRowDmlSafe` answer from that stamp instead of the
+      // catalog) and this run escalates again, forever.
+      expect(healedLogs.some((m) => m.includes('full DB write'))).toBe(false);
       await expectPopulatedFtsIndexes(lbugPath);
 
-      // Both changed and unchanged source content survive fresh publication.
+      // Run 2's work survived into run 3's surgical write — i.e. the escalated
+      // rebuild was really published at the canonical path, not left behind in
+      // a staging file (review H2). handler.ts is untouched by run 3, so its
+      // marker can only come from the run that escalated.
       const contents = contentsByPath(await readGraphFileRows(lbugPath));
       expect(contents.get('src/handler.ts')).toContain('#2841 one-shot escalated touch');
       expect(contents.get('src/validator.ts')).toContain('#2841 one-shot healed touch');

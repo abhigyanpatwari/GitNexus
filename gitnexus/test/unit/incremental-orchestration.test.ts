@@ -1026,7 +1026,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
         { onProgress: () => {}, onLog: (message) => logs.push(message) },
       );
 
-      expect(logs.join('\n')).toContain('writing a compact full graph');
+      expect(logs.join('\n')).toContain('Spring config consumer property drift');
       expect(await readKotlinConfigConsumerState(repo.dbPath)).toEqual({
         description: 'Spring config unresolved: service.timeout',
         bindingCount: 0,
@@ -1119,7 +1119,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       );
       expect(retargeted.alreadyUpToDate).toBeUndefined();
       expect(retargetLogs.join('\n')).toContain('Incremental: changed=1');
-      expect(retargetLogs.join('\n')).toContain('switching to a full DB write');
+      expect(retargetLogs.join('\n')).not.toContain('switching to a full DB write');
 
       const secondSnapshot = await readSpringAopSnapshot(repo.dbPath);
       assertSpringAopSnapshotShape(secondSnapshot, 'kotlinTx');
@@ -1150,7 +1150,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       );
       expect(replayed.alreadyUpToDate).toBeUndefined();
       expect(replayLogs.join('\n')).toContain('Incremental: changed=1');
-      expect(replayLogs.join('\n')).toContain('switching to a full DB write');
+      expect(replayLogs.join('\n')).not.toContain('switching to a full DB write');
       expect(await readSpringAopSnapshot(repo.dbPath)).toEqual(secondSnapshot);
     } finally {
       await repo.cleanup();
@@ -1180,7 +1180,6 @@ describe('runFullAnalysis — incremental orchestration', () => {
         { skipAgentsMd: true },
         { onProgress: () => {} },
       );
-      expect(second.incrementalStats?.writeMode).toBe('full');
       // The early-return alreadyUpToDate path must NOT fire (the dirty
       // tree should kick the run through to incremental writeback).
       expect(second.alreadyUpToDate).toBeUndefined();
@@ -1350,7 +1349,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
           changedFiles: 1,
           affectedDependents: 2,
           deletedFiles: 0,
-          writeMode: 'full',
+          writeMode: 'incremental',
         });
         expect(incremental.incrementalStats?.reparsedFiles).toBe(1);
         expect(
@@ -1541,8 +1540,8 @@ describe('runFullAnalysis — incremental orchestration', () => {
       );
       expect(incremental.alreadyUpToDate).toBeUndefined();
       const joined = logs.join('\n');
-      // Logical importer accounting survives the complete physical write.
-      expect(joined).toContain('importer(s) affected');
+      // The importer expansion fired AND the valve rerouted the write plan.
+      expect(joined).toContain('importer(s) added to writable set');
       expect(joined).toContain('switching to a full DB write');
       // Announced as the one follow-up line, carrying the escalation's own
       // text, and non-forcing: the run stayed on the incremental branch
@@ -2150,7 +2149,10 @@ describe.skipIf(!dartAvailable)('Dart pubspec-only incremental persistence (#296
           else await writeFile(target, content);
           gitCommitAll(repo.dbPath, 'Update package identity');
           const incremental = await runFullAnalysis(repo.dbPath, options, progress);
-          expect(incremental.incrementalStats?.writeMode).toBe('full');
+          // Deletion compacts the graph; edits/additions retain selective writes.
+          expect(incremental.incrementalStats?.writeMode).toBe(
+            content === null ? 'full' : 'incremental',
+          );
           const incrementalEdges = await readEdges();
           const imports = incrementalEdges.filter(
             (edge) =>

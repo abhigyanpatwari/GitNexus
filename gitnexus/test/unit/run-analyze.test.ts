@@ -45,6 +45,23 @@ const currentParserProvenance = () => {
   return { base: parser.identity.base };
 };
 
+/** Seed the storage prerequisite independently of the fast-path guard under test. */
+const saveCompactFixtureMeta = async (storagePath: string, meta: RepoMeta): Promise<void> => {
+  await fs.mkdir(storagePath, { recursive: true });
+  const lbugPath = path.join(storagePath, 'lbug');
+  const { initLbug, closeLbug } = await import('../../src/core/lbug/lbug-adapter.js');
+  await initLbug(lbugPath, { skipFts: true });
+  await closeLbug();
+  await saveMeta(storagePath, {
+    ...meta,
+    graphCompaction: {
+      version: 1,
+      compactBytes: (await fs.stat(lbugPath)).size,
+      incrementalWrites: 0,
+    },
+  });
+};
+
 describe('run-analyze module', () => {
   it('adds and removes dot-directory coverage on a clean same-commit analyze', async () => {
     const tmpRepo = await createTempDir('gitnexus-dotdirs-policy-');
@@ -148,7 +165,7 @@ describe('run-analyze module', () => {
         runnerIdentity: currentRunnerIdentity(),
         parseCacheIdentity: currentParserProvenance(),
       };
-      await saveMeta(storagePath, meta);
+      await saveCompactFixtureMeta(storagePath, meta);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(
@@ -202,7 +219,7 @@ describe('run-analyze module', () => {
           vectorSearch: { provider: 'exact-scan', status: 'unavailable', exactScanLimit: 0 },
         },
       };
-      await saveMeta(storagePath, meta);
+      await saveCompactFixtureMeta(storagePath, meta);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(
@@ -255,7 +272,7 @@ describe('run-analyze module', () => {
         runnerIdentity: currentRunnerIdentity(),
         parseCacheIdentity: currentParserProvenance(),
       };
-      await saveMeta(storagePath, meta);
+      await saveCompactFixtureMeta(storagePath, meta);
       await registerRepo(tmpRepo.dbPath, meta, { name: 'old' });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -307,7 +324,7 @@ describe('run-analyze module', () => {
         runnerIdentity: currentRunnerIdentity(),
         parseCacheIdentity: currentParserProvenance(),
       };
-      await saveMeta(storagePath, meta);
+      await saveCompactFixtureMeta(storagePath, meta);
       await registerRepo(tmpRepo.dbPath, meta, { name: 'kept' });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -366,7 +383,7 @@ describe('run-analyze module', () => {
         runnerIdentity: currentRunnerIdentity(),
         parseCacheIdentity: currentParserProvenance(),
       };
-      await saveMeta(storagePath, metaB);
+      await saveCompactFixtureMeta(storagePath, metaB);
       await registerRepo(tmpB.dbPath, metaB, { name: 'old' });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -407,7 +424,7 @@ describe('run-analyze module', () => {
         runnerIdentity: currentRunnerIdentity(),
         parseCacheIdentity: currentParserProvenance(),
       };
-      await saveMeta(storagePath, meta);
+      await saveCompactFixtureMeta(storagePath, meta);
       await registerRepo(tmpRepo.dbPath, meta, { name: 'original' });
 
       const registerSpy = vi.spyOn(
@@ -716,13 +733,8 @@ describe('run-analyze module', () => {
       expect(midRunMeta).toMatchObject({
         lastCommit: commitA,
         fileHashes: baselineMeta.fileHashes,
-        ...(process.platform === 'win32'
-          ? { incrementalInProgress: { startedAt: expect.any(Number) } }
-          : {}),
+        incrementalInProgress: { startedAt: expect.any(Number) },
       });
-      if (process.platform !== 'win32') {
-        expect(midRunMeta.incrementalInProgress).toEqual(baselineMeta.incrementalInProgress);
-      }
       expect(midRunMeta.lastCommit).not.toBe(commitB);
       // The stale-count restatement is gone too: the window-start save leaves
       // whatever count is already on disk alone.
@@ -740,12 +752,20 @@ describe('run-analyze module', () => {
       );
 
       expect(recovered.alreadyUpToDate).not.toBe(true);
-      // Recovery performs a complete physical write while retaining the
-      // real logical diff when the prior published graph is still intact.
-      expect(recoveryLogs).toContainEqual(expect.stringContaining('full DB write'));
-      if (recovered.incrementalStats) {
-        expect(recovered.incrementalStats.writeMode).toBe('full');
-        expect(recovered.incrementalStats.changedFiles).toBeGreaterThan(0);
+      // #2790 was: hashes advanced mid-run, changed=0, "skipping wipe" preserved
+      // the OLD graph. An FTS-phase stamp after the graph write can now recover
+      // via incremental (graph already mutated) instead of a forced wipe — that
+      // is not the #2790 bug as long as lastCommit is still stale and the
+      // incremental write set is non-empty. A forced rebuild also heals.
+      const skipWipe = recoveryLogs.find((message) => message.includes('skipping wipe'));
+      if (skipWipe) {
+        // #2790 was changed=0/added=0/deleted=0 over the old graph. A write
+        // set with added files is a real incremental, not that bug.
+        expect(skipWipe).not.toMatch(/changed=0, added=0, deleted=0/);
+      } else {
+        expect(recoveryLogs).toContainEqual(
+          expect.stringContaining('forcing full rebuild to restore a known-good index'),
+        );
       }
       const healed = await loadMeta(storagePath);
       expect(healed).toMatchObject({ lastCommit: commitB });
@@ -969,9 +989,9 @@ describe('run-analyze module', () => {
         runnerIdentity,
         parseCacheIdentity: currentParserProvenance(),
       };
-      await saveMeta(flat.storagePath, flatMetaSeed);
+      await saveCompactFixtureMeta(flat.storagePath, flatMetaSeed);
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
-      await saveMeta(path.dirname(branch.metaPath), {
+      await saveCompactFixtureMeta(path.dirname(branch.metaPath), {
         repoPath: tmpRepo.dbPath,
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
@@ -1029,7 +1049,7 @@ describe('run-analyze module', () => {
       const runnerIdentity = currentRunnerIdentity();
 
       const flat = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(flat.storagePath, {
+      await saveCompactFixtureMeta(flat.storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
@@ -1040,7 +1060,7 @@ describe('run-analyze module', () => {
         parseCacheIdentity: currentParserProvenance(),
       });
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
-      await saveMeta(path.dirname(branch.metaPath), {
+      await saveCompactFixtureMeta(path.dirname(branch.metaPath), {
         repoPath: tmpRepo.dbPath,
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
@@ -1090,7 +1110,7 @@ describe('run-analyze module', () => {
       const runnerIdentity = currentRunnerIdentity();
 
       const flat = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(flat.storagePath, {
+      await saveCompactFixtureMeta(flat.storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
@@ -1143,7 +1163,7 @@ describe('run-analyze module', () => {
       // Flat slot recorded for main; feature/x has its own up-to-date pinned
       // sub-index, so an explicit `--branch feature/x` run routes there.
       const flat = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(flat.storagePath, {
+      await saveCompactFixtureMeta(flat.storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
@@ -1154,7 +1174,7 @@ describe('run-analyze module', () => {
         parseCacheIdentity: currentParserProvenance(),
       });
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
-      await saveMeta(path.dirname(branch.metaPath), {
+      await saveCompactFixtureMeta(path.dirname(branch.metaPath), {
         repoPath: tmpRepo.dbPath,
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
@@ -1215,7 +1235,7 @@ describe('run-analyze module', () => {
         encoding: 'utf-8',
       }).trim();
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(storagePath, {
+      await saveCompactFixtureMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: currentCommit,
         indexedAt: new Date().toISOString(),
@@ -1260,7 +1280,7 @@ describe('run-analyze module', () => {
         encoding: 'utf-8',
       }).trim();
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(storagePath, {
+      await saveCompactFixtureMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: currentCommit,
         indexedAt: new Date().toISOString(),
@@ -1305,7 +1325,7 @@ describe('run-analyze module', () => {
         encoding: 'utf-8',
       }).trim();
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(storagePath, {
+      await saveCompactFixtureMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: currentCommit,
         indexedAt: new Date().toISOString(),
@@ -1352,7 +1372,7 @@ describe('run-analyze module', () => {
         encoding: 'utf-8',
       }).trim();
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(storagePath, {
+      await saveCompactFixtureMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: currentCommit,
         indexedAt: new Date().toISOString(),
@@ -1400,7 +1420,7 @@ describe('run-analyze module', () => {
         encoding: 'utf-8',
       }).trim();
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(storagePath, {
+      await saveCompactFixtureMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: currentCommit,
         indexedAt: new Date().toISOString(),

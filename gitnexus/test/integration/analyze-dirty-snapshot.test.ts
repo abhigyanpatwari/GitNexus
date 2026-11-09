@@ -70,7 +70,7 @@ describe('unchanged dirty snapshot analysis', () => {
       );
       const edited = await runFullAnalysis(repo.dbPath, options, { onProgress: () => {} });
       expect(edited.alreadyUpToDate).toBeUndefined();
-      expect(edited.incrementalStats).toMatchObject({ changedFiles: 1, writeMode: 'full' });
+      expect(edited.incrementalStats).toMatchObject({ changedFiles: 1, writeMode: 'incremental' });
       await adapter.initLbug(lbugPath);
       try {
         expect(

@@ -110,6 +110,8 @@ export type PersistedFtsSkipReason =
   | 'tuple-missing';
 
 export interface RepoMeta {
+  /** Physical compaction baseline; each repository/branch advances independently. */
+  graphCompaction?: import('../core/incremental/compaction-policy.js').GraphCompactionState;
   relationshipIntegrity?: import('../core/graph/relationship-integrity.js').RelationshipIntegrityReceipt;
   repoPath: string;
   /** Complete index directory selected for this successful analysis. */

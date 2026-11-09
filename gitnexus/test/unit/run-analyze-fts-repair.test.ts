@@ -1379,7 +1379,7 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
     }
   });
 
-  it('warns and continues without restore when loadCachedEmbeddings rejects (R11)', async () => {
+  it('stops before destroying old vectors when loadCachedEmbeddings rejects', async () => {
     const RESTORED_NODE_ID = 'Function:src/app.ts:handler:1';
     const stubNode = {
       id: RESTORED_NODE_ID,
@@ -1449,14 +1449,17 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
 
       const logs: string[] = [];
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(
-        tmpRepo.dbPath,
-        { force: true, embeddingsNodeLimit: 1 },
-        { onProgress: () => {}, onLog: (m) => logs.push(m) },
-      );
-
-      expect(logs.some((m) => m.includes('Warning: could not load cached embeddings'))).toBe(true);
-      expect(logs.some((m) => m.includes('spill write failed'))).toBe(true);
+      await expect(
+        runFullAnalysis(
+          tmpRepo.dbPath,
+          { force: true, embeddingsNodeLimit: 1 },
+          { onProgress: () => {}, onLog: (m) => logs.push(m) },
+        ),
+      ).rejects.toThrow('spill write failed');
+      const { wipeLbugDbFiles, loadGraphToLbug } =
+        await import('../../src/core/lbug/lbug-adapter.js');
+      expect(wipeLbugDbFiles).not.toHaveBeenCalled();
+      expect(loadGraphToLbug).not.toHaveBeenCalled();
       expect(
         executeWithReusedStatement.mock.calls.some((call) =>
           String(call[0]).includes('CREATE (e:CodeEmbedding'),
@@ -2450,8 +2453,6 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
         incrementalInProgress: { startedAt: Date.now() - 60_000, toWriteCount: 3 },
       });
 
-      const priorMeta = await loadMeta(storagePath);
-      expect(priorMeta).not.toBeNull();
       const snapshots: Record<string, RepoMeta | null> = {};
       const runEmbeddingPipeline = vi.fn(
         async (
@@ -2525,7 +2526,7 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
       expect(snapshots.windowStart).toMatchObject({
         lastCommit: STALE_COMMIT,
         fileHashes: STALE_HASHES,
-        incrementalInProgress: priorMeta.incrementalInProgress,
+        incrementalInProgress: { phase: 'full-rebuild' },
         stats: { embeddings: 7 },
       });
       expect(snapshots.windowStart?.lastCommit).not.toBe(currentCommit);
@@ -2534,7 +2535,7 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
       expect(snapshots.postWindow).toMatchObject({
         lastCommit: STALE_COMMIT,
         fileHashes: STALE_HASHES,
-        incrementalInProgress: priorMeta.incrementalInProgress,
+        incrementalInProgress: { phase: 'full-rebuild' },
         stats: { embeddings: 7 },
       });
       expect(snapshots.postWindow?.embeddingCheckpoint?.recovery).toMatchObject({

@@ -87,11 +87,19 @@ describe('cache interning performance gate', () => {
     const report = indexing();
     for (const sample of report.results.filter((row) => row.variant === 'candidate')) {
       sample.incremental.writeMode = 'full';
+      sample.rebuildReasons = ['escalated-full-write'];
       sample.cpuMs = 120;
     }
     expect(indexingMetrics(report, 'fresh')[1].verdict).toBe('regression');
     report.results[3].cachedFiles = 0;
     expect(() => indexingMetrics(report, 'fresh')).toThrow('hydrate cached files');
+  });
+
+  it('rejects cache invalidations even alongside a compact full-write reason', () => {
+    const report = indexing();
+    report.results[3].incremental.writeMode = 'full';
+    report.results[3].rebuildReasons = ['escalated-full-write', 'runner-identity'];
+    expect(() => indexingMetrics(report, 'fresh')).toThrow('invalidate the parse cache');
   });
 
   it.each(['', 'unknown', undefined])('rejects an unrecognized write mode (%s)', (mode) => {

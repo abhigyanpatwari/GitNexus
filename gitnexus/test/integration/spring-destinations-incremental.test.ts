@@ -102,18 +102,21 @@ describe.skipIf(isWin)('Destination across a second, incremental analyze', () =>
     );
   };
 
-  /** Keep logical incremental accounting observable across fresh graph writes. */
+  /** Run analyze and report whether the INCREMENTAL writeback branch ran. */
   const analyze = async (): Promise<{ incremental: boolean }> => {
-    const result = await runFullAnalysis(
+    let incremental = false;
+    await runFullAnalysis(
       repo,
-      { skipAgentsMd: true, skipSkills: true },
-      { onProgress() {} },
+      {},
+      {
+        onProgress: (_phase: string, _pct: number, message?: string) => {
+          // Emitted only by the incremental writeback branch. Without this the
+          // whole suite could pass vacuously on a silent full rebuild.
+          if (message?.startsWith('Removing rows for changed files')) incremental = true;
+        },
+      },
     );
-    if (result.incrementalStats) {
-      expect(result.incrementalStats.changedFiles).toBe(1);
-      expect(result.incrementalStats.writeMode).toBe('full');
-    }
-    return { incremental: result.incrementalStats !== undefined };
+    return { incremental };
   };
 
   const openDb = async (): Promise<void> => {
@@ -183,8 +186,13 @@ describe.skipIf(isWin)('Destination across a second, incremental analyze', () =>
   }, 180_000);
 
   it('REMOVES a destination whose last referrer is gone, leaving no orphan', async () => {
-    await fs.rm(path.join(srcDir(), 'ShipmentPublisher.java'));
-    commit('drop-publisher');
+    // Keep the source file so this exercises selective orphan cleanup, rather
+    // than the compact rebuild selected for source-file deletion (#3852).
+    await fs.writeFile(
+      path.join(srcDir(), 'ShipmentPublisher.java'),
+      LATE_PUBLISHER.replace('kafkaTemplate.send("shipments.v1", payload);', ''),
+    );
+    commit('drop-topic-reference');
 
     const { incremental } = await analyze();
     expect(incremental).toBe(true);

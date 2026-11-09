@@ -579,6 +579,7 @@ const refuseLargeWalQuarantine = async (
 const reopenReadOnlyAfterMissingShadow = async (
   dbPath: string,
   err: unknown,
+  resources: Pick<LbugInitOptions, 'bufferPoolBytes' | 'threads'> = {},
 ): Promise<LbugConnectionHandle> => {
   await refuseLargeWalQuarantine(dbPath, 'read-only', err);
   try {
@@ -591,7 +592,7 @@ const reopenReadOnlyAfterMissingShadow = async (
     throw new Error(renameFailureMessage(dbPath, renameErr));
   }
 
-  const reopened = await openLbugConnection(lbug, dbPath, { readOnly: true });
+  const reopened = await openLbugConnection(lbug, dbPath, { ...resources, readOnly: true });
   try {
     await queryAndDrain(reopened.conn, READ_ONLY_SHADOW_REPLAY_PROBE);
     return reopened;
@@ -657,6 +658,7 @@ const reopenWritableAfterMissingShadow = async (
 const ensureReadOnlyConnectionUsable = async (
   dbPath: string,
   handle: LbugConnectionHandle,
+  resources: Pick<LbugInitOptions, 'bufferPoolBytes' | 'threads'> = {},
 ): Promise<LbugConnectionHandle> => {
   let shadowReplayErr: unknown;
   try {
@@ -665,7 +667,7 @@ const ensureReadOnlyConnectionUsable = async (
   } catch (err) {
     if (isMissingShadowSidecarError(err)) {
       await closeLbugConnection(handle);
-      return await reopenReadOnlyAfterMissingShadow(dbPath, err);
+      return await reopenReadOnlyAfterMissingShadow(dbPath, err, resources);
     }
     if (!isReadOnlyShadowReplayError(err) && !isReadOnlyCheckpointInProgressError(err)) {
       await closeLbugConnection(handle);
@@ -675,7 +677,7 @@ const ensureReadOnlyConnectionUsable = async (
   }
 
   await closeLbugConnection(handle);
-  return await recoverReadOnlyViaWritableOpen(dbPath, shadowReplayErr);
+  return await recoverReadOnlyViaWritableOpen(dbPath, shadowReplayErr, resources);
 };
 
 /**
@@ -695,10 +697,14 @@ const ensureReadOnlyConnectionUsable = async (
 const recoverReadOnlyViaWritableOpen = async (
   dbPath: string,
   triggeringErr: unknown,
+  resources: Pick<LbugInitOptions, 'bufferPoolBytes' | 'threads'> = {},
 ): Promise<LbugConnectionHandle> => {
   let writable: LbugConnectionHandle;
   try {
-    writable = await openLbugConnection(lbug, dbPath);
+    writable =
+      resources.bufferPoolBytes !== undefined || resources.threads !== undefined
+        ? await openLbugConnection(lbug, dbPath, resources)
+        : await openLbugConnection(lbug, dbPath);
   } catch (openErr) {
     const code = extractErrnoCode(openErr);
     if (code === 'EROFS' || code === 'EACCES' || code === 'EPERM') {
@@ -733,10 +739,10 @@ const recoverReadOnlyViaWritableOpen = async (
     await closeLbugConnection(writable);
   }
   if (missingShadowError) {
-    return await reopenReadOnlyAfterMissingShadow(dbPath, missingShadowError);
+    return await reopenReadOnlyAfterMissingShadow(dbPath, missingShadowError, resources);
   }
 
-  const reopened = await openLbugConnection(lbug, dbPath, { readOnly: true });
+  const reopened = await openLbugConnection(lbug, dbPath, { ...resources, readOnly: true });
   try {
     await queryAndDrain(reopened.conn, READ_ONLY_SHADOW_REPLAY_PROBE);
     return reopened;
@@ -810,7 +816,7 @@ const runSchemaCreationQueries = async (dbPath: string): Promise<unknown | null>
 };
 
 export interface LbugInitOptions {
-  /** Read existing rows without schema writes or a writable close/checkpoint. */
+  /** Open existing rows read-only; interrupted WAL recovery may reopen writable. */
   readOnly?: boolean;
   skipFts?: boolean;
   bufferPoolBytes?: number;
@@ -938,6 +944,9 @@ const doInitLbug = async (
   // create databases and don't need the lock.
   // ---------------------------------------------------------------------------
   if (readOnly) {
+    const resources = resourceBound
+      ? { bufferPoolBytes: options.bufferPoolBytes, threads: options.threads }
+      : {};
     await assertReadOnlyFtsCrashSafe(dbPath);
     await preflightLbugSidecars(dbPath, {
       mode: 'read-only',
@@ -949,15 +958,13 @@ const doInitLbug = async (
     try {
       const opened = await openLbugConnection(lbug, dbPath, {
         readOnly: true,
-        ...(resourceBound
-          ? { bufferPoolBytes: options.bufferPoolBytes, threads: options.threads }
-          : {}),
+        ...resources,
       });
       // The storage-version check isn't necessarily enforced by the native
       // engine until the first real query runs (ensureReadOnlyConnectionUsable's
       // own probe query) — openLbugConnection alone can succeed on a
       // mismatched file. Wrap both.
-      usable = await ensureReadOnlyConnectionUsable(dbPath, opened);
+      usable = await ensureReadOnlyConnectionUsable(dbPath, opened, resources);
     } catch (err) {
       // An interrupted checkpoint can make the OPEN itself refuse read-only
       // ("Cannot open database in read-only mode while checkpoint is in
@@ -965,7 +972,7 @@ const doInitLbug = async (
       // then reopen read-only — the same self-heal the probe path applies.
       // Skip already-wrapped failures so we do not re-enter writable recovery.
       if (isReadOnlyCheckpointInProgressError(err) && !isReadOnlyRecoveryFailure(err)) {
-        usable = await recoverReadOnlyViaWritableOpen(dbPath, err);
+        usable = await recoverReadOnlyViaWritableOpen(dbPath, err, resources);
       } else {
         // Not retryable: the on-disk file's storage version doesn't change on
         // its own, so withLbugDb's retry loop (which only handles

@@ -191,7 +191,7 @@ it.each([true, false])(
   120_000,
 );
 
-it('publishes a fresh generation on a tiny edit without copying its private graph', async () => {
+it('advances the logical generation on a tiny edit without copying its private graph', async () => {
   await runFullAnalysis(repo, options, callbacks);
   const first = await meta();
   const graph = path.join(slot, first.graphPath!);
@@ -200,8 +200,8 @@ it('publishes a fresh generation on a tiny edit without copying its private grap
   const copy = vi.spyOn(fs, 'copyFile');
   await runFullAnalysis(repo, options, callbacks);
   const second = await meta();
-  expect(second.graphPath).not.toBe(first.graphPath);
-  expect((await fs.stat(path.join(slot, second.graphPath!))).ino).not.toBe(inode);
+  expect(second.graphPath).toBe(first.graphPath);
+  expect((await fs.stat(graph)).ino).toBe(inode);
   expect(second.graphGeneration?.id).not.toBe(first.graphGeneration?.id);
   expect(second.graphGeneration?.coveredContent).not.toBe(first.graphGeneration?.coveredContent);
   expect(second.incrementalInProgress).toBeUndefined();

@@ -19,6 +19,7 @@
  */
 
 import { execSync } from 'child_process';
+import { mkdir, stat } from 'fs/promises';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import { describe, it, expect } from 'vitest';
@@ -114,7 +115,13 @@ async function seedIndexedRepo(
     cwd: repo.dbPath,
     encoding: 'utf-8',
   }).trim();
-  const { storagePath } = getStoragePaths(repo.dbPath);
+  const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
+  // A current compaction receipt and real graph keep the storage guard from
+  // masking the independent embedding-width decision under test.
+  await mkdir(storagePath, { recursive: true });
+  const { initLbug, closeLbug } = await import('../../src/core/lbug/lbug-adapter.js');
+  await initLbug(lbugPath, { skipFts: true });
+  await closeLbug();
   const runAnalyzeUrl = pathToFileURL(
     path.resolve(__dirname, '../../src/core/run-analyze.ts'),
   ).href;
@@ -131,6 +138,11 @@ async function seedIndexedRepo(
     runnerIdentity: resolveAnalyzerRunnerIdentity(runAnalyzeUrl),
     parseCacheIdentity: { base: parseIdentity.identity.base },
     embeddingDims,
+    graphCompaction: {
+      version: 1,
+      compactBytes: (await stat(lbugPath)).size,
+      incrementalWrites: 0,
+    },
   };
   await saveMeta(storagePath, meta);
   return { repo, home, storagePath };

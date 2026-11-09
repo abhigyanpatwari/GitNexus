@@ -67,7 +67,7 @@ it.each([false, true])(
     expect(result.alreadyUpToDate).not.toBe(true);
     expect((await loadMeta(slot))?.graphPath).toBe(generation);
     expect(getStoragePaths(repo, undefined, slot).lbugPath).toBe(owned);
-    if (process.platform !== 'win32') expect((await fs.stat(owned)).ino).not.toBe(inode);
+    expect((await fs.stat(owned)).ino).toBe(inode);
     await expect(fs.stat(path.join(slot, 'lbug'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect(
       copy.mock.calls.filter((args) =>

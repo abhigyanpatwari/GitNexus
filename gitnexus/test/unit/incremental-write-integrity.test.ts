@@ -1,8 +1,15 @@
-import { appendFile } from 'node:fs/promises';
+import { appendFile, stat, writeFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setupMiniRepo } from '../helpers/mini-repo.js';
-import { getStoragePaths, loadMeta, readRegistry } from '../../src/storage/repo-manager.js';
+import { readEmbeddingNodeIds, seedEmbeddingsForFiles } from '../helpers/embedding-seed.js';
+import {
+  getStoragePaths,
+  loadMeta,
+  readRegistry,
+  saveMeta,
+} from '../../src/storage/repo-manager.js';
 import * as adapter from '../../src/core/lbug/lbug-adapter.js';
 import * as fts from '../../src/core/search/fts-indexes.js';
 import * as analyzerIdentity from '../../src/core/analyzer-identity.js';
@@ -11,6 +18,10 @@ import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { reconcileGraphNodeIdentities } from '../../src/core/incremental/write-reconciliation.js';
+import {
+  MAX_INCREMENTAL_WRITES,
+  MAX_INCREMENTAL_MUTATION_ROWS,
+} from '../../src/core/incremental/compaction-policy.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -19,6 +30,212 @@ afterEach(() => {
 
 const options = { skipAgentsMd: true, skipSkills: true };
 const callbacks = { onProgress: () => {} };
+
+describe('hybrid graph writes (real LadybugDB)', () => {
+  it('keeps small edits incremental and compacts at the update deadline even without a source edit', async () => {
+    const repo = await setupMiniRepo('gitnexus-hybrid-periodic-');
+    const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
+    try {
+      await runFullAnalysis(repo.dbPath, options, callbacks);
+      const seed = await loadMeta(storagePath);
+      assert(seed?.graphCompaction);
+      expect(seed.graphCompaction).toEqual({
+        version: 1,
+        compactBytes: (await stat(lbugPath)).size,
+        incrementalWrites: 0,
+      });
+      expect((await runFullAnalysis(repo.dbPath, options, callbacks)).alreadyUpToDate).toBe(true);
+
+      await touchHandler(repo.dbPath);
+      const edit = await runFullAnalysis(repo.dbPath, options, callbacks);
+      expect(edit.incrementalStats?.writeMode).toBe('incremental');
+      const afterEdit = await loadMeta(storagePath);
+      assert(afterEdit?.graphCompaction);
+      expect(afterEdit.graphCompaction).toEqual({ ...seed.graphCompaction, incrementalWrites: 1 });
+
+      await saveMeta(storagePath, {
+        ...afterEdit,
+        graphCompaction: {
+          ...afterEdit.graphCompaction,
+          incrementalWrites: MAX_INCREMENTAL_WRITES,
+        },
+      });
+      const compacted = await runFullAnalysis(repo.dbPath, options, callbacks);
+      expect(compacted.alreadyUpToDate).not.toBe(true);
+      expect(compacted.incrementalStats).toMatchObject({ changedFiles: 0, writeMode: 'full' });
+      const final = await loadMeta(storagePath);
+      expect(final?.graphCompaction).toEqual({
+        version: 1,
+        compactBytes: (await stat(lbugPath)).size,
+        incrementalWrites: 0,
+      });
+      expect(final?.incrementalInProgress).toBeUndefined();
+      expect((await runFullAnalysis(repo.dbPath, options, callbacks)).alreadyUpToDate).toBe(true);
+    } finally {
+      await adapter.closeLbug();
+      await repo.cleanup();
+    }
+  }, 120_000);
+
+  it.each(['missing', 'grown'] as const)(
+    'rebuilds a %s compact baseline before an unchanged-snapshot no-op',
+    async (mode) => {
+      const repo = await setupMiniRepo(`gitnexus-hybrid-${mode}-`);
+      const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
+      try {
+        await runFullAnalysis(repo.dbPath, options, callbacks);
+        const before = await loadMeta(storagePath);
+        assert(before?.graphCompaction);
+        if (mode === 'grown') {
+          // Native allocation growth without a source change must still defeat
+          // the clean-HEAD fast path. Compaction restores actual source content.
+          await adapter.initLbug(lbugPath);
+          await adapter.executePrepared(
+            "MATCH (n:File) WHERE n.filePath = 'src/handler.ts' SET n.content = $content",
+            { content: 'x'.repeat(20 * 1024 * 1024) },
+          );
+          await adapter.closeLbug();
+          expect((await stat(lbugPath)).size - before.graphCompaction.compactBytes).toBeGreaterThan(
+            16 * 1024 * 1024,
+          );
+        } else {
+          await saveMeta(storagePath, { ...before, graphCompaction: undefined });
+        }
+        const result = await runFullAnalysis(repo.dbPath, options, callbacks);
+        expect(result.incrementalStats?.writeMode).toBe('full');
+        const after = await loadMeta(storagePath);
+        expect(after?.graphCompaction?.incrementalWrites).toBe(0);
+        expect(after?.graphCompaction?.compactBytes).toBe(before.graphCompaction.compactBytes);
+      } finally {
+        await adapter.closeLbug();
+        await repo.cleanup();
+      }
+    },
+    120_000,
+  );
+
+  it('selects COPY for a large mutation contained in one file', async () => {
+    const repo = await setupMiniRepo('gitnexus-hybrid-large-file-');
+    try {
+      await runFullAnalysis(repo.dbPath, options, callbacks);
+      initGitRepo(repo.dbPath);
+      await writeFile(
+        path.join(repo.dbPath, 'src/generated.ts'),
+        Array.from(
+          { length: MAX_INCREMENTAL_MUTATION_ROWS + 1 },
+          (_, i) => `export function generated${i}() { return ${i}; }`,
+        ).join('\n'),
+      );
+      commitAll(repo.dbPath, 'add one large source file');
+      const logs: string[] = [];
+      const result = await runFullAnalysis(repo.dbPath, options, {
+        ...callbacks,
+        onLog: (message) => logs.push(message),
+      });
+      expect(result.incrementalStats).toMatchObject({ changedFiles: 1, writeMode: 'full' });
+      expect(logs.some((message) => message.includes('2000 graph rows'))).toBe(true);
+    } finally {
+      await adapter.closeLbug();
+      await repo.cleanup();
+    }
+  }, 120_000);
+
+  it('keeps compaction counters independent across small repositories', async () => {
+    const first = await setupMiniRepo('gitnexus-hybrid-first-');
+    const second = await setupMiniRepo('gitnexus-hybrid-second-');
+    try {
+      await runFullAnalysis(first.dbPath, options, callbacks);
+      await runFullAnalysis(second.dbPath, options, callbacks);
+      const secondStorage = getStoragePaths(second.dbPath).storagePath;
+      const before = await loadMeta(secondStorage);
+      await touchHandler(first.dbPath);
+      expect(
+        (await runFullAnalysis(first.dbPath, options, callbacks)).incrementalStats?.writeMode,
+      ).toBe('incremental');
+      expect((await runFullAnalysis(second.dbPath, options, callbacks)).alreadyUpToDate).toBe(true);
+      expect((await loadMeta(secondStorage))?.graphCompaction).toEqual(before?.graphCompaction);
+      expect(
+        (await loadMeta(getStoragePaths(first.dbPath).storagePath))?.graphCompaction
+          ?.incrementalWrites,
+      ).toBe(1);
+    } finally {
+      await adapter.closeLbug();
+      await first.cleanup();
+      await second.cleanup();
+    }
+  }, 120_000);
+
+  it.each([false, true])(
+    'preserves underreported vectors during periodic compaction unless explicitly dropped (drop=%s)',
+    async (dropEmbeddings) => {
+      const repo = await setupMiniRepo('gitnexus-hybrid-vectors-');
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      try {
+        await runFullAnalysis(repo.dbPath, options, callbacks);
+        const seeded = [
+          ...(
+            await seedEmbeddingsForFiles(repo.dbPath, ['src/handler.ts', 'src/db.ts'], 2)
+          ).values(),
+        ]
+          .flat()
+          .sort();
+        expect(seeded.length).toBeGreaterThan(0);
+        const before = await loadMeta(storagePath);
+        assert(before?.graphCompaction);
+        expect(before.stats?.embeddings ?? 0).toBe(0);
+        await saveMeta(storagePath, {
+          ...before,
+          graphCompaction: { ...before.graphCompaction, incrementalWrites: MAX_INCREMENTAL_WRITES },
+        });
+        const result = await runFullAnalysis(
+          repo.dbPath,
+          { ...options, dropEmbeddings },
+          callbacks,
+        );
+        expect(result.alreadyUpToDate).not.toBe(true);
+        if (dropEmbeddings) expect(result.incrementalStats).toBeUndefined();
+        else expect(result.incrementalStats?.writeMode).toBe('full');
+        expect((await readEmbeddingNodeIds(repo.dbPath)).sort()).toEqual(
+          dropEmbeddings ? [] : seeded,
+        );
+        expect((await loadMeta(storagePath))?.graphCompaction?.incrementalWrites).toBe(0);
+      } finally {
+        await adapter.closeLbug();
+        await repo.cleanup();
+      }
+    },
+    120_000,
+  );
+
+  it('does not advance the compact baseline when preserving old vectors fails', async () => {
+    const repo = await setupMiniRepo('gitnexus-hybrid-cache-failure-');
+    const { storagePath } = getStoragePaths(repo.dbPath);
+    try {
+      await runFullAnalysis(repo.dbPath, options, callbacks);
+      const before = await loadMeta(storagePath);
+      assert(before?.graphCompaction);
+      const due = {
+        ...before,
+        graphCompaction: { ...before.graphCompaction, incrementalWrites: MAX_INCREMENTAL_WRITES },
+      };
+      await saveMeta(storagePath, due);
+      vi.spyOn(adapter, 'loadCachedEmbeddings').mockRejectedValueOnce(
+        new Error('injected cache read failure'),
+      );
+      const deleteNodes = vi.spyOn(adapter, 'deleteNodesForFiles');
+      const copy = vi.spyOn(adapter, 'loadGraphToLbug');
+      await expect(runFullAnalysis(repo.dbPath, options, callbacks)).rejects.toThrow(
+        'injected cache read failure',
+      );
+      expect(deleteNodes).not.toHaveBeenCalled();
+      expect(copy).not.toHaveBeenCalled();
+      expect(await loadMeta(storagePath)).toEqual(due);
+    } finally {
+      await adapter.closeLbug();
+      await repo.cleanup();
+    }
+  }, 120_000);
+});
 
 async function touchHandler(repoPath: string): Promise<void> {
   initGitRepo(repoPath);
@@ -43,14 +260,10 @@ describe('incremental graph identity before publication', () => {
         onLog: (line) => logs.push(line),
       });
       expect(deleteNodes).not.toHaveBeenCalled();
-      // The opt-out disables periodic/incremental checkpoints, but a staged
-      // full rebuild still requires one verified checkpoint before publishing.
-      if (process.platform === 'win32') {
-        expect(flush).not.toHaveBeenCalled(); // Default Windows writes stay in place.
-      } else {
-        expect(flush).toHaveBeenCalledTimes(1);
-        await expect(flush.mock.results[0].value).resolves.toBe(true);
-      }
+      // The opt-out disables periodic/incremental checkpoints. Every full
+      // build still certifies durability before recording its compact size.
+      expect(flush).toHaveBeenCalledTimes(1);
+      await expect(flush.mock.results[0].value).resolves.toBe(true);
       expect(result.incrementalStats).toBeUndefined();
       expect(logs).toContain(
         'Manual WAL checkpoints are disabled; switching to a full DB write before mutation.',
@@ -87,7 +300,7 @@ describe('incremental graph identity before publication', () => {
       });
       const result = await runFullAnalysis(repo.dbPath, options, callbacks);
       expect(attempts).toBe(2);
-      expect(result.incrementalStats?.writeMode).toBe('full');
+      expect(result.incrementalStats?.writeMode).toBe('incremental');
       expect((await loadMeta(storagePath))?.incrementalInProgress).toBeUndefined();
     } finally {
       await adapter.closeLbug();
@@ -156,9 +369,8 @@ describe('incremental graph identity before publication', () => {
   ])(
     'refuses freshness after $phase failure (atomic=$atomicIncremental)',
     async ({ phase, atomicIncremental }) => {
-      // Both legacy caller values use the full-build platform policy.
-      const expectsStaging =
-        process.platform !== 'win32' || process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
+      // Windows uses in-place writes even when a caller requests staging.
+      const expectsStaging = atomicIncremental && process.platform !== 'win32';
       const repo = await setupMiniRepo('gitnexus-test-write-integrity-');
       const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
       try {
@@ -227,7 +439,10 @@ describe('incremental graph identity before publication', () => {
         const after = await loadMeta(storagePath);
         expect(after?.lastCommit).toBe(before?.lastCommit);
         expect(after?.indexedAt).toBe(before?.indexedAt);
-        expect(logs).toContainEqual(expect.stringContaining('full DB write'));
+        expect(after?.graphCompaction).toEqual(before?.graphCompaction);
+        expect(logs.filter((line) => line.includes('atomic-incremental'))).toEqual(
+          expectsStaging ? [expect.stringContaining('staged')] : [],
+        );
         expect(Boolean(after?.incrementalInProgress)).toBe(!expectsStaging);
         const registeredAfter = (await readRegistry()).find((entry) => entry.path === repo.dbPath);
         expect(registeredAfter?.indexedAt).toBe(registeredBefore?.indexedAt);

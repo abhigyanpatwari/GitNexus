@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 type LbugAdapter = typeof import('../../src/core/lbug/lbug-adapter.js');
 type RepoManager = typeof import('../../src/storage/repo-manager.js');
 type FsAtomic = typeof import('../../src/storage/fs-atomic.js');
+type EscalationGate = typeof import('../../src/core/incremental/escalation-gate.js');
 type CheckpointDriver = typeof import('../../src/core/lbug/wal-checkpoint-driver.js');
 const ctx = vi.hoisted(() => ({
   loadMock: vi.fn(),
@@ -36,6 +37,8 @@ const ctx = vi.hoisted(() => ({
   realSaveMeta: null as RepoManager['saveMeta'] | null,
   renameMock: vi.fn(),
   realRename: null as FsAtomic['retryRename'] | null,
+  escalateMock: vi.fn(),
+  realEscalate: null as EscalationGate['shouldEscalateIncrementalWrite'] | null,
   finalCheckpointMock: vi.fn(),
   realFinalCheckpoint: null as CheckpointDriver['runCheckpointWithRetry'] | null,
 }));
@@ -77,6 +80,14 @@ vi.mock('../../src/storage/fs-atomic.js', async (importOriginal) => {
   ctx.renameMock.mockImplementation(actual.retryRename);
   return { ...actual, retryRename: ctx.renameMock };
 });
+// Delegating, so a test can force the #2409 escalation valve on a two-file repo
+// (the real predicate needs at least 50 files).
+vi.mock('../../src/core/incremental/escalation-gate.js', async (importOriginal) => {
+  const actual = await importOriginal<EscalationGate>();
+  ctx.realEscalate = actual.shouldEscalateIncrementalWrite;
+  ctx.escalateMock.mockImplementation(actual.shouldEscalateIncrementalWrite);
+  return { ...actual, shouldEscalateIncrementalWrite: ctx.escalateMock };
+});
 
 import {
   analyzeFailureMayHaveMutatedLiveIndex,
@@ -109,9 +120,7 @@ const lingeringTemp = async (lbugPath: string): Promise<string[]> => {
   return entries.filter((e) => e.startsWith(`${base}.new`) || e.startsWith(`${base}.staging.`));
 };
 
-const posixIt = it.skipIf(isWin);
-
-describe('fresh graph publication (#2, #3852)', () => {
+describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
   let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
   let savedHome: string | undefined;
 
@@ -139,6 +148,11 @@ describe('fresh graph publication (#2, #3852)', () => {
     ctx.renameMock.mockImplementation((...a: Parameters<FsAtomic['retryRename']>) =>
       ctx.realRename!(...a),
     );
+    ctx.escalateMock.mockReset();
+    ctx.escalateMock.mockImplementation(
+      (...a: Parameters<EscalationGate['shouldEscalateIncrementalWrite']>) =>
+        ctx.realEscalate!(...a),
+    );
     ctx.finalCheckpointMock.mockReset();
     ctx.finalCheckpointMock.mockImplementation(
       (...args: Parameters<CheckpointDriver['runCheckpointWithRetry']>) =>
@@ -149,7 +163,6 @@ describe('fresh graph publication (#2, #3852)', () => {
   afterEach(async () => {
     if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
     else process.env.GITNEXUS_HOME = savedHome;
-    vi.unstubAllEnvs();
     await tmpHome.cleanup();
   });
 
@@ -168,130 +181,72 @@ describe('fresh graph publication (#2, #3852)', () => {
     return { repo, cleanup: tmp.cleanup };
   };
 
-  posixIt(
-    'writes a fresh compact graph for a one-file edit and leaves no-op snapshots untouched (#3852)',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      const copyFile = vi.spyOn(fs, 'copyFile');
-      const options = { skipAgentsMd: true, skipSkills: true };
-      try {
-        await runFullAnalysis(repo, options, { onProgress: () => {} });
-        const { lbugPath } = getStoragePaths(repo);
-        const before = await identity(lbugPath);
-        ctx.loadMock.mockClear();
-        ctx.deleteMock.mockClear();
-        copyFile.mockClear();
+  it('publishes one lbug with no temp leak; a repeat rebuild swaps the inode', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      const { lbugPath } = getStoragePaths(repo);
+      await expect(fs.stat(lbugPath)).resolves.toBeTruthy();
+      expect(await lingeringTemp(lbugPath)).toEqual([]);
+      const first = await identity(lbugPath);
 
-        const unchanged = await runFullAnalysis(repo, options, { onProgress: () => {} });
-        expect(unchanged.alreadyUpToDate).toBe(true);
-        expect(await identity(lbugPath)).toBe(before);
-        expect(ctx.loadMock).not.toHaveBeenCalled();
+      await runFullAnalysis(repo, { force: true }, { onProgress: () => {} });
+      expect(await lingeringTemp(lbugPath)).toEqual([]);
+      // The atomic rename replaced the file — a new inode, not an in-place edit.
+      expect(await identity(lbugPath)).not.toBe(first);
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
 
-        await fs.appendFile(path.join(repo, 'a.ts'), '\n// same logical graph\n');
-        const refreshed = await runFullAnalysis(repo, options, { onProgress: () => {} });
-        expect(refreshed.incrementalStats).toMatchObject({
-          changedFiles: 1,
-          reparsedFiles: 1,
-          deletedFiles: 0,
-          affectedDependents: 0,
-          writeMode: 'full',
-        });
-        expect(ctx.loadMock).toHaveBeenCalledTimes(1);
-        expect(ctx.deleteMock).not.toHaveBeenCalled();
-        expect(copyFile.mock.calls.some(([source]) => source === lbugPath)).toBe(false);
-        expect(await identity(lbugPath)).not.toBe(before);
-        expect(await lingeringTemp(lbugPath)).toEqual([]);
+  it('leaves the previous index intact when a rebuild fails before the swap', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} }); // v1
+      const { lbugPath } = getStoragePaths(repo);
+      const before = await identity(lbugPath);
 
-        const refreshedIdentity = await identity(lbugPath);
-        ctx.loadMock.mockClear();
-        const sameDirtySnapshot = await runFullAnalysis(repo, options, { onProgress: () => {} });
-        expect(sameDirtySnapshot.alreadyUpToDate).toBe(true);
-        expect(await identity(lbugPath)).toBe(refreshedIdentity);
-        expect(ctx.loadMock).not.toHaveBeenCalled();
-      } finally {
-        copyFile.mockRestore();
-        await cleanup();
-      }
-    },
-    180_000,
-  );
+      ctx.loadMock.mockRejectedValueOnce(new Error('injected mid-rebuild failure'));
+      await expect(
+        runFullAnalysis(repo, { force: true }, { onProgress: () => {} }),
+      ).rejects.toThrow('injected mid-rebuild failure');
 
-  posixIt(
-    'publishes one lbug with no temp leak; a repeat rebuild swaps the inode',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      try {
-        await runFullAnalysis(repo, {}, { onProgress: () => {} });
-        const { lbugPath } = getStoragePaths(repo);
-        await expect(fs.stat(lbugPath)).resolves.toBeTruthy();
-        expect(await lingeringTemp(lbugPath)).toEqual([]);
-        const first = await identity(lbugPath);
+      // The build failed in the temp; the swap (skipped on failure) never
+      // published it, so the live index is byte-for-byte untouched.
+      expect(await identity(lbugPath)).toBe(before);
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
 
-        await runFullAnalysis(repo, { force: true }, { onProgress: () => {} });
-        expect(await lingeringTemp(lbugPath)).toEqual([]);
-        // The atomic rename replaced the file — a new inode, not an in-place edit.
-        expect(await identity(lbugPath)).not.toBe(first);
-      } finally {
-        await cleanup();
-      }
-    },
-    180_000,
-  );
-
-  posixIt(
-    'leaves the previous index intact when a rebuild fails before the swap',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      try {
-        await runFullAnalysis(repo, {}, { onProgress: () => {} }); // v1
-        const { lbugPath } = getStoragePaths(repo);
-        const before = await identity(lbugPath);
-
-        ctx.loadMock.mockRejectedValueOnce(new Error('injected mid-rebuild failure'));
-        await expect(
-          runFullAnalysis(repo, { force: true }, { onProgress: () => {} }),
-        ).rejects.toThrow('injected mid-rebuild failure');
-
-        // The build failed in the temp; the swap (skipped on failure) never
-        // published it, so the live index is byte-for-byte untouched.
-        expect(await identity(lbugPath)).toBe(before);
-      } finally {
-        await cleanup();
-      }
-    },
-    180_000,
-  );
-
-  posixIt(
-    'preserves a pre-existing quarantine before opening the embedding cache (#3591)',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      try {
-        await runFullAnalysis(repo, { skipFts: true }, { onProgress: () => {} });
-        const { lbugPath, storagePath } = getStoragePaths(repo);
-        const seeded = await seedEmbeddingsForFiles(repo, ['a.ts'], 2);
-        const nodeIds = seeded.get('a.ts')!;
-        expect(nodeIds).toHaveLength(2);
-        await stampEmbeddingCount(storagePath, nodeIds.length);
-        const oldGraph = await fs.readFile(lbugPath);
-        const oldMeta = await loadMeta(storagePath);
-        const quarantine = `${lbugPath}.wal.missing-shadow.1234-abcd`;
-        const evidence = Buffer.from('controlled quarantine: retain for recovery');
-        await fs.writeFile(quarantine, evidence);
-        // Stop the unfixed implementation before it reaches embedding generation.
-        // The preservation guard must reject earlier, before any graph write.
-        ctx.loadMock.mockRejectedValueOnce(new Error('injected later rebuild failure'));
-        await expect(
-          runFullAnalysis(repo, { force: true, skipFts: true }, { onProgress: () => {} }),
-        ).rejects.toThrow(/consolidat|recovery files/i);
-        expect(await fs.readFile(quarantine)).toEqual(evidence);
-        expect(await fs.readFile(lbugPath)).toEqual(oldGraph);
-        expect(await loadMeta(storagePath)).toEqual(oldMeta);
-        const coldIds = execFileSync(
-          process.execPath,
-          [
-            '-e',
-            `
+  it('preserves a pre-existing quarantine before opening the embedding cache (#3591)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      await runFullAnalysis(repo, { skipFts: true }, { onProgress: () => {} });
+      const { lbugPath, storagePath } = getStoragePaths(repo);
+      const seeded = await seedEmbeddingsForFiles(repo, ['a.ts'], 2);
+      const nodeIds = seeded.get('a.ts')!;
+      expect(nodeIds).toHaveLength(2);
+      await stampEmbeddingCount(storagePath, nodeIds.length);
+      const oldGraph = await fs.readFile(lbugPath);
+      const oldMeta = await loadMeta(storagePath);
+      const quarantine = `${lbugPath}.wal.missing-shadow.1234-abcd`;
+      const evidence = Buffer.from('controlled quarantine: retain for recovery');
+      await fs.writeFile(quarantine, evidence);
+      // Stop the unfixed implementation before it reaches embedding generation.
+      // The preservation guard must reject earlier, before any graph write.
+      ctx.loadMock.mockRejectedValueOnce(new Error('injected later rebuild failure'));
+      await expect(
+        runFullAnalysis(repo, { force: true, skipFts: true }, { onProgress: () => {} }),
+      ).rejects.toThrow(/consolidat|recovery files/i);
+      expect(await fs.readFile(quarantine)).toEqual(evidence);
+      expect(await fs.readFile(lbugPath)).toEqual(oldGraph);
+      expect(await loadMeta(storagePath)).toEqual(oldMeta);
+      const coldIds = execFileSync(
+        process.execPath,
+        [
+          '-e',
+          `
           const { Database, Connection } = require('@ladybugdb/core');
           (async () => {
             const db = new Database(process.argv[1], 256 * 1024 * 1024, false, true, 1024 ** 3);
@@ -301,19 +256,17 @@ describe('fresh graph publication (#2, #3852)', () => {
             await conn.close(); await db.close();
           })().catch(error => { console.error(error); process.exitCode = 1; });
         `,
-            lbugPath,
-          ],
-          { encoding: 'utf8', timeout: 30_000 },
-        );
-        expect(JSON.parse(coldIds)).toEqual(nodeIds.sort());
-      } finally {
-        await cleanup();
-      }
-    },
-    180_000,
-  );
+          lbugPath,
+        ],
+        { encoding: 'utf8', timeout: 30_000 },
+      );
+      expect(JSON.parse(coldIds)).toEqual(nodeIds.sort());
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
 
-  posixIt.each([
+  it.each([
     { mode: 'wal', failure: 'publication' },
     { mode: 'checkpoint', failure: 'publication' },
     { mode: 'wal', failure: 'checkpoint' },
@@ -405,7 +358,7 @@ describe('fresh graph publication (#2, #3852)', () => {
     180_000,
   );
 
-  posixIt.each([
+  it.each([
     { suffix: '.wal', skipNativeCloseOnExit: false },
     { suffix: '.shadow', skipNativeCloseOnExit: false },
     { suffix: '.wal.checkpoint', skipNativeCloseOnExit: false },
@@ -507,7 +460,7 @@ describe('fresh graph publication (#2, #3852)', () => {
     180_000,
   );
 
-  posixIt.each(['rejected', 'unverified', 'manual-disabled-unverified'])(
+  it.each(['rejected', 'unverified', 'manual-disabled-unverified'])(
     'keeps the published graph when the final full-rebuild checkpoint is %s (#3591)',
     async (outcome) => {
       const { repo, cleanup } = await makeRepo();
@@ -541,89 +494,76 @@ describe('fresh graph publication (#2, #3852)', () => {
     180_000,
   );
 
-  posixIt(
-    'requires a real final checkpoint even when periodic manual checkpoints are disabled (#3591)',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      try {
-        vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', '0');
-        await runFullAnalysis(repo, { force: true }, { onProgress: () => {} });
-        const finalCall = ctx.finalCheckpointMock.mock.calls.findIndex((args) => args.length === 0);
-        expect(finalCall).toBeGreaterThanOrEqual(0);
-        await expect(ctx.finalCheckpointMock.mock.results[finalCall].value).resolves.toMatchObject({
-          flushed: true,
-        });
-        const { lbugPath } = getStoragePaths(repo);
-        expect(
-          (await fs.readdir(path.dirname(lbugPath))).some((name) =>
-            /^lbug\.(wal|shadow|checkpoint)(\.|$)/.test(name),
-          ),
-        ).toBe(false);
-      } finally {
-        vi.unstubAllEnvs();
-        await cleanup();
-      }
-    },
-    180_000,
-  );
+  it('requires a real final checkpoint even when periodic manual checkpoints are disabled (#3591)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', '0');
+      await runFullAnalysis(repo, { force: true }, { onProgress: () => {} });
+      const finalCall = ctx.finalCheckpointMock.mock.calls.findIndex((args) => args.length === 0);
+      expect(finalCall).toBeGreaterThanOrEqual(0);
+      await expect(ctx.finalCheckpointMock.mock.results[finalCall].value).resolves.toMatchObject({
+        flushed: true,
+      });
+      const { lbugPath } = getStoragePaths(repo);
+      expect(
+        (await fs.readdir(path.dirname(lbugPath))).some((name) =>
+          /^lbug\.(wal|shadow|checkpoint)(\.|$)/.test(name),
+        ),
+      ).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      await cleanup();
+    }
+  }, 180_000);
 
-  posixIt(
-    'recovers after a CLI process exits immediately before publication (#3591)',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      const readerId = 'interrupted-publication';
-      try {
-        await runFullAnalysis(repo, {}, { onProgress: () => {} });
-        const { lbugPath, storagePath } = getStoragePaths(repo);
-        const oldGraph = await fs.readFile(lbugPath);
-        const oldMeta = await loadMeta(storagePath);
-        await fs.writeFile(
-          path.join(repo, 'a.ts'),
-          'export function replacement() { return 42; }\n',
-        );
-        execSync('git -c user.name=t -c user.email=t@t commit -am replacement', {
-          cwd: repo,
-          stdio: 'pipe',
-        });
-        const child = spawnSync(
-          process.execPath,
-          [
-            fileURLToPath(
-              new URL('../helpers/interrupted-publication-runner.mjs', import.meta.url),
-            ),
-            repo,
-          ],
-          { encoding: 'utf8', timeout: 120_000 },
-        );
-        expect(child.error, child.stderr).toBeUndefined();
-        expect(child.status, child.stderr).toBe(73);
-        expect((await fs.readFile(lbugPath)).equals(oldGraph)).toBe(true);
-        expect(await loadMeta(storagePath)).toMatchObject({
-          indexedAt: oldMeta!.indexedAt,
-          lastCommit: oldMeta!.lastCommit,
-        });
-        await poolInit(readerId, lbugPath);
-        expect(
-          (await poolQuery(readerId, 'MATCH (f:Function) RETURN f.name AS name'))
-            .map((row) => row.name)
-            .sort(),
-        ).toEqual(['caller', 'greet']);
-        await poolClose(readerId);
-        await runFullAnalysis(repo, { force: true }, { onProgress: () => {} });
-        expect(await lingeringTemp(lbugPath)).toEqual([]);
-        await poolInit(readerId, lbugPath);
-        expect(
-          (await poolQuery(readerId, 'MATCH (f:Function) RETURN f.name AS name')).map(
-            (row) => row.name,
-          ),
-        ).toEqual(['replacement']);
-      } finally {
-        await poolClose(readerId);
-        await cleanup();
-      }
-    },
-    180_000,
-  );
+  it('recovers after a CLI process exits immediately before publication (#3591)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    const readerId = 'interrupted-publication';
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      const { lbugPath, storagePath } = getStoragePaths(repo);
+      const oldGraph = await fs.readFile(lbugPath);
+      const oldMeta = await loadMeta(storagePath);
+      await fs.writeFile(path.join(repo, 'a.ts'), 'export function replacement() { return 42; }\n');
+      execSync('git -c user.name=t -c user.email=t@t commit -am replacement', {
+        cwd: repo,
+        stdio: 'pipe',
+      });
+      const child = spawnSync(
+        process.execPath,
+        [
+          fileURLToPath(new URL('../helpers/interrupted-publication-runner.mjs', import.meta.url)),
+          repo,
+        ],
+        { encoding: 'utf8', timeout: 120_000 },
+      );
+      expect(child.error, child.stderr).toBeUndefined();
+      expect(child.status, child.stderr).toBe(73);
+      expect((await fs.readFile(lbugPath)).equals(oldGraph)).toBe(true);
+      expect(await loadMeta(storagePath)).toMatchObject({
+        indexedAt: oldMeta!.indexedAt,
+        lastCommit: oldMeta!.lastCommit,
+      });
+      await poolInit(readerId, lbugPath);
+      expect(
+        (await poolQuery(readerId, 'MATCH (f:Function) RETURN f.name AS name'))
+          .map((row) => row.name)
+          .sort(),
+      ).toEqual(['caller', 'greet']);
+      await poolClose(readerId);
+      await runFullAnalysis(repo, { force: true }, { onProgress: () => {} });
+      expect(await lingeringTemp(lbugPath)).toEqual([]);
+      await poolInit(readerId, lbugPath);
+      expect(
+        (await poolQuery(readerId, 'MATCH (f:Function) RETURN f.name AS name')).map(
+          (row) => row.name,
+        ),
+      ).toEqual(['replacement']);
+    } finally {
+      await poolClose(readerId);
+      await cleanup();
+    }
+  }, 180_000);
 
   // Commit a replacement graph, then force a rebuild whose staged load loses
   // every relationship, and assert the collapse guard rejects it unpublished.
@@ -663,60 +603,52 @@ describe('fresh graph publication (#2, #3852)', () => {
     expect(await readRegistry()).toEqual(oldRegistry);
   };
 
-  posixIt(
-    'rejects a collapsed first-time staged graph before publication',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      const { lbugPath, storagePath } = getStoragePaths(repo);
-      try {
-        await expectCollapsedRebuildRejected(repo);
-        await expect(fs.stat(lbugPath)).rejects.toMatchObject({ code: 'ENOENT' });
-        // Storage setup may leave its empty metadata shell, but no analysis
-        // commit or completed graph statistics may be published.
-        const failedMeta = await loadMeta(storagePath);
-        expect(failedMeta?.lastCommit).toBe('');
-        expect(failedMeta?.stats).toBeUndefined();
-      } finally {
-        await cleanup();
-      }
-    },
-    180_000,
-  );
+  it('rejects a collapsed first-time staged graph before publication', async () => {
+    const { repo, cleanup } = await makeRepo();
+    const { lbugPath, storagePath } = getStoragePaths(repo);
+    try {
+      await expectCollapsedRebuildRejected(repo);
+      await expect(fs.stat(lbugPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      // Storage setup may leave its empty metadata shell, but no analysis
+      // commit or completed graph statistics may be published.
+      const failedMeta = await loadMeta(storagePath);
+      expect(failedMeta?.lastCommit).toBe('');
+      expect(failedMeta?.stats).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
 
-  posixIt(
-    'rejects a collapsed rebuild and keeps the previous index readable',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      const repoId = 'atomic-collapse-existing';
-      const { lbugPath, storagePath } = getStoragePaths(repo);
-      try {
-        await runFullAnalysis(repo, {}, { onProgress: () => {} });
-        const oldGraph = await fs.readFile(lbugPath);
-        const oldMeta = await loadMeta(storagePath);
+  it('rejects a collapsed rebuild and keeps the previous index readable', async () => {
+    const { repo, cleanup } = await makeRepo();
+    const repoId = 'atomic-collapse-existing';
+    const { lbugPath, storagePath } = getStoragePaths(repo);
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      const oldGraph = await fs.readFile(lbugPath);
+      const oldMeta = await loadMeta(storagePath);
 
-        await expectCollapsedRebuildRejected(repo);
+      await expectCollapsedRebuildRejected(repo);
 
-        expect((await fs.readFile(lbugPath)).equals(oldGraph)).toBe(true);
-        expect(await loadMeta(storagePath)).toMatchObject({
-          lastCommit: oldMeta!.lastCommit,
-          indexedAt: oldMeta!.indexedAt,
-        });
-        await poolInit(repoId, lbugPath);
-        const names = (await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')).flatMap(
-          (row) => Object.values(row as Record<string, unknown>).map(String),
-        );
-        expect(names.sort()).toEqual(['caller', 'greet']);
-        const edges = await poolQuery(repoId, 'MATCH ()-[r:CodeRelation]->() RETURN count(r) AS n');
-        expect(Number((edges[0] as Record<string, unknown>).n)).toBeGreaterThan(0);
-      } finally {
-        await poolClose(repoId);
-        await cleanup();
-      }
-    },
-    180_000,
-  );
+      expect((await fs.readFile(lbugPath)).equals(oldGraph)).toBe(true);
+      expect(await loadMeta(storagePath)).toMatchObject({
+        lastCommit: oldMeta!.lastCommit,
+        indexedAt: oldMeta!.indexedAt,
+      });
+      await poolInit(repoId, lbugPath);
+      const names = (await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')).flatMap(
+        (row) => Object.values(row as Record<string, unknown>).map(String),
+      );
+      expect(names.sort()).toEqual(['caller', 'greet']);
+      const edges = await poolQuery(repoId, 'MATCH ()-[r:CodeRelation]->() RETURN count(r) AS n');
+      expect(Number((edges[0] as Record<string, unknown>).n)).toBeGreaterThan(0);
+    } finally {
+      await poolClose(repoId);
+      await cleanup();
+    }
+  }, 180_000);
 
-  posixIt.each(
+  it.each(
     (['full', 'incremental'] as const).flatMap((writeMode) =>
       (['close', 'swap', 'metadata'] as const).map((failurePoint) => ({
         writeMode,
@@ -789,7 +721,7 @@ describe('fresh graph publication (#2, #3852)', () => {
         ).catch((error: unknown) => error);
         expect(failure).toBe(injected);
         expect(ctx.loadMock).toHaveBeenCalled();
-        expect(ctx.deleteMock).not.toHaveBeenCalled();
+        expect(ctx.deleteMock.mock.calls.length > 0).toBe(writeMode === 'incremental');
         expect(await readRegistry()).toEqual(oldRegistry);
         expect(await loadMeta(storagePath)).toMatchObject({ lastCommit: oldMeta!.lastCommit });
         expect(await lingeringTemp(lbugPath)).toEqual([]);
@@ -812,117 +744,127 @@ describe('fresh graph publication (#2, #3852)', () => {
     180_000,
   );
 
-  posixIt(
-    'marks a failure after an atomic publish as potentially live-mutating',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      try {
-        const failure = await runFullAnalysis(
-          repo,
-          {},
-          {
-            onProgress: (phase, percent) => {
-              if (phase === 'done' && percent === 100) {
-                throw new Error('injected post-publish failure');
-              }
-            },
+  it('marks a failure after an atomic publish as potentially live-mutating', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      const failure = await runFullAnalysis(
+        repo,
+        {},
+        {
+          onProgress: (phase, percent) => {
+            if (phase === 'done' && percent === 100) {
+              throw new Error('injected post-publish failure');
+            }
           },
-        ).catch((error: unknown) => error);
+        },
+      ).catch((error: unknown) => error);
 
-        expect(failure).toMatchObject({ message: 'injected post-publish failure' });
-        expect(analyzeFailureMayHaveMutatedLiveIndex(failure)).toBe(true);
-        await expect(fs.stat(getStoragePaths(repo).lbugPath)).resolves.toBeTruthy();
-      } finally {
-        await cleanup();
-      }
+      expect(failure).toMatchObject({ message: 'injected post-publish failure' });
+      expect(analyzeFailureMayHaveMutatedLiveIndex(failure)).toBe(true);
+      await expect(fs.stat(getStoragePaths(repo).lbugPath)).resolves.toBeTruthy();
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
+
+  it('the read pool serves the freshly-swapped index after a rebuild (#1 + #2 end-to-end)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    const repoId = 'atomic-swap-e2e';
+    const names = async (): Promise<string[]> =>
+      (await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')).flatMap((r) =>
+        Object.values(r as Record<string, unknown>).map(String),
+      );
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} }); // v1: greet
+      const { lbugPath } = getStoragePaths(repo);
+
+      await poolInit(repoId, lbugPath);
+      expect(await names()).toContain('greet');
+
+      // Rebuild with a renamed function so v1 and v2 differ observably.
+      await fs.writeFile(
+        path.join(repo, 'a.ts'),
+        'export function renamedGreet(n: string) { return `hi ${n}`; }\nexport function caller() { return renamedGreet("x"); }\n',
+      );
+      execSync('git -c user.name=t -c user.email=t@t commit -am rename', {
+        cwd: repo,
+        stdio: 'pipe',
+      });
+      await runFullAnalysis(repo, { force: true }, { onProgress: () => {} }); // v2 → atomic swap
+
+      // Same repoId: initLbug detects the swapped inode and re-opens the pool
+      // onto the new index instead of serving the stale (unlinked) one.
+      await poolInit(repoId, lbugPath);
+      const v2 = await names();
+      expect(v2).toContain('renamedGreet');
+      // Proves the pool actually re-opened — a stale handle would still see v1.
+      expect(v2).not.toContain('greet');
+    } finally {
+      await poolClose(repoId);
+      await cleanup();
+    }
+  }, 180_000);
+
+  it('opt-in atomic incremental copies then swaps, no temp leak, change reflected', async () => {
+    const { repo, cleanup } = await makeRepo();
+    const prev = process.env.GITNEXUS_ATOMIC_INCREMENTAL;
+    process.env.GITNEXUS_ATOMIC_INCREMENTAL = '1';
+    const repoId = 'atomic-incr-e2e';
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} }); // v1
+      const { lbugPath } = getStoragePaths(repo);
+
+      // Change a single file so the next run is incremental, adding a function.
+      await fs.writeFile(
+        path.join(repo, 'a.ts'),
+        'export function greet(n: string) { return `hi ${n}`; }\nexport function caller() { return greet("x"); }\nexport function addedFn() { return 1; }\n',
+      );
+      execSync('git -c user.name=t -c user.email=t@t commit -am change', {
+        cwd: repo,
+        stdio: 'pipe',
+      });
+
+      await runFullAnalysis(repo, {}, { onProgress: () => {} }); // incremental + atomic swap
+      expect(await lingeringTemp(lbugPath)).toEqual([]);
+
+      await poolInit(repoId, lbugPath);
+      const names = (await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')).flatMap(
+        (r) => Object.values(r as Record<string, unknown>).map(String),
+      );
+      expect(names).toContain('addedFn'); // the incremental change landed via the swap
+    } finally {
+      if (prev === undefined) delete process.env.GITNEXUS_ATOMIC_INCREMENTAL;
+      else process.env.GITNEXUS_ATOMIC_INCREMENTAL = prev;
+      await poolClose(repoId);
+      await cleanup();
+    }
+  }, 180_000);
+
+  it.each([
+    {
+      label: 'unset keeps the caller request (staged)',
+      envValue: undefined,
+      expectStaged: true,
+      // The same `staging copy` label the failure evidence uses (#3530).
+      stagedLines: [expect.stringMatching(/staging copy: apparent \d+ B, allocated /)],
+      disabledNotices: [],
     },
-    180_000,
-  );
-
-  posixIt(
-    'the read pool serves the freshly-swapped index after a rebuild (#1 + #2 end-to-end)',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      const repoId = 'atomic-swap-e2e';
-      const names = async (): Promise<string[]> =>
-        (await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')).flatMap((r) =>
-          Object.values(r as Record<string, unknown>).map(String),
-        );
-      try {
-        await runFullAnalysis(repo, {}, { onProgress: () => {} }); // v1: greet
-        const { lbugPath } = getStoragePaths(repo);
-
-        await poolInit(repoId, lbugPath);
-        expect(await names()).toContain('greet');
-
-        // Rebuild with a renamed function so v1 and v2 differ observably.
-        await fs.writeFile(
-          path.join(repo, 'a.ts'),
-          'export function renamedGreet(n: string) { return `hi ${n}`; }\nexport function caller() { return renamedGreet("x"); }\n',
-        );
-        execSync('git -c user.name=t -c user.email=t@t commit -am rename', {
-          cwd: repo,
-          stdio: 'pipe',
-        });
-        await runFullAnalysis(repo, { force: true }, { onProgress: () => {} }); // v2 → atomic swap
-
-        // Same repoId: initLbug detects the swapped inode and re-opens the pool
-        // onto the new index instead of serving the stale (unlinked) one.
-        await poolInit(repoId, lbugPath);
-        const v2 = await names();
-        expect(v2).toContain('renamedGreet');
-        // Proves the pool actually re-opened — a stale handle would still see v1.
-        expect(v2).not.toContain('greet');
-      } finally {
-        await poolClose(repoId);
-        await cleanup();
-      }
+    {
+      label: '=0 overrides the caller request (in place)',
+      envValue: '0',
+      expectStaged: false,
+      stagedLines: [],
+      disabledNotices: [
+        expect.stringContaining(
+          'disabled by GITNEXUS_ATOMIC_INCREMENTAL=0 although the caller requested staging; ' +
+            'a failed write will leave the live index partly written and the next run will ' +
+            'rebuild it in full',
+        ),
+      ],
     },
-    180_000,
-  );
-
-  posixIt(
-    'legacy atomic-incremental opt-in publishes a fresh graph with no temp leak',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      const prev = process.env.GITNEXUS_ATOMIC_INCREMENTAL;
-      process.env.GITNEXUS_ATOMIC_INCREMENTAL = '1';
-      const repoId = 'atomic-incr-e2e';
-      try {
-        await runFullAnalysis(repo, {}, { onProgress: () => {} }); // v1
-        const { lbugPath } = getStoragePaths(repo);
-
-        // Change a single file so the next run is incremental, adding a function.
-        await fs.writeFile(
-          path.join(repo, 'a.ts'),
-          'export function greet(n: string) { return `hi ${n}`; }\nexport function caller() { return greet("x"); }\nexport function addedFn() { return 1; }\n',
-        );
-        execSync('git -c user.name=t -c user.email=t@t commit -am change', {
-          cwd: repo,
-          stdio: 'pipe',
-        });
-
-        await runFullAnalysis(repo, {}, { onProgress: () => {} }); // incremental + atomic swap
-        expect(await lingeringTemp(lbugPath)).toEqual([]);
-
-        await poolInit(repoId, lbugPath);
-        const names = (await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')).flatMap(
-          (r) => Object.values(r as Record<string, unknown>).map(String),
-        );
-        expect(names).toContain('addedFn'); // the incremental change landed via the swap
-      } finally {
-        if (prev === undefined) delete process.env.GITNEXUS_ATOMIC_INCREMENTAL;
-        else process.env.GITNEXUS_ATOMIC_INCREMENTAL = prev;
-        await poolClose(repoId);
-        await cleanup();
-      }
-    },
-    180_000,
-  );
-
-  posixIt.each([undefined, '0', '1'])(
-    'GITNEXUS_ATOMIC_INCREMENTAL=%s cannot re-enable delta writes (#3852)',
-    async (envValue) => {
+  ])(
+    'GITNEXUS_ATOMIC_INCREMENTAL $label when the caller passes atomicIncremental (#3530)',
+    async ({ envValue, expectStaged, stagedLines, disabledNotices }) => {
       const { repo, cleanup } = await makeRepo();
       const repoId = 'atomic-incr-switch';
       vi.stubEnv('GITNEXUS_ATOMIC_INCREMENTAL', envValue);
@@ -947,8 +889,13 @@ describe('fresh graph publication (#2, #3852)', () => {
           { onProgress: () => {}, onLog: (line) => logs.push(line) },
         );
 
-        expect((await fs.stat(lbugPath)).ino).not.toBe(inodeBefore);
-        expect(ctx.deleteMock).not.toHaveBeenCalled();
+        expect(logs.filter((line) => line.startsWith('atomic-incremental: staged'))).toEqual(
+          stagedLines,
+        );
+        expect(logs.filter((line) => line.startsWith('atomic-incremental: disabled'))).toEqual(
+          disabledNotices,
+        );
+        expect((await fs.stat(lbugPath)).ino !== inodeBefore).toBe(expectStaged);
         expect(await lingeringTemp(lbugPath)).toEqual([]);
 
         await poolInit(repoId, lbugPath);
@@ -965,96 +912,86 @@ describe('fresh graph publication (#2, #3852)', () => {
     180_000,
   );
 
-  posixIt(
-    'stays silent about GITNEXUS_ATOMIC_INCREMENTAL=0 unless an incremental run was asked to stage (#3530)',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      vi.stubEnv('GITNEXUS_ATOMIC_INCREMENTAL', '0');
-      try {
-        // A full build stages regardless, so the switch changes nothing for it.
-        const fullBuildLogs: string[] = [];
-        await runFullAnalysis(
-          repo,
-          { atomicIncremental: true },
-          { onProgress: () => {}, onLog: (line) => fullBuildLogs.push(line) },
-        );
-        await fs.writeFile(path.join(repo, 'a.ts'), 'export function changed() { return 1; }\n');
-        execSync('git -c user.name=t -c user.email=t@t commit -am change', {
-          cwd: repo,
-          stdio: 'pipe',
-        });
-        // An incremental run nobody asked to stage has nothing to disable.
-        const unrequestedLogs: string[] = [];
-        await runFullAnalysis(
-          repo,
-          {},
-          { onProgress: () => {}, onLog: (line) => unrequestedLogs.push(line) },
-        );
+  it('stays silent about GITNEXUS_ATOMIC_INCREMENTAL=0 unless an incremental run was asked to stage (#3530)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    vi.stubEnv('GITNEXUS_ATOMIC_INCREMENTAL', '0');
+    try {
+      // A full build stages regardless, so the switch changes nothing for it.
+      const fullBuildLogs: string[] = [];
+      await runFullAnalysis(
+        repo,
+        { atomicIncremental: true },
+        { onProgress: () => {}, onLog: (line) => fullBuildLogs.push(line) },
+      );
+      await fs.writeFile(path.join(repo, 'a.ts'), 'export function changed() { return 1; }\n');
+      execSync('git -c user.name=t -c user.email=t@t commit -am change', {
+        cwd: repo,
+        stdio: 'pipe',
+      });
+      // An incremental run nobody asked to stage has nothing to disable.
+      const unrequestedLogs: string[] = [];
+      await runFullAnalysis(
+        repo,
+        {},
+        { onProgress: () => {}, onLog: (line) => unrequestedLogs.push(line) },
+      );
 
-        expect([...fullBuildLogs, ...unrequestedLogs]).not.toContainEqual(
-          expect.stringContaining('disabled by GITNEXUS_ATOMIC_INCREMENTAL=0'),
-        );
-      } finally {
-        vi.unstubAllEnvs();
-        await cleanup();
-      }
-    },
-    180_000,
-  );
+      expect([...fullBuildLogs, ...unrequestedLogs]).not.toContainEqual(
+        expect.stringContaining('disabled by GITNEXUS_ATOMIC_INCREMENTAL=0'),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+      await cleanup();
+    }
+  }, 180_000);
 
-  posixIt(
-    'keeps the live graph unchanged when atomic incremental writeback fails',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      const repoId = 'atomic-incr-failure';
-      try {
-        await runFullAnalysis(repo, {}, { onProgress: () => {} });
-        const { lbugPath } = getStoragePaths(repo);
-        const before = await identity(lbugPath);
-        const priorMeta = await loadMeta(getStoragePaths(repo).storagePath);
+  it('keeps the live graph unchanged when atomic incremental writeback fails', async () => {
+    const { repo, cleanup } = await makeRepo();
+    const repoId = 'atomic-incr-failure';
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      const { lbugPath } = getStoragePaths(repo);
+      const before = await identity(lbugPath);
 
-        await fs.writeFile(
-          path.join(repo, 'a.ts'),
-          'export function greet(n: string) { return `hi ${n}`; }\nexport function caller() { return greet("x"); }\nexport function addedAfterRetry() { return 1; }\n',
-        );
-        execSync('git -c user.name=t -c user.email=t@t commit -am change', {
-          cwd: repo,
-          stdio: 'pipe',
-        });
+      await fs.writeFile(
+        path.join(repo, 'a.ts'),
+        'export function greet(n: string) { return `hi ${n}`; }\nexport function caller() { return greet("x"); }\nexport function addedAfterRetry() { return 1; }\n',
+      );
+      execSync('git -c user.name=t -c user.email=t@t commit -am change', {
+        cwd: repo,
+        stdio: 'pipe',
+      });
 
-        ctx.loadMock.mockRejectedValueOnce(new Error('injected incremental write failure'));
-        const failure = await runFullAnalysis(
-          repo,
-          { atomicIncremental: true },
-          { onProgress: () => {} },
-        ).catch((error: unknown) => error);
-        expect(failure).toMatchObject({ message: 'injected incremental write failure' });
-        expect(analyzeFailureMayHaveMutatedLiveIndex(failure)).toBe(false);
-        expect(await identity(lbugPath)).toBe(before);
-        expect(await loadMeta(getStoragePaths(repo).storagePath)).toEqual(priorMeta);
-        expect(await lingeringTemp(lbugPath)).toEqual([]);
+      ctx.deleteMock.mockRejectedValueOnce(new Error('injected incremental write failure'));
+      const failure = await runFullAnalysis(
+        repo,
+        { atomicIncremental: true },
+        { onProgress: () => {} },
+      ).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ message: 'injected incremental write failure' });
+      expect(analyzeFailureMayHaveMutatedLiveIndex(failure)).toBe(false);
+      expect(await identity(lbugPath)).toBe(before);
+      expect(await lingeringTemp(lbugPath)).toEqual([]);
 
-        await poolInit(repoId, lbugPath);
-        const beforeRetry = (
-          await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')
-        ).flatMap((row) => Object.values(row as Record<string, unknown>).map(String));
-        expect(beforeRetry).toContain('greet');
-        expect(beforeRetry).not.toContain('addedAfterRetry');
-        await poolClose(repoId);
+      await poolInit(repoId, lbugPath);
+      const beforeRetry = (
+        await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')
+      ).flatMap((row) => Object.values(row as Record<string, unknown>).map(String));
+      expect(beforeRetry).toContain('greet');
+      expect(beforeRetry).not.toContain('addedAfterRetry');
+      await poolClose(repoId);
 
-        await runFullAnalysis(repo, { atomicIncremental: true }, { onProgress: () => {} });
-        await poolInit(repoId, lbugPath);
-        const afterRetry = (
-          await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')
-        ).flatMap((row) => Object.values(row as Record<string, unknown>).map(String));
-        expect(afterRetry).toContain('addedAfterRetry');
-      } finally {
-        await poolClose(repoId);
-        await cleanup();
-      }
-    },
-    180_000,
-  );
+      await runFullAnalysis(repo, { atomicIncremental: true }, { onProgress: () => {} });
+      await poolInit(repoId, lbugPath);
+      const afterRetry = (await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')).flatMap(
+        (row) => Object.values(row as Record<string, unknown>).map(String),
+      );
+      expect(afterRetry).toContain('addedAfterRetry');
+    } finally {
+      await poolClose(repoId);
+      await cleanup();
+    }
+  }, 180_000);
 
   const EOF_FAILURE_TAIL = 'numBytesRead: 0 numBytesToRead: 4096 position: 8011825152';
 
@@ -1067,209 +1004,187 @@ describe('fresh graph publication (#2, #3852)', () => {
     });
   };
 
-  posixIt(
-    'reports fresh-build staging evidence when a one-file write hits EOF (#3530)',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      try {
-        await runFullAnalysis(repo, {}, { onProgress: () => {} });
-        await commitEdit(repo);
+  it('names the off-switch and appends staging evidence to the error when an atomic-incremental write hits EOF (#3530)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      await commitEdit(repo);
 
-        const failure = new Error(
-          `IO exception: Cannot read from file: /repo/.gitnexus/lbug.staging.abc fileDescriptor: 19 ${EOF_FAILURE_TAIL}`,
-        );
-        const nativeMessage = failure.message;
-        ctx.loadMock.mockRejectedValueOnce(failure);
-        const logs: string[] = [];
-        const result = await runFullAnalysis(
-          repo,
-          { atomicIncremental: true },
-          { onProgress: () => {}, onLog: (line) => logs.push(line) },
-        ).catch((error: unknown) => error);
+      const failure = new Error(
+        `IO exception: Cannot read from file: /repo/.gitnexus/lbug.staging.abc fileDescriptor: 19 ${EOF_FAILURE_TAIL}`,
+      );
+      const nativeMessage = failure.message;
+      ctx.deleteMock.mockRejectedValueOnce(failure);
+      const logs: string[] = [];
+      const result = await runFullAnalysis(
+        repo,
+        { atomicIncremental: true },
+        { onProgress: () => {}, onLog: (line) => logs.push(line) },
+      ).catch((error: unknown) => error);
 
-        expect(result).toBe(failure);
-        // The message is the channel: watch and auto-sync surface it but not onLog.
-        expect(failure.message.startsWith(`${nativeMessage}\n`)).toBe(true);
-        expect(failure.message.split('\n')).toEqual(
-          expect.arrayContaining([
-            expect.stringContaining('The live index is untouched'),
-            expect.stringMatching(/^Failure evidence — live index: apparent \d+ B, /),
-            expect.stringMatching(/^Failure evidence — staging copy: apparent \d+ B, /),
-          ]),
-        );
-        expect(logs.join('\n')).not.toContain('Failure evidence');
-        expect(failure.message).not.toContain('GITNEXUS_ATOMIC_INCREMENTAL');
-      } finally {
-        await cleanup();
+      expect(result).toBe(failure);
+      // The message is the channel: watch and auto-sync surface it but not onLog.
+      expect(failure.message.startsWith(`${nativeMessage}\n`)).toBe(true);
+      expect(failure.message.split('\n')).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('The live index is untouched'),
+          expect.stringContaining('GITNEXUS_ATOMIC_INCREMENTAL=0'),
+          expect.stringMatching(/^Failure evidence — live index: apparent \d+ B, /),
+          expect.stringMatching(/^Failure evidence — staging copy: apparent \d+ B, /),
+        ]),
+      );
+      expect(logs.join('\n')).not.toContain('Failure evidence');
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
+
+  it('does not name the off-switch when an atomic-incremental run escalated to a full write (#3530)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      await commitEdit(repo);
+
+      // The #2409 valve wipes the staging copy and bulk-COPYs into it: a rebuild,
+      // which stages whatever GITNEXUS_ATOMIC_INCREMENTAL says.
+      ctx.escalateMock.mockReturnValueOnce(true);
+      const failure = new Error(
+        `IO exception: Cannot read from file: /repo/.gitnexus/lbug.staging.abc fileDescriptor: 19 ${EOF_FAILURE_TAIL}`,
+      );
+      ctx.loadMock.mockRejectedValueOnce(failure);
+      const logs: string[] = [];
+      const result = await runFullAnalysis(
+        repo,
+        { atomicIncremental: true },
+        { onProgress: () => {}, onLog: (line) => logs.push(line) },
+      ).catch((error: unknown) => error);
+
+      expect(result).toBe(failure);
+      expect(logs).toContainEqual(expect.stringContaining('incremental write escalated'));
+      expect(failure.message).toContain('in the staged copy of the index');
+      expect(failure.message).toContain('The live index is untouched');
+      expect(failure.message).not.toContain('GITNEXUS_ATOMIC_INCREMENTAL');
+      expect(analyzeFailureMayHaveMutatedLiveIndex(failure)).toBe(false);
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
+
+  it('forwards the remedy and evidence in the analyze worker terminal error message (#3530)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      await commitEdit(repo);
+
+      const failure = new Error(
+        `IO exception: Cannot read from file: /repo/.gitnexus/lbug.staging.abc fileDescriptor: 19 ${EOF_FAILURE_TAIL}`,
+      );
+      ctx.deleteMock.mockRejectedValueOnce(failure);
+      const send = vi.fn<(message: WorkerMessage) => void>();
+      await runWorkerAnalysis(
+        repo,
+        { atomicIncremental: true },
+        {
+          // The worker sets skipNativeCloseOnExit because it exits right after
+          // reporting; this process keeps running, so close the handle for real.
+          runFullAnalysis: (repoPath, options, callbacks, ...rest) =>
+            runFullAnalysis(
+              repoPath,
+              { ...options, skipNativeCloseOnExit: false },
+              callbacks,
+              ...rest,
+            ),
+          assertAnalysisFinalized: async () => undefined,
+          send,
+          claimTerminal: () => true,
+        },
+      );
+
+      expect(send).toHaveBeenCalledWith({
+        type: 'error',
+        message: expect.stringMatching(
+          /GITNEXUS_ATOMIC_INCREMENTAL=0[\s\S]*Failure evidence — staging copy: apparent/,
+        ),
+      });
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
+
+  it('tells an in-place write that hits EOF to rebuild, with live-index evidence only (#3530)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    // The off-switch makes this run in place even though the caller asks for staging.
+    vi.stubEnv('GITNEXUS_ATOMIC_INCREMENTAL', '0');
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      await commitEdit(repo);
+
+      const failure = new Error(
+        `IO exception: Cannot read from file: /repo/.gitnexus/lbug fileDescriptor: 19 ${EOF_FAILURE_TAIL}`,
+      );
+      ctx.deleteMock.mockRejectedValueOnce(failure);
+      const logs: string[] = [];
+      const result = await runFullAnalysis(
+        repo,
+        { atomicIncremental: true },
+        { onProgress: () => {}, onLog: (line) => logs.push(line) },
+      ).catch((error: unknown) => error);
+
+      expect(result).toBe(failure);
+      expect(failure.message.split('\n')).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('analyze --force'),
+          expect.stringMatching(/^Failure evidence — live index: apparent \d+ B, /),
+        ]),
+      );
+      expect(failure.message).not.toContain('live index is untouched');
+      expect(failure.message).not.toContain('GITNEXUS_ATOMIC_INCREMENTAL');
+      expect(failure.message).not.toContain('Failure evidence — staging copy');
+    } finally {
+      vi.unstubAllEnvs();
+      await cleanup();
+    }
+  }, 180_000);
+
+  it('marks failed in-place incremental writes as potentially live-mutating', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      await fs.writeFile(path.join(repo, 'a.ts'), 'export function changed() { return 1; }\n');
+      execSync('git -c user.name=t -c user.email=t@t commit -am change', {
+        cwd: repo,
+        stdio: 'pipe',
+      });
+
+      ctx.deleteMock.mockRejectedValueOnce(new Error('injected in-place failure'));
+      const failure = await runFullAnalysis(repo, {}, { onProgress: () => {} }).catch(
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).toMatchObject({ message: 'injected in-place failure' });
+      expect(analyzeFailureMayHaveMutatedLiveIndex(failure)).toBe(true);
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
+
+  it('publishes cleanly on the production close path (skipNativeCloseOnExit) (#2614 F5)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      // The CLI and serve-worker set skipNativeCloseOnExit (dodges #2264), so the
+      // build handle is still open at swap time — the path production actually
+      // ships, distinct from the default real-close the other tests exercise.
+      // Prove the POSIX swap still publishes a single consolidated file with no
+      // .new temp and no orphan sidecar.
+      await runFullAnalysis(repo, { skipNativeCloseOnExit: true }, { onProgress: () => {} });
+      const { lbugPath } = getStoragePaths(repo);
+      await expect(fs.stat(lbugPath)).resolves.toBeTruthy();
+      expect(await lingeringTemp(lbugPath)).toEqual([]);
+      for (const s of ['.wal', '.shadow', '.wal.checkpoint'] as const) {
+        await expect(fs.stat(`${lbugPath}${s}`)).rejects.toThrow(); // no orphan sidecar
       }
-    },
-    180_000,
-  );
-
-  posixIt(
-    'stages a default compact write without suggesting the obsolete delta off-switch (#3852)',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      try {
-        await runFullAnalysis(repo, {}, { onProgress: () => {} });
-        await commitEdit(repo);
-
-        const failure = new Error(
-          `IO exception: Cannot read from file: /repo/.gitnexus/lbug.staging.abc fileDescriptor: 19 ${EOF_FAILURE_TAIL}`,
-        );
-        ctx.loadMock.mockRejectedValueOnce(failure);
-        const logs: string[] = [];
-        const result = await runFullAnalysis(
-          repo,
-          { atomicIncremental: true },
-          { onProgress: () => {}, onLog: (line) => logs.push(line) },
-        ).catch((error: unknown) => error);
-
-        expect(result).toBe(failure);
-        expect(logs).toContainEqual(expect.stringContaining('switching to a full DB write'));
-        expect(failure.message).toContain('in the staged copy of the index');
-        expect(failure.message).toContain('The live index is untouched');
-        expect(failure.message).not.toContain('GITNEXUS_ATOMIC_INCREMENTAL');
-        expect(analyzeFailureMayHaveMutatedLiveIndex(failure)).toBe(false);
-      } finally {
-        await cleanup();
-      }
-    },
-    180_000,
-  );
-
-  posixIt(
-    'forwards the remedy and evidence in the analyze worker terminal error message (#3530)',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      try {
-        await runFullAnalysis(repo, {}, { onProgress: () => {} });
-        await commitEdit(repo);
-
-        const failure = new Error(
-          `IO exception: Cannot read from file: /repo/.gitnexus/lbug.staging.abc fileDescriptor: 19 ${EOF_FAILURE_TAIL}`,
-        );
-        ctx.loadMock.mockRejectedValueOnce(failure);
-        const send = vi.fn<(message: WorkerMessage) => void>();
-        await runWorkerAnalysis(
-          repo,
-          { atomicIncremental: true },
-          {
-            // The worker sets skipNativeCloseOnExit because it exits right after
-            // reporting; this process keeps running, so close the handle for real.
-            runFullAnalysis: (repoPath, options, callbacks, ...rest) =>
-              runFullAnalysis(
-                repoPath,
-                { ...options, skipNativeCloseOnExit: false },
-                callbacks,
-                ...rest,
-              ),
-            assertAnalysisFinalized: async () => undefined,
-            send,
-            claimTerminal: () => true,
-          },
-        );
-
-        expect(send).toHaveBeenCalledWith({
-          type: 'error',
-          message: expect.stringMatching(
-            /The live index is untouched[\s\S]*Failure evidence — staging copy: apparent/,
-          ),
-        });
-      } finally {
-        await cleanup();
-      }
-    },
-    180_000,
-  );
-
-  it.skipIf(!isWin)(
-    'tells an in-place write that hits EOF to rebuild, with live-index evidence only (#3530)',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      // Windows keeps its established in-place fallback unless explicitly enabled.
-      vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '0');
-      try {
-        await runFullAnalysis(repo, {}, { onProgress: () => {} });
-        await commitEdit(repo);
-
-        const failure = new Error(
-          `IO exception: Cannot read from file: /repo/.gitnexus/lbug fileDescriptor: 19 ${EOF_FAILURE_TAIL}`,
-        );
-        ctx.loadMock.mockRejectedValueOnce(failure);
-        const logs: string[] = [];
-        const result = await runFullAnalysis(
-          repo,
-          { atomicIncremental: true },
-          { onProgress: () => {}, onLog: (line) => logs.push(line) },
-        ).catch((error: unknown) => error);
-
-        expect(result).toBe(failure);
-        expect(failure.message.split('\n')).toEqual(
-          expect.arrayContaining([
-            expect.stringContaining('analyze --force'),
-            expect.stringMatching(/^Failure evidence — live index: apparent \d+ B, /),
-          ]),
-        );
-        expect(failure.message).not.toContain('live index is untouched');
-        expect(failure.message).not.toContain('GITNEXUS_ATOMIC_INCREMENTAL');
-        expect(failure.message).not.toContain('Failure evidence — staging copy');
-      } finally {
-        vi.unstubAllEnvs();
-        await cleanup();
-      }
-    },
-    180_000,
-  );
-
-  it.skipIf(!isWin)(
-    'marks failed in-place compact writes as potentially live-mutating',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '0');
-      try {
-        await runFullAnalysis(repo, {}, { onProgress: () => {} });
-        await fs.writeFile(path.join(repo, 'a.ts'), 'export function changed() { return 1; }\n');
-        execSync('git -c user.name=t -c user.email=t@t commit -am change', {
-          cwd: repo,
-          stdio: 'pipe',
-        });
-
-        ctx.loadMock.mockRejectedValueOnce(new Error('injected in-place failure'));
-        const failure = await runFullAnalysis(repo, {}, { onProgress: () => {} }).catch(
-          (error: unknown) => error,
-        );
-        expect(failure).toBeInstanceOf(Error);
-        expect(failure).toMatchObject({ message: 'injected in-place failure' });
-        expect(analyzeFailureMayHaveMutatedLiveIndex(failure)).toBe(true);
-      } finally {
-        await cleanup();
-      }
-    },
-    180_000,
-  );
-
-  posixIt(
-    'publishes cleanly on the production close path (skipNativeCloseOnExit) (#2614 F5)',
-    async () => {
-      const { repo, cleanup } = await makeRepo();
-      try {
-        // The CLI and serve-worker set skipNativeCloseOnExit (dodges #2264), so the
-        // build handle is still open at swap time — the path production actually
-        // ships, distinct from the default real-close the other tests exercise.
-        // Prove the POSIX swap still publishes a single consolidated file with no
-        // .new temp and no orphan sidecar.
-        await runFullAnalysis(repo, { skipNativeCloseOnExit: true }, { onProgress: () => {} });
-        const { lbugPath } = getStoragePaths(repo);
-        await expect(fs.stat(lbugPath)).resolves.toBeTruthy();
-        expect(await lingeringTemp(lbugPath)).toEqual([]);
-        for (const s of ['.wal', '.shadow', '.wal.checkpoint'] as const) {
-          await expect(fs.stat(`${lbugPath}${s}`)).rejects.toThrow(); // no orphan sidecar
-        }
-      } finally {
-        await cleanup();
-      }
-    },
-    180_000,
-  );
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
 });

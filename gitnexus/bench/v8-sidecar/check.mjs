@@ -98,7 +98,13 @@ export function indexingMetrics(report, lifecycle) {
         'Invalid physical write mode for a cached edit',
       );
       assert.equal(sample.incremental?.changedFiles, 1);
-      assert.deepEqual(sample.rebuildReasons, []);
+      assert.deepEqual(
+        sample.rebuildReasons.filter(
+          (reason) => sample.incremental.writeMode !== 'full' || reason !== 'escalated-full-write',
+        ),
+        [],
+        'Measured edits must not invalidate the parse cache or schema',
+      );
       assert(sample.cachedFiles > 0, 'The benchmark must hydrate cached files');
       assert(sample.graph?.nodes?.count > 0 && sample.graph?.edges?.count > 0);
       assert.deepEqual(sample.persistedTargets, [{ target: i % 2 ? 'load' : 'save' }]);
