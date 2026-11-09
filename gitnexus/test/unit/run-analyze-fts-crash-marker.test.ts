@@ -122,6 +122,16 @@ const mockLbugAdapter = async () => {
     loadGraphToLbug: vi.fn(async () => undefined),
     getLbugStats: vi.fn(async () => ({ nodes: 1, edges: 0, communities: 0, processes: 0 })),
     executeQuery: vi.fn(async () => []),
+    // The stored fixture contains one File node and no incident edges.
+    executePrepared: vi.fn<typeof actual.executePrepared>(async (query) => {
+      if (query.endsWith('WITH n LIMIT $limit RETURN count(*) AS rowCount')) {
+        return [{ rowCount: 1 }];
+      }
+      if (query.endsWith('WITH r LIMIT $limit RETURN count(*) AS rowCount')) {
+        return [{ rowCount: 0 }];
+      }
+      throw new Error(`Unexpected prepared query in FTS fixture: ${query}`);
+    }),
     // The policy fixture has one stored File row. Publication now reconciles
     // that identity instead of trusting the synthetic node count alone.
     forEachQueryRow: vi.fn<typeof actual.forEachQueryRow>(async (query, onRow) => {
