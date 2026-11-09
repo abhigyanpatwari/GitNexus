@@ -13,6 +13,7 @@
 // We use createRequire to load the CommonJS vendored files in ESM context.
 import Graph from 'graphology';
 import type { AbstractGraph, Attributes } from 'graphology-types';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -250,9 +251,10 @@ export const processCommunities = async (
   onProgress?.(`Found ${details.count} communities...`, 60);
 
   // Step 3: Create community nodes with heuristic labels
+  const communityIds = stableCommunityIds(details.communities);
   const communityNodes = createCommunityNodes(
     details.communities as Record<string, number>,
-    details.count,
+    communityIds,
     graph,
     knowledgeGraph,
   );
@@ -265,7 +267,7 @@ export const processCommunities = async (
   const memberships: CommunityMembership[] = [];
   const rawMemberships: CommunityMembership[] = [];
   Object.entries(details.communities).forEach(([nodeId, communityNum]) => {
-    const communityId = `comm_${communityNum}`;
+    const communityId = communityIds.get(communityNum)!;
     const membership = { nodeId, communityId };
     rawMemberships.push(membership);
     if (retainedCommunityIds.has(communityId)) memberships.push(membership);
@@ -764,11 +766,34 @@ const normalizePartition = (
 // ============================================================================
 
 /**
- * Create Community nodes with auto-generated labels based on member file paths
+ * Anchor each community to its smallest member, independent of partition numbering.
+ * Adding other members preserves the ID. Anchor order makes collision suffixes
+ * deterministic even when the engine renumbers or reorders its partition.
  */
+export const stableCommunityIds = (communities: Record<string, number>): Map<number, string> => {
+  const smallest = new Map<number, string>();
+  for (const [nodeId, communityNum] of Object.entries(communities)) {
+    const current = smallest.get(communityNum);
+    if (current === undefined || nodeId < current) smallest.set(communityNum, nodeId);
+  }
+
+  const ids = new Map<number, string>();
+  const used = new Set<string>();
+  const ordered = [...smallest].sort(([, a], [, b]) => (a < b ? -1 : a > b ? 1 : 0));
+  for (const [communityNum, memberId] of ordered) {
+    const base = `comm_${createHash('sha1').update(memberId).digest('hex').slice(0, 12)}`;
+    let id = base;
+    for (let n = 2; used.has(id); n++) id = `${base}_${n}`;
+    used.add(id);
+    ids.set(communityNum, id);
+  }
+  return ids;
+};
+
+/** Create Community nodes with labels based on member file paths. */
 const createCommunityNodes = (
   communities: Record<string, number>,
-  communityCount: number,
+  communityIds: ReadonlyMap<number, string>,
   graph: GraphInstance,
   knowledgeGraph: KnowledgeGraph,
 ): CommunityNode[] => {
@@ -797,10 +822,11 @@ const createCommunityNodes = (
     // Skip singleton communities - they're just isolated nodes
     if (memberIds.length < 2) return;
 
-    const heuristicLabel = generateHeuristicLabel(memberIds, nodePathMap, graph, commNum);
+    const communityId = communityIds.get(commNum)!;
+    const heuristicLabel = generateHeuristicLabel(memberIds, nodePathMap, graph, communityId);
 
     communityNodes.push({
-      id: `comm_${commNum}`,
+      id: communityId,
       label: heuristicLabel,
       heuristicLabel,
       cohesion: calculateCohesion(memberIds, graph),
@@ -825,7 +851,7 @@ const generateHeuristicLabel = (
   memberIds: string[],
   nodePathMap: Map<string, string>,
   graph: GraphInstance,
-  commNum: number,
+  communityId: string,
 ): string => {
   // Collect folder names from file paths
   const folderCounts = new Map<string, number>();
@@ -880,7 +906,7 @@ const generateHeuristicLabel = (
   }
 
   // Last resort: generic name with community ID for uniqueness
-  return `Cluster_${commNum}`;
+  return `Cluster_${communityId.slice('comm_'.length)}`;
 };
 
 /**

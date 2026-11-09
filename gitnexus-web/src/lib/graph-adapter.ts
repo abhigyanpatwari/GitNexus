@@ -26,7 +26,7 @@ export interface SigmaNodeAttributes {
   circlesAnchorY?: number;
   circlesRing?: number;
   circlesAnchorAngle?: number;
-  community?: number; // Community index from Leiden algorithm
+  community?: string | number; // Stable community ID or legacy numeric index
   communityColor?: string; // Color assigned by community
 }
 
@@ -89,11 +89,11 @@ const getNodeMass = (nodeType: NodeLabel, nodeCount: number): number => {
  * Folders are positioned in a wide spread, children positioned NEAR their parents
  *
  * @param knowledgeGraph - The knowledge graph to convert
- * @param communityMemberships - Optional map of nodeId -> communityIndex for community coloring
+ * @param communityMemberships - Optional node-to-community map; defaults to MEMBER_OF relationships
  */
 export const knowledgeGraphToGraphology = (
   knowledgeGraph: KnowledgeGraph,
-  communityMemberships?: Map<string, number>,
+  communityMemberships?: Map<string, string | number>,
 ): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> => {
   const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
   const nodeCount = knowledgeGraph.nodes.length;
@@ -127,6 +127,15 @@ export const knowledgeGraphToGraphology = (
   // Create node lookup
   const nodeMap = new Map(knowledgeGraph.nodes.map((n) => [n.id, n]));
 
+  if (!communityMemberships) {
+    communityMemberships = new Map();
+    for (const rel of knowledgeGraph.relationships) {
+      if (rel.type === 'MEMBER_OF' && nodeMap.get(rel.targetId)?.label === 'Community') {
+        communityMemberships.set(rel.sourceId, rel.targetId);
+      }
+    }
+  }
+
   // Separate structural nodes (folders, packages) from content nodes
   const structuralTypes = new Set(['Project', 'Package', 'Module', 'Folder']);
   const structuralNodes = knowledgeGraph.nodes.filter((n) => structuralTypes.has(n.label));
@@ -138,7 +147,7 @@ export const knowledgeGraphToGraphology = (
 
   // === CLUSTER-BASED POSITIONING ===
   // Calculate cluster centers - each cluster gets a region of the graph
-  const clusterCenters = new Map<number, { x: number; y: number }>();
+  const clusterCenters = new Map<string | number, { x: number; y: number }>();
   if (communityMemberships && communityMemberships.size > 0) {
     // Find unique community IDs
     const communities = new Set(communityMemberships.values());
