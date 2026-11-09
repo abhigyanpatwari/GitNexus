@@ -83,6 +83,23 @@ describe('cache interning performance gate', () => {
     expect(indexingMetrics(report, 'fresh')[1].verdict).toBe('regression');
   });
 
+  it('accepts compact full writes for cached edits without relaxing the performance budget', () => {
+    const report = indexing();
+    for (const sample of report.results.filter((row) => row.variant === 'candidate')) {
+      sample.incremental.writeMode = 'full';
+      sample.cpuMs = 120;
+    }
+    expect(indexingMetrics(report, 'fresh')[1].verdict).toBe('regression');
+    report.results[3].cachedFiles = 0;
+    expect(() => indexingMetrics(report, 'fresh')).toThrow('hydrate cached files');
+  });
+
+  it.each(['', 'unknown', undefined])('rejects an unrecognized write mode (%s)', (mode) => {
+    const report = indexing();
+    report.results[3].incremental = { ...report.results[3].incremental, writeMode: mode as string };
+    expect(() => indexingMetrics(report, 'fresh')).toThrow();
+  });
+
   it.each(['missing', 'duplicate', 'screened', 'cold', 'wrong-target', 'graph', 'rebuild'])(
     'rejects invalid indexing evidence (%s)',
     (kind) => {

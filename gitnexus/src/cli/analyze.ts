@@ -2228,6 +2228,8 @@ const analyzeCommandImpl = async (
         : '';
       cliError(
         `  LadybugDB failed while rotating/removing WAL checkpoint files.\n` +
+          // Keep the failing path and native reason alongside the recovery hint.
+          `  ${msg.replace(/\n/g, '\n  ')}\n` +
           heldOpen +
           `  This can happen when auto-checkpoint runs at the default threshold (~16MB).\n` +
           `  Retry with a larger checkpoint threshold to reduce checkpoint frequency:\n` +

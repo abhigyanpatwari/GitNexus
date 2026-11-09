@@ -146,7 +146,7 @@ describe('lexical benchmark sample collection', () => {
             const target = fs.readFileSync(path.join(repo, 'gitnexus/src/semantic-bench-control.ts'), 'utf8').includes('s.load()') ? 'load' : 'save';
             return {
               storagePath: repo, stats: {}, rebuildReasons: [],
-              incrementalStats: {writeMode: 'incremental', changedFiles: 1},
+              incrementalStats: {writeMode: '${duration === 1 ? 'incremental' : 'full'}', changedFiles: 1},
               pipelineResult: {graph: {
                 *iterNodes() { yield {id: 'semanticBenchUse', label: 'Function'}; },
                 *iterRelationships() { yield {sourceId: 'semanticBenchUse', targetId: target, type: 'CALLS'}; }

@@ -322,7 +322,12 @@ if (isWorker) {
       }
       verifyPair(before, after, candidate);
       for (const entry of [before, after]) {
-        assert.equal(entry.incremental?.writeMode, 'incremental');
+        // Cached one-file edits may use row writes in an older baseline or a
+        // compact full COPY in a newer runtime (#3852). Both are timed in full.
+        assert(
+          ['incremental', 'full'].includes(entry.incremental?.writeMode),
+          'Invalid physical write mode for a cached edit',
+        );
         assert.equal(entry.incremental?.changedFiles, 1);
         assert.deepEqual(entry.rebuildReasons, []);
       }

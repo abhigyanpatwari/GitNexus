@@ -114,19 +114,23 @@ describe('analyze blocked checkpoint family (real lbug, no mocks)', () => {
     expect(fs.readFileSync(path.join(blockerDir, 'blocker'), 'utf8')).toBe(
       'cannot-be-renamed-over',
     );
+    // Plain CLI indexing resolves graphPublication:'auto' to the legacy path
+    // when there is no separate graph/vector generation or embedding job.
     const staged = process.platform !== 'win32' || process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
     if (staged) {
       expect(combined).toContain('publication was stopped to preserve its recovery files');
       expect(combined).toContain('gitnexus clean --lbug-sidecars');
-      expect(fs.readFileSync(lbugPath)).toEqual(graphBefore);
-      expect(fs.readFileSync(metaPath)).toEqual(metadataBefore);
+      // Deep equality enumerates millions of Buffer keys and can exhaust the
+      // test worker's heap. Native comparison checks every byte without that cost.
+      expect(fs.readFileSync(lbugPath).equals(graphBefore)).toBe(true);
+      expect(fs.readFileSync(metaPath).equals(metadataBefore)).toBe(true);
     } else {
       const failedMeta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
       if (!failedMeta.incrementalInProgress) {
         // A read-only cache/accounting open can refuse before the first
         // destructive write. Without a recovery marker, both must be intact.
-        expect(fs.readFileSync(lbugPath)).toEqual(graphBefore);
-        expect(fs.readFileSync(metaPath)).toEqual(metadataBefore);
+        expect(fs.readFileSync(lbugPath).equals(graphBefore)).toBe(true);
+        expect(fs.readFileSync(metaPath).equals(metadataBefore)).toBe(true);
       }
     }
 
