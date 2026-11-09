@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import v8 from 'node:v8';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   loadAnalysisParseCache,
@@ -79,6 +80,45 @@ async function restored(keys: string[]) {
 const read = (cache: ParseCache, key: string) =>
   loadParseCacheFiles(cache, [{ key, path: `${key}.ts` }]);
 
+it.each(['memory', 'disk'])(
+  'treats a scope deserialize failure in %s as a per-file miss',
+  async (kind) => {
+    let cache = emptyParseCache(TEST_PARSE_IDENTITY);
+    for (const key of [a, b]) {
+      await persistParseCacheFiles(cache, [
+        {
+          key,
+          path: `${key}.ts`,
+          cacheable: true,
+          facts: encodeFileResultSection(key, `${key}.ts`, 'facts', {
+            nodes: [],
+            parsedFiles: [],
+          })!,
+          scopes: encodeFileResultSection(key, `${key}.ts`, 'scopes', [{ filePath: `${key}.ts` }])!,
+        },
+      ]);
+      cache.usedKeys.add(key);
+    }
+    if (kind === 'disk') {
+      await saveParseCache(root, cache);
+      cache = await loadParseCache(root, TEST_PARSE_IDENTITY, stage);
+    }
+    const deserialize = v8.deserialize;
+    vi.spyOn(v8, 'deserialize').mockImplementation((bytes) => {
+      const value = deserialize(bytes);
+      if (Array.isArray(value) && value[0]?.filePath === `${a}.ts`)
+        throw new Error('scope deserialization failed');
+      return value;
+    });
+    const loaded = await loadParseCacheFiles(
+      cache,
+      [a, b].map((key) => ({ key, path: `${key}.ts` })),
+    );
+    expect([...loaded.keys()]).toEqual([b]);
+    expect(loaded.get(b)?.parsedFiles).toEqual([{ filePath: `${b}.ts` }]);
+  },
+);
+
 it('hands off packed repairs, merges newer sibling files, and excludes retired keys', async () => {
   await live([
     [a, 'old'],
@@ -114,6 +154,77 @@ it('does not fall back to a live file when its staged repair disappears', async 
   await fs.rm(path.join(store.directory, store.records.get(a)!.pack));
   await publishAnalysisParseCache(await restored([a]), options([a]));
   expect((await loadParseCache(root, TEST_PARSE_IDENTITY, stage)).onDiskKeys?.has(a)).toBe(false);
+});
+
+it('keeps immutable pack names and inodes on no-op publication, including active readers', async () => {
+  await live([
+    [a, 'keep'],
+    [b, 'also keep'],
+  ]);
+  const reader = await loadParseCache(root, TEST_PARSE_IDENTITY, stage);
+  await read(reader, a);
+  const before = reader.fileResults!.live!;
+  const ref = before.records.get(a)!;
+  const stat = await fs.stat(path.join(before.directory, ref.pack));
+  const cache = await loadParseCache(root, TEST_PARSE_IDENTITY, stage);
+  cache.usedKeys = new Set([a, b]);
+  await saveParseCache(root, cache);
+  const published = await loadParseCache(root, TEST_PARSE_IDENTITY, stage);
+  await read(published, a);
+  expect(published.fileResults!.live!.records.get(a)?.pack).toBe(ref.pack);
+  expect((await fs.stat(path.join(before.directory, ref.pack))).ino).toBe(stat.ino);
+  expect((await read(reader, b)).get(b)).toMatchObject({ name: 'also keep' });
+});
+
+it('compacts packs with less than half their bytes retained', async () => {
+  await live([
+    [a, 'keep'],
+    [b, 'remove'],
+    [c, 'remove'],
+    [d, 'remove'],
+  ]);
+  const cache = await loadParseCache(root, TEST_PARSE_IDENTITY, stage);
+  await read(cache, a);
+  const oldPack = cache.fileResults!.live!.records.get(a)!.pack;
+  cache.usedKeys.add(a);
+  await saveParseCache(root, cache);
+  const published = await loadParseCache(root, TEST_PARSE_IDENTITY, stage);
+  expect((await read(published, a)).get(a)).toMatchObject({ name: 'keep' });
+  expect(published.fileResults!.live!.records.get(a)?.pack).not.toBe(oldPack);
+  expect([...published.onDiskKeys!]).toEqual([a]);
+});
+
+it('copies retained packs when linking is unavailable', async () => {
+  await live([[a, 'keep']]);
+  const cache = await loadParseCache(root, TEST_PARSE_IDENTITY, stage);
+  cache.usedKeys.add(a);
+  vi.spyOn(fs, 'link').mockRejectedValue(
+    Object.assign(new Error('cross-device'), { code: 'EXDEV' }),
+  );
+  await saveParseCache(root, cache);
+  expect(
+    (await read(await loadParseCache(root, TEST_PARSE_IDENTITY, stage), a)).get(a),
+  ).toMatchObject({ name: 'keep' });
+});
+
+it('rejects corruption on read after retaining an immutable pack', async () => {
+  await live([
+    [a, 'bad'],
+    [b, 'good'],
+  ]);
+  const cache = await loadParseCache(root, TEST_PARSE_IDENTITY, stage);
+  await read(cache, a);
+  const store = cache.fileResults!.live!;
+  const ref = store.records.get(a)!;
+  const pack = path.join(store.directory, ref.pack);
+  const bytes = await fs.readFile(pack);
+  bytes[ref.offset + 8] ^= 255;
+  await fs.writeFile(pack, bytes);
+  cache.usedKeys = new Set([a, b]);
+  await saveParseCache(root, cache);
+  const published = await loadParseCache(root, TEST_PARSE_IDENTITY, stage);
+  expect((await read(published, a)).size).toBe(0);
+  expect((await read(published, b)).get(b)).toMatchObject({ name: 'good' });
 });
 
 it('keeps recovery receipt and complete stage when publication fails', async () => {

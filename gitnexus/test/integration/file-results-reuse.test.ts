@@ -80,6 +80,36 @@ async function fixture(files: Record<string, string>) {
   };
 }
 describe('per-file parse-result reuse', () => {
+  it('keeps zero-output files correct when they require another worker dispatch', async () => {
+    const f = await fixture({
+      'normal.ts': 'export function normal() { return 1; }',
+      'template.vue': '<template><div>Hello</div></template>',
+    });
+    const cold = await f.run('cold');
+    const warm = await f.run('reuse');
+    expect(rows(warm)).toEqual(rows(cold));
+    expect(warm.reparsedFileCount).toBe(1);
+    expect(warm.parseCacheHitFileCount).toBe(1);
+    expect(warm.usedWorkerPool).toBe(true);
+  }, 120000);
+  it.skipIf(process.platform === 'win32')(
+    'keeps CR/LF filenames usable through the real worker raw fallback',
+    async () => {
+      const f = await fixture({
+        'normal.ts': 'export function normal() { return 1; }',
+        'we\nird.ts': 'export function newline() { return 2; }',
+        'we\rird.ts': 'export function carriageReturn() { return 3; }',
+      });
+      const control = await f.run('none');
+      const cold = await f.run('cold');
+      expect(rows(cold)).toEqual(rows(control));
+      const warm = await f.run('reuse');
+      expect(rows(warm)).toEqual(rows(control));
+      expect(warm.reparsedFileCount).toBe(2);
+      expect(warm.parseCacheHitFileCount).toBe(1);
+    },
+    120000,
+  );
   it('reparses only the edited file in a shared chunk, across additions, renames and packing changes', async () => {
     const names = ['file0.ts', 'file13.ts', 'file35.ts', 'file135.ts'];
     const f = await fixture(

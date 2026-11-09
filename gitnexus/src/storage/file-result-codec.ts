@@ -27,6 +27,9 @@ export function encodeFileResultSection(
   value: unknown,
   codec: 'zstd' | 'gzip' = typeof zlib.zstdCompressSync === 'function' ? 'zstd' : 'gzip',
 ): Buffer | undefined {
+  // The envelope's line-based listing cannot bind these paths. Let the worker
+  // deliver its raw result instead of sending an envelope that cannot decode.
+  if (/[\r\n\0]/.test(filePath)) return undefined;
   const raw = encodeV8CacheBuffer(value, [filePath, key, section]);
   if (!raw || raw.length > MAX_FILE_RESULT_SECTION_BYTES) return undefined;
   const body =

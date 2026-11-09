@@ -9,6 +9,7 @@ import { createHash } from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import { compareCodeUnits } from '../lib/utils.js';
+import { linkOrCopyFile } from './fs-atomic.js';
 import type { ParseCacheIdentity } from '../core/parse-cache-identity.js';
 import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.js';
 import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sidecar.js';
@@ -24,6 +25,7 @@ import {
   readFileResults,
   pinFileResults,
   writeFileResultIndex,
+  type FileResultReference,
   type FileResultStore,
 } from './file-result-store.js';
 
@@ -636,8 +638,9 @@ export async function loadParseCacheFiles(
     if (memory) {
       const value = accept(memory);
       if (value) {
-        value.parsedFiles = decodeFileResultSection(memory.scopes, file.key, file.path, 'scopes')!
-          .value as ParseWorkerResult['parsedFiles'];
+        const scopes = decodeFileResultSection(memory.scopes, file.key, file.path, 'scopes');
+        if (!scopes || !Array.isArray(scopes.value)) continue;
+        value.parsedFiles = scopes.value as ParseWorkerResult['parsedFiles'];
         result.set(file.key, value);
       }
       continue;
@@ -663,13 +666,16 @@ export async function loadParseCacheFiles(
     try {
       if (scopeStoragePath) await pinFileResults(source, [...accepted.keys()], scopeStoragePath);
       for (const [key, value] of accepted) {
-        if (!scopeStoragePath)
-          value.parsedFiles = decodeFileResultSection(
+        if (!scopeStoragePath) {
+          const scopes = decodeFileResultSection(
             records.get(key)!.scopes,
             key,
             wanted.get(key)!,
             'scopes',
-          )!.value as ParseWorkerResult['parsedFiles'];
+          );
+          if (!scopes || !Array.isArray(scopes.value)) continue;
+          value.parsedFiles = scopes.value as ParseWorkerResult['parsedFiles'];
+        }
         result.set(key, value);
       }
     } catch {
@@ -728,8 +734,43 @@ async function saveFileParseCache(storagePath: string, cache: ParseCache): Promi
   const keys = [...cache.usedKeys]
     .filter((key) => isValidChunkCacheKey(key) && !cache.staleKeys?.has(key))
     .sort();
+  // Published packs are immutable. Retain their names and bytes when at least
+  // half the pack remains live; compact sparse packs to bound dead-byte storage.
+  // Hashes are still checked when each record is read, before accepting a hit.
+  const packs = new Map<string, FileResultReference[]>();
+  for (const key of keys) {
+    if (cache.stagedKeys?.has(key) || state.memory.has(key) || !cache.onDiskKeys?.has(key))
+      continue;
+    const ref = live?.records.get(key);
+    if (!ref) continue;
+    const refs = packs.get(ref.pack) ?? [];
+    refs.push(ref);
+    packs.set(ref.pack, refs);
+  }
+  await fs.mkdir(output.directory, { recursive: true });
+  for (const [pack, refs] of packs) {
+    const source = path.join(live!.directory, pack);
+    const target = path.join(output.directory, pack);
+    try {
+      const size = (await fs.stat(source)).size;
+      const intact = refs.filter((ref) => ref.offset + ref.factsLength + ref.scopesLength <= size);
+      const retainedBytes = intact.reduce(
+        (sum, ref) => sum + ref.factsLength + ref.scopesLength,
+        0,
+      );
+      if (!retainedBytes || retainedBytes < size / 2) continue;
+      await linkOrCopyFile(source, target);
+      const linkedSize = (await fs.stat(target)).size;
+      for (const ref of intact)
+        if (ref.offset + ref.factsLength + ref.scopesLength <= linkedSize)
+          output.records.set(ref.key, ref);
+    } catch {
+      // Retry through the ordinary verified range reader below. Missing packs
+      // become misses; a staged repair is never replaced by an old live record.
+    }
+  }
   for (let start = 0; start < keys.length; start += 64) {
-    const batch = keys.slice(start, start + 64);
+    const batch = keys.slice(start, start + 64).filter((key) => !output.records.has(key));
     const staged = state.stage
       ? await readFileResults(
           state.stage,
@@ -752,8 +793,9 @@ async function saveFileParseCache(storagePath: string, cache: ParseCache): Promi
     }
     await appendFileResults(output, records);
   }
+  const writtenKeys = keys.filter((key) => output.records.has(key));
+  output.records = new Map(writtenKeys.map((key) => [key, output.records.get(key)!]));
   await writeFileResultIndex(output);
-  const writtenKeys = [...output.records.keys()];
   await fs.writeFile(
     path.join(temporary, CACHE_INDEX_FILENAME),
     JSON.stringify({ version: cache.identity.base, format: 'file-results-v1', keys: writtenKeys }),

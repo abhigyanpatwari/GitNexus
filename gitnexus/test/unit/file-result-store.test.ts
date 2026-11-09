@@ -47,6 +47,13 @@ const record = (name: string) => ({
 });
 
 describe('file-result codec', () => {
+  it.each(['we\nird.ts', 'we\rird.ts', 'we\0ird.ts'])(
+    'leaves an unlistable path %j to the raw worker fallback',
+    (name) => {
+      expect(encodeFileResultSection(key(name), name, 'facts', { nodes: [] })).toBeUndefined();
+      expect(encodeFileResultSection(key(name), name, 'scopes', [])).toBeUndefined();
+    },
+  );
   it.each(['gzip', 'zstd'] as const)(
     'decodes large %s sections while enforcing the output limit',
     (codec) => {
@@ -130,6 +137,40 @@ describe('file-result codec', () => {
 });
 
 describe('packed file-result store', () => {
+  it.each(['missing', 'unreadable'])('treats a %s scope manifest as a miss', async (kind) => {
+    const root = await temporary();
+    if (kind === 'unreadable')
+      await mkdir(path.join(root, 'parsedfile-store', 'file-results', 'scopes.ndjson'), {
+        recursive: true,
+      });
+    const loaded = [];
+    for await (const hit of loadPackedFileScopes(root, new Set(['a.ts']), new Map()))
+      loaded.push(hit);
+    expect(loaded).toEqual([]);
+  });
+
+  it('rotates a pack after an append writes bytes and then fails', async () => {
+    const root = await temporary();
+    const store = emptyFileResultStore(root, 'identity');
+    const a = record('a.ts'),
+      b = record('b.ts'),
+      c = record('c.ts');
+    await appendFileResults(store, [a]);
+    const append = fs.appendFile;
+    const failure = vi.spyOn(fs, 'appendFile').mockImplementationOnce(async (file, data) => {
+      await append(file, (data as Buffer).subarray(0, 5));
+      throw new Error('short append');
+    });
+    try {
+      await expect(appendFileResults(store, [b])).rejects.toThrow('short append');
+    } finally {
+      failure.mockRestore();
+    }
+    await appendFileResults(store, [c]);
+    expect(store.records.has(b.key)).toBe(false);
+    expect(store.records.get(c.key)?.pack).not.toBe(store.records.get(a.key)?.pack);
+    expect([...(await readFileResults(store, [a.key, c.key])).keys()]).toEqual([a.key, c.key]);
+  });
   it('does not prefetch gaps between sparse selections during publication', async () => {
     const root = await temporary();
     const store = emptyFileResultStore(root, 'identity');
@@ -155,6 +196,23 @@ describe('packed file-result store', () => {
       expect(
         reads.flatMap((read) => read.mock.calls).map(([buffer]) => (buffer as Buffer).length),
       ).toEqual(wanted.map((r) => r.facts.length + r.scopes.length));
+      for (const read of reads) read.mockClear();
+      await pinFileResults(
+        store,
+        wanted.map((r) => r.key),
+        root,
+      );
+      const scopes = [];
+      for await (const hit of loadPackedFileScopes(
+        root,
+        new Set(wanted.map((r) => r.path)),
+        new Map(),
+      ))
+        scopes.push(hit.paths?.[0]);
+      expect(scopes).toEqual(wanted.map((r) => r.path));
+      expect(
+        reads.flatMap((read) => read.mock.calls).map(([buffer]) => (buffer as Buffer).length),
+      ).toEqual(wanted.map((r) => r.scopes.length));
     } finally {
       opening.mockRestore();
       for (const read of reads) read.mockRestore();

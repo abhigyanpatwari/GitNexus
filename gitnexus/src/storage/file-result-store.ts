@@ -23,6 +23,7 @@ interface PackReader {
   handle: Awaited<ReturnType<typeof fs.open>>;
   size: number;
   window?: { offset: number; data: Buffer };
+  nextScopeOffset?: number;
 }
 
 /** Amortize adjacent small reads without retaining whole packs or large records. */
@@ -290,11 +291,6 @@ export async function* loadPackedFileScopes(
 ): AsyncGenerator<V8CacheHit> {
   const directory = path.join(storagePath, 'parsedfile-store', 'file-results');
   const manifest = path.join(directory, 'scopes.ndjson');
-  try {
-    await fs.access(manifest);
-  } catch {
-    return;
-  }
   const stream = createReadStream(manifest);
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
   const handles = new Map<string, PackReader>();
@@ -319,7 +315,17 @@ export async function* loadPackedFileScopes(
           handles.set(ref.pack, opened);
           opened.size = (await handle.stat()).size;
         }
-        const data = await readPackRange(opened, ref.offset + ref.factsLength, ref.scopesLength);
+        // Scope selection follows source/chunk order, while published packs may
+        // follow key order. Read ahead only after observing adjacent records.
+        const readAhead =
+          opened.nextScopeOffset === ref.offset ? READ_AHEAD_BYTES : ref.scopesLength;
+        opened.nextScopeOffset = ref.offset + ref.factsLength + ref.scopesLength;
+        const data = await readPackRange(
+          opened,
+          ref.offset + ref.factsLength,
+          ref.scopesLength,
+          readAhead,
+        );
         if (!data || digest(data) !== ref.scopesHash) continue;
         const loaded = decodeFileResultSection(data, ref.key, ref.path, 'scopes', internPool);
         if (loaded) yield loaded;
@@ -327,6 +333,9 @@ export async function* loadPackedFileScopes(
         // Match legacy shard loading: one unreadable snapshot is a miss.
       }
     }
+  } catch {
+    // Opening or streaming the optional manifest can fail after yielding some
+    // records. Keep those records and treat the unread remainder as misses.
   } finally {
     lines.close();
     stream.destroy();

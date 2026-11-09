@@ -1,10 +1,31 @@
 import { readFileSync } from 'node:fs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { load } from 'js-yaml';
 
 const { assessComparison } = await import(
   new URL('../../bench/file-result-reuse/check.mjs', import.meta.url).href
 );
+const { sourceDigest } = await import(
+  new URL('../../bench/file-result-reuse/provenance.mjs', import.meta.url).href
+);
+
+it('distinguishes corpora with the same unframed path/content bytes', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-corpus-digest-'));
+  try {
+    await fs.writeFile(path.join(root, 'a.ts'), 'b.tsZ');
+    await fs.writeFile(path.join(root, 'a.tsb.ts'), 'Z');
+    await fs.writeFile(path.join(root, 'common.ts'), 'export const value = 1;');
+    const first = await sourceDigest(root, ['a.ts', 'common.ts']);
+    const second = await sourceDigest(root, ['a.tsb.ts', 'common.ts']);
+    expect(first).not.toBe(second);
+    expect(await sourceDigest(root, ['a.ts', 'common.ts'])).toBe(first);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 const phases = ['cold', 'warm', 'edit', 'two-edits', 'repack'];
 const trial = (candidate: boolean) => ({
   provenance: {
@@ -127,19 +148,19 @@ describe('per-file parse reuse performance gate', () => {
   });
 
   it.each([
-    'missing pair',
-    'duplicate pair',
-    'wrong order',
-    'different corpus',
-    'different runtime',
-    'graph mismatch',
-    'missing phase',
-    'invalid RSS',
-    'invalid timing',
-    'lost cache hit',
-    'missing warmup',
-    'unchanged edit',
-  ])('rejects %s', (failure) => {
+    ['missing pair', 'Seven measured process pairs are required'],
+    ['duplicate pair', 'Duplicate or missing pair'],
+    ['wrong order', 'Pair order must alternate'],
+    ['different corpus', 'Mismatched sourceDigest'],
+    ['different runtime', 'Runtime/corpus changed between trials'],
+    ['graph mismatch', 'Graph digest differs for edit'],
+    ['missing phase', 'Missing/duplicate phase'],
+    ['invalid RSS', 'Invalid peakRssKb'],
+    ['invalid timing', 'Invalid withSaveMs'],
+    ['lost cache hit', 'Per-file reuse regressed'],
+    ['missing warmup', 'Missing excluded warmup pair'],
+    ['unchanged edit', 'Edit was not observed'],
+  ])('rejects %s', (failure, message) => {
     const data = report();
     const p = data.pairs[1];
     const row = p.candidate.measurements[2];
@@ -158,7 +179,7 @@ describe('per-file parse reuse performance gate', () => {
     }
     if (failure === 'missing warmup') Object.assign(data, { warmup: null });
     if (failure === 'unchanged edit') row.digest = p.candidate.measurements[1].digest;
-    expect(() => assessComparison(data)).toThrow();
+    expect(() => assessComparison(data)).toThrow(message);
   });
 });
 

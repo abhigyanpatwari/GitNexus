@@ -1,5 +1,13 @@
 # Migration Guide
 
+## Per-file parser cache (#3856)
+
+Parser facts and scopes now use per-file records in compressed packs. The format
+change invalidates old chunk caches, so the first analysis after upgrading parses
+the source again. Later runs reuse compatible files independently of chunk layout.
+No manual cache deletion is needed. Files with incomplete or zero-output parser
+results still require worker dispatch on later runs.
+
 ## Resumable analysis and separate vector storage (#3598)
 
 Analysis with embeddings publishes a private `lbug.generation.<id>` graph and

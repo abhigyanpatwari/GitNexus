@@ -22,7 +22,15 @@
  * scope-resolution. Net effect: the file is parsed exactly once (in a worker),
  * scope-resolution does ZERO parsing, and peak heap stays bounded.
  *
- * ## Shape
+ * ## Current packed store
+ *
+ * The default per-file cache pins packs into
+ * `<storagePath>/parsedfile-store/file-results/` and records selected scopes in
+ * `scopes.ndjson`. `loadParsedFilesForPaths` reads those sections alongside
+ * transient `.v8` shards used by raw worker fallbacks. Both paths preserve the
+ * worker's ParsedFiles without parsing again on the main thread.
+ *
+ * ## Legacy/transient shard shape
  *
  * `<storagePath>/parsedfile-store/<shardId>.v8` — one shard per parse chunk,
  * a V8 envelope of `ParsedFile[]` (Scope.bindings / Scope.typeBindings stay
@@ -30,7 +38,7 @@
  * scope-resolution consumes it, so it never lingers and never goes stale
  * across runs.
  *
- * ## Durable sibling store (`parsedfile-cache/`, warm-cache coverage)
+ * ## Legacy durable sibling store (`parsedfile-cache/`, compatibility helpers)
  *
  * The run-scoped store above is only populated when the parse workers actually
  * run. On a warm re-analyze where every chunk is a parse-cache HIT, no worker

@@ -760,9 +760,12 @@ sections validate and the scope bytes are pinned into the run-owned store.
 Scope resolution reads only its requested files. Empty scope sections are
 explicit; warnings, quarantine and incomplete scope extraction prevent reuse.
 
-Publication copies selected compressed records under the existing store lock,
-retains compatible sibling keys, and excludes retired files or missing staged
-repairs. The child/supervisor receipt binds the graph generation, parser identity
+Publication retains immutable live packs by hard link (atomic copy fallback)
+under the existing store lock, repacking when less than half a pack's bytes
+remain selected. New staged records are packed separately. It retains compatible
+sibling keys and excludes retired files or missing staged repairs. Bounds are
+checked during publication; section hashes are checked on every read before a
+cache hit is accepted. The child/supervisor receipt binds the graph generation, parser identity
 and selected file keys. The format transition changes parser identity, so old
 chunk caches miss once; legacy helpers remain for compatibility. Missing,
 malformed, incompatible or concurrently pruned records are misses.

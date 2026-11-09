@@ -48,7 +48,8 @@ export async function compareRuntimes(options) {
       path.dirname(output),
       `${iteration < 0 ? 'warmup' : 'pair-' + iteration}-${variant}.log`,
     );
-    const handle = await fs.open(log, 'w');
+    const handle = await fs.open(log, 'w+');
+    let outputText = '';
     try {
       const args = [
         fileURLToPath(new URL('./measure.mjs', import.meta.url)),
@@ -72,10 +73,17 @@ export async function compareRuntimes(options) {
             : reject(new Error(`${variant} trial failed (${signal ?? code}); see ${log}`)),
         );
       });
+      // Read the same log inode the child wrote, even if its path was replaced.
+      for await (const chunk of handle.createReadStream({
+        start: 0,
+        autoClose: false,
+        encoding: 'utf8',
+      }))
+        outputText += chunk;
     } finally {
       await handle.close();
     }
-    const rows = (await fs.readFile(log, 'utf8'))
+    const rows = outputText
       .split('\n')
       .filter((line) => line.startsWith('{'))
       .map((line) => JSON.parse(line))

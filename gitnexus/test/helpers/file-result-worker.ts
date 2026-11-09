@@ -29,10 +29,12 @@ import(${JSON.stringify(codec)}).then(({ encodeFileResultSection }) => {
         result.parsedFiles.push({ filePath: file.path, moduleScope: '', scopes: [], parsedImports: [], localDefs: [], referenceSites: [] });
         if (options.scopeFailures?.includes(file.path)) result.scopeExtractionFailures.push(file.path);
         result.fileCount = 1;
-        const encoded = { key: file.cacheKey, path: file.path, cacheable: !options.uncacheablePaths?.includes(file.path) && !result.scopeExtractionFailures.length,
-          facts: encodeFileResultSection(file.cacheKey, file.path, 'facts', { ...result, parsedFiles: [] }),
-          scopes: encodeFileResultSection(file.cacheKey, file.path, 'scopes', result.parsedFiles) };
-        (accumulated.fileResults ??= []).push({ key: file.cacheKey, path: file.path, encoded });
+        const facts = encodeFileResultSection(file.cacheKey, file.path, 'facts', { ...result, parsedFiles: [] });
+        const scopes = encodeFileResultSection(file.cacheKey, file.path, 'scopes', result.parsedFiles);
+        const entry = { key: file.cacheKey, path: file.path };
+        (accumulated.fileResults ??= []).push(facts && scopes
+          ? { ...entry, encoded: { ...entry, facts, scopes, cacheable: !options.uncacheablePaths?.includes(file.path) && !result.scopeExtractionFailures.length } }
+          : { ...entry, raw: result });
         accumulated.scopeExtractionFailures.push(...result.scopeExtractionFailures);
         accumulated.fileCount++;
       }

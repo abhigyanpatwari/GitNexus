@@ -35,6 +35,15 @@ import { pathToFileURL } from 'node:url';
 const persistOverride = vi.hoisted(() => ({
   impl: undefined as undefined | (() => Promise<boolean>),
 }));
+const pinOverride = vi.hoisted(() => ({ fail: false }));
+vi.mock('../../src/storage/file-result-store.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/storage/file-result-store.js')>();
+  return {
+    ...real,
+    pinFileResults: (...args: Parameters<typeof real.pinFileResults>) =>
+      pinOverride.fail ? Promise.reject(new Error('pin failed')) : real.pinFileResults(...args),
+  };
+});
 vi.mock('../../src/storage/parsedfile-store.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../src/storage/parsedfile-store.js')>();
   return {
@@ -200,6 +209,7 @@ describe('parse-impl warm-cache ParsedFile coverage', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     persistOverride.impl = undefined;
+    pinOverride.fail = false;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
   const writeFile = (rel: string, source = 'export const value = 1;') => {
@@ -234,6 +244,33 @@ describe('parse-impl warm-cache ParsedFile coverage', () => {
       { workerUrlForTest: pathToFileURL(workerPath), workerPoolSize: 1, parseCache: cache },
     );
   const persist = (cache: ParseCache) => saveParseCache(storageDir, cache);
+  it.each(['fresh', 'hit'])(
+    'keeps scopes available when pinning a %s record fails',
+    async (kind) => {
+      const file = writeFile('pin.ts');
+      let cache = newCache();
+      if (kind === 'hit') {
+        await run(cache, [file]);
+        await persist(cache);
+        cache = await warmCache();
+      }
+      pinOverride.fail = true;
+      const result = await run(cache, [file]);
+      expect(result.reparsedFileCount).toBe(1);
+      expect((await coverage(cache, [file.path])).has(file.path)).toBe(true);
+    },
+  );
+  it.skipIf(process.platform === 'win32')(
+    'uses raw fixture results when the codec rejects a filename',
+    async () => {
+      const file = writeFile('raw\nfile.ts');
+      const cache = newCache();
+      const result = await run(cache, [file]);
+      expect(result.reparsedFileCount).toBe(1);
+      expect(cache.staleKeys?.has(keyOf(file))).toBe(true);
+      expect((await coverage(cache, [file.path])).has(file.path)).toBe(true);
+    },
+  );
   const coverage = (cache: ParseCache, paths: string[]) =>
     loadParsedFilesForPaths(cache.writeStoragePath!, new Set(paths));
   const corrupt = (cache: ParseCache, key: string, section: 'facts' | 'scopes') => {

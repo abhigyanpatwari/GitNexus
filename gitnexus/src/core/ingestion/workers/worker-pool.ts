@@ -296,7 +296,8 @@ export interface WorkerPoolOptions {
   fileResults?: boolean;
   /**
    * Directory for the DURABLE, content-addressed ParsedFile store
-   * (`getDurableParsedFileDir`). When set (alongside a chunk hash on the
+   * (`getDurableParsedFileDir`). Retained for legacy chunk callers; the default
+   * per-file path pins packed scope sections instead. When set (alongside a chunk hash on the
    * dispatch), the worker ALSO writes its ParsedFiles to a content-addressed
    * shard keyed by chunk hash so a future warm parse-cache hit can restore
    * them without re-parsing (#2038 warm-cache coverage). Baked into every

@@ -62,7 +62,7 @@ const mkParsedFile = (filePath: string): ParsedFile =>
     parsedImports: [],
     localDefs: [],
     referenceSites: [],
-    cfgSideChannel: [factCfg],
+    cfgSideChannel: [{ ...structuredClone(factCfg), filePath }],
   }) as unknown as ParsedFile;
 
 describe('durable ParsedFile store carries M2 statement facts (#2082 U5)', () => {
@@ -95,7 +95,8 @@ describe('durable ParsedFile store carries M2 statement facts (#2082 U5)', () =>
     );
     const loaded = await loadParsedFilesForPaths(tempDir, new Set(files));
     expect(loaded.size).toBe(2);
-    for (const file of files) expect(loaded.get(file)?.cfgSideChannel).toEqual([factCfg]);
+    for (const file of files)
+      expect(loaded.get(file)?.cfgSideChannel).toEqual([{ ...factCfg, filePath: file }]);
     expect(loaded.get(files[0])?.cfgSideChannel).not.toBe(loaded.get(files[1])?.cfgSideChannel);
   });
 

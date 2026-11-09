@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
+import { sourceDigest } from './provenance.mjs';
 const { values } = parseArgs({
   options: {
     dist: { type: 'string' },
@@ -55,11 +56,20 @@ async function measure() {
   };
   async function treeDigest(directory) {
     const hash = createHash('sha256');
-    for (const relative of (await fs.readdir(directory, { recursive: true })).sort()) {
+    const files = (await fs.readdir(directory, { recursive: true, withFileTypes: true }))
+      .filter((entry) => entry.isFile())
+      .map((entry) => path.relative(directory, path.join(entry.parentPath, entry.name)))
+      .sort();
+    for (const relative of files) {
       const file = path.join(directory, relative);
-      if (!(await fs.stat(file)).isFile()) continue;
-      const bytes = await fs.readFile(file);
-      hash.update(JSON.stringify([relative, bytes.length])).update(bytes);
+      const handle = await fs.open(file, 'r');
+      try {
+        if (!(await handle.stat()).isFile()) continue;
+        const bytes = await handle.readFile();
+        hash.update(JSON.stringify([relative, bytes.length])).update(bytes);
+      } finally {
+        await handle.close();
+      }
     }
     return hash.digest('hex');
   }
@@ -110,13 +120,10 @@ async function measure() {
     const sources = (await fs.readdir(repo, { recursive: true }))
       .filter((f) => /\.tsx?$/.test(f))
       .sort();
-    const sourceHash = createHash('sha256');
-    for (const file of sources)
-      sourceHash.update(file).update(await fs.readFile(path.join(repo, file)));
     console.log(
       JSON.stringify({
         kind: 'provenance',
-        sourceDigest: sourceHash.digest('hex'),
+        sourceDigest: await sourceDigest(repo, sources),
         sourceFiles: sources.length,
         node: process.version,
         workers,
@@ -127,6 +134,7 @@ async function measure() {
         buildDigest: await treeDigest(dist),
         driverDigest: createHash('sha256')
           .update(await fs.readFile(new URL(import.meta.url)))
+          .update(await fs.readFile(new URL('./provenance.mjs', import.meta.url)))
           .digest('hex'),
         checkoutHead: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
         runtimeHead,
