@@ -16,6 +16,21 @@ node bench/file-result-reuse/measure.mjs --dist /path/to/baseline/gitnexus/dist 
 
 Run at least three fresh processes per revision and corpus, alternating revisions. Each process creates a fresh temporary repository/cache, then runs cold, unchanged, one-file edit, two-file edit, and repacking scenarios. The edits add exported functions. Repacking changes the existing chunk byte budget to 4 KiB. The driver removes its temporary data afterward.
 
+## CI acceptance gate
+
+`.github/workflows/ci-tests.yml` runs `measure.mjs --check` on both the 1,024-file synthetic fixture and the same frozen base-revision source corpus. It builds the PR base (or the parent on pushes) separately using its lockfile. Each arm runs in a fresh process with two parser workers and a 4 GiB Node heap, alternating order for one excluded warmup pair and seven measured pairs.
+
+```sh
+node bench/file-result-reuse/measure.mjs --check \
+  --baseline-dist /path/to/baseline/gitnexus/dist \
+  --pairs 7 --workers 2 --files 1024 --output /tmp/file-result-reuse/measure.json
+# Repeat with --corpus /path/to/baseline/gitnexus/src for the real-source gate.
+```
+
+When the base uses chunk caching, the upper bound of the paired 95% interval must show at least 5% faster repeated analyses and strictly lower peak process RSS. Repeated analyses sum warm, one-file edit, two-file edit, and repacking, including cache save. Each individual phase may regress by at most 15%; cold cache bytes must fall by at least 50%. Cache size does not substitute for the RSS check. When the base already uses per-file caching, each metric instead has a 5% regression budget, so subsequent unrelated PRs do not need to reproduce the original improvement.
+
+The gate uses the existing paired log-ratio bootstrap/Student-t calculation from the analyze/resume benchmark. Inconclusive intervals fail. Missing samples, changed runtime or corpus identities, unequal complete graphs, incorrect reparse counts, invalid measurements, and worker failures also fail. Smoke runs with fewer than seven pairs cannot pass `--check`. CI retains `measure.json`, a Markdown summary, and every trial log even on failure. Historical `results.json` is not an acceptance input.
+
 `pipelineMs` measures ingestion and whole-repository resolution; `withSaveMs` adds parser-cache publication. Neither includes graph database publication, embedding generation, or CLI startup. `peakRssKb` is the cumulative process high-water mark, not a phase-local peak or a sum of child processes. Cache sizes include both manifests and payloads. The graph digest covers sorted complete node and edge rows, including properties.
 
 ## Recorded comparison
