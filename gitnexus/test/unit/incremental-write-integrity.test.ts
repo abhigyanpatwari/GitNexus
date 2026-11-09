@@ -146,6 +146,9 @@ describe('hybrid graph writes (real LadybugDB)', () => {
           {
             ...options,
             force: !['periodic', 'dirty'].includes(mode),
+            // Force plus recorded vectors normally regenerates embeddings.
+            // Exercise graph recovery without requiring a local model runtime.
+            embeddingsNodeLimit: 1,
           },
           { ...callbacks, onLog: (message) => logs.push(message) },
         );
@@ -153,6 +156,10 @@ describe('hybrid graph writes (real LadybugDB)', () => {
         expect(after?.graphCompaction?.incrementalWrites).toBe(0);
         expect(after?.incrementalInProgress).toBeUndefined();
         expect(after?.stats?.nodes).toBe(before.stats?.nodes);
+        if (mode === 'missing') {
+          expect(logs.some((line) => line.includes('1-node safety cap'))).toBe(true);
+          expect(after?.stats?.embeddings).toBe(0);
+        }
         if (damaged) {
           const backups = (await readdir(path.dirname(lbugPath))).filter((name) =>
             name.startsWith('lbug.unreadable.'),

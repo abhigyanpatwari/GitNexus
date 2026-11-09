@@ -5,9 +5,9 @@ it.skipIf(!['linux', 'darwin', 'win32'].includes(process.platform))(
   'reads a stable birth identity from a real live process',
   async () => {
     // This checks the OS identity format and stability. Cold PowerShell on
-    // Windows CI can exceed the production probe's five-second wait budget;
+    // Windows CI can exceed even a 15-second wait under load;
     // timeout/unknown behavior and the production limit have separate unit tests.
-    const probeBudget = process.platform === 'win32' ? 15_000 : undefined;
+    const probeBudget = process.platform === 'win32' ? 60_000 : undefined;
     const birth = await readAnalysisWriterBirth(process.pid, probeBudget);
     expect(birth).toBeDefined();
     expect(birth?.kind).toBe(
@@ -15,5 +15,5 @@ it.skipIf(!['linux', 'darwin', 'win32'].includes(process.platform))(
     );
     expect(await readAnalysisWriterBirth(process.pid, probeBudget)).toEqual(birth);
   },
-  35_000,
+  125_000,
 );
