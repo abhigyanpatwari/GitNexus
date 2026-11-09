@@ -28,6 +28,8 @@ export async function persistedMutationRows(
       ['MATCH (n)<-[r:CodeRelation]-() ', 'r'],
     ]) {
       const remaining = limit - rows;
+      // determinism: probe — only min(matching rows, remaining) is returned;
+      // the identities and order of the capped rows never leave the aggregate.
       const result = await executePrepared(
         `${match}${suffix}WITH ${variable} LIMIT $limit RETURN count(*) AS rowCount`,
         { paths: batch, limit: remaining },
