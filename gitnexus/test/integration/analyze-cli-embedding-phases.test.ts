@@ -172,8 +172,9 @@ it.each(['CLI', 'CLI pinned heap', 'auto-sync', 'embeddings sync'] as const)(
       expect(accepted).toHaveLength(131);
       const updated = await loadMeta(slot);
       expect(updated?.graphGeneration?.id).not.toBe(graph.graphGeneration?.id);
-      expect(updated?.graphPath).toBe(graph.graphPath);
-      expect((await fs.stat(path.join(slot, graph.graphPath))).ino).toBe(inode);
+      expect(updated?.graphPath).toBeDefined();
+      expect(updated?.graphPath).not.toBe(graph.graphPath);
+      expect((await fs.stat(path.join(slot, updated!.graphPath!))).ino).not.toBe(inode);
       expect(errors).toEqual([]);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));

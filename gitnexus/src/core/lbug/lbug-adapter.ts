@@ -810,6 +810,8 @@ const runSchemaCreationQueries = async (dbPath: string): Promise<unknown | null>
 };
 
 export interface LbugInitOptions {
+  /** Read existing rows without schema writes or a writable close/checkpoint. */
+  readOnly?: boolean;
   skipFts?: boolean;
   bufferPoolBytes?: number;
   threads?: number;
@@ -945,7 +947,12 @@ const doInitLbug = async (
 
     let usable: Awaited<ReturnType<typeof ensureReadOnlyConnectionUsable>>;
     try {
-      const opened = await openLbugConnection(lbug, dbPath, { readOnly: true });
+      const opened = await openLbugConnection(lbug, dbPath, {
+        readOnly: true,
+        ...(resourceBound
+          ? { bufferPoolBytes: options.bufferPoolBytes, threads: options.threads }
+          : {}),
+      });
       // The storage-version check isn't necessarily enforced by the native
       // engine until the first real query runs (ensureReadOnlyConnectionUsable's
       // own probe query) — openLbugConnection alone can succeed on a

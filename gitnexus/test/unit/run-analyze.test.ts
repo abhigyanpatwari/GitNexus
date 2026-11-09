@@ -716,8 +716,13 @@ describe('run-analyze module', () => {
       expect(midRunMeta).toMatchObject({
         lastCommit: commitA,
         fileHashes: baselineMeta.fileHashes,
-        incrementalInProgress: { startedAt: expect.any(Number) },
+        ...(process.platform === 'win32'
+          ? { incrementalInProgress: { startedAt: expect.any(Number) } }
+          : {}),
       });
+      if (process.platform !== 'win32') {
+        expect(midRunMeta.incrementalInProgress).toEqual(baselineMeta.incrementalInProgress);
+      }
       expect(midRunMeta.lastCommit).not.toBe(commitB);
       // The stale-count restatement is gone too: the window-start save leaves
       // whatever count is already on disk alone.
@@ -735,20 +740,12 @@ describe('run-analyze module', () => {
       );
 
       expect(recovered.alreadyUpToDate).not.toBe(true);
-      // #2790 was: hashes advanced mid-run, changed=0, "skipping wipe" preserved
-      // the OLD graph. An FTS-phase stamp after the graph write can now recover
-      // via incremental (graph already mutated) instead of a forced wipe — that
-      // is not the #2790 bug as long as lastCommit is still stale and the
-      // incremental write set is non-empty. A forced rebuild also heals.
-      const skipWipe = recoveryLogs.find((message) => message.includes('skipping wipe'));
-      if (skipWipe) {
-        // #2790 was changed=0/added=0/deleted=0 over the old graph. A write
-        // set with added files is a real incremental, not that bug.
-        expect(skipWipe).not.toMatch(/changed=0, added=0, deleted=0/);
-      } else {
-        expect(recoveryLogs).toContainEqual(
-          expect.stringContaining('forcing full rebuild to restore a known-good index'),
-        );
+      // Recovery performs a complete physical write while retaining the
+      // real logical diff when the prior published graph is still intact.
+      expect(recoveryLogs).toContainEqual(expect.stringContaining('full DB write'));
+      if (recovered.incrementalStats) {
+        expect(recovered.incrementalStats.writeMode).toBe('full');
+        expect(recovered.incrementalStats.changedFiles).toBeGreaterThan(0);
       }
       const healed = await loadMeta(storagePath);
       expect(healed).toMatchObject({ lastCommit: commitB });

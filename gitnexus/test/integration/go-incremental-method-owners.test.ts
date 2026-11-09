@@ -82,7 +82,7 @@ it('persists ownership changes between untouched siblings after deleting and rea
     expect(removed.incrementalStats).toMatchObject({
       changedFiles: 1,
       deletedFiles: 1,
-      writeMode: 'incremental',
+      writeMode: 'full',
     });
     await expectColdParity([SENTINEL_OWNER, LINUX_OWNER]);
 
@@ -96,7 +96,7 @@ it('persists ownership changes between untouched siblings after deleting and rea
     expect(restored.incrementalStats).toMatchObject({
       changedFiles: 1,
       deletedFiles: 0,
-      writeMode: 'incremental',
+      writeMode: 'full',
     });
     await expectColdParity([SENTINEL_OWNER]);
   } finally {

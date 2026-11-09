@@ -1,5 +1,62 @@
 # Incremental node identity reconciliation
 
+## Compact graph writes (#3852)
+
+Changed analyses retain incremental parsing and file/dependent counts, but write
+the complete graph into a fresh LadybugDB file with bulk COPY. The old database
+is not cloned for row updates. Derived layers and FTS are rebuilt; compatible
+legacy vectors are restored before their index is rebuilt. Unchanged snapshots
+still take the no-op path. Existing platform-specific publication rules apply.
+
+Run the native reduction and the production analyzer comparison from `gitnexus/`:
+
+```sh
+node bench/incremental-write-integrity/reproduce-growth.cjs
+node bench/incremental-write-integrity/reproduce-growth.cjs --large
+npm run build
+node bench/incremental-write-integrity/measure-compact-writes.mjs --output /tmp/compact-writes.json
+```
+
+Both harnesses create isolated temporary fixtures and remove them by default;
+`--keep` retains them. The analyzer harness also accepts `--runtime /path/to/repo`
+to compare another checkout's compiled runtime. Timing and file sizes are
+measurements, not CI pass/fail thresholds.
+
+The native reduction uses serial uncompressed COPY, a Function node table and
+three relationships per node, with no parser, FTS or GitNexus adapter. It measures
+individual DELETE/CREATE/SET operations and twelve identical one-file rewrites.
+Every rewrite and fresh reload must preserve an exact node/edge tuple fingerprint.
+The default fixture has 32,768 nodes, 98,304 edges and repeated 1 KiB content;
+`--large` doubles the graph and uses distinct content. It reports checkpointed,
+reopened sizes, free-page counts and warm scan medians. These isolate native
+storage amplification, without establishing a particular C++ allocation defect.
+
+On Linux x64, Node 22.23.3 and `@ladybugdb/core` 0.22.0, the default fixture grew
+from 18.93 MiB to 32.07 MiB after one rewrite (1.69×), then plateaued over the
+remaining cycles. A fresh COPY returned it to 18.92 MiB with identical tuples.
+The larger fixture grew from 98.64 MiB to 123.36 MiB (1.25×). The smaller fixture
+used a 256 MiB native pool; the larger required 1 GiB.
+
+The production comparison uses 128 TypeScript files with 32 mutually calling
+functions each, FTS enabled and no generated embeddings. It checks no-op inode
+stability and compares sorted node identities plus relationship endpoints,
+types and reasons against a forced rebuild of the final source state.
+
+| Three one-file comment edits | Previous row writes | Fresh-file writes |
+| --- | ---: | ---: |
+| Final database | 24.85 MiB | 22.52 MiB |
+| Fresh rebuild control | 22.52 MiB | 22.52 MiB |
+| Per-edit elapsed time | 6.2–6.5 s | 12.3–13.0 s |
+| Node/edge fingerprint matches control | yes | yes |
+
+Fresh-file writes trade additional indexing work and temporary disk space for
+compact published storage. These timings came from a shared development host;
+they are not an isolated throughput benchmark or a claim of universal speedup.
+A repeat on the final build while the full test suite was running took 18.2–19.4 s
+per edit, with the same 22.52 MiB size and exact graph fingerprint.
+The native harness measures query latency separately. Neither harness proves
+bounded memory use or Windows native close/swap behavior.
+
 For the native cause of #3421/#3423 and regressions covering both missing
 context results and Unicode Property FTS, see [search-root-cause.md](search-root-cause.md).
 

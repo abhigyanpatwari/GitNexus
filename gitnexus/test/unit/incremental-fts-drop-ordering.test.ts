@@ -1,12 +1,6 @@
 /**
- * #2589: the incremental writeback must drop every FTS index BEFORE
- * `deleteNodesForFiles` runs its batched DETACH DELETE — not only in
- * Phase 3, after the delete already ran against a table still carrying the
- * PREVIOUS run's index. This drives the real `runFullAnalysis` incremental
- * path (real git repo, real LadybugDB, real FTS extension) and asserts,
- * at the moment `deleteNodesForFiles` is invoked, that `SHOW_INDEXES()`
- * already reports FTS indexes for tables that will be DML'd as absent
- * (#2589 drop-before-delete). #3016: empty-language FTS tables may remain.
+ * Fresh graph COPY runs before FTS indexes are built (#2589, #3852), without
+ * dropping or mutating the prior published graph's search indexes.
  */
 import { readFile, writeFile } from 'fs/promises';
 import { execSync } from 'child_process';
@@ -20,7 +14,7 @@ import { resolveAnalyzeInstallPolicy } from '../../src/core/lbug/extension-loade
 
 const ftsMustBeAvailable = process.env.GITNEXUS_REQUIRE_FTS === '1';
 
-describe('runFullAnalysis incremental writeback — FTS drop-before-delete ordering (#2589)', () => {
+describe('runFullAnalysis compact writeback — fresh FTS ordering (#2589, #3852)', () => {
   let ftsAvailable = true;
   let skipWarned = false;
 
@@ -67,7 +61,7 @@ describe('runFullAnalysis incremental writeback — FTS drop-before-delete order
     vi.resetModules();
   });
 
-  it('SHOW_INDEXES() reports the FTS indexes of every table being written as absent by the time deleteNodesForFiles runs', async () => {
+  it('loads a fresh graph before building every configured FTS index', async () => {
     const lbugAdapter = await import('../../src/core/lbug/lbug-adapter.js');
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
 
@@ -97,19 +91,14 @@ describe('runFullAnalysis incremental writeback — FTS drop-before-delete order
         expect(beforeChange).toContain(indexName);
       }
 
-      // Spy on the real deleteNodesForFiles, recording the FTS index list at
-      // the exact moment it's invoked (before it does anything), then
-      // delegating to the real implementation so the run completes normally.
-      let indexNamesAtDeleteTime: string[] | undefined;
-      const originalDeleteNodesForFiles = lbugAdapter.deleteNodesForFiles;
-      vi.spyOn(lbugAdapter, 'deleteNodesForFiles').mockImplementation(async (filePaths, opts) => {
-        indexNamesAtDeleteTime = await showIndexNames();
-        return originalDeleteNodesForFiles(filePaths, opts);
+      const deleteNodes = vi.spyOn(lbugAdapter, 'deleteNodesForFiles');
+      let indexNamesAtCopyTime: string[] | undefined;
+      const originalLoadGraph = lbugAdapter.loadGraphToLbug;
+      vi.spyOn(lbugAdapter, 'loadGraphToLbug').mockImplementation(async (...args) => {
+        indexNamesAtCopyTime = await showIndexNames();
+        return originalLoadGraph(...args);
       });
 
-      // Small change to a single file — stays well under the escalation
-      // threshold (50 files) on this 7-file mini-repo, so it takes the
-      // non-escalated (surgical) incremental branch this test targets.
       const handlerPath = path.join(repo.dbPath, 'src', 'handler.ts');
       await writeFile(
         handlerPath,
@@ -127,25 +116,16 @@ describe('runFullAnalysis incremental writeback — FTS drop-before-delete order
 
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
 
-      expect(indexNamesAtDeleteTime).toBeDefined();
-      // handler.ts writes File/Function/Class/Method. The incremental write set
-      // also pulls importer-expanded mini-repo files (index.ts re-exports
-      // handler; validator.ts holds Interface + Property), so those FTS
-      // indexes must be down before DETACH DELETE (#2589). Every other
-      // configured FTS index must still be live (#3016 narrowing).
-      const down = new Set([
-        'file_fts',
-        'function_fts',
-        'class_fts',
-        'method_fts',
-        'interface_fts',
-        'property_fts',
-      ]);
-      const configured = FTS_INDEXES.map((i) => i.indexName);
-      const ftsAtDelete = indexNamesAtDeleteTime!.filter((name) => configured.includes(name));
-      expect([...ftsAtDelete].sort()).toEqual(configured.filter((name) => !down.has(name)).sort());
-      for (const name of down) {
-        expect(ftsAtDelete).not.toContain(name);
+      expect(deleteNodes).not.toHaveBeenCalled();
+      expect(indexNamesAtCopyTime).toBeDefined();
+      const configured = FTS_INDEXES.map((index) => index.indexName);
+      expect(indexNamesAtCopyTime!.filter((name) => configured.includes(name))).toEqual([]);
+      await lbugAdapter.initLbug(lbugPath);
+      try {
+        const after = await showIndexNames();
+        expect(after.filter((name) => configured.includes(name)).sort()).toEqual(configured.sort());
+      } finally {
+        await lbugAdapter.closeLbug();
       }
     } finally {
       await repo.cleanup();

@@ -4,6 +4,7 @@
  * reason (KTD6); these tests induce the phase through saveMeta / in-run stamps
  * rather than killing analyze.
  */
+import '@ladybugdb/core';
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import fs from 'fs/promises';
@@ -21,8 +22,14 @@ import { computeFileHash } from '../../src/storage/file-hash.js';
 import { ANALYSIS_FEATURES } from '../../src/core/analysis-feature-registry.js';
 import { resolveAnalysisFeatureVersions } from '../../src/core/analysis-features.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
-import { resolveParseCacheIdentity } from '../../src/core/parse-cache-identity.js';
+import {
+  resolveAnalyzerRunnerIdentity,
+  finalizeAnalyzerRunnerIdentity,
+} from '../../src/core/analyzer-identity.js';
+import {
+  resolveParseCacheIdentity,
+  finalizeParseCacheIdentity,
+} from '../../src/core/parse-cache-identity.js';
 import { EMBEDDING_DIMS, SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import {
   PROCESS_DETECTION_BUDGET_DEFAULTS,
@@ -49,6 +56,33 @@ const RUN_ANALYZE_URL = new URL('../../src/core/run-analyze.ts', import.meta.url
 const RUN_ANALYZE_SRC = fileURLToPath(RUN_ANALYZE_URL);
 
 const REL_FILE = 'src/a.ts';
+
+// Native storage is mocked in these policy tests. Select the existing Windows
+// fallback without claiming to exercise Windows native rename/close behavior.
+const useInPlacePlatform = (): void => {
+  // Keep the host artifact receipts shared with incrementalMeta. Reloading
+  // identity modules under a simulated platform would test identity drift
+  // instead of the publication policy selected here.
+  vi.doMock('../../src/core/analyzer-identity.js', async (importActual) => ({
+    ...(await importActual<typeof import('../../src/core/analyzer-identity.js')>()),
+    resolveAnalyzerRunnerIdentity,
+    finalizeAnalyzerRunnerIdentity,
+  }));
+  vi.doMock('../../src/core/parse-cache-identity.js', async (importActual) => ({
+    ...(await importActual<typeof import('../../src/core/parse-cache-identity.js')>()),
+    resolveParseCacheIdentity,
+    finalizeParseCacheIdentity,
+  }));
+  vi.stubGlobal(
+    'process',
+    new Proxy(process, {
+      get(target, property, receiver) {
+        return property === 'platform' ? 'win32' : Reflect.get(target, property, receiver);
+      },
+    }),
+  );
+  vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '0');
+};
 
 const createPlaceholderGraphStore = async (lbugPath: string): Promise<void> => {
   await fs.writeFile(lbugPath, 'fixture');
@@ -332,12 +366,12 @@ describe('FTS crash-marker policy (characterization)', () => {
     expect(Object.keys(stamp)).not.toContain('reasons');
   });
 
-  it('stamps after the escalation valve in source order', () => {
+  it('stamps after fresh graph loading in source order', () => {
     const src = readFileSync(RUN_ANALYZE_SRC, 'utf8');
-    const valve = src.indexOf("saveIncrementalDirtyState('escalated-full-write'");
+    const load = src.indexOf('    await loadGraphToLbug(');
     const stamp = src.indexOf('shouldStampFtsDirtyPhase(ftsWritePlan)');
-    expect(valve).toBeGreaterThan(-1);
-    expect(stamp).toBeGreaterThan(valve);
+    expect(load).toBeGreaterThan(-1);
+    expect(stamp).toBeGreaterThan(load);
   });
 });
 
@@ -357,9 +391,13 @@ describe('runFullAnalysis FTS crash marker', () => {
     vi.resetModules();
     vi.clearAllMocks();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.doUnmock('../../src/core/analyzer-identity.js');
+    vi.doUnmock('../../src/core/parse-cache-identity.js');
   });
 
   it('stamps phase fts during an in-place incremental build and clears it after a clean run', async () => {
+    useInPlacePlatform();
     const sequence: string[] = [];
     const checkpointOnce = vi.fn(async () => {
       sequence.push('checkpoint');
@@ -435,6 +473,7 @@ describe('runFullAnalysis FTS crash marker', () => {
   });
 
   it('stamps processDetection.uncertified before in-place FTS when the budget mismatched', async () => {
+    useInPlacePlatform();
     const sequence: string[] = [];
     let midBuild: RepoMeta | null = null;
     vi.doMock('../../src/core/lbug/wal-checkpoint-driver.js', async (importActual) => ({
@@ -546,7 +585,7 @@ describe('runFullAnalysis FTS crash marker', () => {
           { onProgress: () => {}, onLog: () => {} },
         );
 
-        expect(phases).toContain('full-rebuild');
+        expect(phases.filter((phase) => phase !== undefined)).toEqual([]);
         expect(phases).not.toContain(FTS_DIRTY_PHASE);
       } finally {
         await tmpRepo.cleanup();
@@ -555,7 +594,7 @@ describe('runFullAnalysis FTS crash marker', () => {
   );
 
   it.skipIf(process.platform === 'win32')(
-    'does not persist live incrementalInProgress when atomic incremental dies during staging copy',
+    'does not change live metadata when a fresh staging COPY fails',
     async () => {
       vi.doMock('../../src/core/lbug/lbug-adapter.js', mockLbugAdapter);
       vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
@@ -591,14 +630,10 @@ describe('runFullAnalysis FTS crash marker', () => {
         });
         await createPlaceholderGraphStore(lbugPath);
 
-        const originalCopyFile: typeof fs.copyFile = fs.copyFile.bind(fs);
-        const copyFile = vi.spyOn(fs, 'copyFile').mockImplementation(async (src, dest, mode) => {
-          if (String(dest).includes('.staging.')) {
-            throw new Error('simulated staging copy crash');
-          }
-          return originalCopyFile(src, dest, mode);
-        });
-
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+        vi.mocked(adapter.loadGraphToLbug).mockRejectedValueOnce(
+          new Error('simulated staging COPY crash'),
+        );
         const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
         await expect(
           runFullAnalysis(
@@ -606,8 +641,8 @@ describe('runFullAnalysis FTS crash marker', () => {
             { atomicIncremental: true, maxProcesses: 25, skipAgentsMd: true, skipSkills: true },
             { onProgress: () => {}, onLog: () => {} },
           ),
-        ).rejects.toThrow('simulated staging copy crash');
-        expect(copyFile).toHaveBeenCalled();
+        ).rejects.toThrow('simulated staging COPY crash');
+        expect(adapter.loadGraphToLbug).toHaveBeenCalledOnce();
 
         const liveMeta = await loadMeta(storagePath);
         expect(liveMeta?.incrementalInProgress).toBeUndefined();
@@ -619,7 +654,8 @@ describe('runFullAnalysis FTS crash marker', () => {
     },
   );
 
-  it('stamps phase pre-write on live meta before in-place incremental writeback', async () => {
+  it('stamps full-rebuild before the in-place database is replaced', async () => {
+    useInPlacePlatform();
     vi.doMock('../../src/core/lbug/lbug-adapter.js', mockLbugAdapter);
     vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
       ...(await importActual<typeof import('../../src/core/search/fts-indexes.js')>()),
@@ -640,7 +676,7 @@ describe('runFullAnalysis FTS crash marker', () => {
         ...actual,
         saveMeta: async (...args: Parameters<typeof actual.saveMeta>) => {
           const result = await actual.saveMeta(...args);
-          if (args[1].incrementalInProgress?.phase === 'pre-write') {
+          if (args[1].incrementalInProgress?.phase === 'full-rebuild') {
             throw new Error('stop after in-place dirty stamp');
           }
           return result;
@@ -665,7 +701,7 @@ describe('runFullAnalysis FTS crash marker', () => {
       ).rejects.toThrow('stop after in-place dirty stamp');
 
       const liveMeta = await loadMeta(storagePath);
-      expect(liveMeta?.incrementalInProgress).toMatchObject({ phase: 'pre-write' });
+      expect(liveMeta?.incrementalInProgress).toMatchObject({ phase: 'full-rebuild' });
     } finally {
       await tmpRepo.cleanup();
     }
@@ -1025,6 +1061,7 @@ describe('runFullAnalysis FTS crash marker', () => {
   );
 
   it('treats a boundary checkpoint failure as best-effort on an in-place plan', async () => {
+    useInPlacePlatform();
     // Only the earlier boundary is best-effort. Publication still requires
     // its own successful checkpoint through the same policy helper.
     const checkpointOnce = vi
@@ -1512,18 +1549,18 @@ describe('runFullAnalysis rebuild reasons on the crash marker', () => {
     vi.doUnmock('../../src/core/search/fts-indexes.js');
     vi.doUnmock('../../src/core/ingestion/pipeline.js');
     vi.doUnmock('../../src/storage/repo-manager.js');
-    vi.doUnmock('../../src/core/incremental/escalation-gate.js');
     vi.restoreAllMocks();
     vi.resetModules();
     vi.clearAllMocks();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.doUnmock('../../src/core/analyzer-identity.js');
+    vi.doUnmock('../../src/core/parse-cache-identity.js');
   });
 
   /** Mocks the storage and pipeline edges; records every marker write with its target dir. */
-  const mockRun = ({
-    buildSearchIndexes = vi.fn(async () => ({ ok: true })),
-    inPlaceEscalation = false,
-  } = {}) => {
+  const mockRun = ({ buildSearchIndexes = vi.fn(async () => ({ ok: true })) } = {}) => {
+    useInPlacePlatform();
     const writes: MarkerWrite[] = [];
     const wipeLbugDbFiles = vi.fn(async () => undefined);
     vi.doMock('../../src/core/lbug/wal-checkpoint-driver.js', async (importActual) => ({
@@ -1532,20 +1569,8 @@ describe('runFullAnalysis rebuild reasons on the crash marker', () => {
     }));
     vi.doMock('../../src/core/lbug/lbug-adapter.js', async () => {
       const adapter = await mockLbugAdapter();
-      // An unreadable catalog keeps a size escalation in place (no staging
-      // swap), which is the only POSIX route to an in-place FTS stamp that
-      // carries a reason.
-      const catalog = [[], adapter.INDEX_CATALOG_UNREADABLE][Number(inPlaceEscalation)];
-      return {
-        ...adapter,
-        wipeLbugDbFiles,
-        readIndexCatalogSnapshot: vi.fn(async () => catalog),
-      };
+      return { ...adapter, wipeLbugDbFiles };
     });
-    vi.doMock('../../src/core/incremental/escalation-gate.js', async (importActual) => ({
-      ...(await importActual<typeof import('../../src/core/incremental/escalation-gate.js')>()),
-      shouldEscalateIncrementalWrite: () => inPlaceEscalation,
-    }));
     vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
       ...(await importActual<typeof import('../../src/core/search/fts-indexes.js')>()),
       initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
@@ -1702,8 +1727,8 @@ describe('runFullAnalysis rebuild reasons on the crash marker', () => {
     }
   });
 
-  it('keeps the escalation reason on the escalated-full-write stamp and through the FTS stamp', async () => {
-    const { writes, wipeLbugDbFiles } = mockRun({ inPlaceEscalation: true });
+  it('keeps the compact-write reason on the in-place rebuild and FTS stamps', async () => {
+    const { writes, wipeLbugDbFiles } = mockRun();
     wipeLbugDbFiles.mockRejectedValueOnce(new Error('simulated kill in the escalated wipe'));
     const tmpRepo = await createTempDir('gitnexus-reasons-escalated-');
     try {
@@ -1719,17 +1744,16 @@ describe('runFullAnalysis rebuild reasons on the crash marker', () => {
         'simulated kill in the escalated wipe',
       );
       const crashed = await loadMeta(storagePath);
-      expect(crashed?.incrementalInProgress?.phase).toBe('escalated-full-write');
+      expect(crashed?.incrementalInProgress?.phase).toBe('full-rebuild');
       expect(crashed?.incrementalInProgress?.reasons?.map((reason) => reason.key)).toEqual([
         'escalated-full-write',
       ]);
-      expect(markersInPhase(writes, 'pre-write')[0].marker?.reasons).toBeUndefined();
 
       // A clean rerun with a live escalation hands the reason to the FTS stamp.
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
       writes.length = 0;
       await runFullAnalysis(tmpRepo.dbPath, options, callbacks);
-      const escalated = markersInPhase(writes, 'escalated-full-write');
+      const escalated = markersInPhase(writes, 'full-rebuild');
       const ftsStamps = markersInPhase(writes, FTS_DIRTY_PHASE);
       expect(ftsStamps).toHaveLength(1);
       expect(ftsStamps[0].marker?.reasons).toEqual(escalated[0].marker?.reasons);
@@ -1743,7 +1767,7 @@ describe('runFullAnalysis rebuild reasons on the crash marker', () => {
     const buildSearchIndexes = vi.fn(async () => {
       throw new Error('simulated kill in CREATE_FTS_INDEX');
     });
-    mockRun({ buildSearchIndexes, inPlaceEscalation: true });
+    mockRun({ buildSearchIndexes });
     const tmpRepo = await createTempDir('gitnexus-reasons-fts-crash-');
     try {
       await seedGitFile(tmpRepo.dbPath);

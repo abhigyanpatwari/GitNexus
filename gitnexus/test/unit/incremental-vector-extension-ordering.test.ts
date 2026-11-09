@@ -1,19 +1,6 @@
 /**
- * #2623: the incremental writeback must have the VECTOR extension loaded
- * BEFORE `deleteNodesForFiles` runs — its very first statement is the
- * `CodeEmbedding` join-delete, and LadybugDB refuses every mutation of a
- * table carrying an HNSW index while the extension is unloaded:
- *
- *   Binder exception: Trying to delete from an index on table CodeEmbedding
- *   but its extension is not loaded.
- *
- * Nothing on that path loaded VECTOR until Phase 4, so any repo that had
- * built `code_embedding_idx` crashed on the next content change — on machines
- * where VECTOR loads perfectly well. This is the sibling of the #2589 FTS
- * drop-before-delete ordering test and deliberately mirrors its shape: drive
- * the real `runFullAnalysis` incremental path against a real git repo and a
- * real LadybugDB, and assert the index state at the exact moment
- * `deleteNodesForFiles` is invoked.
+ * Fresh graph writes preserve legacy vectors without mutating the old HNSW
+ * index (#2623, #3852). Rebuild HNSW only after every retained row is restored.
  */
 import { readFile, writeFile } from 'fs/promises';
 import { execSync } from 'child_process';
@@ -21,7 +8,7 @@ import path from 'path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setupMiniRepo } from '../helpers/mini-repo.js';
 import { seedEmbeddingsForFiles, stampEmbeddingCount } from '../helpers/embedding-seed.js';
-import { getStoragePaths } from '../../src/storage/repo-manager.js';
+import { getStoragePaths, loadMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 import { EMBEDDING_TABLE_NAME } from '../../src/core/lbug/schema.js';
 import { resolveAnalyzeInstallPolicy } from '../../src/core/lbug/extension-loader.js';
@@ -39,7 +26,7 @@ const commitAll = (cwd: string, message: string): void => {
   );
 };
 
-describe('runFullAnalysis incremental writeback — VECTOR loaded before embedding-row DML (#2623)', () => {
+describe('runFullAnalysis compact writeback — VECTOR preservation (#2623, #3852)', () => {
   let vectorAvailable = true;
   let skipWarned = false;
 
@@ -83,7 +70,7 @@ describe('runFullAnalysis incremental writeback — VECTOR loaded before embeddi
     vi.resetModules();
   });
 
-  it('completes the surgical incremental run with the HNSW index present, and VECTOR is loaded by the time deleteNodesForFiles runs', async () => {
+  it('restores changed and retained vectors before rebuilding HNSW without selective deletes', async () => {
     const lbugAdapter = await import('../../src/core/lbug/lbug-adapter.js');
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
 
@@ -132,18 +119,17 @@ describe('runFullAnalysis incremental writeback — VECTOR loaded before embeddi
       expect(indexBuilt).toBe(true);
       expect(indexRowsBefore.length).toBeGreaterThan(0);
 
-      // Record the index's extension state at the exact moment the embedding
-      // join-delete is about to run. Pre-fix this is `false` and the run then
-      // throws; post-fix the gate has already loaded VECTOR.
-      let embeddingIndexAtDeleteTime: Array<Record<string, unknown>> | undefined;
-      const originalDeleteNodesForFiles = lbugAdapter.deleteNodesForFiles;
-      vi.spyOn(lbugAdapter, 'deleteNodesForFiles').mockImplementation(async (filePaths, opts) => {
-        embeddingIndexAtDeleteTime = await readEmbeddingIndexRows();
-        return originalDeleteNodesForFiles(filePaths, opts);
+      const deleteNodes = vi.spyOn(lbugAdapter, 'deleteNodesForFiles');
+      const originalCreateVectorIndex = lbugAdapter.createVectorIndex;
+      let restoredBeforeIndex: string[] | undefined;
+      vi.spyOn(lbugAdapter, 'createVectorIndex').mockImplementation(async (...args) => {
+        const rows = (await lbugAdapter.executeQuery(
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId`,
+        )) as Array<{ nodeId: string }>;
+        restoredBeforeIndex = rows.map((row) => row.nodeId).sort();
+        return originalCreateVectorIndex(...args);
       });
 
-      // One-file change keeps this well under the 50-file escalation
-      // threshold on a 7-file repo, so it takes the surgical branch.
       const handlerPath = path.join(repo.dbPath, changedFile);
       await writeFile(
         handlerPath,
@@ -158,33 +144,22 @@ describe('runFullAnalysis incremental writeback — VECTOR loaded before embeddi
         runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} }),
       ).resolves.toBeDefined();
 
-      // Ordering proof: the index was still there AND its extension was
-      // loaded when the delete ran — the fix loads VECTOR rather than
-      // dropping the index (run-analyze relies on HNSW self-maintaining
-      // across a surgical run).
-      expect(embeddingIndexAtDeleteTime).toBeDefined();
-      expect(embeddingIndexAtDeleteTime!.length).toBeGreaterThan(0);
-      for (const row of embeddingIndexAtDeleteTime!) {
-        expect(row.extension_loaded).toBe(true);
-      }
+      expect(deleteNodes).not.toHaveBeenCalled();
+      expect(restoredBeforeIndex).toEqual([...changedIds, ...untouchedIds].sort());
 
-      // Data outcome: the untouched file's rows survive, and nothing is
-      // duplicated. (The changed file's rows are removed by the join-delete
-      // and restored by Phase 3.5, so their count must stay at exactly one
-      // per nodeId — a PK duplicate would mean the delete silently no-op'd.)
       await lbugAdapter.initLbug(lbugPath);
       try {
         const perNode = (await lbugAdapter.executeQuery(
           `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, count(e) AS c`,
         )) as Array<{ nodeId: string; c: number | bigint }>;
         const counts = new Map(perNode.map((r) => [String(r.nodeId), Number(r.c)]));
-        for (const id of untouchedIds) {
+        for (const id of [...changedIds, ...untouchedIds]) {
           expect(counts.get(id)).toBe(1);
         }
         for (const [, c] of counts) {
           expect(c).toBe(1);
         }
-        // The index is still there — the surgical path keeps it.
+        // The replacement index covers every restored row.
         expect((await readEmbeddingIndexRows()).length).toBeGreaterThan(0);
       } finally {
         await lbugAdapter.closeLbug();
@@ -194,7 +169,7 @@ describe('runFullAnalysis incremental writeback — VECTOR loaded before embeddi
     }
   }, 300_000);
 
-  it('escalates to a full DB write instead of crashing when VECTOR cannot be loaded', async () => {
+  it('rescues underreported legacy vectors when VECTOR cannot be loaded', async () => {
     const lbugAdapter = await import('../../src/core/lbug/lbug-adapter.js');
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
 
@@ -240,9 +215,10 @@ describe('runFullAnalysis incremental writeback — VECTOR loaded before embeddi
       ).resolves.toBeDefined();
 
       expect(logs.some((m) => m.includes('full DB write'))).toBe(true);
-      expect(logs.some((m) => m.includes('VECTOR'))).toBe(true);
+      const metadata = await loadMeta(getStoragePaths(repo.dbPath).storagePath);
+      expect(metadata?.capabilities?.vectorSearch.status).toBe('exact-scan');
 
-      // The forced rebuild must NOT eat the embeddings it never asked to touch.
+      // Missing metadata must not discard paid vectors during fresh loading.
       await lbugAdapter.initLbug(lbugPath);
       try {
         const surviving = (await lbugAdapter.executeQuery(

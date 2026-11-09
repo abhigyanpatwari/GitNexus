@@ -301,7 +301,7 @@ describe('packaged vendor survives a broken or missing home copy', () => {
 });
 
 describe('regression — the home copy disappears between analyze runs (#2841)', () => {
-  it('the incremental run completes without a Binder exception or a full-DB escalation', (ctx) => {
+  it('the changed run publishes a compact graph with working search and no Binder exception', (ctx) => {
     const { home, extensionFile } = makeHome('valid');
     const repo = makeFixtureRepo('vanishing-extension');
 
@@ -327,8 +327,8 @@ describe('regression — the home copy disappears between analyze runs (#2841)',
     //    ~/.lbdb/extension away; a HOME change or a wiped cache does the same.
     fs.rmSync(extensionFile);
 
-    // 3. A content change makes the next run incremental, so it must rewrite
-    //    rows of tables that still carry the indexes from step 1.
+    // 3. A content change requires a fresh graph and search indexes, while
+    //    the prior database still carries the indexes from step 1.
     fs.appendFileSync(path.join(repo, 'src', 'greeter.ts'), '\n// #2841 incremental touch\n');
     const gitEnv = {
       ...process.env,
@@ -343,13 +343,17 @@ describe('regression — the home copy disappears between analyze runs (#2841)',
     const second = runCli(['analyze'], repo, home, 'load-only');
     // Pre-fix: exit 1 with "Binder exception: Trying to delete from an index on
     // table File but its extension is not loaded" and no mention of FTS at all.
-    // Packaged vendor still loads after HOME vanishes, so incremental stays
-    // incremental (no Binder, no full-DB escalation).
+    // Packaged vendor still loads after HOME vanishes. Fresh graph writes
+    // must rebuild usable FTS without touching the prior indexed rows.
     expect(second.status, second.diagnostics).toBe(0);
     expect(second.output).not.toContain('its extension is not loaded');
-    expect(second.output).not.toContain('full DB write');
+    expect(second.output).toContain('full DB write');
     expect(second.output).not.toContain('forcing full rebuild');
     expect(second.output).toMatch(/Incremental:|indexed successfully/);
+    const searched = runCli(['query', 'greetE2eSymbol'], repo, home, 'load-only');
+    expect(searched.status, searched.diagnostics).toBe(0);
+    expect(searched.output).toContain('greetE2eSymbol');
+    expect(searched.output).not.toContain('keyword search degraded');
   }, 400_000);
 });
 

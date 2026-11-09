@@ -102,21 +102,18 @@ describe.skipIf(isWin)('Destination across a second, incremental analyze', () =>
     );
   };
 
-  /** Run analyze and report whether the INCREMENTAL writeback branch ran. */
+  /** Keep logical incremental accounting observable across fresh graph writes. */
   const analyze = async (): Promise<{ incremental: boolean }> => {
-    let incremental = false;
-    await runFullAnalysis(
+    const result = await runFullAnalysis(
       repo,
-      {},
-      {
-        onProgress: (_phase: string, _pct: number, message?: string) => {
-          // Emitted only by the incremental writeback branch. Without this the
-          // whole suite could pass vacuously on a silent full rebuild.
-          if (message?.startsWith('Removing rows for changed files')) incremental = true;
-        },
-      },
+      { skipAgentsMd: true, skipSkills: true },
+      { onProgress() {} },
     );
-    return { incremental };
+    if (result.incrementalStats) {
+      expect(result.incrementalStats.changedFiles).toBe(1);
+      expect(result.incrementalStats.writeMode).toBe('full');
+    }
+    return { incremental: result.incrementalStats !== undefined };
   };
 
   const openDb = async (): Promise<void> => {

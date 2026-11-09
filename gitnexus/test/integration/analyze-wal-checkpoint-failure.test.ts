@@ -1,34 +1,10 @@
 /**
- * Integration test: WAL auto-checkpoint rename failure (#1741 / #1772).
- *
- * Drives the real `analyzeCommand` against a real LadybugDB instance and
- * provokes a genuine Ladybug-engine `IO exception: Error renaming file
- * <db>.wal to <db>.wal.checkpoint` by pre-planting a *directory* at the
- * `<db>.wal.checkpoint` rename target. `fs.rename` (which Ladybug's native
- * `LocalFileSystem` ultimately invokes) cannot overwrite a non-empty
- * directory with a file on either POSIX or Windows, and Ladybug's
- * `doInitLbug` orphan-cleanup uses `fs.unlink` which fails on a directory
- * — so the blocker survives initialization and the next auto-checkpoint
- * fires the natural rename failure that motivated PR #1772.
- *
- * No test-only hooks, no env-var fault toggles in production code: we use
- * the same `GITNEXUS_WAL_CHECKPOINT_THRESHOLD=1` knob that real users have
- * available to force checkpointing on every write, then arrange a real
- * filesystem state that makes the rename impossible.
- *
- * Verifies that:
- *   1. The CLI exits non-zero.
- *   2. stderr contains the actionable recovery hint pointing at
- *      `--wal-checkpoint-threshold 67108864` (the
- *      `RECOMMENDED_WAL_CHECKPOINT_THRESHOLD` constant in `analyze.ts`).
- *   3. The recovery message references the
- *      `GITNEXUS_WAL_CHECKPOINT_THRESHOLD` env var as a parallel route.
- *
- * Empirically confirmed portable on Windows; the same mechanism is
- * expected to work on POSIX (`rename(2)` fails with `EISDIR`/`ENOTEMPTY`
- * when the target is a non-empty directory). If a future Ladybug release
- * changes the rename ordering, the loose match on the recovery hint
- * (rather than the exact engine error wording) keeps this test stable.
+ * Real filesystem obstruction at the previous graph's checkpoint path.
+ * Fresh staged writes must not conceal damaged recovery files by publishing
+ * beside them (#3852). The prior row-update path reached a native checkpoint
+ * rename failure here; staged publication now refuses during consolidation.
+ * The in-place fallback must also fail, preserving bytes before mutation or
+ * retaining a recovery marker after mutation begins.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
@@ -38,6 +14,7 @@ import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { cleanupTempDirSync } from '../helpers/test-db.js';
+import { getStoragePaths } from '../../src/storage/repo-manager.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
@@ -87,15 +64,8 @@ const runAnalyze = (walCheckpointThreshold: string) =>
     }),
   });
 
-describe('analyze WAL auto-checkpoint rename failure (real lbug, no mocks)', () => {
-  it('surfaces the --wal-checkpoint-threshold recovery hint when the rename target is blocked', () => {
-    // The checkpoint rename target must be a PREDICTABLE path so the blocker
-    // can be pre-planted. A full rebuild builds into a per-run
-    // `lbug.staging.<uuid>` and checkpoints `lbug.staging.<uuid>.wal.checkpoint`
-    // (#2658) — an unknowable name. An INCREMENTAL run instead writes the live
-    // index in place, so its auto-checkpoint targets the fixed
-    // `lbug.wal.checkpoint`. So: first do a clean full analyze to create the
-    // index, then plant the blocker and drive an incremental analyze into it.
+describe('analyze blocked checkpoint family (real lbug, no mocks)', () => {
+  it('refuses damaged prior recovery files and succeeds after the obstruction is removed', () => {
     const storageDir = path.join(repoPath, '.gitnexus');
 
     // 1) Clean full analyze (no blocker) — builds the index into staging and
@@ -104,9 +74,11 @@ describe('analyze WAL auto-checkpoint rename failure (real lbug, no mocks)', () 
     // every setup write needlessly stalls schema and FTS creation on Windows.
     const first = runAnalyze('67108864');
     expect(first.status === null ? 'timeout' : first.status, first.stderr).toBe(0);
+    const { lbugPath, metaPath } = getStoragePaths(repoPath);
+    const graphBefore = fs.readFileSync(lbugPath);
+    const metadataBefore = fs.readFileSync(metaPath);
 
-    // 2) Change a tracked source file and commit, so the next analyze is an
-    // incremental writeback (in-place), not a full rebuild.
+    // 2) Change a tracked source file so the next analyze must write a graph.
     const churnFile = path.join(repoPath, 'src', 'logger.ts');
     fs.appendFileSync(churnFile, `\nexport const walChurnMarker = ${Date.now()};\n`);
     const gitEnv = {
@@ -123,18 +95,14 @@ describe('analyze WAL auto-checkpoint rename failure (real lbug, no mocks)', () 
       env: gitEnv,
     });
 
-    // 3) Plant a non-empty directory at `lbug.wal.checkpoint`, the fixed rename
-    // target of the in-place checkpoint. `fs.rename` cannot overwrite a
-    // non-empty directory, and the adapter's orphan-sidecar cleanup uses
-    // `fs.unlink` (which fails on a directory) — so the blocker persists through
-    // `doInitLbug` and trips the auto-checkpoint the incremental writeback
-    // forces at `GITNEXUS_WAL_CHECKPOINT_THRESHOLD=1`.
+    // 3) A non-empty directory cannot be replayed, renamed over or unlinked
+    // as a checkpoint file. Rebuilding beside it must not hide that damage.
     const blockerDir = path.join(storageDir, 'lbug.wal.checkpoint');
     fs.rmSync(blockerDir, { recursive: true, force: true });
     fs.mkdirSync(blockerDir, { recursive: true });
     fs.writeFileSync(path.join(blockerDir, 'blocker'), 'cannot-be-renamed-over');
 
-    // 4) Incremental analyze into the blocked checkpoint target.
+    // 4) Refuse the damaged family before certifying the replacement.
     const result = runAnalyze('1');
     const combined = `${result.stderr}\n${result.stdout}`;
 
@@ -142,13 +110,29 @@ describe('analyze WAL auto-checkpoint rename failure (real lbug, no mocks)', () 
     expect(result.status, combined).not.toBeNull();
     expect(result.status).not.toBe(0);
 
-    // Recovery hint must reference the CLI flag and the recommended
-    // 64 MiB threshold (67_108_864 bytes). Both come from the
-    // RECOMMENDED_WAL_CHECKPOINT_THRESHOLD constant in analyze.ts; keep
-    // those values in sync with this assertion if the constant changes.
-    expect(combined).toContain('gitnexus analyze --wal-checkpoint-threshold');
-    expect(combined).toContain('67108864');
-    // The env-var route should be advertised alongside the flag.
-    expect(combined).toContain('GITNEXUS_WAL_CHECKPOINT_THRESHOLD');
+    expect(combined).toContain('lbug.wal.checkpoint');
+    expect(fs.readFileSync(path.join(blockerDir, 'blocker'), 'utf8')).toBe(
+      'cannot-be-renamed-over',
+    );
+    const staged = process.platform !== 'win32' || process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
+    if (staged) {
+      expect(combined).toContain('publication was stopped to preserve its recovery files');
+      expect(combined).toContain('gitnexus clean --lbug-sidecars');
+      expect(fs.readFileSync(lbugPath)).toEqual(graphBefore);
+      expect(fs.readFileSync(metaPath)).toEqual(metadataBefore);
+    } else {
+      const failedMeta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      if (!failedMeta.incrementalInProgress) {
+        // A read-only cache/accounting open can refuse before the first
+        // destructive write. Without a recovery marker, both must be intact.
+        expect(fs.readFileSync(lbugPath)).toEqual(graphBefore);
+        expect(fs.readFileSync(metaPath)).toEqual(metadataBefore);
+      }
+    }
+
+    fs.rmSync(blockerDir, { recursive: true });
+    const recovered = runAnalyze('67108864');
+    expect(recovered.status === null ? 'timeout' : recovered.status, recovered.stderr).toBe(0);
+    expect(JSON.parse(fs.readFileSync(metaPath, 'utf8')).incrementalInProgress).toBeUndefined();
   }, 180_000);
 });

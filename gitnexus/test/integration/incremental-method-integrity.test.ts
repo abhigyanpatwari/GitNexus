@@ -244,7 +244,7 @@ describe('Python Method identities across selective incremental writes with an o
       expect(refreshed.incrementalStats).toMatchObject({
         changedFiles: 1,
         deletedFiles: 0,
-        writeMode: 'incremental',
+        writeMode: 'full',
       });
       await readAll([...edited.tuples, ...fixtures.slice(1).flatMap(({ tuples }) => tuples)]);
       // Only the edited file's nodes are re-embedded; every other vector row

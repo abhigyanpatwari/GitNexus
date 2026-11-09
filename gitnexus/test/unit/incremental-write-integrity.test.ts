@@ -87,7 +87,7 @@ describe('incremental graph identity before publication', () => {
       });
       const result = await runFullAnalysis(repo.dbPath, options, callbacks);
       expect(attempts).toBe(2);
-      expect(result.incrementalStats?.writeMode).toBe('incremental');
+      expect(result.incrementalStats?.writeMode).toBe('full');
       expect((await loadMeta(storagePath))?.incrementalInProgress).toBeUndefined();
     } finally {
       await adapter.closeLbug();
@@ -156,8 +156,9 @@ describe('incremental graph identity before publication', () => {
   ])(
     'refuses freshness after $phase failure (atomic=$atomicIncremental)',
     async ({ phase, atomicIncremental }) => {
-      // Windows uses in-place writes even when a caller requests staging.
-      const expectsStaging = atomicIncremental && process.platform !== 'win32';
+      // Both legacy caller values use the full-build platform policy.
+      const expectsStaging =
+        process.platform !== 'win32' || process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
       const repo = await setupMiniRepo('gitnexus-test-write-integrity-');
       const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
       try {
@@ -226,9 +227,7 @@ describe('incremental graph identity before publication', () => {
         const after = await loadMeta(storagePath);
         expect(after?.lastCommit).toBe(before?.lastCommit);
         expect(after?.indexedAt).toBe(before?.indexedAt);
-        expect(logs.filter((line) => line.includes('atomic-incremental'))).toEqual(
-          expectsStaging ? [expect.stringContaining('staged')] : [],
-        );
+        expect(logs).toContainEqual(expect.stringContaining('full DB write'));
         expect(Boolean(after?.incrementalInProgress)).toBe(!expectsStaging);
         const registeredAfter = (await readRegistry()).find((entry) => entry.path === repo.dbPath);
         expect(registeredAfter?.indexedAt).toBe(registeredBefore?.indexedAt);

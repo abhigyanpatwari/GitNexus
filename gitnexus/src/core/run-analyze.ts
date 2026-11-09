@@ -37,7 +37,7 @@ import {
 import { PDG_EDGE_TYPES } from './lbug/pdg-emit-sink.js';
 import path from 'path';
 import fs from 'fs/promises';
-import { constants as fsConstants, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { retryRename } from '../storage/fs-atomic.js';
@@ -80,28 +80,10 @@ import {
   drainAnalysisNativeResources,
   closeLbugBeforeExit,
   loadCachedEmbeddings,
-  deleteNodesForFiles,
-  nodeTablesWithRowsForFiles,
-  snapshotDerivedRelsForFiles,
-  restoreDerivedRels,
-  ensureEmbeddingRowDmlSafe,
-  ensureFtsRowDmlSafe,
-  readIndexCatalogSnapshot,
-  INDEX_CATALOG_UNREADABLE,
-  deleteAllCommunitiesAndProcesses,
-  deleteAllInterprocTaintPaths,
-  deleteAllCallSummaries,
-  deleteAllInjects,
-  deleteAllAdvisedBy,
-  deleteAllDestinations,
-  deleteSpringAopEvidenceNodes,
-  deleteSpringAutoConfigurationDeclarations,
-  deleteSpringAutoConfigurationSyntheticClasses,
   queryImportersBatch,
   loadFTSExtension,
   wipeLbugDbFiles,
   LbugWipeError,
-  DELETE_FILES_CHUNK_SIZE,
 } from './lbug/lbug-adapter.js';
 import {
   estimateBufferPool,
@@ -113,15 +95,12 @@ import {
   pastEofReadRemedy,
   type StagedBuildMode,
 } from './lbug/lbug-config.js';
-import { escapeCypherString } from './lbug/cypher-escape.js';
 import { chunk } from '../lib/utils.js';
 import {
   buildSearchIndexesOrDegrade,
   ftsFailureIsFatal,
   createSearchFTSIndexes,
   summarizeFtsIndexBuildFailures,
-  dropSearchFTSIndexes,
-  missingSearchFTSIndexTables,
   initialiseSearchFTSStemmer,
   verifySearchFTSIndexes,
 } from './search/fts-indexes.js';
@@ -138,7 +117,6 @@ import {
   initialiseSearchFTSCjkSegmentation,
 } from './search/cjk-segmentation.js';
 import {
-  getExtensionCapability,
   getExtensionCapabilities,
   getFtsCapability,
   resolveAnalyzeInstallPolicy,
@@ -159,10 +137,8 @@ import {
   type WalCheckpointDriver,
 } from './lbug/wal-checkpoint-driver.js';
 import {
-  describeFileEvidence,
   ftsCrashParkFailureMessage,
   quarantineSidecarsForDirtyRecovery,
-  inspectLbugSidecars,
 } from './lbug/sidecar-recovery.js';
 import { collectFailureEvidence, type FailureEvidenceTargets } from './lbug/failure-evidence.js';
 import type { EmbeddingIdentity } from './embeddings/embedding-identity.js';
@@ -247,22 +223,7 @@ import { DEFAULT_PDG_MAX_INTERPROC_EDGES } from './ingestion/taint/interproc-emi
 import { taintModelVersion } from './ingestion/taint/typescript-model.js';
 import { parseTruthyEnv, parsePositiveIntEnv } from './ingestion/utils/env.js';
 import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
-import {
-  extractChangedSubgraph,
-  computeEffectiveWriteSet,
-} from './incremental/subgraph-extract.js';
-import {
-  collectSpringConfigConsumerDriftFiles,
-  type PersistedSpringConfigConsumerRow,
-} from './incremental/spring-config-drift.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
-import { shouldEscalateIncrementalWrite } from './incremental/escalation-gate.js';
-import {
-  ftsTablesAmong,
-  incrementalFtsTablesFromGraph,
-  nodeTablesForIncrementalDelete,
-  shouldPreservePersistedDerivedGraph,
-} from './incremental/derived-writeback.js';
 import {
   formatInvalidProcessDetectionOverride,
   processDetectionBudgetMismatch,
@@ -270,7 +231,6 @@ import {
   toProcessDetectionStamp,
   uncertifyProcessDetectionStamp,
 } from './ingestion/process-detection-budget.js';
-import { NODE_TABLES } from './lbug/schema.js';
 import {
   resolveParseCacheIdentity,
   finalizeParseCacheIdentity,
@@ -313,7 +273,6 @@ import { assertUniqueEmbeddingKeys, EmbeddingIntegrityError } from './embeddings
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { formatRejectedBranchForLog, sanitizeDetectedBranch } from './git-ref.js';
 import {
-  EMBEDDING_TABLE_NAME,
   EMBEDDING_DIMS,
   STALE_HASH_SENTINEL,
   SCHEMA_FINGERPRINT,
@@ -321,10 +280,6 @@ import {
   isSchemaFingerprintShaped,
   embeddingDimsMismatch,
 } from './lbug/schema.js';
-import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/bean-catalog.js';
-import { isSpringBeanFactoryDeclaration } from './ingestion/frameworks/spring/bean-factories.js';
-import { SPRING_CONFIG_UNRESOLVED_PREFIX } from './ingestion/frameworks/spring/config-bindings.js';
-import { classifySpringConfigFile } from './ingestion/pipeline-phases/spring-config.js';
 import { SPRING_ROUTE_BINDINGS_FEATURE } from './ingestion/frameworks/spring/analysis-features.js';
 import { springVendorPrefixesKey } from './ingestion/frameworks/spring/vendor-prefixes.js';
 import {
@@ -378,89 +333,6 @@ import {
  */
 const stripControlCharacters = (msg: string): string =>
   msg.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
-
-interface PersistedFrameworkAnnotationRow {
-  readonly id?: unknown;
-  readonly frameworkAnnotations?: unknown;
-}
-
-interface PersistedSpringBeanDeclarationRow {
-  readonly id?: unknown;
-  readonly filePath?: unknown;
-  readonly reason?: unknown;
-}
-
-function stringList(value: unknown): readonly string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string')
-    : [];
-}
-
-function collectFrameworkAnnotationDriftFiles(
-  graph: KnowledgeGraph,
-  persistedRows: readonly PersistedFrameworkAnnotationRow[],
-): Set<string> {
-  const persistedById = new Map<string, readonly string[]>();
-  for (const row of persistedRows) {
-    if (typeof row.id === 'string') {
-      persistedById.set(row.id, stringList(row.frameworkAnnotations));
-    }
-  }
-
-  const driftFiles = new Set<string>();
-  graph.forEachNode((node) => {
-    if (node.label !== 'Class') return;
-    const current = stringList(node.properties.frameworkAnnotations);
-    const persisted = persistedById.get(node.id) ?? [];
-    if (
-      current.length !== persisted.length ||
-      current.some((annotation, index) => annotation !== persisted[index])
-    ) {
-      const filePath = node.properties.filePath;
-      if (typeof filePath === 'string') driftFiles.add(filePath);
-    }
-  });
-  return driftFiles;
-}
-
-function collectSpringBeanDeclarationDriftFiles(
-  graph: KnowledgeGraph,
-  persistedRows: readonly PersistedSpringBeanDeclarationRow[],
-): Set<string> {
-  const persisted = new Map<string, { readonly filePath: string; readonly reason: string }>();
-  for (const row of persistedRows) {
-    if (
-      typeof row.id === 'string' &&
-      typeof row.filePath === 'string' &&
-      typeof row.reason === 'string' &&
-      isSpringBeanFactoryDeclaration({ type: 'DECLARES', reason: row.reason })
-    ) {
-      persisted.set(row.id, { filePath: row.filePath, reason: row.reason });
-    }
-  }
-
-  const current = new Map<string, { readonly filePath: string; readonly reason: string }>();
-  for (const relationship of graph.relationships) {
-    if (relationship.type !== 'DECLARES') continue;
-    if (!isSpringBeanFactoryDeclaration(relationship)) continue;
-    const declaration = graph.getNode(relationship.targetId);
-    if (declaration === undefined || typeof declaration.properties.filePath !== 'string') continue;
-    current.set(declaration.id, {
-      filePath: declaration.properties.filePath,
-      reason: relationship.reason,
-    });
-  }
-
-  const driftFiles = new Set<string>();
-  for (const [id, value] of current) {
-    const prior = persisted.get(id);
-    if (prior === undefined || prior.reason !== value.reason) driftFiles.add(value.filePath);
-  }
-  for (const [id, value] of persisted) {
-    if (!current.has(id)) driftFiles.add(value.filePath);
-  }
-  return driftFiles;
-}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -684,10 +556,9 @@ export interface AnalyzeOptions {
    * leave this unset so they get a real close. See `closeLbug`. */
   skipNativeCloseOnExit?: boolean;
   /**
-   * Stage an incremental write in a copy of the live index before publishing
-   * it. Used by long-lived watch mode so a failed refresh leaves the previous
-   * graph readable. Currently supported on POSIX, where an open DB can be
-   * atomically renamed; Windows retains the established in-place path.
+   * Retained for existing callers. Graph writes now always build a fresh
+   * database, using the full-rebuild publication policy on each platform.
+   * No copy of the prior graph is needed for incremental refreshes.
    */
   atomicIncremental?: boolean;
 }
@@ -713,15 +584,9 @@ function describeThrown(value: unknown): string {
   }
 }
 
-/**
- * Where a failing write was going (#3530). A staged build is `staged-incremental`
- * only while it is an atomic-incremental write: the #2409/#2841 escalation wipes
- * the staging file and re-COPYs into it, which is a rebuild, and it stages with
- * `GITNEXUS_ATOMIC_INCREMENTAL=0` as well — so naming the off-switch there would
- * point at a knob with no effect.
- */
-const stagedBuildModeOf = (staged: boolean, atomicIncrementalWrite: boolean): StagedBuildMode =>
-  !staged ? 'in-place' : atomicIncrementalWrite ? 'staged-incremental' : 'staged-rebuild';
+/** Every staged graph write is a fresh rebuild, including one-file edits. */
+const stagedBuildModeOf = (staged: boolean): StagedBuildMode =>
+  staged ? 'staged-rebuild' : 'in-place';
 
 /**
  * The diagnosis (#3529, #3530) for a classified analyze failure — its remedy and
@@ -2072,16 +1937,18 @@ async function runFullAnalysisInner(
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
   const ftsDisabledReason = resolveFtsDisableReason(options.skipFts);
-  const initAnalysisLbug = (dbPath: string) => {
+  const initAnalysisLbug = (dbPath: string, readOnly = false) => {
     if (options.resources) {
       const sizedPool = getEffectiveBufferPoolSize();
       const ceiling = options.resources.parse.graphPoolBytes;
       return initLbug(dbPath, {
-        skipFts: !!ftsDisabledReason,
+        skipFts: readOnly || !!ftsDisabledReason,
+        ...(readOnly ? { readOnly: true } : {}),
         bufferPoolBytes: Math.min(sizedPool || ceiling, ceiling),
         threads: options.resources.parse.nativeThreads,
       });
     }
+    if (readOnly) return initLbug(dbPath, { readOnly: true, skipFts: true });
     return ftsDisabledReason ? initLbug(dbPath, { skipFts: true }) : initLbug(dbPath);
   };
   const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
@@ -3446,24 +3313,23 @@ async function runFullAnalysisInner(
   // disagree with the prediction (e.g. when the pipeline produces zero
   // File nodes, `isIncremental` flips false and the full-rebuild path
   // wipes the DB) — loading unconditionally is insurance against
-  // silently dropping embeddings on a mispredicted run. The re-insert
-  // step gates itself on the actual `isIncremental` value to avoid
-  // PK-conflicts when the incremental writeback path keeps the rows.
+  // silently dropping embeddings on a mispredicted run. Every fresh graph
+  // restores compatible cached rows after the bulk load.
   //
   // This is the FIRST DB open of the run — the one #2409 defect 2 is about.
   // On a dirty-recovery run it happens only after the sidecar quarantine
   // moved (or removed) the crashed run's WAL/shadow; when neither was
   // possible the dirty block above already threw a LbugWipeError, so this
   // open is replay-free by construction (FIX 1 of this shipping review).
-  if (shouldLoadCache && existingMeta) {
+  // A supervisor handoff can create placeholder metadata before the first
+  // database exists. Skip that empty cache, but still fail closed if missing
+  // storage claims paid vectors that must be preserved.
+  if (shouldLoadCache && existingMeta && (existingEmbeddingCount > 0 || existsSync(lbugPath))) {
     if (
       options.graphPublication &&
       !options.dropEmbeddings &&
       !existingMeta.graphGeneration &&
-      !existingMeta.legacyVectorSource &&
-      // A supervisor handoff may leave only placeholder metadata on a first
-      // run. Missing storage is an error only when it claims paid vectors.
-      (existingEmbeddingCount > 0 || existsSync(lbugPath))
+      !existingMeta.legacyVectorSource
     ) {
       const { exportLegacyVectorsFromFile } = await import('./lbug/legacy-vector-export.js');
       const historical = existingMeta.embeddingCheckpoint;
@@ -3492,14 +3358,13 @@ async function runFullAnalysisInner(
         existingMeta.legacyVectorSource = legacy;
       }
     }
-    // Cache initialization is writable and may discard quarantined WALs.
-    // Preserve the live family before this first open, including runs whose
-    // incremental write later escalates to a staged full rebuild. Keep this
-    // outside the cache-load catch: a preservation failure must stop analysis.
+    // Preserve/recover sidecars before reading the prior graph. The cache
+    // open itself is read-only: failure during staging must leave the
+    // published file intact. Preservation failures must stop analysis.
     if (posixSwap || windowsSwapOk) await consolidateLbugForPublication(lbugPath);
     try {
       progress('embeddings', 0, 'Caching embeddings...');
-      await initAnalysisLbug(lbugPath);
+      await initAnalysisLbug(lbugPath, true);
       adoptCachedEmbeddings(await loadCachedEmbeddings());
       await closeLbug();
     } catch (err: any) {
@@ -3617,16 +3482,9 @@ async function runFullAnalysisInner(
   // `resolveStreamPdgEmit` — read fresh at the same point — behaves.)
   const streamGraphEmitActive = resolveStreamGraphEmit(options);
 
-  // #3016: hold back Leiden and flow extraction when the persisted metadata
-  // says this run is a candidate for a surgical incremental write, whose
-  // derived layer is reused rather than recomputed. Deliberately the same
-  // conditions as the `isIncremental` decision below MINUS the two that only
-  // the pipeline can answer (the analysis-feature re-check and a non-empty
-  // file list), so this is a superset: every run that turns out incremental
-  // had the phases skipped, and the runs that do not are caught by
-  // `runDeferredDerivedPhases` once the write plan is known. Excluded on the
-  // streaming path because that is a full rebuild by construction, and the
-  // deferred phases must not write into a finalized emit sink.
+  // Retain the pipeline's deferred-derived contract for cached parses, then
+  // finish those phases before the fresh graph is persisted below. Streamed
+  // builds emit them during the pipeline before their sink is finalized.
   const skipDerivedGraphPhases =
     !streamGraphEmitActive &&
     !options.force &&
@@ -3786,11 +3644,8 @@ async function runFullAnalysisInner(
     });
   }
   // Checkpoint 2 (post-pipeline): the capability re-check is the last reason
-  // that can force the rebuild. The #2409 escalation below adds a non-forcing
-  // reason, so `force` is final from here on.
-  applyCollectedForce();
-  // A forced reason added here rules the escalation out (the run is no longer
-  // incremental), so this and the escalation's line never both print.
+  // that can force the rebuild. The compact physical write below contributes
+  // a non-forcing reason while preserving logical incremental bookkeeping.
   announceFollowUp();
 
   // Decide incremental vs full at THIS point (post-pipeline, pre-DB).
@@ -3812,8 +3667,8 @@ async function runFullAnalysisInner(
     repoHasGit &&
     allFilePaths.length > 0;
 
-  // Select a full build before any selective mutation when the operator has
-  // disabled the checkpoint needed to certify an incremental publication.
+  // Preserve the checkpoint opt-out contract: these runs report a full
+  // rebuild and do not claim incremental verification.
   const isIncremental = incrementalEligible && isManualCheckpointEnabled();
   if (incrementalEligible && !isIncremental) {
     log('Manual WAL checkpoints are disabled; switching to a full DB write before mutation.');
@@ -3823,89 +3678,16 @@ async function runFullAnalysisInner(
     ? diffFileHashes(newFileHashes, existingMeta!.fileHashes)
     : undefined;
 
-  // #3016: `skipDerivedGraphPhases` was decided BEFORE the pipeline, from the
-  // persisted metadata alone, so it can only ever be a bet that this run stays
-  // surgical. Settle the bet here, where `isIncremental` and the deletion set
-  // are both known, and pay it off by running the held-back phases whenever the
-  // write plan needs a freshly derived layer:
-  //   - not incremental      → full rebuild writes the whole graph, and a graph
-  //                            with no Community/Process nodes would publish an
-  //                            index with no communities and no flows;
-  //   - added/changed/deleted files → the persisted derived layer can miss new
-  //                            symbols, keep stale memberships, or reference
-  //                            removed ids. Only an empty file-hash diff is a
-  //                            proof that Leiden/flows still match.
-  const preserveDerivedLayer =
-    skipDerivedGraphPhases &&
-    isIncremental &&
-    !!hashDiff &&
-    shouldPreservePersistedDerivedGraph(hashDiff) &&
-    !processDetectionMismatch;
-  if (skipDerivedGraphPhases && !preserveDerivedLayer) {
+  // Parsing and change accounting stay incremental, but populated-table DML
+  // rewrites native storage regions even for one changed file (#3852). Every
+  // persisting run bulk-loads a fresh database, including its derived layers.
+  if (skipDerivedGraphPhases) {
     progress('communities', 58, 'Detecting code communities and flows...');
     await pipelineResult.runDeferredDerivedPhases?.();
   }
-
-  // #2 atomic index publish: on a full rebuild, build the fresh DB at a temp
-  // path and swap it over the live index in one rename at the very end, so a
-  // concurrent MCP reader opening mid-build only ever sees the previous
-  // complete index (never a wiped/half-built file) and a crash leaves the old
-  // index intact. The whole build flows through the singleton connection, so
-  // only initLbug/wipeLbugDbFiles below take the temp target.
-  //
-  // POSIX only: the common CLI/serve-worker analyze paths skip the native close
-  // (closeLbugBeforeExit, #2264) and leave the build handle open at swap time.
-  // POSIX renames an open file cleanly; a same-process open handle blocks the
-  // rename on Windows. Windows keeps the current in-place behavior
-  // (buildPath === lbugPath, no swap) until that is resolved (see §12/follow-up).
-  const isFullRebuild = !(isIncremental && hashDiff);
-  // Incremental atomicity stages the whole index before mutation. It remains
-  // opt-in for ordinary analyze runs; watch mode requests it for failure
-  // preservation. The copy requests a filesystem clone and records its actual
-  // duration, while Node falls back to a normal copy where reflinks are absent.
-  // `GITNEXUS_ATOMIC_INCREMENTAL=0` is the operator's off-switch and beats a
-  // caller's request (watch and auto-sync cannot be reconfigured, #3530). It
-  // only governs this opt-in staging: a full rebuild and the #2841 escalation
-  // below still stage because they set `useAtomicSwap` independently.
-  const atomicIncrementalEnv = process.env.GITNEXUS_ATOMIC_INCREMENTAL;
-  const atomicIncrementalEligible = isIncremental && !!hashDiff && process.platform !== 'win32';
-  const wantAtomicIncremental =
-    atomicIncrementalEligible &&
-    atomicIncrementalEnv !== '0' &&
-    (options.atomicIncremental === true || atomicIncrementalEnv === '1');
-  if (
-    atomicIncrementalEligible &&
-    atomicIncrementalEnv === '0' &&
-    options.atomicIncremental === true
-  ) {
-    // The off-switch trades failure safety for in-place speed; say so once, since
-    // watch and auto-sync (the callers that request staging) never show the operator
-    // why their runs stopped staging.
-    log(
-      'atomic-incremental: disabled by GITNEXUS_ATOMIC_INCREMENTAL=0 although the caller requested ' +
-        'staging; a failed write will leave the live index partly written and the next run will ' +
-        'rebuild it in full',
-    );
-  }
-  // #2614 F3: the copy-then-swap stages ONLY the main lbug file, so a live index
-  // carrying an orphan .wal/.shadow (a silently-failed prior checkpoint) would
-  // be copied incompletely and lose that delta. Only take the atomic path when
-  // the live index is a consolidated single file; otherwise fall back to the
-  // in-place writeback, which the next open replays correctly.
-  const atomicIncremental =
-    wantAtomicIncremental && (await inspectLbugSidecars(lbugPath)).kind === 'clean';
-  if (wantAtomicIncremental && !atomicIncremental) {
-    log('atomic-incremental: live index carries orphan sidecars — using in-place writeback');
-  }
-  // `let` (#2841 review H2): an escalation discovered ~440 lines below — from
-  // EITHER cause, a blocked extension or an oversized write set — can upgrade
-  // an in-place incremental write to a staged one, because that valve's plan is
-  // wipe-then-COPY over this very path. See the upgrade at the escalation
-  // valve. Nothing between here and there reads either binding except
-  // `initLbug(buildPath)`, which the upgrade re-runs against the staging path.
-  let useAtomicSwap = (isFullRebuild || atomicIncremental) && (posixSwap || windowsSwapOk);
-  // Recover a valid live delta before staging its replacement. In-place runs
-  // retain the adapter's existing recovery path.
+  const useAtomicSwap = posixSwap || windowsSwapOk;
+  // Preserve/recover the live family before any writable open. A replacement
+  // must not conceal orphan WALs or a pre-existing quarantine.
   if (useAtomicSwap) await consolidateLbugForPublication(lbugPath);
   // Set only at the first operation that can mutate the live graph store.
   // Pre-write failures (config, lock, parsing, metadata, importer expansion)
@@ -3916,7 +3698,7 @@ async function runFullAnalysisInner(
   // file can never be mistaken for — or clobber — a live run's; the lock's
   // orphan sweep (sweepStagingArtifacts) reclaims stragglers on the next
   // acquire. The `.staging.` prefix is what that sweep matches.
-  let buildPath = useAtomicSwap ? `${lbugPath}.staging.${randomUUID()}` : lbugPath;
+  const buildPath = useAtomicSwap ? `${lbugPath}.staging.${randomUUID()}` : lbugPath;
   let inPlaceAttempt: string | undefined;
   let inPlaceVectorCoverage: RepoMeta['vectorGeneration'];
   const saveGraphDirtyState = async (metadata: RepoMeta): Promise<void> => {
@@ -3945,90 +3727,156 @@ async function runFullAnalysisInner(
     });
   };
 
-  if (isIncremental && hashDiff) {
-    log(
-      `Incremental: changed=${hashDiff.changed.length}, ` +
-        `added=${hashDiff.added.length}, ` +
-        `deleted=${hashDiff.deleted.length} ` +
-        `(skipping wipe + ${
-          allFilePaths.length - hashDiff.toWrite.length
-        } unchanged file rows preserved)`,
-    );
-    // Set the dirty flag BEFORE any destructive DB mutation. Cleared on
-    // success at the meta-save step. Scoped to this branch's meta.json.
-    // POSIX atomic incremental mutates the copy, so a live dirty stamp would
-    // force-rebuild a healthy index after a crash before swap.
-    if (!atomicIncremental) {
-      const now = Date.now();
-      await saveGraphDirtyState({
-        ...existingMeta!,
-        incrementalInProgress: {
-          startedAt: now,
-          updatedAt: now,
-          phase: 'pre-write',
-          toWriteCount: hashDiff.toWrite.length,
-          directWriteCount: hashDiff.toWrite.length,
-          ...storedRebuildReasons(),
-        },
-      });
-    }
-    if (atomicIncremental) {
-      // Stage the live index into the temp so the in-place delete/writeback
-      // below mutates the COPY, and the end-of-run swap publishes it atomically.
-      // Clear any stale temp first (a crashed run), then clone/copy the
-      // consolidated single-file live index.
-      await wipeLbugDbFiles(buildPath);
-      const copyStartedAt = Date.now();
-      await fs.copyFile(lbugPath, buildPath, fsConstants.COPYFILE_FICLONE);
-      log(
-        `atomic-incremental: staged ${lbugPath} in ${Date.now() - copyStartedAt}ms ` +
-          '(copy-on-write requested; filesystem fallback is allowed); ' +
-          (await describeFileEvidence('staging copy', buildPath)),
-      );
-    }
-  } else {
-    // Full rebuild path: wipe DB files first.
-    // Set the dirty flag BEFORE the wipe whenever a prior meta exists,
-    // mirroring the incremental branch above (#2099 F1, KTD2b). Without it a
-    // full rebuild crashing between the wipe and the end-of-run saveMeta
-    // leaves a meta that vouches for a DB it no longer matches — the next
-    // clean-tree run's fast path would certify a destroyed DB (or, after a
-    // pdg flip, certify zombie/missing BasicBlock rows indefinitely).
-    // toWriteCount: 0 is the full-path sentinel (no incremental write set).
-    if (existingMeta && (!options.graphPublication || !useAtomicSwap)) {
-      const now = Date.now();
-      await saveGraphDirtyState({
-        ...existingMeta,
-        incrementalInProgress: {
-          startedAt: now,
-          updatedAt: now,
-          phase: 'full-rebuild',
-          toWriteCount: 0,
-          ...storedRebuildReasons(),
-        },
-      });
-    }
-    await closeLbug();
-    // Shared loud wipe (#2409 + tri-review 4669518496 P2-4). The 4-file
-    // family list — `.shadow` included, because a checkpoint-in-flight crash
-    // leaves a shadow sidecar that is replay poison next to a freshly created
-    // DB file — lives in wipeLbugDbFiles so this site and the escalation
-    // valve below can never drift. Failures now throw a typed LbugWipeError
-    // (ENOENT-verified removal) instead of silently letting initLbug reopen
-    // a still-populated DB this run believes it wiped.
-    //
-    // With the atomic swap (POSIX), this wipes the TEMP build target
-    // (`buildPath` = `<lbugPath>.new`, clearing any stragglers from a crashed
-    // run) and leaves the live index untouched until the end-of-run swap. On
-    // Windows buildPath === lbugPath, so this is the original in-place wipe.
-    if (buildPath === lbugPath) liveIndexMutationStarted = true;
+  let incrementalStats: AnalyzeResult['incrementalStats'];
+  const rescueLegacyEmbeddings =
+    !!existingMeta &&
+    existsSync(lbugPath) &&
+    !existingMeta.graphGeneration &&
+    !options.dropEmbeddings &&
+    cacheRowCount(cachedSnapshot) === 0;
+  if ((isIncremental && hashDiff) || rescueLegacyEmbeddings) {
     try {
-      await wipeLbugDbFiles(buildPath);
+      await initAnalysisLbug(lbugPath, true);
+      if (isIncremental && hashDiff) {
+        const MAX_IMPORTER_BFS_DEPTH = 4;
+        const writableFiles = new Set<string>(hashDiff.toWrite);
+        const directlyChangedCount = writableFiles.size;
+        // Resolution groups can change edges between unchanged files without an
+        // import or a new-graph edge touching the changed/deleted member. Expand
+        // before the importer walk so dependents of these siblings refresh too.
+        const { collectResolutionGroupFiles } = await import('./incremental/resolution-groups.js');
+        for (const filePath of collectResolutionGroupFiles(
+          [...hashDiff.toWrite, ...hashDiff.deleted],
+          allFilePaths,
+        )) {
+          writableFiles.add(filePath);
+        }
+        const resolutionGroupExpansion = writableFiles.size - directlyChangedCount;
+        if (resolutionGroupExpansion > 0) {
+          log(`Incremental: +${resolutionGroupExpansion} resolution sibling(s) affected`);
+        }
+        // Shadow-seed: for ADDED files, the importer query returns 0 (the new
+        // file has no IMPORTS rows in the pre-pipeline DB yet). But pre-
+        // existing unchanged files may have IMPORTS edges whose module-
+        // resolution claim the newcomer can steal under standard JS/TS
+        // resolution (Bugbot review on PR #1479). For each added file we
+        // derive the shadow candidates and, if the candidate was a known
+        // file in the prior meta, seed it into the BFS frontier so its
+        // importers — surfaced via the importer BFS — get their CALLS edges
+        // re-resolved against the new file. See shadow-candidates.ts for
+        // the full pattern catalogue.
+        const priorFileSet = new Set<string>(
+          existingMeta?.fileHashes ? Object.keys(existingMeta.fileHashes) : [],
+        );
+        const shadowSeed: string[] = [];
+        for (const added of hashDiff.added) {
+          for (const cand of shadowCandidatesFor(added)) {
+            if (priorFileSet.has(cand) && !writableFiles.has(cand)) {
+              shadowSeed.push(cand);
+            }
+          }
+        }
+
+        {
+          // Batched per depth level (#2409): one IN-list query per ~200-path
+          // chunk instead of one query per frontier file — a ~700-file frontier
+          // used to cost ~700 sequential lock-taking round-trips (~5.6s). The
+          // closure is identical: importers already in writableFiles are not
+          // re-frontiered, exactly like the per-file loop's membership check.
+          let frontier: string[] = [...writableFiles, ...hashDiff.deleted, ...shadowSeed];
+          for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
+            const importers = await queryImportersBatch(frontier, {
+              onChunkFailure: () => {
+                log(
+                  'Warning: importer accounting is incomplete; the full graph will still be written.',
+                );
+              },
+            });
+            const nextFrontier: string[] = [];
+            for (const i of importers) {
+              if (!writableFiles.has(i)) {
+                writableFiles.add(i);
+                nextFrontier.push(i);
+              }
+            }
+            frontier = nextFrontier;
+          }
+        }
+        const importerExpansion =
+          writableFiles.size - directlyChangedCount - resolutionGroupExpansion;
+        incrementalStats = {
+          changedFiles: hashDiff.changed.length + hashDiff.added.length + hashDiff.deleted.length,
+          reparsedFiles: pipelineResult.reparsedFileCount,
+          affectedDependents: resolutionGroupExpansion + importerExpansion,
+          deletedFiles: hashDiff.deleted.length,
+          writeMode: 'full',
+        };
+        if (importerExpansion > 0) {
+          log(
+            `Incremental: +${importerExpansion} importer(s) affected (BFS depth ≤ ${MAX_IMPORTER_BFS_DEPTH})`,
+          );
+        }
+        log(
+          `Incremental: changed=${hashDiff.changed.length}, added=${hashDiff.added.length}, ` +
+            `deleted=${hashDiff.deleted.length}; writing a compact full graph`,
+        );
+        addGateReason({
+          key: 'escalated-full-write',
+          forcing: false,
+          text: 'switching to a full DB write (fresh bulk COPY) to avoid native row-update storage growth.',
+        });
+        announceFollowUp();
+      }
+      // Metadata from an older run can undercount paid legacy vectors. Rescue
+      // them before any fresh-file replacement, not only when an extension
+      // blocks selective DML. Modern vector generations are separate artifacts.
+      if (rescueLegacyEmbeddings) {
+        adoptCachedEmbeddings(await loadCachedEmbeddings());
+        if (inheritedUnsafeNodeIds.size > 0) {
+          const rows = cachedSnapshot.rows.filter((row) => !inheritedUnsafeNodeIds.has(row.nodeId));
+          cachedSnapshot = {
+            ...cachedSnapshot,
+            rows,
+            embeddingNodeIds: new Set(rows.map((row) => row.nodeId)),
+          };
+        }
+        if (cacheRowCount(cachedSnapshot) > 0) {
+          log(
+            `Preserving ${cacheRowCount(cachedSnapshot)} embedding row(s) omitted from index metadata.`,
+          );
+        }
+      }
     } catch (error) {
       discardCachedEmbeddingSpill();
-      if (liveIndexMutationStarted) recordLiveIndexMutationRisk(error);
       throw error;
+    } finally {
+      await closeLbug();
     }
+  }
+
+  // A staged failure leaves the published graph and its metadata intact. Only
+  // platforms using the in-place full-write fallback need a dirty marker.
+  if (existingMeta && !useAtomicSwap) {
+    const now = Date.now();
+    await saveGraphDirtyState({
+      ...existingMeta,
+      incrementalInProgress: {
+        startedAt: now,
+        updatedAt: now,
+        phase: 'full-rebuild',
+        toWriteCount: 0,
+        ...storedRebuildReasons(),
+      },
+    });
+  }
+  await closeLbug();
+  if (buildPath === lbugPath) liveIndexMutationStarted = true;
+  try {
+    await wipeLbugDbFiles(buildPath);
+  } catch (error) {
+    discardCachedEmbeddingSpill();
+    if (liveIndexMutationStarted) recordLiveIndexMutationRisk(error);
+    throw error;
   }
 
   // Size the buffer pool to the graph just built by the pipeline (a page cache
@@ -4052,8 +3900,7 @@ async function runFullAnalysisInner(
   // The checkpoint counters are process-global (`analyze --watch` reruns analyze in
   // one process), so a failure report counts only this run's from here (#3530).
   const checkpointsAtRunStart = readCheckpointActivity();
-  // Full rebuild (POSIX) builds into the temp `buildPath`; incremental and
-  // Windows use `buildPath === lbugPath` in place.
+  // The platform policy chooses a fresh staging file or an in-place rebuild.
   try {
     await initAnalysisLbug(buildPath);
   } catch (error) {
@@ -4064,7 +3911,7 @@ async function runFullAnalysisInner(
     const failureMessage = describeThrown(error);
     const diagnosis = await diagnoseClassifiedFailure(
       failureMessage,
-      stagedBuildModeOf(stagedBuild, atomicIncremental),
+      stagedBuildModeOf(stagedBuild),
       { liveIndex: lbugPath, ...(stagedBuild ? { stagingCopy: buildPath } : {}) },
       checkpointsAtRunStart,
     );
@@ -4082,38 +3929,13 @@ async function runFullAnalysisInner(
   // Opt-out via `GITNEXUS_WAL_MANUAL_CHECKPOINT=0` (the driver itself
   // returns a no-op handle when disabled). Analyze-only: MCP and serve
   // paths continue to rely on the close-time CHECKPOINT in `safeClose`.
-  // `let`: the incremental branch's escalation valve (#2409) stops this driver
-  // around its close→wipe→reopen strategy switch and starts a fresh one.
-  let walCheckpointDriver: WalCheckpointDriver = startWalCheckpointDriver();
-  // #2409 escalation valve outcome, hoisted above the incremental branch so
-  // the vector-index recreation seam in Phase 4 below can tell "surgical
-  // incremental" (DB files survived — the HNSW index with them) apart from
-  // "escalated full write" (DB wiped, index destroyed) — tri-review
-  // 4669518496 P1. Hoisted again above the `try` so the failure handler can
-  // classify an escalated run as a rebuild (#3530).
-  let escalatedFullWrite = false;
+  const walCheckpointDriver: WalCheckpointDriver = startWalCheckpointDriver();
   try {
     // All work after initLbug is wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle
     // must be released to avoid blocking subsequent invocations.
 
     let lbugMsgCount = 0;
-    let incrementalStats: AnalyzeResult['incrementalStats'];
-    // Phase 3.5's restore scope (FIX 3 of this shipping review): on the
-    // SURGICAL write plan this is the exact file set whose rows
-    // deleteNodesForFiles just removed — only THOSE files' cached embedding
-    // rows need re-inserting (everything else still sits in the DB, and
-    // re-inserting it would PK-conflict). `null` means the DB was wiped
-    // (full rebuild or escalated write): the embedding table is fresh and
-    // every cached row must come back. Deriving this in memory replaces the
-    // old whole-table `RETURN e.id` pre-read, which rescanned data this
-    // process already holds and — worse — ran a read against the DB between
-    // writeback and finalize for no recovery benefit.
-    let deletedFilePathsForRestore: Set<string> | null = null;
-    // True once this run has persisted only a CHANGED SUBGRAPH. The post-write
-    // collapse check compares the whole in-memory graph against the whole DB,
-    // which is only a like-for-like comparison on a full rebuild.
-    let wroteChangedSubgraphOnly = false;
     const markIncrementalGraphVerification = async (): Promise<void> => {
       if (buildPath !== lbugPath) return;
       const latest = await loadMeta(metaDir);
@@ -4132,806 +3954,22 @@ async function runFullAnalysisInner(
         },
       });
     };
-    let incrementalFtsRebuildTables: Set<string> | undefined;
-    if (isIncremental && hashDiff) {
-      // ── Incremental DB writeback ───────────────────────────────────
-      // 0. Expand the writable set with transitive importers of
-      //    changed/deleted files (bounded BFS).
-      //
-      //    Reason (Bugbot/Claude review on PR #1479): when a barrel /
-      //    re-export file C changes, cross-file resolution may update
-      //    CALLS edges between two unchanged files A and B (A imports
-      //    from C, C re-exports something from B). Those refined edges
-      //    live in `ctx.graph` but would be excluded from the subgraph
-      //    if neither endpoint is in the changed set. To catch this,
-      //    files that imported (directly OR transitively, through
-      //    other unchanged intermediaries) any changed file get pulled
-      //    into the writable set so their rows are deleted + rewritten
-      //    against the refined edges.
-      //
-      //    BFS bound: MAX_IMPORTER_BFS_DEPTH. Practically sized to
-      //    catch nested barrel chains (e.g. `index.ts → submodule/index.ts
-      //    → submodule/impl.ts`) without ballooning into a near-full-
-      //    rebuild on monorepos with deep re-export pyramids. Beyond
-      //    this depth, the "incremental ≡ full-rebuild" invariant is
-      //    self-acknowledged as best-effort; `--force` remains the
-      //    escape hatch documented in GUARDRAILS.md.
-      //
-      //    `queryImportersBatch` reads `IMPORTS` from the pre-pipeline DB
-      //    state, so the result is "files that USED TO import the
-      //    target" — exactly the set whose previously-stored edges may
-      //    no longer match what cross-file resolution produces this run.
-      const MAX_IMPORTER_BFS_DEPTH = 4;
-      // Escalation thresholds (#2409) live with shouldEscalateIncrementalWrite
-      // in incremental/escalation-gate.ts (pure predicate, boundary-tested).
-      const writableFiles = new Set<string>(hashDiff.toWrite);
-      const directlyChangedCount = writableFiles.size;
-      // Resolution groups can change edges between unchanged files without an
-      // import or a new-graph edge touching the changed/deleted member. Expand
-      // before the importer walk so dependents of these siblings refresh too.
-      const { collectResolutionGroupFiles } = await import('./incremental/resolution-groups.js');
-      for (const filePath of collectResolutionGroupFiles(
-        [...hashDiff.toWrite, ...hashDiff.deleted],
-        allFilePaths,
-      )) {
-        writableFiles.add(filePath);
-      }
-      const resolutionGroupExpansion = writableFiles.size - directlyChangedCount;
-      if (resolutionGroupExpansion > 0) {
-        log(
-          `Incremental: +${resolutionGroupExpansion} resolution sibling(s) added to writable set`,
-        );
-      }
-      const dirtyStartedAt = existingMeta!.incrementalInProgress?.startedAt ?? Date.now();
-      // Dropped-chunk observability (tri-review 4669518496 P2-5): counts
-      // importer-BFS chunks whose IMPORTS query failed across ALL depths
-      // (degrade-don't-fail — the expansion shrinks instead of the run
-      // dying). Stamped into the #2410 crash diagnostics by
-      // saveIncrementalDirtyState ITSELF (FIX 6 of this shipping review),
-      // not by per-call-site spreads: the closure rebuilds its object from
-      // scratch on every call, so a count riding along at only some sites
-      // meant any newly added save site would silently erase it — exactly
-      // the phases where #2409-class crashes happen. >0-only semantics
-      // unchanged: unconditional zero-stamping would churn every
-      // strict-equality consumer of the diagnostics shape.
-      let droppedImporterChunks = 0;
-      const saveIncrementalDirtyState = async (
-        phase: string,
-        extra: Partial<NonNullable<RepoMeta['incrementalInProgress']>> = {},
-      ): Promise<void> => {
-        // Do not stamp live metadata while writing a staging database.
-        if (buildPath !== lbugPath) return;
-        await saveGraphDirtyState({
-          ...existingMeta!,
-          incrementalInProgress: {
-            startedAt: dirtyStartedAt,
-            updatedAt: Date.now(),
-            phase,
-            toWriteCount: writableFiles.size,
-            directWriteCount: directlyChangedCount,
-            ...(droppedImporterChunks > 0 ? { droppedImporterChunks } : {}),
-            // Rebuilt from the live collector on every call, so the escalation
-            // reason (added just before the 'escalated-full-write' save) rides
-            // on that stamp and every later one (#3137).
-            ...storedRebuildReasons(),
-            ...extra,
-          },
-        });
-      };
+    await loadGraphToLbug(
+      pipelineResult.graph,
+      pipelineResult.repoPath,
+      storagePath,
+      (msg) => {
+        lbugMsgCount++;
+        const pct = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
+        progress('lbug', pct, msg);
+      },
+      pipelineResult.pdgEmitManifest,
+      pipelineResult.graphEmitManifest,
+      contentRetention,
+    );
 
-      // Shadow-seed: for ADDED files, the importer query returns 0 (the new
-      // file has no IMPORTS rows in the pre-pipeline DB yet). But pre-
-      // existing unchanged files may have IMPORTS edges whose module-
-      // resolution claim the newcomer can steal under standard JS/TS
-      // resolution (Bugbot review on PR #1479). For each added file we
-      // derive the shadow candidates and, if the candidate was a known
-      // file in the prior meta, seed it into the BFS frontier so its
-      // importers — surfaced via the importer BFS — get their CALLS edges
-      // re-resolved against the new file. See shadow-candidates.ts for
-      // the full pattern catalogue.
-      const priorFileSet = new Set<string>(
-        existingMeta?.fileHashes ? Object.keys(existingMeta.fileHashes) : [],
-      );
-      const shadowSeed: string[] = [];
-      for (const added of hashDiff.added) {
-        for (const cand of shadowCandidatesFor(added)) {
-          if (priorFileSet.has(cand) && !writableFiles.has(cand)) {
-            shadowSeed.push(cand);
-          }
-        }
-      }
-
-      {
-        // Batched per depth level (#2409): one IN-list query per ~200-path
-        // chunk instead of one query per frontier file — a ~700-file frontier
-        // used to cost ~700 sequential lock-taking round-trips (~5.6s). The
-        // closure is identical: importers already in writableFiles are not
-        // re-frontiered, exactly like the per-file loop's membership check.
-        let frontier: string[] = [...writableFiles, ...hashDiff.deleted, ...shadowSeed];
-        for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
-          const importers = await queryImportersBatch(frontier, {
-            onChunkFailure: () => {
-              droppedImporterChunks += 1;
-            },
-          });
-          const nextFrontier: string[] = [];
-          for (const i of importers) {
-            if (!writableFiles.has(i)) {
-              writableFiles.add(i);
-              nextFrontier.push(i);
-            }
-          }
-          frontier = nextFrontier;
-        }
-      }
-      const importerExpansion =
-        writableFiles.size - directlyChangedCount - resolutionGroupExpansion;
-      incrementalStats = {
-        changedFiles: hashDiff.changed.length + hashDiff.added.length + hashDiff.deleted.length,
-        reparsedFiles: pipelineResult.reparsedFileCount,
-        affectedDependents: resolutionGroupExpansion + importerExpansion,
-        deletedFiles: hashDiff.deleted.length,
-        writeMode: 'incremental',
-      };
-      await saveIncrementalDirtyState('importer-bfs', {
-        importerExpansion,
-        shadowSeedCount: shadowSeed.length,
-      });
-      if (importerExpansion > 0) {
-        log(
-          `Incremental: +${importerExpansion} importer(s) added to writable set ` +
-            `(BFS depth ≤ ${MAX_IMPORTER_BFS_DEPTH}` +
-            (shadowSeed.length > 0 ? `, ${shadowSeed.length} shadow-seed(s)` : '') +
-            `)`,
-        );
-      }
-
-      // 1. Compute the EFFECTIVE write-set (Finding 1). Two layers,
-      //    composed:
-      //      (a) `writableFiles` — toWrite ∪ resolution siblings ∪ transitive
-      //          importers of changed/deleted files and their siblings (the
-      //          bounded BFS above, reading IMPORTS from the pre-pipeline DB).
-      //      (b) `computeEffectiveWriteSet` — walks the NEW graph's
-      //          edges and pulls in any unchanged-side file that sits
-      //          on a writable-boundary-crossing edge (catches refined
-      //          cross-file CALLS edges that the pre-run DB couldn't
-      //          predict, e.g. a barrel re-export shifting `foo` from
-      //          B to D).
-      //    The composed set is the input to BOTH deleteNodesForFiles
-      //    and extractChangedSubgraph — asymmetry between the two would
-      //    leave stale rows or PK-conflict at COPY time.
-      const effectiveWriteSet = computeEffectiveWriteSet(pipelineResult.graph, writableFiles);
-
-      const springConfigChanged =
-        hashDiff.toWrite.some((filePath) => classifySpringConfigFile(filePath) !== null) ||
-        hashDiff.deleted.some((filePath) => classifySpringConfigFile(filePath) !== null);
-      if (springConfigChanged) {
-        const unresolvedPrefix = escapeCypherString(SPRING_CONFIG_UNRESOLVED_PREFIX);
-        const persistedSpringConfigConsumers = (await executeQuery(
-          'MATCH (n:Property) ' +
-            `WHERE n.description CONTAINS '${unresolvedPrefix}' ` +
-            'RETURN n.id AS id, n.description AS description ' +
-            'UNION ALL ' +
-            'MATCH (n:Class) ' +
-            `WHERE n.description CONTAINS '${unresolvedPrefix}' ` +
-            'RETURN n.id AS id, n.description AS description ' +
-            'UNION ALL ' +
-            'MATCH (n:Record) ' +
-            `WHERE n.description CONTAINS '${unresolvedPrefix}' ` +
-            'RETURN n.id AS id, n.description AS description',
-        )) as PersistedSpringConfigConsumerRow[];
-        const springConfigConsumerDriftFiles = collectSpringConfigConsumerDriftFiles(
-          pipelineResult.graph,
-          persistedSpringConfigConsumers,
-        );
-        for (const filePath of springConfigConsumerDriftFiles) effectiveWriteSet.add(filePath);
-        if (springConfigConsumerDriftFiles.size > 0) {
-          log(
-            `Incremental: +${springConfigConsumerDriftFiles.size} file(s) added for ` +
-              'Spring config consumer property drift',
-          );
-        }
-      }
-
-      // `frameworkAnnotations` is derived from cross-file JVM visibility, so
-      // an unchanged Class row can change when a same-package declaration is
-      // added or removed without producing an IMPORTS edge. Compare the fresh
-      // graph against the pre-write DB and rewrite only files whose persisted
-      // value drifted. Add them after edge-boundary expansion: relationships
-      // touching these files are already included by extractChangedSubgraph,
-      // while pulling every unchanged neighbor would add no correctness.
-      // Only supported Spring Bean source changes can alter this property;
-      // avoid materializing every persisted Class row for unrelated language
-      // updates. Check deleted paths too so removing/renaming a Java shadowing
-      // declaration still refreshes unchanged Spring candidates.
-      const beanSourceChanged =
-        hashDiff.toWrite.some(isSpringBeanCandidateSourceFile) ||
-        hashDiff.deleted.some(isSpringBeanCandidateSourceFile);
-      if (beanSourceChanged) {
-        const persistedFrameworkAnnotations = (await executeQuery(
-          'MATCH (c:Class) ' + 'RETURN c.id AS id, c.frameworkAnnotations AS frameworkAnnotations',
-        )) as PersistedFrameworkAnnotationRow[];
-        const frameworkAnnotationDriftFiles = collectFrameworkAnnotationDriftFiles(
-          pipelineResult.graph,
-          persistedFrameworkAnnotations,
-        );
-        for (const filePath of frameworkAnnotationDriftFiles) effectiveWriteSet.add(filePath);
-        if (frameworkAnnotationDriftFiles.size > 0) {
-          log(
-            `Incremental: +${frameworkAnnotationDriftFiles.size} file(s) added for ` +
-              'framework annotation property drift',
-          );
-        }
-
-        const persistedSpringBeanDeclarations = (await executeQuery(
-          'MATCH (m:Method)-[r:CodeRelation]->(b:CodeElement) ' +
-            "WHERE r.type = 'DECLARES' AND r.reason STARTS WITH 'spring-bean-factory:' " +
-            'RETURN b.id AS id, b.filePath AS filePath, r.reason AS reason',
-        )) as PersistedSpringBeanDeclarationRow[];
-        const springBeanDeclarationDriftFiles = collectSpringBeanDeclarationDriftFiles(
-          pipelineResult.graph,
-          persistedSpringBeanDeclarations,
-        );
-        for (const filePath of springBeanDeclarationDriftFiles) effectiveWriteSet.add(filePath);
-        if (springBeanDeclarationDriftFiles.size > 0) {
-          log(
-            `Incremental: +${springBeanDeclarationDriftFiles.size} file(s) added for ` +
-              'Spring Bean factory declaration drift',
-          );
-        }
-      }
-      // Deduped: deleted entries may already appear via importer-BFS
-      // expansion (the importer BFS can return a now-deleted path), which
-      // would otherwise hand deleteNodesForFiles the same path twice in one
-      // batch (Bugbot LOW finding on PR #1479).
-      const filesToDelete = [...new Set([...effectiveWriteSet, ...hashDiff.deleted])];
-      await saveIncrementalDirtyState('effective-write-set', {
-        importerExpansion,
-        shadowSeedCount: shadowSeed.length,
-        effectiveWriteCount: effectiveWriteSet.size,
-        deleteCount: filesToDelete.length,
-      });
-
-      // Escalation valve (#2409): when the effective write set covers most of
-      // the repo, per-file surgery is strictly worse than the proven
-      // wipe-and-bulk-COPY plan — the same data volume lands either way, but
-      // the surgical plan pays per-table deletes plus COPY-into-non-empty
-      // tables, and at this size it measured SLOWER than a full DB load. The
-      // pipeline already produced the FULL graph (it always does), so only the
-      // DB write plan changes here; fileHashes/meta bookkeeping is identical.
-      // Thresholds + the AND-gate live in incremental/escalation-gate.ts.
-      const writeFraction = effectiveWriteSet.size / Math.max(1, allFilePaths.length);
-      // VECTOR gate (#2623) — load the extension BEFORE a single embedding row
-      // is touched. `deleteNodesForFiles` below opens with the CodeEmbedding
-      // join-delete, and LadybugDB refuses all DML on a table carrying its HNSW
-      // index unless VECTOR is loaded on this connection; nothing else on this
-      // path loads it until Phase 4, so every incremental run over a DB that
-      // already built `code_embedding_idx` died here. Same seam the FTS drop
-      // occupies at the head of this branch (#2589): index lifecycle first,
-      // then rows. UNCONDITIONAL — not gated on `shouldGenerateEmbeddings` —
-      // because a DB carrying the index from an earlier `--embeddings` run hits
-      // the identical wall on a plain incremental run.
-      //
-      // When VECTOR genuinely cannot load, the table is immutable (the index
-      // cannot be dropped without the extension either), so surgery is
-      // impossible: fall through to the escalation valve's wipe-and-COPY plan,
-      // which rebuilds the DB files outright and needs no embedding-row DML.
-      //
-      // FTS twin (#2841): the identical wall exists for every table carrying an
-      // FTS index — LadybugDB refuses the DML at BIND time, so even a zero-row
-      // DETACH DELETE fails, and `DROP_FTS_INDEX` is itself an FTS-extension
-      // function (there is no SQL `DROP INDEX` at all), so the indexes cannot be
-      // cleared in place either. Same verdict, same remedy: escalate. Both gates
-      // share ONE `SHOW_INDEXES` read — they answer different questions about the
-      // same catalog snapshot, and nothing between here and the write plan
-      // creates or drops an index.
-      const indexCatalogRows = await readIndexCatalogSnapshot();
-      const embeddingRowDmlSafe = await ensureEmbeddingRowDmlSafe(indexCatalogRows);
-      const ftsRowDmlSafe = await ensureFtsRowDmlSafe(indexCatalogRows, {
-        skipFts: Boolean(ftsDisabledReason),
-      });
-      const extensionForcedRebuild = !embeddingRowDmlSafe || !ftsRowDmlSafe;
-      // `!options.dropEmbeddings` (H1): this rescue reads the rows back OUT of
-      // the DB, so it must never fire on the one path whose entire purpose is to
-      // destroy them. `--drop-embeddings` deliberately leaves `cachedSnapshot`
-      // empty (`deriveEmbeddingMode` returns `shouldLoadCache: false` for it by
-      // construction — see the four-mode comment at the cache-load site), and its
-      // `drop-embeddings` rebuild reason is only collected INSIDE
-      // `if (existingMeta?.embeddingCheckpoint)`, so a repo without a checkpoint
-      // stays incremental and arrives here holding exactly the state the rescue
-      // reads as "the index metadata did not account for them" — restoring the N
-      // rows the operator just asked to wipe, printing `Preserving N` on top of
-      // this run's own `Dropping N` line, and exiting 0.
-      //
-      // The predicate has to be the FLAG, not `shouldLoadCache`: that would also
-      // disable the rescue in the case it exists for (meta says 0 embeddings
-      // while rows survive ⇒ `hasExisting` false ⇒ `shouldLoadCache` false), i.e.
-      // it would fix the wipe by deleting the safeguard. Covers
-      // `--drop-embeddings --embeddings` too — the rescue repopulates
-      // `cachedSnapshot.embeddingNodeIds`, which Phase 4 hands `runEmbeddingPipeline` as
-      // the already-embedded set, so the very nodes the user asked to REGENERATE
-      // would be skipped.
-      if (
-        extensionForcedRebuild &&
-        !options.dropEmbeddings &&
-        cacheRowCount(cachedSnapshot) === 0
-      ) {
-        // The escalation below WIPES the DB files, and Phase 3.5 restores
-        // embedding rows from `cachedSnapshot` — which is only populated when
-        // `deriveEmbeddingMode` saw `meta.stats.embeddings > 0`. A DB whose meta
-        // under-reports its embeddings (meta restored from an older run, or a
-        // count that never got stamped) would therefore have every vector
-        // silently destroyed by a rebuild it did not ask for. Read them now,
-        // while the DB is still intact — a plain MATCH, which needs no VECTOR
-        // extension. Rows whose owning node is gone are dropped by Phase 3.5's
-        // live-graph filter, exactly as on any other wiped path.
-        try {
-          adoptCachedEmbeddings(await loadCachedEmbeddings());
-          if (cacheRowCount(cachedSnapshot) > 0) {
-            log(
-              `Preserving ${cacheRowCount(cachedSnapshot)} embedding row(s) across the forced rebuild ` +
-                `(the index metadata did not account for them).`,
-            );
-          }
-        } catch (err: any) {
-          discardCachedEmbeddings();
-          if (err instanceof EmbeddingIntegrityError) throw err;
-          log(
-            `Warning: could not load cached embeddings ` +
-              `(${err?.message ?? String(err)}). ` +
-              `Embeddings will not be preserved on this run.`,
-          );
-        }
-      }
-      // Hoisted out of the `||` below (§5.D): the size verdict has to be KNOWN
-      // even when a blocked extension already forced the rebuild, or the message
-      // cannot report both. Pure predicate over three numbers
-      // (incremental/escalation-gate.ts), so evaluating it unconditionally costs
-      // nothing and has no side effects.
-      const sizeForcedRebuild = shouldEscalateIncrementalWrite(
-        filesToDelete.length,
-        effectiveWriteSet.size,
-        allFilePaths.length,
-      );
-      if (extensionForcedRebuild || sizeForcedRebuild) {
-        escalatedFullWrite = true;
-        // #3016: escalation converts this run into a wipe + full bulk COPY of
-        // the in-memory graph, so the derived layer the skip was betting on
-        // preserving has to exist in that graph after all. Same reasoning as
-        // the not-incremental branch above, just discovered later.
-        if (preserveDerivedLayer) {
-          progress('communities', 63, 'Detecting code communities and flows...');
-          await pipelineResult.runDeferredDerivedPhases?.();
-        }
-        // Every live cause is named, not just the first: a DB can carry BOTH a
-        // vector index and FTS indexes, and reporting one cause while the other
-        // is equally fatal is how #2841 stayed mis-diagnosed for so long. §5.D:
-        // that argument crosses the extension/size boundary too, so the size
-        // cause is APPENDED here rather than selected between — the old either/or
-        // ternary dropped the write-set line whenever an extension also blocked.
-        const escalationCauses: string[] = [];
-        const degradedEffects: string[] = [];
-        // H5: `readIndexCatalogRows()` returning nothing means "could not prove
-        // anything", and both gates correctly fail CLOSED on it — but a
-        // fail-closed sentinel is not evidence. Asserting "the CodeEmbedding
-        // vector index exists" from it is affirmatively FALSE on a repo that
-        // never enabled embeddings, and the only truthful signal (the adapter's
-        // `Could not read the LadybugDB index catalog` warning) goes to the pino
-        // stderr stream, NOT this `onLog` callback — so `gitnexus serve` and the
-        // analyze worker UI would show the invented claim alone. Emit one honest
-        // cause naming the unsettled read instead of two fabricated ones.
-        // Tested against the explicit sentinel, NOT truthiness: §5.A made the
-        // failed read representable (`INDEX_CATALOG_UNREADABLE`) precisely so
-        // "the caller passed nothing" and "the caller tried and could not prove
-        // anything" stop sharing one value — and the sentinel is a Symbol, so a
-        // `!indexCatalogRows` test would silently never fire here.
-        const indexCatalogUnreadable = indexCatalogRows === INDEX_CATALOG_UNREADABLE;
-        // `extensionForcedRebuild &&`: an unreadable catalog is only a CAUSE
-        // when it actually blocked something. A size-only escalation whose
-        // catalog read happened to fail still had both gates answer "safe"
-        // (both extensions loaded), and claiming otherwise would trade one
-        // invented cause for another.
-        if (extensionForcedRebuild && indexCatalogUnreadable && !ftsDisabledReason) {
-          const blockedExtensions = [
-            !embeddingRowDmlSafe ? 'VECTOR' : undefined,
-            !ftsRowDmlSafe ? 'FTS' : undefined,
-          ].filter((name): name is string => name !== undefined);
-          escalationCauses.push(
-            `the LadybugDB index catalog could not be read (the read error is on the analyzer's ` +
-              `warning stream), so neither a live ${EMBEDDING_TABLE_NAME} vector index nor a live ` +
-              `FTS search index could be ruled out, and the ${blockedExtensions.join(' and ')} ` +
-              `extension${blockedExtensions.length > 1 ? 's' : ''} could not be loaded to rewrite ` +
-              `indexed rows in place either`,
-          );
-        }
-        if (!embeddingRowDmlSafe) {
-          if (!indexCatalogUnreadable) {
-            escalationCauses.push(
-              `the ${EMBEDDING_TABLE_NAME} vector index exists but the VECTOR extension could not be ` +
-                `loaded, so embedding rows cannot be rewritten in place`,
-            );
-          }
-          degradedEffects.push(
-            'Semantic search falls back to exact scan until VECTOR is available.',
-          );
-        }
-        if (!ftsRowDmlSafe && ftsDisabledReason) {
-          escalationCauses.push(
-            'FTS is explicitly disabled and existing search indexes could not be ruled out; ' +
-              'a fresh graph store is required before writing rows without the extension',
-          );
-        } else if (!ftsRowDmlSafe) {
-          if (!indexCatalogUnreadable) {
-            // Self-contained subject (H5): `join('; and ')` used to render "…the
-            // CodeEmbedding vector index exists … and THIS INDEX carries FTS
-            // search indexes…", pointing "this index" at the vector index just
-            // named — and an index does not carry indexes.
-            escalationCauses.push(
-              `the graph store carries one or more FTS search indexes but the FTS extension could ` +
-                `not be loaded, so no indexed table can be written in place (LadybugDB refuses the ` +
-                `write at bind time, and the indexes cannot be dropped without the extension either)`,
-            );
-          }
-          degradedEffects.push('Full-text/BM25 search stays degraded until FTS is available.');
-        }
-        if (sizeForcedRebuild) {
-          escalationCauses.push(
-            `the effective write set covers ${effectiveWriteSet.size}/${allFilePaths.length} ` +
-              // Display clamp only (predicate unchanged): BFS-found deleted
-              // importers can push the numerator past the CURRENT file list, so
-              // the raw fraction can exceed 1 — see the population-mismatch note
-              // on shouldEscalateIncrementalWrite (tri-review 4669518496).
-              `files (${Math.min(100, Math.round(writeFraction * 100))}%)`,
-          );
-        }
-        // Remedy by CLASSIFICATION, never hand-written (#2841 review H3). The
-        // old tail always said "run `gitnexus doctor` … or set
-        // GITNEXUS_LBUG_EXTENSION_INSTALL=auto", which is affirmatively WRONG
-        // for the `missing_dependency` class (Windows error 126 / absent
-        // OpenSSL 3, #2374/#2669): its own remedy states that reinstalling will
-        // not help, and that class is precisely the environment this escalation
-        // path was registered for on the Windows matrix. Every other rendering
-        // in this file already routes through `diagnoseExtensionLoad` — the
-        // FTS_UNAVAILABLE_LEAD degrade log and the `--repair-fts` failure tail
-        // — so this one does too, once per BLOCKED extension and with that
-        // extension's own label, because the FTS-specific advice the classifier
-        // emits (`gitnexus analyze --repair-fts`) must never be dispensed for
-        // VECTOR. Emitted verbatim and alone: only the classified remedy
-        // reaches the user, never the raw load `reason`, so the message stays
-        // path-free (#2374/#2375 redaction contract). Reached exactly when an
-        // extension blocked the write — `degradedEffects` is pushed by the two
-        // `!…RowDmlSafe` branches above and by nothing else, and each of those
-        // gates only answers `false` after its own load attempt failed, so the
-        // capability record it reads is always populated. Looked up through the
-        // shared `getExtensionCapability`/`getFtsCapability` accessors rather
-        // than a sixth hand-spelled `.find((c) => c.name === …)`: the extension
-        // NAME is the one string the lookup is keyed on, and it belongs in
-        // extension-loader.ts.
-        const extensionRemedies = [
-          !embeddingRowDmlSafe
-            ? { reason: getExtensionCapability('VECTOR')?.reason, label: 'VECTOR' }
-            : undefined,
-          !ftsRowDmlSafe && !ftsDisabledReason
-            ? { reason: getFtsCapability()?.reason, label: 'FTS' }
-            : undefined,
-        ]
-          .filter((e): e is { reason: string | undefined; label: string } => e !== undefined)
-          .map(({ reason, label }) => {
-            const inspectPath = extractExtensionPath(reason);
-            return diagnoseExtensionLoad(
-              reason,
-              label,
-              inspectPath,
-              label === 'FTS' ? resolveFtsVersionPair(inspectPath) : undefined,
-            ).remedy;
-          });
-        // Announced through the collector as its post-pipeline follow-up, but
-        // non-forcing: `escalatedFullWrite` drives the write plan, and
-        // `options.force` stays as checkpoint 2 left it.
-        collector.add({
-          key: 'escalated-full-write',
-          text:
-            `incremental write escalated: ${escalationCauses.join('; and ')} — switching to a ` +
-            `full DB write (wipe + bulk COPY) for this run; file-level incremental bookkeeping ` +
-            `is unaffected.` +
-            (degradedEffects.length > 0
-              ? ` ${degradedEffects.join(' ')} ${extensionRemedies.join(' ')}`
-              : ''),
-          forcing: false,
-        });
-        announceFollowUp();
-        // toWriteCount: 0 is the established full-path dirty-flag sentinel;
-        // the real counters ride along for crash diagnostics.
-        await saveIncrementalDirtyState('escalated-full-write', {
-          toWriteCount: 0,
-          importerExpansion,
-          shadowSeedCount: shadowSeed.length,
-          effectiveWriteCount: effectiveWriteSet.size,
-          deleteCount: filesToDelete.length,
-        });
-        // Strategy switch: stop the checkpoint driver around the close so its
-        // in-flight CHECKPOINT can't race the reopen, drop the DB files
-        // (sidecars included), and bulk-load the full graph into a fresh DB —
-        // byte-for-byte the full-rebuild write plan. The wipe is the shared
-        // ENOENT-verified helper (#2409 + tri-review 4669518496 P2-4): a
-        // surviving family member throws a typed LbugWipeError here instead
-        // of letting the reopen below resurrect the rows this run just chose
-        // to replace wholesale.
-        // #2841 review H2 — never destroy the only complete index before its
-        // replacement is durable. `buildPath` was frozen ~440 lines above, while
-        // this run was still classified incremental, so it still points AT the
-        // live index: escalating without this upgrade means
-        // `wipeLbugDbFiles(lbugPath)` followed by a bulk COPY in place, and an
-        // interrupt, ENOSPC, or COPY failure anywhere in that window leaves NO
-        // complete index at all.
-        //
-        // That invariant is about RECOVERABILITY, which does not depend on why
-        // the run escalated — the wipe-then-COPY plan below is identical for
-        // both causes, so a size-forced escalation loses the index to a Ctrl-C
-        // exactly as an extension-forced one does. Both stage. The escalation
-        // rebuilds from the in-memory graph the pipeline already produced, so
-        // staging costs no `fs.copyFile` of the old DB: it is peak disk plus a
-        // rename — precisely what a plain `--force` full rebuild already pays
-        // unconditionally on POSIX.
-        //
-        // Safe because the gate runs BEFORE any row DML: the DB open at
-        // `buildPath` is unmutated, so switching targets loses nothing. The
-        // end-of-run swap publishes the staging file atomically, and a failure
-        // anywhere before it leaves the previous index live (its own comment
-        // says so) with the dirty flag already stamped above for recovery.
-        //
-        // Knock-on effects of flipping `useAtomicSwap` here, both intended:
-        // `ftsFailureIsFatal(..., useAtomicSwap)` now aborts instead of
-        // degrading on an FTS *integrity* error — which is exactly that
-        // predicate's documented staging contract (throwing abandons a
-        // throwaway file and keeps the live index) — and `forceRealCloseForSwap`
-        // engages on Windows, which is why the upgrade is gated on the same
-        // `posixSwap || windowsSwapOk` policy that governs every other swap.
-        // …but NOT when we are escalating out of ignorance. An unreadable
-        // catalog means `CALL SHOW_INDEXES()` itself failed, which on a real
-        // index means the store is damaged — e.g. a stray directory sitting at
-        // `lbug.wal.checkpoint` makes every open of that path an IO exception.
-        // Staging would then quietly write a fresh index NEXT to the damage,
-        // swap it in, and exit 0: the run "succeeds", the broken sidecar
-        // survives untouched, and the next in-place writeback trips over it
-        // again. Building in place keeps the underlying IO fault on the failure
-        // path where the operator gets a diagnosis (this is what
-        // `analyze-wal-checkpoint-failure.test.ts` pins). Staging protects a
-        // HEALTHY live index from a machine-level cause; it must not be used to
-        // route around a damaged one.
-        const catalogWasReadable = indexCatalogRows !== INDEX_CATALOG_UNREADABLE;
-        if (catalogWasReadable && !useAtomicSwap && (posixSwap || windowsSwapOk)) {
-          useAtomicSwap = true;
-          buildPath = `${lbugPath}.staging.${randomUUID()}`;
-          log(
-            'Incremental: building the replacement index alongside the live one and swapping it in ' +
-              'at the end, so an interrupted rebuild leaves the current index intact.',
-          );
-        }
-        await walCheckpointDriver.stop();
-        await closeLbug();
-        if (buildPath === lbugPath) liveIndexMutationStarted = true;
-        await wipeLbugDbFiles(buildPath);
-        await initAnalysisLbug(buildPath);
-        walCheckpointDriver = startWalCheckpointDriver();
-        await loadGraphToLbug(
-          pipelineResult.graph,
-          pipelineResult.repoPath,
-          storagePath,
-          (msg) => {
-            lbugMsgCount++;
-            const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
-            progress('lbug', pct, msg);
-          },
-          undefined,
-          undefined,
-          contentRetention,
-        );
-      } else {
-        // 1a. Drop every FTS index before touching a single row (#2589).
-        //     `deleteNodesForFiles` below DETACH DELETEs rows out of tables
-        //     that otherwise still carry the FTS index built at the end of
-        //     the PREVIOUS analyze run — Phase 3 doesn't drop+rebuild it
-        //     until well after this delete completes. LadybugDB's FTS
-        //     extension is not proven to survive DML against an indexed
-        //     table (its own docs never demonstrate it), and that ordering
-        //     is exactly what produced "FTS index 'file_fts' is
-        //     inconsistent: term is missing during delete". Dropping first
-        //     removes the hazard outright; Phase 3's createSearchFTSIndexes
-        //     rebuilds every index from the final row set regardless, so
-        //     this is a no-op on its own drop step there.
-        // Reuse the snapshot read at the gate above (#2841 cleanup): same run,
-        // same connection, and nothing on this branch creates or drops an index
-        // in between — so re-reading would only weaken the one-read invariant
-        // the snapshot type exists to enforce.
-        if (buildPath === lbugPath) liveIndexMutationStarted = true;
-        // FTS narrowing is independent of Leiden/flow reuse: even when this
-        // run re-derives communities, Ladybug still cannot DML a live FTS
-        // index (#2589), so only the tables this write set touches should
-        // lose their index. The probe is a question about the DB rather than
-        // the fresh graph — a symbol the edit DELETED is in no fresh graph
-        // but is still a row that has to go.
-        const tablesWithRows = await nodeTablesWithRowsForFiles(filesToDelete, NODE_TABLES);
-        // Narrowing 1 — the FTS sweep, from "every configured index" to "the
-        // indexes this run must touch". Three sources, and dropping any one of
-        // them strands something:
-        //   - what the writeback DELETES (the probe above), because a symbol
-        //     the edit removed is in no fresh graph but is still a row;
-        //   - what it INSERTS (the fresh graph), because inserting under a live
-        //     FTS index is the same #2589 hazard as deleting under one;
-        //   - what is MISSING right now, because narrowing to the written
-        //     tables would otherwise leave keyword search degraded forever on
-        //     tables whose index a previous escalation dropped — the next full
-        //     rebuild would be the only thing that ever restored them.
-        // An unreadable catalog proves nothing about that third set, so it
-        // withdraws the narrowing entirely rather than guess.
-        const missingFts = await missingSearchFTSIndexTables(indexCatalogRows);
-        const touchedFts = missingFts
-          ? new Set([
-              ...ftsTablesAmong(tablesWithRows),
-              ...incrementalFtsTablesFromGraph(pipelineResult.graph, new Set(filesToDelete)),
-              ...missingFts,
-            ])
-          : undefined;
-        // Graph-wide Spring synthetic Class nodes are DETACH DELETEd on this
-        // branch even when Class is not in the write set
-        // (`deleteSpringAutoConfigurationSyntheticClasses`). Always include
-        // Class so class_fts is not live across that DML (#2589), including
-        // when the fresh graph no longer materializes the synthetics but the
-        // DB still holds them.
-        if (touchedFts) {
-          touchedFts.add('Class');
-        }
-        incrementalFtsRebuildTables = touchedFts;
-        // MEMBER_OF / STEP_IN_PROCESS / ENTRY_POINT_OF edges hang off the nodes
-        // the DETACH DELETE below removes, so preserving the Community/Process
-        // nodes preserves only half the layer unless these are reattached after
-        // the subgraph write puts the member nodes back. Only the probed tables
-        // can own such an edge, so they are the only ones worth scanning.
-        const derivedSnapshot = preserveDerivedLayer
-          ? await snapshotDerivedRelsForFiles(filesToDelete, [...tablesWithRows])
-          : [];
-        await dropSearchFTSIndexes(indexCatalogRows, ftsIndexes, incrementalFtsRebuildTables);
-        // 1b. Remove the write set's existing rows — batched (#2409): one
-        //     DETACH DELETE per table per 200-file chunk. The former per-file
-        //     loop issued a count + delete per table per FILE — ~13k
-        //     single-row write transactions on a ~700-file write set — which
-        //     made this phase slower than a full rebuild and is the WAL-append
-        //     storm behind the native mid-writeback deaths in #2409. Errors
-        //     are NOT swallowed anymore: a zero-match file is a no-op by
-        //     construction, so anything thrown is a real engine failure that
-        //     must surface instead of silently skipping (that silent skip was
-        //     how #2409 hid its root cause).
-        progress('lbug', 62, `Removing rows for changed files (0/${filesToDelete.length})...`);
-        await deleteNodesForFiles(filesToDelete, {
-          onChunk: (done, total) =>
-            progress('lbug', 62, `Removing rows for changed files (${done}/${total})...`),
-          nodeTables: incrementalFtsRebuildTables
-            ? nodeTablesForIncrementalDelete(NODE_TABLES, incrementalFtsRebuildTables)
-            : undefined,
-        });
-        // Surgical path: Phase 3.5 restores exactly these files' embedding
-        // rows (FIX 3). Sound because deleteNodesForFiles propagates errors
-        // — reaching this line means every listed file's rows are gone
-        // deterministically — and this process holds the exclusive DB lock,
-        // so no concurrent writer can disturb the derivation.
-        deletedFilePathsForRestore = new Set(filesToDelete);
-        if (!preserveDerivedLayer) {
-          // 2. Drop graph-wide nodes (Community, Process). They'll be re-inserted
-          //    from the fresh pipeline output below. Required for the
-          //    "Leiden runs on the FULL graph" correctness invariant.
-          await deleteAllCommunitiesAndProcesses();
-        }
-        // 2a. Drop INJECTS edges (DI collection injection, #2200) — their
-        //     validity is a whole-program property (a third-file change to the
-        //     interface or an implementer creates/invalidates edges between two
-        //     untouched files), so endpoint-writability extraction can't refresh
-        //     them; extractChangedSubgraph re-includes all of them from the
-        //     fresh graph (isGraphWideRelType). UNCONDITIONAL, next to the
-        //     Communities delete — NOT inside the `options.pdg` block below: the
-        //     di phase runs on every persisting analyze (same !skipGraphPhases
-        //     regime as communities/processes) while the graph-wide re-include
-        //     is unconditional, so a pdg-gated delete would append without
-        //     deleting on every non-pdg incremental run (N runs = N copies of
-        //     every INJECTS row; CodeRelation has no PK and no read-side dedup).
-        await deleteAllInjects();
-        // 2b. Spring AOP pointcuts are matched against the full resolved graph;
-        // a third-file change can invalidate an edge between unchanged files.
-        // Rebuild the complete ADVISED_BY set on every incremental writeback.
-        await deleteAllAdvisedBy();
-        await deleteSpringAopEvidenceNodes();
-        // 2b-bis. Drop the whole async messaging overlay. A RESOLVED
-        //     Destination deliberately stores no filePath (so the per-file
-        //     DETACH DELETE cannot cut a node shared across files), which also
-        //     means the per-file delete can never REMOVE one that is now
-        //     orphaned, and the endpoint-writability extract can never ADD one
-        //     introduced by a new file. Delete-all here plus the graph-wide
-        //     re-include in extractChangedSubgraph rebuilds the layer whole;
-        //     the springDestinations phase recomputes it from the full file
-        //     list on every persisting analyze, so nothing is lost. Both halves
-        //     must move together — deleting without the re-include drops the
-        //     layer, re-including without the delete duplicates its edges.
-        await deleteAllDestinations();
-        // 2c. Drop Spring-owned DECLARES edges (#2415). The
-        //     auto-configuration phase scans every metadata file and recomputes
-        //     the full set each run; exact reason filtering leaves declarations
-        //     owned by other metadata systems untouched.
-        await deleteSpringAutoConfigurationDeclarations();
-        // 2d. Drop source-unavailable auto-configuration placeholders. Fresh
-        //     synthetic nodes are graph-wide in extractChangedSubgraph, so this
-        //     also removes an orphan when a newly-added real class takes over.
-        await deleteSpringAutoConfigurationSyntheticClasses();
-        // 2e. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
-        //     — their validity is a whole-program property (an A→C flow can be
-        //     invalidated by a change to an intermediate function on a third
-        //     file), so endpoint-writability extraction can't refresh them.
-        //     extractChangedSubgraph re-includes all of them from the fresh
-        //     graph (isGraphWideRelType), mirroring Community/Process.
-        if (options.pdg === true) {
-          await deleteAllInterprocTaintPaths();
-          // 2f. Drop CALL_SUMMARY edges (PDG FU-C) on an incremental `--pdg`
-          //     writeback. They are re-included from the FULL fresh graph
-          //     (isGraphWideRelType) and the callSummaries phase recomputes every
-          //     summary each run, so delete-all-then-rebuild keeps an unchanged
-          //     function's summary from being lost — same contract as TAINT_PATH.
-          await deleteAllCallSummaries();
-        }
-
-        // 3. Extract the changed subgraph from the FULL ctx.graph and write
-        //    only that. Unchanged-file rows in the DB stay untouched. Pass
-        //    the SAME effectiveWriteSet so the subgraph and the deletes
-        //    cover identical files (asymmetry would silently corrupt).
-        const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet, {
-          includeDerivedGraphWide: !preserveDerivedLayer,
-        });
-        wroteChangedSubgraphOnly = true;
-        await saveIncrementalDirtyState('load-graph', {
-          importerExpansion,
-          shadowSeedCount: shadowSeed.length,
-          effectiveWriteCount: effectiveWriteSet.size,
-          deleteCount: filesToDelete.length,
-        });
-        await loadGraphToLbug(
-          subgraph,
-          pipelineResult.repoPath,
-          storagePath,
-          (msg) => {
-            lbugMsgCount++;
-            const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
-            progress('lbug', pct, msg);
-          },
-          undefined,
-          undefined,
-          contentRetention,
-        );
-        if (preserveDerivedLayer && derivedSnapshot.length > 0) {
-          await restoreDerivedRels(derivedSnapshot);
-        }
-      }
-    } else {
-      // ── Full rebuild ───────────────────────────────────────────────
-      // Pass the streamed PDG-emit manifest (#2202) so the BasicBlock layer that
-      // was flushed to CSV during the emit loop is COPY'd alongside the
-      // structural CSVs. Only ever set on a full rebuild (streaming is
-      // force-gated), so the incremental branch above never carries it.
-      await loadGraphToLbug(
-        pipelineResult.graph,
-        pipelineResult.repoPath,
-        storagePath,
-        (msg) => {
-          lbugMsgCount++;
-          const pct = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
-          progress('lbug', pct, msg);
-        },
-        pipelineResult.pdgEmitManifest,
-        pipelineResult.graphEmitManifest,
-        contentRetention,
-      );
-    }
-
-    // Converged graph-boundary drain: incremental used to checkpoint here;
-    // full rebuild did not. One site so FTS always starts after a settled
-    // plan (post-escalation `buildPath`) and a recorded checkpoint outcome.
+    // Drain the fresh graph before building search indexes, and record the
+    // checkpoint outcome for the in-place recovery marker.
     const ftsWritePlan = resolveFtsWritePlan(buildPath, lbugPath);
     let boundaryCheckpointSucceeded = false;
     try {
@@ -4946,7 +3984,7 @@ async function runFullAnalysisInner(
           'Continuing; recovery will treat the graph-boundary checkpoint as unsuccessful.',
       );
     }
-    if (wroteChangedSubgraphOnly) {
+    if (isIncremental) {
       await markIncrementalGraphVerification();
       await reconcileGraphNodeIdentities(
         pipelineResult.graph,
@@ -5043,7 +4081,6 @@ async function runFullAnalysisInner(
       // successful graph/embeddings work — only keyword search degrades.
       const ftsResult = await buildSearchIndexesOrDegrade(executeQuery, {
         indexes: ftsIndexes,
-        tables: incrementalFtsRebuildTables,
         onIndexStart: options.verbose
           ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
           : undefined,
@@ -5051,7 +4088,7 @@ async function runFullAnalysisInner(
           ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
           : undefined,
       });
-      if (wroteChangedSubgraphOnly) await markIncrementalGraphVerification();
+      if (isIncremental) await markIncrementalGraphVerification();
       if (ftsResult.ok) {
         progress('fts', 90, 'Search indexes ready');
       } else if (ftsFailureIsFatal(ftsResult.failureClass, useAtomicSwap)) {
@@ -5104,45 +4141,14 @@ async function runFullAnalysisInner(
       progress('fts', 90, 'Search indexes skipped (FTS unavailable)');
     }
 
-    if (wroteChangedSubgraphOnly) {
+    if (isIncremental) {
       // FTS has returned. Later embedding/finalization failures must require
       // graph recovery, since post-FTS node identities are not yet certified.
       await markIncrementalGraphVerification();
     }
 
-    // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
-    // Runs on BOTH the full-rebuild path and the incremental path:
-    //   - Full rebuild / escalated write: DB was wiped, every cached row
-    //     needs to come back.
-    //   - Incremental (surgical): changed/deleted files' rows were just
-    //     deleted by deleteNodesForFiles (a REAL delete since tri-review
-    //     4669518496 P2-1 — it joins embedding rows through their owning
-    //     nodes), so changed-file vectors need to come back; unchanged-file
-    //     rows still exist. Bugbot review on PR #1479 flagged that gating
-    //     this on `!isIncremental` silently lost changed-file embeddings.
-    //
-    // Restore discipline (tri-review 4669518496 / KTD10, restore scope
-    // derived in memory since FIX 3 of this shipping review) — filtered and
-    // conflict-free, replacing the old insert-everything-and-swallow shape:
-    //   1. Live-graph filter: rows whose nodeId no longer exists in the
-    //      freshly-built FULL graph are dropped. The cache was read BEFORE
-    //      the pipeline ran, so it still carries deleted files' rows —
-    //      re-inserting them resurrected orphans (wholesale onto the wiped
-    //      paths' empty table) now that the delete above is real.
-    //   2. Restore-scope filter, derived WITHOUT touching the DB (the old
-    //      shape pre-read every surviving embedding id back out of the
-    //      table it had just written): on a wiped path
-    //      (`deletedFilePathsForRestore === null`) the table is fresh, so
-    //      every live row comes back; on the surgical path only rows whose
-    //      owning node's filePath is in the just-join-deleted set are
-    //      inserted — everything else still sits in the DB and would
-    //      PK-conflict. The derivation is sound because deleteNodesForFiles
-    //      propagates errors (a completed writeback means a deterministic
-    //      delete outcome) and this process holds the exclusive DB lock (no
-    //      concurrent writer).
-    // Materialize runs outside the insert catch so a spill I/O failure is not
-    // treated as a benign PK conflict. Any node with a failed restore batch is
-    // marked stale in the Phase 4 map so leftover chunks are deleted and rembedded.
+    // The graph database is fresh. Restore every compatible cached vector
+    // whose owning node still exists; omitted rows cannot leave legacy orphans.
     let restoredEmbeddingCount = 0;
     const restoreFailedNodeIds = new Set<string>();
     if (cacheRowCount(cachedSnapshot) > 0) {
@@ -5163,14 +4169,7 @@ async function runFullAnalysisInner(
         const liveEmbeddings = cachedSnapshot.rows.filter(
           (e) => pipelineResult.graph.getNode(e.nodeId) !== undefined,
         );
-        // (2) Restore-scope filter (see the discipline note above).
-        const rowsToRestore =
-          deletedFilePathsForRestore === null
-            ? liveEmbeddings
-            : liveEmbeddings.filter((e) => {
-                const filePath = pipelineResult.graph.getNode(e.nodeId)?.properties?.filePath;
-                return typeof filePath === 'string' && deletedFilePathsForRestore!.has(filePath);
-              });
+        const rowsToRestore = liveEmbeddings;
         progress('embeddings', 88, `Restoring ${rowsToRestore.length} cached embeddings...`);
         const EMBED_BATCH = 200;
         let spillReader: EmbeddingSpillReader | undefined;
@@ -5205,48 +4204,6 @@ async function runFullAnalysisInner(
           }
         } finally {
           spillReader?.close();
-        }
-
-        // Legacy-orphan sweep (FIX 3, finder B): the live-graph filter's
-        // REJECTS — cached rows whose owning node no longer exists — are the
-        // rows stranded by the era when the embedding delete was a no-op
-        // (tri-review 4669518496 P2-1; schema version stays 6), plus this
-        // run's just-deleted files' rows (already join-deleted above — the
-        // exact-id DELETE matches nothing for those, so including them is a
-        // harmless no-op rather than worth a fragile nodeId parse to
-        // exclude). On the SURGICAL path the true legacy orphans still sit
-        // in the DB and the node join can never reach them again (no owning
-        // node), so delete them by exact row id. On wiped paths the rejects
-        // were simply not restored — nothing to sweep. Legacy-tolerant: a
-        // sweep failure must never fail a completed writeback, so the whole
-        // sweep warns-and-continues.
-        if (deletedFilePathsForRestore !== null) {
-          const orphanRowIds = cachedSnapshot.rows
-            .filter((e) => pipelineResult.graph.getNode(e.nodeId) === undefined)
-            .map((e) => `${e.nodeId}:${e.chunkIndex}`);
-          if (orphanRowIds.length > 0) {
-            try {
-              for (const batch of chunk(orphanRowIds, DELETE_FILES_CHUNK_SIZE)) {
-                const listLiteral = `[${batch
-                  .map((id) => `'${escapeCypherString(id)}'`)
-                  .join(', ')}]`;
-                await executeQuery(
-                  `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE e.id IN ${listLiteral} DELETE e`,
-                );
-              }
-              log(
-                `Swept ${orphanRowIds.length} cached embedding row(s) with no live owning ` +
-                  'node — legacy orphans stranded while the embedding delete was a no-op; ' +
-                  'ids already removed with their files match nothing.',
-              );
-            } catch (err) {
-              log(
-                `Warning: could not sweep ${orphanRowIds.length} orphaned embedding ` +
-                  `row(s) (${(err as Error).message}); they are unreachable by search ` +
-                  'joins and will be retried next run.',
-              );
-            }
-          }
         }
       }
     }
@@ -5364,18 +4321,10 @@ async function runFullAnalysisInner(
           }`,
       );
     }
-    // NOT COMPARABLE ON AN INCREMENTAL WRITE. That path persists only
-    // `extractChangedSubgraph(...)` while both counts here are whole-scope: the
-    // full in-memory graph against the entire DB. A 10,000-edge index whose
-    // incremental rewrite lost 200 replacements reads 9,800 against 10,000 —
-    // comfortably above the ratio — so a corrupt index would be certified
-    // complete, and the reverse (a small change to a large index) would report
-    // a collapse that did not happen. Producing no verdict is the honest answer
-    // until the check is given the write-set delta to compare against; that is
-    // the same fail-safe the `expected === 0` case already takes.
-    const collapseVerdict: GraphWriteCollapseVerdict = wroteChangedSubgraphOnly
-      ? { verdict: 'unmeasurable', reason: 'incremental-write' }
-      : detectGraphWriteCollapse(expectedRelationships, persistedRelationships);
+    const collapseVerdict: GraphWriteCollapseVerdict = detectGraphWriteCollapse(
+      expectedRelationships,
+      persistedRelationships,
+    );
     const graphWriteCollapsed =
       collapseVerdict.verdict === 'collapsed'
         ? { expected: collapseVerdict.expected, persisted: collapseVerdict.persisted }
@@ -5463,30 +4412,12 @@ async function runFullAnalysisInner(
       }
     }
 
-    // ── Vector-index recreation after a wipe-and-restore (tri-review
-    // 4669518496 P1 / KTD1) ────────────────────────────────────────────
-    // The full-rebuild and escalated-incremental write plans wipe the DB
-    // files — the HNSW index with them. Phase 3.5 brought the embedding ROWS
-    // back, but on a preserve-only run nothing recreates the index: semantic
-    // search silently loses its vector lane (>10k-embedding repos return
-    // empty under the exact-scan cap) while meta certified 'vector-index'.
-    // Recreate it here, where every gate input is settled:
-    //   - restoredEmbeddingCount > 0 — rows actually came back;
-    //   - dbWasWiped — surgical incremental runs keep their index (HNSW
-    //     self-maintains on insert/delete); only wiped DBs lost it;
-    //   - embeddingSkipped — evaluated AFTER the deriveEmbeddingCap decision
-    //     above, NOT `!shouldGenerateEmbeddings`: when Phase 4 really runs,
-    //     the pipeline builds the index itself after all inserts (firing this
-    //     seam first would swap its bulk build for per-row live HNSW
-    //     maintenance on the hottest flow), while a capped >50k-node repo has
-    //     shouldGenerateEmbeddings=true yet never runs the pipeline — exactly
-    //     the case a naive gate would leave index-less again.
-    // buildVectorIndex carries its own extension-policy gate and
-    // warn-on-failure; the boolean feeds semanticMode so the finalize stamp
-    // reflects the DB's ACTUAL state even when recreation fails (extension
-    // unavailable → 'exact-scan').
-    const dbWasWiped = !isIncremental || escalatedFullWrite;
-    if (restoredEmbeddingCount > 0 && dbWasWiped && embeddingSkipped) {
+    // A fresh graph has no legacy HNSW index. Rebuild it after all restored
+    // rows exist when embedding generation did not run (including node-cap
+    // skips). Otherwise the embedding pipeline builds it after its inserts.
+    // The result records actual availability; an unavailable extension leaves
+    // compatible vectors available to the bounded exact-scan fallback.
+    if (restoredEmbeddingCount > 0 && embeddingSkipped) {
       // Re-import at the seam rather than thread a mutable capture from
       // Phase 3.5 (FIX 3 of this shipping review — the captured function was
       // a fragile moving part): dynamic imports are memoized, and
@@ -5848,17 +4779,10 @@ async function runFullAnalysisInner(
 
     const { getRuntimeCapabilities } = await import('./platform/capabilities.js');
     const runtimeCapabilities = getRuntimeCapabilities();
-    // `semanticMode` is authoritative when set (Phase 4 reported what it
-    // built, or the wipe-and-restore seam above verified/recreated the index
-    // — tri-review 4669518496 P1). When unset, prefer the PREVIOUS run's
-    // persisted stamp over the platform capability (FIX 3, finder A): the
-    // unset case is exactly a run that neither wiped nor generated — e.g. a
-    // surgical incremental whose index survived in place — and such a run
-    // cannot change whether the HNSW index exists, so carrying the persisted
-    // observation forward is strictly more truthful than re-deriving from
-    // what the platform COULD do. Only the two positive observations carry
-    // ('vector-index'/'exact-scan'); 'unavailable'/absent falls through to
-    // the platform default rather than pinning a stale negative.
+    // Generation/restoration reports the newly built legacy index's mode.
+    // With independent vector artifacts, carry their prior observed mode when
+    // no legacy index was built in this graph. A zero embedding count below
+    // still stamps semantic search unavailable.
     const persistedStatus = existingMeta?.capabilities?.vectorSearch.status;
     const persistedSemanticMode: 'vector-index' | 'exact-scan' | undefined =
       persistedStatus === 'vector-index' || persistedStatus === 'exact-scan'
@@ -6116,7 +5040,7 @@ async function runFullAnalysisInner(
     // Parse-cache publish waits until after that swap + saveMeta so a failed
     // registerRepo / close / swap cannot replace live shards (#3153).
 
-    if (wroteChangedSubgraphOnly) {
+    if (isIncremental) {
       // Registry freshness must not advance either. Include FTS, embedding
       // restoration and the final WAL drain in the certified boundary.
       await markIncrementalGraphVerification();
@@ -6141,7 +5065,7 @@ async function runFullAnalysisInner(
     await walCheckpointDriver.stop();
     if (
       (useAtomicSwap || options.graphPublication) &&
-      !wroteChangedSubgraphOnly &&
+      !isIncremental &&
       !(await runCheckpointWithRetry()).flushed
     ) {
       // Publication requires durability even when periodic/manual checkpoints
@@ -6424,12 +5348,7 @@ async function runFullAnalysisInner(
       ftsSkipped: !ftsReady,
       ftsSkipReason: ftsReady ? undefined : ftsSkipReason,
       isPrimaryBranch: !placement.branch,
-      incrementalStats: incrementalStats
-        ? {
-            ...incrementalStats,
-            writeMode: escalatedFullWrite ? 'full' : 'incremental',
-          }
-        : undefined,
+      incrementalStats,
     };
   } catch (err) {
     const stagedBuild = useAtomicSwap && buildPath !== lbugPath;
@@ -6443,7 +5362,7 @@ async function runFullAnalysisInner(
     // Before the database closes — see diagnoseClassifiedFailure.
     const diagnosis = await diagnoseClassifiedFailure(
       failureMessage,
-      stagedBuildModeOf(stagedBuild, atomicIncremental && !escalatedFullWrite),
+      stagedBuildModeOf(stagedBuild),
       { liveIndex: lbugPath, ...(stagedBuild ? { stagingCopy: buildPath } : {}) },
       checkpointsAtRunStart,
     );

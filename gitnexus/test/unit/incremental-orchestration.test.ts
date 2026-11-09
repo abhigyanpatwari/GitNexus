@@ -1026,7 +1026,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
         { onProgress: () => {}, onLog: (message) => logs.push(message) },
       );
 
-      expect(logs.join('\n')).toContain('Spring config consumer property drift');
+      expect(logs.join('\n')).toContain('writing a compact full graph');
       expect(await readKotlinConfigConsumerState(repo.dbPath)).toEqual({
         description: 'Spring config unresolved: service.timeout',
         bindingCount: 0,
@@ -1119,7 +1119,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       );
       expect(retargeted.alreadyUpToDate).toBeUndefined();
       expect(retargetLogs.join('\n')).toContain('Incremental: changed=1');
-      expect(retargetLogs.join('\n')).not.toContain('switching to a full DB write');
+      expect(retargetLogs.join('\n')).toContain('switching to a full DB write');
 
       const secondSnapshot = await readSpringAopSnapshot(repo.dbPath);
       assertSpringAopSnapshotShape(secondSnapshot, 'kotlinTx');
@@ -1150,7 +1150,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       );
       expect(replayed.alreadyUpToDate).toBeUndefined();
       expect(replayLogs.join('\n')).toContain('Incremental: changed=1');
-      expect(replayLogs.join('\n')).not.toContain('switching to a full DB write');
+      expect(replayLogs.join('\n')).toContain('switching to a full DB write');
       expect(await readSpringAopSnapshot(repo.dbPath)).toEqual(secondSnapshot);
     } finally {
       await repo.cleanup();
@@ -1180,6 +1180,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
         { skipAgentsMd: true },
         { onProgress: () => {} },
       );
+      expect(second.incrementalStats?.writeMode).toBe('full');
       // The early-return alreadyUpToDate path must NOT fire (the dirty
       // tree should kick the run through to incremental writeback).
       expect(second.alreadyUpToDate).toBeUndefined();
@@ -1349,7 +1350,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
           changedFiles: 1,
           affectedDependents: 2,
           deletedFiles: 0,
-          writeMode: 'incremental',
+          writeMode: 'full',
         });
         expect(incremental.incrementalStats?.reparsedFiles).toBe(1);
         expect(
@@ -1540,8 +1541,8 @@ describe('runFullAnalysis — incremental orchestration', () => {
       );
       expect(incremental.alreadyUpToDate).toBeUndefined();
       const joined = logs.join('\n');
-      // The importer expansion fired AND the valve rerouted the write plan.
-      expect(joined).toContain('importer(s) added to writable set');
+      // Logical importer accounting survives the complete physical write.
+      expect(joined).toContain('importer(s) affected');
       expect(joined).toContain('switching to a full DB write');
       // Announced as the one follow-up line, carrying the escalation's own
       // text, and non-forcing: the run stayed on the incremental branch
@@ -1580,20 +1581,9 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 600_000);
 
-  // U4 / KTD10 (tri-review 4669518496): a SURGICAL preserve-mode run (below
-  // both valve gates) must keep embedding rows in lockstep with their files
-  // now that deleteNodesForFiles really deletes embedding rows via the
-  // nodeId join:
-  //   - changed-file rows are deleted with their nodes and RESTORED from the
-  //     cache (the old insert-all restore lost them when a surviving row's
-  //     PK conflict aborted the rest of the batch),
-  //   - deleted-file rows are gone (join-delete) and NOT resurrected by the
-  //     restore (live-graph filter),
-  //   - unchanged rows are untouched (restore-scope filter, no conflicts),
-  //   - a LEGACY ORPHAN row — stranded while the embedding delete was a
-  //     no-op, unreachable by the node join forever — is swept by exact id
-  //     (this shipping review, FIX 3).
-  it('surgical incremental run keeps embedding rows in lockstep: changed restored, deleted gone, unchanged intact, legacy orphan swept (tri-review 4669518496 KTD10 + FIX 3)', async () => {
+  // Fresh graph replacement must restore changed and retained vectors, while
+  // excluding deleted owners and legacy orphans from the cache.
+  it('compact write keeps embedding rows in lockstep: changed restored, deleted gone, unchanged intact, legacy orphan omitted (tri-review 4669518496 KTD10 + FIX 3)', async () => {
     const repo = await setupMiniRepo();
     try {
       const CHANGED_FILE = 'src/logger.ts';
@@ -1638,19 +1628,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
         { onProgress: () => {}, onLog: (m) => logs.push(m) },
       );
       expect(run.alreadyUpToDate).toBeUndefined();
-      // 7-file repo — far below the 50-file valve floor: this MUST have been
-      // the surgical write plan, or every assertion below is vacuously about
-      // the escalated path instead.
-      expect(logs.join('\n')).not.toContain('switching to a full DB write');
-
-      // The surgical run swept the fabricated legacy orphan by exact id
-      // (FIX 3). The logged count also includes DELETED_FILE's cached rows —
-      // live-graph rejects whose DB rows were already join-deleted with the
-      // file, so their exact-id DELETEs match nothing (documented no-op).
-      const expectedSweepCount = 1 + (idsByFile.get(DELETED_FILE) ?? []).length;
-      expect(logs.join('\n')).toContain(
-        `Swept ${expectedSweepCount} cached embedding row(s) with no live owning node`,
-      );
+      expect(run.incrementalStats?.writeMode).toBe('full');
 
       const after = await loadMeta(storagePath);
       expect(after!.incrementalInProgress).toBeUndefined();
@@ -1658,8 +1636,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
         ...(idsByFile.get(CHANGED_FILE) ?? []),
         ...(idsByFile.get(UNCHANGED_FILE) ?? []),
       ];
-      // stats.embeddings excludes both the deleted-file rows AND the swept
-      // legacy orphan.
+      // stats.embeddings excludes deleted-file rows and the legacy orphan.
       expect(after!.stats?.embeddings).toBe(expectedSurvivors.length);
       // Exact surviving nodeId set — pins all four behaviors at once (a
       // batch-abort loss, a leaked deleted-file row, a dropped unchanged
@@ -2173,7 +2150,7 @@ describe.skipIf(!dartAvailable)('Dart pubspec-only incremental persistence (#296
           else await writeFile(target, content);
           gitCommitAll(repo.dbPath, 'Update package identity');
           const incremental = await runFullAnalysis(repo.dbPath, options, progress);
-          expect(incremental.incrementalStats?.writeMode).toBe('incremental');
+          expect(incremental.incrementalStats?.writeMode).toBe('full');
           const incrementalEdges = await readEdges();
           const imports = incrementalEdges.filter(
             (edge) =>

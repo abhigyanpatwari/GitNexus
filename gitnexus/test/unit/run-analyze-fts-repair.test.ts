@@ -2450,6 +2450,8 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
         incrementalInProgress: { startedAt: Date.now() - 60_000, toWriteCount: 3 },
       });
 
+      const priorMeta = await loadMeta(storagePath);
+      expect(priorMeta).not.toBeNull();
       const snapshots: Record<string, RepoMeta | null> = {};
       const runEmbeddingPipeline = vi.fn(
         async (
@@ -2523,7 +2525,7 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
       expect(snapshots.windowStart).toMatchObject({
         lastCommit: STALE_COMMIT,
         fileHashes: STALE_HASHES,
-        incrementalInProgress: { phase: 'full-rebuild' },
+        incrementalInProgress: priorMeta.incrementalInProgress,
         stats: { embeddings: 7 },
       });
       expect(snapshots.windowStart?.lastCommit).not.toBe(currentCommit);
@@ -2532,7 +2534,7 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
       expect(snapshots.postWindow).toMatchObject({
         lastCommit: STALE_COMMIT,
         fileHashes: STALE_HASHES,
-        incrementalInProgress: { phase: 'full-rebuild' },
+        incrementalInProgress: priorMeta.incrementalInProgress,
         stats: { embeddings: 7 },
       });
       expect(snapshots.postWindow?.embeddingCheckpoint?.recovery).toMatchObject({

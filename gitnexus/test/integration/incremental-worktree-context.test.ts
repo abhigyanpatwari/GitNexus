@@ -239,24 +239,21 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Swift))(
         expect(dirtyStatus.contentDrift.status).toBe('drifted');
         expect(dirtyStatus.index.incompleteReasons).toEqual([]);
 
-        // A call-through spy observes the exact native deletion boundary; it
-        // neither supplies graph rows nor substitutes for the incremental write.
+        // Observe the real full write without supplying any graph rows.
         const deleteNodes = vi.spyOn(adapter, 'deleteNodesForFiles');
+        const loadGraph = vi.spyOn(adapter, 'loadGraphToLbug');
         const refreshed = await runFullAnalysis(worktree, options, callbacks);
         expect(refreshed.incrementalStats).toMatchObject({
           changedFiles: 1,
-          writeMode: 'incremental',
+          writeMode: 'full',
         });
         expect(refreshed.incrementalStats?.affectedDependents).toBeGreaterThan(0);
-        expect(deleteNodes).toHaveBeenCalledTimes(1);
-        const writePaths = [...deleteNodes.mock.calls[0][0]].sort();
-        // Effective write-set expansion also refreshes the containing Folder
-        // row through graph edges; no other source file enters the write set.
-        expect(writePaths).toEqual(['checks', TEST_PATH, IMPORTER_PATH].sort());
-        expect(writePaths.filter((filePath) => filePath.endsWith('.py'))).toEqual(
-          [TEST_PATH, IMPORTER_PATH].sort(),
-        );
-        expect(writePaths).not.toContain(SWIFT_PATH);
+        expect(deleteNodes).not.toHaveBeenCalled();
+        expect(loadGraph).toHaveBeenCalledOnce();
+        const writtenGraph = loadGraph.mock.calls[0][0];
+        for (const file of [TEST_PATH, IMPORTER_PATH, SWIFT_PATH]) {
+          expect(writtenGraph.getNode(`File:${file}`)).toBeDefined();
+        }
         expect((await loadMeta(storagePath))?.runnerIdentity).toEqual(baselineMeta?.runnerIdentity);
         expect(await fs.readFile(path.join(worktree, SWIFT_PATH))).toEqual(swiftBefore);
         await readPublicContexts();
@@ -264,6 +261,7 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Swift))(
         expect(await readPropertyFts()).toEqual(propertyBefore);
 
         deleteNodes.mockClear();
+        loadGraph.mockClear();
         const noop = await runFullAnalysis(worktree, options, callbacks);
         // The uncommitted edit is already indexed: verify freshness without
         // running the pipeline or touching the persisted graph.
@@ -271,6 +269,7 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Swift))(
         expect(noop.pipelineResult).toBeUndefined();
         expect(noop.incrementalStats).toBeUndefined();
         expect(deleteNodes).not.toHaveBeenCalled();
+        expect(loadGraph).not.toHaveBeenCalled();
         expect((await loadMeta(storagePath))?.runnerIdentity).toEqual(baselineMeta?.runnerIdentity);
         await readPublicContexts();
         expectCurrentStatus();
