@@ -1620,8 +1620,8 @@ describe('runFullAnalysis — incremental orchestration', () => {
           });
         }
 
-        // One file modified (comment-only, appended at EOF so node ids keep
-        // their line numbers), one file deleted — committed so lastCommit moves.
+        // Append a comment in every mode so node line numbers stay stable.
+        // Delete another file only in the delete variants, then commit the edits.
         const target = path.join(repo.dbPath, CHANGED_FILE);
         await writeFile(
           target,
