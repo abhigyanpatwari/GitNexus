@@ -247,6 +247,8 @@ const LBUG_NATIVE = [
   // A real refresh worker must preserve active readers or report native contention.
   'test/integration/mcp-refresh-index-e2e.test.ts',
   'test/integration/fts-repair-warm-session.test.ts',
+  'test/integration/fts-empty-tables.test.ts',
+  'test/integration/persisted-mutation-rows.test.ts',
   'test/unit/lbug-pool-pinning.test.ts',
   'test/unit/hybrid-search.test.ts',
   'test/integration/lbug-readonly-init.test.ts',

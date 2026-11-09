@@ -43,6 +43,7 @@ import {
 } from '../helpers/embedding-seed.js';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
 import { RebuildReasonCollector } from '../../src/core/rebuild-reasons.js';
+import { MAX_INCREMENTAL_WRITES } from '../../src/core/incremental/compaction-policy.js';
 import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import {
   isLanguageAvailable,
@@ -1580,73 +1581,96 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 600_000);
 
-  // Fresh graph replacement must restore changed and retained vectors, while
-  // excluding deleted owners and legacy orphans from the cache.
-  it('compact write keeps embedding rows in lockstep: changed restored, deleted gone, unchanged intact, legacy orphan omitted (tri-review 4669518496 KTD10 + FIX 3)', async () => {
-    const repo = await setupMiniRepo();
-    try {
-      const CHANGED_FILE = 'src/logger.ts';
-      const UNCHANGED_FILE = 'src/db.ts';
-      const DELETED_FILE = 'src/formatter.ts';
-      // A fabricated nodeId no graph will ever contain: the P2-1-era no-op
-      // delete left rows like this stranded in real DBs (schema version
-      // stays 6, so they are still out there).
-      const LEGACY_ORPHAN_NODE_ID = 'Function:src/ghost.ts:ghost:1';
+  it.each(['compact-delete', 'selective-delete', 'selective-modify'] as const)(
+    'keeps embedding rows in lockstep across %s, including legacy orphans',
+    async (mode) => {
+      const repo = await setupMiniRepo();
+      try {
+        const CHANGED_FILE = 'src/logger.ts';
+        const UNCHANGED_FILE = 'src/db.ts';
+        const DELETED_FILE = 'src/formatter.ts';
+        // A fabricated nodeId no graph will ever contain: the P2-1-era no-op
+        // delete left rows like this stranded in real DBs (schema version
+        // stays 6, so they are still out there).
+        const LEGACY_ORPHAN_NODE_ID = 'Function:src/ghost.ts:ghost:1';
 
-      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+        const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+        await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
 
-      const { storagePath } = getStoragePaths(repo.dbPath);
-      const idsByFile = await seedEmbeddingsForFiles(
-        repo.dbPath,
-        [CHANGED_FILE, UNCHANGED_FILE, DELETED_FILE],
-        3,
-      );
-      for (const fp of [CHANGED_FILE, UNCHANGED_FILE, DELETED_FILE]) {
-        expect((idsByFile.get(fp) ?? []).length).toBeGreaterThan(0);
+        const { storagePath } = getStoragePaths(repo.dbPath);
+        const idsByFile = await seedEmbeddingsForFiles(
+          repo.dbPath,
+          [CHANGED_FILE, UNCHANGED_FILE, DELETED_FILE],
+          3,
+        );
+        for (const fp of [CHANGED_FILE, UNCHANGED_FILE, DELETED_FILE]) {
+          expect((idsByFile.get(fp) ?? []).length).toBeGreaterThan(0);
+        }
+        await seedEmbeddingForNodeId(repo.dbPath, LEGACY_ORPHAN_NODE_ID);
+        const seededTotal = [...idsByFile.values()].flat().length + 1;
+        await stampEmbeddingCount(storagePath, seededTotal);
+        if (mode === 'compact-delete') {
+          const meta = (await loadMeta(storagePath))!;
+          await saveMeta(storagePath, {
+            ...meta,
+            graphCompaction: {
+              ...meta.graphCompaction!,
+              incrementalWrites: MAX_INCREMENTAL_WRITES,
+            },
+          });
+        }
+
+        // One file modified (comment-only, appended at EOF so node ids keep
+        // their line numbers), one file deleted — committed so lastCommit moves.
+        const target = path.join(repo.dbPath, CHANGED_FILE);
+        await writeFile(
+          target,
+          (await readFile(target, 'utf-8')) + '\n// embeddings parity touch\n',
+          'utf-8',
+        );
+        if (mode !== 'selective-modify') await rm(path.join(repo.dbPath, DELETED_FILE));
+        gitCommitAll(repo.dbPath, mode);
+
+        const logs: string[] = [];
+        const run = await runFullAnalysis(
+          repo.dbPath,
+          { skipAgentsMd: true },
+          { onProgress: () => {}, onLog: (m) => logs.push(m) },
+        );
+        expect(run.alreadyUpToDate).toBeUndefined();
+        expect(run.incrementalStats?.writeMode).toBe(
+          mode === 'compact-delete' ? 'full' : 'incremental',
+        );
+        if (mode !== 'compact-delete') {
+          expect(logs.join('\n')).not.toContain('switching to a full DB write');
+          const expectedSweepCount =
+            1 + (mode === 'selective-delete' ? (idsByFile.get(DELETED_FILE) ?? []).length : 0);
+          expect(logs.join('\n')).toContain(
+            `Swept ${expectedSweepCount} cached embedding row(s) with no live owning node`,
+          );
+        }
+
+        const after = await loadMeta(storagePath);
+        expect(after!.incrementalInProgress).toBeUndefined();
+        const expectedSurvivors = [
+          ...(idsByFile.get(CHANGED_FILE) ?? []),
+          ...(idsByFile.get(UNCHANGED_FILE) ?? []),
+          ...(mode === 'selective-modify' ? (idsByFile.get(DELETED_FILE) ?? []) : []),
+        ];
+        // stats.embeddings excludes deleted-file rows and the legacy orphan.
+        expect(after!.stats?.embeddings).toBe(expectedSurvivors.length);
+        // Exact surviving nodeId set — pins all four behaviors at once (a
+        // batch-abort loss, a leaked deleted-file row, a dropped unchanged
+        // row, or a lingering legacy orphan each break set equality).
+        expect((await readEmbeddingNodeIds(repo.dbPath)).sort()).toEqual(
+          [...expectedSurvivors].sort(),
+        );
+      } finally {
+        await repo.cleanup();
       }
-      await seedEmbeddingForNodeId(repo.dbPath, LEGACY_ORPHAN_NODE_ID);
-      const seededTotal = [...idsByFile.values()].flat().length + 1;
-      await stampEmbeddingCount(storagePath, seededTotal);
-
-      // One file modified (comment-only, appended at EOF so node ids keep
-      // their line numbers), one file deleted — committed so lastCommit moves.
-      const target = path.join(repo.dbPath, CHANGED_FILE);
-      await writeFile(
-        target,
-        (await readFile(target, 'utf-8')) + '\n// embeddings parity touch\n',
-        'utf-8',
-      );
-      await rm(path.join(repo.dbPath, DELETED_FILE));
-      gitCommitAll(repo.dbPath, 'modify logger + delete formatter');
-
-      const logs: string[] = [];
-      const run = await runFullAnalysis(
-        repo.dbPath,
-        { skipAgentsMd: true },
-        { onProgress: () => {}, onLog: (m) => logs.push(m) },
-      );
-      expect(run.alreadyUpToDate).toBeUndefined();
-      expect(run.incrementalStats?.writeMode).toBe('full');
-
-      const after = await loadMeta(storagePath);
-      expect(after!.incrementalInProgress).toBeUndefined();
-      const expectedSurvivors = [
-        ...(idsByFile.get(CHANGED_FILE) ?? []),
-        ...(idsByFile.get(UNCHANGED_FILE) ?? []),
-      ];
-      // stats.embeddings excludes deleted-file rows and the legacy orphan.
-      expect(after!.stats?.embeddings).toBe(expectedSurvivors.length);
-      // Exact surviving nodeId set — pins all four behaviors at once (a
-      // batch-abort loss, a leaked deleted-file row, a dropped unchanged
-      // row, or a lingering legacy orphan each break set equality).
-      expect((await readEmbeddingNodeIds(repo.dbPath)).sort()).toEqual(
-        [...expectedSurvivors].sort(),
-      );
-    } finally {
-      await repo.cleanup();
-    }
-  }, 600_000);
+    },
+    600_000,
+  );
 
   // #2409 defect 2 (dirty-flag recovery parks WAL/shadow sidecars before any
   // open) is covered in incremental-dirty-recovery.test.ts — its own file so
@@ -2149,10 +2173,7 @@ describe.skipIf(!dartAvailable)('Dart pubspec-only incremental persistence (#296
           else await writeFile(target, content);
           gitCommitAll(repo.dbPath, 'Update package identity');
           const incremental = await runFullAnalysis(repo.dbPath, options, progress);
-          // Deletion compacts the graph; edits/additions retain selective writes.
-          expect(incremental.incrementalStats?.writeMode).toBe(
-            content === null ? 'full' : 'incremental',
-          );
+          expect(incremental.incrementalStats?.writeMode).toBe('incremental');
           const incrementalEdges = await readEdges();
           const imports = incrementalEdges.filter(
             (edge) =>

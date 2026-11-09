@@ -126,12 +126,14 @@ describe('analyze blocked checkpoint family (real lbug, no mocks)', () => {
       } else {
         const failedMeta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
         expect(failedMeta.indexedAt).toBe(JSON.parse(metadataBefore.toString()).indexedAt);
-        if (!failedMeta.incrementalInProgress) {
-          // A read-only cache/accounting open can refuse before the first
-          // destructive write. Without a recovery marker, both must be intact.
-          expect(fs.readFileSync(lbugPath).equals(graphBefore)).toBe(true);
-          expect(fs.readFileSync(metaPath).equals(metadataBefore)).toBe(true);
-        }
+        expect(failedMeta.incrementalInProgress).toMatchObject({
+          phase: 'effective-write-set',
+        });
+        expect(failedMeta.incrementalInProgress.toWriteCount).toBeGreaterThan(0);
+        expect(fs.readFileSync(lbugPath).equals(graphBefore)).toBe(true);
+        expect(failedMeta.graphCompaction).toEqual(
+          JSON.parse(metadataBefore.toString()).graphCompaction,
+        );
       }
 
       fs.rmSync(blockerDir, { recursive: true });

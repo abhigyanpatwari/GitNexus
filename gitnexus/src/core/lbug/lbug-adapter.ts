@@ -2335,7 +2335,10 @@ export const loadCachedEmbeddings = async (
           `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex LIMIT 1`,
         );
         await readQueryRows(check);
-      } catch {
+      } catch (err) {
+        if (!isMissingColumnOrTableError(err instanceof Error ? err.message : String(err))) {
+          throw err;
+        }
         abortCachedEmbeddingsBuilder(builder);
         return emptyCachedEmbeddingsSnapshot();
       }

@@ -111,6 +111,7 @@ import {
   LBUG_MAX_DB_SIZE,
   maxDbSizeReachedRemedy,
   pastEofReadRemedy,
+  isStorageVersionMismatchError,
   type StagedBuildMode,
 } from './lbug/lbug-config.js';
 import { escapeCypherString } from './lbug/cypher-escape.js';
@@ -3477,58 +3478,59 @@ async function runFullAnalysisInner(
   // moved (or removed) the crashed run's WAL/shadow; when neither was
   // possible the dirty block above already threw a LbugWipeError, so this
   // open is replay-free by construction (FIX 1 of this shipping review).
-  // A supervisor handoff can create placeholder metadata before the first
-  // database exists. Skip that empty cache, but still fail closed if missing
-  // storage claims paid vectors that must be preserved.
+  // A missing graph has no legacy rows to read. Recorded counts alone must
+  // not prevent recovery; separate vector generations are handled below.
   const rescueLegacyBeforeRebuild =
     !options.dropEmbeddings &&
     !existingMeta?.graphGeneration &&
     (options.force || Boolean(storageCompactionReason));
-  if (
-    (shouldLoadCache || rescueLegacyBeforeRebuild) &&
-    existingMeta &&
-    (existingEmbeddingCount > 0 || existsSync(lbugPath))
-  ) {
-    if (
-      options.graphPublication &&
-      !options.dropEmbeddings &&
-      !existingMeta.graphGeneration &&
-      !existingMeta.legacyVectorSource
-    ) {
-      const { exportLegacyVectorsFromFile } = await import('./lbug/legacy-vector-export.js');
-      const historical = existingMeta.embeddingCheckpoint;
-      const legacy = await exportLegacyVectorsFromFile(lbugPath, {
-        metadataDirectory: metaDir,
-        provenance: {
-          schemaFingerprint: existingMeta.schemaFingerprint ?? SCHEMA_FINGERPRINT,
-          ...(historical
-            ? {
-                recordedIdentity: {
-                  provider: historical.provider,
-                  model: historical.model,
-                  dimensions: historical.dimensions,
-                },
-              }
-            : {}),
-        },
-        excluded: inheritedUnsafeNodeIds,
-        sourcePoolBytes: options.resources!.embedding.graphPoolBytes,
-        bufferPoolBytes: options.resources!.embedding.vectorPoolBytes,
-        threads: options.resources!.embedding.nativeThreads,
-        signal: callbacks.signal,
-      });
-      if (legacy) {
-        await saveMeta(metaDir, { ...existingMeta, legacyVectorSource: legacy });
-        existingMeta.legacyVectorSource = legacy;
-      }
-    }
+  if ((shouldLoadCache || rescueLegacyBeforeRebuild) && existingMeta && existsSync(lbugPath)) {
     // Preserve/recover sidecars before reading the prior graph. The cache
     // open itself is read-only: failure during staging must leave the
     // published file intact. Preservation failures must stop analysis.
     if (posixSwap || windowsSwapOk) await consolidateLbugForPublication(lbugPath);
+    let cacheOpened = false;
     try {
       progress('embeddings', 0, 'Caching embeddings...');
       await initAnalysisLbug(lbugPath, true);
+      cacheOpened = true;
+      if (
+        options.graphPublication &&
+        !options.dropEmbeddings &&
+        !existingMeta.graphGeneration &&
+        !existingMeta.legacyVectorSource
+      ) {
+        // Preserve legacy schema/width evidence before interpreting rows as
+        // the current cache format. Export owns its own bounded connection.
+        await closeLbug();
+        const { exportLegacyVectorsFromFile } = await import('./lbug/legacy-vector-export.js');
+        const historical = existingMeta.embeddingCheckpoint;
+        const legacy = await exportLegacyVectorsFromFile(lbugPath, {
+          metadataDirectory: metaDir,
+          provenance: {
+            schemaFingerprint: existingMeta.schemaFingerprint ?? SCHEMA_FINGERPRINT,
+            ...(historical
+              ? {
+                  recordedIdentity: {
+                    provider: historical.provider,
+                    model: historical.model,
+                    dimensions: historical.dimensions,
+                  },
+                }
+              : {}),
+          },
+          excluded: inheritedUnsafeNodeIds,
+          sourcePoolBytes: options.resources!.embedding.graphPoolBytes,
+          bufferPoolBytes: options.resources!.embedding.vectorPoolBytes,
+          threads: options.resources!.embedding.nativeThreads,
+          signal: callbacks.signal,
+        });
+        if (legacy) {
+          await saveMeta(metaDir, { ...existingMeta, legacyVectorSource: legacy });
+          existingMeta.legacyVectorSource = legacy;
+        }
+        await initAnalysisLbug(lbugPath, true);
+      }
       adoptCachedEmbeddings(await loadCachedEmbeddings());
       await closeLbug();
     } catch (err: any) {
@@ -3538,15 +3540,55 @@ async function runFullAnalysisInner(
       } catch {
         /* preserve the original cache failure */
       }
-      if (err instanceof EmbeddingIntegrityError || rescueLegacyBeforeRebuild) throw err;
-      // Surface cache-load failures explicitly: silently swallowing here would
-      // re-introduce the original silent-data-loss symptom (embeddings end up
-      // at 0 in meta.json with no diagnostic) through a different door.
+      const unreadableFormat =
+        isStorageVersionMismatchError(err) ||
+        /not a valid Lbug database file|Cannot create an empty database under READ ONLY mode/i.test(
+          err?.message ?? '',
+        ) ||
+        err?.code === 'ENOENT';
+      if (!cacheOpened && unreadableFormat && (options.force || existingEmbeddingCount === 0)) {
+        // An incompatible file may still contain recoverable vectors. Retain
+        // its bytes before rebuilding, including when metadata undercounts them.
+        if (existsSync(lbugPath)) {
+          const retained = `${lbugPath}.unreadable.${randomUUID()}`;
+          await fs.copyFile(lbugPath, retained, fsConstants.COPYFILE_EXCL);
+          log(`Warning: unreadable graph retained at ${retained}; rebuilding (${err.message}).`);
+        }
+        if (!options.force) {
+          collector.add({
+            key: 'private-graph-unavailable',
+            text: 'the previous graph cannot be opened; rebuilding from source.',
+          });
+          applyCollectedForce();
+        }
+      } else if (err instanceof EmbeddingIntegrityError) {
+        throw err;
+      } else if (rescueLegacyBeforeRebuild || cacheOpened) {
+        throw new Error(
+          `Cannot read existing embeddings before rebuilding (${err?.message ?? String(err)}). ` +
+            'Resolve the read failure, or re-run with --drop-embeddings to discard them.',
+          { cause: err },
+        );
+      } else {
+        // Surface cache-load failures explicitly: silently swallowing here would
+        // re-introduce the original silent-data-loss symptom (embeddings end up
+        // at 0 in meta.json with no diagnostic) through a different door.
+        log(
+          `Warning: could not load cached embeddings ` +
+            `(${err?.message ?? String(err)}). ` +
+            `Embeddings will not be preserved on this run.`,
+        );
+      }
+    }
+  } else if (existingMeta && !existsSync(lbugPath)) {
+    if (shouldLoadCache) {
       log(
-        `Warning: could not load cached embeddings ` +
-          `(${err?.message ?? String(err)}). ` +
-          `Embeddings will not be preserved on this run.`,
+        'Warning: the previous graph is missing; no legacy embeddings are available to preserve.',
       );
+    }
+    if (!options.force) {
+      addGateReason({ key: 'private-graph-unavailable', text: 'the previous graph is missing.' });
+      applyCollectedForce();
     }
   }
 
@@ -4465,16 +4507,11 @@ async function runFullAnalysisInner(
         effectiveWriteSet.size,
         allFilePaths.length,
       );
-      // File fractions miss a monolith's generated/large source file. Bound
-      // the row work too; deleted files have no fresh nodes to count, so rebuild
-      // those rather than estimating their former size from incomplete evidence.
-      const deletionForcedRebuild = hashDiff.deleted.length > 0;
+      // Compare the old/new source-file footprints, including removed files.
+      // Count/growth receipts separately bound graph-wide derived-layer churn.
       const mutationLimit = incrementalMutationLimit(pipelineResult.graph);
       const preselectedFullWrite =
-        extensionForcedRebuild ||
-        sizeForcedRebuild ||
-        Boolean(storageCompactionReason) ||
-        deletionForcedRebuild;
+        extensionForcedRebuild || sizeForcedRebuild || Boolean(storageCompactionReason);
       let mutationRows = preselectedFullWrite
         ? 0
         : incrementalMutationRows(pipelineResult.graph, effectiveWriteSet, mutationLimit);
@@ -4528,7 +4565,11 @@ async function runFullAnalysisInner(
           discardCachedEmbeddings();
           // A compact rebuild discards every old row. Unknown cache contents
           // must stop it before mutation rather than silently losing vectors.
-          throw err;
+          throw new Error(
+            `Cannot read existing embeddings before rebuilding (${err?.message ?? String(err)}). ` +
+              'Resolve the read failure, or re-run with --drop-embeddings to discard them.',
+            { cause: err },
+          );
         }
       }
       if (compactWrite) {
@@ -4549,7 +4590,6 @@ async function runFullAnalysisInner(
         // ternary dropped the write-set line whenever an extension also blocked.
         const escalationCauses: string[] = [];
         if (storageCompactionReason) escalationCauses.push(storageCompactionReason);
-        if (deletionForcedRebuild) escalationCauses.push('source files were deleted');
         if (mutationForcedRebuild) {
           escalationCauses.push(`the mutation covers at least ${mutationRows} graph rows`);
         }
@@ -6186,7 +6226,7 @@ async function runFullAnalysisInner(
       // Publication requires durability even when periodic/manual checkpoints
       // are disabled. A best-effort close cannot certify the storage baseline.
       throw new Error(
-        `Cannot publish ${useAtomicSwap ? 'staged ' : ''}index: final checkpoint could not be verified.`,
+        `Cannot ${useAtomicSwap ? 'publish staged' : 'complete in-place'} index: final checkpoint could not be verified.`,
       );
     }
 

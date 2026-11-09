@@ -1,4 +1,5 @@
-import { appendFile, stat, writeFile } from 'node:fs/promises';
+import { appendFile, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import lbug from '@ladybugdb/core';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -18,6 +19,7 @@ import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { reconcileGraphNodeIdentities } from '../../src/core/incremental/write-reconciliation.js';
+import { persistedMutationRows } from '../../src/core/incremental/persisted-mutation-rows.js';
 import {
   MAX_INCREMENTAL_WRITES,
   MAX_INCREMENTAL_MUTATION_ROWS,
@@ -32,6 +34,201 @@ const options = { skipAgentsMd: true, skipSkills: true };
 const callbacks = { onProgress: () => {} };
 
 describe('hybrid graph writes (real LadybugDB)', () => {
+  it.each([MAX_INCREMENTAL_MUTATION_ROWS - 1, MAX_INCREMENTAL_MUTATION_ROWS])(
+    'selects the write plan at the persisted footprint boundary (%s rows)',
+    async (rows) => {
+      const repo = await setupMiniRepo('gitnexus-hybrid-boundary-');
+      const { lbugPath } = getStoragePaths(repo.dbPath);
+      const relative = 'src/isolated.ts';
+      // The write set also refreshes the containing Folder and its edges.
+      const writePaths = [relative, 'src'];
+      try {
+        initGitRepo(repo.dbPath);
+        await writeFile(path.join(repo.dbPath, relative), 'export {};\n');
+        commitAll(repo.dbPath, 'isolated file');
+        await runFullAnalysis(repo.dbPath, options, callbacks);
+        await adapter.initLbug(lbugPath);
+        const existing = await persistedMutationRows(writePaths, MAX_INCREMENTAL_MUTATION_ROWS);
+        await adapter.executeWithReusedStatement(
+          'CREATE (:Function {id: $id, name: $name, filePath: $filePath})',
+          Array.from({ length: rows - existing }, (_, i) => ({
+            id: `Function:${relative}:old${i}`,
+            name: `old${i}`,
+            filePath: relative,
+          })),
+        );
+        expect(await persistedMutationRows(writePaths, MAX_INCREMENTAL_MUTATION_ROWS)).toBe(rows);
+        await adapter.closeLbug();
+        await appendFile(path.join(repo.dbPath, relative), '// changed\n');
+        commitAll(repo.dbPath, 'small fresh footprint');
+        const logs: string[] = [];
+        const result = await runFullAnalysis(repo.dbPath, options, {
+          ...callbacks,
+          onLog: (message) => logs.push(message),
+        });
+        expect(result.incrementalStats?.writeMode, logs.join('\n')).toBe(
+          rows < MAX_INCREMENTAL_MUTATION_ROWS ? 'incremental' : 'full',
+        );
+      } finally {
+        await adapter.closeLbug();
+        await repo.cleanup();
+      }
+    },
+    120_000,
+  );
+
+  it.each(['delete', 'rename'] as const)(
+    'keeps a small file %s selective',
+    async (mode) => {
+      const repo = await setupMiniRepo('gitnexus-hybrid-removed-');
+      try {
+        initGitRepo(repo.dbPath);
+        await runFullAnalysis(repo.dbPath, options, callbacks);
+        const oldPath = path.join(repo.dbPath, 'src/formatter.ts');
+        if (mode === 'delete') await rm(oldPath);
+        else await rename(oldPath, path.join(repo.dbPath, 'src/renamed.ts'));
+        commitAll(repo.dbPath, mode);
+        const result = await runFullAnalysis(repo.dbPath, options, callbacks);
+        expect(result.incrementalStats).toMatchObject({
+          deletedFiles: 1,
+          writeMode: 'incremental',
+        });
+        const forced = await runFullAnalysis(repo.dbPath, { ...options, force: true }, callbacks);
+        expect(result.stats).toEqual(forced.stats);
+      } finally {
+        await adapter.closeLbug();
+        await repo.cleanup();
+      }
+    },
+    120_000,
+  );
+
+  it.each(['corrupt', 'version', 'missing', 'periodic', 'dirty'] as const)(
+    'recovers an unreadable old graph without discarding its bytes (%s)',
+    async (mode) => {
+      const repo = await setupMiniRepo('gitnexus-hybrid-unreadable-');
+      const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
+      try {
+        await runFullAnalysis(repo.dbPath, options, callbacks);
+        const before = await loadMeta(storagePath);
+        assert(before?.graphCompaction);
+        let damaged: Buffer | undefined;
+        if (mode === 'missing') {
+          await rm(lbugPath);
+          await saveMeta(storagePath, { ...before, stats: { ...before.stats, embeddings: 3 } });
+        } else {
+          damaged = mode === 'version' ? await readFile(lbugPath) : Buffer.from('invalid graph');
+          if (mode === 'version') {
+            expect(damaged.subarray(0, 4).toString()).toBe('LBUG');
+            damaged.writeBigUInt64LE(damaged.readBigUInt64LE(4) + 1n, 4);
+          }
+          await writeFile(lbugPath, damaged);
+          await saveMeta(storagePath, {
+            ...before,
+            graphCompaction: {
+              ...before.graphCompaction,
+              incrementalWrites: MAX_INCREMENTAL_WRITES,
+            },
+            ...(mode === 'dirty'
+              ? {
+                  incrementalInProgress: {
+                    startedAt: Date.now(),
+                    toWriteCount: 1,
+                    phase: 'load-graph',
+                  },
+                }
+              : {}),
+          });
+        }
+        const logs: string[] = [];
+        await runFullAnalysis(
+          repo.dbPath,
+          {
+            ...options,
+            force: !['periodic', 'dirty'].includes(mode),
+          },
+          { ...callbacks, onLog: (message) => logs.push(message) },
+        );
+        const after = await loadMeta(storagePath);
+        expect(after?.graphCompaction?.incrementalWrites).toBe(0);
+        expect(after?.incrementalInProgress).toBeUndefined();
+        expect(after?.stats?.nodes).toBe(before.stats?.nodes);
+        if (damaged) {
+          const backups = (await readdir(path.dirname(lbugPath))).filter((name) =>
+            name.startsWith('lbug.unreadable.'),
+          );
+          expect(backups).toHaveLength(1);
+          expect(
+            (await readFile(path.join(path.dirname(lbugPath), backups[0]))).equals(damaged),
+          ).toBe(true);
+          expect(
+            logs.some((line) => line.includes('unreadable') && line.includes('retained')),
+          ).toBe(true);
+        }
+      } finally {
+        await adapter.closeLbug();
+        await repo.cleanup();
+      }
+    },
+    120_000,
+  );
+
+  it.each(['periodic', 'mutation'] as const)(
+    'stops before compaction when the real cache schema probe fails (%s)',
+    async (mode) => {
+      const repo = await setupMiniRepo('gitnexus-hybrid-probe-failure-');
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      try {
+        await runFullAnalysis(repo.dbPath, options, callbacks);
+        const seeded = [
+          ...(await seedEmbeddingsForFiles(repo.dbPath, ['src/handler.ts'], 2)).values(),
+        ]
+          .flat()
+          .sort();
+        const before = await loadMeta(storagePath);
+        assert(before?.graphCompaction);
+        const receipt =
+          mode === 'periodic'
+            ? { ...before.graphCompaction, incrementalWrites: MAX_INCREMENTAL_WRITES }
+            : before.graphCompaction;
+        await saveMeta(storagePath, { ...before, graphCompaction: receipt });
+        if (mode === 'mutation') {
+          initGitRepo(repo.dbPath);
+          await writeFile(
+            path.join(repo.dbPath, 'src/generated.ts'),
+            Array.from(
+              { length: MAX_INCREMENTAL_MUTATION_ROWS + 1 },
+              (_, i) => `export function generated${i}() { return ${i}; }`,
+            ).join('\n'),
+          );
+          commitAll(repo.dbPath, 'large source mutation');
+        }
+        const originalQuery = lbug.Connection.prototype.query;
+        const query = vi
+          .spyOn(lbug.Connection.prototype, 'query')
+          .mockImplementation(function (sql) {
+            if (sql.includes('MATCH (e:CodeEmbedding)') && sql.includes('LIMIT 1')) {
+              return Promise.reject(new Error('IO exception: injected cache schema probe failure'));
+            }
+            return originalQuery.call(this, sql);
+          });
+        const copy = vi.spyOn(adapter, 'loadGraphToLbug');
+        await expect(runFullAnalysis(repo.dbPath, options, callbacks)).rejects.toThrow(
+          'injected cache schema probe failure',
+        );
+        expect(copy).not.toHaveBeenCalled();
+        expect((await loadMeta(storagePath))?.graphCompaction).toEqual(receipt);
+        query.mockRestore();
+        expect((await readEmbeddingNodeIds(repo.dbPath)).sort()).toEqual(seeded);
+      } finally {
+        vi.restoreAllMocks();
+        await adapter.closeLbug();
+        await repo.cleanup();
+      }
+    },
+    120_000,
+  );
+
   it('keeps small edits incremental and compacts at the update deadline even without a source edit', async () => {
     const repo = await setupMiniRepo('gitnexus-hybrid-periodic-');
     const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
@@ -262,6 +459,38 @@ async function touchHandler(repoPath: string): Promise<void> {
 }
 
 describe('incremental graph identity before publication', () => {
+  it.each([false, true])(
+    'does not advance the compaction receipt after a final checkpoint failure (force=%s)',
+    async (force) => {
+      const repo = await setupMiniRepo('gitnexus-hybrid-final-checkpoint-');
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      try {
+        await runFullAnalysis(repo.dbPath, options, callbacks);
+        const before = await loadMeta(storagePath);
+        assert(before?.graphCompaction);
+        const receipt = { ...before.graphCompaction, incrementalWrites: MAX_INCREMENTAL_WRITES };
+        await saveMeta(storagePath, { ...before, graphCompaction: receipt });
+        vi.spyOn(checkpoints, 'startWalCheckpointDriver').mockReturnValue({ stop: async () => {} });
+        const build = fts.buildSearchIndexesOrDegrade;
+        vi.spyOn(fts, 'buildSearchIndexesOrDegrade').mockImplementation(async (...args) => {
+          const result = await build(...args);
+          vi.spyOn(adapter, 'tryFlushWAL').mockResolvedValue(false);
+          return result;
+        });
+        await expect(
+          runFullAnalysis(repo.dbPath, { ...options, force }, callbacks),
+        ).rejects.toThrow('final checkpoint could not be verified');
+        expect((await loadMeta(storagePath))?.graphCompaction).toEqual(receipt);
+        expect((await loadMeta(storagePath))?.indexedAt).toBe(before.indexedAt);
+      } finally {
+        vi.restoreAllMocks();
+        await adapter.closeLbug();
+        await repo.cleanup();
+      }
+    },
+    120_000,
+  );
+
   it('chooses a full write before selective mutation when manual checkpoints are disabled', async () => {
     vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '0');
     const repo = await setupMiniRepo('gitnexus-test-checkpoint-opt-out-');

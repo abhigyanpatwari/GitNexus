@@ -134,39 +134,57 @@ describe('shared sibling store analyze (#3352)', () => {
     }
   }, 180_000);
 
-  it('keeps a compacted private graph when the shared copy is due for compaction', async () => {
-    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-    const options = { skipAgentsMd: true, skipSkills: true };
-    const callbacks = { onProgress: () => {} };
-    await runFullAnalysis(main, options, callbacks);
-    await runFullAnalysis(wtA, options, callbacks); // A reader keeps the shared copy alive.
-    const slot = layoutOf(main).checkoutSlot;
-    const before = await loadMeta(slot);
-    assert(before?.graphCompaction);
-    const sharedGraph = resolveGraphPath(slot, before);
-    const sharedMeta = await loadMeta(path.dirname(sharedGraph));
-    assert(sharedMeta?.graphCompaction);
-    const due = { ...sharedMeta.graphCompaction, incrementalWrites: MAX_INCREMENTAL_WRITES };
-    await saveMeta(path.dirname(sharedGraph), { ...sharedMeta, graphCompaction: due });
-    await saveMeta(slot, { ...before, graphCompaction: due });
+  it.each(['expired', 'missing'] as const)(
+    'keeps a healthy private graph after edit/revert when the shared receipt is %s',
+    async (kind) => {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const options = { skipAgentsMd: true, skipSkills: true };
+      const callbacks = { onProgress: () => {} };
+      await runFullAnalysis(main, options, callbacks);
+      await runFullAnalysis(wtA, options, callbacks); // A reader keeps the shared copy alive.
+      const slot = layoutOf(main).checkoutSlot;
+      const before = await loadMeta(slot);
+      assert(before?.graphCompaction);
+      const sharedGraph = resolveGraphPath(slot, before);
+      const sharedMeta = await loadMeta(path.dirname(sharedGraph));
+      assert(sharedMeta?.graphCompaction);
+      const due =
+        kind === 'missing'
+          ? undefined
+          : { ...sharedMeta.graphCompaction, incrementalWrites: MAX_INCREMENTAL_WRITES };
+      await saveMeta(path.dirname(sharedGraph), { ...sharedMeta, graphCompaction: due });
+      await saveMeta(slot, { ...before, graphCompaction: due });
 
-    const result = await runFullAnalysis(main, options, callbacks);
-    expect(result.incrementalStats?.writeMode).toBe('full');
-    const compacted = await loadMeta(slot);
-    assert(compacted);
-    const compactGraph = resolveGraphPath(slot, compacted);
-    expect(compactGraph).toBe(path.join(slot, 'lbug'));
-    expect(compacted.graphCompaction).toEqual({
-      version: 1,
-      compactBytes: (await fs.stat(compactGraph)).size,
-      incrementalWrites: 0,
-    });
-    expect((await loadMeta(path.dirname(sharedGraph)))?.graphCompaction).toEqual(due);
-    expect((await runFullAnalysis(main, options, callbacks)).alreadyUpToDate).toBe(true);
-    const reused = await loadMeta(slot);
-    assert(reused);
-    expect(resolveGraphPath(slot, reused)).toBe(compactGraph);
-  }, 120_000);
+      const result = await runFullAnalysis(main, options, callbacks);
+      expect(result.incrementalStats?.writeMode).toBe('full');
+      const compacted = await loadMeta(slot);
+      assert(compacted);
+      const compactGraph = resolveGraphPath(slot, compacted);
+      expect(compactGraph).toBe(path.join(slot, 'lbug'));
+      expect(compacted.graphCompaction).toEqual({
+        version: 1,
+        compactBytes: (await fs.stat(compactGraph)).size,
+        incrementalWrites: 0,
+      });
+      expect((await loadMeta(path.dirname(sharedGraph)))?.graphCompaction).toEqual(due);
+      expect((await runFullAnalysis(main, options, callbacks)).alreadyUpToDate).toBe(true);
+      const reused = await loadMeta(slot);
+      assert(reused);
+      expect(resolveGraphPath(slot, reused)).toBe(compactGraph);
+      const source = await fs.readFile(path.join(main, 'a.ts'), 'utf8');
+      for (const text of [source + '\n// dirty edit\n', source]) {
+        await fs.writeFile(path.join(main, 'a.ts'), text);
+        const edited = await runFullAnalysis(main, options, callbacks);
+        expect(edited.incrementalStats?.writeMode).toBe('incremental');
+        const meta = await loadMeta(slot);
+        assert(meta);
+        expect(resolveGraphPath(slot, meta)).toBe(compactGraph);
+      }
+      expect((await loadMeta(slot))?.graphCompaction?.incrementalWrites).toBe(2);
+      expect((await runFullAnalysis(main, options, callbacks)).alreadyUpToDate).toBe(true);
+    },
+    120_000,
+  );
 
   it('uses the shared physical file receipt when reusing an existing commit graph', async () => {
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');

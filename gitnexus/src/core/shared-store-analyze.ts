@@ -16,7 +16,7 @@
  */
 
 import { createHash, randomUUID } from 'crypto';
-import { graphCompactionReason, isGraphCompactionState } from './incremental/compaction-policy.js';
+import { graphCompactionReason } from './incremental/compaction-policy.js';
 import { existsSync, constants as fsConstants } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
@@ -552,15 +552,19 @@ export const publishSharedGraph = async (
       // Keep the better private graph; the commit graph stays as it is, since
       // other checkouts may read it.
       const targetMeta = published ? await loadMeta(target) : null;
-      // Never replace a freshly compacted private graph with the same old
-      // shared file that made compaction necessary. Shared files stay immutable;
-      // this checkout can keep its compact private copy until the next commit.
+      // Keep a healthy private graph through dirty edits and exact reverts.
+      // Re-adopting a due immutable graph would force another full COPY.
       const compactedOwnIsBetter =
         published &&
         meta.graphPath !== targetGraph &&
-        isGraphCompactionState(meta.graphCompaction) &&
-        meta.graphCompaction.incrementalWrites === 0 &&
         (await exists(own)) &&
+        graphCompactionReason(
+          meta.graphCompaction,
+          await fs.stat(own).then(
+            (stat) => stat.size,
+            () => undefined,
+          ),
+        ) === undefined &&
         graphCompactionReason(
           targetMeta?.graphCompaction,
           await fs.stat(targetGraph).then(

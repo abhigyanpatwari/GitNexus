@@ -1337,8 +1337,9 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
 
     const tmpRepo = await createTempDir('gitnexus-run-analyze-vector-stamp-');
     try {
-      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
+      await createPlaceholderGraphStore(lbugPath);
       // stats.embeddings > 0 → deriveEmbeddingMode loads the cache; force +
       // embeddingsNodeLimit(1) < getLbugStats().nodes(2) → generation is
       // cap-skipped. That makes this a wiped PRESERVE-shaped run — exactly
@@ -1438,8 +1439,9 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
 
     const tmpRepo = await createTempDir('gitnexus-run-analyze-cache-reject-');
     try {
-      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
+      await createPlaceholderGraphStore(lbugPath);
       await saveMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: '',
@@ -1558,8 +1560,9 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
 
     const tmpRepo = await createTempDir('gitnexus-run-analyze-ktd7-');
     try {
-      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
+      await createPlaceholderGraphStore(lbugPath);
       await saveMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: '',
@@ -1672,8 +1675,9 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
 
     const tmpRepo = await createTempDir('gitnexus-run-analyze-partial-restore-');
     try {
-      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
+      await createPlaceholderGraphStore(lbugPath);
       await saveMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: '',
@@ -2889,7 +2893,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
     vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '1');
     const tmpRepo = await createTempDir('gitnexus-2790r-latest-meta-');
     try {
-      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
       // The dangerous starting point: a prior meta claiming zero embeddings.
       await seedMeta(storagePath, tmpRepo.dbPath, { stats: { nodes: 2, embeddings: 0 } });
       const controls: ResilienceControls = {
@@ -2933,6 +2937,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       );
 
       // ── The consequence: the next --force must still load the cache ─────
+      await createPlaceholderGraphStore(lbugPath);
       controls.count = [{ cnt: MID_RUN_COUNT }];
       controls.pipeline = async () => cleanResult();
       loadCachedEmbeddings.mockClear();
@@ -3791,8 +3796,9 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
   it('retains a failed stage and keeps future incomplete restore groups unsafe', async () => {
     const tmpRepo = await createTempDir('gitnexus-3456-unsafe-restore-');
     try {
-      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
       await seedMeta(storagePath, tmpRepo.dbPath, { stats: { nodes: 2, embeddings: 1 } });
+      await createPlaceholderGraphStore(lbugPath);
       let completedWindow: RepoMeta | null = null;
       const { loadCachedEmbeddings, batchInsertEmbeddings } = mockResilienceHarness({
         count: [{ cnt: 5 }],

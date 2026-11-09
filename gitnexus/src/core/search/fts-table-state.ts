@@ -1,7 +1,7 @@
 import { FTS_INDEXES, type FTSIndexDefinition } from './fts-schema.js';
 
 /**
- * Prove which searchable tables are empty using one bounded count query.
+ * Prove which searchable tables are empty using one bounded presence query.
  * No metadata or cross-request cache: a formerly empty table can gain rows.
  * Unreadable, missing or malformed evidence proves nothing, so callers retain
  * their normal index build/query/verification behavior on that path.
@@ -20,8 +20,10 @@ export async function readEmptyFtsTables(
         .map(
           // Aggregate before projecting the table name: grouping by a literal
           // yields no row for an empty table in LadybugDB.
-          (table) =>
-            `MATCH (n:\`${table}\`) WITH count(n) AS rowCount RETURN '${table}' AS tableName, rowCount`,
+          (table) => {
+            // determinism: probe — only presence is returned, never row identity.
+            return `MATCH (n:\`${table}\`) WITH n LIMIT 1 WITH count(n) AS rowCount RETURN '${table}' AS tableName, rowCount`;
+          },
         )
         .join(' UNION ALL '),
     );

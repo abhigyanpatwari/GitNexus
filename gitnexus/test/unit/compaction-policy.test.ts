@@ -28,6 +28,20 @@ describe('hybrid compaction policy', () => {
     expect(incrementalMutationRows(graph, new Set(['changed.ts']))).toBe(2_100);
     expect(incrementalMutationRows(graph, new Set(['changed.ts']))).toBeLessThan(limit);
     expect(incrementalMutationRows(graph, new Set(['other.ts']))).toBe(limit);
+    for (let i = 1; i <= 10_000; i++) {
+      graph.addRelationship({
+        id: `edge${i}`,
+        sourceId: 'f0',
+        targetId: `f${i}`,
+        type: 'CALLS',
+        confidence: 1,
+        reason: '',
+        step: 0,
+      });
+    }
+    expect(graph.relationshipCount).toBe(10_000);
+    expect(incrementalMutationLimit(graph)).toBe(3_000);
+    expect(incrementalMutationRows(graph, new Set(['changed.ts']))).toBe(3_000);
   });
   it('keeps small edits incremental until the growth or update budget is exhausted', () => {
     expect(graphCompactionReason(baseline, 250 * mib)).toBeUndefined();

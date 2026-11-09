@@ -10,9 +10,11 @@ any of these conditions applies:
 - The effective write set touches the larger of 2,000 nodes and relationships
   or 5% of the graph. The threshold scales with monorepo size and also catches
   large mutations contained in a single source file.
-- Source files were deleted, so their former row volume cannot be estimated
-  from the fresh graph.
 - Existing file-fraction or extension safety gates require a rebuild.
+
+The footprint uses the larger old/new source-file estimate. Capped native reads
+measure removed symbols and deleted files; small deletions and renames remain
+selective. This is a source-footprint heuristic, not a total DML-operation budget.
 
 Each index records its own compact size and update counter after a durable,
 verified publication. Missing or malformed metadata establishes a fresh baseline

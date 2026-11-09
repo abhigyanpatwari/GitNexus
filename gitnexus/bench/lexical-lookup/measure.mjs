@@ -321,6 +321,15 @@ if (isWorker) {
         before = await beforeWorker.run(`baseline-${pair}`);
       }
       verifyPair(before, after, candidate);
+      // The seed established a compact baseline; this tiny cached edit must
+      // exercise the selective path. Periodic compaction is covered separately.
+      if (pair === 1) {
+        assert.equal(
+          after.incremental?.writeMode,
+          'incremental',
+          'First cached edit must stay selective',
+        );
+      }
       for (const entry of [before, after]) {
         // Cached one-file edits may use row writes in an older baseline or a
         // compact full COPY in a newer runtime (#3852). Both are timed in full.
