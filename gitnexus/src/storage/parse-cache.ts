@@ -1,28 +1,8 @@
 /**
- * Chunk-level content-addressed parse cache.
- *
- * The pipeline always parses every file (correctness invariant: cross-file
- * resolution and downstream phases need full graph data). What this cache
- * does is skip the tree-sitter worker dispatch when a chunk's contents
- * haven't changed since the last run.
- *
- * Granularity: chunk-level. Files are assigned to a stable
- * `(language, hash(path) mod 128)` bucket, then packed to a 2 MiB (or
- * operator) byte budget *inside* that bucket. Membership does not depend
- * on worker count. Each chunk key binds the resolved parser identity and
- * sorted (filePath, contentHash) pairs, plus PDG identity/options when enabled.
- * A content edit invalidates only that file's pack; add/delete/rename only
- * the affected bucket.
- *
- * Why not per-file:
- * - Workers process sub-batches and emit aggregated `ParseWorkerResult`s.
- *   Splitting back to per-file would require reworking the worker contract.
- * - Chunk-level invalidation gives a useful speedup floor (98% on a single
- *   1-of-50 invalidated chunk) without touching the worker.
- *
- * `--force` still reuses content-addressed shards (it only rebuilds graph/FTS).
- * `useParseCache: false` reparses every file, writes a staging generation, and
- * publishes onto this cache only after a successful analysis.
+ * Content-addressed parser reuse. Logical entries belong to individual files;
+ * source chunks and dispatch rounds remain scheduling boundaries. Packed V8
+ * facts and scope sections share one staged publication lifecycle. Legacy
+ * chunk helpers remain readable for compatibility but are not split into files.
  */
 
 import { createHash } from 'crypto';
@@ -32,6 +12,26 @@ import { compareCodeUnits } from '../lib/utils.js';
 import type { ParseCacheIdentity } from '../core/parse-cache-identity.js';
 import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.js';
 import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sidecar.js';
+import {
+  decodeFileResultSection,
+  inspectFileResultSection,
+  type EncodedFileResult,
+} from './file-result-codec.js';
+import {
+  emptyFileResultStore,
+  loadFileResultStore,
+  appendFileResults,
+  readFileResults,
+  pinFileResults,
+  writeFileResultIndex,
+  type FileResultStore,
+} from './file-result-store.js';
+
+export interface FileParseCacheState {
+  live?: FileResultStore;
+  stage?: FileResultStore;
+  memory: Map<string, EncodedFileResult>;
+}
 
 /** SHA-256 hex of a string or buffer (paths for bucket ids, contents for cache keys). */
 const sha256Hex = (input: Buffer | string): string =>
@@ -129,11 +129,13 @@ interface ParseCacheFile {
 /** On-disk shape for the sharded directory format. */
 interface ShardedParseCacheIndex {
   version: string;
+  format?: string;
   keys: string[];
 }
 
 /** Runtime view: keyed Map for fast lookup; mutated in place during a run. */
 export interface ParseCache {
+  fileResults?: FileParseCacheState;
   identity: ParseCacheIdentity;
   entries: Map<string, ParseWorkerResult[]>;
   /**
@@ -373,6 +375,8 @@ export const persistParseCacheChunk = async (
 export const markParseCacheChunkStale = (cache: ParseCache, chunkHash: string): void => {
   cache.staleKeys ??= new Set<string>();
   cache.staleKeys.add(chunkHash);
+  cache.fileResults?.memory.delete(chunkHash);
+  cache.fileResults?.stage?.records.delete(chunkHash);
   cache.entries.delete(chunkHash);
   cache.onDiskKeys?.delete(chunkHash);
   cache.stagedKeys?.delete(chunkHash);
@@ -431,16 +435,21 @@ const loadShardedParseCache = async (
       }
     }
 
-    // Lazy: index only — load individual shards on cache hit (#1983).
-    return {
+    // Lazy: manifests only. Payloads are range-read at the file hit gate.
+    const cache: ParseCache = {
       identity,
-      entries: new Map<string, ParseWorkerResult[]>(),
-      usedKeys: new Set<string>(),
+      entries: new Map(),
+      usedKeys: new Set(),
       storagePath,
       writeStoragePath,
       onDiskKeys,
-      stagedKeys: new Set<string>(),
+      stagedKeys: new Set(),
     };
+    if (data.format === 'file-results-v1') {
+      const files = await ensureFileParseCache(cache);
+      cache.onDiskKeys = new Set([...onDiskKeys].filter((key) => files.live?.records.has(key)));
+    }
+    return cache;
   } catch {
     return null;
   }
@@ -471,6 +480,7 @@ export const loadParseCache = async (
  * leaving a half-written shard set visible to readers.
  */
 export const saveParseCache = async (storagePath: string, cache: ParseCache): Promise<string[]> => {
+  if (cache.fileResults) return saveFileParseCache(storagePath, cache);
   await fs.mkdir(storagePath, { recursive: true });
   const cacheDir = getCacheDirPath(storagePath);
   const tmpDir = `${cacheDir}.tmp`;
@@ -567,3 +577,189 @@ export const emptyParseCache = (
   onDiskKeys: locations.storagePath ? new Set<string>() : undefined,
   stagedKeys: locations.writeStoragePath ? new Set<string>() : undefined,
 });
+
+/** Lazily initialize packed state; legacy aggregate shards cannot be split safely. */
+export async function ensureFileParseCache(cache: ParseCache): Promise<FileParseCacheState> {
+  if (cache.fileResults) return cache.fileResults;
+  const live = cache.storagePath
+    ? await loadFileResultStore(
+        path.join(cache.storagePath, 'parse-cache', 'files'),
+        cache.identity.base,
+      )
+    : undefined;
+  const stage = cache.writeStoragePath
+    ? await loadFileResultStore(
+        path.join(cache.writeStoragePath, 'parse-cache', 'files'),
+        cache.identity.base,
+      )
+    : undefined;
+  return (cache.fileResults = { live, stage, memory: new Map() });
+}
+
+/** One file uses the existing framed parser/PDG identity, independent of packing. */
+export function computeFileResultKey(
+  filePath: string,
+  contentHash: string,
+  identity: ParseCacheIdentity,
+  pdg: boolean | PdgCacheKey = false,
+): string {
+  return computeChunkHash([{ filePath, contentHash }], identity, pdg);
+}
+
+export async function loadParseCacheFiles(
+  cache: ParseCache,
+  files: readonly { key: string; path: string }[],
+  scopeStoragePath?: string,
+): Promise<Map<string, ParseWorkerResult>> {
+  const state = await ensureFileParseCache(cache);
+  const result = new Map<string, ParseWorkerResult>();
+  const groups = new Map<FileResultStore, string[]>();
+  const wanted = new Map(files.map((file) => [file.key, file.path]));
+  const accept = (record: EncodedFileResult): ParseWorkerResult | undefined => {
+    if (
+      !record.cacheable ||
+      wanted.get(record.key) !== record.path ||
+      cache.staleKeys?.has(record.key)
+    )
+      return undefined;
+    const facts = decodeFileResultSection(record.facts, record.key, record.path, 'facts');
+    if (!facts || !inspectFileResultSection(record.scopes, record.key, record.path, 'scopes'))
+      return undefined;
+    const value = facts.value as ParseWorkerResult;
+    if (!value || !Array.isArray(value.nodes) || !Array.isArray(value.parsedFiles))
+      return undefined;
+    return value;
+  };
+  for (const file of files) {
+    if (cache.staleKeys?.has(file.key)) continue;
+    const memory = state.memory.get(file.key);
+    if (memory) {
+      const value = accept(memory);
+      if (value) {
+        value.parsedFiles = decodeFileResultSection(memory.scopes, file.key, file.path, 'scopes')!
+          .value as ParseWorkerResult['parsedFiles'];
+        result.set(file.key, value);
+      }
+      continue;
+    }
+    const source = cache.stagedKeys?.has(file.key)
+      ? state.stage
+      : cache.onDiskKeys?.has(file.key)
+        ? state.live
+        : undefined;
+    if (source) {
+      const keys = groups.get(source) ?? [];
+      keys.push(file.key);
+      groups.set(source, keys);
+    }
+  }
+  for (const [source, keys] of groups) {
+    const records = await readFileResults(source, keys);
+    const accepted = new Map<string, ParseWorkerResult>();
+    for (const record of records.values()) {
+      const value = accept(record);
+      if (value) accepted.set(record.key, value);
+    }
+    try {
+      if (scopeStoragePath) await pinFileResults(source, [...accepted.keys()], scopeStoragePath);
+      for (const [key, value] of accepted) {
+        if (!scopeStoragePath)
+          value.parsedFiles = decodeFileResultSection(
+            records.get(key)!.scopes,
+            key,
+            wanted.get(key)!,
+            'scopes',
+          )!.value as ParseWorkerResult['parsedFiles'];
+        result.set(key, value);
+      }
+    } catch {
+      /* Cannot pin a complete scope snapshot: dispatch these files. */
+    }
+  }
+  return result;
+}
+
+export async function persistParseCacheFiles(
+  cache: ParseCache,
+  records: readonly EncodedFileResult[],
+): Promise<void> {
+  const state = await ensureFileParseCache(cache);
+  const complete = records.filter(
+    (record) => record.cacheable && !cache.staleKeys?.has(record.key),
+  );
+  if (state.stage) {
+    try {
+      await appendFileResults(state.stage, complete);
+      cache.stagedKeys ??= new Set();
+      for (const record of complete) {
+        cache.stagedKeys.add(record.key);
+        state.memory.delete(record.key);
+      }
+      return;
+    } catch {
+      /* Keep graph output usable and retry optional persistence at handoff. */
+    }
+  }
+  for (const record of complete) state.memory.set(record.key, record);
+}
+
+export async function flushFileParseCache(cache: ParseCache): Promise<void> {
+  const state = await ensureFileParseCache(cache);
+  if (state.memory.size) await persistParseCacheFiles(cache, [...state.memory.values()]);
+  if (state.memory.size)
+    throw new Error('Could not persist prepared per-file parser cache records');
+  if (state.stage) await writeFileResultIndex(state.stage);
+}
+
+async function saveFileParseCache(storagePath: string, cache: ParseCache): Promise<string[]> {
+  const state = await ensureFileParseCache(cache);
+  const cacheDir = getCacheDirPath(storagePath),
+    temporary = `${cacheDir}.tmp`;
+  await fs.rm(temporary, { recursive: true, force: true });
+  const output = emptyFileResultStore(path.join(temporary, 'files'), cache.identity.base);
+  // Publication holds the store lock. Refresh the live manifest here because a
+  // sibling may have rotated it after this run selected its immutable snapshots.
+  const live = cache.storagePath
+    ? await loadFileResultStore(
+        path.join(cache.storagePath, 'parse-cache', 'files'),
+        cache.identity.base,
+      )
+    : undefined;
+  const keys = [...cache.usedKeys]
+    .filter((key) => isValidChunkCacheKey(key) && !cache.staleKeys?.has(key))
+    .sort();
+  for (let start = 0; start < keys.length; start += 64) {
+    const batch = keys.slice(start, start + 64);
+    const staged = state.stage
+      ? await readFileResults(
+          state.stage,
+          batch.filter((key) => cache.stagedKeys?.has(key) && !state.memory.has(key)),
+        )
+      : new Map<string, EncodedFileResult>();
+    const retained = live
+      ? await readFileResults(
+          live,
+          batch.filter(
+            (key) =>
+              !cache.stagedKeys?.has(key) && cache.onDiskKeys?.has(key) && !state.memory.has(key),
+          ),
+        )
+      : new Map<string, EncodedFileResult>();
+    const records: EncodedFileResult[] = [];
+    for (const key of batch) {
+      const record = state.memory.get(key) ?? staged.get(key) ?? retained.get(key);
+      if (record) records.push(record);
+    }
+    await appendFileResults(output, records);
+  }
+  await writeFileResultIndex(output);
+  const writtenKeys = [...output.records.keys()];
+  await fs.writeFile(
+    path.join(temporary, CACHE_INDEX_FILENAME),
+    JSON.stringify({ version: cache.identity.base, format: 'file-results-v1', keys: writtenKeys }),
+  );
+  await fs.rm(cacheDir, { recursive: true, force: true });
+  await fs.rename(temporary, cacheDir);
+  await fs.rm(getLegacyCachePath(storagePath), { force: true });
+  return writtenKeys;
+}

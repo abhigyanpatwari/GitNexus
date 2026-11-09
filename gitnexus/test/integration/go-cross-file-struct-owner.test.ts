@@ -8,7 +8,7 @@ import type { PipelineResult } from './resolvers/helpers.js';
 import {
   emptyParseCache,
   loadParseCache,
-  loadParseCacheChunk,
+  loadParseCacheFiles,
   saveParseCache,
 } from '../../src/storage/parse-cache.js';
 import { mergeStagedDurableParsedFileStore } from '../../src/storage/parsedfile-store.js';
@@ -138,10 +138,13 @@ describe('Go semantic member ownership (#3558, #3559)', () => {
 
   it('does not cache fabricated owner IDs or ownership edges from parser workers', async () => {
     const stored = await loadParseCache(storage, parseIdentity, storage);
-    const chunks = await Promise.all(
-      [...cache.usedKeys].map((key) => loadParseCacheChunk(stored, key)),
+    const facts = await loadParseCacheFiles(
+      stored,
+      [...stored.fileResults!.live!.records.values()],
+      storage,
     );
-    const results = chunks.flatMap((chunk) => chunk ?? []);
+    expect(facts.size).toBe(cache.usedKeys.size);
+    const results = [...facts.values()];
     const deferred = results
       .flatMap((result) => result.symbols)
       .filter((symbol) => symbol.type === 'Method' && symbol.filePath === 'methods.go');

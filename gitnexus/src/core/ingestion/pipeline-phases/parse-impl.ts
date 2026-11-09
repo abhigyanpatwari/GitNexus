@@ -26,9 +26,10 @@ import {
 import { mergeChunkResults, dispatchChunkParseRound } from '../parsing-processor.js';
 import {
   fileContentHash,
-  computeChunkHash,
-  loadParseCacheChunk,
-  persistParseCacheChunk,
+  computeFileResultKey,
+  ensureFileParseCache,
+  loadParseCacheFiles,
+  persistParseCacheFiles,
   markParseCacheChunkStale,
   packParseCacheChunks,
 } from '../../../storage/parse-cache.js';
@@ -36,13 +37,13 @@ import {
   clearParsedFileStore,
   persistParsedFileChunk,
   loadParsedFilesForPaths,
-  getDurableParsedFileDir,
-  loadDurableParsedFileIndex,
-  prepareDurableParsedFileChunk,
-  durableChunkHasShards,
-  durableChunkHasStaleShards,
 } from '../../../storage/parsedfile-store.js';
-import type { ParseWorkerResult } from '../workers/parse-worker.js';
+import type { ParseWorkerInput, ParseWorkerResult } from '../workers/parse-worker.js';
+import {
+  decodeFileResultSection,
+  type EncodedFileResult,
+} from '../../../storage/file-result-codec.js';
+import { pinFileResults } from '../../../storage/file-result-store.js';
 import { resolveParseWorkerUrl } from '../workers/worker-entry.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from '../cfg/collect.js';
 import type { WorkerExtractedData } from '../parsing-processor.js';
@@ -131,7 +132,6 @@ import {
 import { isDebugHeapEnabled, logHeapProbe } from '../utils/heap-probe.js';
 
 import { logger } from '../../logger.js';
-import { mapConcurrent } from '../../../lib/utils.js';
 import { createRoundBudget } from './parse-round-budget.js';
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -203,12 +203,6 @@ const CHUNK_BYTES_PER_WORKER = DEFAULT_CHUNK_BYTE_BUDGET;
  * while the rest finish early). Drives the derived `subBatchMaxBytes`.
  */
 const TARGET_JOBS_PER_WORKER = 3;
-
-/**
- * Concurrent durable ParsedFile directory resets per round. Matches the file
- * reader's `READ_CONCURRENCY`, because both compete for the same descriptors.
- */
-const DURABLE_RESET_CONCURRENCY = 32;
 
 /** Floor for a derived sub-batch so jobs don't shrink to per-file IPC churn. */
 const MIN_SUB_BATCH_BYTES = 256 * 1024;
@@ -742,11 +736,8 @@ export async function runChunkedParseAndResolve(
         ...(workerResources
           ? { heapLimitMb: workerResources.workerHeapMb, requireDrain: true }
           : {}),
-        parsedFileStoreStoragePath: parsedFileStorePath,
-        // Durable, content-addressed shard dir for warm-cache reuse (#2038).
-        // Initialized below before the chunk loop (same deferred-init pattern
-        // as `parsedFileStorePath`); this closure only runs from the loop.
-        durableParsedFileStoragePath: durableParsedFileDir,
+        parsedFileStoreStoragePath: parseCache ? undefined : parsedFileStorePath,
+        fileResults: parseCache !== undefined,
         // CFG/PDG opt-in (#2081 M1) — baked into each worker's workerData so the
         // worker builds + attaches cfgSideChannel. Off by default.
         pdg: options?.pdg === true,
@@ -767,6 +758,21 @@ export async function runChunkedParseAndResolve(
   };
 
   let filesParsedSoFar = 0;
+  let reportedParseFiles = 0;
+  const reportParsingProgress = (current: number, message: string, detail?: string): void => {
+    reportedParseFiles = Math.max(reportedParseFiles, current);
+    onProgress({
+      phase: 'parsing',
+      percent: Math.round(20 + (reportedParseFiles / totalParseable) * 50),
+      message,
+      detail,
+      stats: {
+        filesProcessed: reportedParseFiles,
+        totalFiles: totalParseable,
+        nodesCreated: graph.nodeCount,
+      },
+    });
+  };
 
   const exportedTypeMap: ExportedTypeMap = new Map();
   const bindingAccumulator = new BindingAccumulator();
@@ -795,11 +801,9 @@ export async function runChunkedParseAndResolve(
   const allParsedFiles: import('gitnexus-shared').ParsedFile[] = [];
   const scopeExtractionFailures = new Set<string>();
 
-  // Incremental parse cache (Option B): chunk-level content-addressed.
-  // When the chunk's (filePath, content-hash) signature matches a prior
-  // run's, replay the cached ParseWorkerResult[] instead of dispatching
-  // to workers. See gitnexus/src/storage/parse-cache.ts.
+  // Reuse one file's facts independently of scheduling chunks and worker jobs.
   const parseCache = options?.parseCache;
+  if (parseCache) await ensureFileParseCache(parseCache);
   // Disk-backed ParsedFile store (#1983): when a storage path is available we
   // flush worker-produced ParsedFiles to disk per chunk (instead of retaining
   // them in `allParsedFiles`) and scope-resolution streams them back per
@@ -811,25 +815,6 @@ export async function runChunkedParseAndResolve(
   // behavior). Cleared up-front so a prior run's shards never leak in.
   const parsedFileStorePath = options?.parsedFileStorePath ?? parseCache?.writeStoragePath;
   if (parsedFileStorePath) await clearParsedFileStore(parsedFileStorePath);
-  // Durable, content-addressed ParsedFile store (#2038 warm-cache coverage) —
-  // a sibling of the run-scoped store, NOT cleared per run. Workers write a
-  // shard per chunk hash; on a warm parse-cache hit we restore the chunk's
-  // shards into the run-scoped store so scope-resolution streams them without
-  // re-parsing. `durableHitEntries` is the prior run's path-coverage index,
-  // gated by the same base identity as the worker-result cache (a mismatch ⇒ every chunk
-  // re-dispatches, which repopulates the durable store).
-  const durableParsedFileDir =
-    parseCache?.writeStoragePath !== undefined
-      ? getDurableParsedFileDir(parseCache.writeStoragePath)
-      : undefined;
-  const durableReadStoragePath = parseCache?.storagePath;
-  const durableHitEntries =
-    parseCache && durableReadStoragePath !== undefined
-      ? await loadDurableParsedFileIndex(
-          getDurableParsedFileDir(durableReadStoragePath),
-          parseCache.identity.base,
-        )
-      : new Map<string, ReadonlySet<string>>();
   let chunkCacheHits = 0;
   let chunkCacheMisses = 0;
   let parseCacheHitFileCount = 0;
@@ -914,23 +899,12 @@ export async function runChunkedParseAndResolve(
       | {
           readonly kind: 'miss';
           readonly chunkIdx: number;
-          readonly chunkHash: string | null;
-          readonly chunkFiles: Array<{ path: string; content: string }>;
+          readonly chunkFiles: ParseWorkerInput[];
+          readonly fileCount: number;
+          readonly selection?: Array<{ key: string; path: string }>;
+          readonly hits?: Map<string, ParseWorkerResult>;
           readonly chunkStartMs: number | null;
         };
-
-    /**
-     * Chunk hashes whose durable ParsedFile directory could not be reset. The
-     * old generation's shards are still on disk, so a warm hit would union
-     * stale shards with the new ones. Treated exactly like a quarantined chunk:
-     * skip the parse-cache write AND, when shards from that generation are
-     * still on disk, retire the hash (#3204): the old `.v8` is not carried
-     * forward and the directory is dropped from the durable index, so the next
-     * run re-dispatches. Kept as its own set rather than
-     * read back off `staleKeys`, which is a superset — it is what selects the
-     * warn below over the quarantine branch's dev-only log.
-     */
-    const durablePrepareFailures = new Set<string>();
 
     const roundByteBudget = resolveParseRoundByteBudget(options);
     let roundEntries: RoundEntry[] = [];
@@ -1072,47 +1046,63 @@ export async function runChunkedParseAndResolve(
       p: Extract<RoundEntry, { kind: 'miss' }>,
       rawResults: ParseWorkerResult[],
     ): Promise<void> => {
-      const chunkWorkerData = mergeChunkResults(graph, symbolTable, rawResults, exportedTypeMap);
-      // Persist raw results for this chunk hash (skipping when any chunk file
-      // was worker-quarantined, so the narrower rawResults isn't cached under
-      // the full-chunk key — see the original inline note / U20.U2).
-      // `rawResults.length > 0` guards the WRITE only. A quarantined chunk
-      // often returns nothing at all (the worker died on it), and that chunk
-      // still has to be retired — otherwise its pre-existing `.v8` is copied
-      // forward at save time (#3204).
-      if (parseCache && p.chunkHash) {
-        const quarantineSet = new Set(workerPool?.getQuarantinedPaths?.() ?? []);
-        const chunkHadQuarantine = p.chunkFiles.some((f) => quarantineSet.has(f.path));
-        const durableGenerationStale = durablePrepareFailures.has(p.chunkHash);
-        if (durableGenerationStale) {
-          logger.warn(
-            { chunkHash: p.chunkHash.slice(0, 8) },
-            'parse-cache SKIP: durable generation for this chunk could not be reset, ' +
-              'so its shards may be stale; next run will re-dispatch it',
-          );
-        } else if (chunkHadQuarantine) {
-          // This chunk's durable directory now holds only this run's NARROWER
-          // shards, so a warm hit would replay the full-coverage `.v8` over
-          // partial ParsedFiles (#3204).
-          markParseCacheChunkStale(parseCache, p.chunkHash);
-          if (isDev) {
-            const quarantinedInChunk = p.chunkFiles.filter((f) => quarantineSet.has(f.path)).length;
-            logger.info(
-              `📦 parse-cache SKIP: chunk ${p.chunkIdx + 1}/${numChunks} ` +
-                `had ${quarantinedInChunk} worker-quarantined file(s); ` +
-                `next run will rediscover (${p.chunkHash.slice(0, 8)})`,
-            );
-          }
-        } else if (rawResults.length > 0) {
-          await persistParseCacheChunk(parseCache, p.chunkHash, rawResults);
-          if (isDev) {
-            logger.info(
-              `📦 parse-cache MISS+store: chunk ${p.chunkIdx + 1}/${numChunks} (${p.chunkFiles.length} files, ${p.chunkHash.slice(0, 8)})`,
-            );
+      let ordered = rawResults;
+      if (parseCache && p.selection) {
+        const resolved = new Map(p.hits);
+        const expected = new Map(p.chunkFiles.map((file) => [file.cacheKey!, file.path]));
+        const fresh = new Map<string, EncodedFileResult>();
+        const quarantined = new Set(workerPool?.getQuarantinedPaths?.() ?? []);
+        for (const result of rawResults) {
+          if (!result.fileResults && result.fileCount > 0)
+            throw new Error('Parser worker omitted per-file results; rebuild the worker');
+          for (const entry of result.fileResults ?? []) {
+            if (expected.get(entry.key) !== entry.path || resolved.has(entry.key))
+              throw new Error('Parser worker returned an unexpected per-file result');
+            if ('raw' in entry) {
+              resolved.set(entry.key, entry.raw);
+              markParseCacheChunkStale(parseCache, entry.key);
+              continue;
+            }
+            const record = entry.encoded;
+            if (record.key !== entry.key || record.path !== entry.path)
+              throw new Error('Parser file-result identity mismatch');
+            const decoded = decodeFileResultSection(record.facts, record.key, record.path, 'facts');
+            if (!decoded) throw new Error(`Invalid encoded parser facts for ${record.path}`);
+            resolved.set(record.key, decoded.value as ParseWorkerResult);
+            fresh.set(record.key, record);
+            if (!record.cacheable || quarantined.has(record.path))
+              markParseCacheChunkStale(parseCache, record.key);
           }
         }
+        await persistParseCacheFiles(parseCache, [...fresh.values()]);
+        const stage = parseCache.fileResults?.stage;
+        let pinned = new Set<string>();
+        if (stage && parsedFileStorePath) {
+          const keys = [...fresh.keys()].filter(
+            (key) => parseCache.stagedKeys?.has(key) && stage.records.has(key),
+          );
+          try {
+            await pinFileResults(stage, keys, parsedFileStorePath);
+            pinned = new Set(keys);
+          } catch {
+            /* Use the existing transient/memory fallback for this run. */
+          }
+        }
+        for (const [key, record] of fresh) {
+          if (pinned.has(key)) continue;
+          const scope = decodeFileResultSection(record.scopes, key, record.path, 'scopes');
+          if (!scope) throw new Error(`Invalid encoded parser scopes for ${record.path}`);
+          resolved.get(key)!.parsedFiles = scope.value as ParseWorkerResult['parsedFiles'];
+        }
+        ordered = [];
+        for (const file of p.selection) {
+          const result = resolved.get(file.key);
+          if (result) ordered.push(result);
+          else markParseCacheChunkStale(parseCache, file.key);
+        }
       }
-      await applyChunkResults(chunkWorkerData, p.chunkIdx, p.chunkFiles.length, p.chunkStartMs);
+      const data = mergeChunkResults(graph, symbolTable, ordered, exportedTypeMap);
+      await applyChunkResults(data, p.chunkIdx, p.fileCount, p.chunkStartMs);
     };
 
     /**
@@ -1129,55 +1119,6 @@ export async function runChunkedParseAndResolve(
       if (misses.length === 0) {
         return { entries, results: Promise.resolve([]) };
       }
-      // Each chunk resets its own directory, so these are independent and run
-      // concurrently: serially they would sit on the critical path this round
-      // exists to shorten, with the pool idle and the previous round's merge
-      // waiting, once per miss.
-      //
-      // BOUNDED, though. A round can hold hundreds of small packs, and each
-      // reset is a recursive rm + mkdir. Firing all of them at once competes
-      // for descriptors with the chunk prefetch this loop already has in
-      // flight, and `readFileContents` degrades a losing read SILENTLY by
-      // contract — a dropped file would vanish from the chunk, from the graph,
-      // and from the chunk hash, shipping a narrowed index with exit 0. Same
-      // helper and width the file reads use.
-      await mapConcurrent(
-        misses,
-        async (miss) => {
-          if (durableParsedFileDir === undefined || miss.chunkHash === null) return;
-          try {
-            await prepareDurableParsedFileChunk(durableParsedFileDir, miss.chunkHash);
-          } catch (err) {
-            // The durable store is an optimization — degrade like the restore
-            // path does instead of failing the analyze. Workers recreate the
-            // directory on write, so at worst the old generation lingers.
-            // Caught per chunk so one failure cannot abort the others.
-            durablePrepareFailures.add(miss.chunkHash);
-            // Retire ONLY when a generation nobody cleared is still on disk.
-            // `prepareDurableParsedFileChunk` is rm-then-mkdir: an rm failure
-            // leaves the old shards to be unioned into a warm hit, but an rm
-            // that succeeded before a failing mkdir leaves nothing — the
-            // workers recreate the directory and write a clean generation, so
-            // retiring there would discard a good `.v8` for no safety gain
-            // (and a correlated burst would discard the whole shared cache).
-            // Retire here rather than at finalize: that branch sits behind
-            // `rawResults.length > 0`, so a chunk whose worker round returns
-            // nothing would keep its stale entry.
-            if (
-              parseCache &&
-              (await durableChunkHasStaleShards(durableParsedFileDir, miss.chunkHash))
-            ) {
-              markParseCacheChunkStale(parseCache, miss.chunkHash);
-            }
-            logger.warn(
-              { err, chunkHash: miss.chunkHash.slice(0, 8) },
-              'parsedfile-cache: could not reset durable chunk generation; ' +
-                'continuing without caching this chunk',
-            );
-          }
-        },
-        { concurrency: DURABLE_RESET_CONCURRENCY },
-      );
       const roundFiles = misses.reduce((sum, miss) => sum + miss.chunkFiles.length, 0);
       const firstIdx = misses[0].chunkIdx;
       const lastIdx = misses[misses.length - 1].chunkIdx;
@@ -1185,22 +1126,13 @@ export async function runChunkedParseAndResolve(
         // Rounds queued before this one are already counted in
         // `queuedFilesSoFar`; `current` is this round's own worker progress.
         const globalCurrent = queuedFilesSoFar - roundFiles + current;
-        // Parse phase covers 20-70 (M2). Deferred extraction handles 70-95.
-        const parsingProgress = 20 + (globalCurrent / totalParseable) * 50;
-        onProgress({
-          phase: 'parsing',
-          percent: Math.round(parsingProgress),
-          message:
-            firstIdx === lastIdx
-              ? `Parsing chunk ${firstIdx + 1}/${numChunks}...`
-              : `Parsing chunks ${firstIdx + 1}-${lastIdx + 1}/${numChunks}...`,
-          detail: filePath,
-          stats: {
-            filesProcessed: globalCurrent,
-            totalFiles: totalParseable,
-            nodesCreated: graph.nodeCount,
-          },
-        });
+        reportParsingProgress(
+          globalCurrent,
+          firstIdx === lastIdx
+            ? `Parsing chunk ${firstIdx + 1}/${numChunks}...`
+            : `Parsing chunks ${firstIdx + 1}-${lastIdx + 1}/${numChunks}...`,
+          filePath,
+        );
       };
       const activeWorkerPool = getOrCreateWorkerPool();
       if (verboseThroughputLog) {
@@ -1212,7 +1144,6 @@ export async function runChunkedParseAndResolve(
       const results = dispatchChunkParseRound(
         misses.map((miss) => ({
           items: miss.chunkFiles,
-          chunkHash: miss.chunkHash ?? undefined,
         })),
         activeWorkerPool,
         progressForRound,
@@ -1354,116 +1285,62 @@ export async function runChunkedParseAndResolve(
         if (content !== undefined) chunkFiles.push({ path: p, content });
       }
 
-      // Compute the chunk's content-hash signature (if cache available).
-      let chunkHash: string | null = null;
-      const entries =
-        parseCache || recordSourceHash
-          ? chunkFiles.map((f) => ({
-              filePath: f.path,
-              contentHash: fileContentHash(f.content),
-            }))
-          : [];
-      for (const entry of entries) recordSourceHash?.(entry.filePath, entry.contentHash);
-      if (parseCache) {
-        chunkHash = computeChunkHash(
-          entries,
-          parseCache.identity,
-          // Only worker-visible pdg config participates in the key —
-          // pdgMaxEdgesPerFunction is emit-time-only and deliberately
-          // excluded (see PdgCacheKey in parse-cache.ts; #2099 F3). The line
-          // cap is RESOLVED to the worker's default before folding so an
-          // explicit-default run shares the default run's keys (the worker
-          // output is byte-identical either way).
-          options?.pdg === true
-            ? {
-                pdg: true,
-                maxFunctionLines: options?.pdgMaxFunctionLines ?? DEFAULT_PDG_MAX_FUNCTION_LINES,
-              }
-            : false,
-        );
+      const selection = chunkFiles.map((file) => {
+        const contentHash = fileContentHash(file.content);
+        recordSourceHash?.(file.path, contentHash);
+        const key = parseCache
+          ? computeFileResultKey(
+              file.path,
+              contentHash,
+              parseCache.identity,
+              options?.pdg === true
+                ? {
+                    pdg: true,
+                    maxFunctionLines:
+                      options?.pdgMaxFunctionLines ?? DEFAULT_PDG_MAX_FUNCTION_LINES,
+                  }
+                : false,
+            )
+          : '';
+        if (parseCache) parseCache.usedKeys.add(key);
+        return { key, path: file.path };
+      });
+      const hits = parseCache
+        ? await loadParseCacheFiles(parseCache, selection, parsedFileStorePath)
+        : new Map<string, ParseWorkerResult>();
+      const misses: ParseWorkerInput[] = [];
+      for (let i = 0; i < chunkFiles.length; i++) {
+        if (!hits.has(selection[i].key))
+          misses.push({ ...chunkFiles[i], ...(parseCache ? { cacheKey: selection[i].key } : {}) });
       }
-
-      const cachedRaw =
-        chunkHash && parseCache ? await loadParseCacheChunk(parseCache, chunkHash) : undefined;
-
-      // Track every chunk hash we touched so the orchestrator can
-      // prune stale entries (chunks whose composition no longer
-      // corresponds to a live chunk in the current scan) before saving.
-      if (parseCache && chunkHash) parseCache.usedKeys.add(chunkHash);
-
-      // A parse-cache hit may skip the workers ONLY if the chunk's ParsedFiles
-      // are recoverable without a main-thread re-parse: restored from a durable
-      // shard (store path) or carried in the cached result (no-store path). If a
-      // cached chunk's durable shards are missing — first run after the durable
-      // store was introduced, or a pruned/version-stale shard — fall through to
-      // a worker re-dispatch to repopulate them. NEVER let scope-resolution
-      // re-extract on the main thread (the #1983 OOM the durable store closes).
-      const durableExpectedPaths =
-        chunkHash === null ? undefined : durableHitEntries.get(chunkHash);
-      const durableHit =
-        cachedRaw !== undefined &&
-        cachedRaw.length > 0 &&
-        chunkHash !== null &&
-        durableReadStoragePath !== undefined &&
-        parsedFileStorePath !== undefined &&
-        durableExpectedPaths !== undefined &&
-        (await durableChunkHasShards(
-          parsedFileStorePath,
-          chunkHash,
-          durableExpectedPaths,
-          durableReadStoragePath,
-        ));
-
-      // Set by whichever branch queues this chunk; drives the close below.
-      let roundIsFull = false;
-      if (cachedRaw && cachedRaw.length > 0 && (durableHit || parsedFileStorePath === undefined)) {
-        // Cache hit: replay cached worker output. Finalize any parked worker
-        // chunk FIRST so deferred aggregation stays in chunk order, then merge
-        // + apply this hit inline (no worker dispatch to overlap).
-        chunkCacheHits++;
-        parseCacheHitFileCount += chunkFiles.length;
-        if (isDev) {
-          logger.info(
-            `📦 parse-cache HIT: chunk ${chunkIdx + 1}/${numChunks} (${chunkFiles.length} files, ${chunkHash?.slice(0, 8) ?? 'unknown'})`,
-          );
-        }
-        // Progress update so UI advances even on a cache hit.
-        const cachedFiles = chunkFiles.length;
-        onProgress({
-          phase: 'parsing',
-          // Parse phase covers 20-70 (50 points). Deferred extraction below
-          // takes 70-95 so the UI advances through the (potentially long)
-          // resolution stages instead of holding at 82 (M2 from PR #1693
-          // review).
-          percent: Math.round(20 + ((queuedFilesSoFar + cachedFiles) / totalParseable) * 50),
-          message: `Parsing chunk ${chunkIdx + 1}/${numChunks} (cache)...`,
-          stats: {
-            filesProcessed: queuedFilesSoFar + cachedFiles,
-            totalFiles: totalParseable,
-            nodesCreated: graph.nodeCount,
-          },
-        });
-        // The durable gate already snapshotted warm `.v8` shards into the
-        // run-scoped store for scope resolution. Queue into the round so this
-        // hit still finalizes in `chunkIdx` order relative to its neighbours.
+      parseCacheHitFileCount += hits.size;
+      reparsedFileCount += misses.length;
+      if (hits.size) chunkCacheHits++;
+      if (misses.length) chunkCacheMisses++;
+      if (misses.length === 0) {
         roundEntries.push({
           kind: 'hit',
           chunkIdx,
           fileCount: chunkFiles.length,
           chunkStartMs,
-          cachedRaw,
+          cachedRaw: selection.map((file) => hits.get(file.key)!),
         });
-        roundIsFull = roundBudget.addChunk(chunkFiles.map((file) => file.content));
-        queuedFilesSoFar += chunkFiles.length;
+        reportParsingProgress(
+          queuedFilesSoFar + chunkFiles.length,
+          `Parsing chunk ${chunkIdx + 1}/${numChunks} (cache)...`,
+        );
       } else {
-        // Cache miss: queue for the round's single dispatch; the raw results
-        // are stored under the chunk hash when the round drains.
-        chunkCacheMisses++;
-        reparsedFileCount += chunkFiles.length;
-        roundEntries.push({ kind: 'miss', chunkIdx, chunkHash, chunkFiles, chunkStartMs });
-        roundIsFull = roundBudget.addChunk(chunkFiles.map((file) => file.content));
-        queuedFilesSoFar += chunkFiles.length;
+        roundEntries.push({
+          kind: 'miss',
+          chunkIdx,
+          chunkFiles: misses,
+          fileCount: chunkFiles.length,
+          chunkStartMs,
+          ...(parseCache ? { selection, hits } : {}),
+        });
       }
+      const roundIsFull = roundBudget.addChunk(chunkFiles.map((file) => file.content));
+      queuedFilesSoFar += chunkFiles.length;
 
       // One cap, on what the main thread is holding. That bounds the worker
       // round too, since a round's dispatched bytes are a subset of its

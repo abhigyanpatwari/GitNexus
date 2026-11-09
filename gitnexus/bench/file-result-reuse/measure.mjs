@@ -1,0 +1,160 @@
+/** Run from gitnexus/: node bench/file-result-reuse/measure.mjs [--dist DIR] [--corpus DIR]
+ * Each invocation is one isolated trial (cold -> warm -> edit -> two edits -> repack).
+ * Compare at least three invocations for baseline/candidate on the same machine.
+ */
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+const args = new Map();
+for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
+const dist = path.resolve(args.get('--dist') ?? 'dist');
+const { runPipelineFromRepo } = await import(
+  pathToFileURL(path.join(dist, 'core/ingestion/pipeline.js'))
+);
+const { emptyParseCache, loadParseCache, saveParseCache } = await import(
+  pathToFileURL(path.join(dist, 'storage/parse-cache.js'))
+);
+const { mergeStagedDurableParsedFileStore } = await import(
+  pathToFileURL(path.join(dist, 'storage/parsedfile-store.js'))
+);
+const count = Number(args.get('--files') ?? 1024),
+  workers = Number(args.get('--workers') ?? 2);
+const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-file-reuse-bench-'));
+const repo = path.join(root, 'repo'),
+  live = path.join(root, 'live');
+const identity = {
+  base: 'file-result-reuse-benchmark-v1',
+  pdg: 'file-result-reuse-benchmark-pdg-v1',
+};
+async function treeDigest(directory) {
+  const hash = createHash('sha256');
+  for (const relative of (await fs.readdir(directory, { recursive: true })).sort()) {
+    const file = path.join(directory, relative);
+    if (!(await fs.stat(file)).isFile()) continue;
+    const bytes = await fs.readFile(file);
+    hash.update(JSON.stringify([relative, bytes.length])).update(bytes);
+  }
+  return hash.digest('hex');
+}
+const canonical = (value) =>
+  Array.isArray(value)
+    ? value.map(canonical)
+    : value && typeof value === 'object'
+      ? Object.fromEntries(
+          Object.keys(value)
+            .sort()
+            .map((key) => [key, canonical(value[key])]),
+        )
+      : value;
+try {
+  await fs.mkdir(repo);
+  const corpus = args.get('--corpus');
+  if (corpus)
+    await fs.cp(path.resolve(corpus), repo, {
+      recursive: true,
+      filter: (source) =>
+        !['node_modules', '.git', '.gitnexus', 'dist'].includes(path.basename(source)),
+    });
+  else
+    for (let i = 0; i < count; i++) {
+      const name = `file${String(i).padStart(4, '0')}.ts`;
+      const previous = `file${String(i - 1).padStart(4, '0')}`;
+      await fs.writeFile(
+        path.join(repo, name),
+        (i ? `import { entry as prev } from './${previous}';\n` : '') +
+          `export function entry(value: number): number { return ${i ? 'prev(value)' : 'value'} + ${i}; }\n` +
+          Array.from(
+            { length: 20 },
+            (_, j) =>
+              `export function helper${j}(value: number): number { return entry(value) + ${j}; }\n`,
+          ).join(''),
+      );
+    }
+  const sources = (await fs.readdir(repo, { recursive: true }))
+    .filter((f) => /\.tsx?$/.test(f))
+    .sort();
+  const sourceHash = createHash('sha256');
+  for (const file of sources)
+    sourceHash.update(file).update(await fs.readFile(path.join(repo, file)));
+  console.log(
+    JSON.stringify({
+      kind: 'provenance',
+      sourceDigest: sourceHash.digest('hex'),
+      sourceFiles: sources.length,
+      node: process.version,
+      workers,
+      dist,
+      cliDigest: createHash('sha256')
+        .update(await fs.readFile(path.join(dist, 'cli/index.js')))
+        .digest('hex'),
+      buildDigest: await treeDigest(dist),
+      checkoutHead: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+    }),
+  );
+  for (const kind of ['cold', 'warm', 'edit', 'two-edits', 'repack']) {
+    if (kind === 'edit' || kind === 'two-edits') {
+      for (const file of sources.slice(0, kind === 'edit' ? 1 : 2)) {
+        await fs.appendFile(
+          path.join(repo, file),
+          `\nexport function benchmarkAdded${kind === 'edit' ? 'One' : 'Two'}(value: number) { return value; }\n`,
+        );
+      }
+    }
+    const stage = path.join(root, kind);
+    const cache =
+      kind === 'cold'
+        ? emptyParseCache(identity, { storagePath: live, writeStoragePath: stage })
+        : await loadParseCache(live, identity, stage);
+    const start = performance.now();
+    const run = await runPipelineFromRepo(repo, () => {}, {
+      workerPoolSize: workers,
+      parseWorkerUrl: pathToFileURL(path.join(dist, 'core/ingestion/workers/parse-worker.js')),
+      parseCache: cache,
+      ...(kind === 'repack' ? { chunkByteBudget: 4096 } : {}),
+    });
+    const pipelineMs = performance.now() - start;
+    const kept = await saveParseCache(live, cache);
+    await mergeStagedDurableParsedFileStore(
+      live,
+      stage,
+      identity.base,
+      new Set(cache.fileResults ? [] : kept),
+    );
+    const withSaveMs = performance.now() - start;
+    const rows = [...run.graph.nodes]
+      .map((n) => 'N ' + JSON.stringify(canonical(n)))
+      .concat([...run.graph.relationships].map((e) => 'R ' + JSON.stringify(canonical(e))))
+      .sort();
+    let cacheBytes = 0,
+      cacheFiles = 0;
+    for (const file of await fs.readdir(live, { recursive: true })) {
+      const stat = await fs.stat(path.join(live, file));
+      if (stat.isFile()) {
+        cacheBytes += stat.size;
+        cacheFiles++;
+      }
+    }
+    console.log(
+      JSON.stringify({
+        kind,
+        pipelineMs,
+        withSaveMs,
+        cacheBytes,
+        cacheFiles,
+        peakRssKb: process.resourceUsage().maxRSS,
+        reparsed: run.reparsedFileCount,
+        hits: run.parseCacheHitFileCount,
+        workersStarted: run.usedWorkerPool,
+        nodes: run.graph.nodeCount,
+        edges: run.graph.relationshipCount,
+        digest: createHash('sha256').update(rows.join('\n')).digest('hex'),
+      }),
+    );
+    await fs.rm(stage, { recursive: true, force: true });
+  }
+} finally {
+  await fs.rm(root, { recursive: true, force: true });
+}

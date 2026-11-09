@@ -18,6 +18,44 @@ import v8 from 'node:v8';
 import { logger } from '../core/logger.js';
 import { linkOrCopyFile, writeFileAtomicBytes, writeFileAtomicBytesSync } from './fs-atomic.js';
 
+/** The same envelope as disk shards, for independently compressed pack sections. */
+export const encodeV8CacheBuffer = (graph: unknown, paths: readonly string[]): Buffer | undefined =>
+  encodeEnvelope(graph, paths);
+
+/** Authenticate metadata and payload before trusting a packed section's identity. */
+export const inspectV8CacheBuffer = (data: Buffer): V8CacheInspection | undefined => {
+  const meta = decodePrefix(data);
+  if (
+    !meta ||
+    !runtimeCompatible(meta) ||
+    meta.payloadOff + meta.payloadLen + PAYLOAD_HASH_LEN !== data.length
+  )
+    return undefined;
+  const rawPaths = data.subarray(meta.pathsOff, meta.payloadOff);
+  const payload = data.subarray(meta.payloadOff, meta.payloadOff + meta.payloadLen);
+  const digest = createHash('sha256').update(rawPaths).update(payload).digest();
+  if (!digest.equals(data.subarray(meta.payloadOff + meta.payloadLen))) return undefined;
+  const paths = parseCachePathListing(rawPaths);
+  return paths && paths.length === meta.pathCount ? { paths } : undefined;
+};
+
+export const decodeV8CacheBuffer = (
+  data: Buffer,
+  pool?: Map<string, string>,
+): V8CacheHit | undefined => {
+  try {
+    const inspected = inspectV8CacheBuffer(data);
+    if (!inspected) return undefined;
+    const meta = decodePrefix(data)!;
+    const value: unknown = v8.deserialize(
+      data.subarray(meta.payloadOff, meta.payloadOff + meta.payloadLen),
+    );
+    if (pool) internGraphStrings(value, pool);
+    return { kind: 'hit', value, bytes: data.length, paths: inspected.paths };
+  } catch {
+    return undefined;
+  }
+};
 const MAGIC = Buffer.from('GNXV8CF1', 'ascii');
 /** Envelope version — independent of artifact-derived parser compatibility. */
 export const V8_CACHE_FORMAT = 5;
