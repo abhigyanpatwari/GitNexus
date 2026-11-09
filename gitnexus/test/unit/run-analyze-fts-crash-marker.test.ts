@@ -1208,6 +1208,10 @@ describe('runFullAnalysis FTS crash marker', () => {
       expect(result.alreadyUpToDate).not.toBe(true);
       expect(runPipelineFromRepo).toHaveBeenCalled();
       expect(runDeferredDerivedPhases).toHaveBeenCalled();
+      expect(await runPipelineFromRepo.mock.results[0].value).toHaveProperty(
+        'runDeferredDerivedPhases',
+        undefined,
+      );
       const finalMeta = await loadMeta(storagePath);
       expect(finalMeta?.processDetection?.uncertified).toBeUndefined();
     } finally {

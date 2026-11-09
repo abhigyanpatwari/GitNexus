@@ -3915,6 +3915,9 @@ async function runFullAnalysisInner(
   if (skipDerivedGraphPhases && !preserveDerivedLayer) {
     progress('communities', 58, 'Detecting code communities and flows...');
     await pipelineResult.runDeferredDerivedPhases?.();
+    // Release the phase context captured by this completed callback before the
+    // native database write allocates its own buffers.
+    pipelineResult.runDeferredDerivedPhases = undefined;
   }
 
   // #2 atomic index publish: on a full rebuild, build the fresh DB at a temp
