@@ -42,10 +42,17 @@ export const inspectV8CacheBuffer = (data: Buffer): V8CacheInspection | undefine
 export const decodeV8CacheBuffer = (
   data: Buffer,
   pool?: Map<string, string>,
+  expectedPaths?: readonly string[],
 ): V8CacheHit | undefined => {
   try {
     const inspected = inspectV8CacheBuffer(data);
     if (!inspected) return undefined;
+    if (
+      expectedPaths &&
+      (inspected.paths.length !== expectedPaths.length ||
+        expectedPaths.some((path, index) => inspected.paths[index] !== path))
+    )
+      return undefined;
     const meta = decodePrefix(data)!;
     const value: unknown = v8.deserialize(
       data.subarray(meta.payloadOff, meta.payloadOff + meta.payloadLen),

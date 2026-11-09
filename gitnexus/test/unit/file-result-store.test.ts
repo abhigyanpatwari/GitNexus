@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs/promises';
+import v8 from 'node:v8';
 import { mkdtemp, rm, readFile, writeFile, readdir, appendFile, mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -45,6 +47,38 @@ const record = (name: string) => ({
 });
 
 describe('file-result codec', () => {
+  it.each(['gzip', 'zstd'] as const)(
+    'decodes large %s sections while enforcing the output limit',
+    (codec) => {
+      const value = { data: Uint8Array.from({ length: 128 * 1024 }, (_, i) => i % 251) };
+      const encoded = encodeFileResultSection(key('large'), 'large.ts', 'scopes', value, codec)!;
+      expect(decodeFileResultSection(encoded, key('large'), 'large.ts', 'scopes')?.value).toEqual(
+        value,
+      );
+      const shortened = Buffer.from(encoded);
+      shortened.writeUInt32LE(encoded.readUInt32LE(1) - 1, 1);
+      expect(
+        decodeFileResultSection(shortened, key('large'), 'large.ts', 'scopes'),
+      ).toBeUndefined();
+    },
+  );
+
+  it('rejects a different file, key or section before deserializing', () => {
+    const encoded = record('a.ts').facts;
+    const deserialize = vi.spyOn(v8, 'deserialize');
+    try {
+      expect(decodeFileResultSection(encoded, key('b.ts'), 'a.ts', 'facts')).toBeUndefined();
+      expect(decodeFileResultSection(encoded, key('a.ts'), 'b.ts', 'facts')).toBeUndefined();
+      expect(decodeFileResultSection(encoded, key('a.ts'), 'a.ts', 'scopes')).toBeUndefined();
+      expect(deserialize).not.toHaveBeenCalled();
+      expect(decodeFileResultSection(encoded, key('a.ts'), 'a.ts', 'facts')?.value).toEqual({
+        nodes: ['a.ts'],
+      });
+      expect(deserialize).toHaveBeenCalledTimes(1);
+    } finally {
+      deserialize.mockRestore();
+    }
+  });
   it.each(['gzip', 'zstd'] as const)(
     'preserves Maps, Sets and shared references with %s',
     (codec) => {
@@ -96,6 +130,121 @@ describe('file-result codec', () => {
 });
 
 describe('packed file-result store', () => {
+  it('does not prefetch gaps between sparse selections during publication', async () => {
+    const root = await temporary();
+    const store = emptyFileResultStore(root, 'identity');
+    const records = Array.from({ length: 512 }, (_, i) => record(`file${i}.ts`));
+    await appendFileResults(store, records);
+    const wanted = [records[0], records[511]];
+    const open = fs.open;
+    const reads: ReturnType<typeof vi.spyOn>[] = [];
+    const opening = vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      reads.push(vi.spyOn(handle, 'read'));
+      return handle;
+    });
+    try {
+      expect([
+        ...(
+          await readFileResults(
+            store,
+            wanted.map((r) => r.key),
+          )
+        ).keys(),
+      ]).toEqual(wanted.map((r) => r.key));
+      expect(
+        reads.flatMap((read) => read.mock.calls).map(([buffer]) => (buffer as Buffer).length),
+      ).toEqual(wanted.map((r) => r.facts.length + r.scopes.length));
+    } finally {
+      opening.mockRestore();
+      for (const read of reads) read.mockRestore();
+    }
+  });
+
+  it('retains an intact record when a read-ahead window is truncated after stat', async () => {
+    const root = await temporary();
+    const store = emptyFileResultStore(root, 'identity');
+    const a = record('a.ts'),
+      b = record('b.ts');
+    await appendFileResults(store, [a, b]);
+    const open = fs.open;
+    vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      const stat = handle.stat.bind(handle);
+      vi.spyOn(handle, 'stat').mockImplementation(async () => {
+        const size = await stat();
+        await fs.truncate(args[0], a.facts.length + a.scopes.length + 5);
+        return size;
+      });
+      return handle;
+    });
+    try {
+      expect([...(await readFileResults(store, [a.key, b.key])).keys()]).toEqual([a.key]);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('amortizes adjacent reads in bounded windows for facts and scopes', async () => {
+    const root = await temporary();
+    const store = emptyFileResultStore(path.join(root, 'packs'), 'identity');
+    const records = Array.from({ length: 512 }, (_, i) => record(`file${i}.ts`));
+    await appendFileResults(store, records);
+    await pinFileResults(
+      store,
+      records.map((r) => r.key),
+      root,
+    );
+    const open = fs.open;
+    const reads: ReturnType<typeof vi.spyOn>[] = [];
+    const opening = vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      reads.push(vi.spyOn(handle, 'read'));
+      return handle;
+    });
+    try {
+      const selected = await readFileResults(
+        store,
+        records.map((r) => r.key),
+      );
+      expect([...selected.keys()]).toEqual(records.map((r) => r.key));
+      const scopes = [];
+      for await (const hit of loadPackedFileScopes(
+        root,
+        new Set(records.map((r) => r.path)),
+        new Map(),
+      ))
+        scopes.push(hit.paths?.[0]);
+      expect(scopes).toEqual(records.map((r) => r.path));
+      const calls = reads.flatMap((read) => read.mock.calls);
+      expect(calls.length).toBeLessThan(32);
+      for (const [buffer] of calls) {
+        expect(Buffer.isBuffer(buffer)).toBe(true);
+        expect((buffer as Buffer).length).toBeLessThanOrEqual(64 * 1024);
+      }
+    } finally {
+      opening.mockRestore();
+      for (const read of reads) read.mockRestore();
+    }
+  });
+
+  it('reads oversized records and backward selections without losing neighbouring bytes', async () => {
+    const root = await temporary();
+    const store = emptyFileResultStore(root, 'identity');
+    const a = record('a.ts'),
+      b = record('b.ts'),
+      c = record('c.ts');
+    // Store bytes are opaque here: exceed the read-ahead window without relying
+    // on a particular compression ratio.
+    b.facts = Buffer.alloc(96 * 1024, 7);
+    b.scopes = Buffer.alloc(96 * 1024, 9);
+    await appendFileResults(store, [a, b, c]);
+    const selected = await readFileResults(store, [c.key, b.key, a.key]);
+    expect([...selected.values()].map((r) => [r.facts, r.scopes])).toEqual(
+      [c, b, a].map((r) => [r.facts, r.scopes]),
+    );
+  });
+
   it('keeps a later snapshot readable after an interrupted manifest append', async () => {
     const root = await temporary();
     const store = emptyFileResultStore(path.join(root, 'packs'), 'identity');

@@ -16,7 +16,38 @@ const PACK_BYTES = 32 * 1024 * 1024;
 const KEY = /^[a-f0-9]{64}$/;
 const PACK = /^[a-f0-9-]{36}\.pack$/;
 const MAX_INDEX_BYTES = 128 * 1024 * 1024;
+const READ_AHEAD_BYTES = 64 * 1024;
 const digest = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
+
+interface PackReader {
+  handle: Awaited<ReturnType<typeof fs.open>>;
+  size: number;
+  window?: { offset: number; data: Buffer };
+}
+
+/** Amortize adjacent small reads without retaining whole packs or large records. */
+async function readPackRange(
+  reader: PackReader,
+  offset: number,
+  length: number,
+  readAhead = READ_AHEAD_BYTES,
+): Promise<Buffer | undefined> {
+  if (offset + length > reader.size) return undefined;
+  const window = reader.window;
+  if (window && offset >= window.offset && offset + length <= window.offset + window.data.length)
+    return window.data.subarray(offset - window.offset, offset - window.offset + length);
+  const data = Buffer.allocUnsafe(Math.min(reader.size - offset, Math.max(length, readAhead)));
+  let got = 0;
+  while (got < data.length) {
+    const read = await reader.handle.read(data, got, data.length - got, offset + got);
+    if (!read.bytesRead) break;
+    got += read.bytesRead;
+  }
+  if (got < length) return undefined;
+  reader.window =
+    data.length <= READ_AHEAD_BYTES ? { offset, data: data.subarray(0, got) } : undefined;
+  return data.subarray(0, length);
+}
 
 export interface FileResultReference {
   key: string;
@@ -161,9 +192,10 @@ export async function readFileResults(
   keys: readonly string[],
 ): Promise<Map<string, EncodedFileResult>> {
   const result = new Map<string, EncodedFileResult>();
-  const handles = new Map<string, { handle: Awaited<ReturnType<typeof fs.open>>; size: number }>();
+  const handles = new Map<string, PackReader>();
   try {
-    for (const key of keys) {
+    for (let index = 0; index < keys.length; index++) {
+      const key = keys[index];
       const ref = store.records.get(key);
       if (!validReference(ref)) continue;
       try {
@@ -180,15 +212,24 @@ export async function readFileResults(
           handle.size = (await opened.stat()).size;
         }
         const length = ref.factsLength + ref.scopesLength;
-        if (ref.offset + length > handle.size) continue;
-        const data = Buffer.allocUnsafe(length);
-        let got = 0;
-        while (got < length) {
-          const read = await handle.handle.read(data, got, length - got, ref.offset + got);
-          if (!read.bytesRead) break;
-          got += read.bytesRead;
+        // Publication visits content-addressed keys, which need not follow pack
+        // order. Only prefetch neighbours requested by this batch; sparse reads
+        // must not copy a window's worth of unrelated bytes for every record.
+        let readAhead = length;
+        for (let next = index + 1; next < keys.length && readAhead < READ_AHEAD_BYTES; next++) {
+          const neighbour = store.records.get(keys[next]);
+          if (
+            !validReference(neighbour) ||
+            neighbour.pack !== ref.pack ||
+            neighbour.offset !== ref.offset + readAhead
+          )
+            break;
+          const span = readAhead + neighbour.factsLength + neighbour.scopesLength;
+          if (span > READ_AHEAD_BYTES) break;
+          readAhead = span;
         }
-        if (got !== length) continue;
+        const data = await readPackRange(handle, ref.offset, length, readAhead);
+        if (!data) continue;
         const facts = data.subarray(0, ref.factsLength),
           scopes = data.subarray(ref.factsLength);
         if (digest(facts) !== ref.factsHash || digest(scopes) !== ref.scopesHash) continue;
@@ -256,7 +297,7 @@ export async function* loadPackedFileScopes(
   }
   const stream = createReadStream(manifest);
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
-  const handles = new Map<string, { handle: Awaited<ReturnType<typeof fs.open>>; size: number }>();
+  const handles = new Map<string, PackReader>();
   try {
     for await (const line of lines) {
       let ref: FileResultReference;
@@ -278,21 +319,8 @@ export async function* loadPackedFileScopes(
           handles.set(ref.pack, opened);
           opened.size = (await handle.stat()).size;
         }
-        if (ref.offset + ref.factsLength + ref.scopesLength > opened.size) continue;
-        const handle = opened.handle;
-        const data = Buffer.allocUnsafe(ref.scopesLength);
-        let got = 0;
-        while (got < data.length) {
-          const read = await handle.read(
-            data,
-            got,
-            data.length - got,
-            ref.offset + ref.factsLength + got,
-          );
-          if (!read.bytesRead) break;
-          got += read.bytesRead;
-        }
-        if (got !== data.length || digest(data) !== ref.scopesHash) continue;
+        const data = await readPackRange(opened, ref.offset + ref.factsLength, ref.scopesLength);
+        if (!data || digest(data) !== ref.scopesHash) continue;
         const loaded = decodeFileResultSection(data, ref.key, ref.path, 'scopes', internPool);
         if (loaded) yield loaded;
       } catch {

@@ -47,7 +47,13 @@ function unpack(bytes: Uint8Array): Buffer | undefined {
     const data = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const length = data.readUInt32LE(1);
     if (length === 0 || length > MAX_FILE_RESULT_SECTION_BYTES) return undefined;
-    const opts = { maxOutputLength: length };
+    // Avoid growing and concatenating 16 KiB output chunks for typical file
+    // results. One spare byte avoids a second allocation when output exactly
+    // fills the buffer. Cap the allocation even for an untrusted length header.
+    const opts = {
+      maxOutputLength: length,
+      chunkSize: Math.max(64, Math.min(length + 1, 64 * 1024)),
+    };
     const raw =
       data[0] === 1 && typeof zlib.zstdDecompressSync === 'function'
         ? zlib.zstdDecompressSync(data.subarray(HEADER), opts)
@@ -90,6 +96,8 @@ export function decodeFileResultSection(
   section: FileResultSection,
   internPool?: Map<string, string>,
 ): V8CacheHit | undefined {
-  const raw = boundEnvelope(bytes, key, filePath, section);
-  return raw ? decodeV8CacheBuffer(raw, internPool) : undefined;
+  const raw = unpack(bytes);
+  // Authenticate and bind once, before deserializing; inspection-only callers
+  // still avoid constructing the graph entirely.
+  return raw ? decodeV8CacheBuffer(raw, internPool, [filePath, key, section]) : undefined;
 }
