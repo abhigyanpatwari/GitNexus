@@ -134,6 +134,24 @@ describe('hybrid graph writes (real LadybugDB)', () => {
       });
       expect(result.incrementalStats).toMatchObject({ changedFiles: 1, writeMode: 'full' });
       expect(logs.some((message) => message.includes('2000 graph rows'))).toBe(true);
+
+      // The deleting half of a replacement matters too: the file still exists,
+      // but none of its thousands of old symbols survive in the fresh graph.
+      await writeFile(path.join(repo.dbPath, 'src/generated.ts'), 'export {};\n');
+      commitAll(repo.dbPath, 'empty the large source file');
+      logs.length = 0;
+      const shrunk = await runFullAnalysis(repo.dbPath, options, {
+        ...callbacks,
+        onLog: (message) => logs.push(message),
+      });
+      expect(shrunk.incrementalStats).toMatchObject({ changedFiles: 1, writeMode: 'full' });
+      expect(logs.some((message) => message.includes('2000 graph rows'))).toBe(true);
+      await adapter.initLbug(getStoragePaths(repo.dbPath).lbugPath);
+      expect(
+        await adapter.executeQuery(
+          "MATCH (n:Function) WHERE n.filePath = 'src/generated.ts' RETURN count(n) AS count",
+        ),
+      ).toEqual([{ count: 0 }]);
     } finally {
       await adapter.closeLbug();
       await repo.cleanup();

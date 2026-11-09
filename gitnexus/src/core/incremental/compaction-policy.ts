@@ -67,6 +67,7 @@ export function incrementalMutationRows(
   files: ReadonlySet<string>,
   limit = incrementalMutationLimit(graph),
 ): number {
+  if (limit <= 0) return 0;
   const ids = new Set<string>();
   let rows = 0;
   for (const node of graph.iterNodes()) {

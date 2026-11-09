@@ -263,6 +263,7 @@ import {
   incrementalMutationRows,
   isGraphCompactionState,
 } from './incremental/compaction-policy.js';
+import { persistedMutationRows } from './incremental/persisted-mutation-rows.js';
 import {
   ftsTablesAmong,
   incrementalFtsTablesFromGraph,
@@ -4469,20 +4470,22 @@ async function runFullAnalysisInner(
       // those rather than estimating their former size from incomplete evidence.
       const deletionForcedRebuild = hashDiff.deleted.length > 0;
       const mutationLimit = incrementalMutationLimit(pipelineResult.graph);
-      const mutationRows =
-        extensionForcedRebuild ||
-        sizeForcedRebuild ||
-        storageCompactionReason ||
-        deletionForcedRebuild
-          ? 0
-          : incrementalMutationRows(pipelineResult.graph, effectiveWriteSet, mutationLimit);
-      const mutationForcedRebuild = mutationRows >= mutationLimit;
-      const compactWrite =
+      const preselectedFullWrite =
         extensionForcedRebuild ||
         sizeForcedRebuild ||
         Boolean(storageCompactionReason) ||
-        deletionForcedRebuild ||
-        mutationForcedRebuild;
+        deletionForcedRebuild;
+      let mutationRows = preselectedFullWrite
+        ? 0
+        : incrementalMutationRows(pipelineResult.graph, effectiveWriteSet, mutationLimit);
+      if (!preselectedFullWrite && mutationRows < mutationLimit) {
+        mutationRows = Math.max(
+          mutationRows,
+          await persistedMutationRows(filesToDelete, mutationLimit),
+        );
+      }
+      const mutationForcedRebuild = mutationRows >= mutationLimit;
+      const compactWrite = preselectedFullWrite || mutationForcedRebuild;
       // `!options.dropEmbeddings` (H1): this rescue reads the rows back OUT of
       // the DB, so it must never fire on the one path whose entire purpose is to
       // destroy them. `--drop-embeddings` deliberately leaves `cachedSnapshot`

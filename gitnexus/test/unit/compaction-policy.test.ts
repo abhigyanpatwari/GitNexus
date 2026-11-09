@@ -116,6 +116,7 @@ describe('hybrid compaction policy', () => {
       step: 0,
     });
     expect(incrementalMutationRows(graph, new Set(['changed.ts']))).toBe(3);
+    expect(incrementalMutationRows(graph, new Set(['changed.ts']), 0)).toBe(0);
     expect(incrementalMutationRows(graph, new Set(['changed.ts', 'other.ts']))).toBe(5);
     expect(incrementalMutationRows(graph, new Set(['missing.ts']))).toBe(0);
   });

@@ -67,8 +67,6 @@ describe('analyze blocked checkpoint family (real lbug, no mocks)', () => {
   it.each([false, true])(
     'refuses damaged recovery files and succeeds after removing the obstruction (atomic=%s)',
     (atomicIncremental) => {
-      const storageDir = path.join(repoPath, '.gitnexus');
-
       // 1) Clean full analyze (no blocker) — builds the index into staging and
       // swaps it in. Must succeed; the staging checkpoint name is unblocked.
       // Use the normal 64 MiB threshold while seeding the index. Checkpointing
@@ -98,7 +96,7 @@ describe('analyze blocked checkpoint family (real lbug, no mocks)', () => {
 
       // 3) A non-empty directory cannot be replayed, renamed over or unlinked
       // as a checkpoint file. Rebuilding beside it must not hide that damage.
-      const blockerDir = path.join(storageDir, 'lbug.wal.checkpoint');
+      const blockerDir = `${lbugPath}.wal.checkpoint`;
       fs.rmSync(blockerDir, { recursive: true, force: true });
       fs.mkdirSync(blockerDir, { recursive: true });
       fs.writeFileSync(path.join(blockerDir, 'blocker'), 'cannot-be-renamed-over');

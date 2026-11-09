@@ -585,6 +585,7 @@ export const publishSharedGraph = async (
         try {
           if (hasSeparateGraphGeneration(meta) && meta.vectorGeneration && !meta.embeddingJob) {
             const retained = await retainSharedMetadata(slot, target, meta);
+            retained.graphCompaction = targetMeta?.graphCompaction;
             if (retained.vectorGeneration) await saveMeta(target, commitMetadata(retained));
           }
           await wipeLbugDbFiles(own);
