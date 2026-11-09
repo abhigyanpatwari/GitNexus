@@ -47,7 +47,7 @@ export const DEFAULT_CONFIG: ProcessDetectionConfig = {
 // ============================================================================
 
 export interface ProcessNode {
-  id: string; // "proc_handleLogin_createSession"
+  id: string; // "proc_<12-hex hash>_<sanitized entry name>"; optional collision suffix
   label: string; // "HandleLogin → CreateSession"
   heuristicLabel: string;
   processType: 'intra_community' | 'cross_community';

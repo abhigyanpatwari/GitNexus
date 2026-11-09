@@ -767,8 +767,9 @@ const normalizePartition = (
 
 /**
  * Anchor each community to its smallest member, independent of partition numbering.
- * Adding other members preserves the ID. Anchor order makes collision suffixes
- * deterministic even when the engine renumbers or reorders its partition.
+ * The ID stays stable while that anchor remains the smallest member. Adding a
+ * smaller member or removing the anchor changes it. Anchor order makes collision
+ * suffixes deterministic even when the engine renumbers or reorders its partition.
  */
 export const stableCommunityIds = (communities: Record<string, number>): Map<number, string> => {
   const smallest = new Map<number, string>();
