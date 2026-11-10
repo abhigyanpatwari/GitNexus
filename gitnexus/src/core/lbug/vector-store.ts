@@ -393,7 +393,7 @@ export class VectorStore {
       );
       const known = ids.filter((id) => selected.has(id));
       const fresh = ids.filter((id) => !selected.has(id));
-      await this.transaction(async () => {
+      const write = async () => {
         if (known.length)
           await this.query(
             'UNWIND $ids AS id MATCH (s:EmbeddingSelection {nodeId:id}) SET s.job=$job',
@@ -404,7 +404,10 @@ export class VectorStore {
             ids: fresh,
             job,
           });
-      });
+      };
+      // A lone statement is already atomic; only the pair needs a transaction.
+      if (known.length && fresh.length) await this.transaction(write);
+      else await write();
     }, true);
   }
 
@@ -500,7 +503,8 @@ export class VectorStore {
       // Ladybug plans a primary-key lookup only for a bound variable key. A
       // `$ids[i]` key, and MERGE in any form, scans the whole table per unit,
       // which made a large run quadratic (#3870). Update known receipts by key
-      // and create the rest; one transaction keeps the unit all-or-nothing.
+      // and create the rest. A lone statement is already atomic; only the
+      // pair needs a transaction to keep the unit all-or-nothing.
       const parameters = (rows: readonly VectorNodeInput[]) => ({
         ids: rows.map((node) => node.nodeId),
         hashes: rows.map((node) => node.contentHash),
@@ -509,7 +513,7 @@ export class VectorStore {
       });
       const known = nodes.filter((node) => previous.has(node.nodeId));
       const fresh = nodes.filter((node) => !previous.has(node.nodeId));
-      await this.transaction(async () => {
+      const write = async () => {
         if (known.length)
           await this.query(
             'UNWIND range(1, size($ids)) AS i WITH $ids[i] AS id, $hashes[i] AS hash, $firstLines[i] AS firstLine, $lastLines[i] AS lastLine MATCH (n:EmbeddingNodeReceipt {nodeId:id}) SET n.contentHash=hash, n.chunks=0, n.complete=false, n.sourceStartLine=firstLine, n.sourceEndLine=lastLine',
@@ -520,7 +524,9 @@ export class VectorStore {
             'UNWIND range(1, size($ids)) AS i CREATE (:EmbeddingNodeReceipt {nodeId:$ids[i], contentHash:$hashes[i], chunks:0, complete:false, sourceStartLine:$firstLines[i], sourceEndLine:$lastLines[i]})',
             parameters(fresh),
           );
-      });
+      };
+      if (known.length && fresh.length) await this.transaction(write);
+      else await write();
     }, true);
   }
 

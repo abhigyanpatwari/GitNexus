@@ -1078,6 +1078,29 @@ describe('separate durable vector artifacts', () => {
     await store.checkpointUnit(receipts);
   });
 
+  it('wraps only a unit that both updates and creates receipts in a transaction', async () => {
+    await setup();
+    const node = (i: number) => ({ nodeId: `Function:a:mixed${i}`, contentHash: `hash${i}` });
+    const queries = vi.spyOn(lbug.Connection.prototype, 'query');
+    const transactions = () =>
+      queries.mock.calls.filter(([sql]) => sql === 'BEGIN TRANSACTION').length;
+    await store.beginNodes([node(0)]);
+    expect(transactions()).toBe(0);
+    // A replayed unit only updates; a lone statement is already atomic.
+    await store.beginNodes([node(0)]);
+    expect(transactions()).toBe(0);
+    await store.beginNodes([node(0), node(1)]);
+    expect(transactions()).toBe(1);
+    queries.mockRestore();
+    const nodes = [node(0), node(1)];
+    await store.appendBatch(nodes.map((entry) => ({ ...entry, ...chunk(0) })));
+    const receipts = await store.finishNodes(nodes.map((entry) => ({ ...entry, chunks: 1 })));
+    expect(receipts.map((receipt) => [receipt.nodeId, receipt.chunks, receipt.complete])).toEqual([
+      ['Function:a:mixed0', 1, true],
+      ['Function:a:mixed1', 1, true],
+    ]);
+  });
+
   it('plans every per-unit write statement as a primary-key lookup, never a table scan (#3870)', async () => {
     const options = await setup();
     const nodes = [0, 1, 2].map((i) => ({
