@@ -1445,39 +1445,38 @@ describe('Cross-platform DB lock probe (source)', () => {
 describe('Claude hook trees ship identical helpers (#1591)', () => {
   const CANONICAL_DIR = path.resolve(__dirname, '..', '..', 'hooks', 'claude');
   const PLUGIN_DIR = path.resolve(__dirname, '..', '..', '..', 'gitnexus-claude-plugin', 'hooks');
-  // The plugin names its CommonJS files `.js`; the canonical tree uses `.cjs`.
-  const stem = (file: string) => file.replace(/\.c?js$/, '');
-  // The adapters differ on purpose (install paths, plugin wording); their shared
-  // functions are compared by the source-level parity tests further down.
-  const ADAPTER = 'gitnexus-hook';
+  // Each helper both trees ship, as [canonical file, plugin file]: the plugin
+  // names its CommonJS files `.js`, the canonical tree `.cjs`. The adapters
+  // (`gitnexus-hook.cjs` / `gitnexus-hook.js`) differ on purpose and are left
+  // out; their shared functions are compared by the source-level parity tests
+  // further down.
+  const TWINS = [
+    ['hook-db-lock-probe.cjs', 'hook-db-lock-probe.cjs'],
+    ['hook-lock.cjs', 'hook-lock.js'],
+    ['registry-query.cjs', 'registry-query.cjs'],
+    ['resolve-analyze-cmd.cjs', 'resolve-analyze-cmd.cjs'],
+    ['win-rm-list-json.ps1', 'win-rm-list-json.ps1'],
+  ] as const;
 
-  const canonical = fs.readdirSync(CANONICAL_DIR).sort();
-  const plugin = fs.readdirSync(PLUGIN_DIR).sort();
-  const pluginByStem = new Map(plugin.map((file) => [stem(file), file]));
-  const canonicalStems = new Set(canonical.map(stem));
-  // [canonical file, plugin file] for every helper both trees ship.
-  const twins = canonical.flatMap((file) => {
-    const pluginFile = pluginByStem.get(stem(file));
-    return pluginFile === undefined || stem(file) === ADAPTER ? [] : [[file, pluginFile] as const];
-  });
-
-  it('shares exactly the known helpers, and nothing new on one side only', () => {
-    expect(twins.map(([file]) => file)).toEqual([
-      'hook-db-lock-probe.cjs',
-      'hook-lock.cjs',
-      'registry-query.cjs',
-      'resolve-analyze-cmd.cjs',
-      'win-rm-list-json.ps1',
-    ]);
-    expect(canonical.filter((file) => !pluginByStem.has(stem(file)))).toEqual([
-      'pre-tool-use.sh',
-      'session-start.sh',
-    ]);
-    expect(plugin.filter((file) => !canonicalStems.has(stem(file)))).toEqual(['hooks.json']);
+  // Whole listings rather than a pairing derived from them: a file added to
+  // either tree, including a second spelling of an existing helper, fails here
+  // until it is listed as a twin or as one tree's own.
+  it('ships exactly the known files in each tree', () => {
+    expect(fs.readdirSync(CANONICAL_DIR).sort()).toEqual(
+      [
+        ...TWINS.map(([file]) => file),
+        'gitnexus-hook.cjs',
+        'pre-tool-use.sh',
+        'session-start.sh',
+      ].sort(),
+    );
+    expect(fs.readdirSync(PLUGIN_DIR).sort()).toEqual(
+      [...TWINS.map(([, file]) => file), 'gitnexus-hook.js', 'hooks.json'].sort(),
+    );
   });
 
   // `.gitattributes` pins `eol=lf`, so a byte comparison holds on Windows too.
-  it.each(twins)('%s is byte-identical to the plugin copy %s', (file, pluginFile) => {
+  it.each(TWINS)('%s is byte-identical to the plugin copy %s', (file, pluginFile) => {
     const canonicalBytes = fs.readFileSync(path.join(CANONICAL_DIR, file));
     const pluginBytes = fs.readFileSync(path.join(PLUGIN_DIR, pluginFile));
     expect(pluginBytes.equals(canonicalBytes)).toBe(true);
