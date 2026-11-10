@@ -104,6 +104,7 @@ async function fixture(count = 130) {
     modelHeapMb: 0,
     queueBytes: 16 * 1024 * 1024,
     nativeThreads: 1,
+    indexThreads: 1,
     reservedBytes: 96 * 1024 * 1024,
   };
   const metadata = {

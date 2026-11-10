@@ -265,6 +265,25 @@ describe('bounded durable embedding runner', () => {
     },
   );
 
+  it('keeps several provider requests in flight per unit and stores every chunk in order (#3870)', async () => {
+    const fixture = await runnerFixture(64);
+    let active = 0;
+    let peak = 0;
+    fixture.provider.mockImplementation(async (texts: string[]) => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      active--;
+      return texts.map(() => new Float32Array([0.1, 0.2, 0.3, 0.4]));
+    });
+    const result = await fixture.run({ providerConcurrency: 4 });
+    expect(peak).toBe(4);
+    // Request size is unchanged; only the number in flight grows.
+    expect(fixture.provider.mock.calls.map(([texts]) => texts.length)).toEqual(Array(8).fill(8));
+    expect(result.state).toMatchObject({ completedNodes: 64, chunks: 64, failedUnits: 0 });
+    await expect(fixture.run({ providerConcurrency: 0 })).rejects.toThrow('provider concurrency');
+  });
+
   it('completes copied groups together at the unit boundary without provider requests', async () => {
     const fixture = await runnerFixture(64);
     const finish = vi.spyOn(store, 'finishNodes');
@@ -1010,6 +1029,38 @@ describe('separate durable vector artifacts', () => {
     }
   });
 
+  it('stores float32 extremes, denormals and exponent forms exactly', async () => {
+    const options = await setup();
+    const values = [
+      1e-7,
+      -1.5e-10,
+      1e-38,
+      1.401298464324817e-45,
+      1.1754943508222875e-38,
+      3.4028234663852886e38,
+      -3.4028234663852886e38,
+      1e21,
+      16777217,
+      0.30000000000000004,
+      5e-324,
+      1 / 3,
+    ];
+    const node = { nodeId: 'Function:a:extremes', contentHash: 'hash' };
+    await store.beginNodes([node]);
+    const rows = [0, 1, 2].map((chunkIndex) => ({
+      ...node,
+      ...chunk(chunkIndex),
+      embedding: values.slice(chunkIndex * 4, chunkIndex * 4 + 4),
+    }));
+    await store.appendBatch(rows);
+    const [receipt] = await store.finishNodes([{ ...node, chunks: 3 }]);
+    await store.close();
+    store = await VectorStore.open({ ...options, mode: 'resume' });
+    expect((await store.readChunks(receipt, 0, 3)).flatMap((stored) => stored.embedding)).toEqual(
+      values.map(Math.fround),
+    );
+  });
+
   it('verifies a complete unit with bounded native queries instead of one query per node', async () => {
     await setup();
     const nodes = Array.from({ length: 64 }, (_, i) => ({
@@ -1025,6 +1076,64 @@ describe('separate durable vector artifacts', () => {
     expect(execute.mock.calls.length).toBeLessThanOrEqual(3);
     execute.mockRestore();
     await store.checkpointUnit(receipts);
+  });
+
+  it('plans every per-unit write statement as a primary-key lookup, never a table scan (#3870)', async () => {
+    const options = await setup();
+    const nodes = [0, 1, 2].map((i) => ({
+      nodeId: `Function:a:plan${i}`,
+      contentHash: `${i}`.repeat(40),
+    }));
+    const prepare = vi.spyOn(lbug.Connection.prototype, 'prepare');
+    const execute = vi.spyOn(lbug.Connection.prototype, 'execute');
+    await store.beginNodes(nodes);
+    // A replayed unit updates its existing receipts instead of creating them.
+    await store.beginNodes(nodes);
+    await store.appendBatch(nodes.map((node) => ({ ...node, ...chunk(0) })));
+    const receipts = await store.finishNodes(
+      nodes.map((node) => ({ ...node, chunks: 1, inputsDigest: 'b'.repeat(40) })),
+    );
+    await store.checkpointUnit(receipts);
+    const selection = nodes.map((node) => node.nodeId);
+    await store.markSelected('c'.repeat(64), selection);
+    // A later job re-selects the same groups instead of creating their rows.
+    await store.markSelected('d'.repeat(64), selection);
+    const statements = await Promise.all(prepare.mock.results.map((result) => result.value));
+    const captured = prepare.mock.calls.map(([sql], i) => ({
+      sql,
+      parameters: execute.mock.calls.find(([statement]) => statement === statements[i])?.[1],
+    }));
+    prepare.mockRestore();
+    execute.mockRestore();
+    await store.close();
+    store = undefined;
+    const handle = await openLbugConnection(lbug, path.join(options.directory, 'vectors'), {
+      bufferPoolBytes: options.bufferPoolBytes,
+      threads: 1,
+    });
+    const plans: Array<{ sql: string; plan: string }> = [];
+    try {
+      for (const { sql, parameters } of captured) {
+        const statement = await handle.conn.prepare(`EXPLAIN ${sql}`);
+        const result = await handle.conn.execute(statement, parameters ?? {});
+        const parts = Array.isArray(result) ? result : [result];
+        const rows = (await Promise.all(parts.map((part) => part.getAll()))).flat();
+        for (const part of parts) part.close();
+        plans.push({ sql, plan: rows.flatMap((row) => Object.values(row)).join('\n') });
+      }
+    } finally {
+      await closeLbugConnection(handle);
+    }
+    const matching = plans.filter(({ sql }) => sql.includes('MATCH'));
+    expect(matching.length).toBeGreaterThanOrEqual(8);
+    expect(
+      matching
+        .filter(({ plan }) => !plan.includes('QUERY_PRIMARY_KEY_LOOKUP'))
+        .map(({ sql }) => sql),
+    ).toEqual([]);
+    expect(
+      plans.filter(({ plan }) => plan.includes('SCAN_NODE_TABLE')).map(({ sql }) => sql),
+    ).toEqual([]);
   });
 
   it('rejects a cross-node chunk mismatch before completing any group in a unit', async () => {
@@ -1264,7 +1373,10 @@ describe('published vector readers', () => {
       batchBytes: 2 * 1024 ** 2,
       // The controller reserves the other half for a compatible reuse reader.
       bufferPoolBytes: Math.floor(resources.embedding.vectorPoolBytes / 2),
+      // Index construction may use the whole CPU allowance (#3870).
+      indexThreads: resources.embedding.indexThreads,
     });
+    const indexThreads = vi.spyOn(lbug.Connection.prototype, 'setMaxNumThreadForExec');
     const nodeId = 'Function:source.ts:large';
     await store.beginNode(nodeId, 'hash');
     const total = 20001;
@@ -1285,6 +1397,8 @@ describe('published vector readers', () => {
     await store.finishNode(nodeId, 'hash', total);
     const sealed = await store.seal(1, total);
     expect(sealed).toBe('hnsw');
+    expect(initial.threads).toBe(1);
+    expect(indexThreads.mock.calls).toEqual([[4]]);
     expect(store.isSealed).toBe(true);
     const options = store.options;
     await store.close();

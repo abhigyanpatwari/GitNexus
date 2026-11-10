@@ -54,6 +54,8 @@ export interface VectorStoreOptions {
   dimensions: number;
   bufferPoolBytes: number;
   threads: number;
+  /** Threads for vector index construction; defaults to `threads`. */
+  indexThreads?: number;
   mode: 'create' | 'resume' | 'read';
   /** Only before a scheduling journal exists: an interrupted initial DDL
    * transaction may leave an owned database with a verified empty catalog. */
@@ -102,6 +104,8 @@ export class VectorStore {
       options.bufferPoolBytes < 8 * 1024 * 1024 ||
       !Number.isSafeInteger(options.threads) ||
       options.threads < 1 ||
+      (options.indexThreads !== undefined &&
+        (!Number.isSafeInteger(options.indexThreads) || options.indexThreads < 1)) ||
       !['create', 'resume', 'read'].includes(options.mode)
     )
       throw new Error('Invalid vector-store resource reservation or identity');
@@ -378,10 +382,29 @@ export class VectorStore {
       )
         throw new Error('Cannot select an incomplete vector group');
       await this.ensureSelectionTable();
-      await this.query(
-        'UNWIND $ids AS id MERGE (s:EmbeddingSelection {nodeId:id}) SET s.job=$job',
-        { ids: [...ids], job },
+      // MERGE scans the whole selection table per unit (#3870). Split by key.
+      const selected = new Set(
+        (
+          await this.query(
+            'UNWIND $ids AS id MATCH (s:EmbeddingSelection {nodeId:id}) RETURN s.nodeId AS nodeId',
+            { ids: [...ids] },
+          )
+        ).map((row) => row.nodeId),
       );
+      const known = ids.filter((id) => selected.has(id));
+      const fresh = ids.filter((id) => !selected.has(id));
+      await this.transaction(async () => {
+        if (known.length)
+          await this.query(
+            'UNWIND $ids AS id MATCH (s:EmbeddingSelection {nodeId:id}) SET s.job=$job',
+            { ids: known, job },
+          );
+        if (fresh.length)
+          await this.query('UNWIND $ids AS id CREATE (:EmbeddingSelection {nodeId:id, job:$job})', {
+            ids: fresh,
+            job,
+          });
+      });
     }, true);
   }
 
@@ -474,15 +497,30 @@ export class VectorStore {
           }
         await remove();
       }
-      await this.query(
-        'UNWIND range(1, size($ids)) AS i MERGE (n:EmbeddingNodeReceipt {nodeId:$ids[i]}) SET n.contentHash=$hashes[i], n.chunks=0, n.complete=false, n.sourceStartLine=$firstLines[i], n.sourceEndLine=$lastLines[i]',
-        {
-          ids: nodes.map((node) => node.nodeId),
-          hashes: nodes.map((node) => node.contentHash),
-          firstLines: nodes.map((node) => node.sourceStartLine ?? 0),
-          lastLines: nodes.map((node) => node.sourceEndLine ?? 0),
-        },
-      );
+      // Ladybug plans a primary-key lookup only for a bound variable key. A
+      // `$ids[i]` key, and MERGE in any form, scans the whole table per unit,
+      // which made a large run quadratic (#3870). Update known receipts by key
+      // and create the rest; one transaction keeps the unit all-or-nothing.
+      const parameters = (rows: readonly VectorNodeInput[]) => ({
+        ids: rows.map((node) => node.nodeId),
+        hashes: rows.map((node) => node.contentHash),
+        firstLines: rows.map((node) => node.sourceStartLine ?? 0),
+        lastLines: rows.map((node) => node.sourceEndLine ?? 0),
+      });
+      const known = nodes.filter((node) => previous.has(node.nodeId));
+      const fresh = nodes.filter((node) => !previous.has(node.nodeId));
+      await this.transaction(async () => {
+        if (known.length)
+          await this.query(
+            'UNWIND range(1, size($ids)) AS i WITH $ids[i] AS id, $hashes[i] AS hash, $firstLines[i] AS firstLine, $lastLines[i] AS lastLine MATCH (n:EmbeddingNodeReceipt {nodeId:id}) SET n.contentHash=hash, n.chunks=0, n.complete=false, n.sourceStartLine=firstLine, n.sourceEndLine=lastLine',
+            parameters(known),
+          );
+        if (fresh.length)
+          await this.query(
+            'UNWIND range(1, size($ids)) AS i CREATE (:EmbeddingNodeReceipt {nodeId:$ids[i], contentHash:$hashes[i], chunks:0, complete:false, sourceStartLine:$firstLines[i], sourceEndLine:$lastLines[i]})',
+            parameters(fresh),
+          );
+      });
     }, true);
   }
 
@@ -538,19 +576,23 @@ export class VectorStore {
       }
       await this.transaction(async () => {
         await this.query(
-          'UNWIND range(1, size($ids)) AS i CREATE (:CodeEmbedding {id:$ids[i], nodeId:$nodeIds[i], chunkIndex:$ordinals[i], startLine:$firstLines[i], endLine:$lastLines[i], embedding:$vectors[i], contentHash:$hashes[i]})',
+          `UNWIND range(1, size($ids)) AS i CREATE (:CodeEmbedding {id:$ids[i], nodeId:$nodeIds[i], chunkIndex:$ordinals[i], startLine:$firstLines[i], endLine:$lastLines[i], embedding:CAST($vectors[i] AS FLOAT[${this.options.dimensions}]), contentHash:$hashes[i]})`,
           {
             ids: chunks.map((chunk) => `${chunk.nodeId}:${chunk.chunkIndex}`),
             nodeIds: chunks.map((chunk) => chunk.nodeId),
             ordinals: chunks.map((chunk) => chunk.chunkIndex),
             firstLines: chunks.map((chunk) => chunk.startLine),
             lastLines: chunks.map((chunk) => chunk.endLine),
-            vectors: chunks.map((chunk) => chunk.embedding),
+            // The binding converts a numeric list one element at a time on
+            // the main thread. One string per row parses natively, about
+            // twice as fast end to end (#3870). Float32 text round-trips
+            // exactly; only the sign of a negative zero is not kept.
+            vectors: chunks.map((chunk) => `[${Float32Array.from(chunk.embedding).join(',')}]`),
             hashes: chunks.map((chunk) => chunk.contentHash),
           },
         );
         await this.query(
-          'UNWIND range(1, size($ids)) AS i MATCH (n:EmbeddingNodeReceipt {nodeId:$ids[i]}) SET n.chunks=$chunks[i]',
+          'UNWIND range(1, size($ids)) AS i WITH $ids[i] AS id, $chunks[i] AS chunks MATCH (n:EmbeddingNodeReceipt {nodeId:id}) SET n.chunks=chunks',
           {
             ids: [...receipts.keys()],
             chunks: [...receipts.values()].map((receipt) => receipt.chunks),
@@ -635,7 +677,7 @@ export class VectorStore {
         const flush = async () => {
           if (!ids.length) return;
           await this.query(
-            'UNWIND range(1, size($ids)) AS i MATCH (e:CodeEmbedding {id:$ids[i]}) SET e.contentHash=$hashes[i]',
+            'UNWIND range(1, size($ids)) AS i WITH $ids[i] AS id, $hashes[i] AS hash MATCH (e:CodeEmbedding {id:id}) SET e.contentHash=hash',
             { ids, hashes },
           );
           ids = [];
@@ -654,7 +696,7 @@ export class VectorStore {
         }
         await flush();
         await this.query(
-          'UNWIND range(1, size($ids)) AS i MATCH (n:EmbeddingNodeReceipt {nodeId:$ids[i]}) SET n.contentHash=$hashes[i], n.complete=true',
+          'UNWIND range(1, size($ids)) AS i WITH $ids[i] AS id, $hashes[i] AS hash MATCH (n:EmbeddingNodeReceipt {nodeId:id}) SET n.contentHash=hash, n.complete=true',
           {
             ids: verified.map((receipt) => receipt.nodeId),
             hashes: verified.map((receipt) => receipt.contentHash),
@@ -936,6 +978,9 @@ export class VectorStore {
         (await manager.ensure((sql) => this.query(sql), 'vector', 'vector search'))
       ) {
         try {
+          // Per-unit writes need no parallelism; index construction scales with it.
+          if (this.options.indexThreads)
+            this.handle.conn.setMaxNumThreadForExec(this.options.indexThreads);
           await this.query(
             "CALL CREATE_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', 'embedding', metric := 'cosine')",
           );

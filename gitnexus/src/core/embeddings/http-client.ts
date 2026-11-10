@@ -104,6 +104,11 @@ const parsePositiveIntegerEnv = (name: string, fallback: number, max: number): n
   return parsed;
 };
 
+/** Embedding requests kept in flight at once. Pacing, retries and the circuit
+ * breaker still apply to each request; set 1 for a strictly serial endpoint. */
+export const httpEmbeddingConcurrency = (): number =>
+  parsePositiveIntegerEnv('GITNEXUS_EMBEDDING_CONCURRENCY', 4, 64);
+
 const parseNonNegativeIntegerEnv = (name: string, fallback: number, max: number): number => {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return fallback;

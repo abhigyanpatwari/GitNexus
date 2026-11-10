@@ -52,6 +52,9 @@ export interface EmbeddingJobRunnerOptions {
   config?: Partial<EmbeddingConfig>;
   queueBytes: number;
   provider: typeof embedBatch;
+  /** Provider requests kept in flight within one unit. A remote endpoint
+   * benefits; a local model is already CPU-bound and stays at one. */
+  providerConcurrency?: number;
   initializeProvider?: () => Promise<void>;
   signal?: AbortSignal;
   onProgress?: (state: EmbeddingJobState, peakQueueBytes: number) => void;
@@ -71,6 +74,9 @@ export async function runEmbeddingJob(
   const { directory, manifest, source, journal, store, signal } = options;
   const config = resolveEmbeddingConfig(options.config ?? {});
   const budget = new EmbeddingByteBudget(options.queueBytes);
+  const concurrency = options.providerConcurrency ?? 1;
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1)
+    throw new Error('Invalid embedding provider concurrency');
   let sourceReader: EmbeddingSourceReader | undefined;
   let releaseSourceCache: (() => void) | undefined;
   const dimensions = store.options.dimensions;
@@ -133,9 +139,11 @@ export async function runEmbeddingJob(
       0,
     );
     const maxIdChars = missing.reduce((n, key) => Math.max(n, key.id.length), 0);
+    // Every queued row holds its reservation until its response is written,
+    // so a tight budget shrinks the window instead of exceeding it.
     const maximumBatchRows = Math.min(
       256,
-      config.subBatchSize,
+      config.subBatchSize * concurrency,
       Math.floor(store.options.batchBytes / (16 * dimensions + 128 + 2 * (maxIdChars + 40))),
     );
     if (maximumBatchRows < 1) throw new Error('Vector write does not fit its batch reservation');
@@ -234,9 +242,10 @@ export async function runEmbeddingJob(
       try {
         for await (const result of embedInputRanges(
           batch.map((row) => row.text),
-          batch.length,
+          Math.min(batch.length, config.subBatchSize),
           signal,
           options.provider,
+          concurrency,
         )) {
           signal?.throwIfAborted();
           const rows = batch.slice(result.start, result.end);

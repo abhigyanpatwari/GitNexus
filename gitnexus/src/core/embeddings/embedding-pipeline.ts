@@ -198,6 +198,7 @@ export async function* embedInputRanges(
   subBatchSize: number,
   signal?: AbortSignal,
   provider: typeof embedBatch = embedBatch,
+  concurrency = 1,
 ): AsyncGenerator<EmbeddedRange> {
   async function* request(start: number, end: number): AsyncGenerator<EmbeddedRange> {
     try {
@@ -212,6 +213,35 @@ export async function* embedInputRanges(
       } else {
         yield { start, end, error };
       }
+    }
+  }
+  if (concurrency > 1) {
+    // A bounded window of sub-batches is in flight at once. Results still
+    // leave in input order, so a node's chunks reach the store contiguously.
+    const collect = async (start: number): Promise<EmbeddedRange[]> => {
+      const results: EmbeddedRange[] = [];
+      for await (const result of request(start, Math.min(start + subBatchSize, texts.length)))
+        results.push(result);
+      return results;
+    };
+    const pending: Array<Promise<EmbeddedRange[]>> = [];
+    let next = 0;
+    try {
+      for (;;) {
+        while (next < texts.length && pending.length < concurrency) {
+          const results = collect(next);
+          // The window observes every outcome; a later await rethrows it.
+          results.catch(() => undefined);
+          pending.push(results);
+          next += subBatchSize;
+        }
+        const head = pending.shift();
+        if (!head) return;
+        yield* await head;
+      }
+    } finally {
+      // Cancellation or an abandoned consumer must not outlive its requests.
+      await Promise.allSettled(pending);
     }
   }
   for (let start = 0; start < texts.length; start += subBatchSize) {
