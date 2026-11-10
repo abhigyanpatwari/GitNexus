@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import * as indexLock from '../../src/storage/index-lock.js';
+import * as writerIdentity from '../../src/core/analysis-writer-identity.js';
 import { recordLegacyEmbeddingSource } from '../../src/storage/legacy-embedding-source.js';
 import { reclaimAnalysisArtifacts } from '../../src/storage/analysis-artifact-cleanup.js';
 import { adoptEmbeddingArtifact } from '../../src/storage/embedding-artifact.js';
@@ -426,6 +427,91 @@ describe('durable graph publication', () => {
     start.mockReturnValue('456');
     expect((await publishPreparedAnalysis(root, actions))?.graphGeneration?.id).toBe(receipt.id);
   });
+
+  it.each(['darwin-lstart', 'win32-ticks'] as const)(
+    'recovers a reused non-current PID using %s',
+    async (kind) => {
+      const { root, stage, actions } = await fixture();
+      const before = kind === 'darwin-lstart' ? 'Sat Nov 7 13:02:03 2026' : '12345';
+      const after = kind === 'darwin-lstart' ? 'Sat Nov 7 13:02:04 2026' : '12346';
+      vi.spyOn(indexLock, 'readProcStartTime').mockReturnValue(null);
+      const birth = vi
+        .spyOn(writerIdentity, 'readAnalysisWriterBirth')
+        .mockResolvedValue({ kind, value: before });
+      const receipt = await prepareAnalysisPublication(root, stage, metadata, content, {
+        waitForProcessExit: true,
+      });
+      const payload = { ...receipt, writerPid: process.pid + 100000 };
+      await fs.writeFile(
+        path.join(root, 'analysis-publication.json'),
+        JSON.stringify({
+          payload,
+          checksum: createHash('sha256').update(JSON.stringify(payload)).digest('hex'),
+        }),
+      );
+      birth.mockResolvedValue({ kind, value: after });
+      const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
+      expect((await publishPreparedAnalysis(root, actions))?.graphGeneration?.id).toBe(receipt.id);
+      expect(kill).not.toHaveBeenCalled();
+    },
+  );
+
+  it('allows a slow Windows birth probe within the recovery deadline', async () => {
+    const { root, stage, actions } = await fixture();
+    vi.spyOn(os, 'platform').mockReturnValue('win32');
+    vi.spyOn(indexLock, 'readProcStartTime').mockReturnValue(null);
+    const birth = vi
+      .spyOn(writerIdentity, 'readAnalysisWriterBirth')
+      .mockResolvedValue({ kind: 'win32-ticks', value: '12345' });
+    const receipt = await prepareAnalysisPublication(root, stage, metadata, content, {
+      waitForProcessExit: true,
+    });
+    const payload = { ...receipt, writerPid: process.pid + 100000 };
+    await fs.writeFile(
+      path.join(root, 'analysis-publication.json'),
+      JSON.stringify({
+        payload,
+        checksum: createHash('sha256').update(JSON.stringify(payload)).digest('hex'),
+      }),
+    );
+    let now = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    birth.mockImplementation(async (_pid, remainingMs) => {
+      now = 2500;
+      return remainingMs !== undefined && remainingMs > now
+        ? { kind: 'win32-ticks', value: '12346' }
+        : undefined;
+    });
+    const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    expect((await publishPreparedAnalysis(root, actions))?.graphGeneration?.id).toBe(receipt.id);
+    expect(kill).not.toHaveBeenCalled();
+    expect(birth.mock.lastCall?.[1]).toBeLessThanOrEqual(5000);
+  });
+
+  it.each(['equal', 'unknown', 'different-platform', 'legacy'] as const)(
+    'retains a live writer when birth identity is %s',
+    async (state) => {
+      const { root, stage, actions } = await fixture();
+      vi.spyOn(indexLock, 'readProcStartTime').mockReturnValue(null);
+      const birth = vi
+        .spyOn(writerIdentity, 'readAnalysisWriterBirth')
+        .mockResolvedValue(
+          state === 'legacy' ? undefined : { kind: 'win32-ticks', value: '12345' },
+        );
+      const receipt = await prepareAnalysisPublication(root, stage, metadata, content, {
+        waitForProcessExit: true,
+      });
+      if (state === 'unknown') birth.mockResolvedValue(undefined);
+      if (state === 'different-platform')
+        birth.mockResolvedValue({ kind: 'linux-proc', value: '999' });
+      vi.spyOn(process, 'kill').mockReturnValue(true);
+      let now = 0;
+      vi.spyOn(performance, 'now').mockImplementation(() => (now += 500));
+      await expect(publishPreparedAnalysis(root, actions)).rejects.toThrow('has not exited');
+      expect(actions.verify).not.toHaveBeenCalled();
+      expect(await readPreparedAnalysis(root)).toEqual(receipt);
+    },
+  );
 
   it('publishes through a symlinked parent while validating the real slot', async () => {
     const { root, stage } = await fixture();

@@ -178,6 +178,24 @@ describe('pending artifacts across graph generations', () => {
       expect(result.peakQueueBytes).toBeLessThanOrEqual(f.options().resources.queueBytes);
       expect(node.content).toContain('[truncated]');
       if (retention === 'full') {
+        await fs.writeFile(
+          path.join(repo, 'sample.ts'),
+          content.replace('RECOVERED_TAIL', 'UNINDEXED_TAIL'),
+        );
+        await f.nextGeneration();
+        const unchanged = await loadMeta(f.root);
+        if (!unchanged) throw new Error('Missing fixture metadata');
+        await saveMeta(f.root, {
+          ...unchanged,
+          repoPath: repo,
+          contentRetention: retention,
+          fileHashes: { 'sample.ts': createHash('sha256').update(content).digest('hex') },
+        });
+        f.provider.mockClear();
+        read.mockClear();
+        expect((await f.run()).state?.reusedNodes).toBe(1);
+        expect(f.provider).not.toHaveBeenCalled();
+        expect(read).not.toHaveBeenCalled();
         const advance = async (source: string) => {
           await fs.writeFile(path.join(repo, 'sample.ts'), source);
           await f.nextGeneration();

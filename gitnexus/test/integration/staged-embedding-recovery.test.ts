@@ -146,18 +146,18 @@ describe('isolated native staged embedding recovery', () => {
   }, 30_000);
 
   it('rejects a malformed WAL without deleting or quarantining it to reopen the source', async () => {
-    const dbPath = stagePath();
+    // A legitimate database name (including its UUID) can contain "bad".
+    const dbPath = `${stagePath()}-bad-id`;
     seed(dbPath, 'hard-kill');
     const walPath = `${dbPath}.wal`;
     fs.writeFileSync(walPath, Buffer.alloc(128, 0xff));
     const sourceBefore = snapshotSourceFamily(dbPath);
+    const entriesBefore = fs.readdirSync(path.dirname(dbPath)).sort();
     await expect(recoverStagedEmbeddings(dbPath, { dimensions: 2 })).rejects.toThrow(
       /extraction failed/,
     );
     expect(fs.existsSync(walPath)).toBe(true);
-    expect(fs.readdirSync(path.dirname(dbPath)).some((name) => /bad|quarantine/i.test(name))).toBe(
-      false,
-    );
+    expect(fs.readdirSync(path.dirname(dbPath)).sort()).toEqual(entriesBefore);
     expect(snapshotSourceFamily(dbPath)).toEqual(sourceBefore);
   }, 30_000);
 

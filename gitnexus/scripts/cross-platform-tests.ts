@@ -28,6 +28,9 @@
 const PLATFORM_LOGIC = [
   'test/unit/embedding-sidecar-lifetime.test.ts',
   'test/unit/analysis-publication.test.ts',
+  'test/unit/analysis-writer-identity.test.ts',
+  'test/unit/analysis-writer-identity-platform.test.ts',
+  'test/integration/parse-impl-round-drain.test.ts',
   'test/unit/analysis-phase-supervisor.test.ts',
   'test/unit/shared-vector-artifact.test.ts',
   'test/unit/embedding-artifact.test.ts',
@@ -125,6 +128,7 @@ const PLATFORM_LOGIC = [
   'test/unit/pool-wal-recovery.test.ts',
   'test/unit/lbug-adapter-wal-schema.test.ts',
   'test/unit/detect-changes-worktree.test.ts',
+  'test/unit/detect-changes-stderr.test.ts',
   'test/unit/eval-server-bind-restriction.test.ts',
   'test/unit/ignore-service.test.ts',
   'test/unit/group/bridge-db.test.ts',
@@ -243,6 +247,8 @@ const LBUG_NATIVE = [
   // A real refresh worker must preserve active readers or report native contention.
   'test/integration/mcp-refresh-index-e2e.test.ts',
   'test/integration/fts-repair-warm-session.test.ts',
+  'test/integration/fts-empty-tables.test.ts',
+  'test/integration/persisted-mutation-rows.test.ts',
   'test/unit/lbug-pool-pinning.test.ts',
   'test/unit/hybrid-search.test.ts',
   'test/integration/lbug-readonly-init.test.ts',
@@ -384,6 +390,7 @@ const WORKER_THREADS = [
   'test/integration/resolvers/java-overload-jls.test.ts',
   'test/unit/community-processor.test.ts',
   'test/integration/worker-pool.test.ts',
+  'test/integration/worker-pool-admission.test.ts',
   'test/integration/class-expression-owners.test.ts',
   'test/integration/parse-impl-quarantine-cache-skip.test.ts',
   // Real parse workers and both on-disk parse stores must retain lexical

@@ -8,7 +8,6 @@ import {
 } from '../../src/core/auto-sync/analysis-worker-launch.js';
 import { resolveAnalysisResourceBudget } from '../../src/core/analysis-resource-budget.js';
 import * as hostResources from '../../src/core/analysis-host-resources.js';
-import * as effectiveRam from '../../src/core/ingestion/utils/effective-ram.js';
 
 function createAutoSyncAnalysisRunner(overrides: Parameters<typeof createRunner>[0]) {
   const run = createRunner(overrides);
@@ -89,17 +88,13 @@ describe('auto-sync analysis worker', () => {
     },
   );
 
-  it.each([
-    [1, 8192],
-    [4, 3072],
-  ])('admits the historical worker heap for %s concurrent repositories', async (slots, heap) => {
-    const cap = vi.spyOn(effectiveRam, 'autoHeapCapMb').mockReturnValue(12288);
+  it.each([1, 4])('launches the admitted heap for %s concurrent repositories', async (slots) => {
     const mayEmbed = vi.spyOn(hostResources, 'analysisMayEmbed').mockResolvedValue(false);
     const admission = vi
       .spyOn(hostResources, 'resolveHostAnalysisResources')
       .mockImplementation((options) =>
         resolveAnalysisResourceBudget({
-          effectiveMemoryBytes: 32 * 1024 ** 3,
+          effectiveMemoryBytes: (32 * 1024 ** 3) / slots,
           availableCpus: 8,
           mainHeapMb: options.mainHeapMb,
           modelMemoryMb: 0,
@@ -111,18 +106,21 @@ describe('auto-sync analysis worker', () => {
     try {
       const pending = run('/tmp/repo', {}, 30_000, undefined, undefined, slots);
       await vi.waitFor(() => expect(forkWorker).toHaveBeenCalledOnce());
-      expect(admission).toHaveBeenCalledWith(
-        expect.objectContaining({ mainHeapMb: heap + 48, concurrency: slots }),
-      );
+      expect(admission).toHaveBeenCalledWith(expect.objectContaining({ concurrency: slots }));
+      const admitted = admission.mock.results[0].value;
+      expect(admission.mock.calls[0][0].mainHeapMb).toBeUndefined();
+      expect(admitted.parse.reservedBytes * slots).toBeLessThanOrEqual(24 * 1024 ** 3);
       expect(forkWorker).toHaveBeenCalledWith(
         expect.any(String),
-        expect.arrayContaining([`--max-old-space-size=${heap}`]),
+        expect.arrayContaining([
+          `--max-old-space-size=${admitted.mainHeapMb - 48}`,
+          '--max-semi-space-size=16',
+        ]),
       );
       child.emit('message', { type: 'complete', result: { stats: { files: 1 } } });
       child.emit('exit', 0, null);
       await expect(pending).resolves.toEqual({ stats: { files: 1 } });
     } finally {
-      cap.mockRestore();
       mayEmbed.mockRestore();
       admission.mockRestore();
     }

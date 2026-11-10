@@ -136,7 +136,9 @@ export function toolForReadOnlyMcp(tool: GitNexusTool, readOnly: boolean): GitNe
     properties.repo = {
       ...repo,
       description:
-        'Indexed repository name or path. Group-mode values beginning with @ are unavailable in MCP read-only mode.',
+        tool.name === 'query'
+          ? 'Indexed repository name or path, or a list of repositories. Group-mode values beginning with @ are unavailable in MCP read-only mode.'
+          : 'Indexed repository name or path. Group-mode values beginning with @ are unavailable in MCP read-only mode.',
     };
   }
   delete properties.subgroup;

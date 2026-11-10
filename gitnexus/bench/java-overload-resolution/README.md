@@ -20,6 +20,8 @@ cannot silently reduce resolution work.
 Each sample runs real worker parsing, scope resolution, graph construction and
 database writes, with a cold cache, a warm cache and one edited source file.
 The edit casts one argument to `Object`, changing exactly one selected overload.
+The cold run parses every file, the warm run parses none, and the edited run
+parses exactly one file in both shapes. Unchanged files must remain cache hits.
 The calls cover reference specificity, widening before boxing, `var` receiver
 inference through a factory call and cross-file member resolution. Expected target IDs
 are generated independently of the implementation. Missing methods or calls,

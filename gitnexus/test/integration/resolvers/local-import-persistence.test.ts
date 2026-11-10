@@ -10,19 +10,16 @@ import { getProviderForFile } from '../../../src/core/ingestion/languages/index.
 import { summarizeUnresolvedReceivers } from '../../../src/core/ingestion/scope-resolution/unresolved-receivers.js';
 import {
   loadParseCache,
-  loadParseCacheChunk,
+  loadParseCacheFiles,
   pruneCache,
   saveParseCache,
   type ParseCache,
 } from '../../../src/storage/parse-cache.js';
 import {
   clearParsedFileStore,
-  durableChunkHasShards,
-  getDurableParsedFileDir,
-  loadDurableParsedFileIndex,
   loadParsedFilesForPaths,
-  pruneAndSaveDurableParsedFileStore,
 } from '../../../src/storage/parsedfile-store.js';
+import { loadFileResultStore, pinFileResults } from '../../../src/storage/file-result-store.js';
 import { describeGrammarPresence, optionalGrammarGate } from '../../helpers/optional-grammar.js';
 import { runPipelineFromRepo, writeFixtureRepo, type PipelineResult } from './helpers.js';
 
@@ -262,26 +259,18 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
 
   async function persist(cache: ParseCache): Promise<void> {
     pruneCache(cache, cache.usedKeys);
-    const keys = await saveParseCache(storageDir, cache);
-    await pruneAndSaveDurableParsedFileStore(
-      getDurableParsedFileDir(storageDir),
-      parseIdentity.base,
-      new Set(keys),
-    );
+    await saveParseCache(storageDir, cache);
   }
 
   async function durableRecords(): Promise<Map<string, ParsedFile>> {
     await clearParsedFileStore(storageDir);
-    const index = await loadDurableParsedFileIndex(
-      getDurableParsedFileDir(storageDir),
+    const store = await loadFileResultStore(
+      path.join(storageDir, 'parse-cache', 'files'),
       parseIdentity.base,
     );
-    expect(index.size).toBeGreaterThan(0);
-    const paths = new Set<string>();
-    for (const [key, wanted] of index) {
-      expect(await durableChunkHasShards(storageDir, key, wanted)).toBe(true);
-      for (const filePath of wanted) paths.add(filePath);
-    }
+    expect(store.records.size).toBeGreaterThan(0);
+    await pinFileResults(store, [...store.records.keys()], storageDir);
+    const paths = new Set([...store.records.values()].map((record) => record.path));
     // This is the same validated durable-to-run snapshot and reader used by
     // warm scope resolution, after the previous pipeline cleared its run store.
     const loaded = await loadParsedFilesForPaths(storageDir, paths);
@@ -495,12 +484,15 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
       const warmCache = await loadParseCache(storageDir, parseIdentity, storageDir);
       expect(warmCache.entries.size).toBe(0);
       expect(warmCache.onDiskKeys!.size).toBeGreaterThan(0);
+      const facts = await loadParseCacheFiles(
+        warmCache,
+        [...warmCache.fileResults!.live!.records.values()],
+        storageDir,
+      );
       let persistedFileCount = 0;
-      for (const key of warmCache.onDiskKeys!) {
-        const chunk = await loadParseCacheChunk(warmCache, key);
-        expect(chunk).toBeDefined();
-        persistedFileCount += chunk!.reduce((sum, part) => sum + part.fileCount, 0);
-        expect(chunk!.flatMap((part) => part.parsedFiles ?? [])).toEqual([]);
+      for (const part of facts.values()) {
+        persistedFileCount += part.fileCount;
+        expect(part.parsedFiles).toEqual([]);
       }
       expect(persistedFileCount).toBe(parsedPaths.length);
       fs.rmSync(marker);
@@ -594,16 +586,22 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
       // cache invalidation alone is not evidence of persisted graph-row updates.
       const previousVersion = '136+0.0.0-legacy';
       expect(previousVersion).not.toBe(parseIdentity.base);
-      for (const indexPath of [
-        path.join(storageDir, 'parse-cache', 'index.json'),
-        path.join(getDurableParsedFileDir(storageDir), 'index.json'),
+      for (const [relative, field] of [
+        ['parse-cache/index.json', 'version'],
+        ['parse-cache/files/index.json', 'identity'],
       ]) {
+        const indexPath = path.join(storageDir, relative);
         const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
-        fs.writeFileSync(indexPath, JSON.stringify({ ...index, version: previousVersion }));
+        fs.writeFileSync(indexPath, JSON.stringify({ ...index, [field]: previousVersion }));
       }
       await clearParsedFileStore(storageDir);
       expect(
-        await loadDurableParsedFileIndex(getDurableParsedFileDir(storageDir), parseIdentity.base),
+        (
+          await loadFileResultStore(
+            path.join(storageDir, 'parse-cache', 'files'),
+            parseIdentity.base,
+          )
+        ).records,
       ).toEqual(new Map());
       const upgradedCache = await loadParseCache(storageDir, parseIdentity, storageDir);
       expect(upgradedCache.entries.size).toBe(0);

@@ -23,6 +23,8 @@ import {
   estimateBufferPool,
 } from '../../src/core/lbug/lbug-config.js';
 import { readLegacyEmbeddingSource } from '../../src/storage/legacy-embedding-source.js';
+import { loadFileResultStore, readFileResults } from '../../src/storage/file-result-store.js';
+import { decodeFileResultSection } from '../../src/storage/file-result-codec.js';
 
 let root: string, repo: string, slot: string;
 const resources = resolveAnalysisResourceBudget({
@@ -441,8 +443,21 @@ it.each(['prepared', 'graph-published'] as const)(
       expect(await readPreparedAnalysis(slot)).toBeUndefined();
       const keys = (await meta()).cacheKeys!;
       expect(keys.length).toBeGreaterThan(0);
-      for (const key of keys)
-        await expect(fs.stat(path.join(slot, 'parse-cache', `${key}.v8`))).resolves.toBeDefined();
+      const cache = await loadFileResultStore(
+        path.join(slot, 'parse-cache', 'files'),
+        (await meta()).parseCacheIdentity!.base,
+      );
+      expect([...cache.records.keys()].sort()).toEqual([...keys].sort());
+      const records = await readFileResults(cache, keys);
+      expect(records.size).toBe(keys.length);
+      for (const record of records.values()) {
+        expect(
+          decodeFileResultSection(record.facts, record.key, record.path, 'facts'),
+        ).toBeDefined();
+        expect(
+          decodeFileResultSection(record.scopes, record.key, record.path, 'scopes'),
+        ).toBeDefined();
+      }
       await expect(
         fs.stat(path.join(slot, `analysis-cache-${message.handoff.publicationId}.json`)),
       ).rejects.toMatchObject({ code: 'ENOENT' });

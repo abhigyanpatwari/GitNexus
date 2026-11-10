@@ -20,7 +20,7 @@ import { createQuarantine } from './quarantine.js';
  * removing it cut one full structured-clone pass per message.
  *
  * Sub-batch dispatch payload shape:
- *   `{ type: 'sub-batch', files: Array<{ path: string; content: Uint8Array }> }`
+ *   `{ type: 'sub-batch', files: Array<{ path: string; content: Uint8Array; cacheKey?: string }> }`
  *
  * The file `content` is a `Uint8Array` (not a string) so its
  * underlying `ArrayBuffer` can be transferred zero-copy via
@@ -35,7 +35,7 @@ import { createQuarantine } from './quarantine.js';
  * bypasses the pool, so transferring its outputs is safe.
  */
 
-type ParseWorkerItem = { path: string; content: string };
+type ParseWorkerItem = { path: string; content: string; cacheKey?: string };
 
 /**
  * Type guard: every element of `items` has the parse-worker shape
@@ -71,7 +71,7 @@ function isParseWorkerItemArray<T>(
  */
 export function buildDispatchMessage<T>(items: readonly T[]): {
   message:
-    | { type: 'sub-batch'; files: Array<{ path: string; content: Uint8Array }> }
+    | { type: 'sub-batch'; files: Array<{ path: string; content: Uint8Array; cacheKey?: string }> }
     | {
         type: 'sub-batch';
         files: readonly T[];
@@ -84,11 +84,15 @@ export function buildDispatchMessage<T>(items: readonly T[]): {
 
   // After the type guard, `items` is narrowed to `readonly ParseWorkerItem[]`.
   const encoder = new TextEncoder();
-  const files: Array<{ path: string; content: Uint8Array }> = [];
+  const files: Array<{ path: string; content: Uint8Array; cacheKey?: string }> = [];
   const transferList: ArrayBuffer[] = [];
   for (const item of items) {
     const u8 = encoder.encode(item.content);
-    files.push({ path: item.path, content: u8 });
+    files.push({
+      path: item.path,
+      content: u8,
+      ...(item.cacheKey === undefined ? {} : { cacheKey: item.cacheKey }),
+    });
     transferList.push(u8.buffer as ArrayBuffer);
   }
   return {
@@ -288,9 +292,12 @@ export interface WorkerPoolOptions {
    * the result (small-repo / no-storage path).
    */
   parsedFileStoreStoragePath?: string;
+  /** Internal: emit independently encoded file results inside batched jobs. */
+  fileResults?: boolean;
   /**
    * Directory for the DURABLE, content-addressed ParsedFile store
-   * (`getDurableParsedFileDir`). When set (alongside a chunk hash on the
+   * (`getDurableParsedFileDir`). Retained for legacy chunk callers; the default
+   * per-file path pins packed scope sections instead. When set (alongside a chunk hash on the
    * dispatch), the worker ALSO writes its ParsedFiles to a content-addressed
    * shard keyed by chunk hash so a future warm parse-cache hit can restore
    * them without re-parsing (#2038 warm-cache coverage). Baked into every
@@ -1072,9 +1079,16 @@ export const createWorkerPool = (
   // CFG/PDG opt-in (#2081 M1) — carried in workerData alongside the store paths.
   const pdg = options?.pdg === true;
   const pdgMaxFunctionLines = options?.pdgMaxFunctionLines;
+  const fileResults = options?.fileResults === true;
   const workerStoreData =
-    parsedFileStoreStoragePath || durableParsedFileStoragePath || pdg
-      ? { parsedFileStoreStoragePath, durableParsedFileStoragePath, pdg, pdgMaxFunctionLines }
+    parsedFileStoreStoragePath || durableParsedFileStoragePath || pdg || fileResults
+      ? {
+          parsedFileStoreStoragePath,
+          durableParsedFileStoragePath,
+          pdg,
+          pdgMaxFunctionLines,
+          fileResults,
+        }
       : undefined;
   const workerHeapCapMb = options?.heapLimitMb ?? resolveWorkerHeapCapMb(size);
   if (

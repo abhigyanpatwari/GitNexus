@@ -15,7 +15,14 @@ import { pathToFileURL } from 'node:url';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
-import { computeChunkHash, fileContentHash } from '../../src/storage/parse-cache.js';
+import {
+  computeChunkHash,
+  fileContentHash,
+  emptyParseCache,
+  persistParseCacheFiles,
+} from '../../src/storage/parse-cache.js';
+import { encodeFileResultSection } from '../../src/storage/file-result-codec.js';
+import { writeFileResultWorker } from '../helpers/file-result-worker.js';
 import { TEST_PARSE_IDENTITY } from '../helpers/cache-identity.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
 
@@ -177,13 +184,16 @@ describe('parse-impl worker pool lazy startup', () => {
       [{ filePath: rel, contentHash: fileContentHash(content) }],
       TEST_PARSE_IDENTITY,
     );
-    const parseCache = {
-      identity: TEST_PARSE_IDENTITY,
-      entries: new Map<string, ParseWorkerResult[]>([
-        [chunkHash, [emptyWorkerResult(rel, 'cached')]],
-      ]),
-      usedKeys: new Set<string>(),
-    };
+    const parseCache = emptyParseCache(TEST_PARSE_IDENTITY);
+    await persistParseCacheFiles(parseCache, [
+      {
+        key: chunkHash,
+        path: rel,
+        cacheable: true,
+        facts: encodeFileResultSection(chunkHash, rel, 'facts', emptyWorkerResult(rel, 'cached'))!,
+        scopes: encodeFileResultSection(chunkHash, rel, 'scopes', [])!,
+      },
+    ]);
 
     const markerPath = path.join(tempDir, 'worker-spawned.marker');
     const workerPath = path.join(tempDir, 'ready-worker.js');
@@ -210,7 +220,7 @@ describe('parse-impl worker pool lazy startup', () => {
     expect(Array.from(graph.nodes.values()).some((n) => n.properties.name === 'cached')).toBe(true);
   });
 
-  it('spawns the parse worker lazily on the first cache miss and stores raw results', async () => {
+  it('spawns the parse worker lazily on the first cache miss and stores complete file results', async () => {
     const rel = 'src/miss.ts';
     const content = 'export function miss() { return 1; }\n';
     const full = path.join(repoDir, rel);
@@ -219,13 +229,9 @@ describe('parse-impl worker pool lazy startup', () => {
 
     const markerPath = path.join(tempDir, 'worker-spawned.marker');
     const workerPath = path.join(tempDir, 'result-worker.js');
-    writeResultWorker(workerPath, markerPath);
+    writeFileResultWorker(workerPath, markerPath);
 
-    const parseCache = {
-      identity: TEST_PARSE_IDENTITY,
-      entries: new Map<string, ParseWorkerResult[]>(),
-      usedKeys: new Set<string>(),
-    };
+    const parseCache = emptyParseCache(TEST_PARSE_IDENTITY);
     const chunkHash = computeChunkHash(
       [{ filePath: rel, contentHash: fileContentHash(content) }],
       TEST_PARSE_IDENTITY,
@@ -248,7 +254,7 @@ describe('parse-impl worker pool lazy startup', () => {
     );
 
     expect(fs.existsSync(markerPath)).toBe(true);
-    expect(parseCache.entries.has(chunkHash)).toBe(true);
+    expect(parseCache.fileResults?.memory.has(chunkHash)).toBe(true);
     expect(Array.from(graph.nodes.values()).some((n) => n.properties.name === 'miss')).toBe(true);
   });
 

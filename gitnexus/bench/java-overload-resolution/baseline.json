@@ -1,5 +1,5 @@
 {
-  "_note": "Measured baseline. --check gates same-run normalized growth at 1.5 and exact call targets/cache counts. Absolute timings and memory are references, not portable budgets.",
+  "_note": "Measured baseline. --check gates same-run normalized growth at 1.5 and exact call targets/cache counts. Absolute timings and memory are references, not portable budgets. Expected correctness cache counts reflect per-file reuse (#3856); measured rows retain the original chunk-cache timings and counts.",
   "schemaVersion": 1,
   "recordedAt": "2026-10-31T19:46:00.972Z",
   "runtimeSha256": "4b3e97e7ebb9f21e6aa4048f584fe10fd5ac049d5a4b60488947f45b01fc2057",
@@ -56,8 +56,8 @@
         "methods": 898,
         "calls": 512,
         "fingerprint": "def7d18a8b462dcf231bd2192afebe764911163d3ffc65e75fe5fefeb7e3a54c",
-        "reparsed": 2,
-        "hits": 127
+        "reparsed": 1,
+        "hits": 128
       }
     },
     {
@@ -98,8 +98,8 @@
         "methods": 3586,
         "calls": 2048,
         "fingerprint": "360cdbc01738746de63cca79adba7410797749c171d3e324579a7a53deee56d0",
-        "reparsed": 5,
-        "hits": 508
+        "reparsed": 1,
+        "hits": 512
       }
     },
     {
@@ -140,8 +140,8 @@
         "methods": 14338,
         "calls": 8192,
         "fingerprint": "8b2269dfa3d017f04e05f86afd8f6cac6364c1228acab0507de5287feb249969",
-        "reparsed": 15,
-        "hits": 2034
+        "reparsed": 1,
+        "hits": 2048
       }
     },
     {

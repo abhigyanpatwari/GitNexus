@@ -785,7 +785,7 @@ export async function ensureHeap(
       `--max-old-space-size=${decision.sizing.oldSpaceMb}`,
       `--max-semi-space-size=${decision.sizing.semiSpaceMb}`,
       'auto',
-      'Analysis likely ran out of memory in its admitted main heap. Raise --resource-budget or reduce the analysis scope. If this persists, it may be a native crash unrelated to heap size.',
+      'Analysis likely ran out of memory in its admitted main heap. Raise --memory-budget and, if needed, --resource-budget within available RAM, or reduce the analysis scope. If this persists, it may be a native crash unrelated to heap size.',
       nodeOpts,
       options,
     );
@@ -2228,6 +2228,8 @@ const analyzeCommandImpl = async (
         : '';
       cliError(
         `  LadybugDB failed while rotating/removing WAL checkpoint files.\n` +
+          // Keep the failing path and native reason alongside the recovery hint.
+          `  ${msg.replace(/\n/g, '\n  ')}\n` +
           heldOpen +
           `  This can happen when auto-checkpoint runs at the default threshold (~16MB).\n` +
           `  Retry with a larger checkpoint threshold to reduce checkpoint frequency:\n` +

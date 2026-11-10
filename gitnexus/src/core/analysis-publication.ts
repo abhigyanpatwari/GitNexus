@@ -9,6 +9,12 @@ import { INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from '../storage/storage-co
 import { preserveVectorCoverage } from '../storage/vector-generation.js';
 import { embeddingJobDirectory, syncEmbeddingJobDirectory } from '../storage/embedding-job.js';
 import { readProcStartTime } from '../storage/index-lock.js';
+import {
+  getAnalysisWriterProbeTimeoutMs,
+  isAnalysisWriterBirth,
+  readAnalysisWriterBirth,
+  type AnalysisWriterBirth,
+} from './analysis-writer-identity.js';
 import { reclaimAnalysisArtifacts } from '../storage/analysis-artifact-cleanup.js';
 
 const RECEIPT = 'analysis-publication.json';
@@ -41,6 +47,8 @@ export interface PreparedAnalysisPublication {
   /** Exit-only callers may not publish while this process is still alive. */
   writerPid?: number;
   writerStartTime?: string;
+  /** Tagged OS process birth identity; absent in older v2 receipts. */
+  writerBirth?: AnalysisWriterBirth;
   writerInstance?: string;
   /** A hard-link destination for the previous legacy graph; never copied. */
   legacyGraphFile?: string;
@@ -80,6 +88,7 @@ function validateReceipt(value: unknown): asserts value is PreparedAnalysisPubli
       (!r.legacyGraphFile || !DIGEST.test(r.redirectedMetadataDigest))) ||
     (r.writerPid !== undefined && (!Number.isSafeInteger(r.writerPid) || r.writerPid < 1)) ||
     (r.writerStartTime !== undefined && (!r.writerPid || !/^\d{1,32}$/.test(r.writerStartTime))) ||
+    (r.writerBirth !== undefined && (!r.writerPid || !isAnalysisWriterBirth(r.writerBirth))) ||
     (r.writerInstance !== undefined && (!r.writerPid || !GENERATION.test(r.writerInstance))) ||
     (r.legacyGraphFile !== undefined &&
       (r.mode !== 'staged' ||
@@ -281,6 +290,7 @@ export async function prepareAnalysisPublication(
           writerPid: process.pid,
           writerInstance: WRITER_INSTANCE,
           writerStartTime: readProcStartTime(process.pid) ?? undefined,
+          writerBirth: await readAnalysisWriterBirth(process.pid),
         }
       : {}),
     ...(mode === 'staged' && (await regularFile(path.join(root, 'lbug')))
@@ -411,7 +421,9 @@ export async function publishPreparedAnalysis(
   const receipt = await readPreparedAnalysis(root);
   if (!receipt) return undefined;
   if (receipt.writerPid !== undefined) {
-    const deadline = performance.now() + 2000;
+    const deadline =
+      performance.now() +
+      Math.max(2000, receipt.writerBirth ? getAnalysisWriterProbeTimeoutMs() : 0);
     for (;;) {
       // A live, recycled PID is not the process that prepared this receipt.
       if (
@@ -422,6 +434,14 @@ export async function publishPreparedAnalysis(
         break;
       const started = readProcStartTime(receipt.writerPid);
       if (receipt.writerStartTime && started && receipt.writerStartTime !== started) break;
+      if (receipt.writerBirth && performance.now() < deadline) {
+        const birth = await readAnalysisWriterBirth(
+          receipt.writerPid,
+          deadline - performance.now(),
+        );
+        if (birth?.kind === receipt.writerBirth.kind && birth.value !== receipt.writerBirth.value)
+          break;
+      }
       try {
         process.kill(receipt.writerPid, 0);
       } catch (error) {

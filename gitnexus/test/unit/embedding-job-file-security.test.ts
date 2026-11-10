@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
+  createEmbeddingJobDirectories,
   readEmbeddingJobRecord,
   writeEmbeddingJobRecord,
 } from '../../src/storage/embedding-job.js';
@@ -27,6 +28,37 @@ afterEach(async () => {
     directories.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })),
   );
 });
+
+it.skipIf(process.platform === 'win32')(
+  'retries failed parent sync for an existing job directory',
+  async () => {
+    const directory = await fixture({ owned: true });
+    const open = fs.open.bind(fs);
+    let attempts = 0;
+    vi.spyOn(fs, 'open').mockImplementation(async (target, flags, mode) => {
+      const handle = await open(target, flags, mode);
+      if (target === directory) {
+        const sync = handle.sync.bind(handle);
+        vi.spyOn(handle, 'sync').mockImplementation(async () => {
+          if (++attempts <= 2)
+            throw Object.assign(new Error('Directory sync failed'), { code: 'EIO' });
+          await sync();
+        });
+      }
+      return handle;
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(
+        createEmbeddingJobDirectories(directory, ['embeddings', 'job']),
+      ).rejects.toMatchObject({ code: 'EIO' });
+    }
+    await expect(createEmbeddingJobDirectories(directory, ['embeddings', 'job'])).resolves.toBe(
+      path.join(directory, 'embeddings', 'job'),
+    );
+    expect(attempts).toBe(3);
+    expect(await readEmbeddingJobRecord(directory, 'job.json')).toEqual({ owned: true });
+  },
+);
 
 it.each(['read', 'write'] as const)(
   'rejects a directory redirected during realpath before receipt %s',

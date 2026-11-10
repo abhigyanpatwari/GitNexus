@@ -9,6 +9,7 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { execFileSync, fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { assertGraphParity } from './reference-migration.mjs';
 const args = process.argv.slice(2);
 assert(
   args.length >= 5 && args.slice(0, 5).every((value) => value !== ''),
@@ -80,6 +81,35 @@ if (isWorker) {
   });
 }
 const results = [];
+const graphParity = [];
+function saveResults(repo) {
+  fs.writeFileSync(
+    path.join(output, 'results.json'),
+    JSON.stringify(
+      {
+        head: head(repo),
+        node: process.version,
+        lifecycle,
+        pairs,
+        workers,
+        heapMiB,
+        screen,
+        baseFirst,
+        baselineRuntime,
+        candidateRuntime,
+        results,
+        graphParity,
+      },
+      null,
+      2,
+    ),
+  );
+}
+function verifyPair(before, after, repo) {
+  const receipt = assertGraphParity(before, after, repo);
+  graphParity.push({ baselineName: before.name, candidateName: after.name, ...receipt });
+  saveResults(repo);
+}
 const canonical = (value) =>
   Array.isArray(value)
     ? value.map(canonical)
@@ -126,7 +156,9 @@ async function sample(repo, isCandidate, name) {
   const ms = performance.now() - started;
   const cpu = process.cpuUsage(cpuBefore);
   // Process-lifetime high-water mark captured before this sample's verification.
-  // Earlier samples can set it; this is not an interval peak or a memory delta.
+  // In persistent mode earlier graph snapshot serialization can set it, so
+  // exclude persistent RSS from performance comparisons. It is not an interval
+  // peak or a memory delta.
   const analysisPeakRssKiB = process.resourceUsage().maxRSS;
   assert(!result.alreadyUpToDate, 'A no-op is not an edit benchmark');
   assert(!result.graphWriteCollapsed);
@@ -146,6 +178,13 @@ async function sample(repo, isCandidate, name) {
     if (edge.type === 'CALLS' && edge.sourceId.includes('semanticBenchUse')) controlCalls++;
   }
   assert(controlCalls > 0, 'The changed call must resolve');
+  // The snapshot is collected after timing and overwritten for each variant.
+  // Digests remain the compact, stable benchmark receipt.
+  const graphRowsPath = path.join(
+    output,
+    isCandidate ? 'candidate-graph.json' : 'baseline-graph.json',
+  );
+  fs.writeFileSync(graphRowsPath, JSON.stringify({ nodes, edges }));
   const expectedTarget = fs.readFileSync(path.join(repo, control), 'utf8').includes('s.load()')
     ? 'load'
     : 'save';
@@ -169,6 +208,10 @@ async function sample(repo, isCandidate, name) {
     ms,
     cpuMs: (cpu.user + cpu.system) / 1000,
     analysisPeakRssKiB,
+    rssInterpretation:
+      lifecycle === 'persistent'
+        ? 'Process-lifetime peak can include earlier graph snapshot serialization; exclude from performance comparisons.'
+        : 'Process-lifetime peak before this sample graph verification.',
     storagePath: result.storagePath,
     loadBefore,
     loadAfter: os.loadavg(),
@@ -179,6 +222,7 @@ async function sample(repo, isCandidate, name) {
     reparsedFiles: result.pipelineResult.reparsedFileCount,
     cachedFiles: result.pipelineResult.parseCacheHitFileCount,
     graph: { nodes: digest(nodes), edges: digest(edges) },
+    graphRowsPath,
     logs,
     progress,
     persistedTargets,
@@ -231,26 +275,7 @@ function worker(repo, isCandidate) {
         child.send({ repo, reuse: isCandidate, name });
       });
       results.push(report);
-      fs.writeFileSync(
-        path.join(output, 'results.json'),
-        JSON.stringify(
-          {
-            head: head(repo),
-            node: process.version,
-            lifecycle,
-            pairs,
-            workers,
-            heapMiB,
-            screen,
-            baseFirst,
-            baselineRuntime,
-            candidateRuntime,
-            results,
-          },
-          null,
-          2,
-        ),
-      );
+      saveResults(repo);
       if (lifecycle === 'fresh') await close();
       return report;
     },
@@ -282,7 +307,7 @@ if (isWorker) {
       afterSeed = await afterWorker.run('candidate-seed');
       beforeSeed = await beforeWorker.run('baseline-seed');
     }
-    assert.deepEqual(afterSeed.graph, beforeSeed.graph, 'Seed semantic graphs differ');
+    verifyPair(beforeSeed, afterSeed, candidate);
     for (let pair = 1; pair <= pairs; pair++) {
       const text = pair % 2 ? source.replace('s.save()', 's.load()') : source;
       for (const repo of [baseline, candidate]) fs.writeFileSync(path.join(repo, control), text);
@@ -295,15 +320,32 @@ if (isWorker) {
         after = await afterWorker.run(`candidate-${pair}`);
         before = await beforeWorker.run(`baseline-${pair}`);
       }
-      assert.deepEqual(
-        after.graph,
-        before.graph,
-        'Semantic graph differs from a full semantic pass',
-      );
+      verifyPair(before, after, candidate);
+      // The seed established a compact baseline; this tiny cached edit must
+      // exercise the selective path. Periodic compaction is covered separately.
+      if (pair === 1) {
+        assert.equal(
+          after.incremental?.writeMode,
+          'incremental',
+          'First cached edit must stay selective',
+        );
+      }
       for (const entry of [before, after]) {
-        assert.equal(entry.incremental?.writeMode, 'incremental');
+        // Cached one-file edits may use row writes in an older baseline or a
+        // compact full COPY in a newer runtime (#3852). Both are timed in full.
+        assert(
+          ['incremental', 'full'].includes(entry.incremental?.writeMode),
+          'Invalid physical write mode for a cached edit',
+        );
         assert.equal(entry.incremental?.changedFiles, 1);
-        assert.deepEqual(entry.rebuildReasons, []);
+        // A compact COPY is reported as a non-forcing write-plan change;
+        // cache/schema invalidations must still be absent from measured edits.
+        assert.deepEqual(
+          entry.rebuildReasons.filter(
+            (reason) => entry.incremental.writeMode !== 'full' || reason !== 'escalated-full-write',
+          ),
+          [],
+        );
       }
       if (screen && pair === 1 && after.ms >= before.ms) {
         console.log('SCREEN REJECTED: no end-to-end improvement; stopping after one pair.');

@@ -142,6 +142,7 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
       ctx.onProgress,
       ctx.options,
       resolutionConfigs,
+      ctx.recordSourceHash,
     );
 
     return {

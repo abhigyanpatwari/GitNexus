@@ -6,6 +6,8 @@ import path from 'node:path';
 import { _captureLogger } from '../../src/core/logger.js';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const heap = vi.hoisted(() => ({ bytes: 1024 ** 3 }));
+
 vi.mock('../../src/core/ingestion/utils/effective-ram.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/core/ingestion/utils/effective-ram.js')>()),
   effectiveRamBytes: () => 8 * 1024 ** 3,
@@ -14,7 +16,7 @@ vi.mock('node:v8', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:v8')>();
   return {
     ...actual,
-    getHeapStatistics: () => ({ ...actual.getHeapStatistics(), heap_size_limit: 64 * 1024 ** 3 }),
+    getHeapStatistics: () => ({ ...actual.getHeapStatistics(), heap_size_limit: heap.bytes }),
   };
 });
 
@@ -173,6 +175,7 @@ afterAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  heap.bytes = 1024 ** 3;
   mocks.isEmbedderReady.mockReturnValue(false);
   mocks.activeJob = undefined;
   mocks.acquireIndexLock.mockResolvedValue({
@@ -253,7 +256,7 @@ describe('POST /api/embed staged recovery preflight', () => {
           metadataDirectory: entry.storagePath,
           graphPath: path.join(entry.storagePath, 'lbug'),
           nodeLimit: 0,
-          resources: expect.objectContaining({ automatic: true, mainHeapMb: 6553 }),
+          resources: expect.objectContaining({ automatic: true, mainHeapMb: 1024 }),
           signal: expect.any(AbortSignal),
         }),
       );
@@ -276,6 +279,27 @@ describe('POST /api/embed staged recovery preflight', () => {
       log.restore();
     }
   });
+
+  it.each([2096, 65536])(
+    'rejects a %i MiB running heap before locking or starting embedding work',
+    async (heapMb) => {
+      vi.stubEnv('GITNEXUS_EMBEDDING_URL', undefined);
+      vi.stubEnv('GITNEXUS_EMBEDDING_MODEL', undefined);
+      mocks.loadMeta.mockResolvedValue({ repoPath: entry.path });
+      heap.bytes = heapMb * 1024 ** 2;
+      const response = await invoke('/api/embed', {}, {}, 500);
+      expect(response.body.error).toContain('cannot admit');
+      expect(mocks.acquireIndexLock).not.toHaveBeenCalled();
+      expect(mocks.ensurePrivateSharedGraph).not.toHaveBeenCalled();
+      expect(mocks.runAnalysisEmbeddingPhase).not.toHaveBeenCalled();
+      expect(mocks.updateJob).not.toHaveBeenCalled();
+
+      heap.bytes = 1024 ** 3;
+      await invoke('/api/embed');
+      await vi.waitFor(() => expect(mocks.releaseIndexLock).toHaveBeenCalledOnce());
+      expect(mocks.runAnalysisEmbeddingPhase).toHaveBeenCalledOnce();
+    },
+  );
 
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -420,6 +444,7 @@ async function invoke(
   route: string,
   query: Record<string, unknown> = {},
   body: Record<string, unknown> = {},
+  expectedStatus = route === '/api/embed' ? 202 : 200,
 ) {
   const layer = app.router.stack.find((item: any) => item.route?.path === route);
   expect(layer, route).toBeDefined();
@@ -457,7 +482,7 @@ async function invoke(
     },
   });
   await handler(req as unknown as express.Request, res as unknown as express.Response, vi.fn());
-  expect(res.statusCode, JSON.stringify(res.body)).toBe(route === '/api/embed' ? 202 : 200);
+  expect(res.statusCode, JSON.stringify(res.body)).toBe(expectedStatus);
   return res;
 }
 

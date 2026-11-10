@@ -14,6 +14,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runFullAnalysisMock = vi.fn();
 
+vi.mock('node:v8', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:v8')>();
+  const mocked = {
+    ...actual,
+    getHeapStatistics: () => ({ ...actual.getHeapStatistics(), heap_size_limit: 1024 ** 3 }),
+  };
+  return { ...mocked, default: mocked };
+});
+
 vi.mock('../../src/core/run-analyze.js', () => ({
   runFullAnalysis: runFullAnalysisMock,
 }));
@@ -70,7 +79,6 @@ describe('analyzeCommand WAL corruption error handling', () => {
     vi.resetModules();
     runFullAnalysisMock.mockReset();
     process.exitCode = undefined;
-    // Ensure ensureHeap() short-circuits (heap already at target size)
     process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim();
   });
 
@@ -181,6 +189,11 @@ describe('analyzeCommand WAL corruption error handling', () => {
         (r) =>
           typeof r.msg === 'string' &&
           r.msg.includes('gitnexus analyze --wal-checkpoint-threshold'),
+      ),
+    ).toBe(true);
+    expect(
+      records.some(
+        (r) => typeof r.msg === 'string' && r.msg.includes('/repo/.gitnexus/lbug.wal.checkpoint'),
       ),
     ).toBe(true);
 
