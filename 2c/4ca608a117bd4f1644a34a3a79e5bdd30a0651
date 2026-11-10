@@ -1,0 +1,27 @@
+docs/languages/ruby-ingestion-gaps.md
+  s_b9690234122db7::t_0479ca56c69064 30,36
+gitnexus/CHANGELOG.md
+  s_b9690234122db7::t_3b177669d99978 12-15
+gitnexus/bench/receiver-resolution/measure.mjs
+  s_b9690234122db7::t_1af1b629ef2a1a 702-704,1073-1079
+gitnexus/src/core/ingestion/languages/ruby/simple-hooks.ts
+  s_b9690234122db7::t_a056682b9b7352 23-32
+gitnexus/test/integration/resolvers/ruby-yard-param-scope.test.ts
+  s_b9690234122db7::t_5dd263d063288e 1-137
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2c4ca608a117bd4f1644a34a3a79e5bdd30a0651",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
