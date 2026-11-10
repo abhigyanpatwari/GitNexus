@@ -9,11 +9,7 @@ import {
   saveParseCache,
   type ParseCache,
 } from '../../../src/storage/parse-cache.js';
-import {
-  getDurableParsedFileDir,
-  loadDurableParsedFileIndex,
-  pruneAndSaveDurableParsedFileStore,
-} from '../../../src/storage/parsedfile-store.js';
+import { loadFileResultStore } from '../../../src/storage/file-result-store.js';
 import {
   FIXTURES,
   getRelationships,
@@ -241,12 +237,7 @@ describe('Express route identity and source priority', () => {
       expect(coldResult.parseCacheHitFileCount).toBe(0);
 
       pruneCache(cold, cold.usedKeys);
-      const savedKeys = await saveParseCache(storageDir, cold);
-      await pruneAndSaveDurableParsedFileStore(
-        getDurableParsedFileDir(storageDir),
-        parseIdentity.base,
-        new Set(savedKeys),
-      );
+      await saveParseCache(storageDir, cold);
       const warm = await loadParseCache(storageDir, parseIdentity, storageDir);
       expect(warm).not.toBeNull();
       const warmResult = await runPipelineFromRepo(repoDir, () => {}, {
@@ -348,12 +339,7 @@ describe('Express route identity and source priority', () => {
     const paths = (pipeline: PipelineResult) => getNodesByLabel(pipeline, 'Route').sort();
     const persist = async (cache: ParseCache) => {
       pruneCache(cache, cache.usedKeys);
-      const keys = await saveParseCache(storageDir, cache);
-      await pruneAndSaveDurableParsedFileStore(
-        getDurableParsedFileDir(storageDir),
-        parseIdentity.base,
-        new Set(keys),
-      );
+      await saveParseCache(storageDir, cache);
     };
     try {
       writeFixtureRepo(repoDir, {
@@ -395,8 +381,12 @@ describe('Express route identity and source priority', () => {
       expect(project(durable).every((route) => route.handler !== undefined)).toBe(true);
       await persist(cold);
       expect(
-        (await loadDurableParsedFileIndex(getDurableParsedFileDir(storageDir), parseIdentity.base))
-          .size,
+        (
+          await loadFileResultStore(
+            path.join(storageDir, 'parse-cache', 'files'),
+            parseIdentity.base,
+          )
+        ).records.size,
       ).toBeGreaterThan(0);
       const warm = await loadParseCache(storageDir, parseIdentity, storageDir);
       const replay = await runPipelineFromRepo(repoDir, () => {}, {
@@ -475,13 +465,20 @@ describe('Express route identity and source priority', () => {
         const indexPath = path.join(storageDir, 'parse-cache', 'index.json');
         const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
         fs.writeFileSync(indexPath, JSON.stringify({ ...index, version: previousVersion }));
-        const durableDir = getDurableParsedFileDir(storageDir);
-        await pruneAndSaveDurableParsedFileStore(durableDir, previousVersion, new Set(savedKeys));
-        expect((await loadDurableParsedFileIndex(durableDir, previousVersion)).size).toBe(2);
+        const durableDir = path.join(storageDir, 'parse-cache', 'files');
+        const durableIndexPath = path.join(durableDir, 'index.json');
+        const durableIndex = JSON.parse(fs.readFileSync(durableIndexPath, 'utf8'));
+        fs.writeFileSync(
+          durableIndexPath,
+          JSON.stringify({ ...durableIndex, identity: previousVersion }),
+        );
+        expect((await loadFileResultStore(durableDir, previousVersion)).records.size).toBe(2);
 
         const upgraded = await loadParseCache(storageDir, parseIdentity, storageDir);
         expect(upgraded.onDiskKeys?.size ?? 0).toBe(0);
-        expect(await loadDurableParsedFileIndex(durableDir, parseIdentity.base)).toEqual(new Map());
+        expect((await loadFileResultStore(durableDir, parseIdentity.base)).records).toEqual(
+          new Map(),
+        );
         const result = await runPipelineFromRepo(repoDir, () => {}, {
           parseCache: upgraded,
           workerPoolSize: 1,

@@ -42,6 +42,8 @@ export const PARSE_CACHE_BASE_FILES = [
   'storage/parse-cache.ts',
   'storage/parsedfile-store.ts',
   'storage/v8-sidecar.ts',
+  'storage/file-result-codec.ts',
+  'storage/file-result-store.ts',
 ] as const;
 
 /** Non-grammar parser dependencies; grammar names come from the runtime loader registry. */
