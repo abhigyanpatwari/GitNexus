@@ -137,6 +137,93 @@ describe('file-result codec', () => {
 });
 
 describe('packed file-result store', () => {
+  it('reads the opened index when its pathname is replaced after stat', async () => {
+    const root = await temporary();
+    const store = emptyFileResultStore(root, 'identity');
+    const a = record('a.ts');
+    await appendFileResults(store, [a]);
+    await writeFileResultIndex(store);
+    const file = path.join(root, 'index.json');
+    const open = fs.open;
+    const closes: ReturnType<typeof vi.spyOn>[] = [];
+    vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      closes.push(vi.spyOn(handle, 'close'));
+      const stat = handle.stat.bind(handle);
+      vi.spyOn(handle, 'stat').mockImplementation(async () => {
+        const snapshot = await stat();
+        await fs.rename(file, `${file}.old`);
+        await writeFile(file, 'invalid replacement');
+        return snapshot;
+      });
+      return handle;
+    });
+    try {
+      expect([...(await loadFileResultStore(root, 'identity')).records.keys()]).toEqual([a.key]);
+      expect(closes).toHaveLength(1);
+      expect(closes[0]).toHaveBeenCalledOnce();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it.each(['growth', 'truncation', 'read error'])(
+    'treats index %s after stat as a miss and closes the handle',
+    async (kind) => {
+      const root = await temporary();
+      const store = emptyFileResultStore(root, 'identity');
+      await appendFileResults(store, [record('a.ts')]);
+      await writeFileResultIndex(store);
+      const file = path.join(root, 'index.json');
+      const open = fs.open;
+      const closes: ReturnType<typeof vi.spyOn>[] = [];
+      vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+        const handle = await open(...args);
+        closes.push(vi.spyOn(handle, 'close'));
+        const stat = handle.stat.bind(handle);
+        vi.spyOn(handle, 'stat').mockImplementation(async () => {
+          const snapshot = await stat();
+          if (kind === 'growth') await appendFile(file, ' ');
+          else if (kind === 'truncation') await fs.truncate(file, 1);
+          else vi.spyOn(handle, 'read').mockRejectedValueOnce(new Error('read failed'));
+          return snapshot;
+        });
+        return handle;
+      });
+      try {
+        expect((await loadFileResultStore(root, 'identity')).records.size).toBe(0);
+        expect(closes).toHaveLength(1);
+        expect(closes[0]).toHaveBeenCalledOnce();
+      } finally {
+        vi.restoreAllMocks();
+      }
+    },
+  );
+
+  it('rejects an oversized index before reading and closes the handle', async () => {
+    const root = await temporary();
+    const file = path.join(root, 'index.json');
+    await writeFile(file, '');
+    await fs.truncate(file, 128 * 1024 * 1024 + 1);
+    const open = fs.open;
+    const closes: ReturnType<typeof vi.spyOn>[] = [];
+    const reads: ReturnType<typeof vi.spyOn>[] = [];
+    vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      closes.push(vi.spyOn(handle, 'close'));
+      reads.push(vi.spyOn(handle, 'read'));
+      return handle;
+    });
+    try {
+      expect((await loadFileResultStore(root, 'identity')).records.size).toBe(0);
+      expect(reads).toHaveLength(1);
+      expect(reads[0]).not.toHaveBeenCalled();
+      expect(closes[0]).toHaveBeenCalledOnce();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
   it.each(['missing', 'unreadable'])('treats a %s scope manifest as a miss', async (kind) => {
     const root = await temporary();
     if (kind === 'unreadable')

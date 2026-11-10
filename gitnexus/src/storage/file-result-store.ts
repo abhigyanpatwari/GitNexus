@@ -104,8 +104,26 @@ export async function loadFileResultStore(
   const store = emptyFileResultStore(directory, identity);
   try {
     const file = path.join(directory, 'index.json');
-    if ((await fs.stat(file)).size > MAX_INDEX_BYTES) return store;
-    const data: unknown = JSON.parse(await fs.readFile(file, 'utf8'));
+    const handle = await fs.open(file, 'r');
+    let contents: string;
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > MAX_INDEX_BYTES) return store;
+      // Read the opened file, not a pathname that can be replaced after stat.
+      // One extra byte detects growth without allowing an unbounded read.
+      const bytes = Buffer.allocUnsafe(stat.size + 1);
+      let got = 0;
+      while (got < bytes.length) {
+        const { bytesRead } = await handle.read(bytes, got, bytes.length - got, got);
+        if (!bytesRead) break;
+        got += bytesRead;
+      }
+      if (got !== stat.size) return store;
+      contents = bytes.subarray(0, got).toString('utf8');
+    } finally {
+      await handle.close();
+    }
+    const data: unknown = JSON.parse(contents);
     if (!data || typeof data !== 'object') return store;
     const index = data as { format?: unknown; identity?: unknown; records?: unknown };
     if (index.format !== FORMAT || index.identity !== identity || !Array.isArray(index.records))
