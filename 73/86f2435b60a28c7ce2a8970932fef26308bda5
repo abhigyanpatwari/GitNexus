@@ -1,0 +1,33 @@
+gitnexus-shared/src/scope-resolution/types.ts
+  s_b9690234122db7::t_c47c9eb01c8056 662-671
+gitnexus/CHANGELOG.md
+  s_b9690234122db7::t_fb1a05f77163c0 15
+gitnexus/src/core/ingestion/language-provider.ts
+  s_b9690234122db7::t_cc72d3b13f44a2 57,1293-1303
+gitnexus/src/core/ingestion/scope-extractor.ts
+  s_b9690234122db7::t_aeeaa09ffdbeb3 118,145,1231-1233,1238,1251,1283-1287,1290,1305-1309,1331-1332,1957
+gitnexus/src/core/ingestion/scope-resolution/passes/imported-return-types.ts
+  s_b9690234122db7::t_ef7af15eb9c7c5 54,300,323-324,376,403,406-409,475,498-504,520-526
+gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts
+  s_b9690234122db7::t_397e5831607d14 1247
+gitnexus/src/core/ingestion/utils/type-ref-chain.ts
+  s_b9690234122db7::t_879e017da96ac3 3-7,14-23,25-39
+gitnexus/test/unit/scope-resolution/awaited-call-result-follow.test.ts
+  s_b9690234122db7::t_08a2bc16c1c4d4 1-204
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7386f2435b60a28c7ce2a8970932fef26308bda5",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
