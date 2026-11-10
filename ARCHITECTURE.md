@@ -746,12 +746,29 @@ Inputs outside that boundary require an ownership decision and an update to
 `test/unit/parse-cache-input-coverage.test.ts`, which audits imports, dynamic
 loaders, runtime assets, and shared dependencies.
 
-Both the worker-result index and durable `ParsedFile` index validate the base
-identity before workers can be skipped. Physical chunk keys bind that identity
-and sorted source path/content hashes; PDG-enabled chunks additionally bind
-the PDG identity and resolved function-line cap. A CFG-only change therefore
-does not invalidate ordinary chunks. Legacy numeric, missing, malformed, or
-foreign identities miss; a concurrently pruned shard is also a miss.
+Each logical cache entry belongs to one source path and content hash, bound to
+its base parser identity. PDG entries also bind the PDG identity and resolved
+function-line cap. Chunk membership, byte budgets and worker assignment affect
+scheduling only: editing, adding or renaming one file does not invalidate its
+unchanged neighbours. Cross-file resolution still runs from all current facts.
+
+Workers encode facts and `ParsedFile` scopes separately, with runtime-checked V8
+envelopes and bounded compression. The coordinator appends these sections to
+32 MiB target packs (a larger valid file occupies a dedicated pack), with range
+references in `parse-cache/files/index.json`. It accepts a hit only after both
+sections validate and the scope bytes are pinned into the run-owned store.
+Scope resolution reads only its requested files. Empty scope sections are
+explicit; warnings, quarantine and incomplete scope extraction prevent reuse.
+
+Publication retains immutable live packs by hard link (atomic copy fallback)
+under the existing store lock, repacking when less than half a pack's bytes
+remain selected. New staged records are packed separately. It retains compatible
+sibling keys and excludes retired files or missing staged repairs. Bounds are
+checked during publication; section hashes are checked on every read before a
+cache hit is accepted. The child/supervisor receipt binds the graph generation, parser identity
+and selected file keys. The format transition changes parser identity, so old
+chunk caches miss once; legacy helpers remain for compatibility. Missing,
+malformed, incompatible or concurrently pruned records are misses.
 
 `RepoMeta.parseCacheIdentity` records the effective parser identity for
 unchanged-analysis and shared-current adoption checks. Analysis resolves it

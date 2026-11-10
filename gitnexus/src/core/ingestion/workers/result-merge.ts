@@ -26,6 +26,7 @@ const appendAll = <T>(target: T[], src: T[]): void => {
  * add the file count.
  */
 export const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult): void => {
+  if (src.fileResults) appendAll((target.fileResults ??= []), src.fileResults);
   appendAll(target.nodes, src.nodes);
   appendAll(target.relationships, src.relationships);
   appendAll(target.symbols, src.symbols);

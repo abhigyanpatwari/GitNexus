@@ -235,11 +235,10 @@ export interface PipelineOptions {
   parsedFileStorePath?: string;
   /**
    * Incremental-indexing parse cache. When provided:
-   *   - The parse phase looks up each chunk's content hash in
-   *     `parseCache.entries`. On hit, it replays the cached
-   *     `ParseWorkerResult[]` instead of dispatching to workers.
-   *   - On miss, it runs the workers as today and stores the new
-   *     results in `parseCache.entries` keyed by chunk hash.
+   *   - Each file's path, content and parser identity select a complete pair
+   *     of cached facts and scopes, independently of chunk membership.
+   *   - Only misses go to the existing batched worker pool. Workers encode
+   *     file-local output into bounded packs staged for publication.
    * The caller (`run-analyze.ts`) is responsible for loading the cache
    * before the pipeline runs and persisting it after. Cache survives
    * `--force` because keys are content-addressed.
