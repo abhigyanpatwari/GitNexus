@@ -28,7 +28,7 @@ export async function compareRuntimes(options) {
   };
   for (const dist of Object.values(runtimes)) await fs.access(path.join(dist, 'cli/index.js'));
   const report = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     measuredAt: new Date().toISOString(),
     environment: {
       node: process.version,

@@ -11,6 +11,48 @@ const { assessComparison } = await import(
 const { sourceDigest } = await import(
   new URL('../../bench/file-result-reuse/provenance.mjs', import.meta.url).href
 );
+const { graphDigests } = await import(
+  new URL('../../bench/file-result-reuse/graph-digests.mjs', import.meta.url).href
+);
+
+it('ignores only derived nodes and incident edges in the cross-version fingerprint', () => {
+  const graph = (community: string, process: string) => ({
+    nodes: [
+      { id: 'fn:a', label: 'Function', properties: { name: 'a', filePath: 'a.ts' } },
+      { id: 'fn:b', label: 'Function', properties: { name: 'b', filePath: 'b.ts' } },
+      { id: community, label: 'Community', properties: { name: 'group' } },
+      { id: process, label: 'Process', properties: { name: 'flow' } },
+    ],
+    relationships: [
+      { id: 'calls', type: 'CALLS', sourceId: 'fn:a', targetId: 'fn:b' },
+      { id: `member:${community}`, type: 'MEMBER_OF', sourceId: 'fn:a', targetId: community },
+      { id: `step:${process}`, type: 'STEP_IN_PROCESS', sourceId: 'fn:b', targetId: process },
+      { id: `out:${process}`, type: 'CALLS', sourceId: process, targetId: 'fn:b' },
+    ],
+  });
+  const old = graphDigests(graph('comm_0', 'proc_0_a'));
+  const current = graph('comm_abcdef123456', 'proc_fedcba654321_a');
+  const hashed = graphDigests(current);
+  expect(hashed).toMatchObject({
+    nodes: 4,
+    edges: 4,
+    parsedNodes: 2,
+    parsedEdges: 1,
+    parsedDigest: old.parsedDigest,
+  });
+  expect(hashed.digest).not.toBe(old.digest);
+  expect(
+    graphDigests({
+      nodes: [...current.nodes].reverse(),
+      relationships: [...current.relationships].reverse(),
+    }),
+  ).toEqual(hashed);
+  current.nodes[0].properties.name = 'changed';
+  expect(graphDigests(current).parsedDigest).not.toBe(hashed.parsedDigest);
+  current.nodes[0].properties.name = 'a';
+  current.relationships[0].targetId = 'fn:a';
+  expect(graphDigests(current).parsedDigest).not.toBe(hashed.parsedDigest);
+});
 
 it('distinguishes corpora with the same unframed path/content bytes', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-corpus-digest-'));
@@ -53,6 +95,9 @@ const trial = (candidate: boolean) => ({
     nodes: 2000,
     edges: 3000,
     digest: (i < 2 ? 'e' : i === 2 ? 'f' : 'a').repeat(64),
+    parsedNodes: 1900,
+    parsedEdges: 2800,
+    parsedDigest: (i < 2 ? 'e' : i === 2 ? 'f' : 'a').repeat(64),
   })),
 });
 const pair = (iteration: number) => ({
@@ -62,12 +107,29 @@ const pair = (iteration: number) => ({
   candidate: trial(true),
 });
 const report = () => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   warmup: pair(-1),
   pairs: Array.from({ length: 7 }, (_, i) => pair(i)),
 });
 
 describe('per-file parse reuse performance gate', () => {
+  it('allows derived ID changes across versions while retaining full-graph reuse checks', () => {
+    const data = report();
+    for (const p of [data.warmup, ...data.pairs]) {
+      for (const row of p.candidate.measurements) {
+        row.digest = { cold: 'b', warm: 'b', edit: 'c', 'two-edits': 'd', repack: 'd' }[
+          row.kind
+        ]!.repeat(64);
+      }
+    }
+    expect(assessComparison(data).passed).toBe(true);
+    data.pairs[0].candidate.measurements[1].digest = 'c'.repeat(64);
+    expect(() => assessComparison(data)).toThrow('Warm graph changed');
+    data.pairs[0].candidate.measurements[1].digest = 'b'.repeat(64);
+    data.pairs[0].candidate.measurements[4].digest = 'c'.repeat(64);
+    expect(() => assessComparison(data)).toThrow('Repacking changed graph');
+  });
+
   it('requires both real speed and RSS improvement against the chunk cache', () => {
     const result = assessComparison(report());
     expect(result.mode).toBe('require-improvement');
@@ -153,7 +215,10 @@ describe('per-file parse reuse performance gate', () => {
     ['wrong order', 'Pair order must alternate'],
     ['different corpus', 'Mismatched sourceDigest'],
     ['different runtime', 'Runtime/corpus changed between trials'],
-    ['graph mismatch', 'Graph digest differs for edit'],
+    ['graph mismatch', 'Graph parsedDigest differs for edit'],
+    ['node count mismatch', 'Graph parsedNodes differs for edit'],
+    ['edge count mismatch', 'Graph parsedEdges differs for edit'],
+    ['missing parsed digest', 'Missing parsed graph digest'],
     ['missing phase', 'Missing/duplicate phase'],
     ['invalid RSS', 'Invalid peakRssKb'],
     ['invalid timing', 'Invalid withSaveMs'],
@@ -169,7 +234,10 @@ describe('per-file parse reuse performance gate', () => {
     if (failure === 'wrong order') p.order.reverse();
     if (failure === 'different corpus') p.candidate.provenance.sourceDigest = 'b'.repeat(64);
     if (failure === 'different runtime') p.candidate.provenance.buildDigest = 'c'.repeat(64);
-    if (failure === 'graph mismatch') row.digest = 'b'.repeat(64);
+    if (failure === 'graph mismatch') row.parsedDigest = 'b'.repeat(64);
+    if (failure === 'node count mismatch') row.parsedNodes++;
+    if (failure === 'edge count mismatch') row.parsedEdges++;
+    if (failure === 'missing parsed digest') row.parsedDigest = '';
     if (failure === 'missing phase') p.candidate.measurements.pop();
     if (failure === 'invalid RSS') row.peakRssKb = Number.NaN;
     if (failure === 'invalid timing') row.withSaveMs = Number.POSITIVE_INFINITY;
@@ -178,7 +246,7 @@ describe('per-file parse reuse performance gate', () => {
       row.hits--;
     }
     if (failure === 'missing warmup') Object.assign(data, { warmup: null });
-    if (failure === 'unchanged edit') row.digest = p.candidate.measurements[1].digest;
+    if (failure === 'unchanged edit') row.parsedDigest = p.candidate.measurements[1].parsedDigest;
     expect(() => assessComparison(data)).toThrow(message);
   });
 });

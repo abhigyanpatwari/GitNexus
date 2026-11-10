@@ -3915,6 +3915,9 @@ async function runFullAnalysisInner(
   if (skipDerivedGraphPhases && !preserveDerivedLayer) {
     progress('communities', 58, 'Detecting code communities and flows...');
     await pipelineResult.runDeferredDerivedPhases?.();
+    // Release the phase context captured by this completed callback before the
+    // native database write allocates its own buffers.
+    pipelineResult.runDeferredDerivedPhases = undefined;
   }
 
   // #2 atomic index publish: on a full rebuild, build the fresh DB at a temp
@@ -4581,6 +4584,7 @@ async function runFullAnalysisInner(
         if (preserveDerivedLayer) {
           progress('communities', 63, 'Detecting code communities and flows...');
           await pipelineResult.runDeferredDerivedPhases?.();
+          pipelineResult.runDeferredDerivedPhases = undefined;
         }
         // Every live cause is named, not just the first: a DB can carry BOTH a
         // vector index and FTS indexes, and reporting one cause while the other
