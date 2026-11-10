@@ -1,0 +1,23 @@
+docs/languages/ruby-ingestion-gaps.md
+  s_b9690234122db7::t_72fc7af7843396 30-49,55
+gitnexus/CHANGELOG.md
+  s_b9690234122db7::t_908a0cc40f54c3 14
+gitnexus/test/integration/resolvers/ruby-yard-param-scope.test.ts
+  s_b9690234122db7::t_a9545b94c0e57f 25-35,149-725
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "df2b9354b42b813f7b9766b42d9dda199cca5709",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
