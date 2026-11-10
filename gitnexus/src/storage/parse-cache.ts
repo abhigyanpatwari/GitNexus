@@ -617,6 +617,9 @@ export async function loadParseCacheFiles(
   const result = new Map<string, ParseWorkerResult>();
   const groups = new Map<FileResultStore, string[]>();
   const wanted = new Map(files.map((file) => [file.key, file.path]));
+  // Per-file deserialization repeats paths, IDs, and labels. Share their strings
+  // within this batch without keeping the interning table alive after replay.
+  const strings = new Map<string, string>();
   const accept = (record: EncodedFileResult): ParseWorkerResult | undefined => {
     if (
       !record.cacheable ||
@@ -624,9 +627,12 @@ export async function loadParseCacheFiles(
       cache.staleKeys?.has(record.key)
     )
       return undefined;
-    const facts = decodeFileResultSection(record.facts, record.key, record.path, 'facts');
-    if (!facts || !inspectFileResultSection(record.scopes, record.key, record.path, 'scopes'))
+    if (!inspectFileResultSection(record.scopes, record.key, record.path, 'scopes'))
       return undefined;
+    const facts =
+      decodeFileResultSection(record.facts, record.key, record.path, 'facts', strings) ??
+      decodeFileResultSection(record.facts, record.key, record.path, 'facts');
+    if (!facts) return undefined;
     const value = facts.value as ParseWorkerResult;
     if (!value || !Array.isArray(value.nodes) || !Array.isArray(value.parsedFiles))
       return undefined;

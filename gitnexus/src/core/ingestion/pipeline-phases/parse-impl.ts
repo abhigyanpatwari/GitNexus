@@ -1048,6 +1048,7 @@ export async function runChunkedParseAndResolve(
     ): Promise<void> => {
       let ordered = rawResults;
       if (parseCache && p.selection) {
+        const strings = new Map<string, string>();
         const resolved = new Map(p.hits);
         const expected = new Map(p.chunkFiles.map((file) => [file.cacheKey!, file.path]));
         const fresh = new Map<string, EncodedFileResult>();
@@ -1066,7 +1067,11 @@ export async function runChunkedParseAndResolve(
             const record = entry.encoded;
             if (record.key !== entry.key || record.path !== entry.path)
               throw new Error('Parser file-result identity mismatch');
-            const decoded = decodeFileResultSection(record.facts, record.key, record.path, 'facts');
+            // Share repeated strings before merging fresh facts into the graph.
+            // Interning is optional: retain valid output if that traversal fails.
+            const decoded =
+              decodeFileResultSection(record.facts, record.key, record.path, 'facts', strings) ??
+              decodeFileResultSection(record.facts, record.key, record.path, 'facts');
             if (!decoded) throw new Error(`Invalid encoded parser facts for ${record.path}`);
             resolved.set(record.key, decoded.value as ParseWorkerResult);
             fresh.set(record.key, record);

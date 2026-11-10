@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -7,6 +7,7 @@ import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { emptyParseCache, loadParseCache, saveParseCache } from '../../src/storage/parse-cache.js';
 import { mergeStagedDurableParsedFileStore } from '../../src/storage/parsedfile-store.js';
 import { TEST_PARSE_IDENTITY } from '../helpers/cache-identity.js';
+import * as fileResultCodec from '../../src/storage/file-result-codec.js';
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
@@ -80,6 +81,31 @@ async function fixture(files: Record<string, string>) {
   };
 }
 describe('per-file parse-result reuse', () => {
+  it('preserves fresh facts and cache hits when optional string interning fails', async () => {
+    const f = await fixture({
+      'a.ts': 'export function value() { return 1; }',
+      'b.ts': "import { value } from './a'; export function run() { return value(); }",
+    });
+    const control = await f.run('none');
+    const decode = fileResultCodec.decodeFileResultSection;
+    const spy = vi
+      .spyOn(fileResultCodec, 'decodeFileResultSection')
+      .mockImplementation((...args) =>
+        args[3] === 'facts' && args[4] ? undefined : decode(...args),
+      );
+    try {
+      const cold = await f.run('cold');
+      expect(cold.reparsedFileCount).toBe(2);
+      expect(rows(cold)).toEqual(rows(control));
+      const warm = await f.run('reuse');
+      expect(warm.reparsedFileCount).toBe(0);
+      expect(warm.parseCacheHitFileCount).toBe(2);
+      expect(warm.usedWorkerPool).toBe(false);
+      expect(rows(warm)).toEqual(rows(control));
+    } finally {
+      spy.mockRestore();
+    }
+  }, 120000);
   it('keeps zero-output files correct when they require another worker dispatch', async () => {
     const f = await fixture({
       'normal.ts': 'export function normal() { return 1; }',
