@@ -1,0 +1,29 @@
+docs/languages/ruby-ingestion-gaps.md
+  s_b9690234122db7::t_48b2503decd836 30,36
+gitnexus/CHANGELOG.md
+  s_b9690234122db7::t_c810460cffe18c 14
+gitnexus/src/core/ingestion/languages/ruby/captures.ts
+  s_b9690234122db7::t_39fde20f5ae03a 362,540-545,578-582,593,612,657-658,694-697,982-1160
+gitnexus/src/core/ingestion/languages/ruby/simple-hooks.ts
+  s_b9690234122db7::t_c50fd93bbce68e 23-44
+gitnexus/test/fixtures/ruby-captures-golden/expected-captures.json
+  s_b9690234122db7::t_ee9e657f4c2817 48,52,56,64,120,140,148,160,164,168,172,224,236,244,268,308,312,332,368,372,380,384
+gitnexus/test/integration/resolvers/ruby-yard-param-scope.test.ts
+  s_b9690234122db7::t_0ca36b82e5c2e4 25-33,147-280
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e2214d97b91b86222fffe66f3c791971bb80c361",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
