@@ -51,7 +51,12 @@ describe('getCommunityColor', () => {
       expect(before[i]).toMatch(/^#[0-9a-f]{6}$/i);
       expect(reversed.get(id)).toBe(before[i]);
     }
-    expect(new Set(before).size).toBeGreaterThan(1);
+    expect(new Set(before)).toEqual(new Set(COMMUNITY_COLORS));
+  });
+
+  it('preserves safe numeric IDs and hashes digit strings outside the safe integer range', () => {
+    expect(getCommunityColor('comm_123456789013')).toBe('#f97316');
+    expect(getCommunityColor('comm_9007199254740993')).toBe('#f97316');
   });
 
   it('returns valid hex colors', () => {

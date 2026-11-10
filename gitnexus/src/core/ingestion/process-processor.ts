@@ -929,7 +929,10 @@ const deduplicateByEndpoints = (traces: string[][]): string[][] => {
 // HELPER: String utilities
 // ============================================================================
 
-/** Endpoint pairs already define process identity during deduplication. */
+/**
+ * Endpoint pairs already define process identity during deduplication.
+ * Colliding hash/name bases receive suffixes in trace order.
+ */
 export const stableProcessId = (
   entryPointId: string,
   terminalId: string,

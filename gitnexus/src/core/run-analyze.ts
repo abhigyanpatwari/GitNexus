@@ -4584,6 +4584,7 @@ async function runFullAnalysisInner(
         if (preserveDerivedLayer) {
           progress('communities', 63, 'Detecting code communities and flows...');
           await pipelineResult.runDeferredDerivedPhases?.();
+          pipelineResult.runDeferredDerivedPhases = undefined;
         }
         // Every live cause is named, not just the first: a DB can carry BOTH a
         // vector index and FTS indexes, and reporting one cause while the other

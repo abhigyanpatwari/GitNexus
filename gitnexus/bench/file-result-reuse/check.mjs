@@ -52,6 +52,8 @@ export function validatePair(pair) {
         'cacheFiles',
         'nodes',
         'edges',
+        'parsedNodes',
+        'parsedEdges',
       ]) {
         assert(positive(row[key]), `Invalid ${key}`);
       }
@@ -65,6 +67,7 @@ export function validatePair(pair) {
       );
       assert.equal(row.workersStarted, row.reparsed > 0, 'Worker dispatch disagrees with reuse');
       assert(digest.test(row.digest), 'Missing graph digest');
+      assert(digest.test(row.parsedDigest), 'Missing parsed graph digest');
     }
     assert.equal(trial.measurements[0].reparsed, files, 'Cold run must parse every file');
     assert.equal(trial.measurements[1].reparsed, 0, 'Warm run must reuse every file');
@@ -75,13 +78,13 @@ export function validatePair(pair) {
       'Repacking changed graph',
     );
     assert.notEqual(
-      trial.measurements[1].digest,
-      trial.measurements[2].digest,
+      trial.measurements[1].parsedDigest,
+      trial.measurements[2].parsedDigest,
       'Edit was not observed',
     );
     assert.notEqual(
-      trial.measurements[2].digest,
-      trial.measurements[3].digest,
+      trial.measurements[2].parsedDigest,
+      trial.measurements[3].parsedDigest,
       'Second edit was not observed',
     );
   }
@@ -96,7 +99,7 @@ export function validatePair(pair) {
     'Per-file reuse regressed',
   );
   for (let i = 0; i < phases.length; i++) {
-    for (const key of ['digest', 'nodes', 'edges']) {
+    for (const key of ['parsedDigest', 'parsedNodes', 'parsedEdges']) {
       assert.equal(
         candidate.measurements[i][key],
         baseline.measurements[i][key],
@@ -107,7 +110,7 @@ export function validatePair(pair) {
 }
 
 export function assessComparison(report) {
-  assert.equal(report.schemaVersion, 1, 'Unknown report schema');
+  assert.equal(report.schemaVersion, 2, 'Unknown report schema');
   assert(report.pairs.length >= 7, 'Seven measured process pairs are required');
   assert(report.warmup, 'Missing excluded warmup pair');
   const all = [report.warmup, ...report.pairs];
