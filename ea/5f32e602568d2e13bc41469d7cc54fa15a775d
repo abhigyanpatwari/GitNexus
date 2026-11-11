@@ -1,0 +1,35 @@
+docs/languages/dart-ingestion-gaps.md
+  s_b9690234122db7::t_e2b8b697d66e1e 29,40-43,48-49,51,100-154
+gitnexus/bench/scope-capture/baselines.json
+  s_b9690234122db7::t_1286b951dfa303 181,183
+gitnexus/bench/scope-capture/measure.mjs
+  s_b9690234122db7::t_ce128bbdce7be9 258-261,266-268
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_e14cfe0dbe0a19 186-190,306,569-575,765-773,796-815,817-828,832-839,841-859,862-902,907-915,966-970,975-977,1133,1290-1292,1294,1296,1301,1305-1311,1313,1322,1329,1335,1344,1397
+gitnexus/src/core/ingestion/scope-resolution/passes/compound-receiver.ts
+  s_b9690234122db7::t_9d207aabd561d8 511-524,983-990,992-997
+gitnexus/src/core/ingestion/scope-resolution/passes/receiver-bound-calls.ts
+  s_b9690234122db7::t_8cd648186e3397 2974-2997
+gitnexus/test/integration/resolvers/dart-awaited-receiver-owner.test.ts
+  s_b9690234122db7::t_960539818b24d8 47-63,120,122-130,134,160-168,259-342,378-383,409-435,443-454,475,489-490,508,510-512,552-555,589-608,665-666
+gitnexus/test/integration/resolvers/ruby-yard-param-scope.test.ts
+  s_b9690234122db7::t_f701179cdf22d6 20,22-23,59-66,82-88,150-162,1332-1419
+gitnexus/test/unit/scope-resolution/await-route-declines.test.ts
+  s_b9690234122db7::t_96dcb5e33585a8 1-61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ea5f32e602568d2e13bc41469d7cc54fa15a775d",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
