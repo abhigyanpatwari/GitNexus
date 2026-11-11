@@ -44,6 +44,11 @@ its hook script, including on versions published before the `gitnexus-hook`
 binary existed. Setup records the package version for cache-cleanup recovery;
 the plugin reads its version from its manifest.
 
+Recovery records the validated package location for later calls and applies a
+retry cooldown after installation failures. The install lock covers recovery;
+the package runtime controls concurrent hook execution. Event and repository
+filtering stay in that runtime.
+
 The bootstrap has one source in `gitnexus-claude-plugin/hooks/gitnexus-hook.js`.
 The normal CLI build packages it for setup automatically. It contains only
 package discovery and startup; keep hook behavior in the package runtime.

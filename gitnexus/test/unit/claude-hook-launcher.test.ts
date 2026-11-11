@@ -4,16 +4,18 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
-import { spawnSync as realSpawnSync, type SpawnOptions } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { createHash } from 'node:crypto';
 
 const launcher = path.resolve(__dirname, '../../../gitnexus-claude-plugin/hooks/gitnexus-hook.js');
 const source = fs.readFileSync(launcher, 'utf8');
 const realRequire = createRequire(import.meta.url);
 const fixtures: string[] = [];
+const children: ChildProcess[] = [];
+const version = '1.6.12';
 
 afterEach(() => {
+  for (const child of children.splice(0)) if (child.exitCode === null) child.kill();
   for (const fixture of fixtures.splice(0)) fs.rmSync(fixture, { recursive: true, force: true });
 });
 
@@ -23,597 +25,741 @@ function fixture() {
   return root;
 }
 
-function installedPackage(root: string, broken = false) {
+function installedPackage(root: string, metadata: Record<string, unknown> = {}) {
   const cli = path.join(root, 'dist', 'cli', 'index.js');
   const hook = path.join(root, 'hooks', 'claude', 'gitnexus-hook.cjs');
   const marker = path.join(root, 'loaded');
   fs.mkdirSync(path.dirname(cli), { recursive: true });
   fs.mkdirSync(path.dirname(hook), { recursive: true });
-  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'gitnexus' }));
+  fs.writeFileSync(
+    path.join(root, 'package.json'),
+    JSON.stringify({ name: 'gitnexus', version, ...metadata }),
+  );
   fs.writeFileSync(cli, '// CLI entry\n');
   fs.writeFileSync(
     hook,
-    broken
-      ? "throw new Error('installed hook is broken');\n"
-      : `require('fs').writeFileSync(${JSON.stringify(marker)}, String(process.pid));\n`,
+    `require('fs').writeFileSync(${JSON.stringify(marker)}, String(process.pid));\n`,
   );
-  return { cli, hook, marker };
+  return { root, cli, hook, marker };
 }
 
-async function execute(
+type Config = { cliPath: string; version: string };
+type Api = {
+  exactVersion: (version: unknown) => string;
+  resolveRuntime: (config?: Config) => string | null;
+  launcherConfig: () => Config;
+  recoveryDirectory: (version: string) => string;
+  readRecovery: (directory: string, version: string) => { runtime?: string; error?: string } | null;
+  writeRecovery: (directory: string, state: Record<string, unknown>) => void;
+  acquireInstallSlot: (directory: string) => (() => void) | null;
+  runPackage: (command: string, args: string[], options: object) => Promise<void>;
+  main: () => Promise<void>;
+  RECOVERY_TIMEOUT: number;
+  LOCK_MAX_AGE: number;
+  FAILURE_COOLDOWN: number;
+};
+
+function load(
   options: {
-    resolvedHook?: string;
-    version?: unknown;
-    platform?: string;
     env?: NodeJS.ProcessEnv;
-    input?: Buffer;
-    childStatus?: number;
+    platform?: string;
     directory?: string;
-    cancel?: 'timeout' | 'signal';
-    ignoreTermination?: boolean;
-    packageMode?: boolean;
-    lockOwner?: 'live' | 'dead' | 'empty';
+    home?: string;
+    resolvedHook?: string;
+    filesystem?: object;
+    childProcess?: object;
+    kill?: (pid: number, signal?: string | number) => void;
+    setTimeout?: typeof setTimeout;
+    clearTimeout?: typeof clearTimeout;
   } = {},
 ) {
-  const input = options.input ?? Buffer.from('{"hook_event_name":"PreToolUse"}\n');
-  const stdinRead = vi.fn(() => input);
-  const stdout = vi.fn();
-  const stderr = vi.fn();
-  const lockDirectory = fixture();
-  const lockKey = createHash('sha256')
-    .update(`${os.homedir()}\0gitnexus@1.7.0-rc.2`)
-    .digest('hex')
-    .slice(0, 24);
-  const lock = path.join(lockDirectory, `gitnexus-hook-install-${lockKey}.lock`);
-  if (options.lockOwner) {
-    fs.mkdirSync(lock);
-    if (options.lockOwner !== 'empty')
-      fs.writeFileSync(path.join(lock, '99999-00000000.owner'), '');
-  }
-  const processEvents = new EventEmitter();
-  const timers = new Map<number, { callback: () => void; delay: number }>();
-  let timerId = 0;
-  const child = Object.assign(new EventEmitter(), {
-    pid: 4242,
-    stdin: Object.assign(new EventEmitter(), { end: vi.fn(), destroy: vi.fn() }),
-    stdout: Object.assign(new EventEmitter(), { destroy: vi.fn() }),
-    stderr: Object.assign(new EventEmitter(), { destroy: vi.fn() }),
-    unref: vi.fn(),
-  });
-  child.stdin.end.mockImplementation(() =>
-    queueMicrotask(() => {
-      if (options.cancel === 'timeout') {
-        [...timers.values()].find((timer) => timer.delay === 120000)?.callback();
-      } else if (options.cancel === 'signal') {
-        processEvents.emit('SIGTERM');
-      } else {
-        child.stdout.emit('data', Buffer.from('{"hookSpecificOutput":{}}\n'));
-        child.stderr.emit('data', Buffer.from('npm diagnostic'));
-        child.emit('close', options.childStatus ?? 0);
-      }
-      if (options.ignoreTermination) {
-        [...timers.values()].find((timer) => timer.delay === 2000)?.callback();
-      }
-    }),
-  );
-  const spawn = vi.fn((_command: string, _args: string[], _options: SpawnOptions) => child);
-  const kill = vi.fn((_pid: number, signal: string | number) => {
-    if (signal === 0) {
-      if (options.lockOwner === 'dead')
-        throw Object.assign(new Error('no process'), { code: 'ESRCH' });
-      return;
-    }
-    if (signal === 'SIGKILL' || !options.ignoreTermination) {
-      queueMicrotask(() => child.emit('close', null));
-    }
-  });
-  const spawnSync = vi.fn(() => {
-    queueMicrotask(() => child.emit('close', null));
-    return { status: 0 };
-  });
+  const events = new EventEmitter();
   const resolve = vi.fn(() => {
     if (options.resolvedHook) return options.resolvedHook;
-    throw Object.assign(new Error('package not found'), { code: 'MODULE_NOT_FOUND' });
+    throw Object.assign(new Error('missing'), { code: 'MODULE_NOT_FOUND' });
   });
-  const require = Object.assign(
-    (id: string) => {
-      if (id === 'fs')
-        return {
-          ...fs,
-          readFileSync: (...args: Parameters<typeof fs.readFileSync>) =>
-            args[0] === 0 ? stdinRead() : fs.readFileSync(...args),
-        };
-      if (id === 'child_process') return { spawn, spawnSync };
-      if (id === 'os') return { ...os, tmpdir: () => lockDirectory };
-      if (id === '../.claude-plugin/plugin.json')
-        return { version: Object.hasOwn(options, 'version') ? options.version : '1.7.0-rc.2' };
-      return realRequire(id);
+  const api: Api = vm.runInNewContext(
+    source.slice(0, source.lastIndexOf('\nmain().catch')) +
+      '\n({exactVersion, resolveRuntime, launcherConfig, recoveryDirectory, readRecovery, writeRecovery, acquireInstallSlot, runPackage, main, RECOVERY_TIMEOUT, LOCK_MAX_AGE, FAILURE_COOLDOWN});',
+    {
+      require: Object.assign(
+        (id: string) => {
+          if (id === 'fs') return { ...fs, ...options.filesystem };
+          if (id === 'os') return { ...os, homedir: () => options.home ?? fixture() };
+          if (id === 'child_process') return options.childProcess ?? { spawn, spawnSync };
+          return realRequire(id);
+        },
+        { resolve },
+      ),
+      Buffer,
+      __dirname: options.directory ?? path.dirname(launcher),
+      __filename: launcher,
+      setTimeout: options.setTimeout ?? setTimeout,
+      clearTimeout: options.clearTimeout ?? clearTimeout,
+      process: {
+        argv: [process.execPath, launcher],
+        pid: process.pid,
+        platform: options.platform ?? process.platform,
+        execPath: process.execPath,
+        env: options.env ?? {},
+        kill: options.kill ?? process.kill,
+        once: events.once.bind(events),
+        removeListener: events.removeListener.bind(events),
+      },
     },
-    { resolve },
   );
-  await vm.runInNewContext(source, {
-    require,
-    Buffer,
-    __dirname: options.directory ?? path.dirname(launcher),
-    __filename: launcher,
-    setTimeout: (callback: () => void, delay: number) => {
-      const id = ++timerId;
-      timers.set(id, { callback, delay });
-      return id;
-    },
-    clearTimeout: (id: number) => timers.delete(id),
-    process: {
-      argv: [process.execPath, launcher, ...(options.packageMode ? ['--package-runtime'] : [])],
-      pid: process.pid,
-      platform: options.platform ?? 'linux',
-      execPath: process.execPath,
-      env: options.env ?? {},
-      kill,
-      once: processEvents.once.bind(processEvents),
-      removeListener: processEvents.removeListener.bind(processEvents),
-      stdout: { write: stdout },
-      stderr: { write: stderr },
-    },
-  });
-  return {
-    spawn,
-    spawnSync,
-    stdout,
-    stderr,
-    stdinRead,
-    resolve,
-    input,
-    child,
-    kill,
-    timers,
-    processEvents,
-    lock,
-  };
+  return { api, resolve, events };
 }
 
-describe('Claude plugin package launcher', () => {
-  it('loads the resolved package hook in-process without consuming stdin or invoking npm', async () => {
-    const pkg = installedPackage(fixture());
-    const result = await execute({ resolvedHook: pkg.hook });
-    expect(fs.readFileSync(pkg.marker, 'utf8')).toBe(String(process.pid));
-    expect(result.resolve).toHaveBeenCalledWith('gitnexus/hooks/claude/gitnexus-hook.cjs');
-    expect(result.stdinRead).not.toHaveBeenCalled();
-    expect(result.spawn).not.toHaveBeenCalled();
-  });
+// npm quotes arguments but treats the command itself as shell source. Use its
+// actual shell executor: shell-less spawn fakes cannot catch path quoting bugs.
+function npmShellExecutor() {
+  const candidates = [
+    process.env.npm_execpath,
+    path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    path.resolve(
+      path.dirname(process.execPath),
+      '..',
+      'lib',
+      'node_modules',
+      'npm',
+      'bin',
+      'npm-cli.js',
+    ),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  const cli = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!cli)
+    throw new Error('Run launcher shell regressions through npm test (npm executable required)');
+  return createRequire(fs.realpathSync(cli)).resolve('@npmcli/promise-spawn');
+}
 
-  it('uses a CLI override only when it identifies the canonical package layout', async () => {
-    const pkg = installedPackage(fixture());
-    const result = await execute({ env: { GITNEXUS_HOOK_CLI_PATH: pkg.cli } });
-    expect(fs.existsSync(pkg.marker)).toBe(true);
-    expect(result.resolve).not.toHaveBeenCalled();
-    expect(result.spawn).not.toHaveBeenCalled();
-  });
-
-  it('ignores an augment fixture override while resolving the installed package', async () => {
-    const pkg = installedPackage(fixture());
-    const augment = path.join(path.dirname(pkg.marker), 'augment.cjs');
-    fs.writeFileSync(augment, "throw new Error('must not load augment as hook');\n");
-    const result = await execute({
-      resolvedHook: pkg.hook,
-      env: { GITNEXUS_HOOK_CLI_PATH: augment },
+function recoveryFixture(
+  options: { interpreter?: boolean; cmdFallback?: boolean; kind?: 'plugin' | 'installed' } = {},
+) {
+  const root = fixture();
+  const home = path.join(root, 'home');
+  const hooks = path.join(root, "bootstrap spaces & 'quote' $cash %percent%", 'hooks');
+  const npmPrefix = path.join(root, 'npm');
+  const pkg = installedPackage(path.join(root, 'cache', 'node_modules', 'gitnexus'));
+  const bin = path.join(root, 'cache', 'node_modules', '.bin');
+  fs.mkdirSync(home);
+  fs.mkdirSync(hooks, { recursive: true });
+  fs.mkdirSync(npmPrefix);
+  fs.mkdirSync(bin);
+  if (process.platform === 'win32')
+    fs.writeFileSync(path.join(bin, 'gitnexus.cmd'), '@echo shim\r\n');
+  else {
+    fs.chmodSync(pkg.cli, 0o755);
+    fs.symlinkSync(pkg.cli, path.join(bin, 'gitnexus'));
+  }
+  const entry = path.join(hooks, 'gitnexus-hook.cjs');
+  fs.writeFileSync(entry, source);
+  if (options.kind === 'installed') {
+    fs.writeFileSync(
+      path.join(hooks, 'gitnexus-hook.json'),
+      JSON.stringify({
+        version,
+        cliPath: path.join(root, 'uninstalled', 'dist', 'cli', 'index.js'),
+      }),
+    );
+  } else {
+    fs.mkdirSync(path.join(path.dirname(hooks), '.claude-plugin'));
+    fs.writeFileSync(
+      path.join(path.dirname(hooks), '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ version }),
+    );
+  }
+  let interpreter = process.execPath;
+  if (options.interpreter) {
+    interpreter = path.join(
+      root,
+      "node spaces & 'quote' $cash %percent%",
+      path.basename(process.execPath),
+    );
+    fs.mkdirSync(path.dirname(interpreter));
+    fs.copyFileSync(process.execPath, interpreter);
+    fs.chmodSync(interpreter, 0o755);
+  }
+  const log = path.join(root, 'npm.jsonl');
+  const started = path.join(root, 'started');
+  const finished = path.join(root, 'finished');
+  const npmSource = `const fs = require('fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({args, cwd:process.cwd(), foreground:process.env.npm_config_foreground_scripts, input:fs.readFileSync(0).length}) + '\\n');
+fs.writeFileSync(${JSON.stringify(started)}, String(process.pid));
+process.stdout.write('npm lifecycle stdout must not become hook JSON\\n');
+if (process.env.TEST_OUTPUT_CAP) process.stdout.write(Buffer.alloc(1024*1024+1));
+setTimeout(async () => {
+  try {
+    if (process.env.TEST_FAILURE) throw new Error('offline fixture failure');
+    const separator = args.indexOf('--');
+    await require(${JSON.stringify(npmShellExecutor())})(args[separator+1], args.slice(separator+2), {
+      shell: process.platform === 'win32' ? process.env.ComSpec : '/bin/sh', stdio:'inherit',
+      env: {...process.env, PATH:${JSON.stringify(bin)}+require('path').delimiter+process.env.PATH}
     });
-    expect(fs.existsSync(pkg.marker)).toBe(true);
-    expect(result.spawn).not.toHaveBeenCalled();
-  });
+    fs.writeFileSync(${JSON.stringify(finished)}, 'done');
+  } catch(error) { process.stderr.write(error.message); process.exitCode=1; }
+}, Number(process.env.TEST_DELAY || 0));
+`;
+  const npmJs =
+    process.platform === 'win32' && !options.cmdFallback
+      ? path.join(npmPrefix, 'node_modules', 'npm', 'bin', 'npx-cli.js')
+      : path.join(npmPrefix, 'npx-fixture.cjs');
+  fs.mkdirSync(path.dirname(npmJs), { recursive: true });
+  fs.writeFileSync(npmJs, npmSource);
+  if (process.platform === 'win32')
+    fs.writeFileSync(path.join(npmPrefix, 'npx.cmd'), '@"%__TEST_NODE%" "%__TEST_NPX%" %*\r\n');
+  else
+    fs.writeFileSync(
+      path.join(npmPrefix, 'npx'),
+      `#!${process.execPath}\nrequire(${JSON.stringify(npmJs)});\n`,
+      { mode: 0o755 },
+    );
+  fs.writeFileSync(
+    pkg.hook,
+    `const fs=require('fs');process.stdout.write(JSON.stringify({version:${JSON.stringify(version)},input:fs.readFileSync(0).toString('base64'),pid:process.pid}));\n`,
+  );
+  const env = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    PATH: npmPrefix,
+    NODE_PATH: '',
+    GITNEXUS_HOOK_CLI_PATH: '',
+    GITNEXUS_DEBUG: '',
+    __GITNEXUS_HOOK_MODE: '',
+    __TEST_NODE: interpreter,
+    __TEST_NPX: npmJs,
+  };
+  const directory = load({ home }).api.recoveryDirectory(version);
+  const input = Buffer.from(' {"pattern":"雪 & $(touch nope) %TEMP%"}\r\n');
+  function start(extraEnv: NodeJS.ProcessEnv = {}, customInput = input) {
+    const child = spawn(interpreter, [entry], {
+      cwd: root,
+      env: { ...env, ...extraEnv },
+      windowsHide: true,
+    });
+    children.push(child);
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on('data', (data) => stdout.push(data));
+    child.stderr.on('data', (data) => stderr.push(data));
+    child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EPIPE') throw error;
+    });
+    child.stdin.end(customInput);
+    const done = new Promise<{
+      status: number | null;
+      signal: string | null;
+      stdout: string;
+      stderr: string;
+    }>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (status, signal) =>
+        resolve({
+          status,
+          signal,
+          stdout: Buffer.concat(stdout).toString(),
+          stderr: Buffer.concat(stderr).toString(),
+        }),
+      );
+    });
+    return { child, done };
+  }
+  return { root, home, pkg, entry, log, started, finished, directory, input, start, npmPrefix };
+}
 
-  it.skipIf(process.platform === 'win32')(
-    'resolves a Unix npm launcher symlink to its package',
-    async () => {
-      const root = fixture();
-      const pkg = installedPackage(path.join(root, 'lib', 'node_modules', 'gitnexus'));
-      const bin = path.join(root, 'bin');
-      fs.mkdirSync(bin);
-      fs.chmodSync(pkg.cli, 0o755);
-      fs.symlinkSync(pkg.cli, path.join(bin, 'gitnexus'));
-      const result = await execute({ env: { PATH: bin } });
-      expect(fs.existsSync(pkg.marker)).toBe(true);
-      expect(result.spawn).not.toHaveBeenCalled();
+async function waitFor(predicate: () => boolean) {
+  const deadline = Date.now() + 10000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for process fixture');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+function logRows(log: string) {
+  return fs
+    .readFileSync(log, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+}
+
+describe('Claude plugin package launcher validation', () => {
+  it('loads a validated package without consuming stdin or starting npm', async () => {
+    const pkg = installedPackage(fixture());
+    const spawn = vi.fn();
+    const readFileSync = vi.fn(fs.readFileSync);
+    const { api, resolve } = load({
+      resolvedHook: pkg.hook,
+      filesystem: { readFileSync },
+      childProcess: { spawn },
+    });
+    await api.main();
+    expect(fs.existsSync(pkg.marker)).toBe(true);
+    expect(resolve).toHaveBeenCalledWith('gitnexus/hooks/claude/gitnexus-hook.cjs');
+    expect(readFileSync.mock.calls.some((args) => args[0] === 0)).toBe(false);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+  it('validates require.resolve package name, metadata and canonical layout', () => {
+    const pkg = installedPackage(fixture(), { name: 'other-package' });
+    expect(load({ resolvedHook: pkg.hook }).api.resolveRuntime()).toBeNull();
+    fs.writeFileSync(
+      path.join(pkg.root, 'package.json'),
+      JSON.stringify({ name: 'gitnexus', version: 'latest' }),
+    );
+    expect(() => load({ resolvedHook: pkg.hook }).api.resolveRuntime()).toThrow(
+      'exact package version',
+    );
+    const arbitrary = path.join(pkg.root, 'arbitrary.cjs');
+    fs.writeFileSync(arbitrary, '');
+    expect(load({ resolvedHook: arbitrary }).api.resolveRuntime()).toBeNull();
+  });
+  it('uses a real environment override before configuration and ignores augment fixtures', () => {
+    const configured = installedPackage(fixture());
+    const override = installedPackage(fixture());
+    const { api, resolve } = load({ env: { GITNEXUS_HOOK_CLI_PATH: override.cli } });
+    expect(api.resolveRuntime({ cliPath: configured.cli, version })).toBe(override.hook);
+    expect(resolve).not.toHaveBeenCalled();
+    const augment = path.join(override.root, 'augment.cjs');
+    fs.writeFileSync(augment, '');
+    expect(
+      load({ env: { GITNEXUS_HOOK_CLI_PATH: augment } }).api.resolveRuntime({
+        cliPath: configured.cli,
+        version,
+      }),
+    ).toBe(configured.hook);
+  });
+  it.each([{}, { cliPath: 'relative', version }, { cliPath: '/absolute', version: 'latest' }])(
+    'rejects invalid configuration %j',
+    (config) => {
+      const directory = fixture();
+      fs.writeFileSync(path.join(directory, 'gitnexus-hook.json'), JSON.stringify(config));
+      expect(() => load({ directory }).api.launcherConfig()).toThrow();
     },
   );
-
-  it('resolves a Windows npm-prefix installation without executing the cmd shim', async () => {
+  it('does not replace a corrupt installed package', async () => {
+    const pkg = installedPackage(fixture());
+    fs.writeFileSync(path.join(pkg.root, 'package.json'), '{broken');
+    const spawn = vi.fn();
+    await expect(
+      load({ env: { GITNEXUS_HOOK_CLI_PATH: pkg.cli }, childProcess: { spawn } }).api.main(),
+    ).rejects.toThrow();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+  it.skipIf(process.platform === 'win32')('resolves Unix npm symlinks', () => {
+    const root = fixture();
+    const pkg = installedPackage(path.join(root, 'package'));
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin);
+    fs.chmodSync(pkg.cli, 0o755);
+    fs.symlinkSync(pkg.cli, path.join(bin, 'gitnexus'));
+    expect(load({ env: { PATH: bin } }).api.resolveRuntime()).toBe(pkg.hook);
+  });
+  it('resolves Windows npm prefix shims without executing them', () => {
     const root = fixture();
     const pkg = installedPackage(path.join(root, 'node_modules', 'gitnexus'));
     fs.writeFileSync(path.join(root, 'gitnexus.cmd'), '@echo shim\n');
-    const result = await execute({ platform: 'win32', env: { PATH: root } });
-    expect(fs.existsSync(pkg.marker)).toBe(true);
-    expect(result.spawn).not.toHaveBeenCalled();
+    expect(load({ platform: 'win32', env: { PATH: root } }).api.resolveRuntime()).toBe(pkg.hook);
   });
-
-  it.each(['', 'true'])(
-    'never falls back after an installed runtime throws (debug %s)',
-    async (debug) => {
-      const pkg = installedPackage(fixture(), true);
-      const result = await execute({ resolvedHook: pkg.hook, env: { GITNEXUS_DEBUG: debug } });
-      expect(result.spawn).not.toHaveBeenCalled();
-      expect(result.stdinRead).not.toHaveBeenCalled();
-      if (debug)
-        expect(result.stderr).toHaveBeenCalledWith(
-          expect.stringContaining('installed hook is broken'),
-        );
-      else expect(result.stderr).not.toHaveBeenCalled();
-    },
-  );
-
-  it('does not download a replacement for a corrupt installed package manifest', async () => {
-    const root = fixture();
-    const pkg = installedPackage(root);
-    fs.writeFileSync(path.join(root, 'package.json'), '{broken');
-    const result = await execute({ env: { GITNEXUS_HOOK_CLI_PATH: pkg.cli } });
-    expect(result.spawn).not.toHaveBeenCalled();
-    expect(result.stdinRead).not.toHaveBeenCalled();
-    expect(fs.existsSync(pkg.marker)).toBe(false);
-  });
-
-  it('pins package fallback, forwards exact stdin bytes, and keeps payload out of argv', async () => {
-    const input = Buffer.from(' {"pattern":"雪 & $(touch nope) %TEMP%"}\r\n');
-    const result = await execute({ input });
-    expect(result.spawn).toHaveBeenCalledExactlyOnceWith(
-      'npx',
-      [
-        '--yes',
-        '--package=gitnexus@1.7.0-rc.2',
-        '--',
-        process.execPath,
-        launcher,
-        '--package-runtime',
-      ],
-      {
-        detached: true,
-        windowsHide: true,
-        env: { npm_config_loglevel: 'silent' },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      },
-    );
-    expect(result.child.stdin.end).toHaveBeenCalledWith(input);
-    expect(result.stdout).toHaveBeenCalledWith(Buffer.from('{"hookSpecificOutput":{}}\n'));
-    expect(result.stderr).not.toHaveBeenCalled();
-  });
-
-  it('uses npm JavaScript through Node for the Windows fallback', async () => {
-    const root = fixture();
-    const npxJs = path.join(root, 'node_modules', 'npm', 'bin', 'npx-cli.js');
-    fs.mkdirSync(path.dirname(npxJs), { recursive: true });
-    fs.writeFileSync(npxJs, '// npm entry\n');
-    fs.writeFileSync(path.join(root, 'npx.cmd'), '@echo shim\n');
-    const result = await execute({ platform: 'win32', env: { PATH: root } });
-    expect(result.spawn).toHaveBeenCalledWith(
-      process.execPath,
-      [
-        npxJs,
-        '--yes',
-        '--package=gitnexus@1.7.0-rc.2',
-        '--',
-        process.execPath,
-        launcher,
-        '--package-runtime',
-      ],
-      expect.objectContaining({ detached: false, windowsHide: true }),
-    );
-  });
-
-  it('uses only a constant command and validated version for the Windows cmd fallback', async () => {
-    const result = await execute({
-      platform: 'win32',
-      env: { ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
-    });
-    expect(result.spawn).toHaveBeenCalledWith(
-      'C:\\Windows\\System32\\cmd.exe',
-      [
-        '/d',
-        '/s',
-        '/c',
-        'npx.cmd --yes --package=gitnexus@1.7.0-rc.2 -- node -e "require(process.env.__GITNEXUS_HOOK_BOOTSTRAP)" -- --package-runtime',
-      ],
-      expect.objectContaining({
-        detached: false,
-        windowsHide: true,
-        env: expect.objectContaining({ __GITNEXUS_HOOK_BOOTSTRAP: launcher }),
-      }),
-    );
-    expect(result.spawn.mock.calls[0]?.[2]).not.toHaveProperty('shell');
-  });
-
   it.each([undefined, '', 'latest', '^1.7.0', '01.7.0', '1.7.0\n', '1.7.0 & echo injected'])(
-    'rejects invalid package pins: %s',
-    async (version) => {
-      const result = await execute({ version, env: { GITNEXUS_DEBUG: '1' } });
-      expect(result.spawn).not.toHaveBeenCalled();
-      expect(result.stdinRead).not.toHaveBeenCalled();
-      expect(result.stderr).toHaveBeenCalledWith(expect.stringContaining('exact package version'));
+    'rejects non-exact version %j',
+    (invalid) => {
+      expect(() => load().api.exactVersion(invalid)).toThrow('exact package version');
     },
   );
-
-  it('does not emit failed npm output as hook context', async () => {
-    const result = await execute({ childStatus: 1 });
-    expect(result.spawn).toHaveBeenCalledOnce();
-    expect(result.stdout).not.toHaveBeenCalled();
-    expect(result.stderr).not.toHaveBeenCalled();
+  it('rejects deleted, wrong-version and wrong-name cached packages', () => {
+    const home = fixture();
+    const pkg = installedPackage(path.join(home, 'package'));
+    const { api } = load({ home });
+    const directory = api.recoveryDirectory(version);
+    api.writeRecovery(directory, { version, runtime: pkg.hook });
+    expect(api.readRecovery(directory, version)).toEqual({ runtime: pkg.hook });
+    expect(api.readRecovery(directory, '1.6.13')).toBeNull();
+    for (const metadata of [
+      { name: 'gitnexus', version: '1.6.13' },
+      { name: 'other', version },
+      { name: 'gitnexus', version: 'latest' },
+    ]) {
+      fs.writeFileSync(path.join(pkg.root, 'package.json'), JSON.stringify(metadata));
+      expect(api.readRecovery(directory, version)).toBeNull();
+    }
+    fs.rmSync(pkg.root, { recursive: true });
+    expect(api.readRecovery(directory, version)).toBeNull();
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(directory).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(path.join(directory, 'runtime.json')).mode & 0o777).toBe(0o600);
+    }
   });
-
-  it('loads the configured installation before unrelated module or environment candidates', async () => {
+  it('keeps the recovery and cleanup budgets within both host deadlines', () => {
+    const { api } = load();
+    const config = JSON.parse(
+      fs.readFileSync(path.resolve(path.dirname(launcher), 'hooks.json'), 'utf8'),
+    );
+    const timeouts = Object.values(config.hooks).flatMap((rows) =>
+      (rows as { hooks: { timeout: number }[] }[]).flatMap((row) =>
+        row.hooks.map((hook) => hook.timeout * 1000),
+      ),
+    );
+    expect(timeouts).toHaveLength(2);
+    expect(api.RECOVERY_TIMEOUT).toBe(120000);
+    expect(api.LOCK_MAX_AGE).toBeGreaterThan(api.RECOVERY_TIMEOUT + 2000 + 2 * 2000);
+    for (const timeout of timeouts) expect(api.LOCK_MAX_AGE + 5000).toBeLessThan(timeout);
+    expect(api.FAILURE_COOLDOWN).toBe(300000);
+  });
+  it('re-reads publication when the owner releases between a missing cache read and lock check', async () => {
+    const home = fixture();
     const directory = fixture();
-    const configured = installedPackage(path.join(directory, 'configured'));
-    const unrelated = installedPackage(path.join(directory, 'unrelated'));
+    const pkg = installedPackage(fixture());
     fs.writeFileSync(
       path.join(directory, 'gitnexus-hook.json'),
-      JSON.stringify({ version: '1.6.12', cliPath: configured.cli }),
+      JSON.stringify({ version, cliPath: path.join(home, 'deleted') }),
     );
-    const result = await execute({
+    let published = false;
+    const spawn = vi.fn(() => {
+      const helper = Object.assign(new EventEmitter(), { unref: vi.fn() });
+      queueMicrotask(() => helper.emit('exit', 0));
+      return helper;
+    });
+    const { api } = load({
+      home,
       directory,
-      resolvedHook: unrelated.hook,
-      env: { GITNEXUS_HOOK_CLI_PATH: unrelated.cli },
+      childProcess: { spawn },
+      filesystem: {
+        existsSync: (target: fs.PathLike) => {
+          if (String(target).endsWith('install.lock')) {
+            api.writeRecovery(api.recoveryDirectory(version), { version, runtime: pkg.hook });
+            published = true;
+            return false;
+          }
+          return fs.existsSync(target);
+        },
+      },
     });
-    expect(fs.existsSync(configured.marker)).toBe(true);
-    expect(fs.existsSync(unrelated.marker)).toBe(false);
-    expect(result.resolve).not.toHaveBeenCalled();
-    expect(result.spawn).not.toHaveBeenCalled();
+    await api.main();
+    expect(published).toBe(true);
+    expect(fs.existsSync(pkg.marker)).toBe(true);
+    expect(spawn).toHaveBeenCalledOnce();
   });
+});
 
-  it('uses the saved package pin when the configured CLI has been uninstalled', async () => {
-    const directory = fixture();
-    fs.writeFileSync(
-      path.join(directory, 'gitnexus-hook.json'),
-      JSON.stringify({
-        version: '1.6.12',
-        cliPath: path.join(directory, 'deleted', 'dist', 'cli', 'index.js'),
-      }),
-    );
-    const result = await execute({ directory, version: '9.9.9' });
-    expect(result.spawn.mock.calls[0]?.[1]).toContain('--package=gitnexus@1.6.12');
-  });
-
-  it('validates the saved pin before downloading a missing installation', async () => {
-    const directory = fixture();
-    fs.writeFileSync(
-      path.join(directory, 'gitnexus-hook.json'),
-      JSON.stringify({ version: 'latest', cliPath: path.join(directory, 'deleted') }),
-    );
-    const result = await execute({ directory });
-    expect(result.spawn).not.toHaveBeenCalled();
-  });
-
-  it('package-runtime mode selects only npm PATH and never another configured package', async () => {
-    const directory = fixture();
-    const pinned = installedPackage(path.join(directory, 'node_modules', 'gitnexus'));
-    const unrelated = installedPackage(path.join(directory, 'unrelated'));
-    fs.writeFileSync(path.join(directory, 'gitnexus.cmd'), '@echo shim\n');
-    const result = await execute({
-      platform: 'win32',
-      packageMode: true,
-      resolvedHook: unrelated.hook,
-      env: { PATH: directory, GITNEXUS_HOOK_CLI_PATH: unrelated.cli },
-    });
-    expect(fs.existsSync(pinned.marker)).toBe(true);
-    expect(fs.existsSync(unrelated.marker)).toBe(false);
-    expect(result.resolve).not.toHaveBeenCalled();
-    expect(result.spawn).not.toHaveBeenCalled();
-  });
-
-  it('package-runtime mode refuses recursive downloads when npm PATH has no hook', async () => {
-    const unrelated = installedPackage(fixture());
-    const result = await execute({
-      packageMode: true,
-      resolvedHook: unrelated.hook,
-      env: { GITNEXUS_HOOK_CLI_PATH: unrelated.cli },
-    });
-    expect(fs.existsSync(unrelated.marker)).toBe(false);
-    expect(result.resolve).not.toHaveBeenCalled();
-    expect(result.spawn).not.toHaveBeenCalled();
-  });
-
-  it.each(['timeout', 'signal'] as const)(
-    'terminates the entire Unix install group on %s and removes handlers',
-    async (cancel) => {
-      const result = await execute({ cancel });
-      expect(result.kill).toHaveBeenCalledWith(-4242, 'SIGTERM');
-      expect(result.kill).toHaveBeenCalledWith(-4242, 'SIGKILL');
-      expect(result.stdout).not.toHaveBeenCalled();
-      expect(result.timers.size).toBe(0);
-      expect(result.processEvents.listenerCount('SIGTERM')).toBe(0);
-      expect(result.processEvents.listenerCount('SIGINT')).toBe(0);
+describe('package recovery with real npm shell semantics', () => {
+  it.each(['plugin', 'installed'] as const)(
+    'recovers once and isolates npm output from the %s hook',
+    async (kind) => {
+      const f = recoveryFixture({ kind });
+      fs.writeFileSync(path.join(f.root, '.npmrc'), 'registry=http://must-not-be-used.invalid\n');
+      const first = await f.start().done;
+      expect(first.status, first.stderr).toBe(0);
+      expect(first.stderr).toBe('');
+      expect(JSON.parse(first.stdout)).toMatchObject({
+        version,
+        input: f.input.toString('base64'),
+      });
+      expect(logRows(f.log)).toEqual([
+        expect.objectContaining({
+          args: [
+            '--yes',
+            '--prefer-offline',
+            `--package=gitnexus@${version}`,
+            '--',
+            'node',
+            '-e',
+            'require(process.env.__GITNEXUS_HOOK_BOOTSTRAP)',
+          ],
+          cwd: f.directory,
+          foreground: 'false',
+          input: 0,
+        }),
+      ]);
+      expect(JSON.parse((await f.start().done).stdout)).toMatchObject({
+        version,
+        input: f.input.toString('base64'),
+      });
+      expect(logRows(f.log)).toHaveLength(1);
+      expect(fs.existsSync(path.join(f.directory, 'install.lock'))).toBe(false);
     },
   );
-
-  it('escalates a SIGTERM-resistant install group and closes its pipes', async () => {
-    const result = await execute({ cancel: 'timeout', ignoreTermination: true });
-    expect(result.kill).toHaveBeenCalledWith(-4242, 'SIGKILL');
-    expect(result.child.stdout.destroy).toHaveBeenCalledOnce();
-    expect(result.child.stderr.destroy).toHaveBeenCalledOnce();
-    expect(result.child.stdin.destroy).toHaveBeenCalledOnce();
-    expect(result.child.unref).toHaveBeenCalledOnce();
-    expect(result.timers.size).toBe(0);
-  });
-
-  it('terminates the Windows npm process tree without a shell', async () => {
-    const result = await execute({ platform: 'win32', cancel: 'signal' });
-    expect(result.spawnSync).toHaveBeenCalledWith(
-      path.join('C:\\Windows', 'System32', 'taskkill.exe'),
-      ['/pid', '4242', '/T', '/F'],
-      { timeout: 5000, windowsHide: true, stdio: 'ignore' },
+  it.skipIf(process.platform === 'win32')(
+    'executes the npm shell with metacharacters and spaces in node and bootstrap paths',
+    async () => {
+      const f = recoveryFixture({ interpreter: true });
+      const result = await f.start().done;
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ input: f.input.toString('base64') });
+      expect(logRows(f.log)).toHaveLength(1);
+    },
+  );
+  it.skipIf(process.platform !== 'win32')(
+    'runs actual cmd.exe fallback with a spaced node and metacharacter bootstrap',
+    async () => {
+      const f = recoveryFixture({ interpreter: true, cmdFallback: true });
+      const result = await f.start({ GITNEXUS_DEBUG: 'true' }).done;
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(JSON.parse(result.stdout)).toMatchObject({ input: f.input.toString('base64') });
+      expect(logRows(f.log)).toHaveLength(1);
+    },
+  );
+  it('delivers concurrent cold and cached calls without serializing runtime events', async () => {
+    const f = recoveryFixture();
+    const count = path.join(f.root, 'runtime-calls');
+    fs.writeFileSync(
+      f.pkg.hook,
+      `const fs=require('fs');fs.readFileSync(0);fs.appendFileSync(${JSON.stringify(count)},String(process.pid)+'\\n');setTimeout(()=>process.stdout.write('done'),300);\n`,
     );
-    expect(result.kill).not.toHaveBeenCalled();
+    const cold = await Promise.all(
+      Array.from({ length: 4 }, () => f.start({ TEST_DELAY: '200' }).done),
+    );
+    expect(cold.map((result) => result.stdout)).toEqual(['done', 'done', 'done', 'done']);
+    expect(logRows(f.log)).toHaveLength(1);
+    const lock = path.join(f.directory, 'install.lock');
+    fs.mkdirSync(lock);
+    fs.writeFileSync(path.join(lock, `${process.pid}-00000000.owner`), '');
+    const warm = await Promise.all(Array.from({ length: 4 }, () => f.start().done));
+    expect(warm.map((result) => result.stdout)).toEqual(['done', 'done', 'done', 'done']);
+    expect(fs.readFileSync(count, 'utf8').trim().split('\n')).toHaveLength(8);
+    expect(logRows(f.log)).toHaveLength(1);
   });
-
-  it('skips a concurrent cold install without spawning or consuming stdin', async () => {
-    const result = await execute({ lockOwner: 'live' });
-    expect(result.spawn).not.toHaveBeenCalled();
-    expect(result.stdinRead).not.toHaveBeenCalled();
-    expect(fs.existsSync(result.lock)).toBe(true);
-    expect(result.stdout).not.toHaveBeenCalled();
-    expect(result.stderr).not.toHaveBeenCalled();
+  it.each([
+    ['', false],
+    ['0', false],
+    ['false', false],
+    ['true', true],
+    ['1', true],
+  ] as const)(
+    'cools down failures and only diagnoses explicit debug %s',
+    async (debug, diagnostic) => {
+      const f = recoveryFixture();
+      const failed = await f.start({ TEST_FAILURE: '1', GITNEXUS_DEBUG: debug }).done;
+      expect(failed.stdout).toBe('');
+      expect(Boolean(failed.stderr)).toBe(diagnostic);
+      const warm = await f.start({ GITNEXUS_DEBUG: debug }).done;
+      expect(warm.stdout).toBe('');
+      expect(Boolean(warm.stderr)).toBe(diagnostic);
+      expect(logRows(f.log)).toHaveLength(1);
+      const stateFile = path.join(f.directory, 'runtime.json');
+      const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      expect(state.error).toContain('offline fixture failure');
+      state.failedAt = Date.now() - 300001;
+      fs.writeFileSync(stateFile, JSON.stringify(state));
+      expect(JSON.parse((await f.start().done).stdout)).toHaveProperty('version', version);
+      expect(logRows(f.log)).toHaveLength(2);
+    },
+  );
+  it('recovers again after the cached runtime is removed', async () => {
+    const f = recoveryFixture();
+    await f.start().done;
+    const stateFile = path.join(f.directory, 'runtime.json');
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    state.runtime = path.join(f.root, 'deleted', 'hooks', 'claude', 'gitnexus-hook.cjs');
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+    expect(JSON.parse((await f.start().done).stdout)).toHaveProperty('version', version);
+    expect(logRows(f.log)).toHaveLength(2);
   });
-
-  it('reclaims an install slot whose owner died and releases it after completion', async () => {
-    const result = await execute({ lockOwner: 'dead' });
-    expect(result.kill).toHaveBeenCalledWith(99999, 0);
-    expect(result.spawn).toHaveBeenCalledOnce();
-    expect(fs.existsSync(result.lock)).toBe(false);
+  it('caps npm output without emitting it as hook context', async () => {
+    const f = recoveryFixture();
+    const result = await f.start({
+      TEST_OUTPUT_CAP: '1',
+      TEST_DELAY: '1000',
+      GITNEXUS_DEBUG: 'true',
+    }).done;
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('exceeded 1 MiB');
+    expect(fs.existsSync(path.join(f.directory, 'install.lock'))).toBe(false);
   });
-
-  it('releases the install slot after process-tree cleanup', async () => {
-    const result = await execute({ cancel: 'signal' });
-    expect(result.kill).toHaveBeenCalledWith(-4242, 'SIGKILL');
-    expect(fs.existsSync(result.lock)).toBe(false);
+  it.skipIf(process.platform === 'win32')(
+    'keeps installation owned after SIGKILL of the outer caller',
+    async () => {
+      const f = recoveryFixture();
+      const first = f.start({ TEST_DELAY: '800' });
+      await waitFor(() => fs.existsSync(f.started));
+      first.child.kill('SIGKILL');
+      expect((await first.done).signal).toBe('SIGKILL');
+      expect(JSON.parse((await f.start().done).stdout)).toHaveProperty('version', version);
+      expect(logRows(f.log)).toHaveLength(1);
+      expect(fs.existsSync(f.finished)).toBe(true);
+      expect(fs.existsSync(path.join(f.directory, 'install.lock'))).toBe(false);
+    },
+  );
+  it('expires a stale live-PID lock without signaling the reused process', async () => {
+    const f = recoveryFixture();
+    const lock = path.join(f.directory, 'install.lock');
+    fs.mkdirSync(lock);
+    const owner = path.join(lock, `${process.pid}-00000000.owner`);
+    fs.writeFileSync(owner, '');
+    fs.utimesSync(owner, new Date(0), new Date(0));
+    expect(JSON.parse((await f.start().done).stdout)).toHaveProperty('version', version);
+    expect(logRows(f.log)).toHaveLength(1);
+    expect(fs.existsSync(lock)).toBe(false);
   });
-
-  it('recovers an interrupted reclaim that left an empty lock directory', async () => {
-    const result = await execute({ lockOwner: 'empty' });
-    expect(result.spawn).toHaveBeenCalledOnce();
-    expect(fs.existsSync(result.lock)).toBe(false);
+  it('fails promptly if its helper cannot publish either result or cooldown', async () => {
+    const f = recoveryFixture();
+    fs.mkdirSync(path.join(f.directory, 'runtime.json'));
+    const result = await f.start({ GITNEXUS_DEBUG: '1' }).done;
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('exited without a result');
+    expect(fs.existsSync(path.join(f.directory, 'install.lock'))).toBe(false);
   });
+  it.each([
+    ['', false],
+    ['true', true],
+  ] as const)(
+    'never downloads after an installed runtime throws (debug %s)',
+    async (debug, diagnostic) => {
+      const f = recoveryFixture();
+      fs.writeFileSync(f.pkg.hook, "throw new Error('installed hook is broken');\n");
+      const result = await f.start({ GITNEXUS_HOOK_CLI_PATH: f.pkg.cli, GITNEXUS_DEBUG: debug })
+        .done;
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('');
+      expect(Boolean(result.stderr)).toBe(diagnostic);
+      expect(fs.existsSync(f.log)).toBe(false);
+    },
+  );
+  it.each([false, true])(
+    'recognizes opaque installed hook shims and tolerates early stdin close %s',
+    async (earlyClose) => {
+      const f = recoveryFixture();
+      if (earlyClose) fs.writeFileSync(f.pkg.hook, 'process.exit(0);\n');
+      const shim = path.join(
+        f.npmPrefix,
+        process.platform === 'win32' ? 'gitnexus-hook.cmd' : 'gitnexus-hook',
+      );
+      fs.writeFileSync(
+        shim,
+        process.platform === 'win32'
+          ? '@"%__TEST_NODE%" "%__TEST_HOOK%"\r\n'
+          : '#!/bin/sh\nexec node "$__TEST_HOOK"\n',
+        { mode: 0o755 },
+      );
+      const result = await f.start(
+        { __TEST_HOOK: f.pkg.hook, GITNEXUS_DEBUG: '1' },
+        earlyClose ? Buffer.alloc(2 * 1024 * 1024) : f.input,
+      ).done;
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe('');
+      if (earlyClose) expect(result.stdout).toBe('');
+      else expect(JSON.parse(result.stdout)).toMatchObject({ input: f.input.toString('base64') });
+      expect(fs.existsSync(f.log)).toBe(false);
+    },
+  );
+});
 
+describe('recovery ownership and process cleanup', () => {
+  it('recovers an interrupted reclaimer that left an empty lock', () => {
+    const directory = fixture();
+    const lock = path.join(directory, 'install.lock');
+    fs.mkdirSync(lock);
+    const release = load().api.acquireInstallSlot(directory);
+    expect(release).toBeTypeOf('function');
+    release?.();
+    expect(fs.existsSync(lock)).toBe(false);
+  });
   it('does not let a delayed stale reclaimer remove a replacement owner', () => {
     const directory = fixture();
-    const packageName = 'gitnexus@1.7.0-rc.2';
-    const key = createHash('sha256')
-      .update(`${os.homedir()}\0${packageName}`)
-      .digest('hex')
-      .slice(0, 24);
-    const lock = path.join(directory, `gitnexus-hook-install-${key}.lock`);
+    const lock = path.join(directory, 'install.lock');
     const oldOwner = path.join(lock, '99999-00000000.owner');
     fs.mkdirSync(lock);
     fs.writeFileSync(oldOwner, '');
-    type Acquire = (name: string) => (() => void) | null;
-    function loadAcquire(unlinkSync: typeof fs.unlinkSync): Acquire {
-      return vm.runInNewContext(
-        source.slice(0, source.lastIndexOf('\nmain().catch')) + '\nacquireInstallSlot;',
-        {
-          require: (id: string) =>
-            id === 'fs'
-              ? { ...fs, unlinkSync }
-              : id === 'os'
-                ? { ...os, tmpdir: () => directory }
-                : realRequire(id),
-          process: {
-            pid: process.pid,
-            kill: (pid: number) => {
-              if (pid === 99999) throw Object.assign(new Error('dead'), { code: 'ESRCH' });
-            },
-          },
-        },
-      );
-    }
-    const acquireFirst = loadAcquire(fs.unlinkSync);
+    const kill = () => {
+      throw Object.assign(new Error('dead'), { code: 'ESRCH' });
+    };
+    const first = load({ kill }).api;
     let releaseFirst: (() => void) | null = null;
-    const acquireDelayed = loadAcquire((target) => {
-      // Both reclaimers have inspected the dead owner. The first publishes
-      // its new lock immediately before the delayed contender tries unlink.
-      if (String(target) === oldOwner) releaseFirst = acquireFirst(packageName);
-      fs.unlinkSync(target);
-    });
-    expect(acquireDelayed(packageName)).toBeNull();
+    const delayed = load({
+      kill,
+      filesystem: {
+        unlinkSync: (target: fs.PathLike) => {
+          if (String(target) === oldOwner) releaseFirst = first.acquireInstallSlot(directory);
+          fs.unlinkSync(target);
+        },
+      },
+    }).api;
+    expect(delayed.acquireInstallSlot(directory)).toBeNull();
     expect(releaseFirst).toBeTypeOf('function');
-    const current = fs.readdirSync(lock);
-    expect(current).toHaveLength(1);
-    expect(current[0]).not.toBe(path.basename(oldOwner));
+    expect(fs.readdirSync(lock)).toHaveLength(1);
+    expect(fs.readdirSync(lock)[0]).not.toBe(path.basename(oldOwner));
     (releaseFirst as (() => void) | null)?.();
     expect(fs.existsSync(lock)).toBe(false);
   });
-});
-
-describe('published-package fallback', () => {
-  it.each(['plugin', 'installed'] as const)(
-    'executes an old package exposing only the gitnexus bin from the %s launcher',
-    (kind) => {
-      const root = fixture();
-      const hooks = path.join(root, 'hooks');
-      const npmPrefix = path.join(root, 'npm');
-      const cache = path.join(root, 'cache', 'node_modules');
-      const bin = path.join(cache, '.bin');
-      fs.mkdirSync(hooks);
-      fs.mkdirSync(npmPrefix);
-      fs.mkdirSync(bin, { recursive: true });
-      const pkg = installedPackage(path.join(cache, 'gitnexus'));
-      fs.writeFileSync(
-        path.join(cache, 'gitnexus', 'package.json'),
-        JSON.stringify({
-          name: 'gitnexus',
-          version: '1.6.12',
-          bin: { gitnexus: 'dist/cli/index.js' },
-        }),
-      );
-      fs.writeFileSync(
-        pkg.hook,
-        "const fs = require('fs'); process.stdout.write(JSON.stringify({version:'1.6.12', input:fs.readFileSync(0).toString('base64')}));\n",
-      );
-      if (process.platform === 'win32') {
-        fs.writeFileSync(path.join(bin, 'gitnexus.cmd'), '@echo shim\n');
-      } else {
-        fs.chmodSync(pkg.cli, 0o755);
-        fs.symlinkSync(pkg.cli, path.join(bin, 'gitnexus'));
-      }
-      const entry = path.join(hooks, 'gitnexus-hook.cjs');
-      fs.writeFileSync(entry, source);
-      if (kind === 'installed') {
-        fs.writeFileSync(
-          path.join(hooks, 'gitnexus-hook.json'),
-          JSON.stringify({
-            version: '1.6.12',
-            cliPath: path.join(root, 'uninstalled', 'dist', 'cli', 'index.js'),
-          }),
-        );
-      } else {
-        fs.mkdirSync(path.join(root, '.claude-plugin'));
-        fs.writeFileSync(
-          path.join(root, '.claude-plugin', 'plugin.json'),
-          JSON.stringify({ version: '1.6.12' }),
-        );
-      }
-      const log = path.join(root, 'npm-args.jsonl');
-      const npmSource = `const fs = require('fs'); const {spawnSync} = require('child_process');
-const args = process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
-const separator = args.indexOf('--');
-const child = spawnSync(args[separator + 1], args.slice(separator + 2), {
-  input: fs.readFileSync(0), windowsHide: true,
-  env: {...process.env, PATH: ${JSON.stringify(bin)} + require('path').delimiter + process.env.PATH}
-});
-if (child.error) throw child.error;
-process.stdout.write(child.stdout); process.stderr.write(child.stderr); process.exitCode = child.status ?? 1;
-`;
-      if (process.platform === 'win32') {
-        const npmJs = path.join(npmPrefix, 'node_modules', 'npm', 'bin', 'npx-cli.js');
-        fs.mkdirSync(path.dirname(npmJs), { recursive: true });
-        fs.writeFileSync(npmJs, npmSource);
-        fs.writeFileSync(path.join(npmPrefix, 'npx.cmd'), '@echo shim\n');
-      } else {
-        fs.writeFileSync(path.join(npmPrefix, 'npx'), `#!${process.execPath}\n${npmSource}`, {
-          mode: 0o755,
-        });
-      }
-      const input = Buffer.from(' {"pattern":"雪 & $(touch nope)"}\r\n');
-      const result = realSpawnSync(process.execPath, [entry], {
-        input,
-        cwd: root,
-        env: {
-          ...process.env,
-          PATH: npmPrefix,
-          NODE_PATH: '',
-          GITNEXUS_HOOK_CLI_PATH: undefined,
-          GITNEXUS_DEBUG: '1',
-        },
-        timeout: 10000,
-        windowsHide: true,
+  it.each(['timeout', 'signal'] as const)(
+    'cleans up the install group on %s without touching stdin',
+    async (cancel) => {
+      const timers = new Map<number, { callback: () => void; delay: number }>();
+      let id = 0;
+      const child = Object.assign(new EventEmitter(), {
+        pid: 4242,
+        stdout: Object.assign(new EventEmitter(), { destroy: vi.fn() }),
+        stderr: Object.assign(new EventEmitter(), { destroy: vi.fn() }),
+        unref: vi.fn(),
       });
-      expect(result.error).toBeUndefined();
-      expect(result.status, String(result.stderr)).toBe(0);
-      expect(JSON.parse(String(result.stdout))).toEqual({
-        version: '1.6.12',
-        input: input.toString('base64'),
+      const spawn = vi.fn(() => child);
+      const kill = vi.fn();
+      const { api, events } = load({
+        platform: 'linux',
+        childProcess: { spawn },
+        kill,
+        setTimeout: ((callback: () => void, delay: number) => {
+          timers.set(++id, { callback, delay });
+          return id;
+        }) as unknown as typeof setTimeout,
+        clearTimeout: ((id: number) => timers.delete(id)) as unknown as typeof clearTimeout,
       });
-      const invocations = fs
-        .readFileSync(log, 'utf8')
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line));
-      expect(invocations).toEqual([
-        ['--yes', '--package=gitnexus@1.6.12', '--', process.execPath, entry, '--package-runtime'],
-      ]);
+      const running = api.runPackage('npx', [], { cwd: fixture() });
+      const rejected = expect(running).rejects.toThrow(
+        cancel === 'timeout' ? 'timed out' : 'cancelled',
+      );
+      const fireTimer = (delay: number) => {
+        const timer = [...timers.values()].find((timer) => timer.delay === delay);
+        if (!timer) throw new Error(`Expected a ${delay} ms timer`);
+        timer.callback();
+      };
+      if (cancel === 'timeout') fireTimer(120000);
+      else events.emit('SIGTERM');
+      fireTimer(2000);
+      await rejected;
+      expect(kill).toHaveBeenCalledWith(-4242, 'SIGTERM');
+      expect(kill).toHaveBeenCalledWith(-4242, 'SIGKILL');
+      expect(spawn).toHaveBeenCalledWith(
+        'npx',
+        [],
+        expect.objectContaining({ stdio: ['ignore', 'pipe', 'pipe'] }),
+      );
+      expect(child.stdout.destroy).toHaveBeenCalledOnce();
+      expect(child.stderr.destroy).toHaveBeenCalledOnce();
+      expect(child.unref).toHaveBeenCalledOnce();
+      expect(timers.size).toBe(0);
+      expect(events.listenerCount('SIGTERM')).toBe(0);
     },
   );
+  it('terminates Windows npm descendants with taskkill, not a shell', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4242,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+    });
+    const spawnSync = vi.fn(() => {
+      queueMicrotask(() => child.emit('close', null));
+      return { status: 0 };
+    });
+    const kill = vi.fn();
+    const { api, events } = load({
+      platform: 'win32',
+      childProcess: { spawn: () => child, spawnSync },
+      kill,
+    });
+    const running = api.runPackage('npx', [], {});
+    const rejected = expect(running).rejects.toThrow('cancelled');
+    events.emit('SIGTERM');
+    await rejected;
+    expect(spawnSync).toHaveBeenCalledWith(
+      path.join('C:\\Windows', 'System32', 'taskkill.exe'),
+      ['/pid', '4242', '/T', '/F'],
+      { timeout: 2000, windowsHide: true, stdio: 'ignore' },
+    );
+    expect(kill).not.toHaveBeenCalled();
+    expect(events.listenerCount('SIGTERM')).toBe(0);
+  });
 });

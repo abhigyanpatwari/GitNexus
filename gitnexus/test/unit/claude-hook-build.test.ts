@@ -109,6 +109,26 @@ fs.writeFileSync(output, 'export {};\\n');
     expect(existsSync(path.join(root, 'gitnexus-shared'))).toBe(false);
   });
 
+  it('explains a missing launcher source in an incomplete source-tree build before compiling', () => {
+    const root = fixture();
+    mkdirSync(path.join(root, 'gitnexus-shared'));
+    // Source builds must not silently retain a stale launcher from an earlier build.
+    const destination = 'gitnexus/dist/cli/claude-hook-launcher.cjs';
+    write(root, destination, 'previous packaged launcher');
+
+    const result = build(root);
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Claude hook launcher source not found');
+    expect(result.stderr).toContain(path.join(root, LOADER_SOURCE));
+    expect(result.stderr).toContain('full monorepo checkout');
+    expect(result.stderr).toContain('build context before running npm ci or npm run build');
+    expect(result.stderr).not.toContain('ENOENT');
+    expect(result.stdout).not.toContain('compiling');
+    expect(readFileSync(path.join(root, destination), 'utf8')).toBe('previous packaged launcher');
+  });
+
   it('stages the launcher in the Docker builder before npm ci runs prepare', () => {
     const instructions = readFileSync(path.join(REPO_ROOT, 'Dockerfile.cli'), 'utf8')
       .split(/\r?\n/)

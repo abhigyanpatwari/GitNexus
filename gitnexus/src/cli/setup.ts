@@ -24,6 +24,7 @@ import {
 import { parse as parseToml, TomlError } from 'smol-toml';
 import { packageVersion } from '../core/package-version.js';
 import { getGlobalDir } from '../storage/repo-manager.js';
+import { writeFileAtomic } from '../storage/fs-atomic.js';
 import {
   getEditorTargets,
   mcpTarget,
@@ -488,6 +489,16 @@ const HOOK_HELPERS = [
   'registry-query.cjs',
 ] as const;
 
+// Only names copied by the former Claude/Codex installer belong to this
+// cleanup list. Future Antigravity helpers must not expand its deletion scope.
+const LEGACY_CLAUDE_HOOK_HELPERS = [
+  'hook-lock.cjs',
+  'hook-db-lock-probe.cjs',
+  'win-rm-list-json.ps1',
+  'resolve-analyze-cmd.cjs',
+  'registry-query.cjs',
+] as const;
+
 // win-rm-list-json.ps1 is best-effort: it is read (not require()'d) by
 // hook-db-lock-probe.cjs only on Windows, and that probe fails open when the
 // script is absent. Every other helper is top-level require()'d by the adapters,
@@ -563,15 +574,17 @@ async function installClaudeSchemaHooks(
         path.join(__dirname, '..', '..', 'dist', 'cli', 'claude-hook-launcher.cjs'),
         'utf-8',
       );
-      await fs.writeFile(
+      // Publish complete files with same-directory temp+rename. Config goes
+      // first: existing launchers accept it, and legacy adapters ignore it.
+      // A failed launcher write therefore leaves the old installation usable.
+      await writeFileAtomic(
         path.join(destHooksDir, 'gitnexus-hook.json'),
         JSON.stringify({
           version: packageVersion(),
           cliPath: path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js'),
         }) + '\n',
-        'utf-8',
       );
-      await fs.writeFile(dest, launcher, 'utf-8');
+      await writeFileAtomic(dest, launcher);
     } catch {
       result.errors.push(
         `${label}: package entrypoint or launcher unavailable — skipping hook registration`,
@@ -581,7 +594,7 @@ async function installClaudeSchemaHooks(
 
     // Remove artifacts owned by the former copy-based installer. The launcher
     // above already uses the package; unrelated files in the directory survive.
-    for (const helper of [...HOOK_HELPERS, 'claude-hook-runtime.cjs']) {
+    for (const helper of LEGACY_CLAUDE_HOOK_HELPERS) {
       await fs.rm(path.join(destHooksDir, helper), { force: true });
     }
 
@@ -600,8 +613,16 @@ async function installClaudeSchemaHooks(
       }
     })();
 
-    // Upgrade our former default timeout while preserving JSONC comments and
-    // user-chosen budgets. Cold package recovery needs room beyond 10 seconds.
+    if (rawHooksConfig.trim() && hookParseErrors.length > 0) {
+      result.errors.push(
+        `${label}: ${path.basename(settingsPath)} is corrupt — skipping to preserve existing content`,
+      );
+      return;
+    }
+
+    // A customized 10s budget is indistinguishable from our former default.
+    // Migrate both and report that explicitly; other budgets stay untouched.
+    let migrationNote = '';
     if (hookParseErrors.length === 0) {
       let upgraded = rawHooksConfig;
       for (const event of ['PreToolUse', 'PostToolUse']) {
@@ -625,7 +646,10 @@ async function installClaudeSchemaHooks(
           });
         });
       }
-      if (upgraded !== rawHooksConfig) await fs.writeFile(settingsPath, upgraded, 'utf-8');
+      if (upgraded !== rawHooksConfig) {
+        await writeFileAtomic(settingsPath, upgraded);
+        migrationNote = ' — migrated timeout 10s → 150s (including customized 10s values)';
+      }
     }
 
     const hookEntries: Array<{ eventName: string; value: unknown }> = [];
@@ -668,13 +692,13 @@ async function installClaudeSchemaHooks(
     }
 
     if (hookEntries.length === 0) {
-      result.configured.push(`${label} (already configured)`);
+      result.configured.push(`${label} (already configured)${migrationNote}`);
       return;
     }
 
     const ok = await mergeHooksJsonc(settingsPath, hookEntries);
     if (ok) {
-      result.configured.push(`${label} (PreToolUse, PostToolUse)`);
+      result.configured.push(`${label} (PreToolUse, PostToolUse)${migrationNote}`);
     } else {
       result.errors.push(
         `${label}: ${path.basename(settingsPath)} is corrupt — skipping to preserve existing content`,

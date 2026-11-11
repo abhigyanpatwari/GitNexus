@@ -20,9 +20,7 @@ interface HookRuntime {
   runGitNexusCli: (target: CliTarget, args: string[], cwd: string, timeout: number) => unknown;
 }
 
-function loadRuntime(
-  options: { platform?: string; guard?: string | null; legacyProbe?: boolean } = {},
-) {
+function loadRuntime(options: { platform?: string; guard?: string | null } = {}) {
   const result = { status: 0, stderr: '[GitNexus] context', stdout: '' };
   const spawnSync = vi.fn(() => result);
   const resolveGuard = vi.fn(() => options.guard ?? null);
@@ -33,7 +31,7 @@ function loadRuntime(
     require: (id: string) => {
       if (id === 'child_process') return { spawnSync };
       if (id === './hook-db-lock-probe.cjs') {
-        return options.legacyProbe ? {} : { resolveUnixGuardTimeout: resolveGuard };
+        return { resolveUnixGuardTimeout: resolveGuard };
       }
       return require(id);
     },
@@ -100,24 +98,86 @@ describe('shared Claude hook CLI execution', () => {
     );
   });
 
-  it.each([false, true])(
-    'executes without an unavailable guard (legacy probe: %s)',
-    (legacyProbe) => {
-      const runtime = loadRuntime({ legacyProbe });
-      runtime.runGitNexusCli({ command: 'gitnexus', args: [] }, ['augment'], '/repo', 7000);
-      expect(runtime.spawnSync).toHaveBeenCalledExactlyOnceWith(
-        'gitnexus',
-        ['augment'],
-        expect.objectContaining({ timeout: 7000 }),
-      );
-    },
-  );
+  it('executes directly when the packaged probe finds no usable guard', () => {
+    const runtime = loadRuntime();
+    runtime.runGitNexusCli({ command: 'gitnexus', args: [] }, ['augment'], '/repo', 7000);
+    expect(runtime.resolveGuard).toHaveBeenCalledOnce();
+    expect(runtime.spawnSync).toHaveBeenCalledExactlyOnceWith(
+      'gitnexus',
+      ['augment'],
+      expect.objectContaining({ timeout: 7000 }),
+    );
+  });
 });
 
 describe('Claude hook package ownership', () => {
   it('ships only the loader and hook manifest in the standalone plugin', () => {
     expect(fs.readdirSync(PLUGIN_DIR).sort()).toEqual(['gitnexus-hook.js', 'hooks.json']);
   });
+
+  it.each([false, true])(
+    'skips a missing packaged CLI without npx or another package (resolvable package: %s)',
+    (otherPackageAvailable) => {
+      const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-missing-cli-'));
+      try {
+        const repo = path.join(temp, 'repo');
+        const storagePath = path.join(repo, '.gitnexus');
+        const home = path.join(temp, 'home');
+        const bin = path.join(temp, 'bin');
+        const modules = path.join(temp, 'other-installation', 'node_modules');
+        const packageHooks = path.join(temp, 'package', 'hooks', 'claude');
+        const marker = path.join(temp, 'unexpected-cli');
+        fs.mkdirSync(storagePath, { recursive: true });
+        fs.mkdirSync(home);
+        fs.mkdirSync(bin);
+        fs.writeFileSync(
+          path.join(storagePath, 'gitnexus.json'),
+          JSON.stringify({ repoPath: repo, storagePath }),
+        );
+        fs.cpSync(HOOK_DIR, packageHooks, { recursive: true });
+        const trapCli = path.join(temp, 'unexpected-cli.cjs');
+        const trapSource = `require('fs').writeFileSync(${JSON.stringify(marker)}, 'called');\n`;
+        fs.writeFileSync(trapCli, trapSource);
+        fs.writeFileSync(path.join(bin, 'npx'), `#!/usr/bin/env node\n${trapSource}`, {
+          mode: 0o755,
+        });
+        fs.writeFileSync(path.join(bin, 'npx.cmd'), `@"${process.execPath}" "${trapCli}"\r\n`);
+        if (otherPackageAvailable) {
+          const otherCliDir = path.join(modules, 'gitnexus', 'dist', 'cli');
+          fs.mkdirSync(otherCliDir, { recursive: true });
+          fs.writeFileSync(path.join(otherCliDir, 'index.js'), trapSource);
+        }
+        const input = {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Grep',
+          tool_input: { pattern: 'missing package cli' },
+          cwd: repo,
+        };
+        for (const debug of ['', '1']) {
+          const result = runHook(path.join(packageHooks, 'gitnexus-hook.cjs'), input, repo, {
+            env: {
+              ...process.env,
+              PATH: `${bin}${path.delimiter}${process.env.PATH || ''}`,
+              NODE_PATH: otherPackageAvailable ? modules : '',
+              GITNEXUS_HOME: home,
+              GITNEXUS_HOOK_CLI_PATH: '',
+              GITNEXUS_DEBUG: debug,
+              GITNEXUS_STORAGE_PATH: undefined,
+              GITNEXUS_STORAGE_ROOT: undefined,
+            },
+          });
+          expect(result.status).toBe(0);
+          expect(result.stdout).toBe('');
+          expect(result.stderr).toBe(
+            debug ? '[GitNexus] augment skipped: packaged CLI is unavailable\n' : '',
+          );
+          expect(fs.existsSync(marker)).toBe(false);
+        }
+      } finally {
+        fs.rmSync(temp, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('loads one isolated installed package through both entrypoints and returns identical context', () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-isolation-'));
@@ -146,9 +206,15 @@ describe('Claude hook package ownership', () => {
       fs.mkdirSync(packageRoot, { recursive: true });
       fs.writeFileSync(
         path.join(packageRoot, 'package.json'),
-        '{"name":"gitnexus","type":"module"}\n',
+        '{"name":"gitnexus","version":"1.6.12","type":"module"}\n',
       );
       fs.cpSync(HOOK_DIR, packageHooks, { recursive: true });
+      const packagedCliDir = path.join(packageRoot, 'dist', 'cli');
+      fs.mkdirSync(packagedCliDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(packagedCliDir, 'index.js'),
+        "process.stderr.write('[GitNexus] packaged CLI must not override explicit path');\n",
+      );
       const standalonePlugin = path.join(temp, 'standalone-plugin');
       fs.cpSync(PLUGIN_DIR, standalonePlugin, { recursive: true });
       const env: NodeJS.ProcessEnv = {

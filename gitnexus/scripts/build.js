@@ -52,6 +52,22 @@ if (!fs.existsSync(SHARED_ROOT)) {
   process.exit(1);
 }
 
+const HOOK_LAUNCHER_SOURCE = path.resolve(
+  ROOT,
+  '..',
+  'gitnexus-claude-plugin',
+  'hooks',
+  'gitnexus-hook.js',
+);
+if (!fs.existsSync(HOOK_LAUNCHER_SOURCE)) {
+  console.error(
+    `[build] Claude hook launcher source not found at ${HOOK_LAUNCHER_SOURCE}.\n` +
+      'Build from the full monorepo checkout, or include ' +
+      'gitnexus-claude-plugin/hooks/gitnexus-hook.js in the build context before running npm ci or npm run build.',
+  );
+  process.exit(1);
+}
+
 // Launch tsc as `node typescript/lib/tsc.js` on every OS. The `.bin/tsc` /
 // `tsc.cmd` shims are Windows-only wrappers; `execFileSync` cannot spawn a
 // `.cmd` without a shell, and a separate `npm ci` in gitnexus-shared would
@@ -78,10 +94,7 @@ runTsc(ROOT);
 
 // Package the thin launcher from its single authored source. It contains no
 // hook behavior; setup installs it to recover if an npm execution cache moves.
-fs.copyFileSync(
-  path.resolve(ROOT, '..', 'gitnexus-claude-plugin', 'hooks', 'gitnexus-hook.js'),
-  path.join(DIST, 'cli', 'claude-hook-launcher.cjs'),
-);
+fs.copyFileSync(HOOK_LAUNCHER_SOURCE, path.join(DIST, 'cli', 'claude-hook-launcher.cjs'));
 
 // ── 3. Copy shared dist ────────────────────────────────────────────
 console.log('[build] copying shared module into dist/_shared…');

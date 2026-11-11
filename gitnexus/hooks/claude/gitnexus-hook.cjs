@@ -11,26 +11,13 @@ function resolveCliPath() {
   if (fromEnv !== undefined && String(fromEnv).trim() && fs.existsSync(String(fromEnv))) {
     return String(fromEnv);
   }
-  let cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');
-  if (!fs.existsSync(cliPath)) {
-    try {
-      cliPath = require.resolve('gitnexus/dist/cli/index.js');
-    } catch {
-      cliPath = '';
-    }
-  }
-  return cliPath;
+  const cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');
+  return fs.existsSync(cliPath) ? cliPath : '';
 }
 
 function resolveCli() {
   const cliPath = resolveCliPath();
-  return cliPath
-    ? { command: process.execPath, args: [cliPath] }
-    : {
-        command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
-        args: ['-y', 'gitnexus'],
-        npx: true,
-      };
+  return cliPath ? { command: process.execPath, args: [cliPath] } : null;
 }
 
 runClaudeHook({ resolveCli, acquireHookSlot });

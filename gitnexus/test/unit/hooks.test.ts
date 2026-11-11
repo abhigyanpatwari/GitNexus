@@ -536,15 +536,10 @@ describe('windowsHide regression', () => {
 // ─── Source code regression: .cmd extensions for Windows ─────────────
 
 describe('Windows .cmd extension handling', () => {
-  for (const [label, hookPath] of [
-    ['CJS', CJS_HOOK],
-    ['Plugin', PLUGIN_HOOK],
-  ] as const) {
-    it(`${label} hook uses .cmd extensions for Windows npx`, () => {
-      const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toContain('npx.cmd');
-    });
-  }
+  it('Plugin hook uses .cmd extensions for Windows npx', () => {
+    const source = fs.readFileSync(PLUGIN_HOOK, 'utf-8');
+    expect(source).toContain('npx.cmd');
+  });
 });
 
 // ─── Source code regression: cwd validation ─────────────────────────
@@ -1867,13 +1862,9 @@ describe.skipIf(process.platform !== 'linux')(
     // (13s = ceil((7000+5000)/1000)+1 here), which nothing can ignore.
     // Reverting the npx arm to plain `-k 1` TERM-first makes this test red.
     //
-    // Topology notes: the hook is STAGED into a bare temp dir together with
-    // its sibling helpers (the install-shaped copy, like the antigravity e2e
-    // suite uses), so resolveCliPath() finds no local dist/ and no
-    // resolvable gitnexus package; with GITNEXUS_HOOK_CLI_PATH cleared the
-    // npx fallback branch is the one that runs. A fake `npx` injected on
-    // PATH then spawns the SIGTERM-immune fake CLI as its own child and
-    // waits on it, mirroring the real npx process tree.
+    // A test adapter explicitly selects an npx target for the shared runner;
+    // the canonical package entrypoint never falls back to npx. A fake npx on
+    // PATH spawns the SIGTERM-immune CLI and waits, preserving the topology.
     it('CJS (staged): SIGKILLed hook leaves no immortal CLI grandchild behind npx', async () => {
       // Guard-availability precheck — see resolveHostGuardForReapingTests.
       expect(resolveHostGuardForReapingTests(), GUARD_PRECHECK_MSG).not.toBeNull();
@@ -1888,9 +1879,8 @@ describe.skipIf(process.platform !== 'linux')(
       const emptyProcRoot = createFakeProcRoot([]);
       const pidFile = path.join(os.tmpdir(), `gn-hook-npxclipid-${process.pid}`);
       fs.rmSync(pidFile, { force: true });
-      // Route self-proof (#2169 review): written by the fake npx as its first
-      // statement, so the test fails loudly if a future resolveCliPath /
-      // hookEnv change silently re-routes the augment to the direct arm.
+      // Route self-proof (#2169 review): the fake npx writes this first, so
+      // silently rerouting the augment to a direct target fails the test.
       const npxMarkerPath = path.join(os.tmpdir(), `gn-hook-npxmarker-${process.pid}`);
       fs.rmSync(npxMarkerPath, { force: true });
       const binDir = createHookToolDir({
@@ -1913,12 +1903,10 @@ describe.skipIf(process.platform !== 'linux')(
           `child.on('exit', (code) => process.exit(code === null ? 1 : code));\n`,
         { mode: 0o755 },
       );
-      // Stage the hook + its sibling helpers into a bare dir with no dist/
-      // and no reachable node_modules/gitnexus, so resolveCliPath() → ''.
+      // Stage the runtime and helpers beside the explicit test adapter.
       const stagedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-staged-hook-'));
       const hookSrcDir = path.dirname(CJS_HOOK);
       for (const f of [
-        'gitnexus-hook.cjs',
         'claude-hook-runtime.cjs',
         'hook-lock.cjs',
         'hook-db-lock-probe.cjs',
@@ -1928,6 +1916,12 @@ describe.skipIf(process.platform !== 'linux')(
         fs.copyFileSync(path.join(hookSrcDir, f), path.join(stagedDir, f));
       }
       const stagedHook = path.join(stagedDir, 'gitnexus-hook.cjs');
+      fs.writeFileSync(
+        stagedHook,
+        "const { runClaudeHook } = require('./claude-hook-runtime.cjs');\n" +
+          "const { acquireHookSlot } = require('./hook-lock.cjs');\n" +
+          "runClaudeHook({ acquireHookSlot, resolveCli: () => ({ command: 'npx', args: ['-y', 'gitnexus'], npx: true }) });\n",
+      );
       let cliPid = 0;
       let hookChild: ReturnType<typeof spawn> | null = null;
 
@@ -1951,11 +1945,6 @@ describe.skipIf(process.platform !== 'linux')(
           stdio: ['pipe', 'ignore', 'ignore'],
           env: {
             ...hookEnv(binDir),
-            // Force the npx fallback: no CLI-path override (empty string
-            // fails resolveCliPath's trim check), and nothing for the staged
-            // copy's require.resolve to find via NODE_PATH.
-            GITNEXUS_HOOK_CLI_PATH: '',
-            NODE_PATH: '',
             // #2180: empty fake /proc → not-owned → augment runs. Generous
             // budget so the scan completes rather than failing closed.
             GITNEXUS_HOOK_PROC_ROOT: emptyProcRoot,
@@ -1988,7 +1977,7 @@ describe.skipIf(process.platform !== 'linux')(
           await new Promise((r) => setTimeout(r, 10));
         }
         expect(cliPid).toBeGreaterThan(0);
-        // The augment really took the npx fallback arm, not the direct arm.
+        // The explicit npx target really ran.
         expect(fs.existsSync(npxMarkerPath)).toBe(true);
 
         // Kill the hook while the npx → CLI chain is alive (orphan topology).
@@ -2114,7 +2103,7 @@ describe('Augment CLI guard wrap (source, #2163 follow-up)', () => {
     'gitnexus-antigravity-hook.cjs',
   );
 
-  // Claude's shared runner is exercised through direct/npx/Windows/guard-skew
+  // Claude's shared runner is exercised through direct/npx/Windows/no-guard
   // behavioral tests in claude-hook-runtime.test.ts. This legacy adapter still
   // owns its spawning logic and retains its source guard.
   // The cursor integration is deliberately ABSENT from this list: it does
@@ -2376,7 +2365,10 @@ describe('PreToolUse augmentation filtering (integration)', () => {
           expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(output!.additionalContext).toContain('validateUser');
           expect(result.status).toBe(0);
-          expect(result.stderr).toContain('[GitNexus] augment skipped: MCP server owns DB');
+          expect(output!.additionalContext).toContain('graph DB may be held');
+          expect(result.stderr).toContain(
+            '[GitNexus] augment skipped: graph DB may be held by another GitNexus process',
+          );
           expect(fs.existsSync(markerPath)).toBe(false);
         } finally {
           fs.rmSync(lbugPath, { force: true });
@@ -2793,9 +2785,9 @@ describe.skipIf(SKIP_LSOF_PATH)(
 
       // #2396/#1913: the fail-closed (probe-timeout) skip routes through the SAME
       // owner branch, so it now emits the conditional MCP-query hint on stdout —
-      // truthful here because the hint only asks the agent to use the MCP tools
-      // "if they are live". The stderr diagnostic stays debug-gated (empty by
-      // default), so strict runners still see no unexpected diagnostic. Symmetric
+      // truthful here because ownership is uncertain and MCP use is conditional.
+      // The stderr diagnostic stays debug-gated and empty by default, so strict
+      // runners still see no unexpected diagnostic. Symmetric
       // counterpart to the debug-on test above.
       it(`${label}: ETIMEDOUT lsof → emits hint on stdout, stderr silent by default`, () => {
         const markerPath = path.join(os.tmpdir(), `gn-hook-etime-silent-${process.pid}-${label}`);
@@ -2821,6 +2813,7 @@ describe.skipIf(SKIP_LSOF_PATH)(
           );
           const output = parseHookOutput(result.stdout);
           expect(output!.additionalContext).toContain('mcp__gitnexus__query');
+          expect(output!.additionalContext).toContain('graph DB may be held');
           expect(result.stderr.trim()).toBe('');
           expect(result.status).toBe(0);
           expect(fs.existsSync(markerPath)).toBe(false);

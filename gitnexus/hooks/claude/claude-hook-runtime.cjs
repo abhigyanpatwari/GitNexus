@@ -131,10 +131,7 @@ let unguardedCliWarned = false;
  */
 function runGitNexusCli(target, args, cwd, timeout) {
   const isWin = process.platform === 'win32';
-  // Older installed probes may not export the resolver. Keep augmentation
-  // working without a guard instead of swallowing a TypeError in the handler.
-  const guard =
-    isWin || typeof resolveUnixGuardTimeout !== 'function' ? null : resolveUnixGuardTimeout();
+  const guard = isWin ? null : resolveUnixGuardTimeout();
   if (!isWin && !guard && !unguardedCliWarned && isDebugEnabled()) {
     unguardedCliWarned = true;
     process.stderr.write(
@@ -165,17 +162,15 @@ function runGitNexusCli(target, args, cwd, timeout) {
 }
 
 /**
- * Fallback augmentation for the #2396 path: when a GitNexus process holds the
- * lbug DB write lock the CLI `augment` can't run, so point the agent at the MCP
- * `query` tool instead. Phrased conditionally ("if the MCP tools are live") so it
- * stays truthful on every owner path — a confirmed MCP owner, a `serve` owner, or
- * a fail-closed probe where no server is actually confirmed. `pattern` is embedded
- * verbatim; the caller (sendHookResponse) JSON-escapes it structurally.
+ * Fallback augmentation for the #2396 path: the owner probe either found a
+ * GitNexus process holding the DB or could not rule one out. Point the agent at
+ * the MCP `query` tool conditionally, since an MCP server may not be available.
+ * `pattern` is embedded verbatim; sendHookResponse JSON-escapes it structurally.
  */
 function buildMcpQueryHint(pattern) {
   return (
-    `[GitNexus] Local augment is unavailable (the graph DB is held by another ` +
-    `GitNexus process). If the GitNexus MCP tools are live in this session, call ` +
+    `[GitNexus] Local augment was skipped because the graph DB may be held by ` +
+    `another GitNexus process. If the GitNexus MCP tools are live in this session, call ` +
     `the GitNexus \`query\` MCP tool (e.g. mcp__gitnexus__query) with ` +
     `search_query "${pattern}".`
   );
@@ -247,21 +242,27 @@ function handlePreToolUse(input, { resolveCli, acquireHookSlot }) {
   let result = '';
   try {
     if (hasGitNexusServerOwner(repo.lbugPath)) {
-      // #2396: the MCP server holds the DB write lock, so a competing CLI
-      // `augment` would only contend on it (LadybugDB is single-writer). But the
-      // session that triggered this hook has the GitNexus MCP tools live — route
-      // the augmentation to the agent via additionalContext instead of silently
-      // doing nothing. Mirror the skip reason to stderr only under GITNEXUS_DEBUG
-      // (strict-runner contract, #1913); the hint itself rides the sanctioned
-      // additionalContext stdout channel the successful augment already uses.
+      // #2396: skip a competing CLI when a GitNexus DB owner is confirmed or
+      // the probe is inconclusive. Suggest MCP conditionally via the sanctioned
+      // additionalContext channel; mirror the skip reason to stderr only under
+      // GITNEXUS_DEBUG (strict-runner contract, #1913).
       if (isDebugEnabled()) {
-        process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
+        process.stderr.write(
+          '[GitNexus] augment skipped: graph DB may be held by another GitNexus process\n',
+        );
       }
       if (shouldEmitMcpHint(storagePath)) {
         result = buildMcpQueryHint(pattern);
       }
     } else {
-      const child = runGitNexusCli(resolveCli(), ['augment', '--', pattern], cwd, 7000);
+      const target = resolveCli();
+      if (!target) {
+        if (isDebugEnabled()) {
+          process.stderr.write('[GitNexus] augment skipped: packaged CLI is unavailable\n');
+        }
+        return;
+      }
+      const child = runGitNexusCli(target, ['augment', '--', pattern], cwd, 7000);
       if (!child.error && child.status === 0) {
         result = extractAugmentContext(child.stderr || '');
       }
@@ -339,7 +340,7 @@ function handlePostToolUse(input) {
   }
 
   // If HEAD matches last indexed commit, no reindex needed
-  if (currentHead && currentHead === lastCommit) return;
+  if (currentHead === lastCommit) return;
 
   const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings, indexOnly: true });
   sendHookResponse(
