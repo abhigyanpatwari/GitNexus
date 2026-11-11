@@ -1882,7 +1882,11 @@ export function runScopeResolution(
             ),
         });
   probeEmit('callable-flow-end', `iterations=${callableValueFlow.iterations}`);
-  const namesMentionedIn = provider.namesMentionedIn;
+  const onDemandImportTargets = provider.onDemandImportTargets;
+  const importSources =
+    onDemandImportTargets === undefined
+      ? undefined
+      : new Map(emitParsedFiles.map((parsed) => [parsed.filePath, parsed]));
   const importsEmitted = callableFlowOnly
     ? 0
     : emitImportEdges(
@@ -1890,14 +1894,11 @@ export function runScopeResolution(
         indexes.imports,
         indexes.scopeTree,
         provider.importEdgeReason,
-        namesMentionedIn === undefined
+        onDemandImportTargets === undefined
           ? undefined
           : (sourceFile) => {
-              // '' is a file whose text was not retained for this pass
-              // (`postExtractSourceTextPolicy`), not an empty file: a file that
-              // imports something is never empty. Unknown keeps every edge.
-              const text = getFileContents().get(sourceFile);
-              return text === undefined || text === '' ? undefined : namesMentionedIn(text);
+              const parsed = importSources?.get(sourceFile);
+              return parsed === undefined ? undefined : onDemandImportTargets(parsed, indexes);
             },
       );
   probeEmit('imports-end', `emitted=${importsEmitted}`);

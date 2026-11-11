@@ -29,7 +29,7 @@
  *    file declaring that package, which is what the import actually names.
  *    That answer is about visibility: any of those files may supply a name.
  *    Which of them become a File→File IMPORTS edge is decided at emission, by
- *    the names the importer mentions (`javaNamesMentionedIn`, #3695) — an
+ *    scope-bound AST uses (`javaOnDemandImportTargets`, #3695) — an
  *    edge per package file was importers × package size.
  *  - a file's location and its package were assumed to agree. They need not:
  *    `weird/path/User.java` declaring `package com.example;` is importable as

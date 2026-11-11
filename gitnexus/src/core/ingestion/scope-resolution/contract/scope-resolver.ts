@@ -397,24 +397,16 @@ export interface ScopeResolver {
    *  working. */
   readonly importEdgeReason: string;
 
-  /**
-   * Opt in when a wildcard import of this language only changes how simple
-   * names in the importing file are read: it loads nothing and names no file
-   * (Java `import pkg.*;`, JLS §7.5.2). Returns every name `sourceText`
-   * mentions. An IMPORTS edge from a wildcard import is then emitted only to
-   * the files that can supply a mentioned name, instead of to every file the
-   * wildcard resolves to — which is importers × package size (#3695). Name
-   * resolution is not affected; see `emitImportEdges`.
-   *
-   * The result must be a SUPERSET of the names the file can bind through such
-   * an import: a spurious name keeps an edge, a missing one drops a real
-   * dependency. Leave it undefined for a language whose wildcard import
-   * executes its target (Python `from m import *`, Ruby `require`, C/C++
-   * `#include`) — that file is a dependency whether or not a name is used —
-   * or binds names the importer never spells (Kotlin operator conventions:
-   * `a + b` uses an imported `plus`).
-   */
-  readonly namesMentionedIn?: (sourceText: string) => ReadonlySet<string>;
+  /** Resolve AST-bound uses to the files supplying on-demand imports. Only
+   * languages whose wildcards do not execute their targets may opt in. The
+   * finalizer's imports remain intact for lookup; this narrows persisted
+   * File→File edges only. Return undefined when capture/binding evidence is
+   * incomplete, retaining all edges. Facts must survive ParsedFile hydration;
+   * this hook receives no source text and must never reparse a cached file. */
+  readonly onDemandImportTargets?: (
+    parsed: ParsedFile,
+    indexes: ScopeResolutionIndexes,
+  ) => ReadonlySet<string> | undefined;
 
   // ─── Pipeline hooks ────────────────────────────────────────────────────────
 
