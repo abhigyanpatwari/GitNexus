@@ -53,15 +53,6 @@ const RESOLVE_CJS = path.resolve(
   'claude',
   'resolve-analyze-cmd.cjs',
 );
-const RESOLVE_PLUGIN_CJS = path.resolve(
-  __dirname,
-  '..',
-  '..',
-  '..',
-  'gitnexus-claude-plugin',
-  'hooks',
-  'resolve-analyze-cmd.cjs',
-);
 const PLUGIN_HOOK = path.resolve(
   __dirname,
   '..',
@@ -71,30 +62,13 @@ const PLUGIN_HOOK = path.resolve(
   'hooks',
   'gitnexus-hook.js',
 );
-const PLUGIN_HOOK_LOCK = path.resolve(
-  __dirname,
-  '..',
-  '..',
-  '..',
-  'gitnexus-claude-plugin',
-  'hooks',
-  'hook-lock.js',
-);
+const CJS_RUNTIME = path.join(path.dirname(CJS_HOOK), 'claude-hook-runtime.cjs');
 const CJS_HOOK_DB_PROBE = path.resolve(
   __dirname,
   '..',
   '..',
   'hooks',
   'claude',
-  'hook-db-lock-probe.cjs',
-);
-const PLUGIN_HOOK_DB_PROBE = path.resolve(
-  __dirname,
-  '..',
-  '..',
-  '..',
-  'gitnexus-claude-plugin',
-  'hooks',
   'hook-db-lock-probe.cjs',
 );
 
@@ -183,10 +157,14 @@ let tmpDir: string;
 let gitNexusDir: string;
 let hookHome: string;
 const originalGitNexusHome = process.env.GITNEXUS_HOME;
+const originalNodePath = process.env.NODE_PATH;
 
 const HOOK_TEST_IDENTITY: GitIdentity = { name: 'Test', email: 'test@test.com' };
 
 beforeAll(() => {
+  // The standalone plugin resolves the installed npm package. Expose this
+  // checkout as that package without invoking npm or reaching the network.
+  process.env.NODE_PATH = path.resolve(__dirname, '..', '..', '..');
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-test-'));
   gitNexusDir = path.join(tmpDir, '.gitnexus');
   fs.mkdirSync(gitNexusDir, { recursive: true });
@@ -211,6 +189,8 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  if (originalNodePath === undefined) delete process.env.NODE_PATH;
+  else process.env.NODE_PATH = originalNodePath;
   if (originalGitNexusHome === undefined) delete process.env.GITNEXUS_HOME;
   else process.env.GITNEXUS_HOME = originalGitNexusHome;
   fs.rmSync(hookHome, { recursive: true, force: true });
@@ -329,10 +309,10 @@ describe('Hook files exist', () => {
 
 describe('Shell injection regression', () => {
   for (const [label, hookPath] of [
-    ['CJS', CJS_HOOK],
-    ['Plugin', PLUGIN_HOOK],
+    ['CJS adapter', CJS_HOOK],
+    ['CJS runtime', CJS_RUNTIME],
+    ['Plugin adapter', PLUGIN_HOOK],
     ['Resolve CJS', RESOLVE_CJS],
-    ['Resolve Plugin', RESOLVE_PLUGIN_CJS],
   ] as const) {
     it(`${label} hook has no shell: true in spawnSync calls`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
@@ -384,13 +364,12 @@ describe('Shell injection regression', () => {
 describe('windowsHide regression', () => {
   // Hook-layer files. Adding a new hook file MUST be reflected here.
   const HOOK_FILES: Array<readonly [string, string]> = [
-    ['gitnexus/hooks/claude/gitnexus-hook.cjs', CJS_HOOK],
+    ['gitnexus/hooks/claude/claude-hook-runtime.cjs', CJS_RUNTIME],
     [
       'gitnexus/hooks/claude/registry-query.cjs',
       path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'registry-query.cjs'),
     ],
     ['gitnexus/hooks/claude/resolve-analyze-cmd.cjs', RESOLVE_CJS],
-    ['gitnexus-claude-plugin/hooks/resolve-analyze-cmd.cjs', RESOLVE_PLUGIN_CJS],
     [
       'gitnexus/hooks/antigravity/gitnexus-antigravity-hook.cjs',
       path.resolve(__dirname, '..', '..', 'hooks', 'antigravity', 'gitnexus-antigravity-hook.cjs'),
@@ -401,18 +380,6 @@ describe('windowsHide regression', () => {
     ],
     ['gitnexus-claude-plugin/hooks/gitnexus-hook.js', PLUGIN_HOOK],
     [
-      'gitnexus-claude-plugin/hooks/registry-query.cjs',
-      path.resolve(
-        __dirname,
-        '..',
-        '..',
-        '..',
-        'gitnexus-claude-plugin',
-        'hooks',
-        'registry-query.cjs',
-      ),
-    ],
-    [
       'gitnexus-cursor-integration/hooks/registry-query.cjs',
       path.resolve(
         __dirname,
@@ -422,18 +389,6 @@ describe('windowsHide regression', () => {
         'gitnexus-cursor-integration',
         'hooks',
         'registry-query.cjs',
-      ),
-    ],
-    [
-      'gitnexus-claude-plugin/hooks/hook-db-lock-probe.cjs',
-      path.resolve(
-        __dirname,
-        '..',
-        '..',
-        '..',
-        'gitnexus-claude-plugin',
-        'hooks',
-        'hook-db-lock-probe.cjs',
       ),
     ],
     [
@@ -590,20 +545,12 @@ describe('Windows .cmd extension handling', () => {
       expect(source).toContain('npx.cmd');
     });
   }
-
-  it('Plugin hook uses .cmd extension for Windows gitnexus binary', () => {
-    const source = fs.readFileSync(PLUGIN_HOOK, 'utf-8');
-    expect(source).toContain('gitnexus.cmd');
-  });
 });
 
 // ─── Source code regression: cwd validation ─────────────────────────
 
 describe('cwd validation guards', () => {
-  for (const [label, hookPath] of [
-    ['CJS', CJS_HOOK],
-    ['Plugin', PLUGIN_HOOK],
-  ] as const) {
+  for (const [label, hookPath] of [['CJS', CJS_RUNTIME]] as const) {
     it(`${label} hook validates cwd is absolute path`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       const cwdChecks = (source.match(/path\.isAbsolute\(cwd\)/g) || []).length;
@@ -616,10 +563,7 @@ describe('cwd validation guards', () => {
 // ─── Source code regression: sendHookResponse used consistently ──────
 
 describe('sendHookResponse consistency', () => {
-  for (const [label, hookPath] of [
-    ['CJS', CJS_HOOK],
-    ['Plugin', PLUGIN_HOOK],
-  ] as const) {
+  for (const [label, hookPath] of [['CJS', CJS_RUNTIME]] as const) {
     it(`${label} hook uses sendHookResponse in both handlers`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       const calls = (source.match(/sendHookResponse\(/g) || []).length;
@@ -640,10 +584,7 @@ describe('sendHookResponse consistency', () => {
 // ─── Source code regression: dispatch map pattern ────────────────────
 
 describe('Dispatch map pattern', () => {
-  for (const [label, hookPath] of [
-    ['CJS', CJS_HOOK],
-    ['Plugin', PLUGIN_HOOK],
-  ] as const) {
+  for (const [label, hookPath] of [['CJS', CJS_RUNTIME]] as const) {
     it(`${label} hook uses dispatch map instead of if/else`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       expect(source).toContain('const handlers = {');
@@ -658,10 +599,7 @@ describe('Dispatch map pattern', () => {
 // ─── Source code regression: debug error truncation ──────────────────
 
 describe('Debug error message truncation', () => {
-  for (const [label, hookPath] of [
-    ['CJS', CJS_HOOK],
-    ['Plugin', PLUGIN_HOOK],
-  ] as const) {
+  for (const [label, hookPath] of [['CJS', CJS_RUNTIME]] as const) {
     it(`${label} hook truncates error messages to 200 chars`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       expect(source).toContain('.slice(0, 200)');
@@ -672,10 +610,7 @@ describe('Debug error message truncation', () => {
 // ─── extractPattern regression (via source analysis) ────────────────
 
 describe('extractPattern coverage', () => {
-  for (const [label, hookPath] of [
-    ['CJS', CJS_HOOK],
-    ['Plugin', PLUGIN_HOOK],
-  ] as const) {
+  for (const [label, hookPath] of [['CJS', CJS_RUNTIME]] as const) {
     it(`${label} hook extracts pattern from Grep tool input`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       expect(source).toContain("toolName === 'Grep'");
@@ -704,10 +639,7 @@ describe('extractPattern coverage', () => {
 describe('Git mutation regex', () => {
   const GIT_REGEX = /\\bgit\\s\+\(commit\|merge\|rebase\|cherry-pick\|pull\)/;
 
-  for (const [label, hookPath] of [
-    ['CJS', CJS_HOOK],
-    ['Plugin', PLUGIN_HOOK],
-  ] as const) {
+  for (const [label, hookPath] of [['CJS', CJS_RUNTIME]] as const) {
     it(`${label} hook detects git commit`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       expect(source).toContain('commit');
@@ -739,9 +671,8 @@ describe('Git mutation regex', () => {
 // ─── Source code regression: PreToolUse concurrency guard (#1486) ──
 
 describe('PreToolUse concurrency guard', () => {
-  for (const [label, hookPath, lockPath] of [
-    ['CJS', CJS_HOOK, CJS_HOOK_LOCK],
-    ['Plugin', PLUGIN_HOOK, PLUGIN_HOOK_LOCK],
+  for (const [label, hookPath, lockPath, runtimePath] of [
+    ['CJS', CJS_HOOK, CJS_HOOK_LOCK, CJS_RUNTIME],
   ] as const) {
     it(`${label} hook loads acquireHookSlot helper`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
@@ -756,7 +687,7 @@ describe('PreToolUse concurrency guard', () => {
     });
 
     it(`${label} hook calls acquireHookSlot in handlePreToolUse`, () => {
-      const source = fs.readFileSync(hookPath, 'utf-8');
+      const source = fs.readFileSync(runtimePath, 'utf-8');
       const preBody = source.slice(
         source.indexOf('function handlePreToolUse'),
         source.indexOf('function handlePostToolUse'),
@@ -819,10 +750,7 @@ describe('acquireHookSlot stale-slot eviction', () => {
   const FOREIGN_TOKEN = `${process.ppid}:ffffffffffffffff`;
   const OWN_TOKEN = new RegExp(`^${process.pid}:[0-9a-f]{16}$`);
 
-  for (const [label, lockPath] of [
-    ['CJS', CJS_HOOK_LOCK],
-    ['Plugin', PLUGIN_HOOK_LOCK],
-  ] as const) {
+  for (const [label, lockPath] of [['CJS', CJS_HOOK_LOCK]] as const) {
     const loadAcquire = (): AcquireHookSlot =>
       (createRequire(import.meta.url)(lockPath) as { acquireHookSlot: AcquireHookSlot })
         .acquireHookSlot;
@@ -1080,7 +1008,6 @@ describe('acquireHookSlot stale-slot eviction', () => {
 describe('acquireHookSlot keeps live slots valid past the old 30s bound', () => {
   const LOCK_COPIES = [
     ['CJS', CJS_HOOK_LOCK],
-    ['Plugin', PLUGIN_HOOK_LOCK],
     [
       'Factory',
       path.resolve(__dirname, '..', '..', '..', 'gitnexus-factory-plugin', 'hooks', 'hook-lock.js'),
@@ -1153,7 +1080,7 @@ describe('acquireHookSlot keeps live slots valid past the old 30s bound', () => 
     });
   }
 
-  it('keeps the four adapter copies byte-identical', () => {
+  it('keeps the package, Factory, and Cursor helpers byte-identical', () => {
     // They share one `.hook-locks` directory, so a divergence in the stale
     // bound would let one adapter evict another adapter's live slot.
     const [primary, ...copies] = LOCK_COPIES.map(([, p]) => fs.readFileSync(p, 'utf-8'));
@@ -1392,10 +1319,7 @@ describe('PreToolUse concurrency guard (integration)', { retry: 1 }, () => {
 // ─── Source: cross-platform DB lock probe module (#1493) ─────────────
 
 describe('Cross-platform DB lock probe (source)', () => {
-  for (const [label, hookPath, probePath] of [
-    ['CJS', CJS_HOOK, CJS_HOOK_DB_PROBE],
-    ['Plugin', PLUGIN_HOOK, PLUGIN_HOOK_DB_PROBE],
-  ] as const) {
+  for (const [label, hookPath, probePath] of [['CJS', CJS_RUNTIME, CJS_HOOK_DB_PROBE]] as const) {
     it(`${label} probe file exists`, () => {
       expect(fs.existsSync(probePath)).toBe(true);
     });
@@ -1421,26 +1345,59 @@ describe('Cross-platform DB lock probe (source)', () => {
       expect(p).toContain('resolveUnixGuardTimeout');
     });
   }
+});
 
-  // T5 (#2163): the two probe copies were only kept in sync by convention
-  // (setup.ts copies the canonical gitnexus/hooks/claude/ file; the plugin
-  // ships its own). Enforce byte-parity in CI, mirroring the
-  // resolve-analyze-cmd.cjs parity test. `.gitattributes` pins `eol=lf`
-  // repo-wide, so the byte comparison is safe on the Windows lane too.
-  it('keeps the two hook-db-lock-probe.cjs copies byte-identical', () => {
-    expect(fs.readFileSync(CJS_HOOK_DB_PROBE, 'utf-8')).toBe(
-      fs.readFileSync(PLUGIN_HOOK_DB_PROBE, 'utf-8'),
-    );
+// Byte identity cannot catch a broken edit in the canonical source. Compile and
+// run the Restart Manager script through the probe's Windows PowerShell route.
+describe.runIf(process.platform === 'win32')('win-rm-list-json.ps1 runs on Windows (#1591)', () => {
+  it('compiles its Restart Manager types and reports no holder for an unused file', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rm-list-'));
+    try {
+      const target = path.join(dir, 'unused.lbug');
+      fs.writeFileSync(target, '');
+      const source = fs
+        .readFileSync(path.join(path.dirname(CJS_HOOK), 'win-rm-list-json.ps1'), 'utf8')
+        .replace(/^\uFEFF/, '')
+        .replace(/\r\n/g, '\n');
+      const encoded = Buffer.from(source, 'utf16le').toString('base64');
+      const powershell = path.join(
+        process.env.SystemRoot || 'C:\\Windows',
+        'System32',
+        'WindowsPowerShell',
+        'v1.0',
+        'powershell.exe',
+      );
+      const result = spawnSync(
+        powershell,
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-STA',
+          '-EncodedCommand',
+          encoded,
+        ],
+        {
+          encoding: 'utf-8',
+          timeout: 60_000,
+          windowsHide: true,
+          env: { ...process.env, GITNEXUS_HOOK_RM_TARGET: target },
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout.trim())).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
 // ─── Source: hook slot must gate the DB-owner probe (#2163) ──────────
 
 describe('PreToolUse source order: tool guard before registry scan', () => {
-  for (const [label, hookPath] of [
-    ['CJS', CJS_HOOK],
-    ['Plugin', PLUGIN_HOOK],
-  ] as const) {
+  for (const [label, hookPath] of [['CJS', CJS_RUNTIME]] as const) {
     it(`${label}: tool guard appears before resolveHookRepo in handlePreToolUse`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       const start = source.indexOf('function handlePreToolUse');
@@ -1475,8 +1432,7 @@ describe('Hook slot gates the DB-owner probe (source order, #2163)', () => {
   // buildAfterToolContext) from probe+augment (runAugment), so its slice
   // spans both functions to express the same call-order contract.
   for (const [label, hookPath, sliceStart, sliceEnd] of [
-    ['CJS', CJS_HOOK, 'function handlePreToolUse', 'function handlePostToolUse'],
-    ['Plugin', PLUGIN_HOOK, 'function handlePreToolUse', 'function handlePostToolUse'],
+    ['CJS', CJS_RUNTIME, 'function handlePreToolUse', 'function handlePostToolUse'],
     [
       'Antigravity',
       ANTIGRAVITY_HOOK,
@@ -1963,6 +1919,7 @@ describe.skipIf(process.platform !== 'linux')(
       const hookSrcDir = path.dirname(CJS_HOOK);
       for (const f of [
         'gitnexus-hook.cjs',
+        'claude-hook-runtime.cjs',
         'hook-lock.cjs',
         'hook-db-lock-probe.cjs',
         'resolve-analyze-cmd.cjs',
@@ -2157,16 +2114,15 @@ describe('Augment CLI guard wrap (source, #2163 follow-up)', () => {
     'gitnexus-antigravity-hook.cjs',
   );
 
+  // Claude's shared runner is exercised through direct/npx/Windows/guard-skew
+  // behavioral tests in claude-hook-runtime.test.ts. This legacy adapter still
+  // owns its spawning logic and retains its source guard.
   // The cursor integration is deliberately ABSENT from this list: it does
   // not install hook-db-lock-probe.cjs (see gitnexus-cursor-integration/
   // README.md "What's installed manually vs. automated"), so there is no
   // resolver sibling to require — wrapping its augment child is the
   // "cursor probe" item on the #2163 follow-up list.
-  for (const [label, hookPath] of [
-    ['CJS', CJS_HOOK],
-    ['Plugin', PLUGIN_HOOK],
-    ['Antigravity', ANTIGRAVITY_HOOK],
-  ] as const) {
+  for (const [label, hookPath] of [['Antigravity', ANTIGRAVITY_HOOK]] as const) {
     it(`${label}: runGitNexusCli wraps via resolveUnixGuardTimeout with a ceil(ms/1000)+1 budget`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       const start = source.indexOf('function runGitNexusCli');
@@ -2187,26 +2143,21 @@ describe('Augment CLI guard wrap (source, #2163 follow-up)', () => {
       // …with a budget STRICTLY above each branch's inner spawnSync timeout:
       // ceil(inner/1000)+1 for both the direct (timeout) and npx
       // (timeout + 5000) call sites. The direct-budget formula is counted
-      // exactly — once per wrapped direct-exec branch (the Plugin adapter has
-      // two: GITNEXUS_HOOK_CLI_PATH and the PATH-direct `gitnexus` branch,
-      // its most common production path) — so a partial revert of any single
-      // branch cannot pass unnoticed.
+      // exactly once for this adapter's direct-exec branch, so a partial
+      // revert cannot pass unnoticed.
       const directBudgetCount = (fn.match(/Math\.ceil\(timeout \/ 1000\) \+ 1/g) ?? []).length;
-      expect(directBudgetCount).toBe(label === 'Plugin' ? 2 : 1);
+      expect(directBudgetCount).toBe(1);
       expect(fn).toMatch(/Math\.ceil\(\(timeout \+ 5000\) \/ 1000\) \+ 1/);
       // Argv-order pin (#2169 review): the budget token must appear BEFORE
       // the command word — `timeout … <budget> <cmd>` — or coreutils would
       // parse the command word as its DURATION argument. Token presence and
       // the counts above alone would let a transposed argv pass. Every
-      // direct-exec budget must be immediately followed by its command token
-      // (process.execPath, or the PATH-direct 'gitnexus' on Plugin), and the
-      // npx budget by 'npx'.
+      // direct-exec budget must be immediately followed by process.execPath,
+      // and the npx budget by 'npx'.
       const directOrderCount = (
-        fn.match(
-          /String\(Math\.ceil\(timeout \/ 1000\) \+ 1\),\s*(?:process\.execPath|'gitnexus')/g,
-        ) ?? []
+        fn.match(/String\(Math\.ceil\(timeout \/ 1000\) \+ 1\),\s*process\.execPath/g) ?? []
       ).length;
-      expect(directOrderCount).toBe(label === 'Plugin' ? 2 : 1);
+      expect(directOrderCount).toBe(1);
       expect(fn).toMatch(/String\(Math\.ceil\(\(timeout \+ 5000\) \/ 1000\) \+ 1\),\s*'npx'/);
       // npx-branch grandchild containment (#2169 review): the npx wrapped
       // arm must SIGKILL the process group at budget (`-s KILL`) — a group
@@ -2223,10 +2174,7 @@ describe('Augment CLI guard wrap (source, #2163 follow-up)', () => {
     });
   }
 
-  for (const [label, probePath] of [
-    ['CJS', CJS_HOOK_DB_PROBE],
-    ['Plugin', PLUGIN_HOOK_DB_PROBE],
-  ] as const) {
+  for (const [label, probePath] of [['CJS', CJS_HOOK_DB_PROBE]] as const) {
     it(`${label} probe exports resolveUnixGuardTimeout`, () => {
       const source = fs.readFileSync(probePath, 'utf-8');
       const exportsSlice = source.slice(source.indexOf('module.exports'));
@@ -2544,9 +2492,8 @@ describe.skipIf(SKIP_LSOF_PATH)('MCP-owner hint throttle (#2396)', () => {
   }
 });
 
-// #2396: buildMcpQueryHint and its throttle are triplicated across the three hook
-// copies (the repo's deliberate no-shared-module hook convention). Guard against
-// silent drift with a source-level byte-identity check — runs on every platform,
+// #2396: Claude uses the package runtime; Antigravity still owns its handlers.
+// Guard its shared hint behavior against drift with source byte identity on every platform,
 // unlike the owner-path behavior tests which are macOS-only.
 describe('hook copy drift guard (#2396)', () => {
   const ANTIGRAVITY_HOOK = path.resolve(
@@ -2558,8 +2505,7 @@ describe('hook copy drift guard (#2396)', () => {
     'gitnexus-antigravity-hook.cjs',
   );
   const HOOK_SOURCES: ReadonlyArray<readonly [string, string]> = [
-    ['claude', CJS_HOOK],
-    ['plugin', PLUGIN_HOOK],
+    ['claude', CJS_RUNTIME],
     ['antigravity', ANTIGRAVITY_HOOK],
   ];
 
@@ -2569,12 +2515,11 @@ describe('hook copy drift guard (#2396)', () => {
   }
 
   for (const fnName of ['buildMcpQueryHint', 'shouldEmitMcpHint']) {
-    it(`${fnName} is byte-identical across all three hook copies`, () => {
-      const [claude, plugin, antigravity] = HOOK_SOURCES.map(([, p]) =>
+    it(`${fnName} is byte-identical in the package runtime and Antigravity`, () => {
+      const [claude, antigravity] = HOOK_SOURCES.map(([, p]) =>
         extractFn(fs.readFileSync(p, 'utf-8'), fnName),
       );
       expect(claude).toContain(`function ${fnName}`);
-      expect(plugin).toBe(claude);
       expect(antigravity).toBe(claude);
     });
   }
@@ -4661,20 +4606,6 @@ describe('PostToolUse with missing/corrupt meta.json', () => {
 describe('Hook metadata-filename drift guard', () => {
   for (const [label, resolverPath] of [
     ['CJS (claude)', path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'registry-query.cjs')],
-    [
-      'Plugin',
-      path.resolve(
-        __dirname,
-        '..',
-        '..',
-        '..',
-        'gitnexus-claude-plugin',
-        'hooks',
-        'registry-query.cjs',
-      ),
-    ],
-    // The Antigravity installer copies this canonical helper beside its adapter.
-    ['Antigravity', path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'registry-query.cjs')],
   ] as const) {
     it(`${label}: registry resolver references gitnexus.json, not only meta.json`, () => {
       const source = fs.readFileSync(resolverPath, 'utf-8');
@@ -4686,15 +4617,6 @@ describe('Hook metadata-filename drift guard', () => {
 describe('Hook registry resolver drift guard', () => {
   const resolverPaths = [
     path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'registry-query.cjs'),
-    path.resolve(
-      __dirname,
-      '..',
-      '..',
-      '..',
-      'gitnexus-claude-plugin',
-      'hooks',
-      'registry-query.cjs',
-    ),
     path.resolve(
       __dirname,
       '..',

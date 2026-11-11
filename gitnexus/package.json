@@ -28,7 +28,8 @@
   ],
   "type": "module",
   "bin": {
-    "gitnexus": "dist/cli/index.js"
+    "gitnexus": "dist/cli/index.js",
+    "gitnexus-hook": "hooks/claude/gitnexus-hook.cjs"
   },
   "files": [
     "dist",

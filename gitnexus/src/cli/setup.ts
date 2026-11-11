@@ -84,7 +84,7 @@ export function formatHookCommand(
   return `node '${hookPath.replace(/'/g, "'\\''")}'`;
 }
 
-// The exact source line each hook adapter ships, rewritten at install time to
+// The exact source line the Antigravity adapter ships, rewritten at install time to
 // point cliPath at the installed CLI. Kept as a named constant so the install
 // patch and its drift guard reference one string — if the adapter source ever
 // changes this literal, the guard records an actionable error instead of
@@ -502,8 +502,8 @@ const BEST_EFFORT_HOOK_HELPERS = new Set<string>(['win-rm-list-json.ps1']);
  * setup error, and the names of any failed REQUIRED helpers are returned so the
  * caller can fail closed (skip hook registration) instead of registering a hook
  * that crashes at runtime. `win-rm-list-json.ps1` is best-effort — its absence is
- * recorded but does not gate registration. Both the Claude and Antigravity
- * install paths copy this same list from hooks/claude/ (the canonical source).
+ * recorded but does not gate registration. Antigravity copies this list from
+ * hooks/claude/. Claude-schema hooks load the package entrypoint directly.
  */
 export async function copyHookHelpers(
   srcDir: string,
@@ -547,7 +547,9 @@ async function installClaudeSchemaHooks(
   // Source hooks bundled within the gitnexus package (hooks/claude/)
   const pluginHooksPath = path.join(__dirname, '..', '..', 'hooks', 'claude');
 
-  // Copy unified hook script to the editor's hooks/gitnexus/ dir
+  // Keep a stable launcher path in editor settings, but execute the package's
+  // entrypoint in place. The launcher can reacquire a pinned package if setup
+  // ran from an npm execution cache that has since been cleared.
   const destHooksDir = hookCfg.scriptDir;
 
   try {
@@ -556,51 +558,75 @@ async function installClaudeSchemaHooks(
     const src = path.join(pluginHooksPath, 'gitnexus-hook.cjs');
     const dest = path.join(destHooksDir, 'gitnexus-hook.cjs');
     try {
-      let content = await fs.readFile(src, 'utf-8');
-      const resolvedCli = path.join(__dirname, '..', 'cli', 'index.js');
-      const normalizedCli = path.resolve(resolvedCli).replace(/\\/g, '/');
-      const jsonCli = JSON.stringify(normalizedCli);
-      if (!content.includes(CLI_PATH_SOURCE_LITERAL)) {
-        result.errors.push(
-          `${label}: gitnexus-hook.cjs no longer contains the cliPath literal to patch — the installed hook may fail to resolve the CLI. Update CLI_PATH_SOURCE_LITERAL in setup.ts.`,
-        );
-      }
-      content = content.replace(CLI_PATH_SOURCE_LITERAL, `let cliPath = ${jsonCli};`);
-      await fs.writeFile(dest, content, 'utf-8');
+      await fs.access(src);
+      const launcher = await fs.readFile(
+        path.join(__dirname, '..', '..', 'dist', 'cli', 'claude-hook-launcher.cjs'),
+        'utf-8',
+      );
+      await fs.writeFile(
+        path.join(destHooksDir, 'gitnexus-hook.json'),
+        JSON.stringify({
+          version: packageVersion(),
+          cliPath: path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js'),
+        }) + '\n',
+        'utf-8',
+      );
+      await fs.writeFile(dest, launcher, 'utf-8');
     } catch {
-      // Script not found in source — skip
-    }
-
-    // Fail closed: registering the hook without its adapter would crash on every
-    // tool invocation. Mirrors the Antigravity adapter guard below (this path
-    // previously registered regardless of whether the adapter wrote).
-    try {
-      await fs.access(dest);
-    } catch {
-      result.errors.push(`${label}: adapter script was not installed — skipping hook registration`);
-      return;
-    }
-
-    const failedRequired = await copyHookHelpers(pluginHooksPath, destHooksDir, label, result);
-    if (failedRequired.length > 0) {
       result.errors.push(
-        `${label}: required helper(s) ${failedRequired.join(', ')} failed to copy — skipping hook registration`,
+        `${label}: package entrypoint or launcher unavailable — skipping hook registration`,
       );
       return;
+    }
+
+    // Remove artifacts owned by the former copy-based installer. The launcher
+    // above already uses the package; unrelated files in the directory survive.
+    for (const helper of [...HOOK_HELPERS, 'claude-hook-runtime.cjs']) {
+      await fs.rm(path.join(destHooksDir, helper), { force: true });
     }
 
     const hookPath = path.join(destHooksDir, 'gitnexus-hook.cjs').replace(/\\/g, '/');
     const hookCmd = formatHookCommand(hookPath);
 
     // Check which hook events need entries (idempotent: skip if already registered)
+    let rawHooksConfig = '';
+    const hookParseErrors: ParseError[] = [];
     const parsed = await (async () => {
       try {
-        const r = await fs.readFile(settingsPath, 'utf-8');
-        return parseJsonc(r);
+        rawHooksConfig = await fs.readFile(settingsPath, 'utf-8');
+        return parseJsonc(rawHooksConfig, hookParseErrors);
       } catch {
         return null;
       }
     })();
+
+    // Upgrade our former default timeout while preserving JSONC comments and
+    // user-chosen budgets. Cold package recovery needs room beyond 10 seconds.
+    if (hookParseErrors.length === 0) {
+      let upgraded = rawHooksConfig;
+      for (const event of ['PreToolUse', 'PostToolUse']) {
+        const entries = parsed?.hooks?.[event];
+        if (!Array.isArray(entries)) continue;
+        entries.forEach((entry, i) => {
+          if (!Array.isArray(entry?.hooks)) return;
+          entry.hooks.forEach((hook: { command?: unknown; timeout?: unknown }, j: number) => {
+            if (
+              typeof hook?.command === 'string' &&
+              hook.command.includes(hookCfg.needle) &&
+              hook.timeout === 10
+            ) {
+              upgraded = applyEdits(
+                upgraded,
+                modify(upgraded, ['hooks', event, i, 'hooks', j, 'timeout'], 150, {
+                  formattingOptions: detectIndentation(rawHooksConfig),
+                }),
+              );
+            }
+          });
+        });
+      }
+      if (upgraded !== rawHooksConfig) await fs.writeFile(settingsPath, upgraded, 'utf-8');
+    }
 
     const hookEntries: Array<{ eventName: string; value: unknown }> = [];
 
@@ -617,7 +643,7 @@ async function installClaudeSchemaHooks(
             {
               type: 'command',
               command: hookCmd,
-              timeout: 10,
+              timeout: 150,
               statusMessage: 'Enriching with GitNexus graph context...',
             },
           ],
@@ -633,7 +659,7 @@ async function installClaudeSchemaHooks(
             {
               type: 'command',
               command: hookCmd,
-              timeout: 10,
+              timeout: 150,
               statusMessage: 'Checking GitNexus index freshness...',
             },
           ],

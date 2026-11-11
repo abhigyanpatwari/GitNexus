@@ -26,15 +26,6 @@ const CANONICAL_CJS = path.resolve(
   'claude',
   'resolve-analyze-cmd.cjs',
 );
-const PLUGIN_CJS = path.resolve(
-  __dirname,
-  '..',
-  '..',
-  '..',
-  'gitnexus-claude-plugin',
-  'hooks',
-  'resolve-analyze-cmd.cjs',
-);
 
 interface CjsModule {
   formatAnalyzeCommand: (
@@ -784,12 +775,6 @@ describe('formatAnalyzeCommand end-to-end via the pure scan (#1938)', () => {
     expect(cjs.formatAnalyzeCommand()).toBe(`npx ${cjs.NPX_REF} analyze`);
     expect(cjs.resolveInvocationMode()).toBe('npx');
     expectRunner('npx');
-  });
-});
-
-describe('resolve-analyze-cmd.cjs parity', () => {
-  it('keeps the two CJS hook copies byte-identical', () => {
-    expect(readFileSync(CANONICAL_CJS, 'utf-8')).toBe(readFileSync(PLUGIN_CJS, 'utf-8'));
   });
 });
 

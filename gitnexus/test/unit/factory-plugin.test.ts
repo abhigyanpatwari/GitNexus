@@ -33,7 +33,7 @@ const HOOK = path.join(PLUGIN_DIR, 'hooks', 'gitnexus-hook.js');
 const HOOKS_JSON = path.join(PLUGIN_DIR, 'hooks', 'hooks.json');
 const PLUGIN_JSON = path.join(PLUGIN_DIR, '.factory-plugin', 'plugin.json');
 const MCP_JSON = path.join(PLUGIN_DIR, 'mcp.json');
-const CLAUDE_HOOKS = path.join(REPO_ROOT, 'gitnexus-claude-plugin', 'hooks');
+const CLAUDE_HOOKS = path.join(REPO_ROOT, 'gitnexus', 'hooks', 'claude');
 
 // Guard and repo-lookup modules bundled into the Factory plugin, kept
 // byte-identical to the canonical Claude-adapter copies.
@@ -112,7 +112,9 @@ describe('Factory plugin bundled guards stay in lockstep with the Claude adapter
   for (const f of BUNDLED_GUARDS) {
     it(`${f} is byte-identical to the canonical copy`, () => {
       const bundled = fs.readFileSync(path.join(PLUGIN_DIR, 'hooks', f));
-      const canonical = fs.readFileSync(path.join(CLAUDE_HOOKS, f));
+      const canonical = fs.readFileSync(
+        path.join(CLAUDE_HOOKS, f === 'hook-lock.js' ? 'hook-lock.cjs' : f),
+      );
       expect(bundled.equals(canonical)).toBe(true);
     });
   }
@@ -309,12 +311,12 @@ describe('Factory Execute pattern parser', () => {
   );
 });
 
-// Same augment-stderr filter as the Claude adapter; fails if either copy drifts.
+// Same augment-stderr filter as the shared Claude runtime; fails on drift.
 describe('Factory augment stderr filter', () => {
   it.each(['extractAugmentContext', 'isDebugEnabled'])(
-    '%s is identical to the Claude adapter',
+    '%s is identical to the Claude runtime',
     (name) => {
-      const claude = path.join(CLAUDE_HOOKS, 'gitnexus-hook.js');
+      const claude = path.join(CLAUDE_HOOKS, 'claude-hook-runtime.cjs');
       expect(fnSource(HOOK, name)).toBe(fnSource(claude, name));
     },
   );

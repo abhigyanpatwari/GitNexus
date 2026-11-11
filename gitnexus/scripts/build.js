@@ -76,6 +76,13 @@ runTsc(SHARED_ROOT);
 console.log('[build] compiling gitnexus…');
 runTsc(ROOT);
 
+// Package the thin launcher from its single authored source. It contains no
+// hook behavior; setup installs it to recover if an npm execution cache moves.
+fs.copyFileSync(
+  path.resolve(ROOT, '..', 'gitnexus-claude-plugin', 'hooks', 'gitnexus-hook.js'),
+  path.join(DIST, 'cli', 'claude-hook-launcher.cjs'),
+);
+
 // ── 3. Copy shared dist ────────────────────────────────────────────
 console.log('[build] copying shared module into dist/_shared…');
 fs.cpSync(path.join(SHARED_ROOT, 'dist'), SHARED_DEST, { recursive: true });
