@@ -53,6 +53,9 @@ export interface AnalysisResourceBudget {
     /** Combined source, expanded text, encoded request, vectors and prefetch. */
     readonly queueBytes: number;
     readonly nativeThreads: number;
+    /** Vector index construction follows all model/provider work, so it may
+     * use the whole CPU allowance rather than the model's thread cap. */
+    readonly indexThreads: number;
     readonly reservedBytes: number;
   };
 }
@@ -234,6 +237,7 @@ export function resolveAnalysisResourceBudget(
       modelHeapMb: modelMb === 0 ? 0 : Math.min(1024, Math.floor(modelMb / 4)),
       queueBytes: bytes(queueMb, 'embedding queues'),
       nativeThreads: embeddingThreads,
+      indexThreads: cpus,
       reservedBytes: bytes(embeddingReservedMb, 'embedding reservation'),
     }),
   });

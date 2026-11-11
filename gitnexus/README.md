@@ -461,10 +461,19 @@ export GITNEXUS_EMBEDDING_API_KEY=your-key   # optional, default: "unused"
 export GITNEXUS_EMBEDDING_MAX_ATTEMPTS=3     # optional, total attempts (1-20)
 export GITNEXUS_EMBEDDING_RETRY_CAP_MS=5000  # optional, maximum retry delay
 export GITNEXUS_EMBEDDING_MIN_INTERVAL_MS=0  # optional, minimum request spacing
+export GITNEXUS_EMBEDDING_CONCURRENCY=4      # optional, requests in flight at once (1-64); 1 = serial
 export GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS=180000 # optional, per-request timeout (max 300000)
 export GITNEXUS_EMBEDDING_MAX_INPUT_CHARS=4096 # optional, final generated input budget (minimum 2)
 gitnexus analyze . --embeddings
 ```
+
+HTTP providers now default to four concurrent requests; local models and injected
+providers stay serial. For strictly serial or rate-limited endpoints, set
+`GITNEXUS_EMBEDDING_CONCURRENCY=1` to restore serial requests, or use
+`GITNEXUS_EMBEDDING_MIN_INTERVAL_MS` to pace request starts. Concurrent retries
+can exhaust their attempt budget on `429` responses even when serial requests
+succeed. The window holds at most 256 rows: with the default sub-batch size of 8,
+values above 32 do not increase concurrency. Byte limits can reduce it further.
 
 The input budget includes generated headers and context. Longer inputs are split
 without truncating their text. It counts UTF-16 characters, not model tokens;
