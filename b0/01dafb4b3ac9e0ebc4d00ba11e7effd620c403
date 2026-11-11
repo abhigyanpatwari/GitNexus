@@ -1,0 +1,27 @@
+gitnexus/test/integration/resolvers/ruby-bare-read-shadows-method.test.ts
+  s_b9690234122db7::t_65ae1759a99647 365-369
+  s_b9690234122db7::t_d012179474aa3b 115-117
+  s_b9690234122db7::t_1c974cabff7f46 500
+docs/languages/ruby-ingestion-gaps.md
+  s_b9690234122db7::t_ba26784ad19afb 45
+gitnexus/src/core/ingestion/languages/ruby/captures.ts
+  s_b9690234122db7::t_3d13bd5a274f65 301-303,372-378,380,386,390-391,394,403,408,413,415,421,428,435-439,451,457,459
+gitnexus/test/unit/scope-resolution/ruby/ruby-bare-read-order.test.ts
+  s_b9690234122db7::t_134814f8fbe72a 129-140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b001dafb4b3ac9e0ebc4d00ba11e7effd620c403",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
