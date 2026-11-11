@@ -2,7 +2,7 @@
  * Tests for the undeclared FROM→TO label-pair failure path in the
  * `analyzeCommand` CLI (#2789).
  *
- * `assertDeclaredPair` aborts the run when an extracted edge's endpoint-label
+ * `checkDeclaredPair` fails the run when an extracted edge's endpoint-label
  * pair is missing from GitNexus's own relation DDL — deliberately, because the
  * alternative is a late `COPY` failure that silently drops edges. Before this
  * branch existed the user got `Analysis failed` plus a stack trace through
@@ -38,7 +38,12 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
 }));
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
-  getStoragePaths: vi.fn(() => ({ storagePath: '.gitnexus', lbugPath: '.gitnexus/lbug' })),
+  loadMeta: vi.fn(async () => null),
+  getStoragePaths: vi.fn(() => ({
+    storagePath: '.gitnexus',
+    lbugPath: '.gitnexus/lbug',
+    metaPath: '.gitnexus/gitnexus.json',
+  })),
   getGlobalRegistryPath: vi.fn(() => 'registry.json'),
   RegistryNameCollisionError: class RegistryNameCollisionError extends Error {},
   AnalysisNotFinalizedError: class AnalysisNotFinalizedError extends Error {},
@@ -150,6 +155,52 @@ describe('analyzeCommand undeclared relation-pair handling (#2789)', () => {
     // The generic large-repo / module-not-found guidance must not also appear.
     expect(records.some((r) => r.recoveryHint === 'large-repo')).toBe(false);
     expect(records.some((r) => r.recoveryHint === 'module-not-found')).toBe(false);
+  });
+
+  it('lists every undeclared pair and reports them all in labelPairs (#2797)', async () => {
+    const { UndeclaredPairCollector } = await import('../../src/core/lbug/rel-pair-routing.js');
+    const undeclared = new UndeclaredPairCollector();
+    undeclared.record(...PAIR_ERROR_ARGS);
+    undeclared.record(
+      'Method|File',
+      'CALLS',
+      'Method:src/App.vue:App.onSave#3',
+      'File:src/Child.vue',
+    );
+    let thrown: unknown;
+    try {
+      undeclared.throwIfAny();
+    } catch (err) {
+      thrown = err;
+    }
+    runFullAnalysisMock.mockRejectedValue(
+      new Error(`Phase 'graph-emit' failed`, { cause: thrown }),
+    );
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, {});
+
+    expect(process.exitCode).toBe(1);
+    const record = cap.records().find((r) => r.recoveryHint === 'undeclared-relation-pair');
+    cap.restore();
+
+    expect(record).toMatchObject({
+      labelPair: 'Method|Annotation',
+      labelPairs: ['Method|Annotation', 'Method|File'],
+    });
+    const text = typeof record?.msg === 'string' ? record.msg : '';
+    expect(
+      [
+        '2 relationship label pairs are not declared',
+        'Method → Annotation',
+        'Method → File',
+        'src/App.vue',
+        'src/main/java/app/BeanConfig.java',
+      ].filter((needle) => !text.includes(needle)),
+    ).toEqual([]);
   });
 
   it('does not claim an unrelated failure', async () => {

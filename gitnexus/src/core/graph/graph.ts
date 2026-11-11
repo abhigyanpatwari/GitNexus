@@ -8,7 +8,9 @@ function emptyRelIter(): IterableIterator<GraphRelationship> {
   return ([] as GraphRelationship[]).values();
 }
 
-export const createKnowledgeGraph = (): KnowledgeGraph => {
+export const createKnowledgeGraph = (
+  inspectRelationship?: KnowledgeGraph['inspectRelationship'],
+): KnowledgeGraph & Required<Pick<KnowledgeGraph, 'getRelationship'>> => {
   const nodeMap = new Map<string, GraphNode>();
   const relationshipMap = new Map<string, GraphRelationship>();
   // Per-type index maintained alongside `relationshipMap`. Bucket
@@ -84,7 +86,17 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
   };
 
   const addRelationship = (relationship: GraphRelationship) => {
-    if (relationshipMap.has(relationship.id)) return;
+    const previous = relationshipMap.get(relationship.id);
+    const conflictingIdentity =
+      previous !== undefined &&
+      (previous.sourceId !== relationship.sourceId ||
+        previous.targetId !== relationship.targetId ||
+        previous.type !== relationship.type);
+    inspectRelationship?.(relationship, previous !== undefined, conflictingIdentity);
+    if (conflictingIdentity) {
+      throw new Error(`Conflicting graph relationship identity: ${relationship.id}`);
+    }
+    if (previous !== undefined) return;
     writeRel(relationship);
   };
 
@@ -142,6 +154,7 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
   };
 
   return {
+    inspectRelationship,
     get nodes() {
       return Array.from(nodeMap.values());
     },
@@ -176,6 +189,7 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
       );
     },
     getNode: (id: string) => nodeMap.get(id),
+    getRelationship: (id: string) => relationshipMap.get(id),
 
     // O(1) count getters - avoid creating arrays just for length
     get nodeCount() {

@@ -19,6 +19,8 @@ import {
 } from '../storage/storage-resolver.js';
 import { WikiGenerator, type WikiOptions } from '../core/wiki/generator.js';
 import {
+  ANTHROPIC_BASE_URL,
+  ANTHROPIC_DEFAULT_MODEL,
   ATLAS_CLOUD_BASE_URL,
   ATLAS_CLOUD_DEFAULT_MODEL,
   getProviderEnvApiKey,
@@ -242,9 +244,13 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     if (options.apiKey) updates.apiKey = options.apiKey;
     if (options.baseUrl) updates.baseUrl = options.baseUrl;
     if (options.provider) updates.provider = options.provider;
-    if (options.provider === 'atlascloud' && providerChanged) {
-      if (!options.baseUrl) updates.baseUrl = ATLAS_CLOUD_BASE_URL;
-      if (!options.model) updates.model = ATLAS_CLOUD_DEFAULT_MODEL;
+    if (options.provider === 'atlascloud') {
+      if (!options.baseUrl && (providerChanged || !existing.baseUrl)) {
+        updates.baseUrl = ATLAS_CLOUD_BASE_URL;
+      }
+      if (!options.model && (providerChanged || !existing.model)) {
+        updates.model = ATLAS_CLOUD_DEFAULT_MODEL;
+      }
     }
     if (options.apiVersion) updates.apiVersion = options.apiVersion;
     if (options.reasoningModel !== undefined) updates.isReasoningModel = options.reasoningModel;
@@ -257,6 +263,14 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       }
       if (!options.model && (providerChanged || !existing.model)) {
         updates.model = MINIMAX_MODEL_IDS[0];
+      }
+    }
+    if (options.provider === 'anthropic') {
+      if (!options.baseUrl && (providerChanged || !existing.baseUrl)) {
+        updates.baseUrl = ANTHROPIC_BASE_URL;
+      }
+      if (!options.model && (providerChanged || !existing.model)) {
+        updates.model = ANTHROPIC_DEFAULT_MODEL;
       }
     }
     // Save model to appropriate field based on provider.
@@ -312,7 +326,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       if (!llmConfig.apiKey && !isLocalProvider(llmConfig.provider)) {
         console.log('  Error: No LLM API key found.');
         console.log(
-          '  Set MINIMAX_API_KEY, ATLASCLOUD_API_KEY, GITNEXUS_API_KEY, or OPENAI_API_KEY,',
+          '  Set MINIMAX_API_KEY, ANTHROPIC_API_KEY, ATLASCLOUD_API_KEY, GITNEXUS_API_KEY, or OPENAI_API_KEY,',
         );
         console.log(
           '  or pass --api-key <key>, or use --provider cursor|claude|codex|opencode|grok.\n',
@@ -324,7 +338,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     } else {
       console.log("  No LLM configured. Let's set it up.\n");
       console.log(
-        '  Supports MiniMax, OpenAI, OpenRouter, Atlas Cloud, Azure, custom OpenAI-compatible APIs, and local agent CLIs.\n',
+        '  Supports MiniMax, Anthropic, Atlas Cloud, OpenAI-compatible APIs, and local agent CLIs.\n',
       );
 
       // Check if local agent CLIs are available.
@@ -342,11 +356,12 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       console.log('  [1] OpenAI (api.openai.com)');
       console.log('  [2] OpenRouter (openrouter.ai)');
       console.log('  [3] Azure OpenAI');
-      console.log('  [4] Atlas Cloud (api.atlascloud.ai)');
-      console.log('  [5] Custom endpoint');
-      console.log('  [6] MiniMax Global (api.minimax.io)');
-      console.log('  [7] MiniMax China (api.minimaxi.com)');
-      let nextChoice = 8;
+      console.log('  [4] Custom endpoint');
+      console.log('  [5] MiniMax Global (api.minimax.io)');
+      console.log('  [6] MiniMax China (api.minimaxi.com)');
+      console.log('  [7] Anthropic (api.anthropic.com)');
+      console.log('  [8] Atlas Cloud (api.atlascloud.ai)');
+      let nextChoice = 9;
       if (hasCursor) {
         const choice = String(nextChoice++);
         localChoices.push({
@@ -481,10 +496,6 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
           defaultModel = '';
           provider = 'openrouter';
         } else if (choice === '4') {
-          baseUrl = ATLAS_CLOUD_BASE_URL;
-          defaultModel = ATLAS_CLOUD_DEFAULT_MODEL;
-          provider = 'atlascloud';
-        } else if (choice === '5') {
           baseUrl = await prompt('  Base URL (e.g. http://localhost:11434/v1): ');
           if (!baseUrl) {
             console.log('\n  No URL provided. Aborting.\n');
@@ -493,11 +504,19 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
           }
           defaultModel = 'gpt-4o-mini';
           provider = 'custom';
-        } else if (choice === '6' || choice === '7') {
+        } else if (choice === '5' || choice === '6') {
           baseUrl =
-            choice === '7' ? MINIMAX_OPENAI_BASE_URLS.cn_zh : MINIMAX_OPENAI_BASE_URLS.global_en;
+            choice === '6' ? MINIMAX_OPENAI_BASE_URLS.cn_zh : MINIMAX_OPENAI_BASE_URLS.global_en;
           defaultModel = MINIMAX_MODEL_IDS[0];
           provider = 'minimax';
+        } else if (choice === '7') {
+          baseUrl = ANTHROPIC_BASE_URL;
+          defaultModel = ANTHROPIC_DEFAULT_MODEL;
+          provider = 'anthropic';
+        } else if (choice === '8') {
+          baseUrl = ATLAS_CLOUD_BASE_URL;
+          defaultModel = ATLAS_CLOUD_DEFAULT_MODEL;
+          provider = 'atlascloud';
         } else {
           baseUrl = 'https://api.openai.com/v1';
           defaultModel = 'gpt-4o-mini';
@@ -516,7 +535,14 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
         }
 
         // API key — pre-fill hint if env var exists
-        const envKey = getProviderEnvApiKey(provider);
+        const envKey =
+          provider === 'atlascloud'
+            ? getProviderEnvApiKey(provider)
+            : (provider === 'minimax' ? process.env.MINIMAX_API_KEY : undefined) ||
+              (provider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : undefined) ||
+              process.env.GITNEXUS_API_KEY ||
+              (provider === 'anthropic' ? undefined : process.env.OPENAI_API_KEY) ||
+              '';
         if (envKey) {
           const masked = envKey.slice(0, 6) + '...' + envKey.slice(-4);
           const useEnv = await prompt(`  Use existing env key (${masked})? (Y/n): `);

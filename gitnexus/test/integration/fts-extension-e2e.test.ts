@@ -20,7 +20,7 @@
  *  - auto:    same vendor survivorship under the install policy
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
-import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
+import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
@@ -163,17 +163,14 @@ const runCli = (
     encoding: 'utf8',
     timeout: timeoutMs,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
+    env: cliAnalysisEnv({
       HOME: home,
       USERPROFILE: home,
       GITNEXUS_HOME: path.join(home, '.gitnexus'),
       GITNEXUS_LANG: 'en',
       GITNEXUS_LBUG_EXTENSION_INSTALL: policy,
       GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS: '60000',
-      // Skip analyzeCommand's ensureHeap re-exec, which would drop the tsx loader.
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-    },
+    }),
   });
   return {
     status: result.status,
@@ -304,12 +301,12 @@ describe('packaged vendor survives a broken or missing home copy', () => {
 });
 
 describe('regression — the home copy disappears between analyze runs (#2841)', () => {
-  it('the incremental run completes without a Binder exception or a full-DB escalation', (ctx) => {
+  it('the incremental run keeps working search without a Binder exception or full-DB escalation', (ctx) => {
     const { home, extensionFile } = makeHome('valid');
     const repo = makeFixtureRepo('vanishing-extension');
 
     // 1. First analyze with the extension in place: the index ends up carrying
-    //    an FTS index on every searchable table.
+    //    an FTS index on every populated searchable table.
     const first = runCli(['analyze'], repo, home, 'load-only');
     expect(first.status, first.diagnostics).toBe(0);
     // This case needs run 1 to actually BUILD the indexes — without them there
@@ -353,6 +350,10 @@ describe('regression — the home copy disappears between analyze runs (#2841)',
     expect(second.output).not.toContain('full DB write');
     expect(second.output).not.toContain('forcing full rebuild');
     expect(second.output).toMatch(/Incremental:|indexed successfully/);
+    const searched = runCli(['query', 'greetE2eSymbol'], repo, home, 'load-only');
+    expect(searched.status, searched.diagnostics).toBe(0);
+    expect(searched.output).toContain('greetE2eSymbol');
+    expect(searched.output).not.toContain('keyword search degraded');
   }, 400_000);
 });
 

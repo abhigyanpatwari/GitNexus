@@ -1,11 +1,10 @@
 import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
-import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { executeQuery } from '../../src/core/lbug/lbug-adapter.js';
 import { type ParseCache } from '../../src/storage/parse-cache.js';
-import { getDurableParsedFileDir } from '../../src/storage/parsedfile-store.js';
+import { readFileResults } from '../../src/storage/file-result-store.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
 const parseIdentity = await runtimeParseIdentity();
@@ -239,8 +238,12 @@ withTestLbugDB(
         workerPoolSize: 1,
       });
       expect(result.usedWorkerPool).toBe(true);
-      const shards = await readdir(getDurableParsedFileDir(cacheDir), { recursive: true });
-      expect(shards.some((name) => name.endsWith('.v8'))).toBe(true);
+      const store = cache.fileResults!.stage!;
+      expect(cache.fileResults!.memory.size).toBe(0);
+      expect(store.records.size).toBeGreaterThan(0);
+      expect((await readFileResults(store, [...store.records.keys()])).size).toBe(
+        store.records.size,
+      );
       const adapter = await import('../../src/core/lbug/lbug-adapter.js');
       await adapter.loadGraphToLbug(result.graph, FIXTURE, storageDir);
     },

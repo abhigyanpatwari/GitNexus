@@ -66,7 +66,12 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
 }));
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
-  getStoragePaths: vi.fn(() => ({ storagePath: '.gitnexus', lbugPath: '.gitnexus/lbug' })),
+  loadMeta: vi.fn(async () => null),
+  getStoragePaths: vi.fn(() => ({
+    storagePath: '.gitnexus',
+    lbugPath: '.gitnexus/lbug',
+    metaPath: '.gitnexus/gitnexus.json',
+  })),
   getGlobalRegistryPath: vi.fn(() => 'registry.json'),
   RegistryNameCollisionError: class RegistryNameCollisionError extends Error {},
   AnalysisNotFinalizedError: class AnalysisNotFinalizedError extends Error {},
@@ -160,6 +165,29 @@ describe('analyzeCommand local-embedding-runtime error handling', () => {
       expect(records.some((r) => r.recoveryHint === 'local-embedding-unsupported')).toBe(true);
       // The HF-download branch must NOT have fired.
       expect(records.some((r) => r.recoveryHint === 'hf-endpoint-unreachable')).toBe(false);
+    });
+  });
+
+  it('prints a local model width mismatch as one config message, without a stack dump', async () => {
+    const { LocalEmbeddingDimensionError } = await import('../../src/core/embeddings/config.js');
+    const error = new LocalEmbeddingDimensionError('Xenova/bge-base-en-v1.5', 768, 384);
+    error.stack = 'local-dimension-error-stack-marker';
+    runFullAnalysisMock.mockRejectedValue(error);
+
+    await withCapturedLogger(async (cap) => {
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+      await analyzeCommand(undefined, { embeddings: true });
+
+      expect(process.exitCode).toBe(1);
+
+      const records = cap.records();
+      const dimsRecords = records.filter((r) => r.recoveryHint === 'embedding-dims-invalid');
+      expect(dimsRecords).toHaveLength(1);
+      expect(dimsRecords[0]?.msg).toContain('Set GITNEXUS_EMBEDDING_DIMS=768');
+      expect(JSON.stringify(records)).not.toContain(error.stack);
+      expect(
+        records.some((r) => typeof r.msg === 'string' && r.msg.includes('Analysis failed')),
+      ).toBe(false);
     });
   });
 

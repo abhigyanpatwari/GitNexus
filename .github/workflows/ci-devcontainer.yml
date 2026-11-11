@@ -57,6 +57,28 @@ jobs:
           bash -n .devcontainer/seed-codex.sh
           bash -n .devcontainer/tune-9p.sh
 
+  # initialize-volumes.cjs runs on developer hosts before the container exists,
+  # so its tests also run on macOS and Windows. Container-side tests skip there.
+  # The importer needs only Node, Git and the host's tar; no npm install.
+  host-importer:
+    name: Host importer tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      # persist-credentials: false — read-only test job; see config-transforms.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Unit-test the host-side importer
+        run: node --test .devcontainer/initialize-volumes.test.cjs
+
   build:
     name: Build devcontainer image (${{ matrix.profile }})
     runs-on: ubuntu-latest

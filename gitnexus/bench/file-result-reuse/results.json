@@ -1,0 +1,1547 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-09",
+  "baselineSourceCommit": "18b28f1261ad7bc91282ce4fa7c5004296503bb5",
+  "candidateBuildDigest": "331a89ddd96ea3683e973f291df413ad522805da8c89fd3d76b4d4817e0cc0e0",
+  "environment": {
+    "platform": "linux-x64",
+    "node": "v22.23.3",
+    "workers": 2,
+    "compression": "zstd level 3",
+    "visibleCpus": 24,
+    "exclusiveHost": false,
+    "notes": "Shared container with concurrent test suites. Fresh Node process and cache per trial. Parser pipeline and parser-cache save measured; graph database publication and embeddings excluded. Candidate source includes uncommitted changes on driverCheckoutHead. Baseline dist built from baselineSourceCommit; driverCheckoutHead is not its source commit."
+  },
+  "primary": {
+    "synthetic": {
+      "baseline": [
+        {
+          "log": "gitnexus-3849-paired-bench-synthetic-baseline-1.log",
+          "provenance": {
+            "sourceDigest": "f30b3018a7a57d407369133c8ce585ed336bc8233cfd9f1a2bdd1ed310d279a4",
+            "sourceFiles": 1024,
+            "node": "v22.23.3",
+            "workers": 2,
+            "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+            "buildDigest": "7a6a9f55d7aaa4af3c1e4f15f806f8b0a081bc50cabcf87e0f5482fd102aeb43",
+            "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+          },
+          "measurements": [
+            {
+              "kind": "cold",
+              "pipelineMs": 15395.807963000001,
+              "withSaveMs": 15602.469389,
+              "cacheBytes": 83184133,
+              "cacheFiles": 258,
+              "peakRssKb": 638784,
+              "reparsed": 1024,
+              "hits": 0,
+              "workersStarted": true,
+              "nodes": 22971,
+              "edges": 46294,
+              "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+            },
+            {
+              "kind": "warm",
+              "pipelineMs": 4052.3704959999995,
+              "withSaveMs": 4261.0498560000015,
+              "cacheBytes": 83184133,
+              "cacheFiles": 258,
+              "peakRssKb": 687860,
+              "reparsed": 0,
+              "hits": 1024,
+              "workersStarted": false,
+              "nodes": 22971,
+              "edges": 46294,
+              "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+            },
+            {
+              "kind": "edit",
+              "pipelineMs": 5917.671534000001,
+              "withSaveMs": 6150.913542000002,
+              "cacheBytes": 83187495,
+              "cacheFiles": 259,
+              "peakRssKb": 802920,
+              "reparsed": 8,
+              "hits": 1016,
+              "workersStarted": true,
+              "nodes": 22972,
+              "edges": 46295,
+              "digest": "c5677b146af7f51d31163bb1488c1bad7f71c8ed527b9cfd7298f0056750bf9a"
+            },
+            {
+              "kind": "two-edits",
+              "pipelineMs": 5600.322250999998,
+              "withSaveMs": 5786.169109999995,
+              "cacheBytes": 83194014,
+              "cacheFiles": 259,
+              "peakRssKb": 821824,
+              "reparsed": 13,
+              "hits": 1011,
+              "workersStarted": true,
+              "nodes": 22974,
+              "edges": 46297,
+              "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+            },
+            {
+              "kind": "repack",
+              "pipelineMs": 18590.255921999997,
+              "withSaveMs": 19397.231423999998,
+              "cacheBytes": 83441668,
+              "cacheFiles": 1150,
+              "peakRssKb": 1005336,
+              "reparsed": 1022,
+              "hits": 2,
+              "workersStarted": true,
+              "nodes": 22974,
+              "edges": 46297,
+              "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+            }
+          ]
+        },
+        {
+          "log": "gitnexus-3849-paired-bench-synthetic-baseline-2.log",
+          "provenance": {
+            "sourceDigest": "f30b3018a7a57d407369133c8ce585ed336bc8233cfd9f1a2bdd1ed310d279a4",
+            "sourceFiles": 1024,
+            "node": "v22.23.3",
+            "workers": 2,
+            "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+            "buildDigest": "7a6a9f55d7aaa4af3c1e4f15f806f8b0a081bc50cabcf87e0f5482fd102aeb43",
+            "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+          },
+          "measurements": [
+            {
+              "kind": "cold",
+              "pipelineMs": 18466.88637,
+              "withSaveMs": 18697.585509,
+              "cacheBytes": 83184133,
+              "cacheFiles": 258,
+              "peakRssKb": 581392,
+              "reparsed": 1024,
+              "hits": 0,
+              "workersStarted": true,
+              "nodes": 22971,
+              "edges": 46294,
+              "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+            },
+            {
+              "kind": "warm",
+              "pipelineMs": 4075.7246650000016,
+              "withSaveMs": 4252.250154000001,
+              "cacheBytes": 83184133,
+              "cacheFiles": 258,
+              "peakRssKb": 742024,
+              "reparsed": 0,
+              "hits": 1024,
+              "workersStarted": false,
+              "nodes": 22971,
+              "edges": 46294,
+              "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+            },
+            {
+              "kind": "edit",
+              "pipelineMs": 5322.710601999999,
+              "withSaveMs": 5486.278167999997,
+              "cacheBytes": 83187495,
+              "cacheFiles": 259,
+              "peakRssKb": 865128,
+              "reparsed": 8,
+              "hits": 1016,
+              "workersStarted": true,
+              "nodes": 22972,
+              "edges": 46295,
+              "digest": "c5677b146af7f51d31163bb1488c1bad7f71c8ed527b9cfd7298f0056750bf9a"
+            },
+            {
+              "kind": "two-edits",
+              "pipelineMs": 5027.591030999996,
+              "withSaveMs": 5203.786228999998,
+              "cacheBytes": 83194014,
+              "cacheFiles": 259,
+              "peakRssKb": 865128,
+              "reparsed": 13,
+              "hits": 1011,
+              "workersStarted": true,
+              "nodes": 22974,
+              "edges": 46297,
+              "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+            },
+            {
+              "kind": "repack",
+              "pipelineMs": 17591.999495999997,
+              "withSaveMs": 18464.661819,
+              "cacheBytes": 83441668,
+              "cacheFiles": 1150,
+              "peakRssKb": 958880,
+              "reparsed": 1022,
+              "hits": 2,
+              "workersStarted": true,
+              "nodes": 22974,
+              "edges": 46297,
+              "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+            }
+          ]
+        },
+        {
+          "log": "gitnexus-3849-paired-bench-synthetic-baseline-3.log",
+          "provenance": {
+            "sourceDigest": "f30b3018a7a57d407369133c8ce585ed336bc8233cfd9f1a2bdd1ed310d279a4",
+            "sourceFiles": 1024,
+            "node": "v22.23.3",
+            "workers": 2,
+            "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+            "buildDigest": "7a6a9f55d7aaa4af3c1e4f15f806f8b0a081bc50cabcf87e0f5482fd102aeb43",
+            "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+          },
+          "measurements": [
+            {
+              "kind": "cold",
+              "pipelineMs": 13984.482662000002,
+              "withSaveMs": 14162.425499,
+              "cacheBytes": 83184133,
+              "cacheFiles": 258,
+              "peakRssKb": 717504,
+              "reparsed": 1024,
+              "hits": 0,
+              "workersStarted": true,
+              "nodes": 22971,
+              "edges": 46294,
+              "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+            },
+            {
+              "kind": "warm",
+              "pipelineMs": 3591.0171039999987,
+              "withSaveMs": 3739.7990910000008,
+              "cacheBytes": 83184133,
+              "cacheFiles": 258,
+              "peakRssKb": 797864,
+              "reparsed": 0,
+              "hits": 1024,
+              "workersStarted": false,
+              "nodes": 22971,
+              "edges": 46294,
+              "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+            },
+            {
+              "kind": "edit",
+              "pipelineMs": 4757.403521,
+              "withSaveMs": 4929.656993999997,
+              "cacheBytes": 83187495,
+              "cacheFiles": 259,
+              "peakRssKb": 899300,
+              "reparsed": 8,
+              "hits": 1016,
+              "workersStarted": true,
+              "nodes": 22972,
+              "edges": 46295,
+              "digest": "c5677b146af7f51d31163bb1488c1bad7f71c8ed527b9cfd7298f0056750bf9a"
+            },
+            {
+              "kind": "two-edits",
+              "pipelineMs": 5033.970023000002,
+              "withSaveMs": 5205.702445000003,
+              "cacheBytes": 83194014,
+              "cacheFiles": 259,
+              "peakRssKb": 905156,
+              "reparsed": 13,
+              "hits": 1011,
+              "workersStarted": true,
+              "nodes": 22974,
+              "edges": 46297,
+              "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+            },
+            {
+              "kind": "repack",
+              "pipelineMs": 15945.927507,
+              "withSaveMs": 16550.702554000003,
+              "cacheBytes": 83441668,
+              "cacheFiles": 1150,
+              "peakRssKb": 1022172,
+              "reparsed": 1022,
+              "hits": 2,
+              "workersStarted": true,
+              "nodes": 22974,
+              "edges": 46297,
+              "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+            }
+          ]
+        }
+      ],
+      "candidate": [
+        {
+          "log": "gitnexus-3849-paired-bench-synthetic-candidate-1.log",
+          "provenance": {
+            "sourceDigest": "f30b3018a7a57d407369133c8ce585ed336bc8233cfd9f1a2bdd1ed310d279a4",
+            "sourceFiles": 1024,
+            "node": "v22.23.3",
+            "workers": 2,
+            "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+            "buildDigest": "331a89ddd96ea3683e973f291df413ad522805da8c89fd3d76b4d4817e0cc0e0",
+            "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+          },
+          "measurements": [
+            {
+              "kind": "cold",
+              "pipelineMs": 17200.555145,
+              "withSaveMs": 17338.055712,
+              "cacheBytes": 6963217,
+              "cacheFiles": 4,
+              "peakRssKb": 730816,
+              "reparsed": 1024,
+              "hits": 0,
+              "workersStarted": true,
+              "nodes": 22971,
+              "edges": 46294,
+              "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+            },
+            {
+              "kind": "warm",
+              "pipelineMs": 4328.523935000001,
+              "withSaveMs": 4477.7478169999995,
+              "cacheBytes": 6963217,
+              "cacheFiles": 4,
+              "peakRssKb": 792364,
+              "reparsed": 0,
+              "hits": 1024,
+              "workersStarted": false,
+              "nodes": 22971,
+              "edges": 46294,
+              "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+            },
+            {
+              "kind": "edit",
+              "pipelineMs": 5554.878398000001,
+              "withSaveMs": 5714.373266999999,
+              "cacheBytes": 6963515,
+              "cacheFiles": 4,
+              "peakRssKb": 886752,
+              "reparsed": 1,
+              "hits": 1023,
+              "workersStarted": true,
+              "nodes": 22972,
+              "edges": 46295,
+              "digest": "c5677b146af7f51d31163bb1488c1bad7f71c8ed527b9cfd7298f0056750bf9a"
+            },
+            {
+              "kind": "two-edits",
+              "pipelineMs": 5500.426017999998,
+              "withSaveMs": 5630.516403000001,
+              "cacheBytes": 6964021,
+              "cacheFiles": 4,
+              "peakRssKb": 897536,
+              "reparsed": 2,
+              "hits": 1022,
+              "workersStarted": true,
+              "nodes": 22974,
+              "edges": 46297,
+              "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+            },
+            {
+              "kind": "repack",
+              "pipelineMs": 4809.316639999997,
+              "withSaveMs": 4981.581609000001,
+              "cacheBytes": 6964021,
+              "cacheFiles": 4,
+              "peakRssKb": 897536,
+              "reparsed": 0,
+              "hits": 1024,
+              "workersStarted": false,
+              "nodes": 22974,
+              "edges": 46297,
+              "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+            }
+          ]
+        },
+        {
+          "log": "gitnexus-3849-paired-bench-synthetic-candidate-2.log",
+          "provenance": {
+            "sourceDigest": "f30b3018a7a57d407369133c8ce585ed336bc8233cfd9f1a2bdd1ed310d279a4",
+            "sourceFiles": 1024,
+            "node": "v22.23.3",
+            "workers": 2,
+            "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+            "buildDigest": "331a89ddd96ea3683e973f291df413ad522805da8c89fd3d76b4d4817e0cc0e0",
+            "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+          },
+          "measurements": [
+            {
+              "kind": "cold",
+              "pipelineMs": 16811.645253,
+              "withSaveMs": 16959.806692,
+              "cacheBytes": 6962684,
+              "cacheFiles": 4,
+              "peakRssKb": 624424,
+              "reparsed": 1024,
+              "hits": 0,
+              "workersStarted": true,
+              "nodes": 22971,
+              "edges": 46294,
+              "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+            },
+            {
+              "kind": "warm",
+              "pipelineMs": 4650.924485,
+              "withSaveMs": 4813.024083999997,
+              "cacheBytes": 6962684,
+              "cacheFiles": 4,
+              "peakRssKb": 753128,
+              "reparsed": 0,
+              "hits": 1024,
+              "workersStarted": false,
+              "nodes": 22971,
+              "edges": 46294,
+              "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+            },
+            {
+              "kind": "edit",
+              "pipelineMs": 6374.120604,
+              "withSaveMs": 6564.873232999998,
+              "cacheBytes": 6962982,
+              "cacheFiles": 4,
+              "peakRssKb": 843808,
+              "reparsed": 1,
+              "hits": 1023,
+              "workersStarted": true,
+              "nodes": 22972,
+              "edges": 46295,
+              "digest": "c5677b146af7f51d31163bb1488c1bad7f71c8ed527b9cfd7298f0056750bf9a"
+            },
+            {
+              "kind": "two-edits",
+              "pipelineMs": 6798.362083,
+              "withSaveMs": 7080.236239999998,
+              "cacheBytes": 6963488,
+              "cacheFiles": 4,
+              "peakRssKb": 855376,
+              "reparsed": 2,
+              "hits": 1022,
+              "workersStarted": true,
+              "nodes": 22974,
+              "edges": 46297,
+              "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+            },
+            {
+              "kind": "repack",
+              "pipelineMs": 6940.32273,
+              "withSaveMs": 7129.641950999998,
+              "cacheBytes": 6963488,
+              "cacheFiles": 4,
+              "peakRssKb": 855376,
+              "reparsed": 0,
+              "hits": 1024,
+              "workersStarted": false,
+              "nodes": 22974,
+              "edges": 46297,
+              "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+            }
+          ]
+        },
+        {
+          "log": "gitnexus-3849-paired-bench-synthetic-candidate-3.log",
+          "provenance": {
+            "sourceDigest": "f30b3018a7a57d407369133c8ce585ed336bc8233cfd9f1a2bdd1ed310d279a4",
+            "sourceFiles": 1024,
+            "node": "v22.23.3",
+            "workers": 2,
+            "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+            "buildDigest": "331a89ddd96ea3683e973f291df413ad522805da8c89fd3d76b4d4817e0cc0e0",
+            "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+          },
+          "measurements": [
+            {
+              "kind": "cold",
+              "pipelineMs": 15203.663343000002,
+              "withSaveMs": 15337.385427,
+              "cacheBytes": 6962688,
+              "cacheFiles": 4,
+              "peakRssKb": 686104,
+              "reparsed": 1024,
+              "hits": 0,
+              "workersStarted": true,
+              "nodes": 22971,
+              "edges": 46294,
+              "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+            },
+            {
+              "kind": "warm",
+              "pipelineMs": 3764.506961000003,
+              "withSaveMs": 3879.0841580000015,
+              "cacheBytes": 6962688,
+              "cacheFiles": 4,
+              "peakRssKb": 746660,
+              "reparsed": 0,
+              "hits": 1024,
+              "workersStarted": false,
+              "nodes": 22971,
+              "edges": 46294,
+              "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+            },
+            {
+              "kind": "edit",
+              "pipelineMs": 4680.3225939999975,
+              "withSaveMs": 4792.5871179999995,
+              "cacheBytes": 6962986,
+              "cacheFiles": 4,
+              "peakRssKb": 840164,
+              "reparsed": 1,
+              "hits": 1023,
+              "workersStarted": true,
+              "nodes": 22972,
+              "edges": 46295,
+              "digest": "c5677b146af7f51d31163bb1488c1bad7f71c8ed527b9cfd7298f0056750bf9a"
+            },
+            {
+              "kind": "two-edits",
+              "pipelineMs": 4510.289154000002,
+              "withSaveMs": 4627.471829999999,
+              "cacheBytes": 6963492,
+              "cacheFiles": 4,
+              "peakRssKb": 852868,
+              "reparsed": 2,
+              "hits": 1022,
+              "workersStarted": true,
+              "nodes": 22974,
+              "edges": 46297,
+              "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+            },
+            {
+              "kind": "repack",
+              "pipelineMs": 4355.235702000002,
+              "withSaveMs": 4472.994484999999,
+              "cacheBytes": 6963492,
+              "cacheFiles": 4,
+              "peakRssKb": 852868,
+              "reparsed": 0,
+              "hits": 1024,
+              "workersStarted": false,
+              "nodes": 22974,
+              "edges": 46297,
+              "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+            }
+          ]
+        }
+      ]
+    },
+    "real": {
+      "baseline": [
+        {
+          "log": "gitnexus-3849-final-bench-real-baseline-1.log",
+          "provenance": {
+            "sourceDigest": "3704edad4110daff12f3d6c44ccc69c6a7a24eabc64b2cba10c72c6cd6e10d69",
+            "sourceFiles": 1126,
+            "node": "v22.23.3",
+            "workers": 2,
+            "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+            "buildDigest": "7a6a9f55d7aaa4af3c1e4f15f806f8b0a081bc50cabcf87e0f5482fd102aeb43",
+            "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+          },
+          "measurements": [
+            {
+              "kind": "cold",
+              "pipelineMs": 74677.717443,
+              "withSaveMs": 75659.897228,
+              "cacheBytes": 299851287,
+              "cacheFiles": 263,
+              "peakRssKb": 1354460,
+              "reparsed": 1126,
+              "hits": 0,
+              "workersStarted": true,
+              "nodes": 36528,
+              "edges": 109058,
+              "digest": "315fb00d630496a853971cf7a4a58e08eae8f1c8f9407e500620f1a1156c4edf"
+            },
+            {
+              "kind": "warm",
+              "pipelineMs": 24401.277755000003,
+              "withSaveMs": 24689.279045999996,
+              "cacheBytes": 299851287,
+              "cacheFiles": 263,
+              "peakRssKb": 1630704,
+              "reparsed": 0,
+              "hits": 1126,
+              "workersStarted": false,
+              "nodes": 36528,
+              "edges": 109058,
+              "digest": "315fb00d630496a853971cf7a4a58e08eae8f1c8f9407e500620f1a1156c4edf"
+            },
+            {
+              "kind": "edit",
+              "pipelineMs": 27654.356704999984,
+              "withSaveMs": 29015.17005799999,
+              "cacheBytes": 299854964,
+              "cacheFiles": 263,
+              "peakRssKb": 1924912,
+              "reparsed": 14,
+              "hits": 1112,
+              "workersStarted": true,
+              "nodes": 36529,
+              "edges": 109059,
+              "digest": "666519e5c7f8f74758d6b28bae52e4a352ba2bbb7037307c1132d6ef91089f56"
+            },
+            {
+              "kind": "two-edits",
+              "pipelineMs": 26291.393866,
+              "withSaveMs": 26577.57547099999,
+              "cacheBytes": 299862765,
+              "cacheFiles": 264,
+              "peakRssKb": 2054260,
+              "reparsed": 24,
+              "hits": 1102,
+              "workersStarted": true,
+              "nodes": 36531,
+              "edges": 109061,
+              "digest": "ed732239620666b219c115cd58561226beab8a568003f77661ceb3c8b0e72360"
+            },
+            {
+              "kind": "repack",
+              "pipelineMs": 107142.986171,
+              "withSaveMs": 112729.89098600001,
+              "cacheBytes": 300473167,
+              "cacheFiles": 2175,
+              "peakRssKb": 2086560,
+              "reparsed": 1126,
+              "hits": 0,
+              "workersStarted": true,
+              "nodes": 36531,
+              "edges": 109061,
+              "digest": "ed732239620666b219c115cd58561226beab8a568003f77661ceb3c8b0e72360"
+            }
+          ]
+        },
+        {
+          "log": "gitnexus-3849-final-bench-real-baseline-2.log",
+          "provenance": {
+            "sourceDigest": "3704edad4110daff12f3d6c44ccc69c6a7a24eabc64b2cba10c72c6cd6e10d69",
+            "sourceFiles": 1126,
+            "node": "v22.23.3",
+            "workers": 2,
+            "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+            "buildDigest": "7a6a9f55d7aaa4af3c1e4f15f806f8b0a081bc50cabcf87e0f5482fd102aeb43",
+            "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+          },
+          "measurements": [
+            {
+              "kind": "cold",
+              "pipelineMs": 67852.281302,
+              "withSaveMs": 68260.160396,
+              "cacheBytes": 299851287,
+              "cacheFiles": 263,
+              "peakRssKb": 1349528,
+              "reparsed": 1126,
+              "hits": 0,
+              "workersStarted": true,
+              "nodes": 36528,
+              "edges": 109058,
+              "digest": "315fb00d630496a853971cf7a4a58e08eae8f1c8f9407e500620f1a1156c4edf"
+            },
+            {
+              "kind": "warm",
+              "pipelineMs": 28990.755053999994,
+              "withSaveMs": 29322.353264000005,
+              "cacheBytes": 299851287,
+              "cacheFiles": 263,
+              "peakRssKb": 1591968,
+              "reparsed": 0,
+              "hits": 1126,
+              "workersStarted": false,
+              "nodes": 36528,
+              "edges": 109058,
+              "digest": "315fb00d630496a853971cf7a4a58e08eae8f1c8f9407e500620f1a1156c4edf"
+            },
+            {
+              "kind": "edit",
+              "pipelineMs": 33610.897209999996,
+              "withSaveMs": 33955.88117800001,
+              "cacheBytes": 299854964,
+              "cacheFiles": 263,
+              "peakRssKb": 1901000,
+              "reparsed": 14,
+              "hits": 1112,
+              "workersStarted": true,
+              "nodes": 36529,
+              "edges": 109059,
+              "digest": "666519e5c7f8f74758d6b28bae52e4a352ba2bbb7037307c1132d6ef91089f56"
+            },
+            {
+              "kind": "two-edits",
+              "pipelineMs": 28487.047801999986,
+              "withSaveMs": 28860.078502999997,
+              "cacheBytes": 299862765,
+              "cacheFiles": 264,
+              "peakRssKb": 2028604,
+              "reparsed": 24,
+              "hits": 1102,
+              "workersStarted": true,
+              "nodes": 36531,
+              "edges": 109061,
+              "digest": "ed732239620666b219c115cd58561226beab8a568003f77661ceb3c8b0e72360"
+            },
+            {
+              "kind": "repack",
+              "pipelineMs": 112797.63491100003,
+              "withSaveMs": 114879.984558,
+              "cacheBytes": 300473167,
+              "cacheFiles": 2175,
+              "peakRssKb": 2051968,
+              "reparsed": 1126,
+              "hits": 0,
+              "workersStarted": true,
+              "nodes": 36531,
+              "edges": 109061,
+              "digest": "ed732239620666b219c115cd58561226beab8a568003f77661ceb3c8b0e72360"
+            }
+          ]
+        },
+        {
+          "log": "gitnexus-3849-final-bench-real-baseline-3.log",
+          "provenance": {
+            "sourceDigest": "3704edad4110daff12f3d6c44ccc69c6a7a24eabc64b2cba10c72c6cd6e10d69",
+            "sourceFiles": 1126,
+            "node": "v22.23.3",
+            "workers": 2,
+            "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+            "buildDigest": "7a6a9f55d7aaa4af3c1e4f15f806f8b0a081bc50cabcf87e0f5482fd102aeb43",
+            "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+          },
+          "measurements": [
+            {
+              "kind": "cold",
+              "pipelineMs": 85317.739882,
+              "withSaveMs": 85899.253006,
+              "cacheBytes": 299851287,
+              "cacheFiles": 263,
+              "peakRssKb": 1364716,
+              "reparsed": 1126,
+              "hits": 0,
+              "workersStarted": true,
+              "nodes": 36528,
+              "edges": 109058,
+              "digest": "315fb00d630496a853971cf7a4a58e08eae8f1c8f9407e500620f1a1156c4edf"
+            },
+            {
+              "kind": "warm",
+              "pipelineMs": 33175.12799200001,
+              "withSaveMs": 33549.691296000005,
+              "cacheBytes": 299851287,
+              "cacheFiles": 263,
+              "peakRssKb": 1594768,
+              "reparsed": 0,
+              "hits": 1126,
+              "workersStarted": false,
+              "nodes": 36528,
+              "edges": 109058,
+              "digest": "315fb00d630496a853971cf7a4a58e08eae8f1c8f9407e500620f1a1156c4edf"
+            },
+            {
+              "kind": "edit",
+              "pipelineMs": 36688.656154,
+              "withSaveMs": 37925.71391599998,
+              "cacheBytes": 299854964,
+              "cacheFiles": 263,
+              "peakRssKb": 1774128,
+              "reparsed": 14,
+              "hits": 1112,
+              "workersStarted": true,
+              "nodes": 36529,
+              "edges": 109059,
+              "digest": "666519e5c7f8f74758d6b28bae52e4a352ba2bbb7037307c1132d6ef91089f56"
+            },
+            {
+              "kind": "two-edits",
+              "pipelineMs": 36002.05806500002,
+              "withSaveMs": 37068.393045000004,
+              "cacheBytes": 299862765,
+              "cacheFiles": 264,
+              "peakRssKb": 1871972,
+              "reparsed": 24,
+              "hits": 1102,
+              "workersStarted": true,
+              "nodes": 36531,
+              "edges": 109061,
+              "digest": "ed732239620666b219c115cd58561226beab8a568003f77661ceb3c8b0e72360"
+            },
+            {
+              "kind": "repack",
+              "pipelineMs": 161522.85158999998,
+              "withSaveMs": 168740.408973,
+              "cacheBytes": 300473167,
+              "cacheFiles": 2175,
+              "peakRssKb": 2066828,
+              "reparsed": 1126,
+              "hits": 0,
+              "workersStarted": true,
+              "nodes": 36531,
+              "edges": 109061,
+              "digest": "ed732239620666b219c115cd58561226beab8a568003f77661ceb3c8b0e72360"
+            }
+          ]
+        }
+      ],
+      "candidate": [
+        {
+          "log": "gitnexus-3849-final-bench-real-candidate-3.log",
+          "provenance": {
+            "sourceDigest": "3704edad4110daff12f3d6c44ccc69c6a7a24eabc64b2cba10c72c6cd6e10d69",
+            "sourceFiles": 1126,
+            "node": "v22.23.3",
+            "workers": 2,
+            "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+            "buildDigest": "331a89ddd96ea3683e973f291df413ad522805da8c89fd3d76b4d4817e0cc0e0",
+            "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+          },
+          "measurements": [
+            {
+              "kind": "cold",
+              "pipelineMs": 84921.708525,
+              "withSaveMs": 85179.44879499999,
+              "cacheBytes": 30224979,
+              "cacheFiles": 4,
+              "peakRssKb": 1385528,
+              "reparsed": 1126,
+              "hits": 0,
+              "workersStarted": true,
+              "nodes": 36528,
+              "edges": 109058,
+              "digest": "315fb00d630496a853971cf7a4a58e08eae8f1c8f9407e500620f1a1156c4edf"
+            },
+            {
+              "kind": "warm",
+              "pipelineMs": 27084.184725999992,
+              "withSaveMs": 27308.029169999994,
+              "cacheBytes": 30224979,
+              "cacheFiles": 4,
+              "peakRssKb": 1627668,
+              "reparsed": 0,
+              "hits": 1126,
+              "workersStarted": false,
+              "nodes": 36528,
+              "edges": 109058,
+              "digest": "315fb00d630496a853971cf7a4a58e08eae8f1c8f9407e500620f1a1156c4edf"
+            },
+            {
+              "kind": "edit",
+              "pipelineMs": 30502.048424000008,
+              "withSaveMs": 30775.05425799999,
+              "cacheBytes": 30225442,
+              "cacheFiles": 4,
+              "peakRssKb": 1882048,
+              "reparsed": 1,
+              "hits": 1125,
+              "workersStarted": true,
+              "nodes": 36529,
+              "edges": 109059,
+              "digest": "666519e5c7f8f74758d6b28bae52e4a352ba2bbb7037307c1132d6ef91089f56"
+            },
+            {
+              "kind": "two-edits",
+              "pipelineMs": 33414.288742000004,
+              "withSaveMs": 33688.762017,
+              "cacheBytes": 30226081,
+              "cacheFiles": 4,
+              "peakRssKb": 1974640,
+              "reparsed": 2,
+              "hits": 1124,
+              "workersStarted": true,
+              "nodes": 36531,
+              "edges": 109061,
+              "digest": "ed732239620666b219c115cd58561226beab8a568003f77661ceb3c8b0e72360"
+            },
+            {
+              "kind": "repack",
+              "pipelineMs": 30810.57602800001,
+              "withSaveMs": 31060.23215300002,
+              "cacheBytes": 30226081,
+              "cacheFiles": 4,
+              "peakRssKb": 1991856,
+              "reparsed": 0,
+              "hits": 1126,
+              "workersStarted": false,
+              "nodes": 36531,
+              "edges": 109061,
+              "digest": "ed732239620666b219c115cd58561226beab8a568003f77661ceb3c8b0e72360"
+            }
+          ]
+        },
+        {
+          "log": "gitnexus-3849-verified-bench-real-candidate-4.log",
+          "provenance": {
+            "sourceDigest": "3704edad4110daff12f3d6c44ccc69c6a7a24eabc64b2cba10c72c6cd6e10d69",
+            "sourceFiles": 1126,
+            "node": "v22.23.3",
+            "workers": 2,
+            "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+            "buildDigest": "331a89ddd96ea3683e973f291df413ad522805da8c89fd3d76b4d4817e0cc0e0",
+            "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+          },
+          "measurements": [
+            {
+              "kind": "cold",
+              "pipelineMs": 87530.116986,
+              "withSaveMs": 88384.917615,
+              "cacheBytes": 30224869,
+              "cacheFiles": 4,
+              "peakRssKb": 1378496,
+              "reparsed": 1126,
+              "hits": 0,
+              "workersStarted": true,
+              "nodes": 36528,
+              "edges": 109058,
+              "digest": "315fb00d630496a853971cf7a4a58e08eae8f1c8f9407e500620f1a1156c4edf"
+            },
+            {
+              "kind": "warm",
+              "pipelineMs": 21735.904553,
+              "withSaveMs": 21959.31158499999,
+              "cacheBytes": 30224869,
+              "cacheFiles": 4,
+              "peakRssKb": 1634180,
+              "reparsed": 0,
+              "hits": 1126,
+              "workersStarted": false,
+              "nodes": 36528,
+              "edges": 109058,
+              "digest": "315fb00d630496a853971cf7a4a58e08eae8f1c8f9407e500620f1a1156c4edf"
+            },
+            {
+              "kind": "edit",
+              "pipelineMs": 24284.909710000007,
+              "withSaveMs": 24506.835179999995,
+              "cacheBytes": 30225318,
+              "cacheFiles": 4,
+              "peakRssKb": 1995124,
+              "reparsed": 1,
+              "hits": 1125,
+              "workersStarted": true,
+              "nodes": 36529,
+              "edges": 109059,
+              "digest": "666519e5c7f8f74758d6b28bae52e4a352ba2bbb7037307c1132d6ef91089f56"
+            },
+            {
+              "kind": "two-edits",
+              "pipelineMs": 24398.464748,
+              "withSaveMs": 24612.14682200001,
+              "cacheBytes": 30225955,
+              "cacheFiles": 4,
+              "peakRssKb": 2076220,
+              "reparsed": 2,
+              "hits": 1124,
+              "workersStarted": true,
+              "nodes": 36531,
+              "edges": 109061,
+              "digest": "ed732239620666b219c115cd58561226beab8a568003f77661ceb3c8b0e72360"
+            },
+            {
+              "kind": "repack",
+              "pipelineMs": 24612.11561799998,
+              "withSaveMs": 24791.54239399999,
+              "cacheBytes": 30225955,
+              "cacheFiles": 4,
+              "peakRssKb": 2076220,
+              "reparsed": 0,
+              "hits": 1126,
+              "workersStarted": false,
+              "nodes": 36531,
+              "edges": 109061,
+              "digest": "ed732239620666b219c115cd58561226beab8a568003f77661ceb3c8b0e72360"
+            }
+          ]
+        },
+        {
+          "log": "gitnexus-3849-verified-bench-real-candidate-5.log",
+          "provenance": {
+            "sourceDigest": "3704edad4110daff12f3d6c44ccc69c6a7a24eabc64b2cba10c72c6cd6e10d69",
+            "sourceFiles": 1126,
+            "node": "v22.23.3",
+            "workers": 2,
+            "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+            "buildDigest": "331a89ddd96ea3683e973f291df413ad522805da8c89fd3d76b4d4817e0cc0e0",
+            "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+          },
+          "measurements": [
+            {
+              "kind": "cold",
+              "pipelineMs": 64056.959931000005,
+              "withSaveMs": 64285.249505,
+              "cacheBytes": 30225500,
+              "cacheFiles": 4,
+              "peakRssKb": 1410980,
+              "reparsed": 1126,
+              "hits": 0,
+              "workersStarted": true,
+              "nodes": 36528,
+              "edges": 109058,
+              "digest": "315fb00d630496a853971cf7a4a58e08eae8f1c8f9407e500620f1a1156c4edf"
+            },
+            {
+              "kind": "warm",
+              "pipelineMs": 23254.889680000008,
+              "withSaveMs": 23492.633329000004,
+              "cacheBytes": 30225500,
+              "cacheFiles": 4,
+              "peakRssKb": 1648812,
+              "reparsed": 0,
+              "hits": 1126,
+              "workersStarted": false,
+              "nodes": 36528,
+              "edges": 109058,
+              "digest": "315fb00d630496a853971cf7a4a58e08eae8f1c8f9407e500620f1a1156c4edf"
+            },
+            {
+              "kind": "edit",
+              "pipelineMs": 29042.936039000007,
+              "withSaveMs": 29298.50808500001,
+              "cacheBytes": 30225954,
+              "cacheFiles": 4,
+              "peakRssKb": 1825224,
+              "reparsed": 1,
+              "hits": 1125,
+              "workersStarted": true,
+              "nodes": 36529,
+              "edges": 109059,
+              "digest": "666519e5c7f8f74758d6b28bae52e4a352ba2bbb7037307c1132d6ef91089f56"
+            },
+            {
+              "kind": "two-edits",
+              "pipelineMs": 29730.001674,
+              "withSaveMs": 29990.868480000005,
+              "cacheBytes": 30226591,
+              "cacheFiles": 4,
+              "peakRssKb": 1880960,
+              "reparsed": 2,
+              "hits": 1124,
+              "workersStarted": true,
+              "nodes": 36531,
+              "edges": 109061,
+              "digest": "ed732239620666b219c115cd58561226beab8a568003f77661ceb3c8b0e72360"
+            },
+            {
+              "kind": "repack",
+              "pipelineMs": 30157.888217,
+              "withSaveMs": 30429.199491999985,
+              "cacheBytes": 30226591,
+              "cacheFiles": 4,
+              "peakRssKb": 1954276,
+              "reparsed": 0,
+              "hits": 1126,
+              "workersStarted": false,
+              "nodes": 36531,
+              "edges": 109061,
+              "digest": "ed732239620666b219c115cd58561226beab8a568003f77661ceb3c8b0e72360"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "earlierSyntheticNoncontemporaneous": {
+    "baseline": [
+      {
+        "log": "gitnexus-3849-final-bench-synthetic-baseline-1.log",
+        "provenance": {
+          "sourceDigest": "f30b3018a7a57d407369133c8ce585ed336bc8233cfd9f1a2bdd1ed310d279a4",
+          "sourceFiles": 1024,
+          "node": "v22.23.3",
+          "workers": 2,
+          "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+          "buildDigest": "7a6a9f55d7aaa4af3c1e4f15f806f8b0a081bc50cabcf87e0f5482fd102aeb43",
+          "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+        },
+        "measurements": [
+          {
+            "kind": "cold",
+            "pipelineMs": 12922.104644,
+            "withSaveMs": 13123.181105000001,
+            "cacheBytes": 83184133,
+            "cacheFiles": 258,
+            "peakRssKb": 652876,
+            "reparsed": 1024,
+            "hits": 0,
+            "workersStarted": true,
+            "nodes": 22971,
+            "edges": 46294,
+            "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+          },
+          {
+            "kind": "warm",
+            "pipelineMs": 3351.441404000001,
+            "withSaveMs": 3473.070087,
+            "cacheBytes": 83184133,
+            "cacheFiles": 258,
+            "peakRssKb": 778320,
+            "reparsed": 0,
+            "hits": 1024,
+            "workersStarted": false,
+            "nodes": 22971,
+            "edges": 46294,
+            "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+          },
+          {
+            "kind": "edit",
+            "pipelineMs": 4205.773047999999,
+            "withSaveMs": 4327.577083,
+            "cacheBytes": 83187495,
+            "cacheFiles": 259,
+            "peakRssKb": 896596,
+            "reparsed": 8,
+            "hits": 1016,
+            "workersStarted": true,
+            "nodes": 22972,
+            "edges": 46295,
+            "digest": "c5677b146af7f51d31163bb1488c1bad7f71c8ed527b9cfd7298f0056750bf9a"
+          },
+          {
+            "kind": "two-edits",
+            "pipelineMs": 4269.231499000001,
+            "withSaveMs": 4413.465014999998,
+            "cacheBytes": 83194014,
+            "cacheFiles": 259,
+            "peakRssKb": 896596,
+            "reparsed": 13,
+            "hits": 1011,
+            "workersStarted": true,
+            "nodes": 22974,
+            "edges": 46297,
+            "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+          },
+          {
+            "kind": "repack",
+            "pipelineMs": 12587.991472999998,
+            "withSaveMs": 13073.802897999998,
+            "cacheBytes": 83441668,
+            "cacheFiles": 1150,
+            "peakRssKb": 1210808,
+            "reparsed": 1022,
+            "hits": 2,
+            "workersStarted": true,
+            "nodes": 22974,
+            "edges": 46297,
+            "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+          }
+        ]
+      },
+      {
+        "log": "gitnexus-3849-final-bench-synthetic-baseline-2.log",
+        "provenance": {
+          "sourceDigest": "f30b3018a7a57d407369133c8ce585ed336bc8233cfd9f1a2bdd1ed310d279a4",
+          "sourceFiles": 1024,
+          "node": "v22.23.3",
+          "workers": 2,
+          "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+          "buildDigest": "7a6a9f55d7aaa4af3c1e4f15f806f8b0a081bc50cabcf87e0f5482fd102aeb43",
+          "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+        },
+        "measurements": [
+          {
+            "kind": "cold",
+            "pipelineMs": 11309.635921000001,
+            "withSaveMs": 11442.915252,
+            "cacheBytes": 83184133,
+            "cacheFiles": 258,
+            "peakRssKb": 642964,
+            "reparsed": 1024,
+            "hits": 0,
+            "workersStarted": true,
+            "nodes": 22971,
+            "edges": 46294,
+            "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+          },
+          {
+            "kind": "warm",
+            "pipelineMs": 2731.1788910000014,
+            "withSaveMs": 2842.5068690000007,
+            "cacheBytes": 83184133,
+            "cacheFiles": 258,
+            "peakRssKb": 762856,
+            "reparsed": 0,
+            "hits": 1024,
+            "workersStarted": false,
+            "nodes": 22971,
+            "edges": 46294,
+            "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+          },
+          {
+            "kind": "edit",
+            "pipelineMs": 3960.8408720000007,
+            "withSaveMs": 4102.158620999999,
+            "cacheBytes": 83187495,
+            "cacheFiles": 259,
+            "peakRssKb": 864144,
+            "reparsed": 8,
+            "hits": 1016,
+            "workersStarted": true,
+            "nodes": 22972,
+            "edges": 46295,
+            "digest": "c5677b146af7f51d31163bb1488c1bad7f71c8ed527b9cfd7298f0056750bf9a"
+          },
+          {
+            "kind": "two-edits",
+            "pipelineMs": 4285.044571999999,
+            "withSaveMs": 4396.927625,
+            "cacheBytes": 83194014,
+            "cacheFiles": 259,
+            "peakRssKb": 873244,
+            "reparsed": 13,
+            "hits": 1011,
+            "workersStarted": true,
+            "nodes": 22974,
+            "edges": 46297,
+            "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+          },
+          {
+            "kind": "repack",
+            "pipelineMs": 12418.558086000001,
+            "withSaveMs": 12936.027071,
+            "cacheBytes": 83441668,
+            "cacheFiles": 1150,
+            "peakRssKb": 986424,
+            "reparsed": 1022,
+            "hits": 2,
+            "workersStarted": true,
+            "nodes": 22974,
+            "edges": 46297,
+            "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+          }
+        ]
+      },
+      {
+        "log": "gitnexus-3849-final-bench-synthetic-baseline-3.log",
+        "provenance": {
+          "sourceDigest": "f30b3018a7a57d407369133c8ce585ed336bc8233cfd9f1a2bdd1ed310d279a4",
+          "sourceFiles": 1024,
+          "node": "v22.23.3",
+          "workers": 2,
+          "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+          "buildDigest": "7a6a9f55d7aaa4af3c1e4f15f806f8b0a081bc50cabcf87e0f5482fd102aeb43",
+          "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+        },
+        "measurements": [
+          {
+            "kind": "cold",
+            "pipelineMs": 11012.097962,
+            "withSaveMs": 11153.227455999999,
+            "cacheBytes": 83184133,
+            "cacheFiles": 258,
+            "peakRssKb": 644144,
+            "reparsed": 1024,
+            "hits": 0,
+            "workersStarted": true,
+            "nodes": 22971,
+            "edges": 46294,
+            "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+          },
+          {
+            "kind": "warm",
+            "pipelineMs": 2951.0735409999998,
+            "withSaveMs": 3091.381663,
+            "cacheBytes": 83184133,
+            "cacheFiles": 258,
+            "peakRssKb": 763612,
+            "reparsed": 0,
+            "hits": 1024,
+            "workersStarted": false,
+            "nodes": 22971,
+            "edges": 46294,
+            "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+          },
+          {
+            "kind": "edit",
+            "pipelineMs": 4042.8554970000023,
+            "withSaveMs": 4186.330534000002,
+            "cacheBytes": 83187495,
+            "cacheFiles": 259,
+            "peakRssKb": 868268,
+            "reparsed": 8,
+            "hits": 1016,
+            "workersStarted": true,
+            "nodes": 22972,
+            "edges": 46295,
+            "digest": "c5677b146af7f51d31163bb1488c1bad7f71c8ed527b9cfd7298f0056750bf9a"
+          },
+          {
+            "kind": "two-edits",
+            "pipelineMs": 3786.6396430000023,
+            "withSaveMs": 3900.701616000002,
+            "cacheBytes": 83194014,
+            "cacheFiles": 259,
+            "peakRssKb": 877004,
+            "reparsed": 13,
+            "hits": 1011,
+            "workersStarted": true,
+            "nodes": 22974,
+            "edges": 46297,
+            "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+          },
+          {
+            "kind": "repack",
+            "pipelineMs": 12396.936801000003,
+            "withSaveMs": 12905.359371999999,
+            "cacheBytes": 83441668,
+            "cacheFiles": 1150,
+            "peakRssKb": 992392,
+            "reparsed": 1022,
+            "hits": 2,
+            "workersStarted": true,
+            "nodes": 22974,
+            "edges": 46297,
+            "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+          }
+        ]
+      }
+    ],
+    "candidate": [
+      {
+        "log": "gitnexus-3849-verified-bench-synthetic-candidate-1.log",
+        "provenance": {
+          "sourceDigest": "f30b3018a7a57d407369133c8ce585ed336bc8233cfd9f1a2bdd1ed310d279a4",
+          "sourceFiles": 1024,
+          "node": "v22.23.3",
+          "workers": 2,
+          "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+          "buildDigest": "331a89ddd96ea3683e973f291df413ad522805da8c89fd3d76b4d4817e0cc0e0",
+          "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+        },
+        "measurements": [
+          {
+            "kind": "cold",
+            "pipelineMs": 15220.909378,
+            "withSaveMs": 15375.351278999999,
+            "cacheBytes": 6963181,
+            "cacheFiles": 4,
+            "peakRssKb": 644424,
+            "reparsed": 1024,
+            "hits": 0,
+            "workersStarted": true,
+            "nodes": 22971,
+            "edges": 46294,
+            "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+          },
+          {
+            "kind": "warm",
+            "pipelineMs": 4646.770551000001,
+            "withSaveMs": 4789.458394000001,
+            "cacheBytes": 6963181,
+            "cacheFiles": 4,
+            "peakRssKb": 767364,
+            "reparsed": 0,
+            "hits": 1024,
+            "workersStarted": false,
+            "nodes": 22971,
+            "edges": 46294,
+            "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+          },
+          {
+            "kind": "edit",
+            "pipelineMs": 5518.130880000001,
+            "withSaveMs": 5672.232185000001,
+            "cacheBytes": 6963479,
+            "cacheFiles": 4,
+            "peakRssKb": 855704,
+            "reparsed": 1,
+            "hits": 1023,
+            "workersStarted": true,
+            "nodes": 22972,
+            "edges": 46295,
+            "digest": "c5677b146af7f51d31163bb1488c1bad7f71c8ed527b9cfd7298f0056750bf9a"
+          },
+          {
+            "kind": "two-edits",
+            "pipelineMs": 5641.771125000003,
+            "withSaveMs": 5800.3030430000035,
+            "cacheBytes": 6963985,
+            "cacheFiles": 4,
+            "peakRssKb": 875496,
+            "reparsed": 2,
+            "hits": 1022,
+            "workersStarted": true,
+            "nodes": 22974,
+            "edges": 46297,
+            "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+          },
+          {
+            "kind": "repack",
+            "pipelineMs": 4977.882473999998,
+            "withSaveMs": 5138.883753000002,
+            "cacheBytes": 6963985,
+            "cacheFiles": 4,
+            "peakRssKb": 875496,
+            "reparsed": 0,
+            "hits": 1024,
+            "workersStarted": false,
+            "nodes": 22974,
+            "edges": 46297,
+            "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+          }
+        ]
+      },
+      {
+        "log": "gitnexus-3849-verified-bench-synthetic-candidate-2.log",
+        "provenance": {
+          "sourceDigest": "f30b3018a7a57d407369133c8ce585ed336bc8233cfd9f1a2bdd1ed310d279a4",
+          "sourceFiles": 1024,
+          "node": "v22.23.3",
+          "workers": 2,
+          "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+          "buildDigest": "331a89ddd96ea3683e973f291df413ad522805da8c89fd3d76b4d4817e0cc0e0",
+          "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+        },
+        "measurements": [
+          {
+            "kind": "cold",
+            "pipelineMs": 15290.615948000002,
+            "withSaveMs": 15416.142153,
+            "cacheBytes": 6963585,
+            "cacheFiles": 4,
+            "peakRssKb": 672628,
+            "reparsed": 1024,
+            "hits": 0,
+            "workersStarted": true,
+            "nodes": 22971,
+            "edges": 46294,
+            "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+          },
+          {
+            "kind": "warm",
+            "pipelineMs": 4650.746956999999,
+            "withSaveMs": 4786.559104,
+            "cacheBytes": 6963585,
+            "cacheFiles": 4,
+            "peakRssKb": 782176,
+            "reparsed": 0,
+            "hits": 1024,
+            "workersStarted": false,
+            "nodes": 22971,
+            "edges": 46294,
+            "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+          },
+          {
+            "kind": "edit",
+            "pipelineMs": 5749.615387999998,
+            "withSaveMs": 5929.574697,
+            "cacheBytes": 6963878,
+            "cacheFiles": 4,
+            "peakRssKb": 867624,
+            "reparsed": 1,
+            "hits": 1023,
+            "workersStarted": true,
+            "nodes": 22972,
+            "edges": 46295,
+            "digest": "c5677b146af7f51d31163bb1488c1bad7f71c8ed527b9cfd7298f0056750bf9a"
+          },
+          {
+            "kind": "two-edits",
+            "pipelineMs": 5935.254688000001,
+            "withSaveMs": 6164.026674000001,
+            "cacheBytes": 6964384,
+            "cacheFiles": 4,
+            "peakRssKb": 898360,
+            "reparsed": 2,
+            "hits": 1022,
+            "workersStarted": true,
+            "nodes": 22974,
+            "edges": 46297,
+            "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+          },
+          {
+            "kind": "repack",
+            "pipelineMs": 5903.703369000003,
+            "withSaveMs": 6075.419269000005,
+            "cacheBytes": 6964384,
+            "cacheFiles": 4,
+            "peakRssKb": 898360,
+            "reparsed": 0,
+            "hits": 1024,
+            "workersStarted": false,
+            "nodes": 22974,
+            "edges": 46297,
+            "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+          }
+        ]
+      },
+      {
+        "log": "gitnexus-3849-verified-bench-synthetic-candidate-3.log",
+        "provenance": {
+          "sourceDigest": "f30b3018a7a57d407369133c8ce585ed336bc8233cfd9f1a2bdd1ed310d279a4",
+          "sourceFiles": 1024,
+          "node": "v22.23.3",
+          "workers": 2,
+          "cliDigest": "bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38",
+          "buildDigest": "331a89ddd96ea3683e973f291df413ad522805da8c89fd3d76b4d4817e0cc0e0",
+          "driverCheckoutHead": "b22bd90dec8df440b57f88d6b9b5f6dba94c2a72"
+        },
+        "measurements": [
+          {
+            "kind": "cold",
+            "pipelineMs": 18150.305564000002,
+            "withSaveMs": 18333.903835999998,
+            "cacheBytes": 6962825,
+            "cacheFiles": 4,
+            "peakRssKb": 650708,
+            "reparsed": 1024,
+            "hits": 0,
+            "workersStarted": true,
+            "nodes": 22971,
+            "edges": 46294,
+            "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+          },
+          {
+            "kind": "warm",
+            "pipelineMs": 5530.332030999998,
+            "withSaveMs": 5730.434712999999,
+            "cacheBytes": 6962825,
+            "cacheFiles": 4,
+            "peakRssKb": 749104,
+            "reparsed": 0,
+            "hits": 1024,
+            "workersStarted": false,
+            "nodes": 22971,
+            "edges": 46294,
+            "digest": "53c09ba3497ea5c2f622f865d898a697906e516973d7fa6cf1cbbd9e78e63839"
+          },
+          {
+            "kind": "edit",
+            "pipelineMs": 6930.010739000001,
+            "withSaveMs": 7125.1916290000045,
+            "cacheBytes": 6963123,
+            "cacheFiles": 4,
+            "peakRssKb": 837280,
+            "reparsed": 1,
+            "hits": 1023,
+            "workersStarted": true,
+            "nodes": 22972,
+            "edges": 46295,
+            "digest": "c5677b146af7f51d31163bb1488c1bad7f71c8ed527b9cfd7298f0056750bf9a"
+          },
+          {
+            "kind": "two-edits",
+            "pipelineMs": 7636.004644000001,
+            "withSaveMs": 7823.414454999998,
+            "cacheBytes": 6963629,
+            "cacheFiles": 4,
+            "peakRssKb": 855004,
+            "reparsed": 2,
+            "hits": 1022,
+            "workersStarted": true,
+            "nodes": 22974,
+            "edges": 46297,
+            "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+          },
+          {
+            "kind": "repack",
+            "pipelineMs": 5662.201567999997,
+            "withSaveMs": 5885.957322999995,
+            "cacheBytes": 6963629,
+            "cacheFiles": 4,
+            "peakRssKb": 855004,
+            "reparsed": 0,
+            "hits": 1024,
+            "workersStarted": false,
+            "nodes": 22974,
+            "edges": 46297,
+            "digest": "4eb9b222ef33e4fc5f3ceb224fcb82ed0b6274b5be34946ca8ca07a5d56e22fc"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -36,9 +36,13 @@ import {
   isBlockedCallbackRegistrationCall,
 } from '../ts-js-hoc-utils.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
-import type { SkippedPath } from './clone-safety.js';
+import { makeWorkerResultCloneSafe, type SkippedPath } from './clone-safety.js';
 import { postResultCloneSafe } from './post-result.js';
 import { mergeResult } from './result-merge.js';
+import {
+  encodeFileResultSection,
+  type EncodedFileResult,
+} from '../../../storage/file-result-codec.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import type {
   ExtractedRouterConstructorPrefix,
@@ -212,6 +216,8 @@ const DURABLE_PARSED_FILE_STORAGE_PATH: string | undefined = (
   workerData as { durableParsedFileStoragePath?: string } | undefined
 )?.durableParsedFileStoragePath;
 let shardSeq = 0;
+const FILE_RESULTS_ENABLED =
+  (workerData as { fileResults?: boolean } | undefined)?.fileResults === true;
 
 // ── PDG/CFG opt-in (#2081 M1) ───────────────────────────────────────────────
 // Read ONCE at worker init from `workerData` (the worker never sees
@@ -515,7 +521,13 @@ export interface FileScopeBindings {
   bindings: [string, string][];
 }
 
+export type FileWorkerResult =
+  | { key: string; path: string; encoded: EncodedFileResult }
+  | { key: string; path: string; raw: ParseWorkerResult };
+
 export interface ParseWorkerResult {
+  /** File-local output, delivered only when the batched job reaches flush. */
+  fileResults?: FileWorkerResult[];
   nodes: ParsedNode[];
   relationships: ParsedRelationship[];
   symbols: ParsedSymbol[];
@@ -605,6 +617,7 @@ export interface ParseWorkerResult {
 export interface ParseWorkerInput {
   path: string;
   content: string;
+  cacheKey?: string;
 }
 
 type WorkerIncomingMessage =
@@ -1590,7 +1603,9 @@ import { unfoldableDeclarationsOf } from '../route-extractors/constant-resolver.
  * group-aborting errors go through the message handler's
  * `{ type: 'error', errorStack }` channel instead.
  */
+let warningSequence = 0;
 function reportWarning(message: string): void {
+  warningSequence++;
   if (parentPort) {
     parentPort.postMessage({ type: 'warning', message });
   } else {
@@ -3536,10 +3551,11 @@ const sharedContentDecoder = new TextDecoder('utf-8');
  * continued main-thread work.
  */
 function decodeSubBatchFiles(
-  files: Array<{ path: string; content: Uint8Array | string }>,
+  files: Array<{ path: string; content: Uint8Array | string; cacheKey?: string }>,
 ): ParseWorkerInput[] {
   return files.map((f) => ({
     path: f.path,
+    ...(f.cacheKey === undefined ? {} : { cacheKey: f.cacheKey }),
     // Test scaffolding (the writeReadyWorker preamble that wraps
     // parentPort.on) may already convert content to string before
     // calling here; tolerate both shapes so the same worker code
@@ -3558,16 +3574,88 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
     // Sub-batch mode: { type: 'sub-batch', files: [...] }
     if (msg.type === 'sub-batch') {
       const files = decodeSubBatchFiles(
-        msg.files as Array<{ path: string; content: Uint8Array | string }>,
+        msg.files as Array<{ path: string; content: Uint8Array | string; cacheKey?: string }>,
       );
-      const result = processBatch(files, (filesProcessed) => {
-        parentPort!.postMessage({
-          type: 'progress',
-          filesProcessed: cumulativeProcessed + filesProcessed,
+      if (FILE_RESULTS_ENABLED) {
+        // Scheduling remains batched. Extraction and encoding are file-local,
+        // so neither worker assignment nor a neighbour's edit changes ownership.
+        for (const file of files) {
+          const before = warningSequence;
+          const result = processBatch([file]);
+          const key = file.cacheKey;
+          if (typeof key !== 'string' || !/^[a-f0-9]{64}$/.test(key)) {
+            throw new Error(`Missing per-file parser identity for ${file.path}`);
+          }
+          let encoded: EncodedFileResult | undefined;
+          try {
+            const facts = encodeFileResultSection(key, file.path, 'facts', {
+              ...result,
+              parsedFiles: [],
+            });
+            const scopes = encodeFileResultSection(key, file.path, 'scopes', result.parsedFiles);
+            if (facts && scopes)
+              encoded = {
+                key,
+                path: file.path,
+                facts,
+                scopes,
+                cacheable:
+                  before === warningSequence &&
+                  result.fileCount === 1 &&
+                  !result.scopeExtractionFailures?.length &&
+                  !result.skippedPaths?.length &&
+                  Object.keys(result.skippedLanguages).length === 0,
+              };
+          } catch {
+            /* Optional encoding: deliver the original result uncached. */
+          }
+          if (!encoded) {
+            // Preserve the existing clone-recovery policy for this file before
+            // nesting its uncached fallback; partial scope objects are dropped.
+            const { skipped } = makeWorkerResultCloneSafe(
+              result as unknown as Record<string, unknown>,
+              {
+                dropWholeElement: new Set(['parsedFiles']),
+                skipFields: new Set(['skippedPaths']),
+              },
+            );
+            if (skipped.length) {
+              if (process.env.GITNEXUS_STRICT_CLONE === '1') {
+                throw new Error(
+                  `GITNEXUS_STRICT_CLONE: ${skipped.map((s) => `${s.path}: ${s.reason}`).join('; ')}`,
+                );
+              }
+              result.skippedPaths = [...(result.skippedPaths ?? []), ...skipped];
+              reportWarning(
+                `Sanitized uncached output for ${file.path}: ${skipped.map((s) => s.reason).join('; ')}`,
+              );
+            }
+          }
+          // Retain diagnostics on the ordinary result channel. Consumers can
+          // report skips without deserializing all encoded graph facts.
+          const telemetry = processBatch([]);
+          telemetry.fileCount = result.fileCount;
+          telemetry.skippedLanguages = result.skippedLanguages;
+          telemetry.cfgSkipped = result.cfgSkipped;
+          telemetry.skippedPaths = result.skippedPaths;
+          telemetry.scopeExtractionFailures = result.scopeExtractionFailures;
+          telemetry.fileResults = [
+            encoded ? { key, path: file.path, encoded } : { key, path: file.path, raw: result },
+          ];
+          mergeResult(accumulated, telemetry);
+          cumulativeProcessed += result.fileCount;
+          parentPort!.postMessage({ type: 'progress', filesProcessed: cumulativeProcessed });
+        }
+      } else {
+        const result = processBatch(files, (filesProcessed) => {
+          parentPort!.postMessage({
+            type: 'progress',
+            filesProcessed: cumulativeProcessed + filesProcessed,
+          });
         });
-      });
-      cumulativeProcessed += result.fileCount;
-      mergeResult(accumulated, result);
+        cumulativeProcessed += result.fileCount;
+        mergeResult(accumulated, result);
+      }
       // Signal ready for next sub-batch
       parentPort!.postMessage({ type: 'sub-batch-done' });
       return;

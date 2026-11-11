@@ -30,6 +30,40 @@
 
 > Per-repo read-only tools take an optional `repo` parameter. Omit it when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout; otherwise pass it explicitly. Mutating tools require `repo` when multiple repos are indexed and no MCP default exists. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`, except `read_file` and `grep`, which read the checkout and do not accept `branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree — switching branches and re-running `gitnexus analyze` updates it incrementally. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
 
+### AdonisJS taint coverage
+
+The TypeScript/JavaScript model recognizes directly assigned or destructured results of `input`, `qs`,
+`header`, `param`, `cookie`, `all`, `body`, `params`, `headers`, `only`, `except`,
+and `validateUsing` calls on `req`, `request`, or `ctx.request`. The request call
+must supply the entire assigned value; `await`, parentheses, and TypeScript
+`as`, `satisfies`, and non-null assertions may wrap it. For example:
+
+```ts
+const name = request.input('name');
+await db.rawQuery('select * from users where name = ' + name); // SQL injection finding
+await db.rawQuery('select * from users where name = ?', [name]); // value binding
+```
+
+`rawQuery` consumes SQL at argument 0. The model recognizes `db`, `database`, and
+`trx` receivers, plus aliases imported from `@adonisjs/lucid/services/db`.
+`Model.query()` without arguments starts a query builder and is not itself a
+SQL injection sink. `validateUsing()` remains a source: schema validation can
+accept strings that are unsafe when concatenated into SQL or executable code.
+
+Request receiver matching is conventional and exact; arbitrary aliases are not
+modeled. The call-result rules also do not cover inline calls, concatenation,
+template interpolation, method chains, `??` / `||` expressions, or wrapper calls
+such as `String(request.input('name'))`, even when the containing expression is
+assigned to a variable. For example, neither of these introduces a modeled source:
+
+```ts
+db.rawQuery(request.input('sql'));
+const name = request.input('name', '').trim();
+```
+
+A zero-finding result does not establish safety. Re-run
+`gitnexus analyze --pdg` after upgrading to rebuild findings with the new model.
+
 ### Resources for instant context
 
 | Resource                                | Purpose                                              |
@@ -174,6 +208,53 @@ definitions:
     type: Interface
     filePath: src/types/auth.ts
 ```
+
+### Search several repositories
+
+Pass `query.repo` a list of 1–10 indexed repository names or paths:
+
+```js
+query({
+  search_query: 'authentication middleware',
+  repo: ['web-client', 'auth-service', '/work/shared-types'],
+  limit: 10,
+  include_content: true,
+});
+```
+
+Array mode returns `repos`, `processes`, `process_symbols`, `definitions`,
+`per_repo`, and `partial`, even for a one-element list. Each result row carries
+`_repo`, the canonical checkout path. Symbol and process IDs remain local to their
+repository: join attachments using both `_repo` and `process_id`. A process's
+`chain` belongs to that same repository. Follow up on a symbol with
+`context({uid: row.id, repo: row._repo})`.
+
+- Results merge by local rank, with deterministic ties by repository path and ID.
+  `limit` caps processes across the entire response; definitions are capped at 20.
+  `max_symbols` still applies to each process.
+- Source previews share one 16,000-character budget across the aggregate, appear
+  once per repository/symbol pair, and retain `content_truncated` when incomplete.
+  Repositories whose retention policy excludes source do not return previews.
+- `per_repo` preserves each member's warnings, errors, timing, content availability,
+  staleness, and candidate/returned counts. There is no aggregate staleness value.
+  `partial: true` means at least one member failed or returned degraded evidence.
+  Successful peers remain available; if every member fails, the response has a
+  top-level error. Corrupt symbol identity fails the entire aggregate with recovery
+  guidance.
+- `response_sections` filters the combined data sections while retaining repository
+  metadata. `maxTokens` applies once to the complete formatted response; truncation
+  can cut JSON, as with scalar queries.
+
+The full list is validated and authorized before searching. Aliases of the same
+checkout are searched once; separate checkouts remain separate even if they share
+an index. At most four member searches run concurrently. A supplied `branch` must
+resolve for every member before any search starts. Explicit lists override MCP
+defaults and work in MCP read-only mode, subject to the server's repository allowlist.
+
+Arrays cannot contain `@group` selectors and are supported only by `query` and its
+legacy `search` alias. Other tools still take one repository. Scalar and omitted
+selectors keep their existing behavior; no repository-group configuration is needed
+for an explicit list.
 
 ### Context (360-degree Symbol View)
 

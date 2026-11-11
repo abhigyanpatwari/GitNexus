@@ -1,7 +1,6 @@
 # Analyze phase breakdown — where the time actually goes
 
-Updated 2026-11-01 with scope-emission measurements after #3796 merged, plus
-production-hardening measurements on LadybugDB **0.22.0** for unchanged dirty checkouts.
+Updated 2026-11-02 with the lexical-lookup allocation experiment below.
 Records what the `analyze`
 pipeline costs per phase and the results of optimization experiments.
 The September measurements remain below as historical
@@ -11,6 +10,193 @@ before/after comparison.
 Unlike `parse-throughput.md` (a synthetic-fixture scaffold), these numbers come
 from a real repo corpus. They are not a CI gate; the gate for the parse
 dispatch path is `bench/parse-dispatch-rounds/`.
+
+---
+
+## Lexical-lookup allocation experiment — 2026-11-02
+
+**Decision: keep experimental; the performance requirement for both workflows
+has not passed.** Fresh-process edits improved in all three pairs (8.95% lower
+median), but the first repeated-process pair took 12.68% longer and triggered
+the harness's early rejection gate. Its host load rose sharply. That does not
+prove a patch-induced regression, and it also does not establish a warm-process
+speedup. Do not promote this as a production optimization on this evidence.
+
+The patch reduces temporary allocation in `lookupNameClaim`,
+`selectClaimsAtScope` and `lookupLexicalName`: reuse frozen empty results, skip
+filters over empty inputs, avoid concatenating empty binding channels, and copy
+lookup options only when the effective position changes. Nonempty binding
+results retain snapshot semantics. Provider hooks, declaration ownership,
+shadowing, redirects and position checks still run. No semantic-result cache,
+new invalidation mechanism or native dependency is introduced.
+
+### Separate-process edit measurements
+
+| Measurement | Baseline | Candidate | Less elapsed time |
+| --- | ---: | ---: | ---: |
+| Edit 1: `save` → `load` | 122.065s | 111.135s | 8.95% |
+| Edit 2: `load` → `save` | 114.006s | 101.730s | 10.77% |
+| Edit 3: `save` → `load` | 131.285s | 111.303s | 15.22% |
+| Median edit | 122.065s | 111.135s | 8.95% |
+| All three edits | 367.356s | 324.168s | 11.76% |
+| Median scope-resolution phase | 68.197s | 62.344s | 8.58% |
+| Highest process peak RSS across edits | 4.29 GiB | 4.25 GiB | — |
+
+All three scope-resolution phases improve, but not all wall-time differences
+belong to that phase. For example, the first pair's process-detection interval
+falls from 5.889s to 1.475s, and the third pair's post-`done` work falls from
+16.551s to 7.974s. The patch does not directly change either stage. Treat the
+observed end-to-end reductions as a small shared-host screen, not a universal
+speedup or a precise attribution of saved time. One-minute host load ranges
+from 7.79 to 11.43 at the start of these measured edits.
+
+### Repeated-process screen
+
+| Measurement | Baseline | Candidate | Less elapsed time |
+| --- | ---: | ---: | ---: |
+| First edit: `save` → `load` | 109.483s | 123.364s | −12.68% |
+| Scope-resolution phase | 67.013s | 65.739s | 1.90% |
+| Ladybug write intervals | 8.814s | 12.902s | — |
+| FTS phase | 10.600s | 14.766s | — |
+| Work after `done` progress | 8.947s | 14.858s | — |
+| Process peak RSS, including setup | 5.49 GiB | 5.62 GiB | — |
+
+These intervals come from progress callbacks; they include all work between
+adjacent callbacks rather than instrumenting native operations individually.
+Baseline one-minute load fell **6.35 → 3.81**; candidate load rose
+**3.81 → 12.23**. Scope resolution improved slightly while several other
+stages slowed. Only this first pair was run, as specified by the screening
+gate; there is no three-pair warm-process median. Both graphs and persisted
+call targets matched. Persistent mode retains one process per variant and
+models repeated analysis, not watch-event scheduling or debounce latency.
+
+Separate excluded cold setup runs took 218.219s/187.148s in fresh mode and
+158.148s/153.951s in persistent mode (baseline/candidate). Each lifecycle uses
+independent index directories. Setup order is fixed and host load changes,
+so these are not controlled cold-index speedup claims. The
+[measurement receipt](lexical-lookup/measurements.json) includes every sample,
+phase duration, peak memory, graph hash, load average and runtime checksum.
+
+### Method and correctness boundaries
+
+Baseline runtime and both disposable corpus checkouts are pinned to
+`347cc99b4a237f9a71c0084167bcbcbd9d06e610`; the candidate runtime adds only the
+lookup patch. Each corpus has 3,384 indexed files / 3,120 parseable files,
+including the same control file. Node **v22.23.3**, LadybugDB **0.22.0**,
+Linux x64, Intel i9-12900K (24 logical CPUs), 16 parse workers, 8 GiB V8 heap.
+Samples run serially; paired order is baseline/candidate, candidate/baseline,
+baseline/candidate after excluded initialization runs. Runtime builds stay
+fixed throughout each comparison, with no tests or other benchmarks launched
+by this experiment concurrently. The machine is shared with other workloads.
+
+The [harness](lexical-lookup/measure.mjs) times `runFullAnalysis`, including
+incremental persistence and FTS. Process startup, graph hashing and subsequent
+persisted-target verification are outside the timer. CPU profiling and heap
+probes are off; the existing scope phase logger remains on for both variants.
+Each measured edit changes one file, reparses 22 files, hits the parser cache
+for 3,098 files, uses incremental writes and has no rebuild reasons. FTS must
+remain available. This is a real edit benchmark, not an up-to-date fast return.
+
+Every pair compares canonical hashes of **114,413 source/semantic nodes and
+318,798 relationships**. Derived Folder/Community/Process nodes and
+CONTAINS/MEMBER_OF/STEP_IN_PROCESS edges are excluded. Hashes cover the graph
+returned after persistence; cleared source content is not independently
+verified by these hashes. A separate LadybugDB query after each sample verifies
+that the control CALLS edge follows `save`/`load`. Matching graphs preserve the
+baseline's limits; they do not establish complete resolution of the corpus.
+
+Targeted tests cover mutation after a missing lookup, result snapshots, reused
+frozen options and deferred activation. The initial validation passed 137 tests
+across lexical ownership, TypeScript type ownership, block shadowing and
+TypeScript/Python/C++ native rename suites. A seeded differential screen also
+matched the original implementation in 72,000 generated lexical lookups.
+The broader scope-resolution suite then passed **3,467 tests / 175 files**
+(overlaps the initial targeted tests). The parameterized differential harness
+also passed when rerun against the same two builds.
+Build, test typecheck and ESLint passed (existing non-null assertion warnings
+remain). These were the checks completed alongside the benchmark; PR validation is recorded separately.
+
+To reproduce, build the baseline and candidate runtimes first, prepare two
+clean disposable corpus checkouts at the same commit, then run from
+`gitnexus/` (the runtime arguments name repository roots):
+
+```sh
+node bench/lexical-lookup/differential.mjs BASE_RUNTIME CANDIDATE_RUNTIME
+node bench/lexical-lookup/measure.mjs BASE_RUNTIME CANDIDATE_RUNTIME BASE_CORPUS CANDIDATE_CORPUS OUTPUT_FRESH fresh 3
+node bench/lexical-lookup/measure.mjs BASE_RUNTIME CANDIDATE_RUNTIME BASE_CORPUS CANDIDATE_CORPUS OUTPUT_PERSISTENT persistent 3
+```
+
+By default, the timing harness stops after the first edit pair if the candidate
+is not faster. To establish a baseline, set `GITNEXUS_LEXICAL_BENCH_SCREEN=0`
+to collect all three pairs regardless of their timings. Repeat each lifecycle
+in independent sessions, setting `GITNEXUS_LEXICAL_BENCH_BASE_FIRST=0` in
+alternating sessions to reverse seed and edit ordering. Both settings accept
+only `0` or `1` and are recorded in `results.json`. Report every sample and
+the variation between sessions; a screening result alone is not a baseline.
+
+The harness waits for native workers to exit normally and removes only its
+control source file. Keep builds fixed and do not run tests concurrently.
+The receipt's harness checksums identify the versions used for measurement.
+The checked-in scripts were subsequently formatted, and cleanup now attempts
+both worker shutdowns and removes the control files even if a worker fails.
+These changes are outside the timed analysis interval.
+
+### CI execution
+
+`.github/workflows/ci-tests.yml` runs the differential check and both process
+lifecycles in a dedicated job. It builds the candidate and the pull request's
+event baseline SHA, falling back to a verified first parent when the event has
+no baseline. It uses two clean sparse corpus checkouts at that baseline.
+The CI corpus contains the ingestion and shared
+scope-resolution source trees, plus Git's cone-mode parent files. It is smaller
+than the full-repository corpus measured above; its timings are a separate series.
+
+CI sets `GITNEXUS_LEXICAL_BENCH_WORKERS=2` and
+`GITNEXUS_LEXICAL_BENCH_HEAP_MIB=4096`; the local defaults remain 16 workers and
+8192 MiB. Each lifecycle requires a new output directory and retains its raw
+results and logs in the `lexical-lookup-performance` artifact. Graph and persisted
+call mismatches fail the job. CI sets `GITNEXUS_LEXICAL_BENCH_SCREEN=0` so all
+three paired edits and their correctness checks run regardless of timing noise.
+
+### Repeated baseline, 2026-11-03 (CI corpus)
+
+The [baseline receipt](lexical-lookup/baseline-20261103.json) records three
+independent sessions per lifecycle, each with three paired edits. Every pair
+was retained, including slower candidates. Runtime order was reversed in the
+middle session. The corpus is the sparse CI source tree at
+`4916e0d5e1f4d6d70d41c1f39cd244bca2c7b390`; baseline and candidate runtimes are
+`4916e0d5e1f4d6d70d41c1f39cd244bca2c7b390` and
+`6b487a529e14d59e51a9df9a44524e98705a6b71`. Both use Node 22.23.3,
+LadybugDB 0.22.0, two workers and a 4 GiB heap on the same shared host.
+
+These are medians of the three session medians; cold seeds are excluded:
+
+| Lifecycle | Baseline | PR candidate | Change |
+| --- | ---: | ---: | ---: |
+| Separate processes | 28.494s | 27.552s | 3.31% less time |
+| Repeated processes | 30.276s | 29.814s | 1.53% less time |
+
+The candidate's session medians have coefficients of variation of **5.02%**
+and **17.01%**, respectively. These small aggregate gains are inconclusive on
+this host. The receipt also retains every paired percentage change, graph hash,
+persisted call target and host-load reading. All 18 edit pairs matched 23,641
+source/semantic nodes and 64,292 relationships, and the seeded differential
+check passed 72,000 comparisons per session. Selection and reporting share the
+same corpus; no holdout was used. This does not establish a full-repository or
+watch-mode speedup.
+
+During measurement, the PR advanced to
+`6aeeace8e96603fb062dcc709e834042d5a6df74` by merging a Kotlin grammar update.
+The lookup implementations and lockfile are unchanged, but the newer native
+grammar and revision were not measured in that baseline. This receipt remains
+pinned to the earlier builds.
+
+The subsequent [optimization review in PR #3805](https://github.com/abhigyanpatwari/GitNexus/pull/3805)
+and [experiment receipt](lexical-lookup/optimization-20261103.json) compare two
+additional candidates against unchanged `6aeeace8` controls. Neither met the
+required repeatable 5% warm-process improvement with at most 3% fresh-process
+regression. Neither additional lexical candidate was retained. The harness
+makes complete, opposite-order baseline collection reproducible.
 
 ---
 

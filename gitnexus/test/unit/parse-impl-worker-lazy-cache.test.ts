@@ -15,7 +15,14 @@ import { pathToFileURL } from 'node:url';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
-import { computeChunkHash, fileContentHash } from '../../src/storage/parse-cache.js';
+import {
+  computeChunkHash,
+  fileContentHash,
+  emptyParseCache,
+  persistParseCacheFiles,
+} from '../../src/storage/parse-cache.js';
+import { encodeFileResultSection } from '../../src/storage/file-result-codec.js';
+import { writeFileResultWorker } from '../helpers/file-result-worker.js';
 import { TEST_PARSE_IDENTITY } from '../helpers/cache-identity.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
 
@@ -177,13 +184,16 @@ describe('parse-impl worker pool lazy startup', () => {
       [{ filePath: rel, contentHash: fileContentHash(content) }],
       TEST_PARSE_IDENTITY,
     );
-    const parseCache = {
-      identity: TEST_PARSE_IDENTITY,
-      entries: new Map<string, ParseWorkerResult[]>([
-        [chunkHash, [emptyWorkerResult(rel, 'cached')]],
-      ]),
-      usedKeys: new Set<string>(),
-    };
+    const parseCache = emptyParseCache(TEST_PARSE_IDENTITY);
+    await persistParseCacheFiles(parseCache, [
+      {
+        key: chunkHash,
+        path: rel,
+        cacheable: true,
+        facts: encodeFileResultSection(chunkHash, rel, 'facts', emptyWorkerResult(rel, 'cached'))!,
+        scopes: encodeFileResultSection(chunkHash, rel, 'scopes', [])!,
+      },
+    ]);
 
     const markerPath = path.join(tempDir, 'worker-spawned.marker');
     const workerPath = path.join(tempDir, 'ready-worker.js');
@@ -210,7 +220,7 @@ describe('parse-impl worker pool lazy startup', () => {
     expect(Array.from(graph.nodes.values()).some((n) => n.properties.name === 'cached')).toBe(true);
   });
 
-  it('spawns the parse worker lazily on the first cache miss and stores raw results', async () => {
+  it('spawns the parse worker lazily on the first cache miss and stores complete file results', async () => {
     const rel = 'src/miss.ts';
     const content = 'export function miss() { return 1; }\n';
     const full = path.join(repoDir, rel);
@@ -219,13 +229,9 @@ describe('parse-impl worker pool lazy startup', () => {
 
     const markerPath = path.join(tempDir, 'worker-spawned.marker');
     const workerPath = path.join(tempDir, 'result-worker.js');
-    writeResultWorker(workerPath, markerPath);
+    writeFileResultWorker(workerPath, markerPath);
 
-    const parseCache = {
-      identity: TEST_PARSE_IDENTITY,
-      entries: new Map<string, ParseWorkerResult[]>(),
-      usedKeys: new Set<string>(),
-    };
+    const parseCache = emptyParseCache(TEST_PARSE_IDENTITY);
     const chunkHash = computeChunkHash(
       [{ filePath: rel, contentHash: fileContentHash(content) }],
       TEST_PARSE_IDENTITY,
@@ -248,7 +254,7 @@ describe('parse-impl worker pool lazy startup', () => {
     );
 
     expect(fs.existsSync(markerPath)).toBe(true);
-    expect(parseCache.entries.has(chunkHash)).toBe(true);
+    expect(parseCache.fileResults?.memory.has(chunkHash)).toBe(true);
     expect(Array.from(graph.nodes.values()).some((n) => n.properties.name === 'miss')).toBe(true);
   });
 
@@ -335,6 +341,88 @@ describe('parse-impl worker pool lazy startup', () => {
       // 3, not the byte-derived 1. Exactly this assertion fails on the clamped
       // parent commit, which is what makes it a regression test for the fix.
       expect(fs.readdirSync(markerDir)).toHaveLength(3);
+    } finally {
+      if (saved === undefined) delete process.env.GITNEXUS_WORKER_POOL_SIZE;
+      else process.env.GITNEXUS_WORKER_POOL_SIZE = saved;
+    }
+  });
+
+  it('accepts a zero-worker budget when there are no parseable files', async () => {
+    const result = await runChunkedParseAndResolve(
+      createKnowledgeGraph(),
+      [],
+      [],
+      0,
+      repoDir,
+      Date.now(),
+      () => {},
+      {
+        workerPoolSize: 0,
+        workerResources: { workers: 0, workerHeapMb: 512 },
+        workerUrlForTest: pathToFileURL(path.join(tempDir, 'must-not-spawn.cjs')),
+      },
+    );
+    expect(result.usedWorkerPool).toBe(false);
+  });
+
+  it('keeps tiny-repository automatic sizing inside the admitted worker ceiling', async () => {
+    const saved = process.env.GITNEXUS_WORKER_POOL_SIZE;
+    delete process.env.GITNEXUS_WORKER_POOL_SIZE;
+    try {
+      const rels = ['a.ts', 'b.ts', 'c.ts', 'd.ts'];
+      const scanned = rels.map((rel) => {
+        fs.writeFileSync(path.join(repoDir, rel), 'export const value = 1;');
+        return { path: rel, size: 23 };
+      });
+      const markerDir = path.join(tempDir, 'budget-markers');
+      const workerPath = path.join(tempDir, 'budget-worker.cjs');
+      // Real worker reports V8's assigned old-generation limit. The generous
+      // default is several GiB on this host; this run must stay at 512 MiB.
+      fs.writeFileSync(
+        workerPath,
+        `
+const fs = require('node:fs');
+const { parentPort, resourceLimits, threadId } = require('node:worker_threads');
+fs.mkdirSync(${JSON.stringify(markerDir)}, { recursive: true });
+fs.writeFileSync(${JSON.stringify(markerDir)} + '/' + threadId, String(resourceLimits.maxOldGenerationSizeMb));
+parentPort.postMessage({ type: 'ready' });
+parentPort.on('message', (msg) => {
+  if (msg.type === 'sub-batch') parentPort.postMessage({ type: 'sub-batch-done' });
+  if (msg.type === 'flush') parentPort.postMessage({ type: 'result', data: ${JSON.stringify(emptyWorkerResult('a.ts', 'value'))} });
+});
+`,
+      );
+      await runChunkedParseAndResolve(
+        createKnowledgeGraph(),
+        scanned,
+        rels,
+        4,
+        repoDir,
+        Date.now(),
+        () => {},
+        {
+          workerUrlForTest: pathToFileURL(workerPath),
+          workerResources: { workers: 3, workerHeapMb: 512 },
+        },
+      );
+      const markers = fs.readdirSync(markerDir);
+      expect(markers).toHaveLength(1);
+      expect(Number(fs.readFileSync(path.join(markerDir, markers[0]), 'utf8'))).toBe(512);
+      await expect(
+        runChunkedParseAndResolve(
+          createKnowledgeGraph(),
+          scanned,
+          rels,
+          4,
+          repoDir,
+          Date.now(),
+          () => {},
+          {
+            workerPoolSize: 4,
+            workerResources: { workers: 3, workerHeapMb: 512 },
+          },
+        ),
+      ).rejects.toThrow('admitted resource budget');
     } finally {
       if (saved === undefined) delete process.env.GITNEXUS_WORKER_POOL_SIZE;
       else process.env.GITNEXUS_WORKER_POOL_SIZE = saved;

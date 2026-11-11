@@ -7,6 +7,7 @@
  */
 
 import { resolveGraphPath } from '../../storage/shared-store.js';
+import { relationshipIntegrityForCaller } from '../../core/graph/relationship-integrity.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
@@ -30,7 +31,13 @@ import {
   statDbIdentity,
   dbIdentityChanged,
   getLbugDbIdentity,
+  pinRepo,
 } from '../../core/lbug/pool-adapter.js';
+import {
+  parseQueryRepositories,
+  mergeRepositoryQueries,
+  type RepositoryQueryResult,
+} from './multi-repo-query.js';
 import { queryClassBeanMetadata } from './bean-metadata.js';
 import { GUARD_TAINT_LIMITATION } from '../taint-limitations.js';
 import { querySpringAopMetadata } from './aop-metadata.js';
@@ -116,6 +123,7 @@ import {
   embeddingDimsMismatch,
 } from '../../core/lbug/schema.js';
 import { getExactScanLimit } from '../../core/platform/capabilities.js';
+import { metadataMatchesGraph, selectVectorGeneration } from '../../storage/vector-generation.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { ftsDegradedWarning, ftsQueryFailedWarning } from '../../core/search/fts-indexes.js';
 import { getFtsDisabledReason, type FtsDisabledReason } from '../../core/search/fts-policy.js';
@@ -925,6 +933,7 @@ export interface EpistemicCauses {
 }
 
 type EpistemicBoundary = {
+  graph_integrity?: ReturnType<typeof relationshipIntegrityForCaller>;
   epistemic: 'exact' | 'lower-bound';
   boundaries?: string[];
   causes?: EpistemicCauses;
@@ -1850,13 +1859,26 @@ export class LocalBackend {
     if (!pending) {
       pending = loadOptionalMeta(path.dirname(repo.lbugPath)).then((meta) => {
         if (!meta) return null;
+        if (
+          (meta.graphPath !== undefined || meta.graphGeneration) &&
+          !metadataMatchesGraph(path.dirname(repo.lbugPath), meta, repo.lbugPath)
+        ) {
+          // A newer immutable path was published after this request resolved
+          // its handle. Keep the old reader's metadata, never mix generations.
+          const previous = this.lastObservedPoolState.get(repo.lbugPath);
+          if (previous?.metadata) return previous.metadata;
+          repo.generationUnknown = true;
+          return null;
+        }
         // Readers never use ingestion manifests. Do not keep their per-file
         // hashes/cache keys or pending embedding IDs in an opened snapshot.
         return {
           ...meta,
           fileHashes: undefined,
           cacheKeys: undefined,
-          embeddingCheckpoint: undefined,
+          embeddingCheckpoint: meta.embeddingCheckpoint
+            ? { ...meta.embeddingCheckpoint, pendingNodeIds: undefined, recovery: undefined }
+            : undefined,
         };
       });
       this.toolMetadata.set(repo, pending);
@@ -1930,33 +1952,6 @@ export class LocalBackend {
    */
   private warnedMissingEmbeddingStack = false;
   private warnedNoEmbeddingVectors = false;
-
-  /**
-   * Width the semantic lane last produced a QUERY vector at for an index, keyed
-   * by `lbugPath` (like `lastObservedPoolState`, and for the same reason: branch
-   * handles are rebuilt by `applyBranchScope` on every `resolveRepo`, so state
-   * hung off the handle would not survive to the next call).
-   *
-   * Exists so `query()` can raise the vector-column drift warning (#2798) ONLY
-   * where a width actually matters — a call that embedded something. The lane
-   * returns before importing the embedder when the index holds no vectors, and
-   * swallows an unavailable/pruned embedder into `[]`; a width complaint about
-   * either is noise about a comparison that never happened, and every index
-   * analyzed without `--embeddings` would carry it on every query.
-   *
-   * Recorded rather than recomputed at the warning site because the comparand
-   * must be the width the CAST actually binds — `getEmbeddingDims()` (the HTTP
-   * dimensions, else the local model's fixed 384), NOT `schema.ts`'s
-   * env-derived `EMBEDDING_DIMS`. Those two disagree exactly when
-   * `GITNEXUS_EMBEDDING_DIMS` is set on a server embedding LOCALLY, where the
-   * env value is the one the query path ignores — comparing against it would
-   * report drift on a lane that is working fine.
-   *
-   * Written only on definite outcomes (set once a vector exists, deleted where
-   * the lane provably embedded nothing), so concurrent queries against one
-   * index write the same value and an entry never outlives the fact it records.
-   */
-  private lastQueryEmbeddingDims: Map<string, number> = new Map();
 
   /**
    * Cross-repo group tools (CLI). Shares logic with MCP `group_*` handlers.
@@ -3096,13 +3091,33 @@ export class LocalBackend {
    * error-returning call pays nothing.
    *
    * #3291: the ref comes straight off the already-resolved handle, so naming
-   * the index costs no extra I/O — no git spawn, no metadata read, and the
-   * `stalenessForTool` TTL cache is untouched. `branch` is passed through as-is
+   * the index ref costs no extra I/O. Graph results also read ingestion
+   * metadata below; the `stalenessForTool` TTL cache is untouched. `branch` is passed through as-is
    * and is legitimately absent for a detached HEAD or a legacy index; the
    * always-present `lastCommit` is what identifies the index in that case.
    */
-  private async withToolStaleness(repo: RepoHandle, result: unknown): Promise<unknown> {
+  private async withToolStaleness(
+    repo: RepoHandle,
+    result: unknown,
+    graphResult = false,
+  ): Promise<unknown> {
     if (!canCarryStaleness(result)) return result;
+    // Install the TTL entry before metadata I/O can yield to another call.
+    const stalenessPromise = repo.generationUnknown
+      ? Promise.resolve(undefined)
+      : this.stalenessForTool(repo).catch(() => undefined);
+    // This envelope covers query/cypher too; context/impact also carry it for
+    // direct backend callers. Read failure or a mixed generation is unknown.
+    let integrityMeta: Awaited<ReturnType<typeof loadMeta>> | undefined;
+    let metadataUnreadable = false;
+    try {
+      if (graphResult) {
+        integrityMeta = (await this.readToolMetadata(repo)) ?? undefined;
+        metadataUnreadable = integrityMeta === undefined;
+      }
+    } catch {
+      metadataUnreadable = true;
+    }
     // Defensive: `checkStalenessAsync` self-catches today, but a rejection here
     // must never fail the tool — degrade to no-staleness. Paired with the
     // evict-on-reject in `stalenessForTool`, a transient failure also can't
@@ -3116,7 +3131,12 @@ export class LocalBackend {
       dbIdentityChanged(repo.poolIdentity, getLbugDbIdentity(repo.lbugPath));
     if (repo.generationUnknown || changedDuringTool) {
       return attachToolStaleness(
-        result,
+        graphResult
+          ? {
+              ...result,
+              graph_integrity: relationshipIntegrityForCaller(undefined, 'generation-changed'),
+            }
+          : result,
         { status: 'unknown', isStale: false, commitsBehind: 0 },
         {
           lastCommit: '',
@@ -3124,12 +3144,24 @@ export class LocalBackend {
         },
       );
     }
-    const staleness = await this.stalenessForTool(repo).catch(() => undefined);
-    return attachToolStaleness(result, staleness, {
-      branch: repo.branch,
-      lastCommit: repo.lastCommit,
-      indexedAt: repo.indexedAt,
-    });
+    const staleness = await stalenessPromise;
+    return attachToolStaleness(
+      graphResult
+        ? {
+            ...result,
+            graph_integrity: relationshipIntegrityForCaller(
+              integrityMeta?.relationshipIntegrity,
+              metadataUnreadable ? 'metadata-unreadable' : undefined,
+            ),
+          }
+        : result,
+      staleness,
+      {
+        branch: repo.branch,
+        lastCommit: repo.lastCommit,
+        indexedAt: repo.indexedAt,
+      },
+    );
   }
 
   /**
@@ -3180,6 +3212,9 @@ export class LocalBackend {
   }
 
   async callTool(method: string, params: any, context: McpToolCallContext = {}): Promise<any> {
+    if (Array.isArray(params?.repo) && method !== 'query' && method !== 'search') {
+      return { error: 'Repository arrays are supported only by query (and legacy search).' };
+    }
     if (method === 'list_repos') {
       // Paginated tool surface (#2119). `listRepos()` is unchanged for internal
       // callers; the tool wraps it in { repositories, pagination } and forwards
@@ -3194,6 +3229,8 @@ export class LocalBackend {
     const normalized = normalizeToolParams(method, params);
     if ('error' in normalized) return { error: normalized.error };
     const p = normalized.params;
+
+    if (Array.isArray(p.repo)) return this.queryRepositories(p);
 
     // #2175: Claude Code drops a tool-call argument named exactly "query", so the
     // query/cypher tools advertise "search_query"/"statement" while still accepting the
@@ -3240,19 +3277,23 @@ export class LocalBackend {
 
     switch (method) {
       case 'query':
-        return this.withToolStaleness(repo, await this.query(repo, p));
+        return this.withToolStaleness(repo, await this.query(repo, p), true);
       case 'cypher': {
         const raw = await this.cypher(repo, p);
-        return this.withToolStaleness(repo, this.formatCypherAsMarkdown(raw));
+        return this.withToolStaleness(repo, this.formatCypherAsMarkdown(raw), true);
       }
       case 'context':
-        return this.withToolStaleness(repo, await this.context(repo, p));
+        return this.withToolStaleness(repo, await this.context(repo, p), true);
       case 'explain':
         return this.explain(repo, p);
       case 'pdg_query':
         return this.pdgQuery(repo, p);
       case 'impact':
-        return this.withToolStaleness(repo, await this.impact(repo, p as unknown as ImpactParams));
+        return this.withToolStaleness(
+          repo,
+          await this.impact(repo, p as unknown as ImpactParams),
+          true,
+        );
       case 'detect_changes':
         return this.detectChanges(repo, p);
       case 'check':
@@ -3541,6 +3582,85 @@ export class LocalBackend {
     };
   }
 
+  /** Resolve the whole selection before opening a database, then lease only active members. */
+  private async queryRepositories(params: Record<string, unknown>) {
+    let specifiers: string[];
+    try {
+      specifiers = parseQueryRepositories(params.repo);
+    } catch (error) {
+      return { error: (error as Error).message };
+    }
+    const rawQuery = resolveAliasString(params.search_query, params.query);
+    if (!rawQuery?.trim()) {
+      return { error: 'search_query (or legacy query) parameter is required and cannot be empty.' };
+    }
+    const limit = parseQueryPageBound(params.limit, 'limit', QUERY_DEFAULT_LIMIT, QUERY_MAX_LIMIT);
+    if (limit.ok === false) return { error: limit.error };
+    const maxSymbols = parseQueryPageBound(
+      params.max_symbols,
+      'max_symbols',
+      QUERY_DEFAULT_MAX_SYMBOLS,
+      QUERY_MAX_MAX_SYMBOLS,
+    );
+    if (maxSymbols.ok === false) return { error: maxSymbols.error };
+    const chainDepth = parseChainDepth(params.chain_depth);
+    if (chainDepth.ok === false) return { error: chainDepth.error };
+
+    const selected = new Map<string, RepoHandle>();
+    for (const specifier of specifiers) {
+      const repo = await this.selectToolRepository(specifier, params.branch as string | undefined);
+      const repoPath = canonicalizePath(repo.repoPath);
+      const key = process.platform === 'win32' ? repoPath.toLowerCase() : repoPath;
+      // Shared databases can serve distinct checkouts; deduplicate checkout identity only.
+      if (!selected.has(key)) selected.set(key, { ...repo, repoPath });
+    }
+    const repos = [...selected.values()];
+    const results = await mapConcurrent(
+      repos,
+      async (repo): Promise<RepositoryQueryResult> => {
+        const release = pinRepo(repo.lbugPath);
+        try {
+          const result = (await this.withToolStaleness(
+            repo,
+            await this.query(repo, params),
+          )) as RepositoryQueryResult['result'];
+          return { repo: repo.repoPath, name: repo.name, result };
+        } catch (error) {
+          return {
+            repo: repo.repoPath,
+            name: repo.name,
+            result:
+              error instanceof SymbolIdentityError
+                ? { error: error.message, recoverySuggestion: SYMBOL_IDENTITY_RECOVERY_SUGGESTION }
+                : {
+                    error:
+                      'Repository search failed; retry this repository individually for details.',
+                  },
+          };
+        } finally {
+          release();
+        }
+      },
+      { concurrency: 4 },
+    );
+    // mapConcurrent retains a slot for a rejected callback; never misreport one as empty success.
+    return mergeRepositoryQueries(
+      results.map(
+        (result, i) =>
+          result ?? {
+            repo: repos[i].repoPath,
+            name: repos[i].name,
+            result: { error: 'Repository search did not complete.' },
+          },
+      ),
+      {
+        limit: limit.value,
+        maxSymbols: maxSymbols.value,
+        includeContent: params.include_content === true,
+      },
+    );
+  }
+
   /**
    * Query tool — process-grouped search.
    *
@@ -3562,6 +3682,7 @@ export class LocalBackend {
       chain_depth?: number;
     },
   ): Promise<any> {
+    const release = pinRepo(repo.lbugPath);
     try {
       const result = await this._queryImpl(repo, params);
       if (!result.error) assertResponseIdentities(result);
@@ -3571,6 +3692,8 @@ export class LocalBackend {
         return { error: err.message, recoverySuggestion: SYMBOL_IDENTITY_RECOVERY_SUGGESTION };
       }
       throw err;
+    } finally {
+      release();
     }
   }
 
@@ -3642,7 +3765,7 @@ export class LocalBackend {
     // over a single `current` phase slot.
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
     const ftsDisabledReason = getFtsDisabledReason(meta?.capabilities?.fts);
-    const vectorDegraded = { reason: undefined as string | undefined };
+    const vectorDegraded: { reason?: string; embeddingDims?: number } = {};
     const [bm25Outcome, semanticOutcome] = await Promise.allSettled([
       timer.time('bm25', this.bm25Search(repo, searchQuery, searchLimit, ftsDisabledReason)),
       timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit, vectorDegraded)),
@@ -4312,14 +4435,7 @@ export class LocalBackend {
     // minus its semantic lane beats no answer at all. Same shape as the CJK
     // drift check above — composed into `warnings`, recomputed per query rather
     // than latched, and carrying the fix rather than just the symptom.
-    //
-    // Gated on a width this call actually embedded at (see
-    // `lastQueryEmbeddingDims`) so the tools that never embed — every other
-    // method on this backend — and every index analyzed without `--embeddings`
-    // stay quiet. ABSENT `embeddingDims` is NOT a mismatch: that is
-    // `embeddingDimsMismatch`'s own rule, reused rather than restated so the
-    // two sides of the guard cannot drift apart.
-    const queryEmbeddingDims = this.lastQueryEmbeddingDims.get(repo.lbugPath);
+    const queryEmbeddingDims = vectorDegraded.embeddingDims;
     if (
       queryEmbeddingDims !== undefined &&
       meta &&
@@ -4568,62 +4684,99 @@ export class LocalBackend {
     repo: RepoHandle,
     query: string,
     limit: number,
-    degraded?: { reason?: string },
+    degraded?: { reason?: string; embeddingDims?: number },
   ): Promise<any[]> {
-    // Whether THIS call produced a query vector — see `lastQueryEmbeddingDims`.
-    // A local flag, not a re-read of the map: the map may still hold an earlier
-    // call's width, and the catch below must only clear an entry it did not set.
-    let embeddedDims: number | undefined;
     try {
-      // Check if embedding table exists before loading the model (avoids heavy model init when embeddings are off)
-      // determinism: probe — aggregate singleton. COUNT(*) with no grouping key returns exactly one row, and only
-      // the count is read, to decide whether to load the embedding model at all.
-      const tableCheck = await executeQuery(
-        repo.lbugPath,
-        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
-      );
-      if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) {
-        this.lastQueryEmbeddingDims.delete(repo.lbugPath);
-        this.logKeywordOnlyEmbeddings();
+      if (repo.generationUnknown) {
+        if (degraded)
+          degraded.reason =
+            'Semantic search is unavailable because the graph generation is unverified. Run gitnexus analyze; graph and keyword search remain available.';
         return [];
       }
-
-      const { embedQuery, getEmbeddingDims } = await import('../core/embedder.js');
-      const queryVec = await embedQuery(query);
-      const dims = getEmbeddingDims();
-      // #2798: the width this query vector really was produced at — the same
-      // value the CAST below binds against the index's `FLOAT[N]` column, and
-      // therefore the only honest comparand for query()'s drift warning.
-      embeddedDims = dims;
-      this.lastQueryEmbeddingDims.set(repo.lbugPath, dims);
-      const queryVecStr = `[${queryVec.join(',')}]`;
-      const maxDistance = getVectorMaxDistance(DEFAULT_MCP_VECTOR_MAX_DISTANCE);
-      let vectorReady = false;
-      try {
-        vectorReady = await ensureVectorExtension(repo.lbugPath);
-      } catch (err) {
-        rethrowSymbolIdentityError(err);
-        if (!this.warnedVectorLoadFailed) {
-          this.warnedVectorLoadFailed = true;
-          logger.warn(
-            { err },
-            'GitNexus [query:vector]: vector extension load failed; using exact scan fallback',
-          );
-        }
+      const metadata = await this.readToolMetadata(repo);
+      if (repo.generationUnknown) {
+        if (degraded)
+          degraded.reason =
+            'Semantic search is unavailable because the graph generation is unverified. Run gitnexus analyze; graph and keyword search remain available.';
+        return [];
       }
-
+      const selection = selectVectorGeneration(
+        path.dirname(repo.lbugPath),
+        metadata,
+        repo.lbugPath,
+        getExactScanLimit(),
+      );
+      if (selection.kind === 'unavailable') {
+        if (degraded && selection.reason === 'embedding-pending')
+          degraded.reason =
+            'Semantic search is unavailable while embeddings are pending. Run gitnexus analyze to resume; graph and keyword search remain available.';
+        else if (degraded && selection.reason !== 'embeddings-unavailable')
+          degraded.reason = `Semantic search is unavailable (${selection.reason}). Run gitnexus analyze; graph and keyword search remain available.`;
+        return [];
+      }
       let bestChunks = new Map<
         string,
         { distance: number; chunkIndex: number; startLine: number; endLine: number }
       >();
-      // Try the vector lane only after its lazy load succeeds. An unavailable
-      // extension is already reported by ExtensionManager; an index/query
-      // failure below gets its own once-per-backend diagnostic before the exact
-      // scan fallback.
-      if (vectorReady) {
+      if (selection.kind === 'ready') {
+        const { searchVectorGeneration } =
+          await import('../../core/embeddings/vector-generation-search.js');
+        const chunks = await searchVectorGeneration(
+          { metadataDirectory: path.dirname(repo.lbugPath), metadata, graphPath: repo.lbugPath },
+          async () => {
+            const { embedQuery, getEmbeddingDims } = await import('../core/embedder.js');
+            const queryVec = await embedQuery(query);
+            if (degraded) degraded.embeddingDims = getEmbeddingDims();
+            return queryVec;
+          },
+          limit,
+          getVectorMaxDistance(DEFAULT_MCP_VECTOR_MAX_DISTANCE),
+        );
+        bestChunks = new Map((chunks ?? []).map(({ nodeId, ...chunk }) => [nodeId, chunk]));
+      } else {
+        // Check if embedding table exists before loading the model (avoids heavy model init when embeddings are off)
+        // determinism: probe — aggregate singleton. COUNT(*) with no grouping key returns exactly one row, and only
+        // the count is read, to decide whether to load the embedding model at all.
+        const tableCheck = await executeQuery(
+          repo.lbugPath,
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
+        );
+        if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) {
+          this.logKeywordOnlyEmbeddings();
+          return [];
+        }
+
+        const { embedQuery, getEmbeddingDims } = await import('../core/embedder.js');
+        const queryVec = await embedQuery(query);
+        const dims = getEmbeddingDims();
+        // #2798: the width this query vector really was produced at — the same
+        // value the CAST below binds against the index's `FLOAT[N]` column, and
+        // therefore the only honest comparand for query()'s drift warning.
+        if (degraded) degraded.embeddingDims = dims;
+        const queryVecStr = `[${queryVec.join(',')}]`;
+        const maxDistance = getVectorMaxDistance(DEFAULT_MCP_VECTOR_MAX_DISTANCE);
+        let vectorReady = false;
         try {
-          bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
-            const vectorQuery = `
+          vectorReady = await ensureVectorExtension(repo.lbugPath);
+        } catch (err) {
+          rethrowSymbolIdentityError(err);
+          if (!this.warnedVectorLoadFailed) {
+            this.warnedVectorLoadFailed = true;
+            logger.warn(
+              { err },
+              'GitNexus [query:vector]: vector extension load failed; using exact scan fallback',
+            );
+          }
+        }
+
+        // Try the vector lane only after its lazy load succeeds. An unavailable
+        // extension is already reported by ExtensionManager; an index/query
+        // failure below gets its own once-per-backend diagnostic before the exact
+        // scan fallback.
+        if (vectorReady) {
+          try {
+            bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
+              const vectorQuery = `
             CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
               CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
             YIELD node AS emb, distance
@@ -4634,66 +4787,66 @@ export class LocalBackend {
             ORDER BY distance
           `;
 
-            const embResults = await executeQuery(repo.lbugPath, vectorQuery);
-            for (const row of embResults) assertQueryIdentity(row, 'nodeId', 0);
-            return embResults.map((row) => ({
-              nodeId: row.nodeId ?? row[0],
-              chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-              startLine: row.startLine ?? row[2] ?? 0,
-              endLine: row.endLine ?? row[3] ?? 0,
-              distance: row.distance ?? row[4],
-            }));
-          });
-        } catch (err) {
-          rethrowSymbolIdentityError(err);
-          bestChunks = new Map();
-          if (!this.warnedVectorQueryFailed) {
-            // Rare diagnostic: surface why semantic search fell back to the
-            // exact scan. Emitted once per `LocalBackend` instance lifetime to
-            // avoid noisy stderr on hot semantic-search paths (DoD §2.8).
-            this.warnedVectorQueryFailed = true;
-            logger.warn(
-              { err },
-              'GitNexus [query:vector]: vector index query failed; using exact scan fallback',
-            );
+              const embResults = await executeQuery(repo.lbugPath, vectorQuery);
+              for (const row of embResults) assertQueryIdentity(row, 'nodeId', 0);
+              return embResults.map((row) => ({
+                nodeId: row.nodeId ?? row[0],
+                chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+                startLine: row.startLine ?? row[2] ?? 0,
+                endLine: row.endLine ?? row[3] ?? 0,
+                distance: row.distance ?? row[4],
+              }));
+            });
+          } catch (err) {
+            rethrowSymbolIdentityError(err);
+            bestChunks = new Map();
+            if (!this.warnedVectorQueryFailed) {
+              // Rare diagnostic: surface why semantic search fell back to the
+              // exact scan. Emitted once per `LocalBackend` instance lifetime to
+              // avoid noisy stderr on hot semantic-search paths (DoD §2.8).
+              this.warnedVectorQueryFailed = true;
+              logger.warn(
+                { err },
+                'GitNexus [query:vector]: vector index query failed; using exact scan fallback',
+              );
+            }
           }
         }
-      }
 
-      if (bestChunks.size === 0) {
-        const embeddingCount = Number(tableCheck[0].cnt ?? tableCheck[0][0] ?? 0);
-        const exactLimit = getExactScanLimit();
-        if (embeddingCount > exactLimit) return [];
+        if (bestChunks.size === 0) {
+          const embeddingCount = Number(tableCheck[0].cnt ?? tableCheck[0][0] ?? 0);
+          const exactLimit = getExactScanLimit();
+          if (embeddingCount > exactLimit) return [];
 
-        const rows = await executeQuery(
-          repo.lbugPath,
-          `
+          const rows = await executeQuery(
+            repo.lbugPath,
+            `
           MATCH (e:${EMBEDDING_TABLE_NAME})
           RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex,
                  e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding
         `,
-        );
-        for (const row of rows) assertQueryIdentity(row, 'nodeId', 0);
-        const exactRows: ExactEmbeddingRow[] = rows.map((row) => ({
-          nodeId: row.nodeId ?? row[0],
-          chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-          startLine: row.startLine ?? row[2] ?? 0,
-          endLine: row.endLine ?? row[3] ?? 0,
-          embedding: row.embedding ?? row[4] ?? [],
-        }));
-        bestChunks = new Map(
-          rankExactEmbeddingRows(exactRows, queryVec, limit, maxDistance).map((row) => [
-            row.nodeId,
-            {
-              distance: row.distance,
-              chunkIndex: row.chunkIndex,
-              startLine: row.startLine,
-              endLine: row.endLine,
-            },
-          ]),
-        );
+          );
+          for (const row of rows) assertQueryIdentity(row, 'nodeId', 0);
+          const exactRows: ExactEmbeddingRow[] = rows.map((row) => ({
+            nodeId: row.nodeId ?? row[0],
+            chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+            startLine: row.startLine ?? row[2] ?? 0,
+            endLine: row.endLine ?? row[3] ?? 0,
+            embedding: row.embedding ?? row[4] ?? [],
+          }));
+          bestChunks = new Map(
+            rankExactEmbeddingRows(exactRows, queryVec, limit, maxDistance).map((row) => [
+              row.nodeId,
+              {
+                distance: row.distance,
+                chunkIndex: row.chunkIndex,
+                startLine: row.startLine,
+                endLine: row.endLine,
+              },
+            ]),
+          );
+        }
       }
-
       if (bestChunks.size === 0) return [];
 
       const results: any[] = [];
@@ -4740,11 +4893,6 @@ export class LocalBackend {
       return results;
     } catch (err) {
       rethrowSymbolIdentityError(err);
-      // Nothing was embedded on this path unless the throw happened after the
-      // vector existed (a failed lookup downstream of a good embedding, where
-      // the width IS still the live one). Clearing only in the former case
-      // keeps the recorded width a fact rather than a leftover (#2798).
-      if (embeddedDims === undefined) this.lastQueryEmbeddingDims.delete(repo.lbugPath);
       // Embeddings disabled is the common, silent case. But a missing or
       // Node-unloadable local stack (#2370/#2372) also lands here — surface it
       // once so semantic search doesn't silently degrade to BM25 with no hint
@@ -5540,8 +5688,18 @@ export class LocalBackend {
     const sym = outcome.symbol;
     const resolvedLabel = outcome.resolvedLabel;
     const symId = sym.id;
+    // A known label lets LadybugDB anchor the traversal on one primary-key
+    // index instead of scanning every node table. Labels can be absent on
+    // legacy indexes, so retain the unlabeled query in that case.
+    const referenceLabel = resolvedLabel || sym.type;
+    const referenceAnchor = VALID_NODE_LABELS.has(referenceLabel)
+      ? `(n:\`${referenceLabel}\` {id: $symId})`
+      : '(n {id: $symId})';
 
     // Categorized incoming refs.
+    // Collapse repeated call sites in each query before LIMIT: the response
+    // lists symbol references, and duplicates must not crowd out other symbols.
+    // Keep relType in the projection so CALLS and ACCESSES remain distinct.
     //
     // ORDER BY uid, relType — the CATEGORY column must NOT lead (#2787 review
     // F1). With `relType` first the 30-row window fills in alphabetical
@@ -5557,10 +5715,10 @@ export class LocalBackend {
       executeParameterized(
         repo.lbugPath,
         `
-      MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
+      MATCH (caller)-[r:CodeRelation]->${referenceAnchor}
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'USES', 'DECLARES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
         AND (r.type <> 'MEMBER_OF' OR labels(n) <> 'Community')
-      RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+      RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       ORDER BY uid, relType
       LIMIT 30
     `,
@@ -5575,8 +5733,8 @@ export class LocalBackend {
       executeParameterized(
         repo.lbugPath,
         `
-      MATCH (caller)-[r:CodeRelation {type: 'ADVISED_BY'}]->(n {id: $symId})
-      RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+      MATCH (caller)-[r:CodeRelation {type: 'ADVISED_BY'}]->${referenceAnchor}
+      RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       ORDER BY uid
       LIMIT 30
     `,
@@ -5628,11 +5786,11 @@ export class LocalBackend {
             executeParameterized(
               repo.lbugPath,
               `
-            MATCH (n)-[hm:CodeRelation]->(ctor:Constructor)
-            WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
+            MATCH ${referenceAnchor}-[hm:CodeRelation]->(ctor:Constructor)
+            WHERE hm.type = 'HAS_METHOD'
             MATCH (caller)-[r:CodeRelation]->(ctor)
             WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'ACCESSES']
-            RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+            RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             ORDER BY uid, relType
             LIMIT 30
           `,
@@ -5641,11 +5799,11 @@ export class LocalBackend {
             executeParameterized(
               repo.lbugPath,
               `
-            MATCH (f:File)-[rel:CodeRelation]->(n)
-            WHERE n.id = $symId AND rel.type = 'DEFINES'
+            MATCH (f:File)-[rel:CodeRelation]->${referenceAnchor}
+            WHERE rel.type = 'DEFINES'
             MATCH (caller)-[r:CodeRelation]->(f)
             WHERE r.type IN ['CALLS', 'IMPORTS']
-            RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+            RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             ORDER BY uid, relType
             LIMIT 30
           `,
@@ -5660,7 +5818,7 @@ export class LocalBackend {
                OR p.declaredType CONTAINS $genericArg
             MATCH (caller)-[r:CodeRelation]->(p)
             WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'ACCESSES']
-            RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+            RETURN DISTINCT r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             ORDER BY uid, relType
             LIMIT 30
           `,
@@ -5726,10 +5884,10 @@ export class LocalBackend {
       executeParameterized(
         repo.lbugPath,
         `
-      MATCH (n {id: $symId})-[r:CodeRelation]->(target)
+      MATCH ${referenceAnchor}-[r:CodeRelation]->(target)
       WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'USES', 'DECLARES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
         AND (r.type <> 'MEMBER_OF' OR labels(target) <> 'Community')
-      RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
+      RETURN DISTINCT r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       ORDER BY uid, relType
       LIMIT 30
     `,
@@ -5738,8 +5896,8 @@ export class LocalBackend {
       executeParameterized(
         repo.lbugPath,
         `
-      MATCH (n {id: $symId})-[r:CodeRelation {type: 'ADVISED_BY'}]->(target)
-      RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
+      MATCH ${referenceAnchor}-[r:CodeRelation {type: 'ADVISED_BY'}]->(target)
+      RETURN DISTINCT r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       ORDER BY uid
       LIMIT 30
     `,
@@ -6924,6 +7082,8 @@ export class LocalBackend {
         encoding: 'utf-8',
         maxBuffer: 256 * 1024 * 1024,
         windowsHide: true,
+        // Keep Git warnings out of CLI/MCP stderr; failures retain stderr in err.message.
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err: any) {
       return { error: `Git diff failed: ${err.message}` };
@@ -8451,7 +8611,11 @@ export class LocalBackend {
       scopeExtraction: scopeExtractionDrops.files,
       callableValueReferences: valueRefDrops.referrers,
     };
-    const baseEpistemic = { ...epistemicFrom(droppedBoundaries), ...crossLanguageAnchor };
+    const baseEpistemic = {
+      ...epistemicFrom(droppedBoundaries),
+      ...crossLanguageAnchor,
+      graph_integrity: relationshipIntegrityForCaller(meta?.relationshipIntegrity),
+    };
     try {
       // Discover the interface / abstract supertypes on the target's boundary.
       // If the target is itself an interface, it is its own boundary node.

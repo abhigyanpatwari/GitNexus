@@ -15,6 +15,7 @@ import { chunk } from '../../lib/utils.js';
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
 import {
   CircuitOpenError,
+  getBreaker,
   ResilientFetchExhaustedError,
   isTerminalNetworkError,
   resilientFetch,
@@ -46,6 +47,46 @@ interface HttpConfig {
 
 export interface EmbeddingRequestOptions {
   signal?: AbortSignal;
+  /** Encoded successful response bound, reserved by the calling job. */
+  maxResponseBytes?: number;
+}
+
+// A local resource limit aborts the request without retrying or penalising
+// endpoint health. resilientFetch treats AbortError DOMExceptions as neutral.
+class EmbeddingResponseBudgetError extends DOMException {
+  constructor(message: string) {
+    super(message, 'AbortError');
+  }
+}
+
+/** Bound encoded bytes before JSON decoding; Content-Length alone is untrusted. */
+async function readEmbeddingResponse(response: Response, maximum?: number): Promise<unknown> {
+  if (maximum === undefined) return response.json();
+  if (!Number.isSafeInteger(maximum) || maximum < 1)
+    throw new Error('Invalid embedding response byte limit');
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('Embedding response has no body');
+  let complete = false;
+  try {
+    const declared = response.headers.get('content-length');
+    if (declared !== null && Number(declared) > maximum)
+      throw new EmbeddingResponseBudgetError('Embedding response exceeds its resource budget');
+    const bytes = Buffer.allocUnsafe(maximum);
+    let size = 0;
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      if (next.value.byteLength > maximum - size)
+        throw new EmbeddingResponseBudgetError('Embedding response exceeds its resource budget');
+      bytes.set(next.value, size);
+      size += next.value.byteLength;
+    }
+    complete = true;
+    return JSON.parse(new TextDecoder().decode(bytes.subarray(0, size)));
+  } finally {
+    if (!complete) await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
 }
 
 let lastHttpRequestStartedAt: number | undefined;
@@ -63,6 +104,11 @@ const parsePositiveIntegerEnv = (name: string, fallback: number, max: number): n
   }
   return parsed;
 };
+
+/** Embedding requests kept in flight at once. Pacing, retries and the circuit
+ * breaker still apply to each request; set 1 for a strictly serial endpoint. */
+export const httpEmbeddingConcurrency = (): number =>
+  parsePositiveIntegerEnv('GITNEXUS_EMBEDDING_CONCURRENCY', 4, 64);
 
 const parseNonNegativeIntegerEnv = (name: string, fallback: number, max: number): number => {
   const raw = process.env[name];
@@ -427,6 +473,11 @@ const httpEmbedBatch = async (
   timeoutMs = DEFAULT_HTTP_TIMEOUT_MS,
   retryTimeouts = false,
 ): Promise<EmbeddingItem[]> => {
+  if (
+    requestOptions.maxResponseBytes !== undefined &&
+    (!Number.isSafeInteger(requestOptions.maxResponseBytes) || requestOptions.maxResponseBytes < 1)
+  )
+    throw new Error('Invalid embedding response byte limit');
   const requestBody: { input: string[]; model: string; dimensions?: number } = {
     input: batch,
     model,
@@ -452,6 +503,15 @@ const httpEmbedBatch = async (
   let parsed: EmbeddingItem[] | undefined;
   try {
     throwIfAborted(requestOptions.signal);
+    const breaker = getBreaker(HTTP_BREAKER_KEY);
+    const probeDeadline = performance.now() + timeoutMs;
+    // A recovering endpoint admits one probe. Its window peers wait locally
+    // instead of turning a healthy resume into failed provider work.
+    while (breaker.getState() === 'half-open' && breaker.isProbeInFlight()) {
+      const remaining = probeDeadline - performance.now();
+      if (remaining <= 0) throw new CircuitOpenError(1_000, HTTP_BREAKER_KEY);
+      await abortableSleep(Math.min(1_000, remaining), requestOptions.signal);
+    }
     resp = await resilientFetch(
       url,
       {
@@ -490,8 +550,17 @@ const httpEmbedBatch = async (
           // and the same breaker accounting as any other endpoint fault (#2790).
           let payload: { data: EmbeddingItem[] };
           try {
-            payload = (await attemptResp.json()) as { data: EmbeddingItem[] };
+            payload = (await readEmbeddingResponse(
+              attemptResp,
+              requestOptions.maxResponseBytes,
+            )) as {
+              data: EmbeddingItem[];
+            };
           } catch (err) {
+            if (err instanceof EmbeddingResponseBudgetError)
+              throw new EmbeddingResponseBudgetError(
+                `Embedding endpoint exceeded its ${requestOptions.maxResponseBytes}-byte response budget (${safeUrl(url)}, batch ${batchIndex})`,
+              );
             // Not every `.json()` rejection is a parse error: the per-attempt
             // signal (`AbortSignal.any([caller, AbortSignal.timeout(...)])`) is
             // wired to the body stream, so a stalled body rejects with the abort
@@ -540,6 +609,9 @@ const httpEmbedBatch = async (
       },
     );
   } catch (err) {
+    if (err instanceof EmbeddingResponseBudgetError) {
+      throw new HttpEmbeddingError(err.message, { cause: err });
+    }
     if (
       requestOptions.signal?.aborted ||
       (err instanceof DOMException && err.name === 'AbortError')

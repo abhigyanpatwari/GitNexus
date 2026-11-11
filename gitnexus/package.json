@@ -136,7 +136,7 @@
     "@babel/parser": "^8.0.0",
     "@babel/traverse": "^8.0.0",
     "@babel/types": "^8.0.0",
-    "@mermaid-js/tiny": "12.2.0",
+    "@mermaid-js/tiny": "12.3.0",
     "@streamparser/json": "0.0.26",
     "@stryker-mutator/api": "10.1.1",
     "@stryker-mutator/core": "10.1.1",
@@ -156,6 +156,9 @@
     "vitest-shard-balancer": "0.1.0"
   },
   "overrides": {
+    "@stryker-mutator/core": {
+      "minimatch": "^11.0.1"
+    },
     "adm-zip": ">=0.6.0",
     "sharp": ">=0.35.0",
     "tree-sitter": "0.25.1"

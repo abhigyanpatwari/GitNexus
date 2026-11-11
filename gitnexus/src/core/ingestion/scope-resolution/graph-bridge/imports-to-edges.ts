@@ -63,17 +63,10 @@
  *
  * `scopeTree` is used for exactly one thing: turning the map's key into the
  * source `filePath`. It is NOT a place to ask where an import was written.
- * `finalize-algorithm.ts:295` publishes every file's finalized edges as
- * `linkedByScope.set(file.moduleScope, …)`, so the `imports` map this function
- * receives holds one bucket per FILE, keyed by that file's `Module` scope —
- * never by the scope an import was actually written in. A walk from such a key
- * looking for an enclosing `Function` starts at a `Module` and answers `false`
- * every time, for every import in the tree.
- *
- * That walk was here, and it never fired once. It looked correct in unit tests
- * only because they hand-built `new Map([['fn', …]])`, a shape the pipeline
- * cannot produce. Position now arrives as `runsOnlyWhenCalled`, decided where
- * the position is still known.
+ * The finalizer publishes binding-scope buckets consecutively per file. Some
+ * providers bind imports in the module scope, others in lexical scopes; neither
+ * choice alone establishes whether an import executes during initialization.
+ * That fact arrives as `runsOnlyWhenCalled`, decided during extraction.
  *
  * Tagging the reason is enough for the check query, which already filters
  * non-runtime edges that way (`markdown-link`, Swift implicit module
@@ -111,16 +104,18 @@
  * `Y` carries the pair. A statement is type-only exactly when every specifier
  * it decomposes to is.
  *
- * Pairs are collected before anything is emitted so the ranking sees every
- * contributing edge rather than whichever one arrived first. Insertion order
- * into the map is first-seen order, so emission order is byte-identical to the
- * single-pass form this replaced.
+ * All scopes of a source file are collected before that file's pairs are
+ * emitted. The finalizer groups scopes by file, so this preserves first-seen
+ * pair order while retaining only one file's pairs. Interleaved source files
+ * retain the global collector, as do source paths containing the legacy `->`
+ * pair-key delimiter: partitioning those keys could change collision behavior.
  */
 
 import type { ImportEdge, ScopeId } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { generateId } from '../../../../lib/utils.js';
+import { isDebugHeapEnabled, logHeapProbe } from '../../utils/heap-probe.js';
 
 /**
  * Reason suffix for a pair reachable only through imports that run later —
@@ -187,31 +182,102 @@ export function emitImportEdges(
   scopeTree: ScopeResolutionIndexes['scopeTree'],
   reason = 'scope-resolution: import',
 ): number {
-  /** dedupKey -> the pair, plus the strongest runtime presence reaching it. */
+  const debug = isDebugHeapEnabled();
+  const started = debug ? Date.now() : 0;
+  let scanned = 0;
+  let emitted = 0;
+  const probe = (stage: string, detail = ''): void => {
+    if (debug)
+      logHeapProbe(
+        `sr-emit-imports-${stage}`,
+        `elapsed_ms=${Date.now() - started} scanned=${scanned} emitted=${emitted} ${detail}`,
+      );
+  };
+  probe('start', `scopes=${imports.size}`);
+
+  // Read each scope once, retaining only its path. This also avoids decoding
+  // disk-backed scope shards again during emission. Check grouping BEFORE any
+  // edge is written: a later scope can strengthen an earlier pair's reason.
+  const sourceByScope = new Map<ScopeId, string>();
+  const seenFiles = new Set<string>();
+  let previousFile: string | undefined;
+  let grouped = true;
+  let scopesScanned = 0;
+  for (const scopeId of imports.keys()) {
+    const scope = scopeTree.getScope(scopeId);
+    if (scope !== undefined) {
+      const sourceFile = scope.filePath;
+      sourceByScope.set(scopeId, sourceFile);
+      if (sourceFile.includes('->')) grouped = false;
+      if (sourceFile !== previousFile) {
+        if (seenFiles.has(sourceFile)) grouped = false;
+        seenFiles.add(sourceFile);
+        previousFile = sourceFile;
+      }
+    }
+    if (debug && ++scopesScanned % 1024 === 0) probe('plan-progress', `scopes=${scopesScanned}`);
+  }
+  seenFiles.clear();
+  probe('plan-end', `mode=${grouped ? 'per-file' : 'global'} scopes=${sourceByScope.size}`);
+
+  const emitPair = (sourceFile: string, targetFile: string, presence: ImportPresence): void => {
+    graph.addRelationship({
+      id: generateId('IMPORTS', `${sourceFile}->${targetFile}`),
+      sourceId: generateId('File', sourceFile),
+      targetId: generateId('File', targetFile),
+      type: 'IMPORTS',
+      confidence: 1.0,
+      reason: reason + REASON_SUFFIX_BY_PRESENCE[presence],
+    });
+    emitted++;
+    if (debug && emitted % 65536 === 0) probe('emit-progress');
+  };
+
+  if (grouped) {
+    const pairs = new Map<string, ImportPresence>();
+    let sourceFile: string | undefined;
+    const flush = (): void => {
+      if (sourceFile === undefined) return;
+      for (const [targetFile, presence] of pairs) emitPair(sourceFile, targetFile, presence);
+      pairs.clear();
+    };
+    for (const [scopeId, edges] of imports) {
+      const nextFile = sourceByScope.get(scopeId);
+      if (nextFile === undefined) continue;
+      if (nextFile !== sourceFile) {
+        flush();
+        sourceFile = nextFile;
+      }
+      for (const edge of edges) {
+        if (debug && ++scanned % 65536 === 0) probe('collect-progress', `pairs=${pairs.size}`);
+        if (edge.targetFile === null || edge.targetFile === sourceFile) continue;
+        const presence = importPresence(edge);
+        const existing = pairs.get(edge.targetFile);
+        if (existing === undefined || presence < existing) pairs.set(edge.targetFile, presence);
+      }
+    }
+    flush();
+    probe('complete');
+    return emitted;
+  }
+
+  // Compatibility path for callers whose buckets interleave source files or
+  // whose source paths can collide under the existing compound pair key.
   const pairs = new Map<
     string,
     { readonly sourceFile: string; readonly targetFile: string; presence: ImportPresence }
   >();
 
   for (const [scopeId, edges] of imports) {
-    // The key's only job here is naming the source file — see the module
-    // header on why it says nothing about where an import was written.
-    const scope = scopeTree.getScope(scopeId);
-    if (scope === undefined) continue;
-    const sourceFile = scope.filePath;
+    const sourceFile = sourceByScope.get(scopeId);
+    if (sourceFile === undefined) continue;
 
     for (const edge of edges) {
+      if (debug && ++scanned % 65536 === 0) probe('collect-progress', `pairs=${pairs.size}`);
       if (edge.targetFile === null) continue;
       if (edge.targetFile === sourceFile) continue;
 
-      // Erasure is checked first: an `import type` inside a function is still
-      // erased, not merely deferred, and the two are not mutually exclusive.
-      const presence =
-        edge.typeOnly === true
-          ? PRESENCE_ERASED
-          : edge.runsOnlyWhenCalled === true || edge.kind === 'dynamic-resolved'
-            ? PRESENCE_DEFERRED
-            : PRESENCE_INITIALIZES;
+      const presence = importPresence(edge);
       const dedupKey = `${sourceFile}->${edge.targetFile}`;
       const existing = pairs.get(dedupKey);
       if (existing === undefined) {
@@ -222,16 +288,17 @@ export function emitImportEdges(
     }
   }
 
-  for (const [dedupKey, pair] of pairs) {
-    graph.addRelationship({
-      id: generateId('IMPORTS', dedupKey),
-      sourceId: generateId('File', pair.sourceFile),
-      targetId: generateId('File', pair.targetFile),
-      type: 'IMPORTS',
-      confidence: 1.0,
-      reason: reason + REASON_SUFFIX_BY_PRESENCE[pair.presence],
-    });
-  }
+  probe('collected', `pairs=${pairs.size}`);
+  for (const pair of pairs.values()) emitPair(pair.sourceFile, pair.targetFile, pair.presence);
+  probe('complete');
+  return emitted;
+}
 
-  return pairs.size;
+function importPresence(edge: ImportEdge): ImportPresence {
+  // Erasure wins even when the same import is also marked deferred.
+  return edge.typeOnly === true
+    ? PRESENCE_ERASED
+    : edge.runsOnlyWhenCalled === true || edge.kind === 'dynamic-resolved'
+      ? PRESENCE_DEFERRED
+      : PRESENCE_INITIALIZES;
 }

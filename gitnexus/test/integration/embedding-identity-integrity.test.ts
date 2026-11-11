@@ -14,6 +14,9 @@ import * as adapter from '../../src/core/lbug/lbug-adapter.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { getStoragePaths, loadMeta } from '../../src/storage/repo-manager.js';
 import { seedEmbeddingsForFiles, stampEmbeddingCount } from '../helpers/embedding-seed.js';
+import * as sidecar from '../../src/core/embeddings/embedding-sidecar-client.js';
+import * as runtimeSupport from '../../src/core/embeddings/runtime-support.js';
+import { DEFAULT_EMBEDDING_CONFIG } from '../../src/core/embeddings/types.js';
 
 describe('embedding identity integrity (#3569)', () => {
   let tmp: TestDBHandle | undefined;
@@ -21,8 +24,87 @@ describe('embedding identity integrity (#3569)', () => {
     await adapter.closeLbug();
     await tmp?.cleanup();
     tmp = undefined;
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
   });
+
+  it('replaces same-width model vectors on forced analyze and reuses only matching hashes', async () => {
+    tmp = await createTempDir('gitnexus-test-embedding-identity-');
+    const repo = path.join(tmp.dbPath, 'repo');
+    await fs.mkdir(repo);
+    vi.stubEnv('GITNEXUS_HOME', path.join(tmp.dbPath, 'home'));
+    vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
+    vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'never');
+    vi.stubEnv('GITNEXUS_EMBEDDING_URL', '');
+    vi.stubEnv('GITNEXUS_EMBEDDING_MODEL', '');
+    vi.stubEnv('GITNEXUS_EMBEDDING_DIMS', String(EMBEDDING_DIMS));
+    vi.spyOn(runtimeSupport, 'getLocalEmbeddingRuntimeBlocker').mockReturnValue(null);
+    const init = vi.spyOn(sidecar, 'ensureEmbeddingSidecar').mockResolvedValue({ device: 'cpu' });
+    vi.spyOn(sidecar, 'reapEmbeddingSidecarAndWait').mockResolvedValue(undefined);
+    let marker = 0;
+    // Only inference is faked: analyze, cache restore, hashes and DB writes are real.
+    const embed = vi.spyOn(sidecar, 'sidecarEmbedBatch').mockImplementation(async (texts) =>
+      texts.map(() => {
+        const vector = new Float32Array(EMBEDDING_DIMS);
+        vector[marker] = 1;
+        return vector;
+      }),
+    );
+    await fs.writeFile(path.join(repo, 'main.ts'), 'export function main() { return 1; }\n');
+    await fs.writeFile(path.join(repo, 'util.ts'), 'export function util() { return 2; }\n');
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
+    git('init', '-q');
+    git('add', '.');
+    git('-c', 'user.name=test', '-c', 'user.email=test@test', 'commit', '-qm', 'fixture');
+    const options = {
+      force: true,
+      embeddings: true,
+      skipFts: true,
+      skipAgentsMd: true,
+      skipSkills: true,
+    };
+    const readRows = async () => {
+      await adapter.initLbug(getStoragePaths(repo).lbugPath, { skipFts: true });
+      try {
+        return await adapter.executeQuery(
+          'MATCH (e:CodeEmbedding) RETURN e.nodeId AS nodeId, e.contentHash AS hash, e.embedding AS vector ORDER BY nodeId',
+        );
+      } finally {
+        await adapter.closeLbug();
+      }
+    };
+    let previousHashes: string[] = [];
+    let defaultHashes: string[] = [];
+    let nodeIds: string[] = [];
+    for (const modelId of ['', 'fixture/model-a', 'fixture/model-b', '']) {
+      vi.stubEnv('GITNEXUS_EMBEDDING_MODEL_ID', modelId);
+      embed.mockClear();
+      await runFullAnalysis(repo, options, { onProgress: () => {} });
+      expect(init.mock.lastCall?.[0]?.embeddingConfig?.modelId).toBe(
+        modelId || DEFAULT_EMBEDDING_CONFIG.modelId,
+      );
+      const rows = await readRows();
+      expect(rows).toHaveLength(2);
+      expect(embed.mock.calls.flatMap(([texts]) => texts)).toHaveLength(2);
+      expect(rows.map((row) => row.vector[marker])).toEqual([1, 1]);
+      const hashes = rows.map((row) => row.hash);
+      if (marker === 0) {
+        defaultHashes = hashes;
+        nodeIds = rows.map((row) => row.nodeId);
+      } else {
+        expect(rows.map((row) => row.nodeId)).toEqual(nodeIds);
+        hashes.forEach((hash, index) => expect(hash).not.toBe(previousHashes[index]));
+        if (modelId === '') expect(hashes).toEqual(defaultHashes);
+      }
+      previousHashes = hashes;
+
+      embed.mockClear();
+      await runFullAnalysis(repo, options, { onProgress: () => {} });
+      expect(embed).not.toHaveBeenCalled();
+      expect(await readRows()).toEqual(rows);
+      marker += 1;
+    }
+  }, 180_000);
 
   it.each([
     '',

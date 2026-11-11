@@ -33,6 +33,7 @@ import type {
 } from 'gitnexus-shared';
 import type { TypeRef } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
+import { GraphReferenceIntegrityError } from '../../../graph/relationship-integrity.js';
 import { generateId } from '../../../../lib/utils.js';
 import { lookupOwnedMembersByOwner } from '../../model/owned-members-lookup.js';
 import type { MutableSemanticModel, SemanticModel } from '../../model/semantic-model.js';
@@ -312,8 +313,8 @@ import { logger } from '../../../logger.js';
  *     graph (so this pass is a no-op when the legacy path already emitted it).
  *   - `seen` — per-site key shared with the generic edge bridge so the two
  *     passes never double-emit the same resolution.
- * The `dedupKey` and `rel:` id shape match `tryEmitEdge` exactly, so graph
- * output stays byte-identical. The caller is the enclosing class (NOT the
+ * This prepass retains its point-only identity; unlike full spans emitted by
+ * `tryEmitEdge`, it cannot certify source-site distinctness. The caller is the enclosing class (NOT the
  * method/constructor `resolveCallerGraphId` would prefer — that broke MRO for
  * C# 12 primary constructors, #1951); the edge type is pre-discriminated.
  */
@@ -2194,6 +2195,7 @@ export function runScopeResolution(
           }
         }
       } catch (err) {
+        if (err instanceof GraphReferenceIntegrityError) throw err;
         // Last-resort isolation, mirroring the worker-side per-file try/catch:
         // a shape the predicate misses must cost this one file's CFG, not
         // abort the language's whole scope-resolution pass mid-graph-build.

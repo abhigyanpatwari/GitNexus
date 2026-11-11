@@ -1,100 +1,98 @@
 # GitNexus Devcontainer
 
-A cross-platform Dev Container that pre-installs Claude Code, OpenAI Codex CLI, Cursor CLI, and Bun alongside the GitNexus native build chain. Supported hosts: **macOS, Linux, Windows 11 (native), and Windows 11 via WSL2.** Windows-native needs a **one-time `HOME` env var setup** — handled automatically by the `initializeCommand` on first run (see [Windows 11 setup](#windows-11-setup)).
-
-> ### ⚠️ Read this before using it on a work machine
->
-> **The default 9p setup grants `SYS_ADMIN`, which can weaken read-only mount protections.** Remove that capability and disable tuning as described below to restore the boundary assumed in the following security notes.
->
-> **With `SYS_ADMIN` removed**, this devcontainer **does not write to your host AI-CLI config.** Your skills, agents, commands, plugins, memory, prompts, and rules are **copied once** from a read-only host stage into a per-container volume on first create; the container edits its own copy and can never write back. So a compromised workspace dependency running in the container **cannot** drop a malicious agent, command, skill, or plugin onto your host for your next host CLI session to load — the write-through vector earlier versions had is closed. Your **credentials** (Claude/Codex/Cursor logins, plus `gh`) likewise stay in per-container volumes and are never written back, and `~/.ssh`, `~/.aws`, `~/.azure`, and `~/.docker` are mounted **read-only**.
->
-> What is **still** exposed: the read-only host stages (`/host/.claude`, `/host/.codex`, `/host/.cursor`, `/host/.claude-mem`) and the read-only credential mounts are all **readable** inside the container. A compromised dependency can therefore READ your host CLI config, memory, SSH/cloud credentials, and GitHub token — and there is **no egress firewall yet**, so it has the network to exfiltrate what it reads. Read-only protects you from tampering and write-back, not from disclosure.
->
-> The trade-off of the copy model: host and container config **diverge after first create.** A skill or plugin you add on the host later won't appear in the container until you wipe the config volume and rebuild (see [§ Rebuild / reset](#rebuild--reset)). Edits you make inside the container persist across rebuilds but never reach the host.
-
-**Contents:** [Quick start](#quick-start) · [Windows 11 setup](#windows-11-setup) · [macOS](#macos) · [Linux](#linux) · [How CLI state flows from your host](#how-cli-state-flows-from-your-host) · [Session resume](#session-resume-across-container-recreation) · [Trust boundary](#trust-boundary-concretely) · [First-time CLI authentication](#first-time-cli-authentication) · [API key auth](#alternative-api-key-authentication-ci--headless) · [Port forwarding](#port-forwarding) · [Known gotchas](#known-gotchas) · [Rebuild / reset](#rebuild--reset) · [Bumping CLI versions](#bumping-cli-versions) · [What's not included (yet)](#whats-not-included-yet) · [Troubleshooting](#troubleshooting)
+A cross-platform Dev Container with Claude Code, OpenAI Codex CLI, Cursor CLI, Bun, and the native build chain. Every declared mount uses **Linux Docker volumes**. Windows bind mounts, `/workspace-host`, `SYS_ADMIN`, and automatic 9P tuning have been removed.
 
 ## Quick start
 
-1. Install [Docker Desktop](https://docs.docker.com/desktop/) (Windows/macOS) or Docker Engine (Linux).
-2. Install [VS Code](https://code.visualstudio.com/) with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
-3. Install [Node.js](https://nodejs.org/) on the **host** (Node 18+). This is the only host-side toolchain dependency beyond Docker and VS Code — the devcontainer's `initializeCommand` runs `node .devcontainer/ensure-host-config-dirs.cjs` to set up the bind-mount source directories before container create. If you already use Claude Code or another Node-based CLI on the host, you're already set.
-4. Open the repo in VS Code → Command Palette → **Dev Containers: Reopen in Container**.
-5. Wait for the image build and lifecycle commands to finish preparing dependencies and AI CLI configuration.
-6. Authenticate the three CLIs once — see [First-time CLI authentication](#first-time-cli-authentication) below.
+1. Install Docker Desktop (Windows/macOS) or Docker Engine (Linux), VS Code, and the Dev Containers extension.
+2. Put **Node.js 18+**, **Docker CLI**, and **tar** on the host PATH. Windows 11 includes `tar.exe`; macOS and typical Linux installations include tar.
+3. Open the repository in VS Code and select **Dev Containers: Reopen in Container**.
+4. The host initializer imports the checkout and selected configuration into native volumes once. Dependency installation and CLI setup follow.
+5. Work in `/workspace` through the attached VS Code window. The host checkout is no longer synchronized.
 
-## Windows 11 setup
+Before rebuilding an existing container, follow [Source volume migration](#source-volume-migration).
 
-### Windows-native (one-time setup, then "just works")
+## Host platforms
 
-The host bind mounts use `${localEnv:HOME}/.claude` (and `.codex`, `.cursor`, `.ssh`, `.config/git`, `.config/gh`, `.gitconfig`). VS Code resolves `${localEnv:HOME}` by reading its own process env, and Windows doesn't set `HOME` by default — it uses `USERPROFILE`. So the bind mounts can't resolve until you tell Windows to also expose your profile as `HOME`.
+On Windows, the original checkout can remain at `D:\\development\\coding\\GitNexus`. The initializer uses `os.homedir()`; setting `HOME` with `setx` is no longer required. Windows tools opening that folder see the original copy, not subsequent container edits.
 
-The `initializeCommand` (`node .devcontainer/ensure-host-config-dirs.cjs`) handles this automatically:
+On WSL2, open the original folder through VS Code's WSL extension with Docker Desktop integration enabled. On macOS or Linux, open the original folder normally. All use the Docker-volume model. Linux hosts retain `updateRemoteUserUID: true`; setup repairs source ownership before dependency installation, including restrictive directories left by an older UID. A root host user keeps `node` at UID 1000, matching the Dev Containers CLI, which skips realignment for UID 0.
 
-1. **First time you Reopen in Container**, the script detects the missing `HOME`, runs `setx HOME "%USERPROFILE%"` (which writes to your user-level Windows env — no admin needed), prints a one-time setup banner, and exits.
-2. **Close all VS Code windows** (File → Exit) and reopen. VS Code picks up the new `HOME` at startup.
-3. **Reopen in Container again.** The script now sees `HOME=C:\Users\<you>`, skips the setup block, creates the bind-mount source dirs, and Docker brings the container up.
+Keep the host folder and selected configuration path stable: moving either can change `${devcontainerId}` and select different volumes.
 
-Subsequent rebuilds work normally with no extra steps. The `HOME` env var is set persistently in your Windows user environment, so it'll be there for every future VS Code session (and any other tool that wants `HOME`).
+## Source volume migration
 
-If you'd rather set it manually before opening the container:
+The default workspace is `gitnexus-source-${devcontainerId}:/workspace`. The host `initializeCommand` runs `initialize-volumes.cjs`, starts a disposable helper with volume mounts only, and streams a tar archive through [Docker's copy API](https://docs.docker.com/reference/cli/docker/container/cp/) into the staging volume `gitnexus-seed-${devcontainerId}`. The helper uses the Dockerfile's digest-pinned base image and mounts the source volume read-only. It is removed afterward; volumes and host files remain.
+
+`initializeCommand` also runs whenever an existing container is reopened, so the host only stages. `onCreateCommand`, which runs once per container creation, commits the stage into the empty source volume, normalizes Git, writes the completion marker, empties the stage, and repairs ownership. Reopening a pre-volume container after pulling this change only refreshes the stage, so the eventual rebuild imports current work. The commit only accepts a stage whose completion marker was written after the copy finished. `initializeCommand` copies the host's `seed-workspace.cjs` into the seed volume on every start and `onCreateCommand` runs that copy, so it always matches `devcontainer.json` and works with prebuilt or custom images.
+
+Staging and snapshot retakes are best-effort. If a host process writes a file while it is streamed, initialization warns, clears that copy and continues, so reopening an existing container never fails; the next start retries. Container creation without a complete stage stops at `onCreateCommand` with `No complete staged checkout`.
+
+The workspace volume is declared in `mounts`, with `workspaceMount` set to an empty string to disable the automatic host mount. This lets the Dev Containers CLI substitute `${devcontainerId}` before starting Docker; affected CLI versions leave it literal when the volume is declared in `workspaceMount`. Default and generated profiles retain their existing volume names, so this placement does not trigger another source import.
+
+The import preserves `.git`, branches, local commits, the index, stashes, uncommitted and ignored files, checkout-local indexes, and nested worktrees. Generated `node_modules`, `.venv`, `.husky/_`, `.gitnexus/parse-cache`, `.gitnexus/parse-cache.json`, and `.gitnexus/parsedfile-cache` paths are excluded at every depth, including under `.worktrees` and `.claude/worktrees`. GitNexus graph databases, embeddings, metadata, and runners are kept; parser caches regenerate on the next analysis. Git metadata is preserved except for source-volume completion markers. Reinstall dependencies inside each worktree as needed, and recreate Python environments with the evaluation project's `uv run` commands. Host files are left intact. Existing dependency, index-store, AI configuration, history, and session volume names stay unchanged.
+
+During archive transfers, `[volumes]` reports elapsed time, entries queued, excluded paths, symlinks, and MiB streamed to Docker every five seconds, followed by a completion or failure line. Streamed bytes measure data sent to Docker, not bytes committed to disk; there is no percentage because the total is not pre-scanned. Helper startup, snapshot finalization, and cleanup also report activity every five seconds; the commit into the source volume logs to the container creation output. Output from the Linux helper is shown as it arrives.
+
+Node writes the tar stream itself (ustar with PAX records for long and UTF-8 names), so the host needs no `tar`. Windows `tar.exe` reads file lists in the ANSI code page and macOS `tar` adds AppleDouble `._*` files; neither applies. Sockets and FIFOs are skipped. Selected snapshot roots such as `~/.config/gh` or `~/.claude.json` are followed when they link to an existing target, matching the bind mounts they replace. Every other symlink is transferred as path/target metadata and recreated by the Linux helper without following it. This also applies to configuration snapshots, so WSL-created links are never opened as files. Restoration rejects paths outside the destination, symlinked parent directories, and replacements of existing files. Ordinary source links and their targets are preserved verbatim.
+
+`initialize-volumes.test.cjs` covers this host-side importer on Linux, macOS and Windows CI. It replaces the Docker CLI with a Node adapter through `GITNEXUS_IMPORT_DOCKER`. Tests of code that runs only inside the Linux dev container or import helper skip on other hosts.
+
+The importer probes the destination filesystem and updates `core.ignorecase`, `core.filemode`, and `core.symlinks`, including worktree overrides. Where Windows disabled mode tracking, tracked executable bits are restored from the index. Unedited tracked symlink placeholders become symlinks; edited placeholders retain their bytes. Staged and unstaged contents are preserved. Absolute `core.worktree` overrides are removed from the copied root configuration and from each relinked nested worktree's `config.worktree`. The host Git configuration is untouched.
+
+Before the first rebuild:
+
+1. Save files and stop agents, Git operations, indexers, dev servers, and host claude-mem writers. The copy requires a quiet source; it is not a live filesystem snapshot. A file whose size or modification time changes while it is streamed discards that stage or snapshot without writing a completion marker.
+2. Preserve worktrees and other files outside `/workspace` and existing named volumes. From a **host terminal**, save the current container's writable layer:
+
+   ```powershell
+   docker commit <current-container-id> gitnexus-before-source-volume
+   ```
+
+   Wait for success before rebuilding. [Docker commit](https://docs.docker.com/reference/cli/docker/container/commit/) excludes mounted volumes, so retain those volumes and the Windows checkout too. This local recovery image can contain private configuration; keep it private.
+3. Keep opening the same host folder and `.devcontainer/devcontainer.json`, then run **Dev Containers: Rebuild Container**. Allow disk space for the source volume and the staged copy, plus configuration snapshots. The stage is emptied once the container commits it.
+4. Verify inside the rebuilt container:
+
+   ```bash
+   findmnt -T /workspace -o TARGET,SOURCE,FSTYPE
+   findmnt -rn -t 9p
+   git status --short
+   git log -1 --oneline
+   git config --get core.ignorecase
+   git config --get core.filemode
+   git config --get core.symlinks
+   ```
+
+   Docker Desktop with WSL2 should report `ext4` for `/workspace`; the 9P query should print nothing. The Git flags should be `false`, `true`, and `true`. Confirm your branch and local edits. From the host, `docker inspect <new-container-id> --format '{{json .Mounts}}'` shows actual mounts, including any your editor adds.
+
+After import, `.git/devcontainer-source-volume` prevents later initialization from replacing container work. The destination is checked before reading the host checkout. A partial, unmarked source volume fails closed without merging or deleting files. Inspect and back up that volume before removing only that failed volume and retrying. Never add or delete a completion marker to force migration.
+
+Lifecycle hooks run from the branch checked out in `/workspace`, while `devcontainer.json` comes from the host folder. Rebuild from a branch that contains this volume setup; an older branch lacks `seed-workspace.cjs`, so `onCreateCommand` fails until you check out a current branch.
+
+The importer requires a full checkout with its own object database. Linked-worktree roots, external object alternates, active Git locks, symlinked configuration, and absolute `.git/commondir` paths are rejected; `commondir` containing `.` is supported.
+
+Nested worktrees are relinked to their copied paths, including registrations created on Windows or another host path. Worktrees outside the checkout are not copied or rewritten. Copying a registration does not save its files. Recover an external worktree from the backup image with:
 
 ```powershell
-setx HOME "%USERPROFILE%"
-# Close & reopen VS Code
+docker create --name gitnexus-source-recovery gitnexus-before-source-volume
+docker cp gitnexus-source-recovery:/absolute/worktree/path ./recovered-worktree
 ```
 
-### Known trade-offs of Windows-native vs WSL2
+Restore its original container path or repair its Git registration before using it. Store future worktrees under `/workspace/.worktrees` to retain them across container recreation.
 
-Windows-native works, but Docker Desktop's Windows bind-mount layer has rough edges that WSL2 avoids:
+Use Git to share committed changes or `docker cp` to export files. **VS Code still reads build configuration from the host `.devcontainer` directory**: export intentional changes there back to the host before rebuilding. Keep the original checkout and recovery image until migration is verified. Back up volume-only work before Docker volume cleanup.
 
-- **File watchers can miss events.** Vite / jest `--watch` running inside the container watching workspace files mounted from `D:\...` may miss changes — chokidar polling (`CHOKIDAR_USEPOLLING=true`) is the usual workaround.
-- **`npm install` is 3-5× slower** through the Windows-to-Linux bind-mount translation than on a WSL2-native filesystem.
-- **Permission edge cases.** The husky `.husky/_/h` EPERM class we hit earlier in this PR is specific to Windows-side bind mounts changing UID ownership between container runs. `install-deps.sh` rebuilds the generated cache and verifies the pre-commit hook, but it's still a real source of friction.
-
-If you hit any of those and want to migrate to WSL2 later, the steps are below.
-
-### WSL2 (faster, fewer edge cases)
-
-To clone and open the repo inside WSL2:
-
-```bash
-# 1. Install WSL2 and a Linux distro if you haven't already.
-wsl --install -d Ubuntu
-
-# 2. Enter WSL.
-wsl
-
-# 3. Clone the repo inside your WSL2 home directory.
-cd ~
-git clone https://github.com/abhigyanpatwari/GitNexus.git
-cd GitNexus
-
-# 4. Launch VS Code from inside WSL — this opens VS Code attached to the WSL2
-#    filesystem, so `${localEnv:HOME}` resolves to the WSL user's home and
-#    subsequent "Reopen in Container" uses the WSL2-side path.
-code .
-```
-
-Then run **Dev Containers: Reopen in Container**. The workspace will be bind-mounted from `\\wsl$\Ubuntu\home\<user>\GitNexus`, which is fast and gives reliable file-system events. **Make sure Docker Desktop's WSL integration is enabled** for your distro: Docker Desktop → Settings → Resources → WSL Integration → toggle on the distro you cloned into.
-
-## macOS
-
-Open the repo folder in VS Code → **Reopen in Container**. The image is multi-arch; on Apple Silicon you'll pull the `linux/arm64` variant automatically.
-
-## Linux
-
-Same as macOS — open in VS Code and reopen in container. `updateRemoteUserUID: true` (default) shifts the container's `node` user UID/GID to match your host user, so bind-mounted files stay writable without extra setup.
+This follows [VS Code's guidance to keep source in Linux-native storage](https://code.visualstudio.com/remote/advancedcontainers/improve-performance).
 
 ## Workspace and image profiles
 
-The main configuration keeps your existing host checkout bind-mounted at `/workspace`. For Windows hosts, the WSL2 filesystem setup above avoids the Windows filesystem translation. Additional profiles are generated from the main configuration, using host Node.js with no npm installation required:
+The main configuration seeds your existing host checkout into a source volume. Additional profiles are generated from it, using host Node.js with no npm installation required:
 
 ```bash
-# A separate checkout in a Docker-managed native filesystem volume.
+# Clone a remote branch into a separate native filesystem volume.
 node .devcontainer/profile.cjs native --ref main
 
-# Bind-mounted checkout with Chromium system dependencies and browser cache.
+# Host-seeded source volume with Chromium dependencies and browser cache.
 node .devcontainer/profile.cjs ui
 
 # Combine the native workspace and UI support.
@@ -110,7 +108,7 @@ node .devcontainer/profile.cjs prebuilt --ui
 
 These commands overwrite the ignored `.devcontainer/generated/devcontainer.json`. Select that configuration when reopening the folder in Dev Containers, or pass `--config .devcontainer/generated/devcontainer.json` to the Dev Container CLI. Regenerate after changing the main configuration. Existing containers need recreation when switching workspace mounts.
 
-The native profile clones the selected **remote branch** of GitNexus into its volume before dependency setup. It does not copy uncommitted host edits. Push your branch first and use `--ref your-branch` to work on it; contributors using a fork must also pass `--url` for that fork. HTTPS, `git@host:owner/repo.git`, and `ssh://git@host/owner/repo.git` URLs are supported without embedded HTTPS credentials. Fresh checkouts track their remote branch, so ordinary `git pull` and `git push` work. Reused volumes keep their current branch and local changes; the bootstrap neither resets nor automatically pulls an existing checkout. The volume is the authoritative checkout: use Git to export changes before removing it. Host credentials/configuration still use the existing read-only staging mounts.
+The native profile clones the selected **remote branch** of GitNexus into its volume before dependency setup. It does not copy uncommitted host edits. Push your branch first and use `--ref your-branch` to work on it; contributors using a fork must also pass `--url` for that fork. HTTPS, `git@host:owner/repo.git`, and `ssh://git@host/owner/repo.git` URLs are supported without embedded HTTPS credentials. Fresh checkouts track their remote branch, so ordinary `git pull` and `git push` work. Reused volumes keep their current branch and local changes; the bootstrap neither resets nor automatically pulls an existing checkout. The volume is the authoritative checkout: use Git to export changes before removing it. Host configuration uses the same native snapshot volumes; this profile skips importing the host checkout.
 
 `--ref` and `--url` apply only to `native`. `--image` selects an existing image for consumer profiles and preserves the configured Features, including GitHub CLI, so custom images need not bundle `gh`. Dev Containers applies those Features to the selected image. `image-build` accepts only `--ui`, since its build output is named by the publishing command.
 
@@ -149,186 +147,55 @@ The diagnostic command reports CPU/memory allowance, cgroup memory events, memor
 
 The rolling tags are `ghcr.io/abhigyanpatwari/gitnexus-devcontainer:main` and `:main-ui`, available **after the first successful publication**. A fork publishes under its own repository-derived name. Each publication also records a unique `sha-COMMIT-run-RUN-ATTEMPT` tag in the workflow summary (with `-ui` for UI images). Pass that full reference or an image digest with `--image` to select a fixed build. Combine `native --image IMAGE` to use a prebuilt image with a native workspace. Local builds remain the default while the publishing workflow is reviewed and merged. New GHCR packages are [private by default](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry); a maintainer must enable public visibility for anonymous pulls, or developers must authenticate to GHCR. The workflow links the package to this repository using its OCI source label.
 
-## 9p workspace tuning
+## Configuration snapshots and CLI state
 
-`.devcontainer/tune-9p.sh` can attempt a larger 9p `msize` on each container start. It is **enabled by default**, with `SYS_ADMIN` granted to permit the remount attempt, and applies only when `/workspace` itself is a 9p mount. **Rebuild** an existing container to apply the capability. Check inside the container with:
+Host initialization creates these snapshots and retakes them until the source volume is committed; after that they are kept. Missing host paths produce an empty snapshot; no host files or directories are created.
 
-```bash
-findmnt -rn --mountpoint /workspace -o FSTYPE,OPTIONS
-```
+| Volume prefix (each ends in `-${devcontainerId}`) | Container target | Access |
+| --- | --- | --- |
+| `gitnexus-host-snapshot` | `/host` | Read-only |
+| `gitnexus-ssh-snapshot` | `/home/node/.ssh` | Read-only |
+| `gitnexus-docker-snapshot` | `/home/node/.docker` | Read-only |
+| `gitnexus-aws-snapshot` | `/home/node/.aws` | Read-only |
+| `gitnexus-azure-snapshot` | `/home/node/.azure` | Read-only |
+| `gitnexus-git-snapshot` | `/home/node/.config/git` | Read-only |
 
-To disable the remount attempts, set `containerEnv.WORKSPACE_9P_TUNE` to `"0"` in `.devcontainer/devcontainer.json`. To also remove the broad mount privileges, remove `"SYS_ADMIN"` from `capAdd` and **rebuild**. Setting the flag alone does not remove the capability. The default target is 1 MiB (`1048576` bytes); change `containerEnv.WORKSPACE_9P_MSIZE` to choose another size. The existing defaults also accept these two variables from the host environment when creating the container.
+`/host` contains selected AI CLI credentials, settings, plugins, skills, agents, commands, rules, prompts, memory, GitHub configuration, and the claude-mem store. Host transcript directories and Cursor's top-level `hooks.json` are excluded. See `HOST_PATHS` in `initialize-volumes.cjs` for the explicit list. Symlinks are preserved without following them; absolute host links may need replacing with container-local paths.
 
-The helper uses `sudo -n` with a five-second timeout, skips other filesystems and mounts already at or above the target, and never fails startup. It reads the mount options again after a remount and distinguishes a verified target value from an unchanged or unknown value. To retry manually:
+`post-create.sh` seeds missing credentials/settings into the existing writable `claude-config`, `codex-config`, `cursor-config`, and `gh-config` volumes. Existing files are preserved, and completion markers keep refreshed logins, edits, and deliberate logouts intact on rebuild. Those markers are written only from a complete `/host` snapshot, so a snapshot skipped during initialization is still seeded by a later rebuild. Plugins and shareable directories are seeded once; Claude and Cursor plugin registry paths are translated for Linux. Claude's home-level `~/.claude.json` is regenerated from the snapshot on recreation as before.
 
-```bash
-WORKSPACE_9P_TUNE=1 bash .devcontainer/tune-9p.sh /workspace
-```
+The independent writable `claude-mem` volume is seeded once. Stop host writers before the initial snapshot so database files and WAL sidecars are consistent.
 
-This is an experiment, with no measured speedup claimed. [`msize` sets the 9p packet payload size](https://www.kernel.org/doc/html/latest/filesystems/9p.html), but [upstream Linux's 9p implementation](https://github.com/torvalds/linux/blob/master/fs/9p/vfs_super.c) has no reconfigure handler to apply a new value. A successful remount command can therefore leave `msize` unchanged; Docker Desktop's kernel and server may also limit it. Increasing privileges alone does not guarantee tuning will work. For Windows development, keeping the checkout on the WSL2 filesystem remains the documented setup above.
+**Host and container state diverge.** Later host logins, key rotations, plugin installations, and config edits do not update snapshots. Authenticate and manage plugins inside the container for daily work. For an intentional snapshot refresh, export container-only changes, remove the old container, then remove only the relevant `gitnexus-*-snapshot-<id>` volume from the host and reopen. Refreshing `/host` does not overwrite existing CLI config: apply selected changes inside the container, or deliberately reset the corresponding config volume after backup.
 
-## How CLI state flows from your host
-
-### AI CLIs (Claude Code, Codex, Cursor): copy-once from a read-only host stage + per-container credentials
-
-The three AI CLIs use a **copy-from-read-only-stage topology**: the host's `~/.<cli>` folders (and `~/.claude-mem`) are mounted **read-only** at `/host/.<cli>`, and `post-create.sh` copies out of them into per-container named volumes. Credentials, identity, and single config files are copied on **every** create; the shareable subdirs (plugins, skills, agents, memory, commands, prompts, rules) are copied **once** on first create and then owned by the container. Lifecycle scripts and CLI tools edit the container copies. The default `SYS_ADMIN` capability means the read-only mounts are not a security boundary against privileged container code. Session sub-paths overlay the config volume via their own named volumes (Docker mount precedence — more specific path wins).
-
-| Mount                                              | Source                                                                                                                  | Target                                                    | Mode          | Purpose                                                                                                                             |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Container Claude config dir                        | _named volume_ `claude-config-${devcontainerId}`                                                                        | `/home/node/.claude`                                      | rw            | Per-container credentials + identity                                                                                                |
-| Container Codex config dir                         | _named volume_ `codex-config-${devcontainerId}`                                                                         | `/home/node/.codex`                                       | rw            | Per-container credentials                                                                                                           |
-| Container Cursor config dir                        | _named volume_ `cursor-config-${devcontainerId}`                                                                        | `/home/node/.cursor`                                      | rw            | Per-container credentials                                                                                                           |
-| Container gh config dir                            | _named volume_ `gh-config-${devcontainerId}`                                                                            | `/home/node/.config/gh`                                   | rw            | Per-container `gh` auth (`hosts.yml`/`config.yml`) seeded from host stage; in-container login persists                              |
-| **Claude sessions** (overlay on the config volume) | _named volume_ `…-claude-sessions-${devcontainerId}`                                                                    | `/home/node/.claude/projects`                             | rw            | `--resume` transcripts; survives the `<cli>-config` volume wipe — see [Session resume](#session-resume-across-container-recreation) |
-| **Codex sessions**                                 | _named volume_ `…-codex-sessions-${devcontainerId}`                                                                     | `/home/node/.codex/sessions`                              | rw            | `codex resume` rollouts; SQLite index backfills on recreation                                                                       |
-| **Cursor sessions**                                | _named volumes_ `…-cursor-sessions-${devcontainerId}`, `…-cursor-projects-${devcontainerId}`                            | `/home/node/.cursor/chats`, `/home/node/.cursor/projects` | rw            | `cursor-agent resume` store (best-effort — layout reverse-engineered)                                                               |
-| **claude-mem store**                               | _named volume_ `claude-mem-${devcontainerId}`                                                                           | `/home/node/.claude-mem`                                  | rw            | claude-mem's SQLite DB + Chroma vector store; **seeded once** from `/host/.claude-mem`, then container-private — see note below     |
-| Host Claude state, read-only stage                 | `$HOME/.claude`                                                                                                         | `/host/.claude`                                           | **read-only** | `post-create.sh` reads credentials + identity from here on container-create                                                         |
-| claude-mem store, read-only stage                  | `$HOME/.claude-mem`                                                                                                     | `/host/.claude-mem`                                       | **read-only** | `post-create.sh` seeds the claude-mem volume from here on first create                                                              |
-| Host Codex state, read-only stage                  | `$HOME/.codex`                                                                                                          | `/host/.codex`                                            | **read-only** | Same purpose for Codex                                                                                                              |
-| Host Cursor state, read-only stage                 | `$HOME/.cursor`                                                                                                         | `/host/.cursor`                                           | **read-only** | Same purpose for Cursor                                                                                                             |
-| **Claude shareable subdirs**                       | _seeded into the config volume from_ `$HOME/.claude/{plugins/marketplaces,plugins/cache,skills,agents,memory,commands}` | same under `/home/node/.claude/`                          | n/a (copy)    | **Seed-once** copy from the read-only stage; container owns its copy after                                                          |
-| **Codex shareable subdirs**                        | _seeded from_ `$HOME/.codex/{plugins,prompts,memories,skills}`                                                          | same under `/home/node/.codex/`                           | n/a (copy)    | **Seed-once** copy (whole `plugins/` dir — no path-bearing registry inside it)                                                      |
-| **Cursor shareable subdirs**                       | _seeded from_ `$HOME/.cursor/{plugins/marketplaces,plugins/local,rules,commands,agents,skills}`                         | same under `/home/node/.cursor/`                          | n/a (copy)    | **Seed-once** copy of the Cursor 2.5 plugin/rules/commands surface                                                                  |
-
-**What gets seeded once from the host (copy, not bind):**
-
-- **Claude**: `plugins/marketplaces`, `plugins/cache`, `skills/`, `agents/`, `memory/`, `commands/`
-- **Codex**: `plugins/` (whole dir), `prompts/`, `memories/`, `skills/`
-- **Cursor**: `plugins/marketplaces`, `plugins/local`, `rules/`, `commands/`, `agents/`, `skills/`
-
-On the **first** container-create, `post-create.sh` copies each of these out of the read-only `/host/.<cli>` stage into the per-container config volume, then writes a `.devcontainer-shareable-seeded` marker. On every later rebuild the marker is present, so the copy is skipped and the container keeps whatever it has accumulated. A plugin/skill/agent you install **inside** the container persists across rebuilds; one you add on the **host** after first create won't appear in the container until you remove the config volume and rebuild (see [§ Rebuild / reset](#rebuild--reset)). Nothing here is writable back to the host — `/plugin marketplace add` inside the container installs into the container's own volume copy, not your host `~/.<cli>/plugins/`.
-
-**Single config files are copied on container-create, not bind-mounted** — on Docker Desktop Windows a single-file bind is 9p while the named volume is ext4, and atomic config writes (`tmp` → rename onto target) trip EXDEV (this is what caused Codex's `config/batchWrite failed in TUI`). So these are synced from host on rebuild and the container rewrites its own copy until the next rebuild: `settings.json` + `$HOME/.claude.json` (Claude), `config.toml` (Codex), `cli-config.json` + `mcp.json` (Cursor). `hooks.json` (Cursor) is deliberately **not** synced — Cursor hooks execute shell commands, so sharing them would widen the supply-chain attack surface; add it yourself if you want it.
-
-**Plugin registry files with absolute paths are translated, not copied verbatim** — Claude's `known_marketplaces.json` / `installed_plugins.json` / `plugin-catalog-cache.json` and Cursor's `installed_plugins.json` bake in `C:\Users\…` (Windows) or `/Users/…` (macOS) install paths. `post-create.sh` rewrites those to `/home/node/.<cli>/plugins/…` and writes the result into the named volume, so plugins resolve inside Linux instead of failing with `cache-miss`. This translation is **also seed-once per CLI** — it runs only for a CLI being seeded that create (`translate-plugin-registries.cjs claude cursor`), so it stays consistent with the seed-once `cache/` copy and won't overwrite a plugin you installed inside the container on a later rebuild. Codex needs no translation — its enablement registry is `config.toml` (git URLs + logical keys, no filesystem paths), so its whole `plugins/` dir is copied as-is.
-
-**What stays per-container (in the named volume) and is synced from host on container-create:**
-
-- `.credentials.json` (Claude OAuth tokens), `auth.json` (Codex), `cli-config.json` (Cursor) — credentials
-- `~/.claude/.claude.json` (Claude's identity-only file: `userID`, `oauthAccount`, migration tracking) — kept per-container so logging in via container doesn't overwrite host's stored identity
-
-`post-create.sh` runs on every container-create, copies host's credentials into the volume if present, then container manages refresh from there. Sync is "always overwrite if host has the file, otherwise leave container alone". So:
-
-- Host has credentials → container starts logged in.
-- Host has no credentials → `claude login` / `codex login --device-auth` / `cursor-agent login` inside container; credentials stay in the named volume across rebuilds (volume is keyed by `${devcontainerId}`, stable for the workspace path).
-- `claude logout` inside container clears volume credentials only; host is untouched.
-
-**Why CLAUDE_CONFIG_DIR is intentionally NOT set:** Claude's default `~/.claude` matches the named-volume mount target, so the env var added no behavior — but setting it changed which file Claude reads `hasCompletedOnboarding` from. With it set, Claude reads `$CLAUDE_CONFIG_DIR/.claude.json` (the small identity-only file) and re-onboards every container; without it, Claude reads `$HOME/.claude.json` (copied from the read-only `/host/.claude.json` stage on container-create via `seed-claude-config.cjs`, with `hasCompletedOnboarding: true`).
-
-**With `SYS_ADMIN` removed, host CLI config is protected from write-through.** The shareable dirs are copied out of a **read-only** stage into the container's own volume, so a compromised npm package in the workspace dep tree — running inside the container — **cannot** write a malicious agent, command, skill, or plugin back to `~/.claude/`, `~/.codex/`, or `~/.cursor/` on the host. The earlier design bind-mounted these read-write and accepted that write-through as the cost of live sync; this design closes it. An even earlier alternative (read-only stage + symlinks) made `/plugin marketplace add` inside the container fail with EROFS; copying into a writable volume avoids that, because the container writes to its own copy rather than a read-only mount. What a compromised dependency can still do is **read** the read-only host stages (`/host/.<cli>`, `/host/.claude-mem`) and the read-only credential mounts and exfiltrate them — there is [no egress firewall yet](#whats-not-included-yet). The cost of the copy model is **divergence**: host edits made after first create don't reach the container until you wipe the config volume and rebuild.
-
-**Refresh-token divergence between rebuilds.** Container's credentials match host's at container-create time; after that, container manages its own refresh until the next rebuild. Anthropic rotates refresh tokens on every use, so an unattended container that hasn't talked to the API in weeks can hit a silent 401 if the host has refreshed since. Re-run `claude login` inside the container, or rebuild, to recover.
-
-**claude-mem is seeded once, then container-private.** The [claude-mem](https://github.com/thedotmack/claude-mem) store (`$HOME/.claude-mem` — a multi-GB SQLite DB `claude-mem.db` + `-wal`/`-shm`, plus a Chroma vector store `chroma/chroma.sqlite3` and its HNSW index binaries) is the one shareable-looking folder that is **deliberately not a host bind**, for the same SQLite reason as sessions below: a multi-GB WAL database over the 9p/virtiofs bind risks unreliable `fcntl` locking and corruption — sharply so if claude-mem ran on the host and in the container against the same DB at once. So it gets its own per-container named volume (`claude-mem-${devcontainerId}`), and `post-create.sh` **seeds it once** from the read-only `/host/.claude-mem` stage _only when the volume has no DB yet_. The first container-create copies the host's store in (a one-time copy, possibly several GB); every later rebuild keeps whatever the container accumulated and skips the copy. The container's memory and the host's **diverge from that seed point** — writes do not flow back — which is the price of keeping SQLite off a shared bind. To re-seed from the host's current store, remove the volume (`docker volume rm claude-mem-<id>`) and rebuild. `ensure-host-config-dirs.cjs` creates an empty `~/.claude-mem` on hosts that never installed claude-mem, so the read-only stage bind always resolves; the seed then finds no DB and the container simply starts with empty memory.
+Snapshots are read-only copies of host files. A partial snapshot is replaced on the next start, and all snapshots are retaken while the source volume is still uncommitted, so they match the staged checkout. If an interrupted import leaves `gitnexus-import-<id>`, inspect and remove that helper before retrying. Do not use `docker rm -v` or broad volume cleanup.
 
 ### Session resume across container recreation
 
-`claude --resume`, `codex resume`, and `cursor-agent resume` all read **local** transcript files. Those live _inside_ each CLI's config dir, which is a per-container named volume — so they already survive an ordinary **Rebuild Container**. What they did _not_ survive were the very things this README tells you to do: `docker volume rm <cli>-config-${devcontainerId}` to force a re-login or clear an `EACCES`, a `${devcontainerId}` change, or a full delete-and-recreate. Each of those drops the config volume and takes your session history with it.
+Existing session names and targets are unchanged:
 
-So the resume/transcript directories get their **own** named volumes (mount group 6 in `devcontainer.json`), keyed like the `node_modules` volumes (`${localWorkspaceFolderBasename}-…-${devcontainerId}`) and mounted _over_ the config volume at the session sub-paths:
+| CLI | Volume | Target |
+| --- | --- | --- |
+| Claude | `${localWorkspaceFolderBasename}-claude-sessions-${devcontainerId}` | `~/.claude/projects` |
+| Codex | `${localWorkspaceFolderBasename}-codex-sessions-${devcontainerId}` | `~/.codex/sessions` |
+| Cursor | `${localWorkspaceFolderBasename}-cursor-sessions-${devcontainerId}` | `~/.cursor/chats` |
+| Cursor projects | `${localWorkspaceFolderBasename}-cursor-projects-${devcontainerId}` | `~/.cursor/projects` |
 
-| Resume command                   | Persisted volume → target                                                               | What's stored                                                                                                                                                                                                                                          |
-| -------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `claude --resume` / `--continue` | `…-claude-sessions-…` → `~/.claude/projects`                                            | `<encoded-cwd>/<uuid>.jsonl` transcripts + `sessions-index.json`. Container cwd is always `/workspace`, so only that slice is stored. Pure JSONL/JSON — no SQLite.                                                                                     |
-| `codex resume` / `resume --last` | `…-codex-sessions-…` → `~/.codex/sessions`                                              | `YYYY/MM/DD/rollout-*.jsonl`. The `state_5.sqlite` thread index stays on the config volume (a single WAL file we don't split out); when it's absent after a recreation, Codex rebuilds it from these rollouts on the next start (a one-time backfill). |
-| `cursor-agent resume` / `ls`     | `…-cursor-sessions-…` → `~/.cursor/chats`; `…-cursor-projects-…` → `~/.cursor/projects` | `chats/{hash}/{uuid}/store.db` (one SQLite db per session, each in its own dir) + `projects/.../agent-transcripts`. cursor-agent's layout is reverse-engineered, so treat this as best-effort.                                                         |
+These overlay the config volumes. Recreation retains transcripts; resetting config leaves the separate session volumes intact, though a CLI may need to rebuild its session index. Cursor resume remains best-effort because its on-disk layout is not a stable public interface. Volumes remain tied to the host folder/configuration identity and Docker engine.
 
-Because these are **separate** volumes from `<cli>-config-${devcontainerId}`, the re-login fix (`docker volume rm claude-config-…`) no longer destroys your sessions — that was the point.
+### Credentials and platform limitations
 
-**Survives:** Rebuild Container, Rebuild Without Cache, a full delete-and-recreate of the container, and the `docker volume rm <cli>-config-…` re-login / `EACCES` fix.
+Snapshots remove the live host filesystem connection, but copied credentials remain readable inside the container. Read-only mounts prevent modification, not disclosure. No egress firewall is configured. The Docker socket is not mounted into the development container.
 
-**Does _not_ survive** (same durability tier as the `node_modules` volumes): `docker volume prune`, a `${devcontainerId}` change (moving the checkout to a new path, or switching between Windows-native and WSL2), or moving to a new machine. To deliberately wipe sessions, remove the session volumes too — see [Rebuild / reset](#rebuild--reset). Two checkouts with the **same folder name** on one host would share session volumes only if they also share a `${devcontainerId}`; they don't, so they stay separate.
+Host OS credential stores, Windows Docker credential helpers, and absolute host MCP command paths do not become Linux-compatible by copying configuration. Authenticate inside the container when needed and install required Linux tools. Docker, AWS, Azure, gcloud, and kubectl CLIs are not installed by this change. SSH and cloud snapshots remain read-only; use appropriate writable container configuration if a CLI needs to refresh tokens or update `known_hosts`.
 
-**First rebuild after adopting this, one-time:** if a container created _before_ these volumes existed already had sessions on the config volume (`~/.claude/projects`, `~/.codex/sessions`, …), the new empty session volume mounts _over_ that sub-path and **masks** the old content — same Docker-precedence shadowing described for plugins above. The old sessions are hidden, not deleted. To carry them forward once, copy them out of the config volume into the session volume; or just start fresh — new sessions land on the session volume from then on.
+VS Code can still copy `~/.gitconfig` and forward credential/SSH-agent helpers separately; these editor features are not repository bind mounts. Git's XDG configuration uses the native `.config/git` snapshot.
 
-**Why sessions are container-private and not even seeded from the host.** The shareable config dirs are _seeded once_ from the host (you want your skills/agents/plugins in the container). Sessions are deliberately _not_ seeded and never touch the host, because a transcript can contain anything you pasted or the agent read — API keys, file contents, connection strings. Binding or copying them to/from the host would (a) spill that to host disk, (b) add a write-through surface a compromised dependency can reach (there's still [no egress firewall](#whats-not-included-yet)), and (c) leak _every other project's_ transcripts into the container (Codex `sessions/` and Cursor `chats/` aren't project-scoped). Container-private volumes avoid all three while still surviving recreation. And Claude/Codex transcripts embed the container cwd (`/workspace`), so even if you _did_ bind them to the host, the host CLI wouldn't natively `--resume` them — its encoded-cwd folder differs.
-
-**Opt in to host-shared sessions anyway.** If you want transcripts visible/portable on the host and accept the trade-offs above, uncomment the host-bind block in `devcontainer.json` (just below the group-6 volumes) and add the matching source dirs to `ensure-host-config-dirs.cjs`'s `DIRS` so Docker can resolve the binds. That block scopes Claude to `/workspace`'s encoded subdir to limit the cross-project leak; the Codex and Cursor stores can't be scoped that way, so they expose every project's transcripts.
-
-### Other host bind mounts
-
-| Container path  | Host source         | Mode          | Why                                                                                    |
-| --------------- | ------------------- | ------------- | -------------------------------------------------------------------------------------- |
-| `~/.config/git` | `$HOME/.config/git` | **read-only** | XDG-style git config / ignore / attributes                                             |
-| `~/.ssh`        | `$HOME/.ssh`        | **read-only** | SSH commit signing + git push over SSH                                                 |
-| `~/.config/gh`  | `$HOME/.config/gh`  | **copy → volume** | `gh` CLI auth (PR/issue create, checks) — seeded from your host login on create into a per-container volume; in-container `gh auth login` persists across rebuilds and never writes back to the host |
-| `~/.docker`     | `$HOME/.docker`     | **read-only** | Container registry auth + buildx config (inert until you add Docker CLI via a Feature) |
-| `~/.aws`        | `$HOME/.aws`        | **read-only** | AWS CLI / SDK credentials (forward-compat — empty by default)                          |
-| `~/.azure`      | `$HOME/.azure`      | **read-only** | Azure CLI credentials (forward-compat — empty by default)                              |
-
-**Why `ssh`/`aws`/`azure`/`docker` are read-only, and why `gh` is copied into a volume:** `ssh`/`aws`/`azure` are consumed read-only by their clients (the SSH client and the AWS/Azure SDKs only read their credential files), so a one-way mount loses nothing. `docker` _can_ write its own state (`docker login` / buildx write `config.json`), but a read-write host bind would let a compromised in-container dependency rewrite your host `~/.docker/config.json` (point a `credHelper` at an attacker-controlled binary) — a credential-takeover vector. The common case is _reading_ an existing host login, so `docker` stays **read-only**: registry pulls/pushes using your host creds work, only a `docker login` inside the container won't persist back. `gh` used to be read-only for the same reason, but that meant an in-container `gh auth login` had nowhere to write and silently failed. So `gh` now uses the **copy-into-volume** model (the same one the AI-CLI credentials use): the host `~/.config/gh` is a read-only _stage_ at `/host/.config/gh`, and `post-create.sh` copies `hosts.yml`/`config.yml` out of it into the per-container `gh-config` volume on create. The container gets a **writable** copy — `gh auth login` / `gh auth refresh` inside the container now work and persist across rebuilds — while the read-only stage guarantees nothing is ever written back to the host's token. If you want `docker` to behave the same way, give it the same treatment (a `/host/.docker` stage + a docker-config volume + a copy step in `post-create.sh`).
-
-`~/.gitconfig` is **not** bind-mounted — VS Code's Dev Containers extension auto-copies the host's gitconfig into the container at attach time (this is built-in behavior, not something this devcontainer configures). The bind-mount approach conflicts with that auto-copy mechanism, so we let VS Code own it. The end result is the same: your host's `user.name` / `user.email` are available inside the container.
-
-If a host source dir doesn't exist when the container is first created, the `initializeCommand` (`node .devcontainer/ensure-host-config-dirs.cjs`) creates it empty — so the bind mount always has a valid source.
-
-### Per-CLI quirks worth knowing
-
-- **Claude Code on macOS** stores credentials in the system Keychain, not in `~/.claude/.credentials.json`. The sync silently no-ops; run `claude login` inside the container once and the named volume persists it.
-- **Codex on macOS / Linux with `cli_auth_credentials_store = "keyring"`** stores auth in the OS keyring (Keychain / Secret Service), so `~/.codex/auth.json` may not exist on host. Same fallback: `codex login --device-auth` inside the container.
-- **Cursor CLI inside containers** has [known upstream auth issues](https://forum.cursor.com/t/cursor-agent-authentication-issue-inside-docker/143995) — even with a correctly-synced `cli-config.json`, you may need to re-run `cursor-agent login` inside the container.
-- **Stale named volumes from old rebuilds can carry forward.** If you delete and re-create the same workspace, or if a prior container left interim state with a different `userID`, deleting the named volumes before rebuild guarantees a clean sync: `docker volume rm claude-config-${devcontainerId} codex-config-${devcontainerId} cursor-config-${devcontainerId}` (look them up with `docker volume ls | grep -config-`).
-- **User-scope MCP servers with absolute host paths won't resolve in-container.** `~/.claude.json` (Claude), `~/.codex/config.toml` (Codex), and `~/.cursor/mcp.json` (Cursor) are copied from host on container-create, so their user-scope `mcpServers` entries come along. But an entry whose `command` is an absolute host path (`C:\tools\foo.exe`, `/usr/local/bin/foo`) points at a binary that doesn't exist in the container — that server silently fails to launch. Only registry/`npx`-based servers (like this repo's `.mcp.json`, which uses `npx -y gitnexus@latest mcp`) and remote/URL servers work unchanged. The path-translation pass only rewrites `*/.​<cli>/plugins/*` registry paths, **not** arbitrary `mcpServers` command paths (there's no correct container target for a host-local binary). Install such MCP servers inside the container, or use `npx`/remote ones.
-- **Host config is seeded once per devcontainer, then diverges — this now applies to everything.** A `mcpServers` entry, setting, plugin, skill, agent, or command you add **on the host after** the container was created is not visible in the container until you remove the config volume and rebuild. Single config files (`mcpServers`, `settings.json`, …) are copy-on-create; the shareable dirs (plugins/skills/agents/memory/commands/prompts/rules) are copy-on-**first**-create (they persist across ordinary rebuilds and aren't even re-copied). Both diverge from the host after their copy. To pull host-side changes in, wipe the relevant volume and rebuild (see [§ Rebuild / reset](#rebuild--reset)).
-- **Plugins/skills/agents installed in-container persist; they do not reach the host.** A `/plugin marketplace add` (or `codex plugin add`, or a new skill/agent) inside the container writes to the container's own config volume and survives ordinary rebuilds. It never appears on the host — the host dirs are read-only sources, not bind targets. To get a plugin onto the host, install it on the host (then wipe + rebuild to seed it into the container).
-- **No cross-checkout plugin contention.** Because each container copies plugins into its own per-`${devcontainerId}` volume rather than sharing one host bind source, two containers (or checkouts) installing plugins at the same time no longer interleave git clones/extractions against a shared host dir. Each writes only its own copy.
-
-### What you still don't have inside the container
-
-These are commonly-needed CLIs that aren't installed by default — adding them would be follow-up work, not in this PR's scope:
-
-- **Docker CLI** (for `docker push` / `docker build` from inside the container). Add via `ghcr.io/devcontainers/features/docker-outside-of-docker:1` to the `features` block — `~/.docker/` is already mounted **read-only**, so your host `docker login` state works immediately for pulls/pushes; an in-container `docker login` won't persist to the host (drop `,readonly` on that mount if you need it to).
-- **AWS CLI / Azure CLI / gcloud / kubectl** — same pattern: add the matching Feature, the host config dirs already flow through.
-- **Private npm registry auth** (`~/.npmrc`) — you don't have a global one on this host. If you ever start using private packages, add `source=${localEnv:HOME}/.npmrc,target=/home/node/.npmrc,type=bind,readonly` to the mounts.
-
-That means:
-
-- **Authentication is shared.** If you're already logged in on the host (`claude login`, `codex login`, `cursor-agent login`, `gh auth login`), you're already logged in inside the container. No second login step.
-- **Plugins, skills, agents, memory, and commands are seeded from the host once, then container-private.** On first create the container copies your host's plugins/skills/agents/memory/commands (and Codex prompts/memories, Cursor rules) into its own volume. After that they're independent: install or edit inside the container and it stays in the container (persists across rebuilds); add a plugin or agent on the host and the container won't see it until you wipe the config volume and rebuild. Nothing the container does reaches the host. (`settings.json` and the user-scope `~/.claude.json` are copy-on-create the same way; `~/.claude/projects/` is container-local by design.)
-- **Git identity comes from the host.** Commits from inside the container use your host's `user.name` / `user.email` — VS Code's Dev Containers extension auto-copies your `~/.gitconfig` into the container at attach time. Any XDG-style config under `~/.config/git/` flows through via the read-only bind mount. To change git identity, edit `~/.gitconfig` on the host (container-side `git config --global` writes to a container-local file that's discarded on rebuild).
-- **SSH keys flow through (read-only).** Push over SSH remotes and SSH commit signing work inside the container using your host keys. The mount is read-only so container code can't exfiltrate or modify private keys — agent-perspective, this means you get git operations but the keys stay vendor-side.
-- **`gh` auth is shared, and in-container logins persist.** If you're logged in on the host, `gh pr create`, `gh pr checks`, `gh issue create` work inside the container without re-authenticating. If you're not, run `gh auth login` inside the container once — because `gh` config lives in a writable per-container volume (seeded from the host stage), that login persists across rebuilds and never touches the host's token.
-- **No per-workspace duplication.** All your devcontainers across all your projects see the same host CLI state, just like all your host shells do.
-
-The bind mount source directories are guaranteed to exist by the `initializeCommand` (`node .devcontainer/ensure-host-config-dirs.cjs`), which runs on the host before container create. It's a Node script (not a shell one-liner) so the same command works on Windows `cmd.exe` and POSIX shells. It creates the top-level bind-mount source dirs — `~/.claude`, `~/.codex`, `~/.cursor`, `~/.claude-mem`, plus `~/.ssh`, `~/.docker`, `~/.aws`, `~/.azure`, `~/.config/{gh,git}`. It deliberately does **not** pre-create the shareable subdirs (skills/agents/plugins/…): those are no longer bind sources (they're copied out of the whole-`~/.<cli>` read-only stage), and pre-creating empty ones would needlessly write into the host of someone who never used that CLI.
-
-### Trust boundary, concretely
-
-Host and container share a single trust boundary by design — fine for personal-dev, but the consequence is concrete. Any malicious npm package or `postinstall` script in the workspace dep tree, running inside the container, has direct **read** access to:
-
-- **Host AI CLI state** — the read-only stage at `/host/.claude`, `/host/.codex`, `/host/.cursor`, `/host/.claude-mem`, which exposes your **entire** host `~/.<cli>` tree (credentials, identity, AND the shareable skills/agents/plugins/memory/commands) for _reading_. The container copies what it needs out of this stage; a compromised dep can read all of it. It is mounted read-only; default `SYS_ADMIN` can weaken that protection
-- The **container's own credential snapshots** at `/home/node/.claude/.credentials.json` etc. (copied from host on container-create)
-- `~/.claude/memory/` / per-project memory (which may contain user-stored secrets if you've used the `/remember` skill)
-- The **current container's own session transcripts** (`~/.claude/projects`, `~/.codex/sessions`, `~/.cursor/chats`/`projects` — the group-6 volumes), which can hold anything pasted into or read during a session. These are container-private (see one-way note below), so this is read access to _this_ container's sessions only, not the host's or other projects'
-- Your **`gh` token** (`~/.config/gh`)
-- Your **SSH private keys** (`~/.ssh/`)
-- Docker registry tokens in **`~/.docker/config.json`** (if you've `docker login`-ed)
-- AWS/Azure CLI credentials if you've populated `~/.aws/` or `~/.azure/`
-
-**With `SYS_ADMIN` removed**, it does **not** have write-through to the host's CLI config. The shareable dirs are copied out of the read-only stage into the container's own volume, so a compromised in-container dep **cannot** write into your host `~/.claude/{plugins,agents,skills,commands,memory}/`, `~/.codex/{plugins,prompts,memories,skills}/`, or `~/.cursor/{plugins,rules,commands,agents,skills}/`. The persistence vector earlier versions had — drop a malicious auto-loaded agent/command/skill/rule onto the host, have it run in your next **host** session — is closed: there is no writable path from the container to those host folders. (Cursor's `hooks.json` is still additionally withheld from even the _container's_ copy, because hooks fire without an agent invoking them.) The boundary is now one-way for **all** of the host CLI config, not just credentials.
-
-**With `SYS_ADMIN` removed, what stays one-way:** everything. Credentials never flow back to host — `.credentials.json` / `auth.json` / `cli-config.json` live only in the per-container named volumes, and the `/host/.<cli>` stage they're copied from is mounted **read-only**, so the snapshot can't be overwritten back. The shareable AI-CLI dirs (skills/agents/plugins/memory/commands/prompts/rules) are now copy-on-create from that same read-only stage, so they have the one-way property too — readable for the copy, never writable back. `~/.ssh`, `~/.config/git`, `~/.aws`, `~/.azure`, and **`~/.docker`** are read-only binds with the same property — a compromised dep can _read_ your registry tokens but cannot _rewrite_ them to hijack your future host auth. **`~/.config/gh`** is now a read-only _stage_ copied into a per-container volume, so it keeps that same one-way property: the container reads it once to seed its own writable copy, and the read-only stage means an in-container `gh auth login` can never overwrite your host token. **Session transcripts** live in per-workspace named volumes (mount group 6) and are never seeded from or written back to the host, and the container can't see any _other_ project's transcripts. The opt-in host-bind block in `devcontainer.json` reverses that for sessions only — enable it only if you accept transcripts on host disk; see [Session resume across container recreation](#session-resume-across-container-recreation).
-
-**The egress firewall is the key compensating control that is still missing.** It's deferred (see "What's not included (yet)" below), so a compromised package currently has unrestricted outbound network to exfiltrate anything in the read list above. Until it lands, treat that read surface as exposed to any code you run in the container — don't use this devcontainer on a machine whose host credentials you couldn't afford to rotate. The isolated-volume setup below removes host AI-CLI config/credentials from that surface entirely.
-
-**If a workspace dep is ever found compromised**, rotate credentials at the vendor side — local file deletion is insufficient because tokens may have already left:
-
-- Anthropic: [console.anthropic.com → Settings → Keys](https://console.anthropic.com/settings/keys), revoke the OAuth session under Account
-- OpenAI / Codex: [platform.openai.com/api-keys](https://platform.openai.com/api-keys), revoke session under Profile
-- Cursor: dashboard → Integrations, rotate API key + revoke CLI session
-- GitHub: `gh auth refresh` or revoke the token at github.com/settings/tokens
-
-For high-trust enterprise environments where the container should not even be able to **read** host CLI state, remove the three read-only stage binds (`/host/.claude`, `/host/.codex`, `/host/.cursor`) — plus `/host/.claude-mem` and `/host/.claude.json` — from `.devcontainer/devcontainer.json`. With no stage to copy from, `post-create.sh`'s seed and credential-sync steps quietly do nothing (their `[ -f ]` / `[ -d ]` guards), and each devcontainer starts with empty, fully isolated config and credentials (Anthropic's reference pattern). You give up seeding your host setup into the container in exchange for removing host config/credentials from the container's read surface entirely; log in inside each container instead.
+The legacy `tune-9p.sh` and host-directory helper remain for their existing tests and CI checks. No runtime profile invokes them.
 
 ## First-time CLI authentication
 
-Each CLI works either way:
-
-- **Log in on host first** → the container picks it up automatically on the next rebuild (`sync_from_host` copies the credential file into the named volume during `post-create.sh`). Host stays the source of truth.
-- **Log in inside the container** → credentials write to the named volume. They persist across ordinary rebuilds (volume is keyed by `${devcontainerId}`, which is stable for a given workspace folder). The host's credentials are untouched.
-
-You can mix and match per-CLI. A common setup is "Claude logged in on host, Codex/Cursor logged in inside container".
+A host login present when snapshots are first created can seed the container. Otherwise log in inside it. In-container credentials persist in writable volumes and do not flow back to the host.
 
 ### Claude Code
 
@@ -336,7 +203,7 @@ You can mix and match per-CLI. A common setup is "Claude logged in on host, Code
 claude login
 ```
 
-Opens a browser auth flow. VS Code's port forwarding handles the OAuth callback automatically. After auth, `~/.claude/` is populated and visible from both host and container. The `DISABLE_AUTOUPDATER=1` env var prevents the in-container CLI from auto-updating — rebuild the container to pick up a newer Claude Code.
+Opens a browser auth flow. VS Code's port forwarding handles the OAuth callback automatically. After auth, `~/.claude/` is populated in the container volume. The `DISABLE_AUTOUPDATER=1` env var prevents the in-container CLI from auto-updating — rebuild the container to pick up a newer Claude Code.
 
 ### OpenAI Codex CLI
 
@@ -344,7 +211,7 @@ Opens a browser auth flow. VS Code's port forwarding handles the OAuth callback 
 codex login --device-auth
 ```
 
-The device-code flow prints a URL and a one-time code. Visit the URL on your host browser, paste the code, and the CLI authenticates without needing a callback listener — this is the most reliable path inside containers. Credentials land in `~/.codex/auth.json` (shared with host).
+The device-code flow prints a URL and a one-time code. Visit the URL on your host browser, paste the code, and the CLI authenticates without needing a callback listener — this is the most reliable path inside containers. Credentials land in `~/.codex/auth.json` (in the container volume).
 
 `codex login` (browser-callback variant) also works but can be flaky in some headless contexts; prefer `--device-auth`.
 
@@ -354,7 +221,7 @@ The device-code flow prints a URL and a one-time code. Visit the URL on your hos
 cursor-agent login
 ```
 
-Opens a browser auth flow; VS Code's port forwarding handles the callback. Credentials persist in `~/.cursor/cli-config.json` (shared with host).
+Opens a browser auth flow; VS Code's port forwarding handles the callback. Credentials persist in `~/.cursor/cli-config.json` (in the container volume).
 
 Verify any time with `cursor-agent status`.
 
@@ -400,42 +267,24 @@ VS Code's Ports panel shows forwarded ports once their listener starts.
 - **Single-writer LadybugDB constraint** (`GUARDRAILS.md` § LadybugDB lock). Don't run `gitnexus analyze` on the host and inside the container against the same `.gitnexus/` directory simultaneously — the second writer will get `database busy`.
 - **Native grammar builds add ~30s to first install.** Tree-sitter Dart/Proto/Swift/Kotlin/Zig are all vendored uniformly: `node-gyp-build` picks a committed GitNexus-built prebuilt `.node` at install time (no compile), and only falls back to compiling from the vendored source during `postinstall` if no prebuild matches the host (then a toolchain is needed). Set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` (in your shell or `remoteEnv`, then rebuild) to skip these optional grammars; each loses parsing for the affected language(s), and the install still succeeds. Changing this setting invalidates the CLI dependency receipt, including when it is removed to restore parsing.
 - **`tree-sitter-kotlin`/`tree-sitter-swift` warnings on install** only appear when no prebuild matches the platform-arch (per `AGENTS.md`); they are non-fatal — parsing for that language is simply unavailable.
-- **`.mcp.json` works inside the container**: `npx -y gitnexus@latest mcp` resolves cleanly because npm registry is reachable and the workspace bind mount exposes the same `.mcp.json` the host sees.
+- **`.mcp.json` is copied into the source volume on first creation.** Later host edits are not synchronized; update the container copy when changing its MCP configuration.
 - **Husky pre-commit is verified during setup.** Root preparation always installs the hook, including cached dependency runs. Only its generated `.husky/_` cache is cleared for stale Windows permissions; the tracked `.husky/pre-commit` stays intact. Setup fails if the hook is missing, Git points elsewhere, or the environment or Husky's `init.sh` disables or skips it. Verification runs the installed Husky helper against a temporary sentinel hook without running the real formatter or changing staged files. Run `npm run prepare` at the repository root to restore the hook, and keep Husky enabled in its startup configuration.
 
 ## Rebuild / reset
 
-- **Rebuild Container** (Command Palette) — re-runs the Dockerfile build and `postCreateCommand` against the existing named volumes (auth, history, **and sessions** persist).
-- **Rebuild Container Without Cache** — fresh image layers, same volumes.
-- **To force a re-login / clear an `EACCES`** — remove the per-container _config_ volumes and rebuild. As of the session-volume change this **no longer drops your `--resume` history** (sessions are on separate volumes — see [Session resume](#session-resume-across-container-recreation)):
-  ```bash
-  docker volume ls | grep -- -config-          # the credential / identity volumes
-  docker volume rm claude-config-<id> codex-config-<id> cursor-config-<id> gh-config-<id>
-  ```
-  ⚠️ Since the shareable dirs are now seeded into the config volume (not bind-mounted), wiping `<cli>-config` **also discards any plugin/skill/agent/command you installed _inside_ the container** and re-seeds those dirs from the host on the next rebuild. That is the intended way to pull host-side config changes in, but if you have in-container-only plugins you want to keep, reinstall them after the rebuild (or install them on the host first so the re-seed brings them along).
-- **To also wipe session history** (a true clean slate) — remove the session volumes too (`<name>` is your workspace folder name):
-  ```bash
-  docker volume ls | grep -E -- '-(sessions|cursor-projects)-'   # the group-6 volumes
-  docker volume rm <name>-claude-sessions-<id> <name>-codex-sessions-<id> \
-                   <name>-cursor-sessions-<id> <name>-cursor-projects-<id>
-  ```
-  Then rebuild.
-- **To re-seed claude-mem from the host** (the container's memory has diverged and you want the host's current store back) — remove the claude-mem volume and rebuild; `post-create.sh` copies the host store in again on the next create:
-  ```bash
-  docker volume rm claude-mem-<id>
-  ```
+- **Rebuild Container** reuses source, snapshots, credentials, sessions, dependencies, and caches. An initialized source volume is never re-seeded.
+- **Rebuild Container Without Cache** refreshes image layers while retaining volumes.
+- For ownership errors, first rebuild: source preparation runs as root, and lifecycle hooks repair writable config and dependency volumes.
+- To reset a CLI, back up its container-only configuration/plugins, then remove only its `<cli>-config-<id>` volume after removing the container. Reopening seeds from the existing snapshot. Separate session volumes remain.
+- Resetting `claude-mem-<id>` restores the existing snapshot. To import a newer host store, refresh `gitnexus-host-snapshot-<id>` too, with host writers stopped.
+- `gitnexus-seed-<id>` is empty after the container commits it; removing it is safe.
+- Never remove the source volume to fix a credential problem. Back up volume-only work before removing volumes.
 
 ## Bumping CLI versions
 
 Claude Code, Codex, and Cursor install the latest available release at image build time using their official shell installers. Rebuild without the Docker cache to refresh those image layers. Bun's version is pinned by `BUN_VERSION` in `.devcontainer/devcontainer.json` `build.args`; the Node base image is pinned by digest in the Dockerfile.
 
 Codex uses the [official standalone installer](https://developers.openai.com/codex/cli/) (`curl -fsSL https://chatgpt.com/codex/install.sh | sh`) rather than npm. The build runs it non-interactively and checks `codex --version`. Its native packages normally live under `~/.codex/packages/standalone`, inside the persistent config volume. The image keeps a package seed outside that mount; `post-create.sh` restores it when Codex cannot run, including when rebuilding with a config volume created by the previous npm-based image. A working standalone release already in the volume is kept. This avoids another download during setup and leaves credentials, configuration, and sessions intact.
-
-## What's not included (yet)
-
-- **Egress firewall — the most important hardening still outstanding.** The original plan included an opt-in iptables/ipset firewall adapted from Anthropic's reference devcontainer. It was deferred to a follow-up PR — `runArgs` is static in `devcontainer.json`, so toggling NET_ADMIN/NET_RAW capabilities cleanly requires either a separate `devcontainer-firewall.json` profile or an `initializeCommand`-generated overlay. Until it lands, the read surface in [§ Trust boundary](#trust-boundary-concretely) has no network containment — anything readable can be exfiltrated. Track at the project's issue tracker if you need this.
-- **Codespaces tuning.** Host configuration mounts and `SYS_ADMIN` support are not actively tested there.
-- **Non-Chromium browsers.** The UI profile provisions Chromium. Firefox/WebKit need their own browser binaries and system dependencies.
 
 ## Troubleshooting
 
@@ -450,16 +299,19 @@ recreate the container; a pinned older image keeps its older runtime.
 
 If `[install-deps]` prints `npm warn EBADENGINE` with Node 22.16.0, run **Dev Containers: Rebuild Container** from the Command Palette after updating this checkout. The image now pins Node 22.23.3; workspace dependencies require at least 22.22.2 on the Node 22 line. Re-running `npm install` in the old container does not update its Node runtime.
 
-| Symptom                                                                                      | Likely cause                                                                                                                           | Fix                                                                                                                                                                                                                                                                         |
-| -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GitNexus devcontainer one-time Windows setup` banner from `initializeCommand`               | First-time Windows-native Reopen-in-Container; `HOME` env var was missing                                                              | The script just ran `setx HOME "%USERPROFILE%"` for you. Close ALL VS Code windows (File → Exit) and reopen — see [Windows 11 setup](#windows-11-setup)                                                                                                                     |
-| `bind source path does not exist: /.claude` (or similar) from Docker                         | Windows-native `HOME` env var is still missing even after one rebuild — `setx` may have failed or VS Code wasn't fully restarted       | Run `setx HOME "%USERPROFILE%"` in a Windows shell manually, fully exit VS Code (check Task Manager that no `Code.exe` remains), reopen                                                                                                                                     |
-| `EACCES` / `EPERM` writing into `~/.claude`, `~/.codex`, or `~/.cursor` inside the container | Stale state from a previous container with a different effective UID                                                                   | Move the affected dir aside and let the CLI rebuild it (`mv ~/.claude ~/.claude.bak` and log in again). Long-term: WSL2 setup, which doesn't hit this class of issue                                                                                                        |
-| `EPERM: operation not permitted, copyfile ... '.husky/_/h'` in `postCreateCommand`           | Leftover `.husky/_/` from a previous container run on a Windows-side bind mount                                                        | `install-deps.sh` regenerates `.husky/_` and verifies the active hook. If you hit this on an older config, delete `.husky/_/` on the host and rebuild. Long-term: clone in WSL2                                                                                                       |
-| Vite never hot-reloads                                                                       | Repo cloned on Windows side, not WSL2                                                                                                  | Re-clone inside WSL2                                                                                                                                                                                                                                                        |
-| `gitnexus-web` can't reach the backend                                                       | `4747` was remapped or backend isn't running                                                                                           | Verify the Ports panel shows `4747` forwarded with no remap; start the backend with `cd gitnexus && npx gitnexus serve`                                                                                                                                                     |
-| `npm install` fails on tree-sitter-swift / proto / dart                                      | Native build toolchain missing                                                                                                         | This shouldn't happen in the devcontainer — verify the apt layer installed `python3 make g++`. If iterating, set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` to skip the vendored grammars                                                                                          |
-| Integration tests fail with `database busy`                                                  | LadybugDB single-writer constraint                                                                                                     | Don't run host-side `gitnexus analyze` while the container is also analyzing the same repo; choose one writer                                                                                                                                                               |
-| API key env vars not visible inside the container                                            | They are intentionally not auto-propagated from the host (so an empty/stale host var can't silently break `*-login` for everyone else) | `export ANTHROPIC_API_KEY=...` / `OPENAI_API_KEY=...` / `CURSOR_API_KEY=...` inside the container shell, or carry it via your VS Code [dotfiles repo](https://code.visualstudio.com/docs/devcontainers/containers#_personalizing-with-dotfile-repositories) for persistence |
-| `git commit` produces commits with empty author                                              | `~/.gitconfig` is missing or empty on the host (VS Code's auto-copy had nothing to copy)                                               | Set `git config --global user.name "Your Name"` and `git config --global user.email "you@example.com"` from the host shell, then rebuild the container                                                                                                                      |
-| `gh: not logged in` inside the container                                                     | Not logged in on the host (nothing to seed), or the `gh-config` volume is empty                                                        | Just run `gh auth login` **inside the container** — `gh` config lives in a writable per-container volume, so the login persists across rebuilds. (Logging in on the host instead also works: it seeds in on the next container create.)                                      |
+| Symptom | Check / action |
+| --- | --- |
+| `node` or `docker` missing during initialization | Install the host prerequisite and restart VS Code to refresh PATH. |
+| Import helper already exists | Inspect `gitnexus-import-<id>`; remove it only if the import is no longer running. |
+| `no space left on device` during import | Docker's Linux storage is full. Check `docker system df` and Docker Desktop's disk allocation. Allow room for both the staged copy and the source volume, plus configuration snapshots. The importer excludes regenerable parser caches at every depth. A failed transfer into the stage is replaced on the next start, so retry after resolving space. If the failure occurred while the container committed into `/workspace`, inspect and preserve the partial source volume before resetting it. Do not prune volumes containing work. |
+| Uninitialized source volume | Inspect and back up that volume, then retry with it empty. Never add a completion marker manually. |
+| `No complete staged checkout` during container creation | Staging was skipped; the `[volumes]` initialization output names the cause, usually a host process writing during the copy or an active Git operation. Stop host writers, then run **Rebuild Container** (or `devcontainer up --remove-existing-container`): a failed `onCreateCommand` is not retried in the same container. |
+| `changed during the import` warning | A host process wrote the named file while it was streamed. That stage or snapshot is retried on the next start. Stop agents, indexers and claude-mem on the host before rebuilding. |
+| 9P remains after rebuilding | Check the selected config, regenerate optional profiles, and inspect editor-added mounts and image metadata. |
+| Host edits no longer appear | Work in the attached container. Export files explicitly with Git or `docker cp`. |
+| SSH/cloud/Docker auth fails | Host credential helpers and absolute paths may not work on Linux. Configure the available Linux tool. |
+| Vite or Git appears stale | Confirm VS Code is attached to the volume workspace, not the original host checkout. |
+| Web cannot reach backend | Keep port 4747 forwarded without remapping and start `gitnexus serve`. |
+| Tests report `database busy` | Stop other writers to the same LadybugDB store. |
+
+Codespaces initialization is not validated; the host importer requires Docker CLI/daemon access. UI profiles provision Chromium only.

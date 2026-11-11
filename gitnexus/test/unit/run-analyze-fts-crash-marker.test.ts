@@ -30,6 +30,7 @@ import {
 } from '../../src/core/ingestion/process-detection-budget.js';
 import { getSearchFTSCjkSegmentation } from '../../src/core/search/cjk-segmentation.js';
 import { RebuildReasonCollector } from '../../src/core/rebuild-reasons.js';
+import { MAX_INCREMENTAL_WRITES } from '../../src/core/incremental/compaction-policy.js';
 import {
   FTS_DIRTY_PHASE,
   allowsFtsCrashWalPark,
@@ -77,6 +78,7 @@ const incrementalMeta = (repoPath: string): RepoMeta => {
     lastCommit: 'stale-not-head',
     indexedAt: new Date().toISOString(),
     stats: {},
+    graphCompaction: { version: 1, compactBytes: 7, incrementalWrites: 0 },
     fileHashes: { [REL_FILE]: 'stale-hash' },
     schemaFingerprint: SCHEMA_FINGERPRINT,
     analysisFeatures: resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, [REL_FILE]),
@@ -120,13 +122,24 @@ const mockLbugAdapter = async () => {
     initLbug: vi.fn(async () => undefined),
     loadGraphToLbug: vi.fn(async () => undefined),
     getLbugStats: vi.fn(async () => ({ nodes: 1, edges: 0, communities: 0, processes: 0 })),
+    executeQuery: vi.fn(async () => []),
+    // The stored fixture contains one File node and no incident edges.
+    executePrepared: vi.fn<typeof actual.executePrepared>(async (query) => {
+      if (query.endsWith('WITH n LIMIT $limit RETURN count(*) AS rowCount')) {
+        return [{ rowCount: 1 }];
+      }
+      if (query.endsWith('WITH r LIMIT $limit RETURN count(*) AS rowCount')) {
+        return [{ rowCount: 0 }];
+      }
+      throw new Error(`Unexpected prepared query in FTS fixture: ${query}`);
+    }),
     // The policy fixture has one stored File row. Publication now reconciles
     // that identity instead of trusting the synthetic node count alone.
-    executeQuery: vi.fn(async (query: string) =>
-      query.startsWith('MATCH (n:`File`) RETURN n.id AS id')
-        ? [{ id: 'file:src/a.ts', name: REL_FILE, filePath: REL_FILE }]
-        : [],
-    ),
+    forEachQueryRow: vi.fn<typeof actual.forEachQueryRow>(async (query, onRow) => {
+      if (query.startsWith('MATCH (n:`File`) RETURN n.id AS id')) {
+        onRow({ id: 'file:src/a.ts', name: REL_FILE, filePath: REL_FILE });
+      }
+    }),
     executeWithReusedStatement: vi.fn(async () => []),
     closeLbug: vi.fn(async () => undefined),
     wipeLbugDbFiles: vi.fn(async () => undefined),
@@ -407,6 +420,7 @@ describe('runFullAnalysis FTS crash marker', () => {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(
@@ -477,6 +491,7 @@ describe('runFullAnalysis FTS crash marker', () => {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       await runFullAnalysis(
@@ -653,6 +668,7 @@ describe('runFullAnalysis FTS crash marker', () => {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       await expect(
@@ -696,6 +712,7 @@ describe('runFullAnalysis FTS crash marker', () => {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(
@@ -1068,6 +1085,7 @@ describe('runFullAnalysis FTS crash marker', () => {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(
@@ -1191,8 +1209,79 @@ describe('runFullAnalysis FTS crash marker', () => {
       expect(result.alreadyUpToDate).not.toBe(true);
       expect(runPipelineFromRepo).toHaveBeenCalled();
       expect(runDeferredDerivedPhases).toHaveBeenCalled();
+      expect(await runPipelineFromRepo.mock.results[0].value).toHaveProperty(
+        'runDeferredDerivedPhases',
+        undefined,
+      );
       const finalMeta = await loadMeta(storagePath);
       expect(finalMeta?.processDetection?.uncertified).toBeUndefined();
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('releases deferred phases before compacting an unchanged snapshot', async () => {
+    const runDeferredDerivedPhases = vi.fn(async () => undefined);
+    const runPipelineFromRepo = vi.fn(async (repoPath: string) => ({
+      repoPath,
+      graph: fileGraph(),
+      runDeferredDerivedPhases,
+    }));
+    const wipeLbugDbFiles = vi.fn(async () => {
+      expect(runDeferredDerivedPhases).toHaveBeenCalledTimes(1);
+      expect(await runPipelineFromRepo.mock.results[0].value).toHaveProperty(
+        'runDeferredDerivedPhases',
+        undefined,
+      );
+    });
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', async () => ({
+      ...(await mockLbugAdapter()),
+      wipeLbugDbFiles,
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/search/fts-indexes.js')>()),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      missingSearchFTSIndexTables: vi.fn(async () => []),
+      dropSearchFTSIndexes: vi.fn(async () => undefined),
+      buildSearchIndexesOrDegrade: vi.fn(async () => ({ ok: true })),
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({ runPipelineFromRepo }));
+
+    const tmpRepo = await createTempDir('gitnexus-deferred-compaction-');
+    try {
+      await seedGitFile(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      const fileHash = await computeFileHash(path.join(tmpRepo.dbPath, REL_FILE));
+      await saveMeta(storagePath, {
+        ...incrementalMeta(tmpRepo.dbPath),
+        lastCommit: headCommit(tmpRepo.dbPath),
+        fileHashes: { [REL_FILE]: fileHash! },
+        graphCompaction: { version: 1, compactBytes: 7, incrementalWrites: MAX_INCREMENTAL_WRITES },
+        processDetection: {
+          maxProcesses: null,
+          maxProcessBranching: PROCESS_DETECTION_BUDGET_DEFAULTS.maxProcessBranching,
+          maxProcessTraceDepth: PROCESS_DETECTION_BUDGET_DEFAULTS.maxProcessTraceDepth,
+          maxEntryPointCandidates: PROCESS_DETECTION_BUDGET_DEFAULTS.maxEntryPointCandidates,
+        },
+      });
+      await createPlaceholderGraphStore(lbugPath);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { skipAgentsMd: true, skipSkills: true },
+        { onProgress: () => {}, onLog: () => {} },
+      );
+
+      expect(result.alreadyUpToDate).not.toBe(true);
+      expect(runPipelineFromRepo).toHaveBeenCalledWith(
+        tmpRepo.dbPath,
+        expect.any(Function),
+        expect.objectContaining({ skipDerivedGraphPhases: true }),
+      );
+      expect(wipeLbugDbFiles).toHaveBeenCalledTimes(1);
+      expect(runDeferredDerivedPhases).toHaveBeenCalledTimes(1);
     } finally {
       await tmpRepo.cleanup();
     }
@@ -1710,6 +1799,7 @@ describe('runFullAnalysis rebuild reasons on the crash marker', () => {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
       const options = { skipAgentsMd: true, skipSkills: true };
       const callbacks = { onProgress: () => {}, onLog: () => {} };
 
@@ -1726,6 +1816,7 @@ describe('runFullAnalysis rebuild reasons on the crash marker', () => {
 
       // A clean rerun with a live escalation hands the reason to the FTS stamp.
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
       writes.length = 0;
       await runFullAnalysis(tmpRepo.dbPath, options, callbacks);
       const escalated = markersInPhase(writes, 'escalated-full-write');
@@ -1749,6 +1840,7 @@ describe('runFullAnalysis rebuild reasons on the crash marker', () => {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
       await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+      await createPlaceholderGraphStore(getStoragePaths(tmpRepo.dbPath).lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       await expect(

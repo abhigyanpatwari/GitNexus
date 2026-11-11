@@ -1,0 +1,40 @@
+--- a/gitnexus/src/mcp/repository-policy.ts
++++ b/gitnexus/src/mcp/repository-policy.ts
+@@ -229,7 +229,14 @@
+       defaultLimit: LIST_REPOS_DEFAULT_LIMIT,
+       maxLimit: LIST_REPOS_MAX_LIMIT,
+     });
+-    const repositories = await this.listAllowedRepos(backend);
++    const nameContains = params?.name_contains;
++    if (nameContains !== undefined && typeof nameContains !== 'string') {
++      throw new Error('list_repos: "name_contains" must be a string');
++    }
++    const needle = typeof nameContains === 'string' ? nameContains.toLowerCase() : undefined;
++    const repositories = (await this.listAllowedRepos(backend)).filter(
++      (repo) => needle === undefined || repo.name.toLowerCase().includes(needle),
++    );
+     repositories.sort((a, b) => {
+       const an = a.name.toLowerCase();
+       const bn = b.name.toLowerCase();
+@@ -259,8 +266,10 @@
+     method: string,
+     params: Record<string, unknown> | undefined,
+   ): Promise<unknown> {
++    if (method === 'list_repos' && (this.configured || params?.name_contains !== undefined)) {
++      return this.listReposPage(backend, params);
++    }
+     if (!this.configured) return backend.callTool(method, params);
+-    if (method === 'list_repos') return this.listReposPage(backend, params);
+     if (this.restricted && method.startsWith('group_')) {
+       throw new Error('Group tools are unavailable when an MCP repository allowlist is set.');
+     }
+--- a/gitnexus/src/mcp/tools.ts
++++ b/gitnexus/src/mcp/tools.ts
+@@ -108,6 +108,7 @@
+     inputSchema: {
+       type: 'object',
+       properties: {
++        name_contains: { type: 'string', description: 'Case-insensitive repository name substring' },
+         limit: {
+           type: 'integer',
+           description: `Max repositories to return in this page (default: ${LIST_REPOS_DEFAULT_LIMIT}, min: 1, max: ${LIST_REPOS_MAX_LIMIT}). Values outside [1, ${LIST_REPOS_MAX_LIMIT}] are rejected.`,

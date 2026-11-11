@@ -5,6 +5,16 @@ import path from 'node:path';
 import { createWatchIgnorePredicate } from '../../src/config/ignore-service.js';
 import { isRelevantWatchPath, resolveWatchOptions } from '../../src/cli/analyze-watch.js';
 import * as git from '../../src/storage/git.js';
+import {
+  analysisMayEmbed,
+  resolveHostAnalysisResources,
+} from '../../src/core/analysis-host-resources.js';
+
+vi.mock('../../src/core/analysis-host-resources.js', () => ({
+  analysisMayEmbed: vi.fn(async () => false),
+  analysisSupervisorReservation: () => 192 * 1024 ** 2,
+  resolveHostAnalysisResources: vi.fn(() => ({ mainHeapMb: 512 })),
+}));
 
 vi.mock('../../src/storage/git.js', () => ({
   getCoreExcludesFilePath: vi.fn(),
@@ -24,6 +34,25 @@ afterEach(async () => {
 });
 
 describe('watch path selection', () => {
+  it('admits the requested family budget and pending embeddings for watch refreshes', async () => {
+    vi.mocked(analysisMayEmbed).mockResolvedValueOnce(true);
+    const baseline = { maxFileSize: undefined, workerTimeout: undefined, verbose: undefined };
+    const result = await resolveWatchOptions(
+      repoPath,
+      { resourceBudget: '4096', workers: '2', branch: 'feature' },
+      baseline,
+    );
+    expect(analysisMayEmbed).toHaveBeenLastCalledWith(repoPath, { branch: 'feature' });
+    expect(resolveHostAnalysisResources).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        totalMb: 4096,
+        workers: 2,
+        includeEmbeddings: true,
+        mainHeapMb: expect.any(Number),
+      }),
+    );
+    expect(result).toMatchObject({ graphPublication: 'auto', resources: { mainHeapMb: 512 } });
+  });
   it('forwards and removes route configuration on subsequent refreshes', async () => {
     const aliases = [{ importPath: 'example.com/core', type: 'Engine', framework: 'gin' }];
     const baseline = { maxFileSize: undefined, workerTimeout: undefined, verbose: undefined };
