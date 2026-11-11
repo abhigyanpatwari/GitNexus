@@ -356,7 +356,8 @@ async function downloadAndRun(packageName, directory) {
     if (npxJs && fs.existsSync(npxJs)) {
       command = process.execPath;
       commandArgs = [npxJs, ...args];
-    } else {
+    } else if (!npx || /\.(cmd|bat)$/i.test(npx)) {
+      env.__GITNEXUS_HOOK_NPX = npx || 'npx.cmd';
       command =
         process.env.ComSpec ||
         path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe');
@@ -364,7 +365,7 @@ async function downloadAndRun(packageName, directory) {
         '/d',
         '/s',
         '/c',
-        `"npx.cmd ${args.slice(0, -1).join(' ')} \"${args.at(-1)}\""`,
+        `""%__GITNEXUS_HOOK_NPX%" ${args.slice(0, -1).join(' ')} \"${args.at(-1)}\""`,
       ];
       windowsVerbatimArguments = true;
     }

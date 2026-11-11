@@ -53,6 +53,7 @@ type Api = {
   writeRecovery: (directory: string, state: Record<string, unknown>) => void;
   acquireInstallSlot: (directory: string) => (() => void) | null;
   runPackage: (command: string, args: string[], options: object) => Promise<void>;
+  downloadAndRun: (packageName: string, directory: string) => Promise<string>;
   main: () => Promise<void>;
   RECOVERY_TIMEOUT: number;
   LOCK_MAX_AGE: number;
@@ -80,7 +81,7 @@ function load(
   });
   const api: Api = vm.runInNewContext(
     source.slice(0, source.lastIndexOf('\nmain().catch')) +
-      '\n({exactVersion, resolveRuntime, launcherConfig, recoveryDirectory, readRecovery, writeRecovery, acquireInstallSlot, runPackage, main, RECOVERY_TIMEOUT, LOCK_MAX_AGE, FAILURE_COOLDOWN});',
+      '\n({exactVersion, resolveRuntime, launcherConfig, recoveryDirectory, readRecovery, writeRecovery, acquireInstallSlot, runPackage, downloadAndRun, main, RECOVERY_TIMEOUT, LOCK_MAX_AGE, FAILURE_COOLDOWN});',
     {
       require: Object.assign(
         (id: string) => {
@@ -134,12 +135,16 @@ function npmShellExecutor() {
 }
 
 function recoveryFixture(
-  options: { interpreter?: boolean; cmdFallback?: boolean; kind?: 'plugin' | 'installed' } = {},
+  options: {
+    interpreter?: boolean;
+    cmdFallback?: 'cmd' | 'bat';
+    kind?: 'plugin' | 'installed';
+  } = {},
 ) {
   const root = fixture();
   const home = path.join(root, 'home');
   const hooks = path.join(root, "bootstrap spaces & 'quote' $cash %percent%", 'hooks');
-  const npmPrefix = path.join(root, 'npm');
+  const npmPrefix = path.join(root, options.cmdFallback ? 'npm spaces & %percent%' : 'npm');
   const pkg = installedPackage(path.join(root, 'cache', 'node_modules', 'gitnexus'));
   const bin = path.join(root, 'cache', 'node_modules', '.bin');
   fs.mkdirSync(home);
@@ -208,7 +213,10 @@ setTimeout(async () => {
   fs.mkdirSync(path.dirname(npmJs), { recursive: true });
   fs.writeFileSync(npmJs, npmSource);
   if (process.platform === 'win32')
-    fs.writeFileSync(path.join(npmPrefix, 'npx.cmd'), '@"%__TEST_NODE%" "%__TEST_NPX%" %*\r\n');
+    fs.writeFileSync(
+      path.join(npmPrefix, `npx.${options.cmdFallback || 'cmd'}`),
+      '@"%__TEST_NODE%" "%__TEST_NPX%" %*\r\n',
+    );
   else
     fs.writeFileSync(
       path.join(npmPrefix, 'npx'),
@@ -443,6 +451,69 @@ describe('Claude plugin package launcher validation', () => {
 });
 
 describe('package recovery with real npm shell semantics', () => {
+  it.each(['exe', 'bat', 'cmd'] as const)(
+    'preserves the discovered Windows npx.%s launcher',
+    async (extension) => {
+      const directory = fixture();
+      const prefix = path.join(directory, 'npm spaces & %percent%');
+      fs.mkdirSync(prefix);
+      const npx = path.join(prefix, `npx.${extension}`);
+      fs.writeFileSync(npx, '');
+      const pkg = installedPackage(path.join(directory, 'package'));
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+      });
+      const spawn = vi.fn(
+        (_command: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
+          fs.writeFileSync(
+            String(options.env.__GITNEXUS_HOOK_RECEIPT),
+            JSON.stringify({ runtime: pkg.hook }),
+          );
+          queueMicrotask(() => child.emit('close', 0));
+          return child;
+        },
+      );
+      const cmd = 'C:\\Windows\\System32\\cmd.exe';
+      const { api } = load({
+        platform: 'win32',
+        env: { PATH: prefix, ComSpec: cmd },
+        childProcess: { spawn },
+      });
+      expect(await api.downloadAndRun(`gitnexus@${version}`, directory)).toBe(pkg.hook);
+      const args = [
+        '--yes',
+        '--prefer-offline',
+        `--package=gitnexus@${version}`,
+        '--',
+        'node',
+        '-e',
+        'require(process.env.__GITNEXUS_HOOK_BOOTSTRAP)',
+      ];
+      if (extension === 'exe') {
+        expect(spawn).toHaveBeenCalledExactlyOnceWith(
+          npx,
+          args,
+          expect.objectContaining({ windowsVerbatimArguments: false }),
+        );
+      } else {
+        expect(spawn).toHaveBeenCalledExactlyOnceWith(
+          cmd,
+          [
+            '/d',
+            '/s',
+            '/c',
+            `""%__GITNEXUS_HOOK_NPX%" --yes --prefer-offline --package=gitnexus@${version} -- node -e "require(process.env.__GITNEXUS_HOOK_BOOTSTRAP)""`,
+          ],
+          expect.objectContaining({
+            windowsVerbatimArguments: true,
+            env: expect.objectContaining({ __GITNEXUS_HOOK_NPX: npx }),
+          }),
+        );
+      }
+      expect(spawn.mock.calls[0]?.[2]).not.toHaveProperty('shell');
+    },
+  );
   it.each(['plugin', 'installed'] as const)(
     'recovers once and isolates npm output from the %s hook',
     async (kind) => {
@@ -489,10 +560,10 @@ describe('package recovery with real npm shell semantics', () => {
       expect(logRows(f.log)).toHaveLength(1);
     },
   );
-  it.skipIf(process.platform !== 'win32')(
-    'runs actual cmd.exe fallback with a spaced node and metacharacter bootstrap',
-    async () => {
-      const f = recoveryFixture({ interpreter: true, cmdFallback: true });
+  it.skipIf(process.platform !== 'win32').each(['cmd', 'bat'] as const)(
+    'runs actual cmd.exe fallback for an npx.%s shim with spaced paths and metacharacters',
+    async (cmdFallback) => {
+      const f = recoveryFixture({ interpreter: true, cmdFallback });
       const result = await f.start({ GITNEXUS_DEBUG: 'true' }).done;
       expect(result.status, result.stderr).toBe(0);
       expect(result.stderr).toBe('');
