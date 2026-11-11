@@ -255,11 +255,17 @@ const LANGS = [
     // both heritage paths and the postfix-chain reference walk run at scale.
     header:
       'class Base {\n  String ping() { return "base"; }\n}\n\nabstract class Marker {\n  String mark();\n}\n\n',
+    // Each entity also carries one awaited call-result local (`final e =
+    // await load()`), so the per-body binder census behind that inference
+    // (`dartBodyCensus`) is exercised at scale: a per-initializer re-walk
+    // made it quadratic in the number of awaited locals (DART-04 review).
     unit: (n) =>
       `class Entity${n} extends Base implements Marker {\n` +
       `  int id = 0;\n  String name = '';\n` +
       `  int getId() { return this.id; }\n` +
-      `  String mark() { return this.name; }\n}\n\n`,
+      `  String mark() { return this.name; }\n` +
+      `  Future<Entity${n}> load() async { return this; }\n` +
+      `  Future<int> use() async { final e = await load(); return e.getId(); }\n}\n\n`,
   },
   {
     name: 'java',

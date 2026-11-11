@@ -336,9 +336,15 @@ export interface ImportResolutionContext {
  *  `RegistryProviders.constraintCompatibility`'s third parameter. */
 export type { ConstraintContext } from 'gitnexus-shared';
 
-/** How a container's element was reached in the source. */
+/** How a container's element was reached in the source. `await` is the
+ *  value an awaitable wrapper yields — name-free, like `index`; it carries
+ *  `name?: undefined` so a provider that reads `via.name` after ruling out
+ *  `index` keeps type-checking. A provider answers `undefined` for any route
+ *  it does not recognize, which is an answer ("not that kind of container"),
+ *  so a language without an await route keeps the fold's identity behaviour. */
 export type ElementAccessRoute =
   | { readonly kind: 'index' }
+  | { readonly kind: 'await'; readonly name?: undefined }
   | { readonly kind: 'accessor'; readonly name: string };
 
 /** One structurally-detected implementor plus the receiver form in which it

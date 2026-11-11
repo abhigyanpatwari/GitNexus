@@ -1244,6 +1244,7 @@ export function runScopeResolution(
       workspaceIndex,
       provider.resolveQualifiedCallee,
       allFilePaths,
+      provider.elementTypeOf,
     );
   }
 

@@ -115,7 +115,7 @@ import {
   typeApplicationArguments,
 } from './utils/template-arguments.js';
 import { parseTypeParameterList } from './utils/type-parameters.js';
-import { followedStep } from './utils/type-ref-chain.js';
+import { followedStep, type AwaitedFollow } from './utils/type-ref-chain.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
 
@@ -142,6 +142,7 @@ export type ScopeExtractorHooks = Pick<
   | 'importsExecuteWhereWritten'
   | 'interpretTypeBinding'
   | 'classifyCallForm'
+  | 'elementTypeOf'
 >;
 
 // ─── Public entry point ─────────────────────────────────────────────────────
@@ -1227,10 +1228,14 @@ function pass4CollectTypeBindings(
       writtenType !== parsed.rawTypeName
         ? writtenType
         : undefined;
+    // The binding holds the AWAITED result of the callee it names — a generic
+    // sub-tag any emitter may set; see `TypeRef.awaited`.
+    const awaited = match['@type-binding.awaited'] !== undefined;
     const typeRef: TypeRef =
       declaredSpelling === undefined
         ? {
             rawName: parsed.rawTypeName,
+            ...(awaited ? { awaited: true as const } : {}),
             bindingRange: anchor.range,
             declaredAtScope: match['@type.lookup-scope']?.text ?? host.id,
             lookupPosition: { startLine: anchor.range.startLine, startCol: anchor.range.startCol },
@@ -1243,6 +1248,7 @@ function pass4CollectTypeBindings(
         : {
             rawName: parsed.rawTypeName,
             declaredSpelling,
+            ...(awaited ? { awaited: true as const } : {}),
             bindingRange: anchor.range,
             declaredAtScope: match['@type.lookup-scope']?.text ?? host.id,
             lookupPosition: { startLine: anchor.range.startLine, startCol: anchor.range.startCol },
@@ -1274,9 +1280,19 @@ function pass4CollectTypeBindings(
   // class type — not at another local variable name. Without this,
   // `resolveTypeRef` hits the chained name, sees it's a local Variable
   // (non-type kind), and strict-returns null.
+  // An awaited binding takes what the followed return type yields under
+  // `await` — the provider's route, bound here; see `followedStep`. No
+  // `resolveQualified`: imports are not finalized here, so a qualified yield
+  // (`models.User`) is left for the post-finalize follow, which can read the
+  // producer's import.
+  const elementTypeOf = provider.elementTypeOf;
+  const awaited: AwaitedFollow | undefined =
+    elementTypeOf === undefined
+      ? undefined
+      : { yields: (type) => elementTypeOf(type, { kind: 'await' }) };
   for (const draft of drafts) {
     for (const [name, ref] of draft.typeBindings) {
-      const resolved = followChainedRef(ref, draftById);
+      const resolved = followChainedRef(ref, draftById, awaited);
       if (resolved !== ref) draft.typeBindings.set(name, resolved);
     }
   }
@@ -1291,7 +1307,11 @@ const CHAIN_MAX_DEPTH = 16;
  * lookups in the declaring scope and its ancestors. Returns the terminal
  * TypeRef (or the original if the chain dead-ends or cycles).
  */
-function followChainedRef(start: TypeRef, draftById: ReadonlyMap<ScopeId, ScopeDraft>): TypeRef {
+function followChainedRef(
+  start: TypeRef,
+  draftById: ReadonlyMap<ScopeId, ScopeDraft>,
+  awaited?: AwaitedFollow,
+): TypeRef {
   let current = start;
   const visited = new Set<string>();
   for (let depth = 0; depth < CHAIN_MAX_DEPTH; depth++) {
@@ -1313,7 +1333,8 @@ function followChainedRef(start: TypeRef, draftById: ReadonlyMap<ScopeId, ScopeD
     if (next === current) return current; // self-ref
     if (visited.has(next.rawName)) return current; // cycle guard
     visited.add(next.rawName);
-    current = followedStep(start, next);
+    // The await hop is the FIRST step only: callee → its awaited result.
+    current = followedStep(start, next, depth === 0 ? awaited : undefined);
   }
   return current;
 }
@@ -1938,6 +1959,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@type-binding.name',
   '@type-binding.type',
   '@type-binding.nullable-field',
+  '@type-binding.awaited',
   '@reference.name',
   '@reference.qualified-name',
   // The generic arguments a heritage base was written with, when the emitter's

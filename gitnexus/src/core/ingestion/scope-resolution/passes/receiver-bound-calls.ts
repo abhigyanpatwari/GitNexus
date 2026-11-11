@@ -2971,6 +2971,30 @@ export function emitReceiverBoundCalls(
       // ── Case 4: simple typeBinding (`u: U`) ──────────────────────
       if (typeRef !== undefined && !typeRef.rawName.includes('.')) {
         sourceBindingGrounded = true;
+        // An awaitable WRAPPER spelling (`Future<User>`, kept whole by the
+        // language so the un-awaited value is not typed as its result) names
+        // no owner: the receiver is recorded as unresolved instead of being
+        // erased to whatever workspace class shares the wrapper's name. Same
+        // rule as `classOfDeclaredType` in `compound-receiver.ts`, which every
+        // fold route goes through; this is the one lookup outside it.
+        if (
+          provider.elementTypeOf?.(typeRef.declaredSpelling ?? typeRef.rawName, {
+            kind: 'await',
+          }) !== undefined
+        ) {
+          options.recordResolutionOutcome?.({
+            kind: 'suppressed',
+            reason: 'receiver-unresolved',
+            candidateIds: [],
+            phase: 'receiver-bound-calls',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+            siteKind: site.kind,
+          });
+          handledSites.add(siteKey);
+          continue;
+        }
         // A `rawName` the capture layer reduced from a type application is
         // resolved through the application it was written as, so the erasure
         // takes the GROUNDED route rather than binding whatever the workspace
