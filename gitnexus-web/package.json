@@ -61,7 +61,7 @@
     "@playwright/test": "^1.63.0",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
-    "@testing-library/user-event": "^14.6.7",
+    "@testing-library/user-event": "^14.6.8",
     "@types/dompurify": "^3.2.0",
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
