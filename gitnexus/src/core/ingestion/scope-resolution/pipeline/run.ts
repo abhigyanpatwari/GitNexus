@@ -1882,9 +1882,24 @@ export function runScopeResolution(
             ),
         });
   probeEmit('callable-flow-end', `iterations=${callableValueFlow.iterations}`);
+  const namesMentionedIn = provider.namesMentionedIn;
   const importsEmitted = callableFlowOnly
     ? 0
-    : emitImportEdges(graph, indexes.imports, indexes.scopeTree, provider.importEdgeReason);
+    : emitImportEdges(
+        graph,
+        indexes.imports,
+        indexes.scopeTree,
+        provider.importEdgeReason,
+        namesMentionedIn === undefined
+          ? undefined
+          : (sourceFile) => {
+              // '' is a file whose text was not retained for this pass
+              // (`postExtractSourceTextPolicy`), not an empty file: a file that
+              // imports something is never empty. Unknown keeps every edge.
+              const text = getFileContents().get(sourceFile);
+              return text === undefined || text === '' ? undefined : namesMentionedIn(text);
+            },
+      );
   probeEmit('imports-end', `emitted=${importsEmitted}`);
 
   // Language-specific supplementary edges (e.g. Vue template-derived

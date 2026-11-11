@@ -29,6 +29,7 @@ import {
   resolveJavaImportTarget,
   type JavaResolveContext,
 } from './index.js';
+import { javaNamesMentionedIn } from './mentioned-names.js';
 import { populateJavaPackageSiblings, resolveJavaSamePackageBase } from './package-siblings.js';
 import { attachSpringBeanCandidateMetadata } from './spring-bean-metadata.js';
 import { attachJavaSpringAopMetadata } from './spring-aop.js';
@@ -53,6 +54,9 @@ const javaScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Java,
   languageProvider: javaProvider,
   importEdgeReason: 'java-scope: import',
+  // `import pkg.*;` resolves to every file declaring `pkg`; only the ones this
+  // file names are dependencies (#3695).
+  namesMentionedIn: javaNamesMentionedIn,
 
   loadResolutionConfig: () => {
     // Worker capture facts are process-local and outlive a single analysis in

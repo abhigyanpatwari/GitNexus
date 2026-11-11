@@ -27,6 +27,10 @@
  *    which the previous header documented at length as being decided by "a
  *    property of the file list, not of the import". It now answers with every
  *    file declaring that package, which is what the import actually names.
+ *    That answer is about visibility: any of those files may supply a name.
+ *    Which of them become a File→File IMPORTS edge is decided at emission, by
+ *    the names the importer mentions (`javaNamesMentionedIn`, #3695) — an
+ *    edge per package file was importers × package size.
  *  - a file's location and its package were assumed to agree. They need not:
  *    `weird/path/User.java` declaring `package com.example;` is importable as
  *    `com.example.User`, and `com/example/User.java` declaring nothing is in

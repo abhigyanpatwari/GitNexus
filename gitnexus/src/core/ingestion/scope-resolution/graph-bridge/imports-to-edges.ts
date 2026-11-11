@@ -104,6 +104,42 @@
  * `Y` carries the pair. A statement is type-only exactly when every specifier
  * it decomposes to is.
  *
+ * ## On-demand wildcard imports name no file (#3695)
+ *
+ * `import pkg.*;` resolves to EVERY file declaring `pkg`, because any of them
+ * may supply a name. Emitting a pair for each of them is importers × package
+ * size: 1,000 files importing a 1,000-file package is a million edges, of which
+ * each importer uses a handful. One 24,736-file Java repository produced
+ * 3,742,494 IMPORTS edges this way — 81% of its graph — and ran out of heap
+ * writing them.
+ *
+ * A language whose wildcard import only changes how simple names in the file
+ * are read (Java, JLS §7.5.2: types are imported "as needed") depends on a
+ * package file exactly when it writes one of that file's names. A provider
+ * that says so supplies `mentionedNamesOf`, and a `wildcard-expanded` edge is
+ * then emitted only when the importer mentions a name the edge can bind:
+ *
+ *  - an expanded edge binds its own `localName`;
+ *  - an unexpanded one (no `localName`; the resolver reads the target's module
+ *    scope on demand) binds whatever that module scope binds.
+ *
+ * Both answers come from what the edge and the scope tree already hold. The
+ * mention set is the provider's, because what counts as a name is lexical and
+ * therefore the language's to define.
+ *
+ * It is an over-approximation on purpose, and only ever in the keeping
+ * direction: a name inside a comment or a string keeps an edge that a compiler
+ * would not need, while a dropped edge would hide a real dependency. That
+ * matters more here than it looks, because a type used only in a declaration,
+ * a cast, `instanceof`, `throws` or an annotation produces NO symbol-level
+ * edge — the IMPORTS pair is the only record that the file depends on it. For
+ * the same reason every unknown fails open: no source text, or a target scope
+ * the tree cannot produce, keeps the edge.
+ *
+ * Name resolution is untouched. The finalized edges, and so everything a
+ * lookup can reach through them, are exactly what they were; this decides only
+ * which of them become a persisted File→File dependency.
+ *
  * All scopes of a source file are collected before that file's pairs are
  * emitted. The finalizer groups scopes by file, so this preserves first-seen
  * pair order while retaining only one file's pairs. Interleaved source files
@@ -176,22 +212,75 @@ const REASON_SUFFIX_BY_PRESENCE: Readonly<Record<ImportPresence, string>> = {
   [PRESENCE_ERASED]: TYPE_ONLY_IMPORT_REASON_SUFFIX,
 };
 
+/**
+ * The names a source file mentions, for narrowing on-demand wildcard imports
+ * (see "On-demand wildcard imports name no file" in the module header).
+ * `undefined` means the file's text is unavailable, which keeps every edge.
+ */
+export type MentionedNamesOf = (sourceFile: string) => ReadonlySet<string> | undefined;
+
 export function emitImportEdges(
   graph: KnowledgeGraph,
   imports: ReadonlyMap<ScopeId, readonly ImportEdge[]>,
   scopeTree: ScopeResolutionIndexes['scopeTree'],
   reason = 'scope-resolution: import',
+  mentionedNamesOf?: MentionedNamesOf,
 ): number {
   const debug = isDebugHeapEnabled();
   const started = debug ? Date.now() : 0;
   let scanned = 0;
   let emitted = 0;
+  let unmentioned = 0;
   const probe = (stage: string, detail = ''): void => {
     if (debug)
       logHeapProbe(
         `sr-emit-imports-${stage}`,
-        `elapsed_ms=${Date.now() - started} scanned=${scanned} emitted=${emitted} ${detail}`,
+        `elapsed_ms=${Date.now() - started} scanned=${scanned} emitted=${emitted} unmentioned=${unmentioned} ${detail}`,
       );
+  };
+
+  // One source file's mention set at a time: buckets arrive grouped by file, so
+  // the previous set is garbage as soon as the next file starts. Built on the
+  // first wildcard edge that needs it, so a file without one never pays.
+  let mentionedFile: string | undefined;
+  let mentioned: ReadonlySet<string> | undefined;
+  // Names an unexpanded wildcard edge can bind, per target file: every importer
+  // of a package asks about the same files, and the scope tree may have to
+  // decode a disk-backed shard to answer. `null` is "the tree has no such
+  // scope", which keeps the edge.
+  const bindableNamesByTarget = new Map<string, readonly string[] | null>();
+  const bindableNamesOf = (targetFile: string, edge: ImportEdge): readonly string[] | null => {
+    let names = bindableNamesByTarget.get(targetFile);
+    if (names === undefined) {
+      const target =
+        edge.targetModuleScope === undefined
+          ? undefined
+          : scopeTree.getScope(edge.targetModuleScope);
+      names = target === undefined ? null : [...target.bindings.keys()];
+      bindableNamesByTarget.set(targetFile, names);
+    }
+    return names;
+  };
+  const isUnmentionedWildcard = (
+    sourceFile: string,
+    targetFile: string,
+    edge: ImportEdge,
+  ): boolean => {
+    if (mentionedNamesOf === undefined || edge.kind !== 'wildcard-expanded') return false;
+    if (sourceFile !== mentionedFile) {
+      mentionedFile = sourceFile;
+      mentioned = mentionedNamesOf(sourceFile);
+    }
+    if (mentioned === undefined) return false;
+    if (edge.localName !== '') {
+      if (mentioned.has(edge.localName)) return false;
+    } else {
+      const names = bindableNamesOf(targetFile, edge);
+      if (names === null) return false;
+      for (const name of names) if (mentioned.has(name)) return false;
+    }
+    unmentioned++;
+    return true;
   };
   probe('start', `scopes=${imports.size}`);
 
@@ -251,6 +340,7 @@ export function emitImportEdges(
       for (const edge of edges) {
         if (debug && ++scanned % 65536 === 0) probe('collect-progress', `pairs=${pairs.size}`);
         if (edge.targetFile === null || edge.targetFile === sourceFile) continue;
+        if (isUnmentionedWildcard(nextFile, edge.targetFile, edge)) continue;
         const presence = importPresence(edge);
         const existing = pairs.get(edge.targetFile);
         if (existing === undefined || presence < existing) pairs.set(edge.targetFile, presence);
@@ -276,6 +366,7 @@ export function emitImportEdges(
       if (debug && ++scanned % 65536 === 0) probe('collect-progress', `pairs=${pairs.size}`);
       if (edge.targetFile === null) continue;
       if (edge.targetFile === sourceFile) continue;
+      if (isUnmentionedWildcard(sourceFile, edge.targetFile, edge)) continue;
 
       const presence = importPresence(edge);
       const dedupKey = `${sourceFile}->${edge.targetFile}`;
