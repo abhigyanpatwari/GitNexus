@@ -1,0 +1,21 @@
+gitnexus/bench/scope-capture/baselines.json
+  s_b9690234122db7::t_3237460573ea47 181,194-195
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_abf5a3d7a53a27 824,826-832
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7f69f5af62fa3761e0e286b1dfa12c7e23926b6c",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
