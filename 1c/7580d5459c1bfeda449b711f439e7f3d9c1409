@@ -1,0 +1,19 @@
+docs/languages/ruby-ingestion-gaps.md
+  s_0def0c056bb1d5::t_a07fab13195138 46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1c7580d5459c1bfeda449b711f439e7f3d9c1409",
+  "prompts": {},
+  "sessions": {
+    "s_0def0c056bb1d5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_0def0c056bb1d5",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
