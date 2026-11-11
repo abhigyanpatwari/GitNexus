@@ -84,26 +84,27 @@ describe('shared Claude hook CLI execution', () => {
     );
   });
 
-  it.each([
-    { command: 'gitnexus.cmd', args: [], timeout: 7000 },
-    { command: 'npx.cmd', args: ['-y', 'gitnexus'], npx: true, timeout: 12000 },
-  ])('runs $command without a Unix probe or shell on Windows', (target) => {
-    const runtime = loadRuntime({ platform: 'win32', guard: '/tools/timeout' });
-    runtime.runGitNexusCli(target, ['augment', '--', '&literal'], 'C:\\repo', 7000);
+  it.each(['C:\\nodejs\\node.exe', 'C:\\Program Files\\nodejs\\node.exe'])(
+    'passes the packaged CLI to %s without a Unix guard on Windows',
+    (command) => {
+      const runtime = loadRuntime({ platform: 'win32', guard: '/tools/timeout' });
+      const target = { command, args: ['C:\\gitnexus package\\dist\\cli\\index.js'] };
+      runtime.runGitNexusCli(target, ['augment', '--', '&literal'], 'C:\\repo', 7000);
 
-    expect(runtime.resolveGuard).not.toHaveBeenCalled();
-    expect(runtime.spawnSync).toHaveBeenCalledExactlyOnceWith(
-      target.command,
-      [...target.args, 'augment', '--', '&literal'],
-      {
-        encoding: 'utf-8',
-        timeout: target.timeout,
-        cwd: 'C:\\repo',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true,
-      },
-    );
-  });
+      expect(runtime.resolveGuard).not.toHaveBeenCalled();
+      expect(runtime.spawnSync).toHaveBeenCalledExactlyOnceWith(
+        target.command,
+        [...target.args, 'augment', '--', '&literal'],
+        {
+          encoding: 'utf-8',
+          timeout: 7000,
+          cwd: 'C:\\repo',
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true,
+        },
+      );
+    },
+  );
 
   it('executes directly when the packaged probe finds no usable guard', () => {
     const runtime = loadRuntime();
