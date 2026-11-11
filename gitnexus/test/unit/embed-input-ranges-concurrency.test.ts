@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { embedInputRanges } from '../../src/core/embeddings/embedding-pipeline.js';
 import { HttpEmbeddingError } from '../../src/core/embeddings/http-client.js';
 
@@ -35,10 +35,9 @@ describe('embedInputRanges provider concurrency (#3870)', () => {
     await tick();
     expect(held.open).toHaveLength(expected);
     // Release every request, newest first, until all five sub-batches finish.
-    for (let released = 0; released < 5; ) {
-      const request = held.open.pop();
-      request?.release();
-      released += request ? 1 : 0;
+    for (let released = 0; released < 5; released++) {
+      await vi.waitFor(() => expect(held.open.length).toBeGreaterThan(0));
+      held.open.pop()!.release();
       await tick();
     }
     await consumed;
@@ -55,8 +54,12 @@ describe('embedInputRanges provider concurrency (#3870)', () => {
   });
 
   it('bisects a rejected sub-batch in place while its neighbours proceed', async () => {
+    let active = 0;
+    let peak = 0;
     const provider = async (batch: string[]) => {
+      peak = Math.max(peak, ++active);
       await tick();
+      active--;
       if (batch.includes('5')) throw new HttpEmbeddingError('input too long', { status: 413 });
       return batch.map((text) => Float32Array.of(Number(text)));
     };
@@ -70,6 +73,31 @@ describe('embedInputRanges provider concurrency (#3870)', () => {
       [6, 8, false],
       [8, 10, false],
     ]);
+    expect(peak).toBe(3);
+  });
+
+  it('aborts window peers before draining when the consumer fails', async () => {
+    const failure = new Error('vector write failed');
+    let aborted = 0;
+    const provider = async (batch: string[], { signal }: { signal?: AbortSignal }) => {
+      if (batch[0] === '0') return [Float32Array.of(0), Float32Array.of(1)];
+      await new Promise<void>((_resolve, reject) => {
+        signal!.addEventListener(
+          'abort',
+          () => {
+            aborted++;
+            reject(signal!.reason);
+          },
+          { once: true },
+        );
+      });
+      throw new Error('unreachable');
+    };
+    const consume = async () => {
+      for await (const _range of embedInputRanges(texts, 2, undefined, provider, 4)) throw failure;
+    };
+    await expect(consume()).rejects.toBe(failure);
+    expect(aborted).toBe(3);
   });
 
   it('settles in-flight requests before surfacing a cancellation', async () => {

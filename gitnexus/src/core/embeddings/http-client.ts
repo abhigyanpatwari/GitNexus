@@ -15,6 +15,7 @@ import { chunk } from '../../lib/utils.js';
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
 import {
   CircuitOpenError,
+  getBreaker,
   ResilientFetchExhaustedError,
   isTerminalNetworkError,
   resilientFetch,
@@ -502,6 +503,15 @@ const httpEmbedBatch = async (
   let parsed: EmbeddingItem[] | undefined;
   try {
     throwIfAborted(requestOptions.signal);
+    const breaker = getBreaker(HTTP_BREAKER_KEY);
+    const probeDeadline = performance.now() + timeoutMs;
+    // A recovering endpoint admits one probe. Its window peers wait locally
+    // instead of turning a healthy resume into failed provider work.
+    while (breaker.getState() === 'half-open' && breaker.isProbeInFlight()) {
+      const remaining = probeDeadline - performance.now();
+      if (remaining <= 0) throw new CircuitOpenError(1_000, HTTP_BREAKER_KEY);
+      await abortableSleep(Math.min(1_000, remaining), requestOptions.signal);
+    }
     resp = await resilientFetch(
       url,
       {

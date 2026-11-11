@@ -15,6 +15,8 @@ import {
 import { EmbeddingJobJournal } from '../../src/storage/embedding-job-journal.js';
 import { HttpEmbeddingError } from '../../src/core/embeddings/http-client.js';
 import type { EmbeddableNode } from '../../src/core/embeddings/types.js';
+import { iterateEmbeddingInputs } from '../../src/core/embeddings/embedding-inputs.js';
+import { resolveEmbeddingConfig } from '../../src/core/embeddings/config.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { searchVectorGeneration } from '../../src/core/embeddings/vector-generation-search.js';
 import * as readerPool from '../../src/core/lbug/pool-adapter.js';
@@ -29,6 +31,7 @@ import { ExtensionManager } from '../../src/core/lbug/extension-loader.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { CircuitOpenError } from 'gitnexus-shared';
 
 let temporary: TestDBHandle | undefined;
 let store: VectorStore;
@@ -62,12 +65,16 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-async function runnerFixture(count: number, content = 'const value = "漢😀";') {
+async function runnerFixture(
+  count: number,
+  content = 'const value = "漢😀";',
+  nodeLabel: EmbeddableNode['label'] = 'Const',
+) {
   const options = await setup();
   const node = (id: string): EmbeddableNode => ({
     id,
     name: id.split(':').at(-1),
-    label: 'Const',
+    label: nodeLabel,
     filePath: 'source.ts',
     content,
     startLine: 1,
@@ -76,10 +83,10 @@ async function runnerFixture(count: number, content = 'const value = "漢😀";'
   const fetch = vi.fn(async (_label: string, ids: readonly string[]) => ids.map(node));
   const source = {
     async *scan(label: string) {
-      if (label !== 'Const') return;
+      if (label !== nodeLabel) return;
       for (let i = 0; i < count; i++)
         yield {
-          id: `Const:source.ts:n${String(i).padStart(5, '0')}`,
+          id: `${nodeLabel}:source.ts:n${String(i).padStart(5, '0')}`,
           contentBytes: Buffer.byteLength(content),
           metadataBytes: 1024,
         };
@@ -266,22 +273,56 @@ describe('bounded durable embedding runner', () => {
   );
 
   it('keeps several provider requests in flight per unit and stores every chunk in order (#3870)', async () => {
-    const fixture = await runnerFixture(64);
-    let active = 0;
-    let peak = 0;
-    fixture.provider.mockImplementation(async (texts: string[]) => {
-      active++;
-      peak = Math.max(peak, active);
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      active--;
-      return texts.map(() => new Float32Array([0.1, 0.2, 0.3, 0.4]));
+    const content = Array.from({ length: 12 }, (_, i) => `  const value${i} = ${i};`).join('\n');
+    const fixture = await runnerFixture(4, content, 'Function');
+    const config = resolveEmbeddingConfig({
+      subBatchSize: 2,
+      maxInputChars: 1024,
+      chunkSize: 80,
+      overlap: 0,
+      chunkStrategy: 'fixed',
     });
-    const result = await fixture.run({ providerConcurrency: 4 });
-    expect(peak).toBe(4);
-    // Request size is unchanged; only the number in flight grows.
-    expect(fixture.provider.mock.calls.map(([texts]) => texts.length)).toEqual(Array(8).fill(8));
-    expect(result.state).toMatchObject({ completedNodes: 64, chunks: 64, failedUnits: 0 });
-    await expect(fixture.run({ providerConcurrency: 0 })).rejects.toThrow('provider concurrency');
+    const ids = Array.from(
+      { length: 4 },
+      (_, i) => `Function:source.ts:n${String(i).padStart(5, '0')}`,
+    );
+    const nodes = await fixture.source.fetch('Function', ids);
+    const vector = (text: string) =>
+      Float32Array.from(createHash('sha256').update(text).digest().subarray(0, 4));
+    const expected = new Map<string, number[][]>();
+    for (const node of nodes) {
+      const vectors: number[][] = [];
+      for await (const input of iterateEmbeddingInputs(node, config))
+        vectors.push(Array.from(vector(input.text)));
+      expect(vectors.length).toBeGreaterThan(config.subBatchSize);
+      expected.set(node.id, vectors);
+    }
+    const chunks = [...expected.values()].reduce((sum, vectors) => sum + vectors.length, 0);
+    const open: Array<() => void> = [];
+    fixture.provider.mockImplementation(async (texts) => {
+      await new Promise<void>((resolve) => open.push(resolve));
+      return texts.map(vector);
+    });
+    const running = fixture.run({ providerConcurrency: 4, config });
+    const batches = Math.ceil(chunks / config.subBatchSize);
+    for (let released = 0; released < batches; released += 4) {
+      await vi.waitFor(() => expect(open).toHaveLength(Math.min(4, batches - released)));
+      for (const release of open.splice(0).reverse()) release();
+    }
+    const result = await running;
+    expect(
+      fixture.provider.mock.calls.every(([texts]) => texts.length <= config.subBatchSize),
+    ).toBe(true);
+    expect(result.state).toMatchObject({ completedNodes: 4, chunks, failedUnits: 0 });
+    await fixture.reopen();
+    const receipts = await store.completedNodes(ids);
+    expect(receipts.size).toBe(4);
+    for (const [id, vectors] of expected) {
+      const receipt = receipts.get(id)!;
+      expect(
+        (await store.readChunks(receipt, 0, receipt.chunks)).map((row) => row.embedding),
+      ).toEqual(vectors);
+    }
   });
 
   it('completes copied groups together at the unit boundary without provider requests', async () => {
@@ -948,6 +989,95 @@ describe('bounded durable embedding runner', () => {
     });
   });
 
+  it('counts scattered failures per original request at concurrency four', async () => {
+    const fixture = await runnerFixture(640);
+    let requests = 0;
+    fixture.provider.mockImplementation(async (texts) => {
+      if (++requests % 10 === 0) throw new HttpEmbeddingError('unavailable', { status: 503 });
+      return texts.map(() => Float32Array.of(1, 0, 0, 0));
+    });
+    const result = await fixture.run({ providerConcurrency: 4 });
+    expect(requests).toBe(80);
+    const ids = Array.from(
+      { length: 640 },
+      (_, i) => `Const:source.ts:n${String(i).padStart(5, '0')}`,
+    );
+    let complete = 0;
+    for (let start = 0; start < ids.length; start += 64)
+      complete += (await store.completedNodes(ids.slice(start, start + 64))).size;
+    expect(complete).toBe(576);
+    expect(result.state.failedUnits).toBeGreaterThan(0);
+    expect(result.indexKind).toBeUndefined();
+    await fixture.reopen();
+    fixture.provider.mockImplementation(async (texts) =>
+      texts.map(() => Float32Array.of(1, 0, 0, 0)),
+    );
+    const resumed = await fixture.run({ providerConcurrency: 4 });
+    expect(resumed.state.completedNodes + resumed.state.reusedNodes).toBe(640);
+    expect(resumed.state.failedUnits).toBe(0);
+  });
+
+  it('stops a concurrent burst outage with only the admitted window outstanding', async () => {
+    const fixture = await runnerFixture(100);
+    fixture.provider.mockRejectedValue(new HttpEmbeddingError('unavailable', { status: 503 }));
+    await expect(fixture.run({ providerConcurrency: 4 })).rejects.toThrow('unavailable');
+    expect(fixture.provider).toHaveBeenCalledTimes(8);
+    expect(fixture.journal.snapshot()).toMatchObject({
+      failedUnits: 1,
+      completedNodes: 0,
+      active: null,
+    });
+  });
+
+  it('counts failed bisection halves only once per original sub-batch', async () => {
+    const fixture = await runnerFixture(640);
+    fixture.provider.mockImplementation(async (texts) => {
+      const node = Number(texts[0].match(/n(\d{5})/u)![1]);
+      if (Math.floor(node / 8) % 8 === 7)
+        throw new HttpEmbeddingError('unavailable', { status: texts.length === 8 ? 413 : 503 });
+      return texts.map(() => Float32Array.of(1, 0, 0, 0));
+    });
+    const result = await fixture.run({ providerConcurrency: 4 });
+    expect(fixture.provider).toHaveBeenCalledTimes(100);
+    expect(result.state.failedUnits).toBe(10);
+    expect(result.indexKind).toBeUndefined();
+  });
+
+  it('keeps the provider cause when a circuit refusal ends the unit', async () => {
+    const fixture = await runnerFixture(64);
+    const outage = new HttpEmbeddingError('provider unavailable', { status: 503 });
+    fixture.provider.mockRejectedValue(
+      new HttpEmbeddingError('gate closed', { cause: new CircuitOpenError(30_000) }),
+    );
+    fixture.provider.mockRejectedValueOnce(outage);
+    await expect(fixture.run({ providerConcurrency: 4 })).rejects.toMatchObject({
+      message: 'Embedding endpoint unavailable; unfinished units remain resumable',
+      cause: outage,
+    });
+    expect(fixture.provider).toHaveBeenCalledTimes(4);
+    expect(fixture.journal.snapshot()).toMatchObject({ failedUnits: 1, active: null });
+  });
+
+  it('stops an input-rejection flood without exhausting concurrent bisections', async () => {
+    const fixture = await runnerFixture(64);
+    fixture.provider.mockRejectedValue(new HttpEmbeddingError('input rejected', { status: 413 }));
+    await expect(fixture.run({ providerConcurrency: 4 })).rejects.toThrow('five nodes');
+    // Four complete eight-input bisections would make 60 requests.
+    expect(fixture.provider.mock.calls.length).toBeLessThan(30);
+    expect(fixture.journal.snapshot()).toMatchObject({
+      failedUnits: 1,
+      completedNodes: 0,
+      active: null,
+    });
+  });
+
+  it('rejects invalid provider concurrency before starting work', async () => {
+    const fixture = await runnerFixture(1);
+    await expect(fixture.run({ providerConcurrency: 0 })).rejects.toThrow('provider concurrency');
+    expect(fixture.provider).not.toHaveBeenCalled();
+    expect(fixture.journal.snapshot().active).toBeNull();
+  });
+
   it('leaves a durable active unit on cancellation and never writes a late provider response', async () => {
     const fixture = await runnerFixture(20);
     const controller = new AbortController();
@@ -1052,7 +1182,15 @@ describe('separate durable vector artifacts', () => {
       ...chunk(chunkIndex),
       embedding: values.slice(chunkIndex * 4, chunkIndex * 4 + 4),
     }));
+    const execute = vi.spyOn(lbug.Connection.prototype, 'execute');
     await store.appendBatch(rows);
+    const vectorBindings = execute.mock.calls
+      .map(([, parameters]) => parameters?.vectors)
+      .filter(Boolean);
+    expect(vectorBindings).toEqual([
+      rows.map((row) => `[${Array.from(new Float32Array(row.embedding)).join(',')}]`),
+    ]);
+    execute.mockRestore();
     const [receipt] = await store.finishNodes([{ ...node, chunks: 3 }]);
     await store.close();
     store = await VectorStore.open({ ...options, mode: 'resume' });
@@ -1118,9 +1256,13 @@ describe('separate durable vector artifacts', () => {
     );
     await store.checkpointUnit(receipts);
     const selection = nodes.map((node) => node.nodeId);
-    await store.markSelected('c'.repeat(64), selection);
-    // A later job re-selects the same groups instead of creating their rows.
+    await store.markSelected('c'.repeat(64), selection.slice(0, 1));
+    // The second selection both updates an existing row and creates new rows.
+    const query = vi.spyOn(lbug.Connection.prototype, 'query');
     await store.markSelected('d'.repeat(64), selection);
+    expect(query.mock.calls.filter(([sql]) => sql === 'BEGIN TRANSACTION')).toHaveLength(1);
+    expect(query.mock.calls.filter(([sql]) => sql === 'COMMIT')).toHaveLength(1);
+    query.mockRestore();
     const statements = await Promise.all(prepare.mock.results.map((result) => result.value));
     const captured = prepare.mock.calls.map(([sql], i) => ({
       sql,
@@ -1128,6 +1270,7 @@ describe('separate durable vector artifacts', () => {
     }));
     prepare.mockRestore();
     execute.mockRestore();
+    await store.pruneUnselected('d'.repeat(64), 3);
     await store.close();
     store = undefined;
     const handle = await openLbugConnection(lbug, path.join(options.directory, 'vectors'), {

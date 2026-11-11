@@ -200,12 +200,15 @@ export async function* embedInputRanges(
   provider: typeof embedBatch = embedBatch,
   concurrency = 1,
 ): AsyncGenerator<EmbeddedRange> {
+  const controller = new AbortController();
+  const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   async function* request(start: number, end: number): AsyncGenerator<EmbeddedRange> {
     try {
-      const embeddings = await provider(texts.slice(start, end), { signal });
+      requestSignal.throwIfAborted();
+      const embeddings = await provider(texts.slice(start, end), { signal: requestSignal });
       yield { start, end, embeddings };
     } catch (error) {
-      if (signal?.aborted || isCancellationError(error)) throw error;
+      if (requestSignal.aborted || isCancellationError(error)) throw error;
       if (isInputRejection(error) && end - start > 1) {
         const middle = start + Math.floor((end - start) / 2);
         yield* request(start, middle);
@@ -218,30 +221,40 @@ export async function* embedInputRanges(
   if (concurrency > 1) {
     // A bounded window of sub-batches is in flight at once. Results still
     // leave in input order, so a node's chunks reach the store contiguously.
-    const collect = async (start: number): Promise<EmbeddedRange[]> => {
-      const results: EmbeddedRange[] = [];
-      for await (const result of request(start, Math.min(start + subBatchSize, texts.length)))
-        results.push(result);
-      return results;
+    const advance = (iterator: AsyncGenerator<EmbeddedRange>) => {
+      const next = iterator.next();
+      // Every in-flight outcome is observed, even when the consumer stops early.
+      void next.catch(() => undefined);
+      return next;
     };
-    const pending: Array<Promise<EmbeddedRange[]>> = [];
+    const pending: Array<{
+      iterator: AsyncGenerator<EmbeddedRange>;
+      next: Promise<IteratorResult<EmbeddedRange>>;
+    }> = [];
     let next = 0;
     try {
       for (;;) {
         while (next < texts.length && pending.length < concurrency) {
-          const results = collect(next);
-          // The window observes every outcome; a later await rethrows it.
-          results.catch(() => undefined);
-          pending.push(results);
+          const iterator = request(next, Math.min(next + subBatchSize, texts.length));
+          pending.push({ iterator, next: advance(iterator) });
           next += subBatchSize;
         }
-        const head = pending.shift();
+        const head = pending[0];
         if (!head) return;
-        yield* await head;
+        const result = await head.next;
+        if (result.done) {
+          pending.shift();
+          continue;
+        }
+        // Pull one bisected range at a time so the consumer's rejection guard
+        // can stop the window without exhausting every neighbour's bisections.
+        yield result.value;
+        head.next = advance(head.iterator);
       }
     } finally {
-      // Cancellation or an abandoned consumer must not outlive its requests.
-      await Promise.allSettled(pending);
+      controller.abort();
+      await Promise.allSettled(pending.map((entry) => entry.next));
+      await Promise.allSettled(pending.map((entry) => entry.iterator.return(undefined)));
     }
   }
   for (let start = 0; start < texts.length; start += subBatchSize) {

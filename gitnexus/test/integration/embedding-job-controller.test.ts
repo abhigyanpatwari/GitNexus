@@ -141,6 +141,25 @@ async function fixture(count = 130) {
 }
 
 describe('pending artifacts across graph generations', () => {
+  it.each(['local', `http:${'a'.repeat(64)}`])(
+    'keeps an injected %s provider serial despite the HTTP setting',
+    async (provider) => {
+      const f = await fixture(64);
+      vi.stubEnv('GITNEXUS_EMBEDDING_CONCURRENCY', '4');
+      f.dependencies.identity.mockReturnValue({ provider, model: 'test', dimensions: 4 });
+      let active = 0;
+      let peak = 0;
+      f.provider.mockImplementation(async (texts) => {
+        peak = Math.max(peak, ++active);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        active--;
+        return texts.map(() => Float32Array.of(1, 0, 0, 0));
+      });
+      await f.run();
+      expect(peak).toBe(1);
+      expect(f.provider).toHaveBeenCalledTimes(8);
+    },
+  );
   it.each(['full', 'symbol', 'none'] as const)(
     'uses published repository source policy (%s), then resumes without source or provider work',
     async (retention) => {

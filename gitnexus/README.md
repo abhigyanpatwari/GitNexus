@@ -467,6 +467,14 @@ export GITNEXUS_EMBEDDING_MAX_INPUT_CHARS=4096 # optional, final generated input
 gitnexus analyze . --embeddings
 ```
 
+HTTP providers now default to four concurrent requests; local models and injected
+providers stay serial. For strictly serial or rate-limited endpoints, set
+`GITNEXUS_EMBEDDING_CONCURRENCY=1` to restore serial requests, or use
+`GITNEXUS_EMBEDDING_MIN_INTERVAL_MS` to pace request starts. Concurrent retries
+can exhaust their attempt budget on `429` responses even when serial requests
+succeed. The window holds at most 256 rows: with the default sub-batch size of 8,
+values above 32 do not increase concurrency. Byte limits can reduce it further.
+
 The input budget includes generated headers and context. Longer inputs are split
 without truncating their text. It counts UTF-16 characters, not model tokens;
 lower it for endpoints with smaller token limits. Changing it invalidates cached
