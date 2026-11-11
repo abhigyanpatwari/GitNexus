@@ -699,8 +699,9 @@ func (h HostVP) decoratedFieldType() {
     // guessing from a method name. `untypedChain` keeps one untyped cell as the
     // control: `save` exists on both `User` and `Address`, so an edge there is a
     // guess, and the cell must stay a gap. It deliberately reuses the name
-    // `svc`. JSDoc `@param` bindings stay on their own function, unlike Ruby's
-    // YARD below, so the control also catches a binding that starts leaking.
+    // `svc`. JSDoc `@param` bindings stay on their own function (so do Ruby's
+    // YARD tags since RUBY-01), so the control also catches a binding that
+    // starts leaking.
     extraShapeIds: ['untypedChain'],
     support: {
       'models.js': `export class Address {
@@ -1069,10 +1070,13 @@ public class Service {
     // `untypedChain` as the one untyped control.
     //
     // Each function names its parameter after its own cell. YARD `@param`
-    // bindings are anchored on the method but land on the Module scope, so
-    // every function in the file shares ONE binding per parameter name. With a
-    // shared `svc`, a cell would resolve through a sibling's tag and the
-    // untyped control would borrow one, so neither would measure itself.
+    // bindings used to land on the Module scope (RUBY-01: the method-anchored
+    // binding was auto-hoisted), so every function in the file shared ONE
+    // binding per parameter name and a shared `svc` let a cell resolve through
+    // a sibling's tag. The provider now pins the binding to its own method; the
+    // distinct names stay so this row keeps measuring each spelling on its own,
+    // and the sibling-isolation contract is owned by
+    // test/integration/resolvers/ruby-yard-param-scope.test.ts.
     extraShapeIds: ['untypedChain'],
     support: {
       'models.rb': `class Address
