@@ -397,12 +397,21 @@ export interface ScopeResolver {
    *  working. */
   readonly importEdgeReason: string;
 
-  /** Resolve AST-bound uses to the files supplying on-demand imports. Only
-   * languages whose wildcards do not execute their targets may opt in. The
-   * finalizer's imports remain intact for lookup; this narrows persisted
-   * File→File edges only. Return undefined when capture/binding evidence is
-   * incomplete, retaining all edges. Facts must survive ParsedFile hydration;
-   * this hook receives no source text and must never reparse a cached file. */
+  /** Name the files that supply what a source file takes through its on-demand
+   * (wildcard) imports. Only languages whose wildcards do not execute their
+   * targets may opt in. The finalizer's imports remain intact for lookup; this
+   * narrows persisted File→File edges only.
+   *
+   * The answer governs EVERY `wildcard-expanded` import edge of the file,
+   * whatever statement produced it: an edge whose target is absent from the
+   * returned set is not persisted, so an empty set drops them all. A provider
+   * that cannot decide one kind of wildcard must put that wildcard's targets
+   * in the set. Return undefined when capture or binding evidence is
+   * incomplete; every edge of the file is then kept.
+   *
+   * Facts must survive ParsedFile hydration. The hook receives no source text,
+   * must never reparse a cached file, and must not read `parsed.scopes`: the
+   * emit phase may already have released them to disk. */
   readonly onDemandImportTargets?: (
     parsed: ParsedFile,
     indexes: ScopeResolutionIndexes,

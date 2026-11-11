@@ -77,9 +77,11 @@ describe('emitImportEdges on-demand targets', () => {
     ]);
   });
   it('resolves once per source even for interleaved scope buckets', () => {
-    const select = vi.fn(
-      (file: string) => new Set(file === 'Main.java' ? ['Order.java'] : ['User.java']),
-    );
+    const selection = new Map([
+      ['Main.java', ['Order.java']],
+      ['Other.java', ['User.java']],
+    ]);
+    const select = vi.fn((file: string) => new Set(selection.get(file)));
     const buckets = new Map<ScopeId, readonly ImportEdge[]>([
       ['Main.java', [wildcard('User.java')]],
       ['Other.java', [wildcard('User.java')]],

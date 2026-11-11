@@ -108,7 +108,7 @@
  * `import pkg.*;` resolves to EVERY file declaring `pkg`, because any of them
  * may supply a name. Emitting a pair for each of them is importers × package
  * size: 1,000 files importing a 1,000-file package is a million edges, of which
- * each importer uses a handful. One 24,736-file Java repository produced
+ * each importer uses a handful. One reported 24,736-file repository produced
  * 3,742,494 IMPORTS edges this way — 81% of its graph — and ran out of heap
  * writing them.
  *

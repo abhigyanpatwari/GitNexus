@@ -1,25 +1,19 @@
-import {
-  buildPositionIndex,
-  lookupLexicalName,
-  type BindingRef,
-  type ParsedFile,
-  type Scope,
-  type ScopeId,
-} from 'gitnexus-shared';
+import type { BindingRef, ParsedFile, ScopeId } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
-import { isClassLike, lookupBindingsAt } from '../../scope-resolution/scope/walkers.js';
-import { javaMergeBindings } from './merge-bindings.js';
+import { isClassLike } from '../../scope-resolution/scope/walkers.js';
 import { getJavaImportUses, type JavaCaptureSideChannel } from './capture-side-channel.js';
+import type { JavaImportUses } from './import-use-facts.js';
 import { getJavaPackageFact } from './package-facts.js';
-import { isJvmSourceVisible } from '../jvm/source-visibility.js';
 
-interface PackageBindings {
-  readonly names: ReadonlyMap<string, readonly BindingRef[]>;
+interface PackageTypes {
+  /** Top-level type name -> the files of the package that declare it. */
+  readonly names: ReadonlyMap<string, readonly string[]>;
+  /** Files whose declared names cannot be trusted; always retained. */
   readonly uncertain: ReadonlySet<string>;
 }
 interface PackageLookup {
   readonly scopes: ReadonlyMap<string, readonly { id: ScopeId; file: string }[]>;
-  readonly bindings: Map<string, PackageBindings>;
+  readonly types: Map<string, PackageTypes>;
 }
 // Share declarations across importers. This is O(workspace declarations), not
 // importer × package size; each target scope is decoded at most once.
@@ -36,22 +30,23 @@ function packageLookup(indexes: ScopeResolutionIndexes): PackageLookup {
       bucket.push({ id, file });
       scopes.set(fact.packageName, bucket);
     }
-    lookup = { scopes, bindings: new Map() };
+    lookup = { scopes, types: new Map() };
     packages.set(indexes, lookup);
   }
   return lookup;
 }
 
-function packageBindings(
+function packageTypes(
   indexes: ScopeResolutionIndexes,
   lookup: PackageLookup,
   name: string,
-): PackageBindings {
-  let result = lookup.bindings.get(name);
+): PackageTypes {
+  let result = lookup.types.get(name);
   if (result !== undefined) return result;
-  const names = new Map<string, BindingRef[]>();
+  const names = new Map<string, string[]>();
   const uncertain = new Set<string>();
   for (const { id, file } of lookup.scopes.get(name) ?? []) {
+    // A point lookup: it still answers after the scope tree is sealed to disk.
     const scope = indexes.scopeTree.getScope(id);
     if (scope === undefined || getJavaImportUses(file)?.complete !== true) {
       uncertain.add(file);
@@ -62,24 +57,43 @@ function packageBindings(
         // Package on-demand imports bind top-level types, never hoisted
         // methods, fields or nested types (JLS 7.5.2).
         if (!isType(binding) || binding.def.ownerId !== undefined) continue;
-        const bucket = names.get(spelling) ?? [];
-        bucket.push({ def: binding.def, origin: 'wildcard' });
-        names.set(spelling, bucket);
+        const files = names.get(spelling) ?? [];
+        files.push(binding.def.filePath);
+        names.set(spelling, files);
       }
     }
   }
   result = { names, uncertain };
-  lookup.bindings.set(name, result);
+  lookup.types.set(name, result);
   return result;
 }
 
-/** JLS 6.5.5.1 / 7.5.2: bind AST simple names through lexical scopes, explicit
- * imports and same-package types before package wildcards. Preserve ambiguity;
- * never fall back to a workspace-wide spelling match. Static/member-type
- * wildcards retain their concrete owner dependency: this optimization removes
- * the package cross-product without assuming a complete inherited static
- * member inventory (JLS 7.5.4).
- * https://docs.oracle.com/javase/specs/jls/se25/html/jls-6.html#jls-6.5.5.1
+/** Facts survive a cache round trip as plain JSON; trust nothing about them. */
+function usableFacts(facts: JavaImportUses | undefined): facts is JavaImportUses {
+  return (
+    facts?.version === 2 &&
+    facts.complete === true &&
+    Array.isArray(facts.names) &&
+    facts.names.every((name) => typeof name === 'string')
+  );
+}
+
+function directoryOf(file: string): string {
+  const path = file.replace(/\\/g, '/');
+  return path.slice(0, path.lastIndexOf('/') + 1);
+}
+
+/** JLS 6.4.1 / 7.5.2: a name the file's own declarations do not bind is
+ * supplied by a single-type import, then a type of the file's package, then a
+ * package on-demand import. The capture resolved everything declared in the
+ * file; this resolves what is left against other files. Ambiguous wildcard
+ * candidates are all retained; there is never a workspace-wide spelling match.
+ * Static/member-type wildcards retain their concrete owner dependency: this
+ * optimization removes the package cross-product without assuming a complete
+ * inherited static member inventory (JLS 7.5.4).
+ *
+ * Nothing here reads `parsed.scopes`: the emit phase may have released them.
+ * https://docs.oracle.com/javase/specs/jls/se25/html/jls-6.html#jls-6.4.1
  * https://docs.oracle.com/javase/specs/jls/se25/html/jls-7.html#jls-7.5.2 */
 export function javaOnDemandImportTargets(
   parsed: ParsedFile,
@@ -87,16 +101,10 @@ export function javaOnDemandImportTargets(
 ): ReadonlySet<string> | undefined {
   const facts = (parsed.captureSideChannel as JavaCaptureSideChannel | undefined)?.importUses;
   const packageFact = getJavaPackageFact(parsed.filePath);
-  if (
-    facts?.version !== 1 ||
-    !facts.complete ||
-    !Array.isArray(facts.uses) ||
-    packageFact?.status !== 'known'
-  )
-    return undefined;
+  if (!usableFacts(facts) || packageFact?.status !== 'known') return undefined;
   const lookup = packageLookup(indexes);
   const targets = new Set<string>();
-  const visiblePackages: PackageBindings[] = [];
+  const visiblePackages: PackageTypes[] = [];
   const explicitTypes = new Set<string>();
   for (const imported of parsed.parsedImports) {
     if (imported.kind === 'named' && imported.targetIncludesImportedName)
@@ -106,9 +114,9 @@ export function javaOnDemandImportTargets(
       ? imported.targetRaw.slice(0, -2)
       : undefined;
     if (packageName !== undefined && lookup.scopes.has(packageName)) {
-      const bindings = packageBindings(indexes, lookup, packageName);
-      visiblePackages.push(bindings);
-      for (const file of bindings.uncertain) targets.add(file);
+      const types = packageTypes(indexes, lookup, packageName);
+      visiblePackages.push(types);
+      for (const file of types.uncertain) targets.add(file);
     } else {
       for (const edge of indexes.imports.get(parsed.moduleScope) ?? []) {
         if (
@@ -123,63 +131,19 @@ export function javaOnDemandImportTargets(
     }
   }
   if (visiblePackages.length === 0) return targets;
-  // Unlike receiver inference's bounded sibling injection, lexical package
-  // visibility is complete even when the package has hundreds of files.
-  const siblings = packageBindings(indexes, lookup, packageFact.packageName);
-  const positions = buildPositionIndex(parsed.scopes);
-  const typeScopes = new Map<ScopeId, Scope>();
-  const typeLookup = {
-    getScope: (id: ScopeId): Scope | undefined => {
-      let view = typeScopes.get(id);
-      if (view === undefined) {
-        const scope = indexes.scopeTree.getScope(id);
-        if (scope === undefined) return undefined;
-        // Java separates type and expression namespaces (JLS 6.5.2/6.5.5).
-        // `User User` uses the type. Expression-name shadowing was already
-        // bound in exact AST scopes; hoisted receiver hints must not escape them.
-        view = {
-          ...scope,
-          typeBindings: new Map(),
-          lexicalNames: new Set(),
-          ownsReceivers: new Set(),
-          imports: [],
-        };
-        typeScopes.set(id, view);
-      }
-      return view;
-    },
-  };
-  for (const use of facts.uses) {
-    if (use.purpose === 'method' || explicitTypes.has(use.name)) continue;
-    const scopeId = positions.atPosition(parsed.filePath, use.range.startLine, use.range.startCol);
-    if (scopeId === undefined) return undefined;
-    const claim = lookupLexicalName(
-      scopeId,
-      use.name,
-      {
-        scopes: typeLookup,
-        bindingsAt: (scope, name) => {
-          const local = [
-            ...(scope.bindings.get(name) ?? []),
-            ...lookupBindingsAt(scope.id, name, indexes),
-          ].filter(isType);
-          const samePackage =
-            scope.id === parsed.moduleScope
-              ? (siblings.names.get(name) ?? [])
-                  .filter((binding) => isJvmSourceVisible(parsed.filePath, binding.def.filePath))
-                  .map((binding): BindingRef => ({ def: binding.def, origin: 'namespace' }))
-              : [];
-          const wildcard =
-            scope.id === parsed.moduleScope
-              ? visiblePackages.flatMap((group) => group.names.get(name) ?? [])
-              : [];
-          return javaMergeBindings([...local, ...samePackage, ...wildcard]);
-        },
-      },
-      { position: use.range, purpose: 'type' },
-    );
-    for (const binding of claim.bindings)
-      if (binding.origin === 'wildcard') targets.add(binding.def.filePath);
+  // Unlike receiver inference's bounded sibling injection, this sees the whole
+  // package even when it has hundreds of files.
+  const siblings = packageTypes(indexes, lookup, packageFact.packageName);
+  const directory = directoryOf(parsed.filePath);
+  for (const name of facts.names) {
+    if (explicitTypes.has(name)) continue;
+    // A declared package name does not prove two files are compiled together:
+    // another build module, a test source set, or a sample directory can
+    // declare the same package. Only a sibling in the importer's own directory
+    // is certain to shadow the on-demand import; any other keeps the edge.
+    if (siblings.names.get(name)?.some((file) => directoryOf(file) === directory)) continue;
+    for (const types of visiblePackages)
+      for (const file of types.names.get(name) ?? []) targets.add(file);
   }
   return targets;
 }
