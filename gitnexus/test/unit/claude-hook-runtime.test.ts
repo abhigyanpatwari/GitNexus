@@ -134,6 +134,18 @@ describe('Claude hook literal Bash search patterns', () => {
     { command: 'rg "queue$" src', pattern: 'queue$' },
     { command: `rg pre" middle "'suffix' src`, pattern: 'pre middle suffix' },
     { command: "rg -g '*.ts' -n 'quoted phrase' src", pattern: 'quoted phrase' },
+    { command: 'rg --max-count 100 UserService src/', pattern: 'UserService' },
+    { command: 'grep --max-count 100 UserService src/', pattern: 'UserService' },
+    { command: 'rg --after-context 100 UserService src/', pattern: 'UserService' },
+    { command: 'grep --after-context 100 UserService src/', pattern: 'UserService' },
+    { command: 'rg --before-context 100 UserService src/', pattern: 'UserService' },
+    { command: 'grep --before-context 100 UserService src/', pattern: 'UserService' },
+    { command: 'rg --context 100 UserService src/', pattern: 'UserService' },
+    { command: 'grep --context 100 UserService src/', pattern: 'UserService' },
+    { command: 'rg --max-count=100 UserService src/', pattern: 'UserService' },
+    { command: 'grep --max-count=100 UserService src/', pattern: 'UserService' },
+    { command: "rg --max-count 100 'quoted phrase' src", pattern: 'quoted phrase' },
+    { command: 'rg -- --max-count src/', pattern: '--max-count' },
     { command: "rg -e 'explicit phrase' src", pattern: 'explicit phrase' },
     { command: 'grep --regexp "explicit phrase" src', pattern: 'explicit phrase' },
     { command: "rg --regexp='explicit phrase' src", pattern: 'explicit phrase' },
@@ -158,6 +170,10 @@ describe('Claude hook literal Bash search patterns', () => {
     'rg "partial `printf phrase`" src',
     'rg partial$QUERY src',
     'rg "valid phrase" "unclosed path',
+    'rg --max-count',
+    'rg --max-count 100',
+    'rg UserService --max-count',
+    'grep UserService --max-count',
   ])('declines an empty, malformed, or expanded argument in %s', (command) => {
     expect(loadRuntime().extractPattern('Bash', { command })).toBeNull();
   });
@@ -283,6 +299,10 @@ describe('Claude hook package ownership', () => {
       for (const search of [
         { tool_name: 'Grep', tool_input: { pattern: 'shared runtime' } },
         { tool_name: 'Bash', tool_input: { command: 'rg "shared runtime" src' } },
+        {
+          tool_name: 'Bash',
+          tool_input: { command: 'rg --max-count 100 "shared runtime" src' },
+        },
       ]) {
         const input = { hook_event_name: 'PreToolUse', ...search, cwd: repo };
         const results = [

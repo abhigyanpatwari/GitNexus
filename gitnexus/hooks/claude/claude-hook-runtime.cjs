@@ -128,9 +128,13 @@ function extractPattern(toolName, toolInput) {
     let explicitPattern = null;
     const flagsWithValues = new Set([
       '-m',
+      '--max-count',
       '-A',
+      '--after-context',
       '-B',
+      '--before-context',
       '-C',
+      '--context',
       '-g',
       '--glob',
       '-t',
