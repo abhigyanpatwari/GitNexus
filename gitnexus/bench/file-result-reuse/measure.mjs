@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { sourceDigest } from './provenance.mjs';
+import { graphDigests } from './graph-digests.mjs';
 const { values } = parseArgs({
   options: {
     dist: { type: 'string' },
@@ -83,16 +84,6 @@ async function measure() {
       return null;
     }
   })();
-  const canonical = (value) =>
-    Array.isArray(value)
-      ? value.map(canonical)
-      : value && typeof value === 'object'
-        ? Object.fromEntries(
-            Object.keys(value)
-              .sort()
-              .map((key) => [key, canonical(value[key])]),
-          )
-        : value;
   try {
     await fs.mkdir(repo);
     const corpus = args.get('--corpus');
@@ -135,6 +126,7 @@ async function measure() {
         driverDigest: createHash('sha256')
           .update(await fs.readFile(new URL(import.meta.url)))
           .update(await fs.readFile(new URL('./provenance.mjs', import.meta.url)))
+          .update(await fs.readFile(new URL('./graph-digests.mjs', import.meta.url)))
           .digest('hex'),
         checkoutHead: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
         runtimeHead,
@@ -172,10 +164,7 @@ async function measure() {
         new Set(cache.fileResults ? [] : kept),
       );
       const withSaveMs = performance.now() - start;
-      const rows = [...run.graph.nodes]
-        .map((n) => 'N ' + JSON.stringify(canonical(n)))
-        .concat([...run.graph.relationships].map((e) => 'R ' + JSON.stringify(canonical(e))))
-        .sort();
+      const fingerprints = graphDigests(run.graph);
       let cacheBytes = 0,
         cacheFiles = 0;
       for (const file of await fs.readdir(live, { recursive: true })) {
@@ -197,9 +186,7 @@ async function measure() {
           reparsed: run.reparsedFileCount,
           hits: run.parseCacheHitFileCount,
           workersStarted: run.usedWorkerPool,
-          nodes: run.graph.nodeCount,
-          edges: run.graph.relationshipCount,
-          digest: createHash('sha256').update(rows.join('\n')).digest('hex'),
+          ...fingerprints,
         }),
       );
       await fs.rm(stage, { recursive: true, force: true });
