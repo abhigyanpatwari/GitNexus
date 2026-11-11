@@ -1,0 +1,23 @@
+gitnexus/CHANGELOG.md
+  s_b9690234122db7::t_ce49bf477ebd5f 12-13,15-16
+gitnexus/src/core/ingestion/scope-resolution/contract/scope-resolver.ts
+  s_b9690234122db7::t_250309b0fa0e51 339-344,347
+gitnexus/src/core/ingestion/scope-resolution/passes/compound-receiver.ts
+  s_b9690234122db7::t_c3663e0af9f4a6 969-1006
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "66c460a497e4d739c3556a2051e2727df224af21",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}

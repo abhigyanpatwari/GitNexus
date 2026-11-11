@@ -1,0 +1,27 @@
+docs/languages/dart-ingestion-gaps.md
+  s_b9690234122db7::t_21bd4d40acd478 40
+gitnexus/CHANGELOG.md
+  s_b9690234122db7::t_dc90dd31e89b55 16
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_26f39a56ac1271 770-773,775,781-839,902-905,916
+gitnexus/src/core/ingestion/languages/dart/interpret.ts
+  s_b9690234122db7::t_a21217eaacaa0b 99-103,115-118
+gitnexus/test/integration/resolvers/dart-awaited-receiver-owner.test.ts
+  s_b9690234122db7::t_359580720bbf79 40-43,140-150,190-205,234,241-245,251-255,258-261,322-337,379-382
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "da78b6bb7d2ba96868ea8e74c09fcb7091560673",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}

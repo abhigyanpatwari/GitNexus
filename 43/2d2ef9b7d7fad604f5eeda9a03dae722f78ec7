@@ -1,0 +1,33 @@
+docs/languages/dart-ingestion-gaps.md
+  s_b9690234122db7::t_2cb3526878795a 40-41
+gitnexus/CHANGELOG.md
+  s_b9690234122db7::t_6dfd27b33c0906 17
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_fc2ebc1b656ab8 795-799,831-843
+gitnexus/src/core/ingestion/scope-extractor.ts
+  s_b9690234122db7::t_63d9834d81483c 118,1284-1287,1289-1292,1295,1313,1337
+gitnexus/src/core/ingestion/scope-resolution/passes/imported-return-types.ts
+  s_b9690234122db7::t_9d2d288c570492 54-58,65,250-286,342,366,418,450-457,523,551,568
+gitnexus/src/core/ingestion/utils/type-ref-chain.ts
+  s_b9690234122db7::t_4064c0ba4e43d0 1,3-29,44-61,63,69-71,74-80
+gitnexus/test/integration/resolvers/dart-awaited-receiver-owner.test.ts
+  s_b9690234122db7::t_40165b969c63b1 41-46,154-195,251-282,312,323-325,342-345,411-423,474-476
+gitnexus/test/unit/scope-resolution/awaited-call-result-follow.test.ts
+  s_b9690234122db7::t_d7b3a018dc9adc 31-38,52,63,70,75-101,105,130,151,157-166,168,170-175,177-178,187,245,247
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "432d2ef9b7d7fad604f5eeda9a03dae722f78ec7",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}

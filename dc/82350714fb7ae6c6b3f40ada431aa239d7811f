@@ -1,0 +1,52 @@
+gitnexus/bench/receiver-resolution/baseline.json
+  s_1f233384c0376a::t_a52ba551f726ad 183
+  s_b9690234122db7::t_75470b00d7e722 205-206,208,223-224,228,234
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_1f233384c0376a::t_a52ba551f726ad 30,49,457,464-603,644-647,652-664,842,845
+  s_b9690234122db7::t_bc4211d7942c81 782-783,828-834,840-841,843-844,846-847,850-852
+gitnexus/bench/receiver-resolution/measure.mjs
+  s_1f233384c0376a::t_a52ba551f726ad 1622-1627
+gitnexus/test/integration/resolvers/dart-awaited-receiver-owner.test.ts
+  s_1f233384c0376a::t_a52ba551f726ad 1-201
+  s_b9690234122db7::t_3603ae98995a4c 202-328
+docs/languages/dart-ingestion-gaps.md
+  s_b9690234122db7::t_21160eca75f1b5 22,29,38-41
+gitnexus/CHANGELOG.md
+  s_b9690234122db7::t_2bea8b9aa3ed0b 15
+gitnexus/src/core/ingestion/languages/dart.ts
+  s_b9690234122db7::t_66d15c94d7a014 41,149-152
+gitnexus/src/core/ingestion/languages/dart/index.ts
+  s_b9690234122db7::t_618cd92480af9b 31
+gitnexus/src/core/ingestion/languages/dart/interpret.ts
+  s_b9690234122db7::t_6e293eec6a8e70 19,89-118,126-131,135-138
+gitnexus/src/core/ingestion/languages/dart/scope-resolver.ts
+  s_b9690234122db7::t_5a8fcc5df01045 46,241-244
+gitnexus/src/core/ingestion/languages/dart/signature-bindings.ts
+  s_b9690234122db7::t_f095babcb1d062 12-13,23-58,101-108
+gitnexus/test/integration/resolvers/dart.test.ts
+  s_b9690234122db7::t_7d7f1b7940c672 173-186,189,199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "dc82350714fb7ae6c6b3f40ada431aa239d7811f",
+  "prompts": {},
+  "sessions": {
+    "s_1f233384c0376a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1c6cc-0a49-7431-982c-7e496025ebd5",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
