@@ -52,16 +52,16 @@
     "digest": "f21447a4fb5db53f2b4dce563ecc86ce1cb2e3cbc0298e8dee7f325c2e9a0a28"
   },
   "ruby-calls/lib/one_arg.rb": {
-    "captureGroups": 8,
-    "digest": "72037dcb0e066b690e9cb7e580f309f7df7d0c1d34813d22074ecc6978f4d258"
+    "captureGroups": 7,
+    "digest": "a8d87d65ff5a311009a39a035269b78c1f578d0f926436c84353483f03dbc26c"
   },
   "ruby-calls/lib/service.rb": {
     "captureGroups": 11,
     "digest": "985bd233953251cdc3d26288af9993600e265a071dd03a37cd0217057a7cae35"
   },
   "ruby-calls/lib/two_args.rb": {
-    "captureGroups": 9,
-    "digest": "12525b90d305542b57092bfe29440d3110bf1cbfdcc5d077de1555b6f4f016d8"
+    "captureGroups": 8,
+    "digest": "6f2cfe167dd8382f18ededb66bc9d6f1328c599aff2dfe30ece835ea1a686389"
   },
   "ruby-chain-call/lib/app.rb": {
     "captureGroups": 13,

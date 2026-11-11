@@ -270,6 +270,333 @@ function isRubyLexicalMethod(node: SyntaxNode): boolean {
   return false;
 }
 
+// ─── Bare identifier reads (RUBY-02) ──────────────────────────────────────
+//
+// `(body_statement (identifier)) @reference.call.free` captures a receiver-
+// less, paren-less name that is a statement of its own as a zero-arity call.
+// Ruby decides that question LEXICALLY: the name is a variable read when a
+// formal parameter, a block parameter or an assignment seen earlier in the
+// enclosing scope has bound it, and a method call otherwise (`target()`,
+// `self.target` and `target arg` call the method regardless). Emitting the
+// call for a bound name produced `run → Host#target` for
+// `def target; end; def run(target); target; end` — a wrong edge, not a
+// missing one — so the capture is dropped when the name is bound.
+//
+// Scopes, from tree-sitter-ruby: a `method` / `singleton_method` body sees
+// its own parameters and nothing outside itself; a `block` / `do_block` /
+// `lambda` body sees its own parameters (and `|x; y|` block locals) plus
+// every enclosing scope's names; `class` / `module` / `singleton_class` /
+// `program` bodies hold their own locals and close the walk. Every binding
+// is POSITIONAL: it counts only when it starts before the read. Ruby registers
+// a local when the parser passes its assignment (`target; target = 1` still
+// calls) and a parameter when it passes the parameter's NAME, left to right —
+// so a default expression sees the parameters declared before it and the
+// parameter it belongs to (`def run(target = … target …)` reads the nil local,
+// a circular reference), but not a later one (`def run(x = … target …,
+// target: nil)` calls the method). A nested scope's bindings never leak out
+// (a block's `|target|` or its `target = a` is invisible after the block, so
+// a bare `target` there is a call again). A header expression Ruby evaluates in the ENCLOSING scope —
+// a singleton method's receiver (`def (target = x).run`), a class's
+// superclass, a `class << value` value — binds in that enclosing scope, not
+// in the body, and a read inside such a header is answered by the enclosing
+// scope. A `BEGIN { … }` / `END { … }` body is its own scope. A pattern's
+// expression parts (a string / regex / symbol / subshell `interpolation`, a
+// `lambda` pattern's parameters, a `^pin`) are not binding positions.
+//
+// Each scope's bindings are indexed once per file — the earliest offset at
+// which every name is bound — always the offset where the name is WRITTEN:
+// a parameter at its name node, an assignment target or pattern variable at
+// its identifier — and cached by scope node id for the capture pass, so
+// a read costs one map lookup per enclosing scope instead of a re-walk.
+
+/**
+ * Scopes whose body sees nothing bound outside them. `BEGIN { … }` /
+ * `END { … }` bodies run outside the enclosing method (before the program,
+ * at exit), so an assignment inside one binds nothing in that method — the
+ * ivar walker treats them as boundaries for the same reason.
+ */
+const RUBY_CLOSED_LOCAL_SCOPES: ReadonlySet<string> = new Set([
+  'method',
+  'singleton_method',
+  'class',
+  'module',
+  'singleton_class',
+  'program',
+  'begin_block',
+  'end_block',
+]);
+
+/**
+ * Header fields of a scope node that Ruby evaluates in the ENCLOSING scope:
+ * a `singleton_method`'s receiver (`object`), a `class`'s `superclass`, a
+ * `singleton_class`'s `value`. Their bindings belong to the scope that
+ * contains the header, never to the body.
+ */
+const RUBY_SCOPE_HEADER_FIELDS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['singleton_method', ['object']],
+  ['class', ['superclass']],
+  ['singleton_class', ['value']],
+]);
+
+/** The header-field children of `node`, when it is a scope kind that has them. */
+function rubyScopeHeaderNodes(node: SyntaxNode): SyntaxNode[] {
+  const fields = RUBY_SCOPE_HEADER_FIELDS.get(node.type);
+  if (fields === undefined) return [];
+  const out: SyntaxNode[] = [];
+  for (const field of fields) {
+    const child = node.childForFieldName(field);
+    if (child !== null) out.push(child);
+  }
+  return out;
+}
+
+/** Scopes whose body also sees every enclosing scope's bindings. */
+const RUBY_OPEN_LOCAL_SCOPES: ReadonlySet<string> = new Set(['block', 'do_block', 'lambda']);
+
+/**
+ * Nodes that bind a local name at a position seen before the rest of the
+ * scope, with the field holding the binding target: `assignment` /
+ * `operator_assignment` `left` (`target = …`, `a, target = …`, `target ||= …`),
+ * `for` `pattern`, `rescue` `variable` (`rescue => target`), and the patterns
+ * of `case … in`, `expr => pattern` and `expr in pattern`.
+ */
+const RUBY_LOCAL_BINDING_SITES: ReadonlyMap<string, string> = new Map([
+  ['assignment', 'left'],
+  ['operator_assignment', 'left'],
+  ['for', 'pattern'],
+  ['rescue', 'variable'],
+  ['in_clause', 'pattern'],
+  ['match_pattern', 'pattern'],
+  ['test_pattern', 'pattern'],
+]);
+
+/** Containers an assignment / `for` / `rescue` target passes through to the names it binds. */
+const RUBY_LHS_CONTAINERS: ReadonlySet<string> = new Set([
+  'left_assignment_list',
+  'destructured_left_assignment',
+  'rest_assignment',
+  'exception_variable',
+]);
+
+/** Name → earliest source offset at which one scope binds it. */
+export type RubyScopeBindings = ReadonlyMap<string, number>;
+type RubyBindingVisitor = (name: string, start: number) => void;
+
+/**
+ * Names a `method_parameters` / `block_parameters` / `lambda_parameters` node
+ * declares, each at its NAME node's offset. Optional, keyword, splat,
+ * hash-splat and block parameters carry the name in a `name` field; a
+ * destructured parameter `(a, b)` nests plain identifiers; block locals
+ * (`|x; target|`) are plain identifiers too. A default VALUE is an
+ * expression, not a declared name.
+ */
+function collectRubyParameterNames(paramsNode: SyntaxNode | null, visit: RubyBindingVisitor): void {
+  if (paramsNode === null) return;
+  for (let i = 0; i < paramsNode.namedChildCount; i++) {
+    const child = paramsNode.namedChild(i);
+    if (child === null) continue;
+    if (child.type === 'identifier') {
+      visit(child.text, child.startIndex);
+    } else if (child.type === 'destructured_parameter') {
+      collectRubyParameterNames(child, visit);
+    } else {
+      const name = child.childForFieldName('name');
+      if (name !== null && name.type === 'identifier') visit(name.text, name.startIndex);
+    }
+  }
+}
+
+/**
+ * Names an assignment-like target binds itself (not a receiver it writes
+ * into), each at ITS OWN offset: in `a[… target …], target = …` the first
+ * target's subscript is parsed before the second target declares the name,
+ * so a bare read there is still a call.
+ */
+function collectRubyLhsNames(target: SyntaxNode, visit: RubyBindingVisitor): void {
+  if (target.type === 'identifier') {
+    visit(target.text, target.startIndex);
+    return;
+  }
+  if (!RUBY_LHS_CONTAINERS.has(target.type)) return;
+  for (let i = 0; i < target.namedChildCount; i++) {
+    const child = target.namedChild(i);
+    if (child !== null) collectRubyLhsNames(child, visit);
+  }
+}
+
+/**
+ * Pattern nodes whose named children are themselves patterns (tree-sitter-
+ * ruby `_pattern_top_expr_body` / `_pattern_expr` / `_pattern_expr_basic`).
+ * Everything else a pattern position can hold is a VALUE, not a binding
+ * position: literals, `string` / `regex` / `delimited_symbol` / `subshell` /
+ * heredoc bodies (whose `interpolation` holds expressions), a `lambda` (its
+ * parameters are its own), a `^target` / `^(expr)` pin, a `constant` /
+ * `scope_resolution` (also the `class` field of an array / find / hash
+ * pattern), and ranges. `keyword_pattern`, `as_pattern`, `splat_parameter`
+ * and `hash_splat_parameter` are handled by name below.
+ */
+const RUBY_PATTERN_CONTAINERS: ReadonlySet<string> = new Set([
+  'array_pattern',
+  'find_pattern',
+  'hash_pattern',
+  'alternative_pattern',
+  'parenthesized_pattern',
+]);
+
+/**
+ * Names a `case … in` / `=>` / `in` pattern binds, each where it is written.
+ * Only true binding positions count (`RUBY_PATTERN_CONTAINERS`); an
+ * expression nested in a pattern — `"x#{target}"`, `/#{target}/`,
+ * `->(target) { }`, `^(target)` — reads or declares nothing in the enclosing
+ * scope.
+ */
+function collectRubyPatternNames(pattern: SyntaxNode, visit: RubyBindingVisitor): void {
+  switch (pattern.type) {
+    case 'identifier':
+      visit(pattern.text, pattern.startIndex);
+      return;
+    case 'keyword_pattern': {
+      const value = pattern.childForFieldName('value');
+      if (value !== null) {
+        collectRubyPatternNames(value, visit);
+        return;
+      }
+      // `{target:}` — a key with no value binds a local of the key's name.
+      const key = pattern.childForFieldName('key');
+      if (key !== null) visit(key.text.replace(/:$/, ''), key.startIndex);
+      return;
+    }
+    case 'as_pattern': {
+      const bound = pattern.childForFieldName('name');
+      if (bound !== null) visit(bound.text, bound.startIndex);
+      const value = pattern.childForFieldName('value');
+      if (value !== null) collectRubyPatternNames(value, visit);
+      return;
+    }
+    case 'splat_parameter':
+    case 'hash_splat_parameter': {
+      const bound = pattern.childForFieldName('name');
+      if (bound !== null) visit(bound.text, bound.startIndex);
+      return;
+    }
+    default: {
+      // Only a pattern CONTAINER is entered; a value (literal, string with
+      // interpolation, regex, lambda, pin, constant, range) binds nothing.
+      if (!RUBY_PATTERN_CONTAINERS.has(pattern.type)) return;
+      for (let i = 0; i < pattern.namedChildCount; i++) {
+        const child = pattern.namedChild(i);
+        if (child !== null) collectRubyPatternNames(child, visit);
+      }
+    }
+  }
+}
+
+/**
+ * Names bound at the binding site of a `RUBY_LOCAL_BINDING_SITES` node, each
+ * at the offset where it is WRITTEN. That is the one rule Ruby's parser
+ * follows: a local exists from the point its name appears in a binding
+ * position, so anything parsed before that point — an earlier target's
+ * subscript, the value of a rightward `=>` / `in` pattern — still calls.
+ */
+function collectRubyBindingSiteNames(node: SyntaxNode, visit: RubyBindingVisitor): void {
+  const field = RUBY_LOCAL_BINDING_SITES.get(node.type);
+  if (field === undefined) return;
+  const site = node.childForFieldName(field);
+  if (site === null) return;
+  switch (node.type) {
+    case 'assignment':
+    case 'operator_assignment':
+    case 'for':
+    case 'rescue':
+      collectRubyLhsNames(site, visit);
+      return;
+    case 'in_clause':
+    case 'match_pattern':
+    case 'test_pattern':
+      // A rightward `value => pattern` / `value in pattern` parses the VALUE
+      // before the pattern declares anything, so a bare read inside the value
+      // (`[1].each do |a| target end => target`) is still a call.
+      collectRubyPatternNames(site, visit);
+      return;
+    default:
+      return;
+  }
+}
+
+/**
+ * The bindings one scope declares — its own parameters plus every binding
+ * site inside it that is not inside a nested scope (whose locals do not
+ * leak), plus the header expressions of nested scopes (evaluated here, not
+ * in them), minus this scope's own header expressions (evaluated in ITS
+ * enclosing scope) — keyed by name with the earliest offset each is bound
+ * at. Built once per scope and cached for the file's capture pass.
+ */
+function rubyScopeBindings(
+  scope: SyntaxNode,
+  cache: Map<number, RubyScopeBindings>,
+): RubyScopeBindings {
+  const cached = cache.get(scope.id);
+  if (cached !== undefined) return cached;
+  const earliest = new Map<string, number>();
+  const visit: RubyBindingVisitor = (name, start) => {
+    const prev = earliest.get(name);
+    if (prev === undefined || start < prev) earliest.set(name, start);
+  };
+  collectRubyParameterNames(scope.childForFieldName('parameters'), visit);
+  const ownHeaders = new Set(rubyScopeHeaderNodes(scope).map((n) => n.id));
+  const pending: SyntaxNode[] = [];
+  for (let i = 0; i < scope.namedChildCount; i++) {
+    const child = scope.namedChild(i);
+    if (child !== null && !ownHeaders.has(child.id)) pending.push(child);
+  }
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (RUBY_CLOSED_LOCAL_SCOPES.has(node.type) || RUBY_OPEN_LOCAL_SCOPES.has(node.type)) {
+      // A nested scope's bindings do not leak into this one — but its header
+      // expressions run here.
+      pending.push(...rubyScopeHeaderNodes(node));
+      continue;
+    }
+    collectRubyBindingSiteNames(node, visit);
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child !== null) pending.push(child);
+    }
+  }
+  cache.set(scope.id, earliest);
+  return earliest;
+}
+
+/**
+ * Whether a bare `identifier` statement reads a parameter or local that is
+ * bound before that point in an enclosing scope — in which case it is not a
+ * method call and the `@reference.call.free` capture must not be emitted.
+ * Exported for the unit test that pins the ordering rule on parsed trees,
+ * including default-expression shapes the statement pattern never captures.
+ */
+export function rubyBareNameIsLocalRead(
+  identifier: SyntaxNode,
+  cache: Map<number, RubyScopeBindings>,
+): boolean {
+  const name = identifier.text;
+  const readStart = identifier.startIndex;
+  let child: SyntaxNode = identifier;
+  for (let scope = identifier.parent; scope !== null; child = scope, scope = scope.parent) {
+    const closed = RUBY_CLOSED_LOCAL_SCOPES.has(scope.type);
+    if (!closed && !RUBY_OPEN_LOCAL_SCOPES.has(scope.type)) continue;
+    // A read inside the scope's HEADER (a singleton receiver, a superclass,
+    // a `class <<` value — reachable through a `do` block or lambda body
+    // nested in it) is evaluated in the ENCLOSING scope: this scope's
+    // parameters and locals are not visible there, and its index (which
+    // excludes its own header) has nothing to say. Keep climbing.
+    if (closed && rubyScopeHeaderNodes(scope).some((header) => header.id === child.id)) continue;
+    const boundAt = rubyScopeBindings(scope, cache).get(name);
+    if (boundAt !== undefined && boundAt < readStart) return true;
+    if (closed) return false;
+  }
+  return false;
+}
+
 export function emitRubyScopeCaptures(
   sourceText: string,
   _filePath: string,
@@ -298,6 +625,9 @@ export function emitRubyScopeCaptures(
 
   recordRubyMemberDispatch(tree.rootNode, _filePath);
   const out: CaptureMatch[] = [];
+  // Per-scope binding index for the bare-identifier read check (RUBY-02),
+  // built lazily and shared across every match of this file.
+  const bareReadBindings = new Map<number, RubyScopeBindings>();
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
@@ -433,6 +763,20 @@ export function emitRubyScopeCaptures(
       synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
       out.push(grouped);
       continue;
+    }
+
+    // A bare identifier statement that names a parameter or an earlier-bound
+    // local is a variable read, not a call (RUBY-02; see the section above).
+    // Only the paren-less form is in question — the pattern anchors
+    // `@reference.call.free` on the `body_statement` and `@reference.name` on
+    // the bare `identifier`; a `call` anchor (`target()`, `target arg`,
+    // `self.target`) is a call whatever is bound.
+    if (
+      grouped['@reference.call.free'] !== undefined &&
+      nodeIfType(nodeMap['@reference.call.free'], 'body_statement') !== null
+    ) {
+      const bare = nodeIfType(nodeMap['@reference.name'], 'identifier');
+      if (bare !== null && rubyBareNameIsLocalRead(bare, bareReadBindings)) continue;
     }
 
     // Intercept heritage calls (include/extend/prepend) — encode as
