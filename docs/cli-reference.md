@@ -223,6 +223,10 @@ Notes:
 
 ## Environment variables
 
+| HTTP embedding variable | Default | Effect | When to tune |
+| --- | --- | --- | --- |
+| `GITNEXUS_EMBEDDING_CONCURRENCY` | `4` | Concurrent provider requests, integer `1`–`64`. HTTP providers only; local models and injected providers stay at `1`. A window holds at most 256 rows, so with the default sub-batch size of 8, values above 32 cannot increase concurrency. Byte limits may reduce the window further. | Set `1` for strictly serial or rate-limited endpoints, or set `GITNEXUS_EMBEDDING_MIN_INTERVAL_MS` to pace request starts. Concurrent retries can exhaust their attempt budget on an endpoint returning `429` even when serial requests succeed. |
+
 | Embedding chunk variable | Default | Effect | When to tune |
 | --- | --- | --- | --- |
 | `GITNEXUS_EMBEDDING_CHUNK_SIZE` | `1200` | Code chunk budget in characters; must be a safe integer of at least 2. | Adjust embedding granularity and vector count. |

@@ -8,6 +8,7 @@
 import type { MethodExtractorContext, ExtractedMethods } from '../ingestion/method-types.js';
 import type { FieldExtractorContext, ExtractedFields } from '../ingestion/field-types.js';
 import type { LanguageProvider } from '../ingestion/language-provider.js';
+import type { TypeEnvironment } from '../ingestion/type-env.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { ensureAndParse, findDeclarationNode } from './ast-utils.js';
 
@@ -15,6 +16,18 @@ export interface StructuralNames {
   methodNames: string[];
   fieldNames: string[];
 }
+
+// A field extractor consults its type environment only to resolve a field's
+// type. Embedding text keeps the names alone, so an empty environment yields
+// the same names without walking every method body of the class (#3870).
+const NO_TYPE_ENV: TypeEnvironment = {
+  lookup: () => undefined,
+  constructorBindings: [],
+  fileScope: () => new Map(),
+  allScopes: () => new Map(),
+  constructorTypeMap: new Map(),
+  flush: () => {},
+};
 
 const NOOP_SYMBOL_TABLE = {
   lookupExactAll: () => [],
@@ -46,7 +59,7 @@ export const extractStructuralNames = async (
   const language = provider.id;
 
   const methodNames = extractMethodNames(classNode, provider, filePath, language);
-  const fieldNames = await extractFieldNames(classNode, provider, tree, filePath, language);
+  const fieldNames = extractFieldNames(classNode, provider, filePath, language);
 
   return { methodNames, fieldNames };
 };
@@ -66,20 +79,16 @@ function extractMethodNames(
   return result.methods.map((m) => m.name);
 }
 
-async function extractFieldNames(
+function extractFieldNames(
   classNode: any,
   provider: LanguageProvider,
-  tree: any,
   filePath: string,
   language: SupportedLanguages,
-): Promise<string[]> {
+): string[] {
   if (!provider.fieldExtractor) return [];
 
-  const { buildTypeEnv } = await import('../ingestion/type-env.js');
-  const typeEnv = buildTypeEnv(tree, language);
-
   const context: FieldExtractorContext = {
-    typeEnv,
+    typeEnv: NO_TYPE_ENV,
     symbolTable: NOOP_SYMBOL_TABLE,
     filePath,
     language,
