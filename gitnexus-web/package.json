@@ -37,7 +37,7 @@
     "graphology-layout-noverlap": "^0.4.2",
     "graphology-utils": "^2.3.0",
     "i18next": "^26.4.7",
-    "i18next-browser-languagedetector": "^8.2.1",
+    "i18next-browser-languagedetector": "^8.3.0",
     "langchain": "^1.6.0",
     "lru-cache": "^11.5.3",
     "lucide-react": "^1.63.0",
