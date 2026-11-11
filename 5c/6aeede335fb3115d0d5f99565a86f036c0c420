@@ -1,0 +1,67 @@
+docs/cli-reference.md
+  s_b9690234122db7::t_f0cce5afca38bf 226-229
+eval/uv.lock
+  s_b9690234122db7::t_bbf4859b08a9da 2078,2080,2082
+gitnexus/.env.example
+  s_b9690234122db7::t_2cc30fb8961d3e 13-15
+gitnexus/README.md
+  s_b9690234122db7::t_fc4b1068f1b531 464,470-477
+gitnexus/package-lock.json
+  s_b9690234122db7::t_72f6c794e4bd34 75,195-197,201-202,423-425,429,699-701,706,708,710,718-720,1858-1860,1920-1922,1937-1939,1955-1957,1973-1975,1991-1993,2009-2011,2027-2029,2045-2047,2052-2054,2066-2068,2073-2075,2087-2089,2094-2096,2108-2110,2115-2117,2129-2131,2136-2138,2150-2152,2157-2159,2171-2173,2189-2191,2207-2209,2379-2431,2978-2980,2985-2986,2997-2998,3007-3009,3017-3019,3023,3030-3032,3037,3058-3060,4251-4253,4262-4264,4266,4495-4497,4500,4542-4544,4807-4809,5279-5281,5304-5306,5329-5331,5354-5356,5438-5440,6071-6073,6281-6283,6288,6298-6312,6687-6689,7401-7403,7410-7411,7428,7480-7482,7487,7513-7514,7516-7518
+gitnexus/package.json
+  s_b9690234122db7::t_30a30c2d832ca1 139
+gitnexus/src/core/analysis-resource-budget.ts
+  s_b9690234122db7::t_2138a54ca92347 56-58,240
+gitnexus/src/core/embeddings/embedding-job-runner.ts
+  s_b9690234122db7::t_0018ca744fc29d 3,56-58,78-80,97,144-145,148,242,244,248,251,255-266,272-275,278-304,306,317,336-338
+gitnexus/src/core/embeddings/embedding-job.ts
+  s_b9690234122db7::t_25234a341675ad 39,236,550-551
+gitnexus/src/core/embeddings/embedding-pipeline.ts
+  s_b9690234122db7::t_8930a4fe218e11 201,203-204,207-208,211,221-259
+gitnexus/src/core/embeddings/http-client.ts
+  s_b9690234122db7::t_9cd827f5d5d934 18,108-112,506-514
+gitnexus/src/core/embeddings/structural-extractor.ts
+  s_b9690234122db7::t_c079c0ceaf77a4 11,20-31,62,82,87,91
+gitnexus/src/core/lbug/vector-store.ts
+  s_b9690234122db7::t_83d44ad1322ca6 57-58,107-108,385-392,394-410,503-529,585,592-596,601,686,705,987-989
+gitnexus/test/helpers/embedding-restart-runner.mjs
+  s_b9690234122db7::t_03396685b5c3b8 73
+gitnexus/test/integration/analysis-embedding-flow.test.ts
+  s_b9690234122db7::t_c04d4740eb8395 89
+gitnexus/test/integration/embedding-job-controller.test.ts
+  s_b9690234122db7::t_3c9781c3b9203c 107,144-162
+gitnexus/test/integration/embedding-vector-store.test.ts
+  s_b9690234122db7::t_cd82d77bf2631d 18-19,34,68-72,77,86,89,275-327,992-1080,1162-1201,1219-1304,1542-1543,1545,1566-1567
+gitnexus/test/integration/legacy-embedding-controller.test.ts
+  s_b9690234122db7::t_96310b395ed0f6 160
+gitnexus/test/unit/analysis-resource-budget.test.ts
+  s_b9690234122db7::t_19dd213b5097b6 224-229
+gitnexus/test/unit/embed-input-ranges-concurrency.test.ts
+  s_b9690234122db7::t_98029d768da412 1-122
+gitnexus/test/unit/http-embedding-concurrency.test.ts
+  s_b9690234122db7::t_e51ce634091dde 1-80
+gitnexus/test/unit/mutation/version-guard.test.ts
+  s_b9690234122db7::t_2d7f2b5c46206d 3,20-32,105,109-116
+gitnexus/test/unit/structural-extractor-type-env.test.ts
+  s_b9690234122db7::t_cc18889b871f0a 1-42
+gitnexus/tools/mutation/runner/plugin.ts
+  s_b9690234122db7::t_f96897fb26461c 2
+gitnexus/tools/mutation/runner/version-guard.ts
+  s_b9690234122db7::t_e3006400ceff5d 5,14-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5c6aeede335fb3115d0d5f99565a86f036c0c420",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
