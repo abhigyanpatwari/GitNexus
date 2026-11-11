@@ -1,0 +1,21 @@
+docs/languages/README.md
+  s_b9690234122db7::t_21e8aadeb4ffb1 32
+gitnexus/bench/receiver-resolution/BASELINE.md
+  s_b9690234122db7::t_7a6643fd09a542 59-65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9f3f63db8d6ee2ac15e3b276fd1383378c4aef11",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
