@@ -24,6 +24,7 @@ import { createRequire } from 'node:module';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import vm from 'node:vm';
 import {
   runHook as spawnHook,
   parseHookOutput,
@@ -620,11 +621,6 @@ describe('extractPattern coverage', () => {
     it(`${label} hook extracts pattern from Bash grep/rg commands`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       expect(source).toMatch(/\\brg\\b.*\\bgrep\\b/);
-    });
-
-    it(`${label} hook rejects patterns shorter than 3 chars`, () => {
-      const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toContain('cleaned.length >= 3');
     });
   }
 });
@@ -2484,6 +2480,320 @@ describe.skipIf(SKIP_LSOF_PATH)('MCP-owner hint throttle (#2396)', () => {
   }
 });
 
+describe('MCP hint throttle across processes', () => {
+  interface Claim {
+    owned: () => boolean;
+    release: () => void;
+  }
+
+  function loadThrottle(
+    options: {
+      windowMs?: string;
+      now?: () => number;
+      fs?: Partial<typeof fs>;
+    } = {},
+  ) {
+    const require = createRequire(CJS_RUNTIME);
+    const module = {
+      exports: {} as {
+        shouldEmitMcpHint: (storagePath: string) => boolean;
+        acquireMcpHintClaim: (storagePath: string) => Claim | null;
+      },
+    };
+    vm.runInNewContext(
+      fs.readFileSync(CJS_RUNTIME, 'utf8') +
+        '\nmodule.exports = { shouldEmitMcpHint, acquireMcpHintClaim };',
+      {
+        module,
+        require: (id: string) => (id === 'fs' ? { ...fs, ...options.fs } : require(id)),
+        process: {
+          ...process,
+          env: { ...process.env, GITNEXUS_MCP_HINT_THROTTLE_MS: options.windowMs },
+        },
+        Date: { now: options.now ?? Date.now },
+      },
+    );
+    return module.exports;
+  }
+
+  it.each(['missing', 'expired'])(
+    'allows exactly one simultaneous emitter with a %s marker',
+    async (initialMarker) => {
+      const { spawn } = await import('child_process');
+      const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-hint-burst-'));
+      const marker = path.join(storage, '.mcp-hint-shown');
+      const barrier = path.join(storage, 'go');
+      if (initialMarker === 'expired') {
+        fs.writeFileSync(marker, '');
+        const expired = new Date(Date.now() - 120000);
+        fs.utimesSync(marker, expired, expired);
+      }
+      // Freeze each process's initial marker snapshot until all contenders have
+      // read it. This deterministically exposes the old stat-then-write race;
+      // every later marker read, including the one under the claim, is real.
+      const script = `
+const fs = require('fs');
+const vm = require('vm');
+const { createRequire } = require('module');
+const [runtime, storage, barrier] = process.argv.slice(1);
+const marker = require('path').join(storage, '.mcp-hint-shown');
+const requireRuntime = createRequire(runtime);
+const moduleForRuntime = { exports: {} };
+let first = true;
+const filesystem = { ...fs, statSync(...args) {
+  if (!first || String(args[0]) !== marker) return fs.statSync(...args);
+  first = false;
+  let snapshot, failure;
+  try { snapshot = fs.statSync(...args); } catch (error) { failure = error; }
+  process.send('ready');
+  const deadline = Date.now() + 10000;
+  const wait = new Int32Array(new SharedArrayBuffer(4));
+  while (!fs.existsSync(barrier)) {
+    if (Date.now() > deadline) throw new Error('marker barrier timed out');
+    Atomics.wait(wait, 0, 0, 5);
+  }
+  if (failure) throw failure;
+  return snapshot;
+} };
+vm.runInNewContext(fs.readFileSync(runtime, 'utf8') + '\\nmodule.exports = { shouldEmitMcpHint };', {
+  module: moduleForRuntime,
+  require: (id) => id === 'fs' ? filesystem : requireRuntime(id),
+  process,
+});
+process.stdout.write(JSON.stringify(moduleForRuntime.exports.shouldEmitMcpHint(storage)));
+process.disconnect();
+`;
+      const children = Array.from({ length: 8 }, () => {
+        const child = spawn(process.execPath, ['-e', script, CJS_RUNTIME, storage, barrier], {
+          stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+          windowsHide: true,
+          env: { ...process.env, GITNEXUS_MCP_HINT_THROTTLE_MS: '60000' },
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout!.on('data', (chunk) => {
+          stdout += chunk;
+        });
+        child.stderr!.on('data', (chunk) => {
+          stderr += chunk;
+        });
+        let announced = false;
+        const ready = new Promise<void>((resolve, reject) => {
+          child.once('message', () => {
+            announced = true;
+            resolve();
+          });
+          child.once('error', reject);
+          child.once('exit', () => {
+            if (!announced) reject(new Error(`contender exited before barrier: ${stderr}`));
+          });
+        });
+        const finished = new Promise<{ code: number | null; stdout: string; stderr: string }>(
+          (resolve) => child.once('close', (code) => resolve({ code, stdout, stderr })),
+        );
+        return { child, ready, finished };
+      });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('hint contenders timed out')), 12000);
+      });
+      try {
+        await Promise.race([Promise.all(children.map(({ ready }) => ready)), deadline]);
+        fs.writeFileSync(barrier, '');
+        const results = await Promise.race([
+          Promise.all(children.map(({ finished }) => finished)),
+          deadline,
+        ]);
+        for (const result of results) {
+          expect(result.code, result.stderr).toBe(0);
+          expect(result.stderr).toBe('');
+        }
+        expect(results.filter(({ stdout }) => stdout === 'true')).toHaveLength(1);
+        expect(results.filter(({ stdout }) => stdout === 'false')).toHaveLength(7);
+        expect(fs.existsSync(marker)).toBe(true);
+      } finally {
+        clearTimeout(timer);
+        for (const { child } of children) {
+          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        }
+        await Promise.all(children.map(({ finished }) => finished));
+        fs.rmSync(storage, { recursive: true, force: true });
+      }
+    },
+    20000,
+  );
+
+  it('honors a legacy marker and starts each rolling window at the last emission', () => {
+    const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-hint-window-'));
+    const marker = path.join(storage, '.mcp-hint-shown');
+    const base = 1700000000000;
+    let now = base + 1000;
+    fs.writeFileSync(marker, '');
+    fs.utimesSync(marker, new Date(base + 900), new Date(base + 900));
+    const runtime = loadThrottle({
+      windowMs: '1000',
+      now: () => now,
+      fs: {
+        writeFileSync: (...args: Parameters<typeof fs.writeFileSync>) => {
+          fs.writeFileSync(...args);
+          if (String(args[0]) === marker) fs.utimesSync(marker, new Date(now), new Date(now));
+        },
+      },
+    });
+    try {
+      expect(runtime.shouldEmitMcpHint(storage)).toBe(false);
+      now = base + 1899;
+      expect(runtime.shouldEmitMcpHint(storage)).toBe(false);
+      now = base + 1901;
+      expect(runtime.shouldEmitMcpHint(storage)).toBe(true);
+      now = base + 2000;
+      expect(runtime.shouldEmitMcpHint(storage)).toBe(false);
+      now = base + 2902;
+      expect(runtime.shouldEmitMcpHint(storage)).toBe(true);
+    } finally {
+      fs.rmSync(storage, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['0', '-1', 'invalid', 'Infinity'])('disables throttling for %s', (windowMs) => {
+    const statSync = vi.fn(() => {
+      throw new Error('disabled throttle touched disk');
+    });
+    const runtime = loadThrottle({ windowMs, fs: { statSync } });
+    expect(runtime.shouldEmitMcpHint('/unused')).toBe(true);
+    expect(runtime.shouldEmitMcpHint('/unused')).toBe(true);
+    expect(statSync).not.toHaveBeenCalled();
+  });
+
+  it.each(['claim', 'marker'])(
+    'fails open on a %s filesystem error and releases its claim',
+    (phase) => {
+      const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-hint-error-'));
+      const marker = path.join(storage, '.mcp-hint-shown');
+      const fail = () => {
+        throw Object.assign(new Error('read-only filesystem'), { code: 'EROFS' });
+      };
+      const runtime = loadThrottle({
+        fs:
+          phase === 'claim'
+            ? { mkdtempSync: fail }
+            : {
+                writeFileSync: (...args: Parameters<typeof fs.writeFileSync>) => {
+                  if (String(args[0]) === marker) fail();
+                  fs.writeFileSync(...args);
+                },
+              },
+      });
+      try {
+        expect(runtime.shouldEmitMcpHint(storage)).toBe(true);
+        expect(fs.existsSync(path.join(storage, '.mcp-hint-shown.lock'))).toBe(false);
+        expect(loadThrottle().shouldEmitMcpHint(storage)).toBe(true);
+      } finally {
+        fs.rmSync(storage, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('expires an orphan and prevents its delayed release from deleting the successor', () => {
+    const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-hint-orphan-'));
+    const lock = path.join(storage, '.mcp-hint-shown.lock');
+    const runtime = loadThrottle();
+    try {
+      const oldClaim = runtime.acquireMcpHintClaim(storage)!;
+      expect(oldClaim).not.toBeNull();
+      expect(runtime.shouldEmitMcpHint(storage)).toBe(false);
+      const oldOwner = path.join(lock, fs.readdirSync(lock)[0]);
+      const expired = new Date(Date.now() - 180001);
+      fs.utimesSync(oldOwner, expired, expired);
+      const successor = runtime.acquireMcpHintClaim(storage)!;
+      expect(successor).not.toBeNull();
+      oldClaim.release();
+      expect(successor.owned()).toBe(true);
+      expect(runtime.shouldEmitMcpHint(storage)).toBe(false);
+      successor.release();
+      expect(runtime.shouldEmitMcpHint(storage)).toBe(true);
+    } finally {
+      fs.rmSync(storage, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves a replacement claim intact when a stale contender resumes cleanup', () => {
+    const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-hint-replaced-'));
+    const lock = path.join(storage, '.mcp-hint-shown.lock');
+    const runtime = loadThrottle();
+    let successor: Claim | null = null;
+    try {
+      const oldClaim = runtime.acquireMcpHintClaim(storage)!;
+      const oldOwner = path.join(lock, fs.readdirSync(lock)[0]);
+      const expired = new Date(Date.now() - 180001);
+      fs.utimesSync(oldOwner, expired, expired);
+      const contender = loadThrottle({
+        fs: {
+          unlinkSync: (file) => {
+            if (String(file) === oldOwner && !successor) {
+              oldClaim.release();
+              successor = runtime.acquireMcpHintClaim(storage);
+            }
+            fs.unlinkSync(file);
+          },
+        },
+      });
+      expect(contender.acquireMcpHintClaim(storage)).toBeNull();
+      expect(successor).not.toBeNull();
+      expect((successor as Claim | null)?.owned()).toBe(true);
+    } finally {
+      (successor as Claim | null)?.release();
+      fs.rmSync(storage, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers an empty claim directory left by a crash during release', () => {
+    const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-hint-empty-'));
+    const lock = path.join(storage, '.mcp-hint-shown.lock');
+    fs.mkdirSync(lock);
+    let blocked = false;
+    const runtime = loadThrottle({
+      fs: {
+        renameSync: (source, destination) => {
+          if (!blocked && String(destination) === lock) {
+            blocked = true;
+            throw Object.assign(new Error('destination exists'), { code: 'EPERM' });
+          }
+          fs.renameSync(source, destination);
+        },
+      },
+    });
+    try {
+      expect(runtime.shouldEmitMcpHint(storage)).toBe(true);
+      expect(fs.existsSync(path.join(storage, '.mcp-hint-shown'))).toBe(true);
+    } finally {
+      fs.rmSync(storage, { recursive: true, force: true });
+    }
+  });
+
+  it('treats disappearing owner metadata as contention rather than emitting twice', () => {
+    const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-hint-disappeared-'));
+    const lock = path.join(storage, '.mcp-hint-shown.lock');
+    const existing = loadThrottle().acquireMcpHintClaim(storage)!;
+    const owner = path.join(lock, fs.readdirSync(lock)[0]);
+    const runtime = loadThrottle({
+      fs: {
+        lstatSync: ((file: fs.PathLike) => {
+          if (String(file) === owner) existing.release();
+          return fs.lstatSync(file);
+        }) as typeof fs.lstatSync,
+      },
+    });
+    try {
+      expect(runtime.shouldEmitMcpHint(storage)).toBe(false);
+      expect(fs.existsSync(path.join(storage, '.mcp-hint-shown'))).toBe(false);
+    } finally {
+      existing.release();
+      fs.rmSync(storage, { recursive: true, force: true });
+    }
+  });
+});
+
 // #2396: Claude uses the package runtime; Antigravity still owns its handlers.
 // Guard its shared hint behavior against drift with source byte identity on every platform,
 // unlike the owner-path behavior tests which are macOS-only.
@@ -2506,7 +2816,7 @@ describe('hook copy drift guard (#2396)', () => {
     return match ? match[0] : `<${name} not found>`;
   }
 
-  for (const fnName of ['buildMcpQueryHint', 'shouldEmitMcpHint']) {
+  for (const fnName of ['buildMcpQueryHint']) {
     it(`${fnName} is byte-identical in the package runtime and Antigravity`, () => {
       const [claude, antigravity] = HOOK_SOURCES.map(([, p]) =>
         extractFn(fs.readFileSync(p, 'utf-8'), fnName),

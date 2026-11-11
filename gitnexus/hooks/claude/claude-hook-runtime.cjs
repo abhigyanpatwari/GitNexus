@@ -5,6 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { randomUUID } = require('crypto');
 const { spawnSync } = require('child_process');
 const {
   hasGitNexusDbLockedByGitNexusServer,
@@ -57,9 +58,53 @@ function extractAugmentContext(stderr) {
   return marker === -1 ? '' : output.slice(marker).trim();
 }
 
-/**
- * Extract search pattern from tool input.
- */
+// Read literal argv from the first simple command without executing a shell.
+// Quotes group words; expansions and malformed input have no reliable query.
+function tokenizeShellCommand(command) {
+  const tokens = [];
+  let word = '';
+  let quote = null;
+  let started = false;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (ch === '\\' && quote !== "'") {
+      const next = command[++i];
+      if (next === undefined) return [];
+      if (next === '\n') continue;
+      if (quote === '"' && !['"', '\\', '$', '`'].includes(next)) word += '\\';
+      word += next;
+      started = true;
+    } else if (
+      quote !== "'" &&
+      (ch === '`' ||
+        (ch === '$' &&
+          (/[\w{([*@#?$!-]/.test(command[i + 1] || '') ||
+            (!quote && ['"', "'"].includes(command[i + 1])))))
+    ) {
+      return [];
+    } else if (quote) {
+      if (ch === quote) quote = null;
+      else word += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+    } else if (/[;&|<>\n\r]/.test(ch) || (ch === '#' && !started)) {
+      break;
+    } else if (/\s/.test(ch)) {
+      if (started) tokens.push(word);
+      word = '';
+      started = false;
+    } else {
+      word += ch;
+      started = true;
+    }
+  }
+  if (quote) return [];
+  if (started) tokens.push(word);
+  return tokens;
+}
+
+/** Extract search pattern from tool input. */
 function extractPattern(toolName, toolInput) {
   if (toolName === 'Grep') {
     return toolInput.pattern || null;
@@ -73,14 +118,15 @@ function extractPattern(toolName, toolInput) {
 
   if (toolName === 'Bash') {
     const cmd = toolInput.command || '';
-    if (!/\brg\b|\bgrep\b/.test(cmd)) return null;
+    if (typeof cmd !== 'string' || !/\brg\b|\bgrep\b/.test(cmd)) return null;
 
-    const tokens = cmd.split(/\s+/);
-    let foundCmd = false;
-    let skipNext = false;
+    const tokens = tokenizeShellCommand(cmd);
+    if (!/(?:^|[/\\])(?:rg|grep)(?:\.exe)?$/.test(tokens[0] || '')) return null;
+    let pending = null;
+    let endOptions = false;
+    let pattern = null;
+    let explicitPattern = null;
     const flagsWithValues = new Set([
-      '-e',
-      '-f',
       '-m',
       '-A',
       '-B',
@@ -93,23 +139,32 @@ function extractPattern(toolName, toolInput) {
       '--exclude',
     ]);
 
-    for (const token of tokens) {
-      if (skipNext) {
-        skipNext = false;
+    for (const token of tokens.slice(1)) {
+      if (pending) {
+        if (pending === 'pattern') explicitPattern ??= token;
+        pending = null;
         continue;
       }
-      if (!foundCmd) {
-        if (/\brg$|\bgrep$/.test(token)) foundCmd = true;
+      if (!endOptions && token === '--') {
+        endOptions = true;
         continue;
       }
-      if (token.startsWith('-')) {
-        if (flagsWithValues.has(token)) skipNext = true;
+      if (!endOptions && token.startsWith('-')) {
+        // File-backed queries are unavailable without reading user files.
+        if (token.startsWith('-f') || token === '--file' || token.startsWith('--file='))
+          return null;
+        if (['--files', '--type-list', '--help', '--version'].includes(token)) return null;
+        if (['-e', '--regexp', '--expression'].includes(token)) pending = 'pattern';
+        else if (/^--(?:regexp|expression)=/.test(token))
+          explicitPattern ??= token.slice(token.indexOf('=') + 1);
+        else if (token.startsWith('-e')) explicitPattern ??= token.slice(2);
+        else if (flagsWithValues.has(token)) pending = 'skip';
         continue;
       }
-      const cleaned = token.replace(/['"]/g, '');
-      return cleaned.length >= 3 ? cleaned : null;
+      pattern ??= token;
     }
-    return null;
+    const result = explicitPattern ?? pattern;
+    return !pending && result?.length >= 3 ? result : null;
   }
 
   return null;
@@ -176,13 +231,63 @@ function buildMcpQueryHint(pattern) {
   );
 }
 
+// A prepared, nonempty directory makes publication atomic. Unique owner names
+// prevent delayed cleanup from unlinking a successor's claim. Orphans expire
+// beyond the 150s host lifetime; a suspended process must still own its claim
+// before publishing a hint. Filesystem failures remain best-effort.
+function acquireMcpHintClaim(storagePath) {
+  const lock = path.join(storagePath, '.mcp-hint-shown.lock');
+  const prepared = fs.mkdtempSync(`${lock}-`);
+  const owner = `${randomUUID()}.owner`;
+  try {
+    fs.writeFileSync(path.join(prepared, owner), '', { mode: 0o600 });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        fs.renameSync(prepared, lock);
+        return {
+          owned: () => fs.existsSync(path.join(lock, owner)),
+          release: () => {
+            try {
+              fs.unlinkSync(path.join(lock, owner));
+              fs.rmdirSync(lock);
+            } catch {
+              /* A successor owns a different filename; leave its claim alone. */
+            }
+          },
+        };
+      } catch (error) {
+        if (!['EEXIST', 'ENOTEMPTY', 'EPERM'].includes(error.code)) throw error;
+      }
+      try {
+        const stat = fs.lstatSync(lock);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
+        const entries = fs.readdirSync(lock);
+        if (entries.length === 0) {
+          // A crash during release can leave an empty directory. rmdir cannot
+          // remove a successor's atomically published nonempty claim.
+          fs.rmdirSync(lock);
+          continue;
+        }
+        if (entries.length !== 1 || !/^[0-9a-f-]{36}\.owner$/.test(entries[0])) return null;
+        const previous = path.join(lock, entries[0]);
+        if (Date.now() - fs.lstatSync(previous).mtimeMs < 180000) return null;
+        fs.unlinkSync(previous);
+        fs.rmdirSync(lock);
+      } catch (error) {
+        if (['ENOENT', 'ENOTDIR', 'ENOTEMPTY', 'EEXIST'].includes(error.code)) return null;
+        throw error;
+      }
+    }
+    return null;
+  } finally {
+    fs.rmSync(prepared, { recursive: true, force: true });
+  }
+}
+
 /**
- * #2396 throttle: emit the MCP-query hint at most once per repo per window, so an
- * owner-locked session isn't nudged on every search. Window (ms) via
- * GITNEXUS_MCP_HINT_THROTTLE_MS (default 10min; 0/invalid disables). Best-effort —
- * any fs error falls back to emitting.
- * ponytail: per-repo mtime marker, shared across concurrent sessions on the same
- * repo; add per-session dedup only if that sharing becomes a problem.
+ * Serialize the rolling-window marker check/update across hook processes.
+ * GITNEXUS_MCP_HINT_THROTTLE_MS defaults to 10min; 0/invalid disables it.
+ * Unexpected filesystem failures retain the best-effort hint fallback.
  */
 function shouldEmitMcpHint(storagePath) {
   const raw = process.env.GITNEXUS_MCP_HINT_THROTTLE_MS;
@@ -192,14 +297,25 @@ function shouldEmitMcpHint(storagePath) {
   try {
     if (Date.now() - fs.statSync(marker).mtimeMs < windowMs) return false;
   } catch {
-    /* marker missing/unreadable → emit */
+    /* Missing/unreadable marker: acquire the claim before checking again. */
   }
+  let claim;
   try {
+    claim = acquireMcpHintClaim(storagePath);
+    if (!claim) return false;
+    try {
+      if (Date.now() - fs.statSync(marker).mtimeMs < windowMs) return false;
+    } catch {
+      /* marker missing/unreadable → emit */
+    }
+    if (!claim.owned()) return false;
     fs.writeFileSync(marker, '');
+    return true;
   } catch {
-    /* best-effort; still emit */
+    return true;
+  } finally {
+    if (claim) claim.release();
   }
-  return true;
 }
 
 /**

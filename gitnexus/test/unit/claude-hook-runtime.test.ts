@@ -18,6 +18,10 @@ interface CliTarget {
 
 interface HookRuntime {
   runGitNexusCli: (target: CliTarget, args: string[], cwd: string, timeout: number) => unknown;
+  extractPattern: (
+    toolName: string,
+    toolInput: { command?: string; pattern?: string },
+  ) => string | null;
 }
 
 function loadRuntime(options: { platform?: string; guard?: string | null } = {}) {
@@ -26,17 +30,20 @@ function loadRuntime(options: { platform?: string; guard?: string | null } = {})
   const resolveGuard = vi.fn(() => options.guard ?? null);
   const require = createRequire(RUNTIME);
   const module = { exports: {} as HookRuntime };
-  vm.runInNewContext(fs.readFileSync(RUNTIME, 'utf8'), {
-    module,
-    require: (id: string) => {
-      if (id === 'child_process') return { spawnSync };
-      if (id === './hook-db-lock-probe.cjs') {
-        return { resolveUnixGuardTimeout: resolveGuard };
-      }
-      return require(id);
+  vm.runInNewContext(
+    fs.readFileSync(RUNTIME, 'utf8') + '\nmodule.exports.extractPattern = extractPattern;',
+    {
+      module,
+      require: (id: string) => {
+        if (id === 'child_process') return { spawnSync };
+        if (id === './hook-db-lock-probe.cjs') {
+          return { resolveUnixGuardTimeout: resolveGuard };
+        }
+        return require(id);
+      },
+      process: { platform: options.platform ?? 'linux', env: {}, stderr: { write: vi.fn() } },
     },
-    process: { platform: options.platform ?? 'linux', env: {}, stderr: { write: vi.fn() } },
-  });
+  );
   return { ...module.exports, spawnSync, resolveGuard, result };
 }
 
@@ -107,6 +114,51 @@ describe('shared Claude hook CLI execution', () => {
       ['augment'],
       expect.objectContaining({ timeout: 7000 }),
     );
+  });
+});
+
+describe('Claude hook literal Bash search patterns', () => {
+  it.each([
+    { command: "rg 'database busy' src", pattern: 'database busy' },
+    { command: 'grep -n "database busy" src', pattern: 'database busy' },
+    { command: String.raw`rg database\ busy src`, pattern: 'database busy' },
+    { command: `rg 'say "hello"' src`, pattern: 'say "hello"' },
+    { command: `grep "user's table" src`, pattern: "user's table" },
+    { command: String.raw`rg "say \"hello\"" src`, pattern: 'say "hello"' },
+    { command: String.raw`rg 'can'\''t connect' src`, pattern: "can't connect" },
+    { command: String.raw`rg "\bworker\s+queue\b" src`, pattern: String.raw`\bworker\s+queue\b` },
+    { command: String.raw`rg "path\\name" src`, pattern: String.raw`path\name` },
+    { command: String.raw`rg "\$literal" src`, pattern: '$literal' },
+    { command: "rg '$HOME literal' src", pattern: '$HOME literal' },
+    { command: 'rg "queue$" src', pattern: 'queue$' },
+    { command: `rg pre" middle "'suffix' src`, pattern: 'pre middle suffix' },
+    { command: "rg -g '*.ts' -n 'quoted phrase' src", pattern: 'quoted phrase' },
+    { command: "rg -e 'explicit phrase' src", pattern: 'explicit phrase' },
+    { command: 'grep --regexp "explicit phrase" src', pattern: 'explicit phrase' },
+    { command: "rg --regexp='explicit phrase' src", pattern: 'explicit phrase' },
+    { command: 'grep -e"explicit phrase" src', pattern: 'explicit phrase' },
+    { command: "rg -- '-literal phrase' src", pattern: '-literal phrase' },
+    { command: "grep -n -- 'quoted phrase' src", pattern: 'quoted phrase' },
+  ])('preserves the complete argument in $command', ({ command, pattern }) => {
+    expect(loadRuntime().extractPattern('Bash', { command })).toBe(pattern);
+  });
+
+  it.each([
+    "rg '' src",
+    'grep "" src',
+    "rg -e '' src",
+    'grep --regexp="" src',
+    "rg 'unclosed phrase",
+    'grep "unclosed phrase',
+    'rg dangling\\',
+    'rg "partial $QUERY" src',
+    'grep "partial ${QUERY}" src',
+    'rg "partial $(printf phrase)" src',
+    'rg "partial `printf phrase`" src',
+    'rg partial$QUERY src',
+    'rg "valid phrase" "unclosed path',
+  ])('declines an empty, malformed, or expanded argument in %s', (command) => {
+    expect(loadRuntime().extractPattern('Bash', { command })).toBeNull();
   });
 });
 
@@ -227,28 +279,28 @@ describe('Claude hook package ownership', () => {
         GITNEXUS_STORAGE_ROOT: undefined,
         NODE_PATH: modules,
       };
-      const input = {
-        hook_event_name: 'PreToolUse',
-        tool_name: 'Grep',
-        tool_input: { pattern: 'shared runtime' },
-        cwd: repo,
-      };
-      const results = [
-        path.join(packageHooks, 'gitnexus-hook.cjs'),
-        path.join(standalonePlugin, 'gitnexus-hook.js'),
-      ].map((entry) => runHook(entry, input, repo, { env }));
+      for (const search of [
+        { tool_name: 'Grep', tool_input: { pattern: 'shared runtime' } },
+        { tool_name: 'Bash', tool_input: { command: 'rg "shared runtime" src' } },
+      ]) {
+        const input = { hook_event_name: 'PreToolUse', ...search, cwd: repo };
+        const results = [
+          path.join(packageHooks, 'gitnexus-hook.cjs'),
+          path.join(standalonePlugin, 'gitnexus-hook.js'),
+        ].map((entry) => runHook(entry, input, repo, { env }));
 
-      for (const result of results) {
-        expect(result.status).toBe(0);
-        expect(result.stderr).toBe('');
-        expect(JSON.parse(result.stdout)).toEqual({
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse',
-            additionalContext: '[GitNexus] ["augment","--","shared runtime"]',
-          },
-        });
+        for (const result of results) {
+          expect(result.status).toBe(0);
+          expect(result.stderr).toBe('');
+          expect(JSON.parse(result.stdout)).toEqual({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              additionalContext: '[GitNexus] ["augment","--","shared runtime"]',
+            },
+          });
+        }
+        expect(results[0]).toEqual(results[1]);
       }
-      expect(results[0]).toEqual(results[1]);
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
     }
