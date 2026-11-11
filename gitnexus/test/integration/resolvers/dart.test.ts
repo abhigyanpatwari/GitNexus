@@ -174,6 +174,23 @@ describe.skipIf(!dartAvailable)('Dart prefixed-import factory result types (#349
     expect(methodCalls(source)).toEqual(['Method:lib/mod.dart:C.m#0']);
   });
 
+  // `import 'mod.dart' deferred as dp;` is a namespace import like `as rp`:
+  // the deferred branch of the grammar must be captured, or the file has no
+  // IMPORTS edge and `dp.make()` never binds its result to C.
+  it('captures a deferred prefixed import as an IMPORTS edge', () => {
+    const imports = getRelationships(result, 'IMPORTS')
+      .filter((edge) => edge.sourceFilePath === 'lib/deferred_callers.dart')
+      .map((edge) => edge.targetFilePath);
+    expect(imports).toEqual(['lib/mod.dart']);
+  });
+
+  it.each(['deferredFinalCall', 'deferredInlineCall'])(
+    'resolves %s to C.m through the deferred prefix',
+    (source) => {
+      expect(methodCalls(source)).toEqual(['Method:lib/mod.dart:C.m#0']);
+    },
+  );
+
   // An awaited `Future<C>` is captured like a direct call, but no Dart path
   // unwraps the Future of an awaited result yet, named imports included.
   it.each(['untypedCall', 'awaitedCall'])('does not guess a receiver type for %s', (source) => {
