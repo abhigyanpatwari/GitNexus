@@ -1,0 +1,25 @@
+docs/languages/php-ingestion-gaps.md
+  s_b9690234122db7::t_55bcb4fe81aeae 36-39,49
+gitnexus/CHANGELOG.md
+  s_b9690234122db7::t_b4b767a20249c1 20
+gitnexus/src/core/ingestion/languages/php/captures.ts
+  s_b9690234122db7::t_0179ea5d386439 781-784,820-826,843-844,847-908,912-917,922-924,928,931-932
+gitnexus/test/integration/resolvers/php-docblock-param-scope.test.ts
+  s_b9690234122db7::t_91a0fd453317b3 429-505,633-664
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b62a13e9ff26c920fbf1f75ff4804c250d99baff",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
