@@ -94,6 +94,19 @@ export function phpBindingScopeFor(
     if (cur !== undefined && cur.kind === 'Class') return cur.id;
   }
 
+  // A parameter's type belongs to the one callable that declares it. Native
+  // hints (`function f(User $u)`) anchor inside the body and already land
+  // here; a PHPDoc `@param` anchors on the function body too — except for a
+  // BODYLESS declaration (abstract or interface method), where
+  // `synthesizePhpDocBindings` falls back to the declaration node, which is
+  // also that method's `@scope.function`. The extractor's equal-range
+  // auto-hoist (built for return types, which callers read by the function's
+  // name) would then lift the binding onto the enclosing class, and every
+  // sibling with a same-named untyped parameter would borrow it (PHP-04).
+  if (decl['@type-binding.parameter'] !== undefined) {
+    return innermost.id;
+  }
+
   return null;
 }
 
