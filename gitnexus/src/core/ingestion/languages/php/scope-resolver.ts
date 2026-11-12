@@ -25,6 +25,7 @@ import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js
 import {
   findReceiverTypeBinding,
   findUntypedReceiverBinder,
+  isReceiverOwnedButUnbound,
   populateClassOwnedMembers,
 } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
@@ -257,9 +258,10 @@ function collectTransitiveTraits(
  * method name, emit the CALLS edge.
  *
  * Only fires for sites that are NOT already in `handledSites`, whose
- * receiver has no type binding in the scope chain, and whose walk did not
- * stop at an untyped binder (`findUntypedReceiverBinder`). Unique-name-match
- * constraint avoids false positives for common method names.
+ * receiver is not owned-but-unbound (`isReceiverOwnedButUnbound`), has no
+ * type binding in the scope chain, and whose walk did not stop at an untyped
+ * binder (`findUntypedReceiverBinder`). Unique-name-match constraint avoids
+ * false positives for common method names.
  */
 function phpEmitUnresolvedReceiverEdges(
   graph: KnowledgeGraph,
@@ -279,6 +281,14 @@ function phpEmitUnresolvedReceiverEdges(
 
       const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
       if (handledSites.has(siteKey)) continue;
+
+      // A scope that owns the receiver but has no type for it has said "no
+      // type here" (a declined PHPDoc `@param`, see `phpScopeOwnsReceivers`):
+      // a definitive negative, not a missing binding. The receiver pass
+      // suppresses such a site and marks it handled; check it here too, so
+      // this fallback does not depend on that pass having run first.
+      const receiverBase = site.explicitReceiver.name.split('.', 1)[0]!;
+      if (isReceiverOwnedButUnbound(site.inScope, receiverBase, scopes)) continue;
 
       // Only proceed when the receiver has NO type binding — it's unresolvable
       // by the generic pass. This is the `mixed` / unannotated case.

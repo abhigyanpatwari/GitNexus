@@ -29,3 +29,12 @@ export function collectResolutionGroupFiles(
   }
   return affected;
 }
+
+/** Whether any current file belongs to a resolution group. Repositories with
+ * none never pay for per-file row digests. */
+export function hasResolutionGroups(currentFiles: readonly string[]): boolean {
+  return currentFiles.some((filePath) => {
+    const provider = getProviderForFile(filePath);
+    return provider?.incrementalResolutionGroup?.(filePath) !== undefined;
+  });
+}
