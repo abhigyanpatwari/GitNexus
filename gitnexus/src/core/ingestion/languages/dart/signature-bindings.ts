@@ -148,8 +148,10 @@ export function synthesizeDartParameterBindings(
   const out: CaptureMatch[] = [];
   for (const p of params) {
     // An untyped closure parameter has no `name` field, so the extractor
-    // reports `<unknown>` with no type; both guards skip it.
-    if (p.type === null || p.name === '' || p.name === '<unknown>') continue;
+    // reports `<unknown>` with no type; both guards skip it. A parameter named
+    // `_` declares nothing (Dart 3.7 wildcard variables), so `_` inside the
+    // body is whatever an enclosing scope calls `_`, never this parameter.
+    if (p.type === null || p.name === '' || p.name === '<unknown>' || p.name === '_') continue;
     out.push(buildBindingMatch(bodyNode, '@type-binding.parameter', p.name, p.type));
   }
   return out;

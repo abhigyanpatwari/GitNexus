@@ -51,8 +51,11 @@
  *     parameter, catch variable or local-function parameter reusing the
  *     name, sibling argument closures each declaring it, an outer local
  *     redeclared in a closure, and `if`/`else` branches each declaring it all
- *     get NO inferred binding from either declaration — every call on the
- *     name is a missing edge, never the other binder's owner. An un-awaited
+ *     get NO inferred binding from either declaration — a call on the name is
+ *     a missing edge, never the other binder's owner. The one exception
+ *     (`OWN_TYPED_PARAM`, DART-11): a closure or local-function parameter
+ *     declared WITH a type types its own sites through its own scope, so
+ *     `(Address x) { x.save(); }` reaches `Address.save` there. An un-awaited
  *     `.then(…)`-suffixed call binds nothing (the call must be the whole
  *     initializer), a reassigned un-awaited local binds nothing, and a whole
  *     `Future<T>` spelling never names an owner even when the workspace

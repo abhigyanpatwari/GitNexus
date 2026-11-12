@@ -244,8 +244,12 @@ export function emitDartScopeCaptures(
         };
         out.push(scopeMatch);
         // DART-11: the names this scope binds are filled in by Pass B.
-        registerDartLexicalScope(lexicalScopes, bodyNode, scopeMatch);
-        for (const cm of synthesizeDartReceiverBinding(declNode, bodyNode)) out.push(cm);
+        const receiver = synthesizeDartReceiverBinding(declNode, bodyNode);
+        for (const cm of receiver) out.push(cm);
+        registerDartLexicalScope(lexicalScopes, bodyNode, 'member', {
+          match: scopeMatch,
+          providesThis: receiver.length > 0,
+        });
         // A closure bound to a name keeps its parameter list as a child, which
         // the signature helper below cannot read, so its typed parameters
         // were never bound at all.
@@ -318,11 +322,18 @@ export function emitDartScopeCaptures(
 
   // ── Pass B: tree-walked references, type inference, heritage ────────────
   const seenReadSpans = new Set<string>();
-  walkDartTree(root, null, (node, type, ownerBody) => {
+  walkDartTree(root, null, null, (node, type, owner, opensBlock) => {
+    // A statement that opens a Dart scope gets a Block scope if it binds a
+    // name; a catch clause's parameters belong to the body block after it.
+    if (opensBlock) registerDartBlockScope(lexicalScopes, node, owner);
+    else if (type === 'catch_clause') {
+      const catchBody = dartCatchBody(node);
+      if (catchBody !== null) registerDartBlockScope(lexicalScopes, catchBody, owner);
+    }
     // Not exclusive with the branches below: an initializer is both a binder
     // and a type-binding site.
-    if (ownerBody !== null && DART_BINDER_NODE_TYPES.has(type)) {
-      recordDartLexicalName(node, ownerBody, lexicalScopes);
+    if (owner !== null && DART_DECLARED_NAME_TYPES.has(type)) {
+      recordDartLexicalName(node, type, owner, lexicalScopes);
     }
     if (
       type === 'selector' ||
@@ -349,7 +360,7 @@ export function emitDartScopeCaptures(
       return;
     }
     if (type === 'function_expression' || type === 'local_function_declaration') {
-      emitDartNestedFunctionScope(node, seenFnDeclNodes, lexicalScopes, out);
+      emitDartNestedFunctionScope(node, seenFnDeclNodes, lexicalScopes, owner);
       return;
     }
   });
@@ -474,7 +485,7 @@ function emitDartNestedFunctionScope(
   node: SyntaxNode,
   seenFnDeclNodes: ReadonlySet<string>,
   lexicalScopes: DartLexicalScopes,
-  out: CaptureMatch[],
+  owner: SyntaxNode | null,
 ): void {
   let scopeNode: SyntaxNode | null;
   let paramOwner: SyntaxNode | null;
@@ -491,35 +502,86 @@ function emitDartNestedFunctionScope(
     body = scopeNode === null ? null : findChild(scopeNode, 'function_body');
   }
   if (scopeNode === null || paramOwner === null || body === null) return;
-  // Emitted only once Pass B shows it binds a name (`attachDartLexicalNames`).
-  registerDartLexicalScope(
-    lexicalScopes,
-    body,
-    { '@scope.function': spanCapture('@scope.function', scopeNode, scopeNode) },
-    true,
-  );
-  for (const cm of synthesizeDartParameterBindings(paramOwner, body)) out.push(cm);
+  // Emitted only once Pass B shows it binds a name (`attachDartLexicalNames`),
+  // and its bindings with it: pushed without the scope they would land on the
+  // ENCLOSING scope and type its reads of the same name.
+  //
+  // The receiver binding: a function literal does not rebind `this`, and a
+  // member that has no Function scope of its own (a getter, setter, operator or
+  // field initializer) leaves this closure the first Function scope above the
+  // site, where `this` would otherwise be unbound. Pushed only where no emitted
+  // enclosing scope already provides `this` (`attachDartLexicalNames`).
+  registerDartLexicalScope(lexicalScopes, body, 'nested', {
+    parent: owner,
+    nested: { node, scopeNode, paramOwner },
+  });
 }
 
-/** A Function scope's match and the names it binds, keyed by its body span. */
-type DartLexicalScopes = Map<
-  string,
-  {
-    readonly match: Record<string, Capture>;
-    readonly body: SyntaxNode;
-    readonly names: Set<string>;
-    /** A closure or local function scope, emitted only if it binds a name. */
-    readonly deferred: boolean;
-  }
->;
+/**
+ * One lexical scope this file emits, keyed by the span of the node that owns
+ * its binders: a member's or closure's body, or a statement that opens a scope.
+ */
+interface DartLexicalScope {
+  /** A member's scope match (Pass A); deferred scopes build theirs when emitted. */
+  readonly match: Record<string, Capture> | null;
+  /** The node the `@scope.lexical-names` capture anchors on. */
+  readonly anchor: SyntaxNode;
+  readonly names: Set<string>;
+  /**
+   * `member`: a declared function's scope, always emitted (Pass A).
+   * `nested`: a closure or local function, and `block`: a statement that opens
+   * a scope. Both are emitted only if they bind a name; one that binds nothing
+   * is transparent to every lookup, the filter JavaScript and TypeScript block
+   * scopes apply.
+   */
+  readonly kind: 'member' | 'nested' | 'block';
+  /** The key of the scope this one sits in, or null at file or class level. */
+  readonly parent: string | null;
+  /**
+   * A closure or local function: the nodes its bindings are synthesized from,
+   * once it is known to be emitted. Most closures bind nothing, so building
+   * their bindings up front would be work thrown away.
+   */
+  readonly nested: {
+    readonly node: SyntaxNode;
+    readonly scopeNode: SyntaxNode;
+    readonly paramOwner: SyntaxNode;
+  } | null;
+  /** A member scope that binds `this` itself (an instance member). */
+  readonly providesThis: boolean;
+}
+type DartLexicalScopes = Map<string, DartLexicalScope>;
 
 function registerDartLexicalScope(
   scopes: DartLexicalScopes,
-  body: SyntaxNode,
-  match: Record<string, Capture>,
-  deferred = false,
+  anchor: SyntaxNode,
+  kind: DartLexicalScope['kind'],
+  options: {
+    readonly match?: Record<string, Capture>;
+    readonly parent?: SyntaxNode | null;
+    readonly nested?: DartLexicalScope['nested'];
+    readonly providesThis?: boolean;
+  } = {},
 ): void {
-  scopes.set(nodeSpanKey(body), { match, body, names: new Set(), deferred });
+  const key = nodeSpanKey(anchor);
+  if (scopes.has(key)) return;
+  scopes.set(key, {
+    match: options.match ?? null,
+    anchor,
+    names: new Set(),
+    kind,
+    parent: options.parent == null ? null : nodeSpanKey(options.parent),
+    nested: options.nested ?? null,
+    providesThis: options.providesThis ?? false,
+  });
+}
+
+function registerDartBlockScope(
+  scopes: DartLexicalScopes,
+  node: SyntaxNode,
+  owner: SyntaxNode | null,
+): void {
+  registerDartLexicalScope(scopes, node, 'block', { parent: owner });
 }
 
 /** Signature nodes whose formal parameters belong to the sibling body. */
@@ -534,83 +596,272 @@ const DART_SIGNATURE_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * `walkNamedTree` that also hands each node the body of the Function scope
- * that owns it: the nearest enclosing function or closure body, or — inside a
- * parameter list — the body of the closure or signature that declares it.
- * `null` outside every function (a field, a top-level variable). Tracking it
- * on the way down makes the owner of a binder a field read, not a climb.
+ * Statements that open a Dart scope for the names they bind: a nested block, a
+ * `for` (its loop variable), a switch case (its pattern variables and body
+ * locals), an if-case (its pattern variables). A catch clause's parameters are
+ * scoped to the body block that follows it (`dartCatchBody`).
+ */
+const DART_BLOCK_SCOPE_TYPES: ReadonlySet<string> = new Set([
+  'block',
+  'for_statement',
+  'switch_statement_case',
+  'switch_expression_case',
+  'if_statement',
+]);
+
+/** A function's own body block is its Function scope, not a nested one. */
+function opensDartBlockScope(type: string, parentType: string | null): boolean {
+  if (!DART_BLOCK_SCOPE_TYPES.has(type)) return false;
+  return (
+    type !== 'block' ||
+    (parentType !== 'function_body' && parentType !== 'function_expression_body')
+  );
+}
+
+/** The next named sibling that is not a comment. */
+function nextDartNonCommentSibling(node: SyntaxNode): SyntaxNode | null {
+  let next = node.nextNamedSibling;
+  while (next !== null && next.type === 'comment') next = next.nextNamedSibling;
+  return next;
+}
+
+/** The body block a `catch (e, st)` clause's parameters are scoped to. */
+function dartCatchBody(catchClause: SyntaxNode): SyntaxNode | null {
+  const body = nextDartNonCommentSibling(catchClause);
+  return body !== null && body.type === 'block' ? body : null;
+}
+
+/**
+ * `walkNamedTree` that also hands each node the node owning the scope it sits
+ * in: the nearest enclosing function or closure body, or the nearest statement
+ * that opens a scope — or, inside a parameter list, the body of the closure or
+ * signature that declares it (a comment between the two is skipped). `null`
+ * outside every function (a field, a top-level variable). Tracking it on the
+ * way down makes the owner of a binder a field read, not a climb.
  */
 function walkDartTree(
   node: SyntaxNode,
-  ownerBody: SyntaxNode | null,
-  visit: (node: SyntaxNode, type: string, ownerBody: SyntaxNode | null) => void,
+  owner: SyntaxNode | null,
+  parentType: string | null,
+  visit: (node: SyntaxNode, type: string, owner: SyntaxNode | null, opensBlock: boolean) => void,
 ): void {
   // Read once: `type` is a native call on every access.
   const type = node.type;
-  visit(node, type, ownerBody);
-  let childOwner = ownerBody;
+  const opensBlock = owner !== null && opensDartBlockScope(type, parentType);
+  visit(node, type, owner, opensBlock);
+  let childOwner = owner;
   if (type === 'function_body' || type === 'function_expression_body') childOwner = node;
   else if (type === 'function_expression') childOwner = findFunctionBody(node);
   else if (type === 'class_body' || type === 'program') childOwner = null;
+  else if (opensBlock) childOwner = node;
+  else if (type === 'catch_clause') childOwner = dartCatchBody(node);
   else if (DART_SIGNATURE_TYPES.has(type)) {
     // A signature's parameters belong to its SIBLING body; an inner signature
     // (`method_signature > function_signature`) reads its wrapper's sibling.
-    const host = node.parent?.type === 'method_signature' ? node.parent : node;
-    const body = host.nextNamedSibling;
+    const host = parentType === 'method_signature' ? (node.parent ?? node) : node;
+    const body = nextDartNonCommentSibling(host);
     childOwner = body !== null && body.type === 'function_body' ? body : null;
   }
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
-    if (child !== null) walkDartTree(child, childOwner, visit);
+    if (child !== null) walkDartTree(child, childOwner, type, visit);
   }
 }
 
-/** File the name `node` binds under the Function scope whose body is `ownerBody`. */
+/** File the name `node` declares under the scope whose owner node is `owner`. */
 function recordDartLexicalName(
   node: SyntaxNode,
-  ownerBody: SyntaxNode,
+  type: string,
+  owner: SyntaxNode,
   scopes: DartLexicalScopes,
 ): void {
-  const scope = scopes.get(nodeSpanKey(ownerBody));
+  const scope = scopes.get(nodeSpanKey(owner));
   if (scope === undefined) return; // a body with no Function scope (a class accessor)
-  visitDartBinderName(node, (name) => {
+  visitDartDeclaredName(node, type, (name) => {
     scope.names.add(name);
   });
 }
 
 /**
- * `@scope.lexical-names` on each Function scope: every name it binds —
- * parameters, locals, catch and loop variables, pattern binders — typed or not
- * (DART-11).
+ * `@scope.lexical-names` on each scope: every name it DECLARES — parameters,
+ * locals, local functions, catch and loop variables, pattern variables — typed
+ * or not (DART-11).
  *
  * The shared receiver walk treats a listed name as owned by this scope, so it
  * stops here instead of borrowing an enclosing binding of the same spelling;
  * a binder that also has a type still answers with that type, because the walk
  * reads a scope's own type before it honours the stop.
  *
- * The binder forms are `visitDartBinderName`'s, the one enumeration the field
- * shadow set and the call-result inference census also read. A binder belongs
- * to its NEAREST function or closure body, so a name bound only inside a nested
- * closure or local function does not stop reads in the enclosing function.
- * Within one body the set is body-wide, because Dart blocks open no scope
- * here: a name bound in an inner block also stops reads elsewhere in the body.
- * That costs an edge, never adds one.
+ * A name belongs to the NEAREST scope that declares it: a closure or local
+ * function, a nested block, a `for`, a switch case, an if-case, or the body a
+ * catch clause guards. So a loop variable, a catch parameter or a block-local
+ * does not stop reads of an outer binding after its statement, and a closure's
+ * binders do not stop reads in the enclosing function.
  *
  * Collected during Pass B's one tree walk rather than by a walk per scope.
  * Sorted, so the capture text and every fingerprint over it is order-stable; a
- * scope that binds nothing carries no tag, and a deferred closure or local
- * function scope that binds nothing is not emitted at all.
+ * scope that binds nothing carries no tag, and a deferred scope that binds
+ * nothing is not emitted at all.
  */
 function attachDartLexicalNames(scopes: DartLexicalScopes, out: CaptureMatch[]): void {
-  for (const { match, body, names, deferred } of scopes.values()) {
-    if (names.size === 0) continue;
-    match['@scope.lexical-names'] = syntheticCapture(
-      '@scope.lexical-names',
-      body,
-      JSON.stringify([...names].sort()),
-    );
-    if (deferred) out.push(match);
+  // Whether `this` is bound at or above each scope once deferred scopes are
+  // decided. Registration order is the walk's pre-order, so a parent is always
+  // settled before its children.
+  const thisBound = new Map<string, boolean>();
+  for (const [key, scope] of scopes) {
+    const { anchor, names, kind, parent, nested, providesThis } = scope;
+    const inherited = parent !== null && thisBound.get(parent) === true;
+    const lexical =
+      names.size === 0
+        ? undefined
+        : syntheticCapture('@scope.lexical-names', anchor, JSON.stringify([...names].sort()));
+    if (kind === 'member') {
+      if (lexical !== undefined && scope.match !== null) {
+        scope.match['@scope.lexical-names'] = lexical;
+      }
+      thisBound.set(key, providesThis);
+      continue;
+    }
+    if (lexical === undefined) {
+      thisBound.set(key, inherited);
+      continue;
+    }
+    if (nested === null) {
+      out.push({
+        '@scope.block': spanCapture('@scope.block', anchor, anchor),
+        '@scope.lexical-names': lexical,
+      });
+      thisBound.set(key, inherited);
+      continue;
+    }
+    out.push({
+      '@scope.function': spanCapture('@scope.function', nested.scopeNode, nested.scopeNode),
+      '@scope.lexical-names': lexical,
+    });
+    for (const cm of synthesizeDartParameterBindings(nested.paramOwner, anchor)) out.push(cm);
+    // Only where no emitted enclosing scope binds `this` already: under a
+    // getter, setter, operator or field initializer, which have no scope.
+    let ownThis = false;
+    if (!inherited) {
+      const receiver = synthesizeDartReceiverBinding(nested.node, anchor);
+      for (const cm of receiver) out.push(cm);
+      ownThis = receiver.length > 0;
+    }
+    thisBound.set(key, inherited || ownThis);
   }
+}
+
+/** Every node type `visitDartDeclaredName` reads a declared name from. */
+const DART_DECLARED_NAME_TYPES: ReadonlySet<string> = new Set([
+  'initialized_variable_definition',
+  'for_loop_parts',
+  'formal_parameter',
+  'catch_parameters',
+  'initialized_identifier',
+  'variable_pattern',
+  'constant_pattern',
+  'local_function_declaration',
+]);
+
+/**
+ * Hand `visit` the name `node` DECLARES, for lexical ownership.
+ *
+ * Narrower than `visitDartBinderName`, which over-approximates on purpose for
+ * the field-shadow mask and the call-result inference census (where declining
+ * costs nothing wrong). As lexical ownership an over-approximation stops every
+ * lookup of the spelling in the scope, so this reader follows the patterns
+ * specification:
+ *   - a `variable_pattern` (`var x`, `final x`, `Type x`) declares in every
+ *     context;
+ *   - a bare name (`constant_pattern`) declares only in a declaration context
+ *     (`var (a, b) = …`, `for (final (a, b) in …)`); in a matching context
+ *     (`case Address:`) it is a constant reference, and a pattern assignment
+ *     (`(a,) = …`) declares nothing;
+ *   - a field label or map key (`(api: v)`, `Box(cs: var x)`) is a getter
+ *     name, never a binder — those are direct identifier children of the
+ *     container patterns, which this reader does not take.
+ * A parameter of a function-typed parameter (`Other cs(int a)`) belongs to
+ * that type, not to this scope. `_` declares nothing (wildcard variables).
+ */
+function visitDartDeclaredName(
+  node: SyntaxNode,
+  type: string,
+  visit: (name: string) => void,
+): void {
+  const declare = (name: string | null | undefined): void => {
+    if (name !== null && name !== undefined && name !== '' && name !== '_') visit(name);
+  };
+  switch (type) {
+    case 'initialized_variable_definition':
+    case 'for_loop_parts':
+      declare(node.childForFieldName('name')?.text);
+      return;
+    case 'initialized_identifier': {
+      const first = node.namedChild(0);
+      if (first !== null && first.type === 'identifier') declare(first.text);
+      return;
+    }
+    case 'catch_parameters':
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const child = node.namedChild(i);
+        if (child !== null && child.type === 'identifier') declare(child.text);
+      }
+      return;
+    case 'formal_parameter':
+      if (node.parent?.parent?.type === 'formal_parameter') return;
+      declare(dartParameterName(node) ?? dartFunctionTypedParameterName(node));
+      return;
+    case 'variable_pattern': {
+      for (let i = node.namedChildCount - 1; i >= 0; i--) {
+        const child = node.namedChild(i);
+        if (child !== null && child.type === 'identifier') {
+          declare(child.text);
+          return;
+        }
+      }
+      return;
+    }
+    case 'constant_pattern': {
+      if (!dartPatternDeclares(node)) return;
+      const only = node.namedChild(0);
+      if (only !== null && only.type === 'identifier') declare(only.text);
+      return;
+    }
+    case 'local_function_declaration': {
+      const lambda = findChild(node, 'lambda_expression');
+      const signature = lambda === null ? null : findChild(lambda, 'function_signature');
+      declare(signature?.childForFieldName('name')?.text);
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+/** `Other cs(int a)`: the name written before the parameter's own parameter list. */
+function dartFunctionTypedParameterName(param: SyntaxNode): string | null {
+  let name: string | null = null;
+  for (let i = 0; i < param.namedChildCount; i++) {
+    const child = param.namedChild(i);
+    if (child === null) continue;
+    if (child.type === 'formal_parameter_list') return name;
+    if (child.type === 'identifier') name = child.text;
+  }
+  return null;
+}
+
+/**
+ * Whether a bare-name pattern sits in a DECLARATION context — the pattern of a
+ * `var`/`final` pattern declaration or of a for-in — rather than in a matching
+ * context or a pattern assignment. Climbs only through pattern nodes.
+ */
+function dartPatternDeclares(constantPattern: SyntaxNode): boolean {
+  for (let cur = constantPattern.parent; cur !== null; cur = cur.parent) {
+    const type = cur.type;
+    if (type === 'pattern_variable_declaration' || type === 'for_loop_parts') return true;
+    if (!type.endsWith('_pattern')) return false;
+  }
+  return false;
 }
 
 function attachArityMetadata(grouped: Record<string, Capture>, declNode: SyntaxNode): void {
@@ -1561,9 +1812,10 @@ const DART_BINDER_NODE_TYPES: ReadonlySet<string> = new Set([
  * closure parameters and catch variables). It is enumerated against
  * `vendor/tree-sitter-dart/grammar.js`, not against the shapes a bug report
  * happened to carry, and it is the ONE list: the field-shadow set
- * (`collectDartBodyShadows`), the call-result inference census
- * (`dartBodyCensus`) and the Function-scope lexical names
- * (`dartLexicalNamesCapture`) all read it.
+ * (`collectDartBodyShadows`) and the call-result inference census
+ * (`dartBodyCensus`) both read it. Lexical ownership reads a narrower,
+ * declaration-sensitive subset (`visitDartDeclaredName`): an over-approximation
+ * that only makes those two decline would, as ownership, stop every lookup.
  *
  * `DART_BINDER_NODE_TYPES` gates the switch, so a node type missing from it is
  * ignored by every reader at once; a new `case` must be added to both.
