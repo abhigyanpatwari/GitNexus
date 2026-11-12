@@ -5,6 +5,9 @@ import v8 from 'node:v8';
 
 const [modulePath, corpusPath, expectedStrings] = process.argv.slice(2);
 assert.equal(typeof global.gc, 'function', 'Run with --expose-gc');
+// Heap sizing alone leaves background GC/JIT tasks and hash seeds variable.
+// Keep their work in the measured thread under the same seed in both arms.
+assert(process.execArgv.includes('--predictable'), 'Use deterministic GC/JIT scheduling');
 assert(process.execArgv.includes('--predictable-gc-schedule'), 'Use the fixed GC profile');
 const { internGraphStrings } = await import(pathToFileURL(modulePath).href);
 const payloads = v8.deserialize(fs.readFileSync(corpusPath));

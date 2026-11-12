@@ -70,6 +70,7 @@ try {
           process.execPath,
           [
             '--expose-gc',
+            '--predictable',
             '--predictable-gc-schedule',
             '--max-old-space-size=4096',
             fileURLToPath(new URL('./intern-sample.mjs', import.meta.url)),

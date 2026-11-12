@@ -5,12 +5,13 @@
  *   --baseline-dist /path/to/base/gitnexus/dist --pairs 7 --workers 2
  *   --output /tmp/file-result-reuse/measure.json
  * Add --corpus /path/to/base/gitnexus/src for frozen real-source measurements.
- * Standalone: node --expose-gc --predictable-gc-schedule benchmark.js --files 1024
+ * Standalone: node --expose-gc --predictable --predictable-gc-schedule benchmark.js --files 1024
  *
  * Each phase has a fresh Node process and retains only on-disk input/cache state.
  * Timing covers ingestion and cache save, excluding startup and verification.
  * Peak RSS is max(phase process maxRSS), including parser worker threads.
- * Both arms use the same fixed GC profile; collection during analysis is timed.
+ * Both arms use deterministic GC/JIT scheduling and seeds, plus fixed heap
+ * growth. Collection and compilation during analysis remain inside the timer.
  * Graph fingerprints retain every property and duplicate, with bounded memory.
  * Cross-version fingerprints omit only derived Community/Process nodes/edges.
  *
@@ -38,9 +39,13 @@ const identity = {
   pdg: 'file-result-reuse-benchmark-pdg-v1',
 };
 function requireGcProfile() {
-  if (typeof global.gc !== 'function' || !process.execArgv.includes('--predictable-gc-schedule'))
+  if (
+    typeof global.gc !== 'function' ||
+    !process.execArgv.includes('--predictable') ||
+    !process.execArgv.includes('--predictable-gc-schedule')
+  )
     throw new Error(
-      'Measurements require --expose-gc and --predictable-gc-schedule; comparisons enable them automatically',
+      'Measurements require --expose-gc, --predictable and --predictable-gc-schedule; comparisons enable them automatically',
     );
 }
 
@@ -243,6 +248,16 @@ export function validatePair(pair) {
   );
   for (const trial of [baseline, candidate]) {
     assert.equal(trial.provenance.phaseIsolation, 'process', 'Phases must use fresh processes');
+    assert.deepEqual(
+      trial.provenance.execArgv,
+      [
+        '--expose-gc',
+        '--predictable',
+        '--predictable-gc-schedule',
+        '--max-old-space-size=' + benchmarkBaseline.defaults.heapMiB,
+      ],
+      'Unexpected measurement profile',
+    );
     assert(
       ['sourceDigest', 'buildDigest', 'driverDigest'].every((key) =>
         digest.test(trial.provenance[key]),
@@ -322,7 +337,7 @@ export function validatePair(pair) {
 }
 
 export function assessComparison(report) {
-  assert.equal(report.schemaVersion, 3, 'Unknown report schema');
+  assert.equal(report.schemaVersion, 4, 'Unknown report schema');
   assert(report.pairs.length >= 7, 'Seven measured process pairs are required');
   assert(report.warmup, 'Missing excluded warmup pair');
   const all = [report.warmup, ...report.pairs];
@@ -426,7 +441,7 @@ export async function compareRuntimes(options) {
   };
   for (const dist of Object.values(runtimes)) await fs.access(path.join(dist, 'cli/index.js'));
   const report = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     measuredAt: new Date().toISOString(),
     environment: {
       node: process.version,
@@ -463,6 +478,7 @@ export async function compareRuntimes(options) {
         process.execPath,
         [
           '--expose-gc',
+          '--predictable',
           '--predictable-gc-schedule',
           '--max-old-space-size=' + benchmarkBaseline.defaults.heapMiB,
           ...args,
@@ -622,6 +638,7 @@ async function measure(values) {
       JSON.stringify({
         kind: 'provenance',
         phaseIsolation: 'process',
+        execArgv: process.execArgv,
         sourceDigest: await sourceDigest(repo, sources),
         sourceFiles: sources.length,
         node: process.version,

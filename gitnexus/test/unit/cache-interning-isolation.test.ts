@@ -91,6 +91,7 @@ describe('cache interning sample isolation', () => {
           expect(sample.warmupRounds).toBe(2);
           expect(sample.execArgv).toEqual([
             '--expose-gc',
+            '--predictable',
             '--predictable-gc-schedule',
             '--max-old-space-size=4096',
           ]);
