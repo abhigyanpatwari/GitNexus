@@ -1,0 +1,155 @@
+ARCHITECTURE.md
+  s_b9690234122db7::t_e516af7a3eb685 72,117-130,547
+docs/languages/README.md
+  s_b9690234122db7::t_0a8d16b05a878d 32
+docs/languages/dart-ingestion-gaps.md
+  s_b9690234122db7::t_49f13fae0c317d 22,29,38-154
+docs/languages/php-ingestion-gaps.md
+  s_b9690234122db7::t_04a7f8661156c3 33-42,50
+docs/languages/ruby-ingestion-gaps.md
+  s_b9690234122db7::t_4e5bc36ef12eb1 30-55,61
+gitnexus-shared/src/scope-resolution/types.ts
+  s_b9690234122db7::t_904a5f839a9d52 662-671
+gitnexus/bench/receiver-resolution/BASELINE.md
+  s_b9690234122db7::t_f5bf9b1204596c 59-65
+gitnexus/bench/receiver-resolution/baseline.json
+  s_b9690234122db7::t_0199505407c187 183,205-206,208,223-224,228,234
+gitnexus/bench/receiver-resolution/measure.mjs
+  s_b9690234122db7::t_31284c8ca4e5b9 702-704,1073-1079,1622-1627
+gitnexus/bench/scope-capture/baselines.json
+  s_b9690234122db7::t_673475cfdb04c6 181,184,196-197,200-201,222-223,324-332
+gitnexus/bench/scope-capture/measure.mjs
+  s_b9690234122db7::t_d0b3654b5cf223 258-261,266-268,303-313
+gitnexus/src/core/incremental/file-row-digests.ts
+  s_b9690234122db7::t_3e96284343003c 1-82
+gitnexus/src/core/incremental/resolution-groups.ts
+  s_b9690234122db7::t_a4f005b68fc622 32-40
+gitnexus/src/core/incremental/subgraph-extract.ts
+  s_b9690234122db7::t_8dbced42fe6b5e 82,122
+gitnexus/src/core/ingestion/language-provider.ts
+  s_b9690234122db7::t_0572da23e0a476 57,271-272,274-276,1296-1306
+gitnexus/src/core/ingestion/languages/dart.ts
+  s_b9690234122db7::t_0577935e7414ce 41,149-152
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_c3a5c914d65b32 32,54,191-195,328,468-469,483-485,489,579,586-728,769-772,777-789,883-891,903-906,908,914-1022,1025-1033,1077-1088,1093-1104,1107-1109,1251,1408-1410,1412,1414,1419,1423-1429,1431,1440,1447,1453,1462,1515
+gitnexus/src/core/ingestion/languages/dart/index.ts
+  s_b9690234122db7::t_63c654e8abcc0f 31
+gitnexus/src/core/ingestion/languages/dart/interpret.ts
+  s_b9690234122db7::t_7fcf8cb5ed744b 19,89-121,129-134,138-141
+gitnexus/src/core/ingestion/languages/dart/scope-resolver.ts
+  s_b9690234122db7::t_3cbe5932fff8c5 46,241-244
+gitnexus/src/core/ingestion/languages/dart/signature-bindings.ts
+  s_b9690234122db7::t_13779ca5ab74a8 12-13,27-62,105-112
+gitnexus/src/core/ingestion/languages/java.ts
+  s_b9690234122db7::t_6a2163d5548ae0 188-194
+gitnexus/src/core/ingestion/languages/java/capture-side-channel.ts
+  s_b9690234122db7::t_6a7b1f7cac2f18 2,32,46-55,66,207,230
+gitnexus/src/core/ingestion/languages/java/captures.ts
+  s_b9690234122db7::t_f294f36c5e4aaa 38,68,149
+gitnexus/src/core/ingestion/languages/java/import-target.ts
+  s_b9690234122db7::t_bd5b0d5a55fd47 30-33
+gitnexus/src/core/ingestion/languages/java/import-use-facts.ts
+  s_b9690234122db7::t_d76e135f16b133 1-261
+gitnexus/src/core/ingestion/languages/java/on-demand-imports.ts
+  s_b9690234122db7::t_8b1bba68aac9d0 1-153
+gitnexus/src/core/ingestion/languages/java/scope-resolver.ts
+  s_b9690234122db7::t_3a85de9a0b8d91 32,57
+gitnexus/src/core/ingestion/languages/php.ts
+  s_b9690234122db7::t_f3e07e786407d4 18,333-335
+gitnexus/src/core/ingestion/languages/php/captures.ts
+  s_b9690234122db7::t_404f6049165c98 154-156,217-230,321-326,332,336,705-1200,1334-1338,1340-1344,1357,1406-1410,1422-1427,1432,1444-1445,1449,1455,1470-1471,1501-1503
+gitnexus/src/core/ingestion/languages/php/index.ts
+  s_b9690234122db7::t_851b2f9eba165b 62
+gitnexus/src/core/ingestion/languages/php/scope-resolver.ts
+  s_b9690234122db7::t_bdf6551edb4b0a 28,261-264,285-292
+gitnexus/src/core/ingestion/languages/php/simple-hooks.ts
+  s_b9690234122db7::t_42b73948091bd6 97-110
+gitnexus/src/core/ingestion/languages/ruby/captures.ts
+  s_b9690234122db7::t_020ca3a1cfe4ea 580-585,603-608,954-1142
+gitnexus/src/core/ingestion/languages/ruby/simple-hooks.ts
+  s_b9690234122db7::t_0ce3f9cddd87c0 23-34
+gitnexus/src/core/ingestion/scope-extractor.ts
+  s_b9690234122db7::t_0d0fe17d76d550 118,145,1231-1233,1238,1251,1283-1292,1295,1310-1314,1336-1337,1962
+gitnexus/src/core/ingestion/scope-resolution/contract/scope-resolver.ts
+  s_b9690234122db7::t_e4c26bfc71a3e8 339-344,347,406-425
+gitnexus/src/core/ingestion/scope-resolution/graph-bridge/imports-to-edges.ts
+  s_b9690234122db7::t_c3406df003d9e1 42-43,62,64,106-124,197-199,205,211-212,217,220-236,295,321
+gitnexus/src/core/ingestion/scope-resolution/passes/compound-receiver.ts
+  s_b9690234122db7::t_dede4788c643df 511-524,983-1022
+gitnexus/src/core/ingestion/scope-resolution/passes/imported-return-types.ts
+  s_b9690234122db7::t_2956d6e54471dd 54-58,65,250-286,342,365-366,418,445,448-457,523,546-552,568
+gitnexus/src/core/ingestion/scope-resolution/passes/receiver-bound-calls.ts
+  s_b9690234122db7::t_35a995aeedd005 2975-2998
+gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts
+  s_b9690234122db7::t_0406e65a75f4e4 1247,1886-1890,1893-1904
+gitnexus/src/core/ingestion/utils/type-ref-chain.ts
+  s_b9690234122db7::t_566887a3d64147 1-29,37-61,63-80
+gitnexus/src/core/run-analyze.ts
+  s_b9690234122db7::t_b9786122da84fe 261,4211-4222,4257-4261,4266,4350-4385,4408-4411,4506,6197-6206
+gitnexus/src/storage/repo-meta.ts
+  s_b9690234122db7::t_e101fb4c533aef 449-456
+gitnexus/test/fixtures/lang-resolution/java-wildcard-on-demand/com/example/app/Explicit.java
+  s_b9690234122db7::t_6d5f5fc395031e 1-9
+gitnexus/test/fixtures/lang-resolution/java-wildcard-on-demand/com/example/app/StaticUser.java
+  s_b9690234122db7::t_2f60ecc63b2898 1-9
+gitnexus/test/fixtures/lang-resolution/java-wildcard-on-demand/com/example/app/TypeOnly.java
+  s_b9690234122db7::t_90af1af7a443b7 1-10
+gitnexus/test/fixtures/lang-resolution/java-wildcard-on-demand/com/example/app/Unused.java
+  s_b9690234122db7::t_265c274d9e767a 1-9
+gitnexus/test/fixtures/lang-resolution/java-wildcard-on-demand/com/example/models/Audited.java
+  s_b9690234122db7::t_1a18f78cec83a8 1-3
+gitnexus/test/fixtures/lang-resolution/java-wildcard-on-demand/com/example/models/BizException.java
+  s_b9690234122db7::t_5e6bcfb3e0c2ba 1-3
+gitnexus/test/fixtures/lang-resolution/java-wildcard-on-demand/com/example/models/Order.java
+  s_b9690234122db7::t_327d0c45af9e0f 1-5
+gitnexus/test/fixtures/lang-resolution/java-wildcard-on-demand/com/example/models/User.java
+  s_b9690234122db7::t_ea85e22744d5b5 1-5
+gitnexus/test/fixtures/lang-resolution/java-wildcard-on-demand/com/example/models/Utils.java
+  s_b9690234122db7::t_b4de3dda33bcd4 1-7
+gitnexus/test/fixtures/lang-resolution/java-wildcard-on-demand/com/example/models/package-info.java
+  s_b9690234122db7::t_d12daa26e986fb 1-2
+gitnexus/test/integration/java-incremental-on-demand.test.ts
+  s_b9690234122db7::t_6058035501f9b4 1-158
+gitnexus/test/integration/resolvers/dart-awaited-receiver-owner.test.ts
+  s_b9690234122db7::t_7f4b2ddcdee4d9 1-690
+gitnexus/test/integration/resolvers/dart.test.ts
+  s_b9690234122db7::t_e6dc17bd206d90 173-186,189,199
+gitnexus/test/integration/resolvers/java.test.ts
+  s_b9690234122db7::t_2d75e3001c734b 670-671,681-683,700-736
+gitnexus/test/integration/resolvers/php-docblock-param-scope.test.ts
+  s_b9690234122db7::t_3316a40ab6a12b 1-1045
+gitnexus/test/integration/resolvers/ruby-param-shadow-call.test.ts
+  s_b9690234122db7::t_d5a5302f2542a7 1-78
+gitnexus/test/integration/resolvers/ruby-yard-param-scope.test.ts
+  s_b9690234122db7::t_14efd13c6494ef 1-1419
+gitnexus/test/unit/incremental-file-row-digests.test.ts
+  s_b9690234122db7::t_0c1b37b9ad884f 1-119
+gitnexus/test/unit/incremental-resolution-groups.test.ts
+  s_b9690234122db7::t_b46243518af4fa 2-5,8-15,54-62
+gitnexus/test/unit/scope-resolution/await-route-declines.test.ts
+  s_b9690234122db7::t_1695ab5e4561bd 1-61
+gitnexus/test/unit/scope-resolution/awaited-call-result-follow.test.ts
+  s_b9690234122db7::t_c1c44f1e0687b8 1-250
+gitnexus/test/unit/scope-resolution/imports-to-edges-on-demand.test.ts
+  s_b9690234122db7::t_384ee10adf6786 1-119
+gitnexus/test/unit/scope-resolution/java/java-on-demand-imports.test.ts
+  s_b9690234122db7::t_63f51ec64c73f6 1-353
+gitnexus/vitest.config.ts
+  s_b9690234122db7::t_ae80b80c3ff7ef 114,237
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "34248cbdb857b76ca3dec684c0f2b23a6907228c",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
