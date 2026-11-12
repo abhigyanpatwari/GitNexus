@@ -4,10 +4,6 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-
-- **Dart deferred imports** — `import 'x.dart' deferred as p;` now yields a namespace import for `p` like the non-deferred `as p` form; before, the scope query only matched the grammar's `configurable_uri` branch, so a deferred import produced no IMPORTS edge and `p.fn()` results never bound their receiver type
-
 ### Changed
 
 - **MCP `query` / `context` / `impact` / `cypher` always attach a ref-carrying `staleness` field** — object results include it even when `status` is `current`. Absence is no longer the freshness signal: read `staleness.status` (`behind`/`diverged` vs `current`/`unknown`) and `branch`/`lastCommit` for which index answered. `list_repos` and the HTTP repo routes are unchanged (still omit `staleness` when current; the ref is top-level) (#3291, #3293)
