@@ -1,0 +1,23 @@
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_836e0957242a76 197-201,236,239-242,312-317,319-320,325,329,333,338,342-343,347,426-429,434,452-458,462-493,495-540,550-555,557-560,562-570,1493-1511,1522-1527,1530
+gitnexus/test/unit/scope-resolution/dart-lexical-names.test.ts
+  s_b9690234122db7::t_27c153c212437f 33-34,52,76-90
+gitnexus/test/unit/scope-resolution/php/php-unresolved-receiver-fallback.test.ts
+  s_b9690234122db7::t_b7a289464d961f 146-148
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "27a4acf5e1dd9fe1eed7f5432a52b7cab5b4b240",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
