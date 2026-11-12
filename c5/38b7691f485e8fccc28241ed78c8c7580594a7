@@ -1,0 +1,33 @@
+gitnexus/test/unit/scope-resolution/dart-lexical-names.test.ts
+  s_b9690234122db7::t_9c26822d9271c0 4-10,15-31,57-58,61-68,70,85-86,88-93,95,97-99,101,103,116-119,132-173
+  s_b9690234122db7::t_0d16fd1f5f34fa 174-200
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_c5906646623b36 672
+  s_b9690234122db7::t_a0b968ac7db5cd 242-247,316-323,326-327,354,446,463-475,478-511,515-522,524-542,557-598,602-604,608-610,614-615,619-620,625,629,632-633,636,638,644-646,653-657,661-662,665-671,673-820,822,1773-1776
+docs/languages/dart-ingestion-gaps.md
+  s_b9690234122db7::t_c65fa319a769b1 45,110-117
+gitnexus/src/core/ingestion/languages/dart/signature-bindings.ts
+  s_b9690234122db7::t_5c72cb8b124882 151-154
+gitnexus/src/core/ingestion/scope-resolution/passes/receiver-bound-calls.ts
+  s_b9690234122db7::t_c32c14c30c02b3 3858-3865
+gitnexus/test/integration/resolvers/dart-awaited-receiver-owner.test.ts
+  s_b9690234122db7::t_dc31d38498a04c 54-58
+gitnexus/test/integration/resolvers/receiver-walk-untyped-binder.test.ts
+  s_b9690234122db7::t_cfed302348f977 12-14,31-36,39-49,87-91,98,106-107,130-135,191,193-200,202-208,210-217,219-226,228-236,238-245,247-254,256-264,266-273,276-281,313,315-320,322-326,328-333,335-341,344-349,370,372-377,379-386,388-392,394,416,685-1017
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c538b7691f485e8fccc28241ed78c8c7580594a7",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
