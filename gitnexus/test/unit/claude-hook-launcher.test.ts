@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-launcher-'));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-launcher-')));
   fixtures.push(root);
   return root;
 }

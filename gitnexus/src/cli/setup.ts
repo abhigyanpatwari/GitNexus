@@ -23,6 +23,7 @@ import {
 } from 'jsonc-parser';
 import { parse as parseToml, TomlError } from 'smol-toml';
 import { packageVersion } from '../core/package-version.js';
+import { composeWin32Command } from '../core/embeddings/runtime-install.js';
 import { getGlobalDir } from '../storage/repo-manager.js';
 import { writeFileAtomic } from '../storage/fs-atomic.js';
 import {
@@ -1171,10 +1172,20 @@ async function setupCodex(result: SetupResult): Promise<void> {
 
   try {
     const entry = getMcpEntry();
-    await execFileAsync('codex', ['mcp', 'add', 'gitnexus', '--', entry.command, ...entry.args], {
-      shell: process.platform === 'win32',
-      windowsHide: true,
-    });
+    const codexArgs = ['mcp', 'add', 'gitnexus', '--', entry.command, ...entry.args];
+    if (process.platform === 'win32') {
+      // `codex` is a `.cmd` shim, so Windows needs a shell (CVE-2024-27980). With
+      // shell:true Node only joins an args array with spaces, so a gitnexus.cmd
+      // under a spaced path (`C:\Program Files\nodejs\`, `C:\Users\Jane Doe\`)
+      // reached codex as two arguments and registered a server that cannot
+      // start. Quote each argument into one command line instead.
+      await execFileAsync(composeWin32Command('codex', codexArgs), [], {
+        shell: true,
+        windowsHide: true,
+      });
+    } else {
+      await execFileAsync('codex', codexArgs, { shell: false, windowsHide: true });
+    }
     result.configured.push('Codex');
     return;
   } catch {

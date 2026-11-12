@@ -2792,6 +2792,35 @@ process.disconnect();
       fs.rmSync(storage, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    ['publish', 'EACCES'],
+    ['cleanup', 'EPERM'],
+    ['cleanup', 'EACCES'],
+  ])('treats Windows claim %s errors (%s) as contention', (phase, code) => {
+    const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-hint-busy-'));
+    const lock = path.join(storage, '.mcp-hint-shown.lock');
+    fs.mkdirSync(lock);
+    const runtime = loadThrottle({
+      fs: {
+        renameSync: () => {
+          throw Object.assign(new Error('destination exists'), {
+            code: phase === 'publish' ? code : 'EPERM',
+          });
+        },
+        rmdirSync: () => {
+          throw Object.assign(new Error('directory pending deletion'), { code });
+        },
+      },
+    });
+    try {
+      expect(runtime.shouldEmitMcpHint(storage)).toBe(false);
+      expect(fs.existsSync(path.join(storage, '.mcp-hint-shown'))).toBe(false);
+      expect(fs.readdirSync(storage)).toEqual(['.mcp-hint-shown.lock']);
+    } finally {
+      fs.rmSync(storage, { recursive: true, force: true });
+    }
+  });
 });
 
 // #2396: Claude uses the package runtime; Antigravity still owns its handlers.

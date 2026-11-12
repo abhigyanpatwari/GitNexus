@@ -260,7 +260,7 @@ function acquireMcpHintClaim(storagePath) {
           },
         };
       } catch (error) {
-        if (!['EEXIST', 'ENOTEMPTY', 'EPERM'].includes(error.code)) throw error;
+        if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES'].includes(error.code)) throw error;
       }
       try {
         const stat = fs.lstatSync(lock);
@@ -278,7 +278,10 @@ function acquireMcpHintClaim(storagePath) {
         fs.unlinkSync(previous);
         fs.rmdirSync(lock);
       } catch (error) {
-        if (['ENOENT', 'ENOTDIR', 'ENOTEMPTY', 'EEXIST'].includes(error.code)) return null;
+        // Windows can deny access while another process removes the directory.
+        // Losing that race is contention, not a reason to emit without a claim.
+        if (['ENOENT', 'ENOTDIR', 'ENOTEMPTY', 'EEXIST', 'EPERM', 'EACCES'].includes(error.code))
+          return null;
         throw error;
       }
     }
