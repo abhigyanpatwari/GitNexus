@@ -1,0 +1,39 @@
+gitnexus/src/core/ingestion/languages/dart/signature-bindings.ts
+  s_b9690234122db7::t_472d96478ba529 19-22
+  s_b9690234122db7::t_872325d8cdddfe 72-108
+  s_b9690234122db7::t_b80c64045924eb 23,109-111
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_45001ebee16072 13-15
+  s_b9690234122db7::t_744846456d9196 226-235,239,242-247
+  s_b9690234122db7::t_a285ae0fea761c 42-45
+  s_b9690234122db7::t_bb658774775e2e 335-338
+  s_b9690234122db7::t_b2d79dcfcd1faf 402-489
+  s_b9690234122db7::t_d135139d30e5e3 490
+gitnexus/test/unit/scope-resolution/dart-lexical-names.test.ts
+  s_b9690234122db7::t_4e7048ab28c309 1-85
+docs/languages/dart-ingestion-gaps.md
+  s_b9690234122db7::t_cc230624600425 40
+gitnexus/bench/scope-capture/baselines.json
+  s_b9690234122db7::t_8a8a5864df4dee 181,183
+gitnexus/src/core/ingestion/method-extractors/configs/dart.ts
+  s_b9690234122db7::t_6ddaad601636a5 202-209
+  s_b9690234122db7::t_b82970278df84c 201
+gitnexus/test/integration/resolvers/receiver-walk-untyped-binder.test.ts
+  s_b9690234122db7::t_c924ae141904f0 1-650
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "69729a70fa519189f7bf2d368826ddcb07d5d438",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
