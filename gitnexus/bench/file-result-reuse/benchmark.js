@@ -5,19 +5,24 @@
  *   --baseline-dist /path/to/base/gitnexus/dist --pairs 7 --workers 2
  *   --output /tmp/file-result-reuse/measure.json
  * Add --corpus /path/to/base/gitnexus/src for frozen real-source measurements.
- * Standalone: node --expose-gc --predictable --predictable-gc-schedule benchmark.js --files 1024
+ * Standalone: node --expose-gc --predictable-gc-schedule benchmark.js --files 1024
  *
  * Each phase has a fresh Node process and retains only on-disk input/cache state.
  * Timing covers ingestion and cache save, excluding startup and verification.
  * Peak RSS is max(phase process maxRSS), including parser worker threads.
- * Both arms use deterministic GC/JIT scheduling and seeds, plus fixed heap
- * growth. Collection and compilation during analysis remain inside the timer.
+ * Both arms use the same fixed GC profile; collection during analysis is timed.
+ * V8's --predictable is deliberately absent: it serialises collection and
+ * compilation, which nearly doubled cold RSS and slowed warm runs by 40%, so
+ * the gate measured a runtime nobody ships.
  * Matching phases run consecutively; the first arm alternates between pairs.
  * Graph fingerprints retain every property and duplicate, with bounded memory.
  * Cross-version fingerprints omit only derived Community/Process nodes/edges.
  *
- * One warmup pair is excluded; seven measured pairs, unchanged confidence bounds
- * and reviewed limits in baseline.json gate acceptance. Inconclusive fails.
+ * One warmup pair is excluded. Acceptance looks after every seven measured
+ * pairs, up to the pair cap: it passes once every interval sits within its
+ * reviewed limit in baseline.json, fails once any interval sits beyond it, and
+ * otherwise measures seven more. Each look uses an equal share of the 5% error,
+ * so extra looks never loosen the gate. Still inconclusive at the cap fails.
  * Historical reference timings in baseline.json predate this isolated profile;
  * they are evidence, not portable wall-clock budgets. CI never rewrites them.
  */
@@ -35,18 +40,15 @@ const baselinePath = new URL('./baseline.json', import.meta.url);
 const baselineBytes = await fs.readFile(baselinePath);
 const benchmarkBaseline = JSON.parse(baselineBytes.toString('utf8'));
 assert.equal(benchmarkBaseline.schemaVersion, 1, 'Unknown benchmark baseline');
+const heapMiB = benchmarkBaseline.defaults.heapMiB;
 const identity = {
   base: 'file-result-reuse-benchmark-v1',
   pdg: 'file-result-reuse-benchmark-pdg-v1',
 };
 function requireGcProfile() {
-  if (
-    typeof global.gc !== 'function' ||
-    !process.execArgv.includes('--predictable') ||
-    !process.execArgv.includes('--predictable-gc-schedule')
-  )
+  if (typeof global.gc !== 'function' || !process.execArgv.includes('--predictable-gc-schedule'))
     throw new Error(
-      'Measurements require --expose-gc, --predictable and --predictable-gc-schedule; comparisons enable them automatically',
+      'Measurements require --expose-gc and --predictable-gc-schedule; comparisons enable them automatically',
     );
 }
 
@@ -59,6 +61,7 @@ async function main() {
       workers: { type: 'string' },
       'baseline-dist': { type: 'string' },
       pairs: { type: 'string' },
+      'max-pairs': { type: 'string' },
       output: { type: 'string' },
       check: { type: 'boolean' },
       prepare: { type: 'boolean' },
@@ -73,20 +76,29 @@ async function main() {
         !values['baseline-dist'] &&
         !values.check &&
         !values.output &&
-        !values.pairs,
+        !values.pairs &&
+        !values['max-pairs'],
       'Invalid preparation options',
     );
     await measure(values);
   } else if (values.phase) {
     assert(
-      !values['baseline-dist'] && !values.check && !values.output && !values.pairs,
+      !values['baseline-dist'] &&
+        !values.check &&
+        !values.output &&
+        !values.pairs &&
+        !values['max-pairs'],
       'Invalid phase options',
     );
     await measurePhase(values);
   } else if (values['baseline-dist']) await compareRuntimes(values);
   else {
     assert(
-      !values.check && !values.pairs && !values.output && !values['trial-root'],
+      !values.check &&
+        !values.pairs &&
+        !values['max-pairs'] &&
+        !values.output &&
+        !values['trial-root'],
       'Comparison requires --baseline-dist',
     );
     await measure(values);
@@ -168,8 +180,33 @@ const median = (values) => {
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 };
 
+/**
+ * Two-sided Student-t critical value. With u = sqrt(df) * tan(angle), the mass
+ * within +/-u is the integral of cos^(df-1) up to that angle over its integral
+ * up to a right angle, so no gamma function or lookup table is needed.
+ */
+export function studentCritical(df, alpha) {
+  assert(Number.isSafeInteger(df) && df > 0 && alpha > 0 && alpha < 1, 'Invalid Student-t request');
+  const mass = (angle) => {
+    const steps = 2000;
+    const width = angle / steps;
+    let sum = 1 + Math.cos(angle) ** (df - 1);
+    for (let i = 1; i < steps; i++) sum += (i % 2 ? 4 : 2) * Math.cos(i * width) ** (df - 1);
+    return (sum * width) / 3;
+  };
+  const target = (1 - alpha) * mass(Math.PI / 2);
+  let low = 0,
+    high = Math.PI / 2;
+  for (let i = 0; i < 60; i++) {
+    const middle = (low + high) / 2;
+    if (mass(middle) < target) low = middle;
+    else high = middle;
+  }
+  return Math.sqrt(df) * Math.tan((low + high) / 2);
+}
+
 /** Paired log-ratio intervals. Crossing 1 is unresolved, never equivalence. */
-export function summarizePairs(pairs) {
+export function summarizePairs(pairs, alpha = 0.05) {
   assert(pairs.length > 0, 'At least one measured pair is required');
   const logs = pairs.map(({ baseline, candidate }) => {
     assert(
@@ -186,31 +223,16 @@ export function summarizePairs(pairs) {
   const samples = Array.from({ length: 10_000 }, () =>
     Math.exp(average(logs.map(() => logs[Math.floor(random() * logs.length)]))),
   ).sort((a, b) => a - b);
-  const bootstrap = [samples[250], samples[9749]];
-  // Bootstrap alone understates uncertainty with seven pairs. Enclose it in
-  // the Student-t interval for the mean log ratio; round df down in this table.
+  const tail = Math.floor((samples.length * alpha) / 2);
+  const bootstrap = [samples[tail], samples[samples.length - 1 - tail]];
+  // Bootstrap alone understates uncertainty with few pairs. Enclose it in
+  // the Student-t interval for the mean log ratio.
   const df = logs.length - 1;
-  const critical = [
-    [1, 12.707],
-    [2, 4.303],
-    [3, 3.183],
-    [4, 2.777],
-    [5, 2.571],
-    [6, 2.447],
-    [7, 2.365],
-    [8, 2.307],
-    [9, 2.263],
-    [10, 2.229],
-    [15, 2.132],
-    [20, 2.086],
-    [30, 2.043],
-  ]
-    .filter(([degree]) => degree <= df)
-    .at(-1)?.[1];
   const mean = average(logs);
   const margin =
     df > 0
-      ? critical * Math.sqrt(logs.reduce((sum, x) => sum + (x - mean) ** 2, 0) / df / logs.length)
+      ? studentCritical(df, alpha) *
+        Math.sqrt(logs.reduce((sum, x) => sum + (x - mean) ** 2, 0) / df / logs.length)
       : 0;
   const student = [Math.exp(mean - margin), Math.exp(mean + margin)];
   const interval = [Math.min(bootstrap[0], student[0]), Math.max(bootstrap[1], student[1])];
@@ -219,9 +241,10 @@ export function summarizePairs(pairs) {
     baselineMedianMs: median(pairs.map((p) => p.baseline)),
     candidateMedianMs: median(pairs.map((p) => p.candidate)),
     geometricRatio: Math.exp(average(logs)),
-    pairedBootstrap95: bootstrap,
-    pairedStudent95: student,
-    paired95: interval,
+    confidence: 1 - alpha,
+    pairedBootstrap: bootstrap,
+    pairedStudent: student,
+    pairedInterval: interval,
     evidence:
       pairs.length < 7
         ? 'smoke-only'
@@ -263,12 +286,7 @@ export function validatePair(pair) {
     assert.equal(trial.provenance.phaseIsolation, 'process', 'Phases must use fresh processes');
     assert.deepEqual(
       trial.provenance.execArgv,
-      [
-        '--expose-gc',
-        '--predictable',
-        '--predictable-gc-schedule',
-        '--max-old-space-size=' + benchmarkBaseline.defaults.heapMiB,
-      ],
+      ['--expose-gc', '--predictable-gc-schedule', '--max-old-space-size=' + heapMiB],
       'Unexpected measurement profile',
     );
     assert(
@@ -349,9 +367,22 @@ export function validatePair(pair) {
   }
 }
 
+/**
+ * Decide at the latest planned look. `verdict` is 'continue' while the
+ * evidence is inconclusive and pairs remain; the last look turns that into
+ * 'fail'. Earlier looks are replayed, so a report that kept sampling after a
+ * decision is rejected, and one that stopped early can never read as a pass.
+ */
 export function assessComparison(report) {
-  assert.equal(report.schemaVersion, 5, 'Unknown report schema');
-  assert(report.pairs.length >= 7, 'Seven measured process pairs are required');
+  assert.equal(report.schemaVersion, 6, 'Unknown report schema');
+  const { stagePairs, maxPairs } = report.design ?? {};
+  assert(
+    Number.isSafeInteger(stagePairs) && stagePairs >= 7 && Number.isSafeInteger(maxPairs),
+    'Seven measured process pairs are required per look',
+  );
+  const looks = Math.floor(maxPairs / stagePairs);
+  const look = report.pairs.length / stagePairs;
+  assert(Number.isSafeInteger(look) && look >= 1 && look <= looks, 'Pairs must end on a look');
   assert(report.warmup, 'Missing excluded warmup pair');
   const all = [report.warmup, ...report.pairs];
   for (const [index, pair] of all.entries()) {
@@ -385,54 +416,81 @@ export function assessComparison(report) {
     }
   }
   const improving = report.pairs[0].baseline.measurements[0].cacheFormat === 'chunk';
-  const metric = (name, unit, select, limit, strict = false) => {
-    const summary = summarizePairs(
-      report.pairs.map((pair) => ({
-        baseline: select(pair.baseline.measurements),
-        candidate: select(pair.candidate.measurements),
-      })),
-    );
+  const budgets = benchmarkBaseline.budgets;
+  // Every look may accept or reject, so each gets an equal share of the 5%
+  // error: the chance of a wrong decision across all looks stays within 5%.
+  const alpha = 0.05 / looks;
+  const assessLook = (pairs) => {
+    const metric = (name, unit, select, limit, strict = false) => {
+      const summary = summarizePairs(
+        pairs.map((pair) => ({
+          baseline: select(pair.baseline.measurements),
+          candidate: select(pair.candidate.measurements),
+        })),
+        alpha,
+      );
+      const [lower, upper] = summary.pairedInterval;
+      return {
+        name,
+        unit,
+        limit,
+        ...summary,
+        passed: strict ? upper < limit : upper <= limit,
+        regressed: lower > limit,
+      };
+    };
+    const metrics = [
+      metric(
+        'repeated analyses',
+        'ms',
+        (rows) => rows.slice(1).reduce((sum, row) => sum + row.withSaveMs, 0),
+        improving ? budgets.repeated : budgets.regression,
+      ),
+      metric(
+        'peak process RSS',
+        'KiB',
+        (rows) => Math.max(...rows.map((row) => row.peakRssKb)),
+        improving ? budgets.peakRss : budgets.regression,
+        improving,
+      ),
+      ...phases.map((phase, i) =>
+        metric(
+          phase,
+          'ms',
+          (rows) => rows[i].withSaveMs,
+          improving ? budgets.phase : budgets.regression,
+        ),
+      ),
+      metric(
+        'cold cache size',
+        'bytes',
+        (rows) => rows[0].cacheBytes,
+        improving ? budgets.cacheBytes : budgets.regression,
+      ),
+    ];
     return {
-      name,
-      unit,
-      limit,
-      ...summary,
-      passed: strict ? summary.paired95[1] < limit : summary.paired95[1] <= limit,
+      metrics,
+      verdict: metrics.some((m) => m.regressed)
+        ? 'fail'
+        : metrics.every((m) => m.passed)
+          ? 'pass'
+          : 'continue',
     };
   };
-  const metrics = [
-    metric(
-      'repeated analyses',
-      'ms',
-      (rows) => rows.slice(1).reduce((sum, row) => sum + row.withSaveMs, 0),
-      improving ? benchmarkBaseline.budgets.repeated : benchmarkBaseline.budgets.regression,
-    ),
-    metric(
-      'peak process RSS',
-      'KiB',
-      (rows) => Math.max(...rows.map((row) => row.peakRssKb)),
-      improving ? benchmarkBaseline.budgets.peakRss : benchmarkBaseline.budgets.regression,
-      improving,
-    ),
-    ...phases.map((phase, i) =>
-      metric(
-        phase,
-        'ms',
-        (rows) => rows[i].withSaveMs,
-        improving ? benchmarkBaseline.budgets.phase : benchmarkBaseline.budgets.regression,
-      ),
-    ),
-    metric(
-      'cold cache size',
-      'bytes',
-      (rows) => rows[0].cacheBytes,
-      improving ? benchmarkBaseline.budgets.cacheBytes : benchmarkBaseline.budgets.regression,
-    ),
-  ];
+  let result;
+  for (let i = 1; i <= look; i++) {
+    assert(!result || result.verdict === 'continue', 'Sampling continued past a decision');
+    result = assessLook(report.pairs.slice(0, i * stagePairs));
+  }
+  const verdict = result.verdict === 'continue' && look === looks ? 'fail' : result.verdict;
   return {
     mode: improving ? 'require-improvement' : 'prevent-regression',
-    metrics,
-    passed: metrics.every((m) => m.passed),
+    look,
+    looks,
+    confidence: 1 - alpha,
+    metrics: result.metrics,
+    verdict,
+    passed: verdict === 'pass',
   };
 }
 
@@ -443,6 +501,15 @@ export async function compareRuntimes(options) {
   assert(
     Number.isSafeInteger(count) && count >= (options.check ? 7 : 1) && count <= 30,
     'Invalid --pairs (acceptance needs at least seven)',
+  );
+  // Fewer than seven pairs is a smoke run: no acceptance, so no further looks.
+  const maxPairs =
+    count < 7
+      ? count
+      : Number(options['max-pairs'] ?? Math.max(count, benchmarkBaseline.defaults.maxPairs));
+  assert(
+    Number.isSafeInteger(maxPairs) && maxPairs >= count && maxPairs <= 90,
+    'Invalid --max-pairs (must be at least --pairs)',
   );
   assert(Number.isSafeInteger(workers) && workers >= 1 && workers <= 16, 'Invalid --workers');
   assert(
@@ -459,8 +526,9 @@ export async function compareRuntimes(options) {
   };
   for (const dist of Object.values(runtimes)) await fs.access(path.join(dist, 'cli/index.js'));
   const report = {
-    schemaVersion: 5,
+    schemaVersion: 6,
     measuredAt: new Date().toISOString(),
+    design: { stagePairs: count, maxPairs },
     environment: {
       node: process.version,
       platform: process.platform,
@@ -498,13 +566,7 @@ export async function compareRuntimes(options) {
       if (!phase && options.corpus) args.push('--corpus', path.resolve(options.corpus));
       const child = spawn(
         process.execPath,
-        [
-          '--expose-gc',
-          '--predictable',
-          '--predictable-gc-schedule',
-          '--max-old-space-size=' + benchmarkBaseline.defaults.heapMiB,
-          ...args,
-        ],
+        ['--expose-gc', '--predictable-gc-schedule', '--max-old-space-size=' + heapMiB, ...args],
         {
           stdio: ['ignore', handle.fd, handle.fd],
           env: { ...process.env, GITNEXUS_MEMORY: 'off' },
@@ -550,7 +612,7 @@ export async function compareRuntimes(options) {
   };
   try {
     await save();
-    for (let iteration = -1; iteration < count; iteration++) {
+    for (let iteration = -1; report.verdict === 'incomplete'; iteration++) {
       const order = (iteration + 1) % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate'];
       const pair = { iteration, order, phaseOrder: [] };
       if (iteration < 0) report.warmup = pair;
@@ -569,7 +631,7 @@ export async function compareRuntimes(options) {
         for (const phase of phases) {
           for (const variant of order) {
             console.log(
-              `${iteration < 0 ? 'Warmup' : 'Pair ' + (iteration + 1) + '/' + count}: ${phase} ${variant}`,
+              `${iteration < 0 ? 'Warmup' : 'Pair ' + (iteration + 1) + ' of up to ' + maxPairs}: ${phase} ${variant}`,
             );
             pair[variant].measurements.push(await run(variant, iteration, phase, roots[variant]));
             pair.phaseOrder.push({ phase, variant });
@@ -582,11 +644,15 @@ export async function compareRuntimes(options) {
           Object.values(roots).map((root) => fs.rm(root, { recursive: true, force: true })),
         );
       }
+      if (report.pairs.length === 0 || report.pairs.length % count) continue;
+      if (count < 7) report.verdict = 'smoke-only';
+      else {
+        report.assessment = assessComparison(report);
+        const { look, looks, verdict } = report.assessment;
+        console.log(`Look ${look}/${looks} after ${report.pairs.length} pairs: ${verdict}`);
+        if (verdict !== 'continue') report.verdict = verdict;
+      }
     }
-    if (count >= 7) {
-      report.assessment = assessComparison(report);
-      report.verdict = report.assessment.passed ? 'pass' : 'fail';
-    } else report.verdict = 'smoke-only';
     await save();
   } catch (error) {
     report.verdict = 'invalid';
@@ -594,16 +660,17 @@ export async function compareRuntimes(options) {
     await save();
     throw error;
   } finally {
-    const metrics = report.assessment?.metrics ?? [];
+    const { metrics = [], mode = 'incomplete/smoke-only', ...decision } = report.assessment ?? {};
+    const level = decision.confidence ? (100 * decision.confidence).toFixed(1) + '% ' : '';
     const summary =
-      `## Per-file parse reuse: ${report.verdict}\n\nMode: ${report.assessment?.mode ?? 'incomplete/smoke-only'}. One excluded warmup and ${report.pairs.length} measured, alternating pairs; every phase runs in a fresh process.\n\n| Metric | Unit | Base median | Candidate median | Paired ratio (95% interval) | Limit | Pass |\n| --- | --- | ---: | ---: | --- | ---: | --- |\n` +
+      `## Per-file parse reuse: ${report.verdict}\n\nMode: ${mode}. One excluded warmup and ${report.pairs.length} measured, alternating pairs${decision.look ? ` (look ${decision.look} of ${decision.looks})` : ''}; every phase runs in a fresh process.\n\n| Metric | Unit | Base median | Candidate median | Paired ratio (${level}interval) | Limit | Pass |\n| --- | --- | ---: | ---: | --- | ---: | --- |\n` +
       metrics
         .map(
           (m) =>
-            `| ${m.name} | ${m.unit} | ${m.baselineMedianMs.toFixed(1)} | ${m.candidateMedianMs.toFixed(1)} | ${m.paired95.map((r) => r.toFixed(3)).join(' – ')} | ${m.limit} | ${m.passed} |`,
+            `| ${m.name} | ${m.unit} | ${m.baselineMedianMs.toFixed(1)} | ${m.candidateMedianMs.toFixed(1)} | ${m.pairedInterval.map((r) => r.toFixed(3)).join(' – ')} | ${m.limit} | ${m.passed} |`,
         )
         .join('\n') +
-      `\n\nRepeated analyses sum warm, one edit, two edits, and repacking (including cache save). RSS is the maximum phase-process high-water mark, including parser worker threads; cache bytes are reported separately. Intervals crossing a budget fail. Graph equality and exact per-file reuse are required.\n${report.error ? '\nError: ' + report.error + '\n' : ''}`;
+      `\n\nRepeated analyses sum warm, one edit, two edits, and repacking (including cache save). RSS is the maximum phase-process high-water mark, including parser worker threads; cache bytes are reported separately. Inconclusive evidence adds ${report.design.stagePairs} pairs per look up to ${report.design.maxPairs}; looks share the 5% error equally, and intervals still crossing a budget at the last look fail. Graph equality and exact per-file reuse are required.\n${report.error ? '\nError: ' + report.error + '\n' : ''}`;
     await fs.writeFile(output.replace(/\.json$/, '') + '.md', summary);
     console.log(summary);
   }

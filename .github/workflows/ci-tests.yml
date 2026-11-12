@@ -10,7 +10,9 @@ jobs:
   file-result-reuse-benchmark:
     name: parse cache / speed and memory (${{ matrix.corpus }})
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # A noisy runner extends the comparison from 7 to at most 21 pairs. The
+    # real corpus takes about five minutes per pair, plus one warmup pair.
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
@@ -55,7 +57,7 @@ jobs:
           fi
           node bench/file-result-reuse/benchmark.js --check \
             --baseline-dist "$GITHUB_WORKSPACE/baseline/gitnexus/dist" \
-            --pairs 7 --files 1024 --workers 2 \
+            --pairs 7 --max-pairs 21 --files 1024 --workers 2 \
             --output "$RUNNER_TEMP/file-result-reuse/measure.json" \
             "${corpus_args[@]}"
       - name: Publish speed and memory summary
