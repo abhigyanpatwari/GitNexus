@@ -1,0 +1,62 @@
+gitnexus/src/core/ingestion/languages/ruby/captures.ts
+  s_b9690234122db7::t_b948c22de9aeac 1154
+  s_b9690234122db7::t_ffc76798eae847 383-384,1165-1184,1187-1190
+  s_b9690234122db7::t_b3cf070c5756cd 1035-1051,1057-1084,1164
+  s_b9690234122db7::t_a759c41814547e 978-984
+  s_b9690234122db7::t_393b9a11c25a97 365,377-381
+  s_b9690234122db7::t_8dce14c7ff95a3 1052-1056
+  s_b9690234122db7::t_e695685456121b 382,385
+gitnexus/test/integration/resolvers/ruby-block-param-lexical-stop.test.ts
+  s_b9690234122db7::t_812629acab7a0e 21-26
+  s_b9690234122db7::t_d488c2faa0c57d 1-20,27-31,34,39-96,99-105,114-210,212-213,224-273,276-349,357-366,380-402,404,406,409-410,412,416,418,421-444,449,453,460-504,509,513,517-532,535-574
+  s_b9690234122db7::t_67fea36e11d6cd 32-33
+  s_b9690234122db7::t_3b0161ef8bfb60 35-38
+  s_b9690234122db7::t_719ee945b3116e 97-98
+  s_b9690234122db7::t_de6ae15b0d8c9c 106-108,111-113
+  s_b9690234122db7::t_4f649ea15093be 211
+  s_b9690234122db7::t_dadc4be18e1958 214-216,221-223
+  s_b9690234122db7::t_d8f25b2e2a20da 274-275
+  s_b9690234122db7::t_4bdcad1d07dbe4 350-352,354-356
+  s_b9690234122db7::t_e479f2fbed6f97 367-369,377-379
+  s_b9690234122db7::t_b9d6d6fb5254a7 403
+  s_b9690234122db7::t_86d487c090adc7 405
+  s_b9690234122db7::t_18ab8df26db71d 407-408
+  s_b9690234122db7::t_858822fd730a27 411
+  s_b9690234122db7::t_ee7b5de46871cc 413-415
+  s_b9690234122db7::t_36e09793cbe72d 417
+  s_b9690234122db7::t_68878668e6c567 419-420
+  s_b9690234122db7::t_e66edc9d70a22b 445-448
+  s_b9690234122db7::t_808a5dbf0ca7d9 450-452
+  s_b9690234122db7::t_71fea7ca9f9df1 454-459
+  s_b9690234122db7::t_c9dd67f64357dd 505-508
+  s_b9690234122db7::t_f9812bc57c3e44 510-512
+  s_b9690234122db7::t_1060e7fb89e187 514-516
+  s_b9690234122db7::t_2b9101d022849a 533-534
+  s_b9690234122db7::t_3297e9528bbd78 109-110,217-220,353,370-376
+gitnexus/test/unit/scope-resolution/ruby/ruby-lexical-names.test.ts
+  s_b9690234122db7::t_1546037daa8364 1-81
+docs/languages/ruby-ingestion-gaps.md
+  s_b9690234122db7::t_8c14c4b5387453 34,38-39,43,55-65,73-74,82
+gitnexus/bench/scope-capture/baselines.json
+  s_b9690234122db7::t_7b419d9e479633 139-140,154-155
+gitnexus/test/fixtures/ruby-captures-golden/expected-captures.json
+  s_b9690234122db7::t_1c55fc868177d4 48,52,56,64,120,140,148,160,164,168,172,224,236,244,268,308,312,332,368,372,380,384
+gitnexus/test/integration/resolvers/ruby-yard-param-scope.test.ts
+  s_b9690234122db7::t_1967e13902e0eb 42-55,1071-1081
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2aca9ca5331ae27032afce10d46cb6aa5035d1ac",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
