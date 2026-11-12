@@ -253,7 +253,8 @@ setTimeout(async () => {
     child.stdout.on('data', (data) => stdout.push(data));
     child.stderr.on('data', (data) => stderr.push(data));
     child.stdin.on('error', (error: NodeJS.ErrnoException) => {
-      if (error.code !== 'EPIPE') throw error;
+      // A hook can exit without consuming input; Windows reports EOF instead of EPIPE.
+      if (error.code !== 'EPIPE' && error.code !== 'EOF') throw error;
     });
     child.stdin.end(customInput);
     const done = new Promise<{
