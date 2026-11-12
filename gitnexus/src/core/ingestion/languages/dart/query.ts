@@ -156,12 +156,23 @@ const DART_SCOPE_QUERY = `
   name: (identifier) @declaration.name) @declaration.constructor
 
 ; ── Declarations — getters / setters (Property, like the legacy DAG) ─────────
+; \`@dart.accessor\` is private to captures.ts: it marks the inner signature so
+; the accessor's body opens its own Function scope (its parameters and locals
+; must not leak into the enclosing Module / Class scope), while the graph keeps
+; the declaration a Property. A class field never carries it — a field is not
+; callable and has no body.
+(program
+  (getter_signature
+    name: (identifier) @declaration.name) @declaration.property @dart.accessor)
+(program
+  (setter_signature
+    name: (identifier) @declaration.name) @declaration.property @dart.accessor)
 (method_signature
   (getter_signature
-    name: (identifier) @declaration.name)) @declaration.property
+    name: (identifier) @declaration.name) @dart.accessor) @declaration.property
 (method_signature
   (setter_signature
-    name: (identifier) @declaration.name)) @declaration.property
+    name: (identifier) @declaration.name) @dart.accessor) @declaration.property
 
 ; ── Declarations — class fields ──────────────────────────────────────────────
 (declaration

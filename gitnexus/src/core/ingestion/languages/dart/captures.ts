@@ -78,6 +78,12 @@ const FUNCTION_DECL_TAGS = [
   '@declaration.function',
   '@declaration.method',
   '@declaration.constructor',
+  // A getter / setter stays a graph Property, but its body is executable code:
+  // without its own Function scope a setter's parameter and an accessor's
+  // locals land in the enclosing Module / Class scope and type same-named
+  // receivers elsewhere. This private capture (query.ts) marks accessors only;
+  // a class field is a Property too but has no body and never carries it.
+  '@dart.accessor',
 ] as const;
 
 const DART_CALLABLE_CAPTURE_OPTIONS = {
@@ -207,6 +213,15 @@ export function emitDartScopeCaptures(
       if (seenFnDeclNodes.has(declKey)) continue; // dedup named-ctor double-match
       seenFnDeclNodes.add(declKey);
       const bodyNode = findFunctionBody(declNode);
+      // An accessor opens its scope for its BODY; it publishes no return
+      // binding. `dartBindingScopeFor` hoists every return binding to the
+      // Module scope, and the receiver walk climbs past an untyped nearest
+      // binding (a `dynamic` parameter, a local of unknown type) to a
+      // same-named module binding, so `Addr get cs` — a member of any class, or
+      // a top-level getter — would type `void g(dynamic cs) { cs.save(); }` as
+      // `Addr.save`: a wrong owner, where before this scope existed the getter
+      // published nothing. Withheld until that walk stops at an untyped binder.
+      const accessor = declTag === '@dart.accessor';
 
       attachArityMetadata(grouped, declNode);
       // Structural receiver chain for a call whose receiver is itself an
@@ -229,7 +244,22 @@ export function emitDartScopeCaptures(
         });
         for (const cm of synthesizeDartReceiverBinding(declNode, bodyNode)) out.push(cm);
       }
-      for (const cm of synthesizeDartSignatureBindings(declNode, bodyNode)) out.push(cm);
+      for (const cm of synthesizeDartSignatureBindings(declNode, bodyNode)) {
+        if (accessor && cm['@type-binding.return'] !== undefined) continue;
+        // A parameter annotation lands on this Function scope, which keeps ONE
+        // binding per name. When the body binds the name again (`void f(Address
+        // cs) /* c */ { final cs = make(); cs.save(); }`, a closure `(cs) =>`,
+        // a catch or pattern binder), the annotation would type the rebound
+        // sites too, so it is withheld — see `dartParameterReboundInBody`.
+        if (
+          bodyNode !== null &&
+          cm['@type-binding.parameter'] !== undefined &&
+          dartParameterReboundInBody(cm['@type-binding.name']?.text ?? '', bodyNode, memo)
+        ) {
+          continue;
+        }
+        out.push(cm);
+      }
       continue;
     }
 
@@ -359,7 +389,14 @@ function findFunctionBody(declNode: SyntaxNode): SyntaxNode | null {
     declNode.parent !== null && declNode.parent.type === 'method_signature'
       ? declNode.parent
       : declNode;
-  const next = node.nextNamedSibling;
+  // tree-sitter keeps comments as NAMED siblings, so a comment between a
+  // signature and its body (`void f(User v) /* note */ { … }`) would stop the
+  // walk one node early and the declaration would open no scope.
+  // Only comments are skipped: any other named sibling still means there is no
+  // body (a bodiless `User get a;` followed by a doc comment and the next
+  // member must not take that member's body).
+  let next = node.nextNamedSibling;
+  while (next !== null && next.type === 'comment') next = next.nextNamedSibling;
   return next !== null && next.type === 'function_body' ? next : null;
 }
 
@@ -847,7 +884,7 @@ function dartBodyCensus(body: SyntaxNode, memo: DartClassMemo): DartBodyCensus {
   const count = (name: string): void => {
     binders.set(name, (binders.get(name) ?? 0) + 1);
   };
-  const signature = body.previousNamedSibling;
+  const signature = signatureBefore(body);
   if (signature !== null && OWN_SIGNATURE_TYPES.has(signature.type)) {
     walkNamedTree(signature, (n) => visitDartBinderName(n, count));
   }
@@ -868,7 +905,19 @@ const OWN_SIGNATURE_TYPES: ReadonlySet<string> = new Set([
   'method_signature',
   'function_signature',
   'formal_parameter_list',
+  // A top-level setter (a class member's is wrapped in a `method_signature`);
+  // its body opens a Function scope (DART-10). A getter declares no parameter.
+  'setter_signature',
 ]);
+
+/** The signature a body belongs to: its previous named sibling, past the
+ *  comments tree-sitter keeps as named siblings between the two (the inverse
+ *  of the walk in `findFunctionBody`). */
+function signatureBefore(body: SyntaxNode): SyntaxNode | null {
+  let sibling = body.previousNamedSibling;
+  while (sibling !== null && sibling.type === 'comment') sibling = sibling.previousNamedSibling;
+  return sibling;
+}
 
 /**
  * May a call-result type be inferred for the local `name` declared at
@@ -900,6 +949,26 @@ function dartLocalInferenceAllowed(
 ): boolean {
   const census = dartBodyCensus(outermostBody(initVarDef), memo);
   return (census.binders.get(name) ?? 0) <= 1 && !census.assigned.has(name);
+}
+
+/**
+ * Is the formal parameter `name` bound a SECOND time inside its own body — a
+ * same-named declarator, a closure / local-function parameter, a catch or
+ * pattern binder? The census counts the member's own parameters from the
+ * signature, so one binder is the parameter itself. Flow-insensitive for the
+ * same reason as `dartLocalInferenceAllowed`: one Function scope keeps ONE
+ * binding per name, so an annotation that survives a rebinding types every
+ * site of the name in the body, the rebound ones included. A plain assignment
+ * is NOT a rebinding — Dart requires the assigned value to be assignable to
+ * the declared type, so the annotation stays sound.
+ *
+ * The cost is recall: `void f(Address cs) { xs.forEach((cs) => …); cs.save(); }`
+ * loses the outer `cs.save()` edge, because the closure parameter shares the
+ * enclosing Function scope's one binding slot.
+ */
+function dartParameterReboundInBody(name: string, body: SyntaxNode, memo: DartClassMemo): boolean {
+  if (name === '') return false;
+  return (dartBodyCensus(body, memo).binders.get(name) ?? 0) > 1;
 }
 
 /**
@@ -1285,8 +1354,9 @@ function collectDartBodyShadows(bodyNode: SyntaxNode): Set<string> {
   // The enclosing function's own formal parameters live OUTSIDE the body, on
   // the `method_signature` sibling that precedes it — the shape every class
   // member takes (method, constructor, factory, static, getter, setter,
-  // operator, `async`/`async*`).
-  const signature = bodyNode.previousNamedSibling;
+  // operator, `async`/`async*`) — past any comment between the two, now that
+  // such a member opens its own scope (DART-10) for the mask to ride on.
+  const signature = signatureBefore(bodyNode);
   const add = (name: string): void => {
     shadows.add(name);
   };
