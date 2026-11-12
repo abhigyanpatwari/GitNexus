@@ -143,7 +143,9 @@ function run(fnExtra: Partial<Scope>) {
       lookupMethodByName: (name: string) => (name === 'formatOnly' ? [targetDef] : []),
     },
   } as unknown as SemanticModel;
-  const emitted = phpScopeResolver.emitUnresolvedReceiverEdges!(
+  const emit = phpScopeResolver.emitUnresolvedReceiverEdges;
+  if (emit === undefined) throw new Error('PHP lost its unresolved-receiver fallback');
+  const emitted = emit(
     graph,
     indexes,
     [parsed],
