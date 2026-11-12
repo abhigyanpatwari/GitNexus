@@ -93,6 +93,7 @@ it('releases the previous graph before starting the next measured phase', async 
       process.execPath,
       [
         '--expose-gc',
+        '--predictable-gc-schedule',
         fileURLToPath(new URL('../../bench/file-result-reuse/measure.mjs', import.meta.url)),
         '--dist',
         dist,
@@ -115,15 +116,23 @@ it('releases the previous graph before starting the next measured phase', async 
   }
 });
 
-it('rejects standalone measurements without controlled garbage collection', () => {
-  const child = spawnSync(
-    process.execPath,
-    [fileURLToPath(new URL('../../bench/file-result-reuse/measure.mjs', import.meta.url))],
-    { encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_OPTIONS: '' } },
-  );
-  expect(child.status).toBe(1);
-  expect(child.stderr).toContain('Measurements require --expose-gc');
-});
+it.each([[], ['--expose-gc'], ['--predictable-gc-schedule']].map((flags) => ({ flags })))(
+  'rejects standalone measurements with incomplete GC flags: $flags',
+  ({ flags }) => {
+    const child = spawnSync(
+      process.execPath,
+      [
+        ...flags,
+        fileURLToPath(new URL('../../bench/file-result-reuse/measure.mjs', import.meta.url)),
+      ],
+      { encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_OPTIONS: '' } },
+    );
+    expect(child.status).toBe(1);
+    expect(child.stderr).toContain(
+      'Measurements require --expose-gc and --predictable-gc-schedule',
+    );
+  },
+);
 
 it('ignores only derived nodes and incident edges in the cross-version fingerprint', () => {
   const graph = (community: string, process: string) => ({

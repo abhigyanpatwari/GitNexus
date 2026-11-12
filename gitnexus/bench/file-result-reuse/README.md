@@ -8,10 +8,10 @@ Build both revisions with their locked dependencies. Run the driver from the can
 
 ```sh
 npm run build
-node --expose-gc bench/file-result-reuse/measure.mjs --files 1024 --workers 2
-node --expose-gc bench/file-result-reuse/measure.mjs --dist /path/to/baseline/gitnexus/dist --files 1024 --workers 2
-node --expose-gc bench/file-result-reuse/measure.mjs --corpus /path/to/frozen/gitnexus/src --workers 2
-node --expose-gc bench/file-result-reuse/measure.mjs --dist /path/to/baseline/gitnexus/dist --corpus /path/to/frozen/gitnexus/src --workers 2
+node --expose-gc --predictable-gc-schedule bench/file-result-reuse/measure.mjs --files 1024 --workers 2
+node --expose-gc --predictable-gc-schedule bench/file-result-reuse/measure.mjs --dist /path/to/baseline/gitnexus/dist --files 1024 --workers 2
+node --expose-gc --predictable-gc-schedule bench/file-result-reuse/measure.mjs --corpus /path/to/frozen/gitnexus/src --workers 2
+node --expose-gc --predictable-gc-schedule bench/file-result-reuse/measure.mjs --dist /path/to/baseline/gitnexus/dist --corpus /path/to/frozen/gitnexus/src --workers 2
 ```
 
 Run at least three fresh processes per revision and corpus, alternating revisions. Each process creates a fresh temporary repository/cache, then runs cold, unchanged, one-file edit, two-file edit, and repacking scenarios. The edits add exported functions. Repacking changes the existing chunk byte budget to 4 KiB. The driver removes its temporary data afterward.
@@ -20,7 +20,9 @@ Run at least three fresh processes per revision and corpus, alternating revision
 
 `.github/workflows/ci-tests.yml` runs `measure.mjs --check` on both the 1,024-file synthetic fixture and the same frozen base-revision source corpus. It builds the PR base (or the parent on pushes) separately using its lockfile. Each arm runs in a fresh process with two parser workers and a 4 GiB Node heap, alternating order for one excluded warmup pair and seven measured pairs.
 
-Comparison children enable `--expose-gc`. Before each phase, the driver collects the preceding phase's discarded graph, cache, and verification temporaries outside the timed region. Each phase has a separate stack frame so those objects are collectible before the next pipeline call. GC during ingestion/publication remains part of the timing, and cumulative process peak RSS still includes every phase and its parser workers. Standalone trials require the same flag.
+Comparison children enable `--expose-gc` and `--predictable-gc-schedule`; standalone trials require both flags. V8's [predictable GC schedule](https://github.com/nodejs/node/blob/v22.23.4/deps/v8/src/flags/flag-definitions.h#L2712-L2720) fixes heap growth, young-generation size, and idle memory-reduction behavior. This controls cold-analysis allocation variance that can fail the RSS gate even when both compiled runtimes are byte-identical. Absolute timing and RSS figures describe this controlled GC profile. GC during ingestion/publication remains part of the timing, with concurrent collection and compilation still enabled.
+
+Before each phase, the driver collects the preceding phase's discarded graph, cache, and verification temporaries outside the timed region. Each phase has a separate stack frame so those objects are collectible before the next pipeline call. Cumulative process peak RSS still includes every phase and its parser workers. The two-worker configuration, 4 GiB heap, memory budget, and confidence checks are unchanged.
 
 ```sh
 node bench/file-result-reuse/measure.mjs --check \
@@ -40,6 +42,8 @@ Report schema 2 retains the complete graph `digest` for cold/warm and two-edit/r
 Graph verification hashes each canonical node or edge before sorting and incrementally hashing those fixed-size hashes. It retains every property and duplicate row without holding serialized copies of the entire graph and its source text. Those copies previously inflated the process high-water mark after pipeline timing stopped, adding unrelated allocation and GC noise to the RSS gate. Fingerprints change with this algorithm; both arms must use the same driver, whose provenance digest includes `graph-digests.mjs`. The existing driver-identity checks reject mixed measurements. The memory budget and confidence-interval checks are unchanged.
 
 ## Recorded comparison
+
+This historical comparison predates the controlled GC profile above. Remeasure with the current driver for acceptance.
 
 Baseline source: `18b28f1261ad7bc91282ce4fa7c5004296503bb5`. Candidate compiled tree SHA-256: `331a89ddd96ea3683e973f291df413ad522805da8c89fd3d76b4d4817e0cc0e0`. [results.json](results.json) records every measurement, source/build digest, Node version, worker count, and the driver checkout SHA. The candidate was measured before its final commit; its compiled-tree digest identifies the tested implementation. The baseline build is independent of the driver checkout SHA.
 
