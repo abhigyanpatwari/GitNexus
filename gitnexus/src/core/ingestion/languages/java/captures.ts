@@ -35,6 +35,7 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import {
   setJavaClassAnnotationFacts,
+  setJavaImportUses,
   setJavaSpringAopFacts,
   setJavaSpringConfigConsumerFacts,
   setJavaSpringConditionalFacts,
@@ -64,6 +65,7 @@ import {
 import { synthesizeJavaRecordComponentAccessorCaptures } from './record-components.js';
 import { synthesizeLombokAccessorCaptures } from './lombok-synthesizer.js';
 import { captureJavaOverloadFacts, setJavaOverloadFacts } from './overload-argument-facts.js';
+import { captureJavaImportUses } from './import-use-facts.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
@@ -144,6 +146,7 @@ export function emitJavaScopeCaptures(
     recordCacheHit();
   }
   captureJavaPackageFact(filePath, tree.rootNode);
+  setJavaImportUses(filePath, captureJavaImportUses(tree.rootNode));
   const accessorCaptures = synthesizeJavaRecordComponentAccessorCaptures(tree.rootNode);
   setJavaOverloadFacts(filePath, captureJavaOverloadFacts(tree.rootNode, accessorCaptures));
 

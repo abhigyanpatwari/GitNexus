@@ -59,7 +59,7 @@
  * the standard CI test workflow, so a regression blocks the merge.
  */
 
-export { emitPhpScopeCaptures } from './captures.js';
+export { emitPhpScopeCaptures, phpScopeOwnsReceivers } from './captures.js';
 export { getPhpCaptureCacheStats, resetPhpCaptureCacheStats } from './cache-stats.js';
 export { interpretPhpImport, interpretPhpTypeBinding } from './interpret.js';
 export { phpMergeBindings } from './merge-bindings.js';

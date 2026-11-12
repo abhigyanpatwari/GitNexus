@@ -170,8 +170,20 @@ describe.skipIf(!dartAvailable)('Dart prefixed-import factory result types (#349
       .filter((edge) => edge.source === source && edge.target === 'm')
       .map((edge) => edge.rel.targetId);
 
-  it.each(['finalCall', 'varCall', 'inlineCall'])('resolves %s to C.m', (source) => {
-    expect(methodCalls(source)).toEqual(['Method:lib/mod.dart:C.m#0']);
+  // `awaitedCall` (`final x = await rp.makeAsync()`, `Future<C> makeAsync()`):
+  // the binding carries `@type-binding.awaited`, the return binding carries
+  // `Future<C>` whole, and the post-finalize chain follow takes what the
+  // Dart await route says the Future yields — `C` (DART-04). The exact owner
+  // matters: `Other.m` is the same-named decoy.
+  it.each(['finalCall', 'varCall', 'inlineCall', 'awaitedCall'])(
+    'resolves %s to the exact C.m',
+    (source) => {
+      expect(methodCalls(source)).toEqual(['Method:lib/mod.dart:C.m#0']);
+    },
+  );
+
+  it('does not guess a receiver type for untypedCall', () => {
+    expect(methodCalls('untypedCall')).toEqual([]);
   });
 
   // `import 'mod.dart' deferred as dp;` is a namespace import like `as rp`:
@@ -191,13 +203,7 @@ describe.skipIf(!dartAvailable)('Dart prefixed-import factory result types (#349
     },
   );
 
-  // An awaited `Future<C>` is captured like a direct call, but no Dart path
-  // unwraps the Future of an awaited result yet, named imports included.
-  it.each(['untypedCall', 'awaitedCall'])('does not guess a receiver type for %s', (source) => {
-    expect(methodCalls(source)).toEqual([]);
-  });
-
-  it('records the untyped and awaited factory results as dropped sites', () => {
+  it('records the untyped factory result as a dropped site (and the awaited one no longer)', () => {
     expect(
       getResolutionOutcomes(result)
         .filter((outcome) => outcome.kind === 'suppressed')
@@ -207,7 +213,7 @@ describe.skipIf(!dartAvailable)('Dart prefixed-import factory result types (#349
         )
         .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
         .sort(),
-    ).toEqual(['17:m', '22:m']);
+    ).toEqual(['17:m']);
   });
 });
 
