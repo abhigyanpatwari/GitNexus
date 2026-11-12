@@ -76,8 +76,8 @@ describe('setupCommand codex execution', () => {
     await setupCommand();
 
     expect(execFileMock).toHaveBeenCalledWith(
-      'codex',
-      ['mcp', 'add', 'gitnexus', '--', 'cmd', '/c', 'npx', '-y', NPX_REF, 'mcp'],
+      `codex mcp add gitnexus -- cmd /c npx -y ${NPX_REF} mcp`,
+      [],
       { shell: true, windowsHide: true },
       expect.any(Function),
     );
@@ -91,8 +91,26 @@ describe('setupCommand codex execution', () => {
     await setupCommand();
 
     expect(execFileMock).toHaveBeenCalledWith(
-      'codex',
-      ['mcp', 'add', 'gitnexus', '--', 'cmd', '/c', 'npx', '-y', NPX_REF, 'mcp'],
+      `codex mcp add gitnexus -- cmd /c npx -y ${NPX_REF} mcp`,
+      [],
+      { shell: true, windowsHide: true },
+      expect.any(Function),
+    );
+  });
+
+  it('quotes a gitnexus.cmd under a path with spaces for the Windows shell', async () => {
+    execFileSyncMock.mockReturnValueOnce(
+      'C:\\Program Files\\nodejs\\gitnexus\r\nC:\\Program Files\\nodejs\\gitnexus.cmd\r\n',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+
+    await setupCommand({ codingAgent: 'codex' });
+
+    // cmd.exe splits unquoted spaces, so the path must arrive as one argument.
+    expect(execFileMock).toHaveBeenCalledWith(
+      'codex mcp add gitnexus -- "C:\\Program Files\\nodejs\\gitnexus.cmd" mcp',
+      [],
       { shell: true, windowsHide: true },
       expect.any(Function),
     );
@@ -142,8 +160,8 @@ describe('setupCommand codex execution', () => {
     await setupCommand({ codingAgent: 'codex' });
 
     expect(execFileMock).toHaveBeenCalledWith(
-      'codex',
-      ['mcp', 'add', 'gitnexus', '--', 'cmd', '/c', 'npx', '-y', NPX_REF, 'mcp'],
+      `codex mcp add gitnexus -- cmd /c npx -y ${NPX_REF} mcp`,
+      [],
       { shell: true, windowsHide: true },
       expect.any(Function),
     );
