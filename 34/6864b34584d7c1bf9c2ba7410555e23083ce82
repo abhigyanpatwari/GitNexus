@@ -1,0 +1,47 @@
+gitnexus/bench/scope-capture/baselines.json
+  s_b9690234122db7::t_46d0050c160f68 181,183
+gitnexus/src/core/ingestion/languages/dart.ts
+  s_b9690234122db7::t_ac219f4a3dd140 141-146
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_a98a2f1231d356 54-55,236-239,241-260,263,267,271,407-412,414,418-421,882-887,908,910-914,918,921,928,942-981,987-989,1027-1033,1039-1041,1045,1367-1368,1370,1376,1378,1381,1383,1389-1416
+gitnexus/src/core/ingestion/languages/dart/simple-hooks.ts
+  s_b9690234122db7::t_9a33d915763381 7-8,56-62,66-67
+gitnexus/test/fixtures/lang-resolution/dart-scope-openers/accessor_names.dart
+  s_b9690234122db7::t_91a89dced7c521 1-40
+gitnexus/test/fixtures/lang-resolution/dart-scope-openers/declares_nothing.dart
+  s_b66087a6d02d74::t_396beeacfb52d9 1-43
+gitnexus/test/fixtures/lang-resolution/dart-scope-openers/main.dart
+  s_b9690234122db7::t_96197e0a5e0e3b 3-6,16-17,28-33,38-41,48-50,60
+gitnexus/test/fixtures/lang-resolution/dart-scope-openers/shadow.dart
+  s_b9690234122db7::t_02dd96bf59003e 17-22
+gitnexus/test/fixtures/lang-resolution/dart-scope-openers/withheld.dart
+  s_b9690234122db7::t_4d5fee2afcbfef 1-40
+gitnexus/test/integration/resolvers/dart-scope-openers.test.ts
+  s_b9690234122db7::t_e932ba152b559e 16-17,22-24,31-38,78-90,127-155,164-166,170-172,196-198,202-251,261,263,267-277,279,281-289,293-307,309-334,338-341,344,352-355
+gitnexus/test/integration/resolvers/inferred-field-receiver-matrix.test.ts
+  s_b9690234122db7::t_728c89242d5447 111,1998,2036
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "346864b34584d7c1bf9c2ba7410555e23083ce82",
+  "prompts": {},
+  "sessions": {
+    "s_b66087a6d02d74": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "7a788969-545c-465b-9025-888307712298",
+        "model": "auto-smart"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
