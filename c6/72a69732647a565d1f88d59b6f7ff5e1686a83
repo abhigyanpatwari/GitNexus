@@ -1,0 +1,37 @@
+gitnexus/bench/scope-capture/baselines.json
+  s_b9690234122db7::t_d056da6fb0d2a6 181,183
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_b1a642f16588c5 187-191,282-285,326-359
+gitnexus/src/core/ingestion/languages/dart/query.ts
+  s_b9690234122db7::t_152829bd117c4c 240-245,250
+gitnexus/test/fixtures/lang-resolution/dart-deferred-load-library/lib/decoy.dart
+  s_b9690234122db7::t_78c6eb106a9a24 1-9
+gitnexus/test/fixtures/lang-resolution/dart-deferred-load-library/lib/deferred_callers.dart
+  s_b9690234122db7::t_087a1f17d7af69 1-26
+gitnexus/test/fixtures/lang-resolution/dart-deferred-load-library/lib/immediate_callers.dart
+  s_b9690234122db7::t_e0eca406dc9a49 1-22
+gitnexus/test/fixtures/lang-resolution/dart-deferred-load-library/lib/mod.dart
+  s_b9690234122db7::t_63ae877aecc788 1-13
+gitnexus/test/fixtures/lang-resolution/dart-deferred-load-library/pubspec.yaml
+  s_b9690234122db7::t_5a80c48a6a9d5c 1
+gitnexus/test/integration/resolvers/dart.test.ts
+  s_b9690234122db7::t_ae9805ab02557e 214-280
+gitnexus/test/unit/dart-import-resolver.test.ts
+  s_b9690234122db7::t_8dd5daead32503 28-29,54-97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c672a69732647a565d1f88d59b6f7ff5e1686a83",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
