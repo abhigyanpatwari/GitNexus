@@ -196,11 +196,14 @@ mixin UserMixin { User get copy => User(); }`,
       expect(inner).toEqual([]);
       const outcomes = getResolutionOutcomes(result)
         .filter((outcome) => outcome.filePath.endsWith('shadow.dart'))
-        .map((outcome) =>
-          outcome.kind === 'suppressed'
-            ? `${outcome.range.startLine}:${outcome.range.startCol} ${outcome.name} ${outcome.reason}`
-            : `${outcome.range.startLine}:${outcome.range.startCol} ${outcome.name} resolved`,
-        )
+        .map((outcome) => {
+          // Every outcome in the file, whatever its kind; only some kinds
+          // carry a range.
+          const site =
+            'range' in outcome ? `${outcome.range.startLine}:${outcome.range.startCol}` : '-';
+          const what = outcome.kind === 'suppressed' ? outcome.reason : outcome.kind;
+          return `${site} ${outcome.name} ${what}`;
+        })
         .sort();
       expect(outcomes).toEqual([
         '11:9 inner receiver-owned-but-unbound',
