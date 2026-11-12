@@ -318,6 +318,15 @@
     "_rebaselined_parent3659_3498": "After merging main c30449394 (#3659), its seven Kotlin fixture files add 45 fixture capture groups to the earlier factory candidate (151/2735 -> 158/2780). Synthetic captures remain 5253/16803 and the scaling budget remains 1.5.",
     "_rebaselined_qualified_factory_shadowing_3660": "Review follow-up over the identical 158 fixture entries: 2780 -> 2787 capture groups, comprising six deferred qualified-callee bindings and one getter Block scope. Existing scope matches also gain partial name-claim metadata for destructuring and plain constructor parameters; removing only that metadata preserves every old capture. No fixture growth or legacy capture removal. Synthetic groups remain 5253/16803; measured scaling 1.095 remains below the unchanged 1.5 budget."
   },
+  "java-deep-chain": {
+    "fingerprint": "475b4864a9520d33486abf2242d1b286406cb6637c56cb917bb3be3927bdf472",
+    "scaling_budget": 1.5,
+    "capture_groups_small": 257,
+    "capture_groups_large": 807,
+    "capture_groups_fp": 27,
+    "fixture_count": 1,
+    "_added": "#3875 review: one wildcard-importing Java file with a left-deep Label.F0 + Label.F1 expression (250 -> 800 operands). Each operand adds an ancestor level, exposing per-identifier walks to the root. Synthetic-only fingerprint; the Java fixture corpus remains in the existing java case. Initial measured scaling 1.265, within the existing 1.5 convention. No existing capture baseline changed."
+  },
   "typescript-deep-chain": {
     "_lexical_ownership_3532": "#3532: lexical ownership captures and fixture updates; fixture identities are relative to lang-resolution so serialized scope IDs are independent of checkout location. Full capture content remains hashed; scaling_budget is unchanged.",
     "fingerprint": "3f41a3c6d9161f95c0c906cc979e6ef853c25b39052c5cab274dba2aabf270ba",

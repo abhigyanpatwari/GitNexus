@@ -114,6 +114,20 @@ scan → structure → [springConfig, markdown, cobol] → parse → [routes, to
 
 **Non-phase files in the same directory:** `parse-impl.ts`, `cross-file-impl.ts` (implementation), `wildcard-synthesis.ts` (whole-module import expansion), `types.ts`, `runner.ts`, `index.ts`.
 
+### Incremental resolution groups
+
+`LanguageProvider.incrementalResolutionGroup(filePath)` groups files whose
+resolution can change together even without a persisted import edge. Java uses
+one workspace-wide group because a chained call can depend on an unmentioned
+type in another directory. Edits, additions and deletions make every group member
+and its importers candidates for rewriting.
+
+After resolution, `incremental/file-row-digests.ts` compares each candidate's
+graph rows with the digest recorded in index metadata at its last write. Only
+changed candidates join the write set; missing digests conservatively require a
+rewrite. This preserves incremental/full parity without making every Java body
+edit rewrite the whole language. Grouping affects invalidation, not name visibility.
+
 ### DAG runner
 
 `runner.ts` — static phase graph, no plugins, compile-time type safety.

@@ -233,6 +233,13 @@ describe('Java AST-bound package on-demand dependencies (JLS 6.5, 7.5.2)', () =>
       }).targets,
     ).toEqual(['utility/Child.java']);
   });
+  it('retains the static owner alongside a selected package wildcard type', () => {
+    expect(
+      run('import models.*; import static utility.Tools.*; class Main { User value; }', {
+        'utility/Tools.java': 'package utility; public class Tools { public static void run() {} }',
+      }).targets,
+    ).toEqual(['models/User.java', 'utility/Tools.java']);
+  });
   it.each([
     ['Unicode escape', String.raw`\u0055ser`],
     ['repeated u', String.raw`Us\uuuu0065r`],
@@ -278,6 +285,25 @@ describe('Java AST-bound package on-demand dependencies (JLS 6.5, 7.5.2)', () =>
       captureSideChannel: { ...(parsed.captureSideChannel as JavaCaptureSideChannel), importUses },
     }));
     expect(rerun(source, cached).targets).toEqual(Object.keys(declarations).sort());
+  });
+  it.each([
+    ['incomplete', { version: 2, complete: false, names: [] }],
+    ['superseded', { version: 1, complete: true, uses: [] }],
+    ['malformed', { version: 2, complete: true, names: [7] }],
+  ])('retains an otherwise unused target whose cached facts are %s', (_label, importUses) => {
+    const source = importing('Order value;');
+    const cached = structuredClone(run(source).parsedFiles);
+    const target = cached.find((parsed) => parsed.filePath === 'models/User.java');
+    if (target === undefined) throw new Error('Missing parsed User fixture');
+    const preExtracted = new Map(cached.map((parsed) => [parsed.filePath, parsed]));
+    preExtracted.set(target.filePath, {
+      ...target,
+      captureSideChannel: { ...(target.captureSideChannel as JavaCaptureSideChannel), importUses },
+    });
+    expect(rerun(source, [...preExtracted.values()]).targets).toEqual([
+      'models/Order.java',
+      'models/User.java',
+    ]);
   });
   it('stores each unbound name once and no declared, bound or method name', () => {
     const { parsedFiles } = run(

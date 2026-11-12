@@ -295,6 +295,17 @@ const LANGS = [
     footer: '  }\n}\n',
   },
   {
+    // One left-deep expression in a wildcard importer: each operand adds an
+    // ancestor level. Guards against walking to the root for every name (#3875).
+    name: 'java-deep-chain',
+    emit: emitJavaScopeCaptures,
+    exts: ['.java'],
+    file: 'bench-chain.java',
+    header: 'import models.*; class Chain { int sum() { return 0',
+    unit: (n) => ` + Label.F${n}`,
+    footer: '; } }',
+  },
+  {
     name: 'typescript',
     emit: emitTsScopeCaptures,
     fixturePrefix: 'typescript',

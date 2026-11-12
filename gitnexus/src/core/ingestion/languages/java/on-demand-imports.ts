@@ -48,7 +48,7 @@ function packageTypes(
   for (const { id, file } of lookup.scopes.get(name) ?? []) {
     // A point lookup: it still answers after the scope tree is sealed to disk.
     const scope = indexes.scopeTree.getScope(id);
-    if (scope === undefined || getJavaImportUses(file)?.complete !== true) {
+    if (scope === undefined || !usableFacts(getJavaImportUses(file))) {
       uncertain.add(file);
       continue;
     }
