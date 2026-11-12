@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import v8 from 'node:v8';
 import { loadCachePayloads } from './cache-payloads.mjs';
 
@@ -55,41 +56,37 @@ assert(strings > 0, 'No strings were interned');
 pools.baseline.clear();
 pools.candidate.clear();
 const samples = [];
-for (let round = 0; round < 10; round++) {
-  for (const variant of round % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate']) {
-    global.gc();
-    const pool = new Map();
-    let ms = 0;
-    let cpuMs = 0;
-    const totalCpu = process.cpuUsage();
-    const graphs = [];
-    for (const payload of payloads) {
-      const graph = v8.deserialize(payload);
-      const cpu = process.cpuUsage();
-      const started = performance.now();
-      modules[variant].internGraphStrings(graph, pool);
-      ms += performance.now() - started;
-      const used = process.cpuUsage(cpu);
-      cpuMs += (used.user + used.system) / 1000;
-      graphs.push(graph);
+// Correctness checks above retain a large graph and two module instances. Run
+// each timed sample outside that heap, with identical startup/GC conditions.
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-intern-'));
+try {
+  const corpusPath = path.join(scratch, 'payloads.v8');
+  fs.writeFileSync(corpusPath, v8.serialize(payloads));
+  for (let round = 0; round < 10; round++) {
+    for (const variant of round % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate']) {
+      const runtimeRoot = variant === 'baseline' ? baselineRoot : candidateRoot;
+      const measured = JSON.parse(
+        execFileSync(
+          process.execPath,
+          [
+            '--expose-gc',
+            '--predictable-gc-schedule',
+            '--max-old-space-size=4096',
+            fileURLToPath(new URL('./intern-sample.mjs', import.meta.url)),
+            path.resolve(runtimeRoot, 'gitnexus/dist/storage/v8-sidecar.js'),
+            corpusPath,
+            String(strings),
+          ],
+          { encoding: 'utf8', timeout: 120_000 },
+        ),
+      );
+      const row = { round, variant, ...measured };
+      samples.push(row);
+      console.log(JSON.stringify(row));
     }
-    const used = process.cpuUsage(totalCpu);
-    assert.equal(pool.size, strings);
-    global.gc();
-    const row = {
-      round,
-      variant,
-      ms,
-      cpuMs,
-      // Deserialization + interning CPU, excluding the forced heap-measurement GC.
-      hydrateCpuMs: (used.user + used.system) / 1000,
-      heapUsed: process.memoryUsage().heapUsed,
-      peakRssKiB: process.resourceUsage().maxRSS,
-    };
-    assert.equal(graphs.length, payloads.length);
-    samples.push(row);
-    console.log(JSON.stringify(row));
   }
+} finally {
+  fs.rmSync(scratch, { recursive: true, force: true });
 }
 fs.writeFileSync(
   output,
