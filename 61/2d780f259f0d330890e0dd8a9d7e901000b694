@@ -1,0 +1,105 @@
+.github/workflows/ci-tests.yml
+  s_b9690234122db7::t_0f7761132b3c10 56
+.github/workflows/codeql.yml
+  s_b9690234122db7::t_7a67d494ef3672 51,94
+.github/workflows/docker.yml
+  s_b9690234122db7::t_ebc706696742f9 181
+.github/workflows/gitnexus-review-agent.yml
+  s_b9690234122db7::t_46f28f65a3aba5 1297,1450
+.github/workflows/scorecard.yml
+  s_b9690234122db7::t_a6eaec8e2fc320 56
+.github/workflows/trivy.yml
+  s_b9690234122db7::t_5459f4dccb6ad0 79
+.github/workflows/workflow-lint.yml
+  s_b9690234122db7::t_6eb3359128c30e 79
+CONTRIBUTING.md
+  s_b9690234122db7::t_b0580c424a758e 33-55
+Dockerfile.cli
+  s_b9690234122db7::t_8731206e71c43e 37-38
+gitnexus-claude-plugin/hooks/gitnexus-hook.js
+  s_b9690234122db7::t_b2695d05f04935 2,5-24,26,28-44,48-58,61-69,72-84,87,90-111,113-115,117-128,130-131,133-135,137-149,151-157,159-167,172-176,178-228,230,232-233,235-248,250,252,254-259,261,263-317,321-325,328-371,374-382,386-390,392-401,408-415,417-419,421-446,448-451,453-464,466-477,480-482,484-504,508-517
+gitnexus-claude-plugin/hooks/hooks.json
+  s_b9690234122db7::t_8473c8eaca1bcd 10,23
+gitnexus-web/package-lock.json
+  s_b9690234122db7::t_2de829192bdb26 12,30,35,45,54,293-295,1161-1163,1166,2127-2132,2435-2440,2527-2529,5590-5592,5595,7400-7402,8490-8492
+gitnexus-web/package.json
+  s_b9690234122db7::t_7942d81175bb2b 22,40,45,55,64
+gitnexus/README.md
+  s_b9690234122db7::t_b5e84a5333b6b8 1072-1093,1098-1099,1102-1104
+gitnexus/bench/file-result-reuse/baseline.json
+  s_b9690234122db7::t_94e5d91483b44b 3-17
+gitnexus/bench/file-result-reuse/benchmark.js
+  s_b9690234122db7::t_bc4316563e0b95 1-21,23-216,245,325,375,381,385-396,405-758
+gitnexus/hooks/antigravity/gitnexus-antigravity-hook.cjs
+  s_b9690234122db7::t_00eca2cc809547 341-342
+gitnexus/hooks/claude/claude-hook-runtime.cjs
+  s_b9690234122db7::t_d975e82f921d6e 1-5,8,10-20,22-23,25,29-30,33-40,43-56,58,61-104,107-110,112-116,119-174,177-198,200-220,223-229,231-234,238-290,294-303,305,307,309,311-316,318-326,328-360,362-363,365-390,394-396,399-400,404-412,415-452,455,457-462,465-466,468-472,476-480,482,484-489,494
+gitnexus/hooks/claude/gitnexus-hook.cjs
+  s_b9690234122db7::t_c0508a563402db 2,6,8,14-15,18-20,23
+gitnexus/hooks/claude/resolve-analyze-cmd.cjs
+  s_b9690234122db7::t_7ac4eccb302424 28-32
+gitnexus/package-lock.json
+  s_b9690234122db7::t_61e92aaa890bf1 68-69,88,4883-4885,4898-4905,4909-4911,4923-4925,4937-4939,4944-4946,4954-4956,4961-4963,4971-4973,4978-4980,4988-4990,4995-4997,5005-5007,5019-5021
+gitnexus/package.json
+  s_b9690234122db7::t_491cc16bfe9d17 31-32,152
+gitnexus/scripts/build.js
+  s_b9690234122db7::t_8a7993b5f25574 55-70,95-98
+gitnexus/scripts/cross-platform-tests.ts
+  s_b9690234122db7::t_f62b6b651333b4 45-47
+gitnexus/src/cli/resolve-invocation.ts
+  s_b9690234122db7::t_ab3dd579b0108d 62-63,65,67-76
+gitnexus/src/cli/setup.ts
+  s_b9690234122db7::t_5d7a470b3cec2e 26,28,89,493-502,517-518,562-564,573-588,591,596-601,606-607,610-611,617-655,671,687,696,702,1175-1188
+gitnexus/src/cli/uninstall.ts
+  s_b9690234122db7::t_b52c11e22759d7 45,437-446
+gitnexus/test/helpers/parse-identity-runtime.ts
+  s_b9690234122db7::t_f121e62679a20c 31-33
+gitnexus/test/integration/hooks-e2e.test.ts
+  s_b9690234122db7::t_1a3d313197c41a 83-87
+gitnexus/test/unit/claude-hook-build.test.ts
+  s_b9690234122db7::t_f61fc9537d3ad3 1-10,13-37,40-49,51-145
+gitnexus/test/unit/claude-hook-launcher.test.ts
+  s_b9690234122db7::t_eeef5e5f03f06c 1-837
+gitnexus/test/unit/claude-hook-runtime.test.ts
+  s_b9690234122db7::t_4d32815fa74e2f 1-2,5-7,9-11,13-17,19-25,27-68,71-83,87-105,109-117,119,121-156,159-178,180,182-184,187-217,219-246,248-249,251-311,313-326
+gitnexus/test/unit/cli-commands.test.ts
+  s_b9690234122db7::t_f5fe3904774712 94-109
+gitnexus/test/unit/factory-plugin.test.ts
+  s_b9690234122db7::t_f1e6abefbc5f6c 36,115-117,314,317,319
+gitnexus/test/unit/hooks-shared-store.test.ts
+  s_b9690234122db7::t_619d94e6b2df81 92
+gitnexus/test/unit/hooks.test.ts
+  s_b9690234122db7::t_f3d9ad3b6d4a53 27,66,161,166-168,193-194,313-315,368,540,542,549,562,583,598,609,633,665-666,681,744,1074,1313,1339,1341-1384,1391,1426,1861-1863,1878-1879,1902,1906,1915-1920,1976,2102-2104,2110,2131-2132,2134,2140-2141,2143,2145,2162,2364-2367,2483-2827,2839,2848-2850,3127-3129,3155
+gitnexus/test/unit/resolve-invocation.test.ts
+  s_b9690234122db7::t_d1026484eecd9a 409-410,412
+gitnexus/test/unit/review-agent-workflow.test.ts
+  s_b9690234122db7::t_92e5d665c3f384 694
+gitnexus/test/unit/scenario-map/consolidation.test.ts
+  s_b9690234122db7::t_b97b5cbf457b1d 285
+gitnexus/test/unit/setup-codex.test.ts
+  s_b9690234122db7::t_006a86a14e88b2 79-80,94-113,163-164
+gitnexus/test/unit/setup.test.ts
+  s_b9690234122db7::t_9dc85201c1b422 308,310-322,327-367,424-441,444-445,447-457,1012-1146
+gitnexus/test/unit/uninstall.test.ts
+  s_b9690234122db7::t_ea286dfcb33287 549-556,561,568-595
+gitnexus/tools/scenario-map/README.md
+  s_b9690234122db7::t_c0bf58dff2fd69 87
+gitnexus/tools/scenario-map/consolidation/fixture-clones.ts
+  s_b9690234122db7::t_da33d80a462c48 61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "612d780f259f0d330890e0dd8a9d7e901000b694",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
