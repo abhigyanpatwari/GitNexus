@@ -24,6 +24,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import {
   findReceiverTypeBinding,
+  isReceiverOwnedButUnbound,
   populateClassOwnedMembers,
 } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
@@ -277,6 +278,14 @@ function phpEmitUnresolvedReceiverEdges(
 
       const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
       if (handledSites.has(siteKey)) continue;
+
+      // A scope that owns the receiver but has no type for it has said "no
+      // type here" (a declined PHPDoc `@param`, see `phpScopeOwnsReceivers`):
+      // a definitive negative, not a missing binding. The receiver pass
+      // suppresses such a site and marks it handled; check it here too, so
+      // this fallback does not depend on that pass having run first.
+      const receiverBase = site.explicitReceiver.name.split('.', 1)[0]!;
+      if (isReceiverOwnedButUnbound(site.inScope, receiverBase, scopes)) continue;
 
       // Only proceed when the receiver has NO type binding — it's unresolvable
       // by the generic pass. This is the `mixed` / unannotated case.

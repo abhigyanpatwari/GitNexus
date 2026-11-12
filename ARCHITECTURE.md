@@ -69,7 +69,7 @@ Group-mode `trace` (`gitnexus/src/core/group/cross-trace.ts`) stitches a path th
 | Embeddings                                              | `src/core/embeddings/` + `src/core/run-analyze.ts`                                                     |
 | Wiki generation                                         | `src/core/wiki/`                                                                                       |
 | Language support                                        | `src/core/ingestion/languages/` + `tree-sitter-queries.ts` + `gitnexus-shared/src/languages.ts`        |
-| Import resolution | `src/core/ingestion/scope-resolution/pipeline/run.ts` + per-language `ScopeResolver.resolveImportTarget` hooks |
+| Import resolution | `src/core/ingestion/scope-resolution/pipeline/run.ts` + per-language `ScopeResolver.resolveImportTarget` hooks (which files an import can reach) and optional `ScopeResolver.onDemandImportTargets` (which wildcard targets become persisted `IMPORTS` edges) |
 | Call resolution/inheritance/MRO                         | `src/core/ingestion/scope-resolution/` (pipeline, passes, graph-bridge)                                |
 | Type extraction                                         | `src/core/ingestion/type-extractors/`                                                                  |
 | Worker pool                                             | `src/core/ingestion/workers/`                                                                          |
@@ -113,6 +113,20 @@ scan → structure → [springConfig, markdown, cobol] → parse → [routes, to
 | `processes`               | `processes.ts`                         | `communities`, `routes`, `tools`, `pruneLocalSymbols`, `structure` | Process nodes + STEP_IN_PROCESS edges                                                                                                                                                       |
 
 **Non-phase files in the same directory:** `parse-impl.ts`, `cross-file-impl.ts` (implementation), `wildcard-synthesis.ts` (whole-module import expansion), `types.ts`, `runner.ts`, `index.ts`.
+
+### Incremental resolution groups
+
+`LanguageProvider.incrementalResolutionGroup(filePath)` groups files whose
+resolution can change together even without a persisted import edge. Java uses
+one workspace-wide group because a chained call can depend on an unmentioned
+type in another directory. Edits, additions and deletions make every group member
+and its importers candidates for rewriting.
+
+After resolution, `incremental/file-row-digests.ts` compares each candidate's
+graph rows with the digest recorded in index metadata at its last write. Only
+changed candidates join the write set; missing digests conservatively require a
+rewrite. This preserves incremental/full parity without making every Java body
+edit rewrite the whole language. Grouping affects invalidation, not name visibility.
 
 ### DAG runner
 
@@ -530,6 +544,7 @@ Single interface a language implements to plug into the pipeline. Contract fully
 | `resolveQualifiedCallee?`                               | `(calleeText, inScope, …) → callable \| undefined` — resolve a qualified callee only the language can read (Rust `rp::make` in `x = rp::make()` / `rp::make().m()`, Kotlin package path `com.acme.mod.make`) so chain-follow types the call from its return annotation; default off |
 | `resolveQualifiedTypeSpellings?`                        | A receiver's declared or return type written QUALIFIED (`rp::C x`, `f(a::Config c)`) that binds nothing through the scope chain resolves through `resolveQualifiedInheritanceBase` — qualifier matched against the candidate's namespace, refuse on a tie — instead of by its tail, which binds the nearer same-named class. Runs after every existing lookup and after the template-argument match; default off, C++ opts in |
 | `splitQualifiedCallee?`                                 | `(callee, callerScope?, scopes?, position?) → { receiver, member } \| undefined` — map a qualified callee spelling (`rp::make`) onto a receiver/member pair that retains the full written namespace qualifier, so a factory result (`auto x = rp::make(); x.m()`, `rp::make().m()`) is typed from the definition `resolveQualifiedReceiverMember` returns and that definition's own declared return type. Caller scope, indexes and source position let a provider reject shadowed or aliased namespace qualifiers only when visible at the factory expression. Shared code never splits on a separator; default off, C++ implements it |
+| `onDemandImportTargets?(parsed, indexes)`               | Files supplying what a source file takes through on-demand (wildcard) imports; narrows persisted File→File `IMPORTS` edges only — `undefined` keeps every edge. Default: no narrowing                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 ### Per-language registration
 
