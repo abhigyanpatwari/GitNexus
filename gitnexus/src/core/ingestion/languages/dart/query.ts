@@ -237,13 +237,17 @@ const DART_SCOPE_QUERY = `
 ; \`import_specification\` branch: a bare \`(uri)\` (no \`configurable_uri\`
 ; wrapper), the anonymous \`deferred\`/\`as\` tokens, then the alias
 ; \`(identifier)\`. The pattern above never matches it, so the statement
-; produced no import capture at all. The prefix is a namespace handle
-; exactly like the non-deferred \`as p\` form.
+; produced no import capture at all. The prefix is a namespace handle like
+; the non-deferred \`as p\` form, with one exception: the language adds an
+; implicit \`loadLibrary()\` to a deferred prefix and loads the library with
+; \`hide loadLibrary\`, so \`p.loadLibrary\` never names a declaration of the
+; imported library. \`@import.deferred\` marks the prefix so \`captures.ts\`
+; can drop those references.
 (import_or_export
   (library_import
     (import_specification
       (uri) @import.source
-      "deferred"
+      "deferred" @import.deferred
       (identifier) @import.alias))) @import.statement
 (import_or_export
   (library_export
