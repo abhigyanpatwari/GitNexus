@@ -10,7 +10,9 @@
  *   1. Function/method/constructor SCOPES — `function_signature`/`function_body`
  *      are SIBLINGS, so each Function scope is synthesized to span
  *      `signature.start .. body.end` (composed range); a constructor's body is
- *      a sibling of the wrapping `method_signature`.
+ *      a sibling of the wrapping `method_signature`. Inline closures and local
+ *      functions get a Function scope of their own, and every Function scope
+ *      carries `@scope.lexical-names`, the names it binds (DART-11).
  *   2. Receiver (`this`/`super`) + parameter + return type bindings, anchored
  *      inside the body so they land in the Function scope.
  *   3. Arity metadata on function-like declarations.
@@ -37,7 +39,10 @@ import {
 } from '../../utils/ast-helpers.js';
 import { computeDartArityMetadata } from './arity-metadata.js';
 import { synthesizeDartReceiverBinding } from './receiver-binding.js';
-import { synthesizeDartSignatureBindings } from './signature-bindings.js';
+import {
+  synthesizeDartParameterBindings,
+  synthesizeDartSignatureBindings,
+} from './signature-bindings.js';
 import { getDartParser, getDartScopeQuery } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
@@ -228,11 +233,28 @@ export function emitDartScopeCaptures(
         // lands on this member's Function scope; outside the `@scope.`
         // namespace so `anchorCaptureFor` cannot mistake it for the anchor.
         const mask = dartShadowedFieldsCapture(bodyNode, memo);
+        // DART-11: every name this scope binds, typed or not, so the receiver
+        // walk stops here instead of reaching an enclosing binding of the same
+        // spelling. A closure is its own `declNode`; a member or top-level
+        // function also binds the parameters on its sibling signature.
+        const lexical = dartLexicalNamesCapture(
+          declNode.type === 'function_expression'
+            ? [declNode]
+            : [declNode.parent?.type === 'method_signature' ? declNode.parent : declNode, bodyNode],
+          bodyNode,
+        );
         out.push({
           '@scope.function': spanCapture('@scope.function', declNode, bodyNode),
           ...(mask === undefined ? {} : { '@receiver-owner.shadowed-fields': mask }),
+          ...(lexical === undefined ? {} : { '@scope.lexical-names': lexical }),
         });
         for (const cm of synthesizeDartReceiverBinding(declNode, bodyNode)) out.push(cm);
+        // A closure bound to a name keeps its parameter list as a child, which
+        // the signature helper below cannot read, so its typed parameters
+        // were never bound at all.
+        if (declNode.type === 'function_expression') {
+          for (const cm of synthesizeDartParameterBindings(declNode, bodyNode)) out.push(cm);
+        }
       }
       for (const cm of synthesizeDartSignatureBindings(declNode, bodyNode)) out.push(cm);
       continue;
@@ -322,6 +344,10 @@ export function emitDartScopeCaptures(
     }
     if (node.type === 'extension_declaration' || node.type === 'extension_type_declaration') {
       emitExtensionImplementsHeritage(node, out);
+      return;
+    }
+    if (node.type === 'function_expression' || node.type === 'local_function_declaration') {
+      emitDartNestedFunctionScope(node, seenFnDeclNodes, out);
       return;
     }
   });
@@ -418,6 +444,95 @@ function spanCapture(name: string, startNode: SyntaxNode, endNode: SyntaxNode): 
     },
     text: '',
   };
+}
+
+/** Constructs that open a Function scope of their own inside a function body. */
+const DART_NESTED_FUNCTION_TYPES: ReadonlySet<string> = new Set([
+  'function_expression',
+  'local_function_declaration',
+]);
+
+/**
+ * The Function scope of a closure or local function that no declaration query
+ * anchors (DART-11): an inline argument closure (`items.forEach((cs) { … })`)
+ * or a local `void inner(cs) { … }`.
+ *
+ * Without it the closure body sat in the ENCLOSING function's scope, so the
+ * closure's own parameter was invisible and `cs.save()` inside it climbed to
+ * the enclosing function's `Address cs`, minting an edge for a call the source
+ * never makes. The scope carries the closure's binder names and its typed
+ * parameters, so the walk stops at the closure and reads the closure's own
+ * types. It owns no definition, so a call inside it is still attributed to the
+ * enclosing callable.
+ *
+ * A closure bound to a name (`var h = (cs) { … }`) already has a scope from
+ * Pass A; `seenFnDeclNodes` holds its span, and a second scope at the same
+ * range would give two scopes one id, which drops the whole file.
+ */
+function emitDartNestedFunctionScope(
+  node: SyntaxNode,
+  seenFnDeclNodes: ReadonlySet<string>,
+  out: CaptureMatch[],
+): void {
+  let scopeNode: SyntaxNode | null;
+  let paramOwner: SyntaxNode | null;
+  let body: SyntaxNode | null;
+  if (node.type === 'function_expression') {
+    if (seenFnDeclNodes.has(nodeSpanKey(node))) return;
+    scopeNode = node;
+    paramOwner = node;
+    body = findFunctionBody(node);
+  } else {
+    // `local_function_declaration > lambda_expression > (function_signature, function_body)`.
+    scopeNode = findChild(node, 'lambda_expression');
+    paramOwner = scopeNode === null ? null : findChild(scopeNode, 'function_signature');
+    body = scopeNode === null ? null : findChild(scopeNode, 'function_body');
+  }
+  if (scopeNode === null || paramOwner === null || body === null) return;
+  const lexical = dartLexicalNamesCapture([scopeNode], body);
+  out.push({
+    '@scope.function': spanCapture('@scope.function', scopeNode, scopeNode),
+    ...(lexical === undefined ? {} : { '@scope.lexical-names': lexical }),
+  });
+  for (const cm of synthesizeDartParameterBindings(paramOwner, body)) out.push(cm);
+}
+
+/**
+ * `@scope.lexical-names` for one Function scope: every name it binds —
+ * parameters, locals, catch and loop variables, pattern binders — typed or not
+ * (DART-11).
+ *
+ * The shared receiver walk treats a listed name as owned by this scope, so it
+ * stops here instead of borrowing an enclosing binding of the same spelling;
+ * a binder that also has a type still answers with that type, because the walk
+ * reads a scope's own type before it honours the stop.
+ *
+ * The binder forms are `addDartBinderName`'s, the same enumeration the field
+ * shadow set uses. Nested closures and local functions are NOT descended into:
+ * they get scopes of their own, so a name bound only inside one does not stop
+ * reads in the enclosing function. Within one function the set is body-wide,
+ * because Dart blocks open no scope here: a name bound in an inner block also
+ * stops reads elsewhere in the function. That costs an edge, never adds one.
+ *
+ * Sorted, so the capture text and every fingerprint over it is order-stable;
+ * `undefined` when the scope binds nothing.
+ */
+function dartLexicalNamesCapture(
+  roots: readonly SyntaxNode[],
+  anchor: SyntaxNode,
+): Capture | undefined {
+  const names = new Set<string>();
+  const stack: SyntaxNode[] = [...roots];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    addDartBinderName(node, names);
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child !== null && !DART_NESTED_FUNCTION_TYPES.has(child.type)) stack.push(child);
+    }
+  }
+  if (names.size === 0) return undefined;
+  return syntheticCapture('@scope.lexical-names', anchor, JSON.stringify([...names].sort()));
 }
 
 function attachArityMetadata(grouped: Record<string, Capture>, declNode: SyntaxNode): void {
