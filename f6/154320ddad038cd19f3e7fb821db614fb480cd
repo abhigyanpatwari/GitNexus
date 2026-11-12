@@ -1,0 +1,34 @@
+gitnexus/test/integration/resolvers/dart-scope-openers.test.ts
+  s_b9690234122db7::t_b3985dad21b684 1-194
+  s_b9690234122db7::t_a3427840d31740 195-221
+gitnexus/bench/scope-capture/baselines.json
+  s_b9690234122db7::t_f2e980f733e353 181,183
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_9bf636b7f891f4 81-86,216-224,247-262,392-399,887,908-910,913-921,954-973,1357-1359
+gitnexus/src/core/ingestion/languages/dart/query.ts
+  s_b9690234122db7::t_c85b81f7ef9fea 159-169,172,175
+gitnexus/test/fixtures/lang-resolution/dart-scope-openers/getters.dart
+  s_b9690234122db7::t_30b56235d77fcd 1-49
+gitnexus/test/fixtures/lang-resolution/dart-scope-openers/main.dart
+  s_b9690234122db7::t_138e62c6c22c19 1-49
+gitnexus/test/fixtures/lang-resolution/dart-scope-openers/models.dart
+  s_b9690234122db7::t_48b64d1cf79b08 1-14
+gitnexus/test/fixtures/lang-resolution/dart-scope-openers/shadow.dart
+  s_b9690234122db7::t_5c2423232238e5 1-17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f6154320ddad038cd19f3e7fb821db614fb480cd",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
