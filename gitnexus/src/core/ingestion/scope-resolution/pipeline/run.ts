@@ -1882,9 +1882,25 @@ export function runScopeResolution(
             ),
         });
   probeEmit('callable-flow-end', `iterations=${callableValueFlow.iterations}`);
+  const onDemandImportTargets = provider.onDemandImportTargets;
+  const importSources =
+    onDemandImportTargets === undefined
+      ? undefined
+      : new Map(emitParsedFiles.map((parsed) => [parsed.filePath, parsed]));
   const importsEmitted = callableFlowOnly
     ? 0
-    : emitImportEdges(graph, indexes.imports, indexes.scopeTree, provider.importEdgeReason);
+    : emitImportEdges(
+        graph,
+        indexes.imports,
+        indexes.scopeTree,
+        provider.importEdgeReason,
+        onDemandImportTargets === undefined
+          ? undefined
+          : (sourceFile) => {
+              const parsed = importSources?.get(sourceFile);
+              return parsed === undefined ? undefined : onDemandImportTargets(parsed, indexes);
+            },
+      );
   probeEmit('imports-end', `emitted=${importsEmitted}`);
 
   // Language-specific supplementary edges (e.g. Vue template-derived

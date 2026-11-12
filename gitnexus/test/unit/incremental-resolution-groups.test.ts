@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { collectResolutionGroupFiles } from '../../src/core/incremental/resolution-groups.js';
+import {
+  collectResolutionGroupFiles,
+  hasResolutionGroups,
+} from '../../src/core/incremental/resolution-groups.js';
 
 describe('incremental resolution groups', () => {
+  it('refreshes Java across directories when an unmentioned package type changes or is deleted', () => {
+    const javaFiles = ['models/Foo.java', 'generated/Mid.java', 'app/A.java'];
+    const mixed = [...javaFiles, 'models/Other.kt', 'models/Other.ts'];
+    for (const changed of ['generated/Mid.java', 'removed/Base.java', 'New.java']) {
+      expect(collectResolutionGroupFiles([changed], mixed)).toEqual(new Set(javaFiles));
+    }
+  });
+
   const files = [
     'pkg/value_linux.go',
     'pkg/method.go',
@@ -39,5 +50,14 @@ describe('incremental resolution groups', () => {
     expect(collectResolutionGroupFiles(['pkg\\removed.go'], files)).toEqual(
       new Set(files.slice(0, 4)),
     );
+  });
+
+  it.each([
+    ['a Java file', ['web/app.ts', 'models/Foo.java'], true],
+    ['a Go file', ['pkg/method.go'], true],
+    ['only languages without a group', ['web/app.ts', 'models/Other.kt', 'README.md'], false],
+    ['no files', [], false],
+  ])('reports whether a repository with %s has a resolution group', (_label, paths, expected) => {
+    expect(hasResolutionGroups(paths)).toBe(expected);
   });
 });

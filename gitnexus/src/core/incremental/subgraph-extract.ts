@@ -79,7 +79,7 @@ import { isSpringAopEvidenceNode } from '../ingestion/frameworks/spring/aop.js';
  * rule, but they are included here too: the delete-all removes them as well, so
  * anything not re-included would be dropped rather than merely stale.
  */
-const isGraphWideNode = (node: GraphNode): boolean =>
+export const isGraphWideNode = (node: GraphNode): boolean =>
   node.label === 'Community' ||
   node.label === 'Process' ||
   node.label === 'Destination' ||
@@ -119,7 +119,7 @@ const isGraphWideNode = (node: GraphNode): boolean =>
 // an unchanged declaration, so they need the same global re-extract contract.
 // DECLARES itself is generic, however: only the two Spring-owned reasons are
 // graph-wide, leaving future metadata systems under their own lifecycle.
-const isGraphWideRelationship = (relationship: GraphRelationship): boolean =>
+export const isGraphWideRelationship = (relationship: GraphRelationship): boolean =>
   relationship.type === 'TAINT_PATH' ||
   relationship.type === 'CALL_SUMMARY' ||
   relationship.type === 'INJECTS' ||

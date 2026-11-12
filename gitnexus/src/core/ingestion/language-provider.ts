@@ -267,9 +267,12 @@ interface LanguageProviderConfig {
   readonly extensions: readonly string[];
 
   /**
-   * Files with the same provider-local key must be rewritten together when
-   * any member changes, is added, or is deleted. Resolution can change edges
+   * Files with the same provider-local key are re-examined together when any
+   * member changes, is added, or is deleted. Resolution can change edges
    * between untouched members even without an import or current graph edge.
+   * A member (or a file importing one) is rewritten when its graph rows differ
+   * from the rows recorded at its last write, so a key may be as wide as the
+   * whole language without turning every edit into a full database write.
    * Derive the key from the path alone: deleted files have no current source.
    * This only widens incremental invalidation, not semantic resolution scope.
    */
