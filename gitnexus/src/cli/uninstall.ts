@@ -42,6 +42,7 @@ import {
   type ParseError,
   type JSONPath,
 } from 'jsonc-parser';
+import { composeWin32Command } from '../core/embeddings/runtime-install.js';
 import { getEditorTargets, detectIndentation, isEnoent } from './editor-targets.js';
 import { LEGACY_SKILL_DIR_NAMES } from './setup.js';
 
@@ -433,11 +434,16 @@ async function uninstallCodex(
   // Prefer the official CLI (mirrors setup's `codex mcp add`); fall back
   // to editing config.toml directly when the binary isn't on PATH.
   try {
-    await execFileAsync('codex', ['mcp', 'remove', 'gitnexus'], {
-      shell: process.platform === 'win32',
-      windowsHide: true,
-      timeout: 10000,
-    });
+    const codexArgs = ['mcp', 'remove', 'gitnexus'];
+    // Windows: one quoted command line through the shell, like setup's
+    // `codex mcp add` (an args array with shell:true is only space-joined).
+    await (process.platform === 'win32'
+      ? execFileAsync(composeWin32Command('codex', codexArgs), [], {
+          shell: true,
+          windowsHide: true,
+          timeout: 10000,
+        })
+      : execFileAsync('codex', codexArgs, { shell: false, windowsHide: true, timeout: 10000 }));
     result.removed.push("Codex MCP server — via 'codex mcp remove gitnexus'");
     return;
   } catch {
