@@ -1,0 +1,35 @@
+gitnexus/src/core/ingestion/languages/ruby/captures.ts
+  s_b9690234122db7::t_29cdc085ffc1c5 323-329,342-346,350-351
+  s_b9690234122db7::t_6c639139666036 298-314
+  s_b9690234122db7::t_35cff15beaea6b 479-480,482-490
+  s_b9690234122db7::t_da4bcd884d8381 518-540
+  s_b9690234122db7::t_df3c2f3d69a9ff 562,568
+  s_b9690234122db7::t_37ee2bf24e856d 644-647
+  s_b9690234122db7::t_2fb5080a8f790e 273
+  s_b9690234122db7::t_a58c3dfcf84a00 635-639,642-643
+  s_b9690234122db7::t_d671b1728fad3b 569-570,684,825
+docs/languages/ruby-ingestion-gaps.md
+  s_b9690234122db7::t_b0448b1fd1d25f 38,59,61,63-68,70-71
+gitnexus/bench/scope-capture/baselines.json
+  s_b9690234122db7::t_febbd00b8d501f 140
+gitnexus/test/integration/resolvers/ruby-bare-read-shadows-method.test.ts
+  s_b9690234122db7::t_445972800deaee 2,22-23,30-36,70-75,88-89,131-138,142-145,168,192-231,246-249,334-350,393-400,501,524-546,570,572,651-693,721-728,754-760,783-785,791-802,807-813,815,826-841
+gitnexus/test/unit/scope-resolution/ruby/ruby-bare-read-order.test.ts
+  s_b9690234122db7::t_c0ca2a81615425 2,8,21-25,38-39,45,60-62,75,129,135,145,150-151,172-179,198-210,212,214,233-254,266,274-305
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e83adc968fbc5ae8370ea416f49f0f88adf7ce19",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
