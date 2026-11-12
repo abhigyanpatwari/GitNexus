@@ -12,6 +12,7 @@
  * Peak RSS is max(phase process maxRSS), including parser worker threads.
  * Both arms use deterministic GC/JIT scheduling and seeds, plus fixed heap
  * growth. Collection and compilation during analysis remain inside the timer.
+ * Matching phases run consecutively; the first arm alternates between pairs.
  * Graph fingerprints retain every property and duplicate, with bounded memory.
  * Cross-version fingerprints omit only derived Community/Process nodes/edges.
  *
@@ -60,11 +61,23 @@ async function main() {
       pairs: { type: 'string' },
       output: { type: 'string' },
       check: { type: 'boolean' },
+      prepare: { type: 'boolean' },
       phase: { type: 'string' },
       'trial-root': { type: 'string' },
     },
   });
-  if (values.phase) {
+  if (values.prepare) {
+    assert(
+      values['trial-root'] &&
+        !values.phase &&
+        !values['baseline-dist'] &&
+        !values.check &&
+        !values.output &&
+        !values.pairs,
+      'Invalid preparation options',
+    );
+    await measure(values);
+  } else if (values.phase) {
     assert(
       !values['baseline-dist'] && !values.check && !values.output && !values.pairs,
       'Invalid phase options',
@@ -337,7 +350,7 @@ export function validatePair(pair) {
 }
 
 export function assessComparison(report) {
-  assert.equal(report.schemaVersion, 4, 'Unknown report schema');
+  assert.equal(report.schemaVersion, 5, 'Unknown report schema');
   assert(report.pairs.length >= 7, 'Seven measured process pairs are required');
   assert(report.warmup, 'Missing excluded warmup pair');
   const all = [report.warmup, ...report.pairs];
@@ -347,6 +360,11 @@ export function assessComparison(report) {
       pair.order,
       index % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate'],
       'Pair order must alternate',
+    );
+    assert.deepEqual(
+      pair.phaseOrder,
+      phases.flatMap((phase) => pair.order.map((variant) => ({ phase, variant }))),
+      'Matching phases must run consecutively',
     );
     validatePair(pair);
     assert(
@@ -441,7 +459,7 @@ export async function compareRuntimes(options) {
   };
   for (const dist of Object.values(runtimes)) await fs.access(path.join(dist, 'cli/index.js'));
   const report = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     measuredAt: new Date().toISOString(),
     environment: {
       node: process.version,
@@ -456,16 +474,20 @@ export async function compareRuntimes(options) {
     verdict: 'incomplete',
   };
   const save = () => fs.writeFile(output, JSON.stringify(report, null, 2) + '\n');
-  const run = async (variant, iteration) => {
+  const run = async (variant, iteration, phase, root) => {
     const log = path.join(
       path.dirname(output),
       `${iteration < 0 ? 'warmup' : 'pair-' + iteration}-${variant}.log`,
     );
-    const handle = await fs.open(log, 'w+');
+    const handle = await fs.open(log, phase ? 'a+' : 'w+');
     let outputText = '';
     try {
+      const offset = (await handle.stat()).size;
       const args = [
         script,
+        ...(phase ? ['--phase', phase] : ['--prepare']),
+        '--trial-root',
+        root,
         '--dist',
         runtimes[variant],
         '--files',
@@ -473,7 +495,7 @@ export async function compareRuntimes(options) {
         '--workers',
         String(workers),
       ];
-      if (options.corpus) args.push('--corpus', path.resolve(options.corpus));
+      if (!phase && options.corpus) args.push('--corpus', path.resolve(options.corpus));
       const child = spawn(
         process.execPath,
         [
@@ -498,7 +520,7 @@ export async function compareRuntimes(options) {
       });
       // Read the same log inode the child wrote, even if its path was replaced.
       for await (const chunk of handle.createReadStream({
-        start: 0,
+        start: offset,
         autoClose: false,
         encoding: 'utf8',
       }))
@@ -511,35 +533,55 @@ export async function compareRuntimes(options) {
       .filter((line) => line.startsWith('{'))
       .map((line) => JSON.parse(line))
       .filter((row) => row.kind === 'provenance' || phases.includes(row.kind));
-    assert.equal(rows.length, phases.length + 1, `Incomplete trial: ${log}`);
-    assert.equal(rows[0].kind, 'provenance', `Missing trial provenance: ${log}`);
-    const trial = { provenance: rows[0], measurements: rows.slice(1) };
-    assert.equal(
-      trial.provenance.runtimeHead,
-      execFileSync('git', ['-C', path.dirname(runtimes[variant]), 'rev-parse', 'HEAD'], {
-        encoding: 'utf8',
-      }).trim(),
-      'Measured wrong runtime revision',
-    );
-    if (options.check)
-      assert(trial.provenance.sourceFiles >= 1024, 'Acceptance corpus needs at least 1024 files');
-    return trial;
+    assert.equal(rows.length, 1, `Incomplete ${phase ?? 'preparation'}: ${log}`);
+    assert.equal(rows[0].kind, phase ?? 'provenance', `Unexpected measurement: ${log}`);
+    if (!phase) {
+      assert.equal(
+        rows[0].runtimeHead,
+        execFileSync('git', ['-C', path.dirname(runtimes[variant]), 'rev-parse', 'HEAD'], {
+          encoding: 'utf8',
+        }).trim(),
+        'Measured wrong runtime revision',
+      );
+      if (options.check)
+        assert(rows[0].sourceFiles >= 1024, 'Acceptance corpus needs at least 1024 files');
+    }
+    return rows[0];
   };
   try {
     await save();
     for (let iteration = -1; iteration < count; iteration++) {
       const order = (iteration + 1) % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate'];
-      const pair = { iteration, order };
+      const pair = { iteration, order, phaseOrder: [] };
       if (iteration < 0) report.warmup = pair;
       else report.pairs.push(pair);
-      for (const variant of order) {
-        console.log(
-          `${iteration < 0 ? 'Warmup' : 'Pair ' + (iteration + 1) + '/' + count}: ${variant}`,
+      const roots = {};
+      try {
+        for (const variant of order) {
+          roots[variant] = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-file-reuse-bench-'));
+          pair[variant] = {
+            provenance: await run(variant, iteration, null, roots[variant]),
+            measurements: [],
+          };
+        }
+        // Match each phase before moving on. Whole-trial ordering separates
+        // paired measurements by minutes of unrelated work and host drift.
+        for (const phase of phases) {
+          for (const variant of order) {
+            console.log(
+              `${iteration < 0 ? 'Warmup' : 'Pair ' + (iteration + 1) + '/' + count}: ${phase} ${variant}`,
+            );
+            pair[variant].measurements.push(await run(variant, iteration, phase, roots[variant]));
+            pair.phaseOrder.push({ phase, variant });
+            await save();
+          }
+        }
+        validatePair(pair);
+      } finally {
+        await Promise.all(
+          Object.values(roots).map((root) => fs.rm(root, { recursive: true, force: true })),
         );
-        pair[variant] = await run(variant, iteration);
-        await save();
       }
-      validatePair(pair);
     }
     if (count >= 7) {
       report.assessment = assessComparison(report);
@@ -576,7 +618,9 @@ async function measure(values) {
     workers = Number(args.get('--workers') ?? benchmarkBaseline.defaults.workers);
   if (![count, workers].every((n) => Number.isSafeInteger(n) && n > 0))
     throw new Error('Invalid files/workers');
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-file-reuse-bench-'));
+  const root = values.prepare
+    ? path.resolve(values['trial-root'])
+    : await fs.mkdtemp(path.join(os.tmpdir(), 'gn-file-reuse-bench-'));
   const repo = path.join(root, 'repo');
   async function treeDigest(directory) {
     const hash = createHash('sha256');
@@ -658,15 +702,8 @@ async function measure(values) {
         arch: process.arch,
       }),
     );
-    for (const kind of ['cold', 'warm', 'edit', 'two-edits', 'repack']) {
-      if (kind === 'edit' || kind === 'two-edits') {
-        for (const file of sources.slice(0, kind === 'edit' ? 1 : 2)) {
-          await fs.appendFile(
-            path.join(repo, file),
-            `\nexport function benchmarkAdded${kind === 'edit' ? 'One' : 'Two'}(value: number) { return value; }\n`,
-          );
-        }
-      }
+    if (values.prepare) return;
+    for (const kind of phases) {
       // Preserve only the repository/cache between analyses. A fresh V8 isolate
       // prevents previous graphs, heap growth and JIT feedback affecting timing.
       const child = spawn(
@@ -698,7 +735,7 @@ async function measure(values) {
       });
     }
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    if (!values.prepare) await fs.rm(root, { recursive: true, force: true });
   }
 }
 
@@ -713,6 +750,17 @@ async function measurePhase(values) {
   const dist = path.resolve(values.dist ?? 'dist');
   const workers = Number(values.workers ?? benchmarkBaseline.defaults.workers);
   assert(Number.isSafeInteger(workers) && workers >= 1 && workers <= 16, 'Invalid workers');
+  if (kind === 'edit' || kind === 'two-edits') {
+    const sources = (await fs.readdir(repo, { recursive: true }))
+      .filter((f) => /\.tsx?$/.test(f))
+      .sort();
+    for (const file of sources.slice(0, kind === 'edit' ? 1 : 2)) {
+      await fs.appendFile(
+        path.join(repo, file),
+        `\nexport function benchmarkAdded${kind === 'edit' ? 'One' : 'Two'}(value: number) { return value; }\n`,
+      );
+    }
+  }
   const { runPipelineFromRepo } = await import(
     pathToFileURL(path.join(dist, 'core/ingestion/pipeline.js'))
   );

@@ -45,11 +45,16 @@ function report() {
   const pair = (iteration: number) => ({
     iteration,
     order: (iteration + 1) % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate'],
+    phaseOrder: ['cold', 'warm', 'edit', 'two-edits', 'repack'].flatMap((phase) =>
+      ((iteration + 1) % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate']).map(
+        (variant) => ({ phase, variant }),
+      ),
+    ),
     baseline: trial(),
     candidate: trial(),
   });
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     warmup: pair(-1),
     pairs: Array.from({ length: 7 }, (_, i) => pair(i)),
   };
@@ -121,11 +126,12 @@ describe('parse-cache performance acceptance', () => {
     ).toEqual([key === 'peakRssKb' ? 'peak process RSS' : 'cold cache size']);
   });
 
-  it.each(['missing-pair', 'wrong-graph', 'lost-reuse', 'wrong-profile'])(
+  it.each(['missing-pair', 'wrong-graph', 'lost-reuse', 'wrong-profile', 'wrong-order'])(
     'rejects invalid evidence: %s',
     (defect) => {
       const input = report();
       if (defect === 'missing-pair') input.pairs.pop();
+      if (defect === 'wrong-order') input.pairs[0].phaseOrder.reverse();
       if (defect === 'wrong-profile') input.pairs[0].candidate.provenance.execArgv = [];
       if (defect === 'wrong-graph')
         input.pairs[0].candidate.measurements[2].parsedDigest = 'd'.repeat(64);
