@@ -1,4 +1,4 @@
-/** Run from gitnexus/: node bench/file-result-reuse/measure.mjs [--dist DIR] [--corpus DIR]
+/** Run from gitnexus/: node --expose-gc bench/file-result-reuse/measure.mjs [--dist DIR] [--corpus DIR]
  * Each invocation is one isolated trial (cold -> warm -> edit -> two edits -> repack).
  * Compare at least three invocations for baseline/candidate on the same machine.
  */
@@ -33,6 +33,8 @@ if (values['baseline-dist']) {
 }
 
 async function measure() {
+  if (typeof global.gc !== 'function')
+    throw new Error('Measurements require --expose-gc; comparisons enable it automatically');
   const args = new Map(Object.entries(values).map(([key, value]) => ['--' + key, value]));
   const dist = path.resolve(args.get('--dist') ?? 'dist');
   const { runPipelineFromRepo } = await import(
@@ -143,6 +145,13 @@ async function measure() {
           );
         }
       }
+      // Collect the previous phase's graph/cache and verification temporaries
+      // before timing starts. Keep phase locals in a separate stack frame so
+      // they cannot survive across the next runPipelineFromRepo await.
+      global.gc();
+      await measurePhase(kind);
+    }
+    async function measurePhase(kind) {
       const stage = path.join(root, kind);
       const cache =
         kind === 'cold'

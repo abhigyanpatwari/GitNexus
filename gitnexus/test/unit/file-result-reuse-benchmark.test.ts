@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { load } from 'js-yaml';
 
@@ -14,6 +16,114 @@ const { sourceDigest } = await import(
 const { graphDigests } = await import(
   new URL('../../bench/file-result-reuse/graph-digests.mjs', import.meta.url).href
 );
+
+it('fingerprints source-heavy graphs without retaining serialized copies of their contents', () => {
+  const moduleUrl = new URL('../../bench/file-result-reuse/graph-digests.mjs', import.meta.url)
+    .href;
+  const child = spawnSync(
+    process.execPath,
+    [
+      '--max-old-space-size=64',
+      '--input-type=module',
+      '-e',
+      `
+      import assert from 'node:assert/strict';
+      import { graphDigests } from ${JSON.stringify(moduleUrl)};
+      const content = 'x'.repeat(64 * 1024);
+      const graph = {
+        nodes: Array.from({ length: 1024 }, (_, i) => ({
+          id: 'fn:' + i, label: 'Function', properties: { content },
+        })),
+        relationships: [],
+      };
+      const first = graphDigests(graph);
+      assert.equal(first.nodes, 1024);
+      assert.equal(first.digest, first.parsedDigest);
+      graph.nodes.reverse();
+      assert.deepEqual(graphDigests(graph), first);
+      graph.nodes[0].properties.content += 'changed';
+      assert.notEqual(graphDigests(graph).digest, first.digest);
+    `,
+    ],
+    { encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_OPTIONS: '' } },
+  );
+  expect(child.error).toBeUndefined();
+  expect(child.status, child.stderr).toBe(0);
+});
+
+it('releases the previous graph before starting the next measured phase', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-benchmark-lifetime-'));
+  const dist = path.join(root, 'dist');
+  try {
+    for (const directory of ['cli', 'core/ingestion', 'storage'])
+      await fs.mkdir(path.join(dist, directory), { recursive: true });
+    await fs.writeFile(path.join(root, 'package.json'), '{"type":"module"}');
+    await fs.writeFile(path.join(dist, 'cli/index.js'), '');
+    await fs.writeFile(
+      path.join(dist, 'core/ingestion/pipeline.js'),
+      `
+      let previous;
+      export async function runPipelineFromRepo() {
+        if (previous?.deref()) throw new Error('Previous graph is still retained');
+        const graph = { nodes: [{ id: 'fn:a', label: 'Function' }], relationships: [] };
+        previous = new WeakRef(graph);
+        return { graph, reparsedFileCount: 2, parseCacheHitFileCount: 0, usedWorkerPool: true };
+      }
+    `,
+    );
+    await fs.writeFile(
+      path.join(dist, 'storage/parse-cache.js'),
+      `
+      import fs from 'node:fs/promises';
+      export const emptyParseCache = () => ({ fileResults: {} });
+      export const loadParseCache = emptyParseCache;
+      export async function saveParseCache(live) {
+        await fs.mkdir(live, { recursive: true });
+        return [];
+      }
+    `,
+    );
+    await fs.writeFile(
+      path.join(dist, 'storage/parsedfile-store.js'),
+      `
+      export async function mergeStagedDurableParsedFileStore() {}
+    `,
+    );
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--expose-gc',
+        fileURLToPath(new URL('../../bench/file-result-reuse/measure.mjs', import.meta.url)),
+        '--dist',
+        dist,
+        '--files',
+        '2',
+        '--workers',
+        '1',
+      ],
+      { encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_OPTIONS: '' } },
+    );
+    expect(child.error).toBeUndefined();
+    expect(child.status, child.stderr).toBe(0);
+    const phases = child.stdout
+      .split('\n')
+      .filter((line) => line.startsWith('{'))
+      .map((line) => JSON.parse(line).kind);
+    expect(phases).toEqual(['provenance', 'cold', 'warm', 'edit', 'two-edits', 'repack']);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+it('rejects standalone measurements without controlled garbage collection', () => {
+  const child = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL('../../bench/file-result-reuse/measure.mjs', import.meta.url))],
+    { encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_OPTIONS: '' } },
+  );
+  expect(child.status).toBe(1);
+  expect(child.stderr).toContain('Measurements require --expose-gc');
+});
 
 it('ignores only derived nodes and incident edges in the cross-version fingerprint', () => {
   const graph = (community: string, process: string) => ({

@@ -8,10 +8,10 @@ Build both revisions with their locked dependencies. Run the driver from the can
 
 ```sh
 npm run build
-node bench/file-result-reuse/measure.mjs --files 1024 --workers 2
-node bench/file-result-reuse/measure.mjs --dist /path/to/baseline/gitnexus/dist --files 1024 --workers 2
-node bench/file-result-reuse/measure.mjs --corpus /path/to/frozen/gitnexus/src --workers 2
-node bench/file-result-reuse/measure.mjs --dist /path/to/baseline/gitnexus/dist --corpus /path/to/frozen/gitnexus/src --workers 2
+node --expose-gc bench/file-result-reuse/measure.mjs --files 1024 --workers 2
+node --expose-gc bench/file-result-reuse/measure.mjs --dist /path/to/baseline/gitnexus/dist --files 1024 --workers 2
+node --expose-gc bench/file-result-reuse/measure.mjs --corpus /path/to/frozen/gitnexus/src --workers 2
+node --expose-gc bench/file-result-reuse/measure.mjs --dist /path/to/baseline/gitnexus/dist --corpus /path/to/frozen/gitnexus/src --workers 2
 ```
 
 Run at least three fresh processes per revision and corpus, alternating revisions. Each process creates a fresh temporary repository/cache, then runs cold, unchanged, one-file edit, two-file edit, and repacking scenarios. The edits add exported functions. Repacking changes the existing chunk byte budget to 4 KiB. The driver removes its temporary data afterward.
@@ -19,6 +19,8 @@ Run at least three fresh processes per revision and corpus, alternating revision
 ## CI acceptance gate
 
 `.github/workflows/ci-tests.yml` runs `measure.mjs --check` on both the 1,024-file synthetic fixture and the same frozen base-revision source corpus. It builds the PR base (or the parent on pushes) separately using its lockfile. Each arm runs in a fresh process with two parser workers and a 4 GiB Node heap, alternating order for one excluded warmup pair and seven measured pairs.
+
+Comparison children enable `--expose-gc`. Before each phase, the driver collects the preceding phase's discarded graph, cache, and verification temporaries outside the timed region. Each phase has a separate stack frame so those objects are collectible before the next pipeline call. GC during ingestion/publication remains part of the timing, and cumulative process peak RSS still includes every phase and its parser workers. Standalone trials require the same flag.
 
 ```sh
 node bench/file-result-reuse/measure.mjs --check \
@@ -34,6 +36,8 @@ The gate uses the existing paired log-ratio bootstrap/Student-t calculation from
 `pipelineMs` measures ingestion and whole-repository resolution; `withSaveMs` adds parser-cache publication. Neither includes graph database publication, embedding generation, or CLI startup. `peakRssKb` is the cumulative process high-water mark, not a phase-local peak or a sum of child processes. Cache sizes include both manifests and payloads.
 
 Report schema 2 retains the complete graph `digest` for cold/warm and two-edit/repack equality within each runtime. Cross-version comparisons use `parsedDigest`, `parsedNodes`, and `parsedEdges`, which exclude Community/Process nodes and every edge touching them. All remaining node and edge properties participate. This allows intentional derived-ID migrations without hiding parser-output regressions. Both runtimes still execute and time the complete pipeline; the performance limits are unchanged. Schema 1 reports must be remeasured with the current driver.
+
+Graph verification hashes each canonical node or edge before sorting and incrementally hashing those fixed-size hashes. It retains every property and duplicate row without holding serialized copies of the entire graph and its source text. Those copies previously inflated the process high-water mark after pipeline timing stopped, adding unrelated allocation and GC noise to the RSS gate. Fingerprints change with this algorithm; both arms must use the same driver, whose provenance digest includes `graph-digests.mjs`. The existing driver-identity checks reject mixed measurements. The memory budget and confidence-interval checks are unchanged.
 
 ## Recorded comparison
 

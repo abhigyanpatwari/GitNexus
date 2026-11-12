@@ -61,7 +61,7 @@ export async function compareRuntimes(options) {
         String(workers),
       ];
       if (options.corpus) args.push('--corpus', path.resolve(options.corpus));
-      const child = spawn(process.execPath, ['--max-old-space-size=4096', ...args], {
+      const child = spawn(process.execPath, ['--expose-gc', '--max-old-space-size=4096', ...args], {
         stdio: ['ignore', handle.fd, handle.fd],
         env: { ...process.env, GITNEXUS_MEMORY: 'off' },
       });
