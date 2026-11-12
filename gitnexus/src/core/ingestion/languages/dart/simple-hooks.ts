@@ -4,7 +4,8 @@
  *   - `dartBindingScopeFor` — (1) hoists `@type-binding.return` bindings to
  *     the Module scope so chain-follow + `propagateImportedReturnTypes` see
  *     them; (2) hoists function/method/constructor declaration NAMES to the
- *     enclosing parent scope. The second case is Dart-specific: because
+ *     enclosing parent scope, and getter / setter names too (DART-10). The
+ *     second case is Dart-specific: because
  *     `function_signature`/`function_body` are siblings, the synthesized
  *     Function scope starts AT the declaration, so the central auto-hoist
  *     (which fires only when the declaration anchor range equals the scope
@@ -52,10 +53,18 @@ export function dartBindingScopeFor(
   }
 
   // (2) Function/method/constructor names are visible in the enclosing scope.
+  // So is a getter / setter name (`@dart.accessor`, DART-10): its Property
+  // declaration lies inside the accessor's own synthesized Function scope, and
+  // left there the Class scope would no longer own the name — a bare `cs` read
+  // in a sibling member would climb past it to a same-named Module binding (the
+  // hoisted return of `Other cs()` in another class) instead of stopping at
+  // `this.cs`. A static accessor's declaration starts at `static`, before the
+  // scope, so it already binds on the Class scope and is unaffected.
   if (
     decl['@declaration.function'] !== undefined ||
     decl['@declaration.method'] !== undefined ||
-    decl['@declaration.constructor'] !== undefined
+    decl['@declaration.constructor'] !== undefined ||
+    decl['@dart.accessor'] !== undefined
   ) {
     if (innermost.kind === 'Function' && innermost.parent !== null) return innermost.parent;
   }

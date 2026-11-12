@@ -14,4 +14,10 @@ class Holder {
   void commented(conn) /* the parameter is untyped */ {
     conn.inner();
   }
+
+  void documented(conn)
+  /// the parameter is untyped
+  {
+    conn.inner();
+  }
 }

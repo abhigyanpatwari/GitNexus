@@ -51,7 +51,8 @@ import { hasKeyword } from '../../field-extractors/configs/helpers.js';
 
 /**
  * `LanguageProvider.scopeOwnsReceivers` for Dart — the read side of
- * `dartShadowedFieldsCapture`, which is where the full rationale lives.
+ * `dartReceiverOwnerCapture` (shadowed fields and withheld parameters); the
+ * field rationale lives on `dartShadowedFieldNames`.
  *
  * Reads the marker rather than re-deriving anything: the names were computed at
  * capture time, where the AST is, and a `CaptureMatch` carries only
@@ -232,29 +233,42 @@ export function emitDartScopeCaptures(
       synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
       out.push(grouped);
 
+      const signatureBindings = synthesizeDartSignatureBindings(declNode, bodyNode);
+      // Parameter bindings exist only when there is a body, so `withheld`
+      // stays empty for a bodiless declaration.
+      const withheld = new Set<string>();
       if (bodyNode !== null) {
-        // The READ-side half of the bare-name field discipline (#2807 review).
-        // Rides the SAME synthesized match as `@scope.function` so the mask
-        // lands on this member's Function scope; outside the `@scope.`
-        // namespace so `anchorCaptureFor` cannot mistake it for the anchor.
-        const mask = dartShadowedFieldsCapture(bodyNode, memo);
+        // A parameter annotation lands on this Function scope, which keeps ONE
+        // binding per name. When the body binds the name again (`void f(Address
+        // cs) /* c */ { final cs = make(); cs.save(); }`, a closure `(cs) =>`, a
+        // for-in, catch or pattern binder), the annotation would type the
+        // rebound sites too, so it is withheld — see `dartParameterReboundInBody`.
+        for (const cm of signatureBindings) {
+          const name = cm['@type-binding.name']?.text;
+          if (cm['@type-binding.parameter'] === undefined || name === undefined) continue;
+          if (dartParameterReboundInBody(name, bodyNode, memo)) withheld.add(name);
+        }
+        // The scope OWNS every name it withholds, and every class field its
+        // body shadows (`dartReceiverOwnerCapture`): the receiver walk stops
+        // here and the site is a recorded `receiver-owned-but-unbound` drop.
+        // Without it the walk leaves the function and a same-named binding
+        // further out answers — the Module-hoisted return of `Other cs()` in
+        // any class, typing the `Address cs` parameter's `cs.save()` as
+        // `Other.save`. Rides the SAME synthesized match as `@scope.function`
+        // so it lands on this Function scope; outside the `@scope.` namespace
+        // so `anchorCaptureFor` cannot mistake it for the anchor.
+        const owned = dartReceiverOwnerCapture(bodyNode, memo, withheld);
         out.push({
           '@scope.function': spanCapture('@scope.function', declNode, bodyNode),
-          ...(mask === undefined ? {} : { '@receiver-owner.shadowed-fields': mask }),
+          ...(owned === undefined ? {} : { '@receiver-owner.shadowed-fields': owned }),
         });
         for (const cm of synthesizeDartReceiverBinding(declNode, bodyNode)) out.push(cm);
       }
-      for (const cm of synthesizeDartSignatureBindings(declNode, bodyNode)) {
+      for (const cm of signatureBindings) {
         if (accessor && cm['@type-binding.return'] !== undefined) continue;
-        // A parameter annotation lands on this Function scope, which keeps ONE
-        // binding per name. When the body binds the name again (`void f(Address
-        // cs) /* c */ { final cs = make(); cs.save(); }`, a closure `(cs) =>`,
-        // a catch or pattern binder), the annotation would type the rebound
-        // sites too, so it is withheld — see `dartParameterReboundInBody`.
         if (
-          bodyNode !== null &&
           cm['@type-binding.parameter'] !== undefined &&
-          dartParameterReboundInBody(cm['@type-binding.name']?.text ?? '', bodyNode, memo)
+          withheld.has(cm['@type-binding.name']?.text ?? '')
         ) {
           continue;
         }
@@ -390,15 +404,20 @@ function findFunctionBody(declNode: SyntaxNode): SyntaxNode | null {
       ? declNode.parent
       : declNode;
   // tree-sitter keeps comments as NAMED siblings, so a comment between a
-  // signature and its body (`void f(User v) /* note */ { … }`) would stop the
-  // walk one node early and the declaration would open no scope.
-  // Only comments are skipped: any other named sibling still means there is no
-  // body (a bodiless `User get a;` followed by a doc comment and the next
-  // member must not take that member's body).
+  // signature and its body (`void f(User v) /* note */ { … }`, or a `///` /
+  // `/** */` doc comment) would stop the walk one node early and the
+  // declaration would open no scope. Only comments are skipped: any other
+  // named sibling still means there is no body (a bodiless `void a();`
+  // followed by a comment and the next member must not take that member's
+  // body).
   let next = node.nextNamedSibling;
-  while (next !== null && next.type === 'comment') next = next.nextNamedSibling;
+  while (next !== null && DART_COMMENT_TYPES.has(next.type)) next = next.nextNamedSibling;
   return next !== null && next.type === 'function_body' ? next : null;
 }
+
+/** Both comment node kinds tree-sitter-dart emits; to the language each is an
+ *  ordinary comment. Same set as the CFG visitor's (`cfg/visitors/dart.ts`). */
+const DART_COMMENT_TYPES: ReadonlySet<string> = new Set(['comment', 'documentation_comment']);
 
 /** A capture whose range spans two nodes (Dart has no node wrapping both a
  *  signature and its sibling body). */
@@ -860,6 +879,12 @@ interface DartBodyCensus {
    *  every closure's / local function's), catch variables, for-in variables
    *  and every pattern binder — the `visitDartBinderName` family. */
   readonly binders: ReadonlyMap<string, number>;
+  /** The same count restricted to nodes that DECLARE the name
+   *  (`dartIsStrictBinder`): no pattern field label or map key, no parameter of
+   *  a function-typed parameter, nothing a pattern assignment writes. The
+   *  permissive count above errs toward declining an inference, which is safe;
+   *  withholding a parameter annotation on an over-count drops a correct edge. */
+  readonly strictBinders: ReadonlyMap<string, number>;
   /** Names that are the target of `=`, an op-assignment or `++`/`--`
    *  anywhere in the body, nested closures included. */
   readonly assigned: ReadonlySet<string>;
@@ -880,23 +905,27 @@ function dartBodyCensus(body: SyntaxNode, memo: DartClassMemo): DartBodyCensus {
   const cached = memo.censusByBody.get(key);
   if (cached !== undefined) return cached;
   const binders = new Map<string, number>();
+  const strictBinders = new Map<string, number>();
   const assigned = new Set<string>();
-  const count = (name: string): void => {
-    binders.set(name, (binders.get(name) ?? 0) + 1);
+  const visitBinders = (node: SyntaxNode): void => {
+    visitDartBinderName(node, (name) => {
+      binders.set(name, (binders.get(name) ?? 0) + 1);
+      if (dartIsStrictBinder(node)) strictBinders.set(name, (strictBinders.get(name) ?? 0) + 1);
+    });
   };
   const signature = signatureBefore(body);
   if (signature !== null && OWN_SIGNATURE_TYPES.has(signature.type)) {
-    walkNamedTree(signature, (n) => visitDartBinderName(n, count));
+    walkNamedTree(signature, visitBinders);
   }
   walkNamedTree(body, (node) => {
-    visitDartBinderName(node, count);
+    visitBinders(node);
     if (node.type === 'assignable_expression') {
       // The target of `=`, `+=`, `??=`, `++` — exactly one named child, the name.
       const only = node.namedChildCount === 1 ? node.namedChild(0) : null;
       if (only !== null && only.type === 'identifier') assigned.add(only.text);
     }
   });
-  const census: DartBodyCensus = { binders, assigned };
+  const census: DartBodyCensus = { binders, strictBinders, assigned };
   memo.censusByBody.set(key, census);
   return census;
 }
@@ -910,12 +939,54 @@ const OWN_SIGNATURE_TYPES: ReadonlySet<string> = new Set([
   'setter_signature',
 ]);
 
+/** Pattern containers whose DIRECT identifier children are field labels
+ *  (`Point(x: var q)`, `(x: q, n: m)`) or map keys — names that bind nothing
+ *  (`visitDartBinderName` counts them on purpose, to err toward shadowing). */
+const DART_LABELLED_PATTERNS: ReadonlySet<string> = new Set([
+  'record_pattern',
+  'object_pattern',
+  'map_pattern',
+]);
+
+/**
+ * Does the binder node `visitDartBinderName` just reported DECLARE its name in
+ * the function's scopes? False for the three shapes that bind nothing:
+ *
+ *   - a label or key identifier sitting directly on a record / object / map
+ *     pattern (the nested `variable_pattern` / `constant_pattern` is the binder);
+ *   - a parameter of an old-style function-typed parameter (`void cb(Address
+ *     x)`): it names the callback's parameter, not a variable of this function;
+ *   - any pattern under a `pattern_assignment` (`(x, y) = (y, x);`), which
+ *     assigns existing variables — their declared types still hold.
+ */
+function dartIsStrictBinder(node: SyntaxNode): boolean {
+  if (DART_LABELLED_PATTERNS.has(node.type)) return false;
+  if (node.type === 'formal_parameter') {
+    let up = node.parent;
+    while (
+      up !== null &&
+      (up.type === 'formal_parameter_list' || up.type === 'optional_formal_parameters')
+    ) {
+      up = up.parent;
+    }
+    return up === null || up.type !== 'formal_parameter';
+  }
+  if (node.type.endsWith('_pattern')) {
+    let up = node.parent;
+    while (up !== null && up.type.endsWith('_pattern')) up = up.parent;
+    return up === null || up.type !== 'pattern_assignment';
+  }
+  return true;
+}
+
 /** The signature a body belongs to: its previous named sibling, past the
  *  comments tree-sitter keeps as named siblings between the two (the inverse
  *  of the walk in `findFunctionBody`). */
 function signatureBefore(body: SyntaxNode): SyntaxNode | null {
   let sibling = body.previousNamedSibling;
-  while (sibling !== null && sibling.type === 'comment') sibling = sibling.previousNamedSibling;
+  while (sibling !== null && DART_COMMENT_TYPES.has(sibling.type)) {
+    sibling = sibling.previousNamedSibling;
+  }
   return sibling;
 }
 
@@ -953,22 +1024,25 @@ function dartLocalInferenceAllowed(
 
 /**
  * Is the formal parameter `name` bound a SECOND time inside its own body — a
- * same-named declarator, a closure / local-function parameter, a catch or
- * pattern binder? The census counts the member's own parameters from the
- * signature, so one binder is the parameter itself. Flow-insensitive for the
- * same reason as `dartLocalInferenceAllowed`: one Function scope keeps ONE
- * binding per name, so an annotation that survives a rebinding types every
+ * same-named declarator, a closure / local-function parameter, a for-in, catch
+ * or pattern binder? Counted with the STRICT census (`dartIsStrictBinder`):
+ * pattern labels, a function-typed parameter's own parameters and pattern
+ * assignments declare nothing. The census counts the member's own parameters
+ * from the signature, so one binder is the parameter itself. Flow-insensitive
+ * for the same reason as `dartLocalInferenceAllowed`: one Function scope keeps
+ * ONE binding per name, so an annotation that survives a rebinding types every
  * site of the name in the body, the rebound ones included. A plain assignment
  * is NOT a rebinding — Dart requires the assigned value to be assignable to
  * the declared type, so the annotation stays sound.
  *
  * The cost is recall: `void f(Address cs) { xs.forEach((cs) => …); cs.save(); }`
- * loses the outer `cs.save()` edge, because the closure parameter shares the
+ * has no `Address.save` edge for the outer `cs.save()` — a recorded
+ * `receiver-owned-but-unbound` drop, because the scope owns the withheld name
+ * (`dartReceiverOwnerCapture`) — since the closure parameter shares the
  * enclosing Function scope's one binding slot.
  */
 function dartParameterReboundInBody(name: string, body: SyntaxNode, memo: DartClassMemo): boolean {
-  if (name === '') return false;
-  return (dartBodyCensus(body, memo).binders.get(name) ?? 0) > 1;
+  return (dartBodyCensus(body, memo).strictBinders.get(name) ?? 0) > 1;
 }
 
 /**
@@ -1290,33 +1364,56 @@ function dartBodyShadows(bodyNode: SyntaxNode, memo: DartClassMemo): ReadonlySet
  *     `emitDartFieldAssignmentBindings` mints nothing for them. `extension`
  *     bodies are a different node (`extension_body`) and are left alone.
  *
- * Returns `undefined` — not an empty marker — when nothing is masked, so the
- * emitted capture set is unchanged for every body that does not shadow a field.
- * Names are sorted so the capture text (and every fingerprint over it) is
- * order-stable.
+ * Returns the masked field names, or none; `dartReceiverOwnerCapture` (below)
+ * turns them, with any withheld parameters, into the capture.
  */
-function dartShadowedFieldsCapture(bodyNode: SyntaxNode, memo: DartClassMemo): Capture | undefined {
+function dartShadowedFieldNames(bodyNode: SyntaxNode, memo: DartClassMemo): readonly string[] {
   // Only a CLASS-MEMBER body can shadow a field: `function_body` whose parent is
   // the `class_body`. A closure's `function_expression_body` and a top-level
   // function are both excluded, and neither needs the mask — a closure's binders
   // are already in its enclosing member's body-wide shadow set, and the walk
   // passes through the enclosing member's Function scope on its way out.
-  if (bodyNode.type !== 'function_body') return undefined;
+  if (bodyNode.type !== 'function_body') return [];
   const classBody = bodyNode.parent;
-  if (classBody === null || classBody.type !== 'class_body') return undefined;
+  if (classBody === null || classBody.type !== 'class_body') return [];
 
   const fields = dartClassFieldNames(classBody, memo);
-  if (fields.size === 0) return undefined;
+  if (fields.size === 0) return [];
   const shadows = dartBodyShadows(bodyNode, memo);
-  if (shadows.size === 0) return undefined;
+  if (shadows.size === 0) return [];
 
   const masked: string[] = [];
   for (const name of fields) {
     if (shadows.has(name)) masked.push(name);
   }
-  if (masked.length === 0) return undefined;
-  masked.sort();
-  return syntheticCapture('@receiver-owner.shadowed-fields', bodyNode, JSON.stringify(masked));
+  return masked;
+}
+
+/**
+ * The receiver names a Function scope OWNS (`Scope.ownsReceivers`): the class
+ * fields its body shadows (`dartShadowedFieldNames`, above) and the parameters
+ * whose annotation it withheld because the body binds them again
+ * (`dartParameterReboundInBody`). Either way the scope binds the name itself
+ * and has no type for it, so the walk must stop here — a recorded
+ * `receiver-owned-but-unbound` drop — instead of reaching a same-named binding
+ * further out. The capture keeps its historical tag; `dartScopeOwnsReceivers`
+ * reads it. `undefined` when nothing is owned, so a body that neither shadows
+ * a field nor withholds a parameter emits exactly what it did before. Names are
+ * sorted so the capture text (and every fingerprint over it) is order-stable.
+ */
+function dartReceiverOwnerCapture(
+  bodyNode: SyntaxNode,
+  memo: DartClassMemo,
+  withheld: ReadonlySet<string>,
+): Capture | undefined {
+  const owned = new Set(dartShadowedFieldNames(bodyNode, memo));
+  for (const name of withheld) owned.add(name);
+  if (owned.size === 0) return undefined;
+  return syntheticCapture(
+    '@receiver-owner.shadowed-fields',
+    bodyNode,
+    JSON.stringify([...owned].sort()),
+  );
 }
 
 /**

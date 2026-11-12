@@ -108,7 +108,7 @@
  * mask is body-wide, so a read of the genuine field elsewhere in a shadowing
  * member loses its edge; and only names the class declares as FIELDS are masked,
  * so the same defect against a library-level variable is still open. Both are
- * recorded on `dartShadowedFieldsCapture` in `languages/dart/captures.ts`.
+ * recorded on `dartShadowedFieldNames` in `languages/dart/captures.ts`.
  *
  * Swift reached parity only once a SEPARATE defect was fixed alongside: its
  * methods are emitted as `Function` nodes while the scope extractor derives
@@ -1995,7 +1995,7 @@ const CASES: readonly LanguageCase[] = [
         status: 'resolves',
       },
       // The closure parameter is the shape that pins WHERE the mask is emitted.
-      // `dartShadowedFieldsCapture` returns early unless the node is a
+      // `dartShadowedFieldNames` returns early unless the node is a
       // `function_body` whose parent is a `class_body`, so a closure's own
       // `function_expression_body` never carries a mask — the read is covered
       // only because the closure's binders are in the enclosing member's
@@ -2033,7 +2033,7 @@ const CASES: readonly LanguageCase[] = [
       // in the SAME class as the masked `probe` above deliberately: it is the
       // row that distinguishes "mask the names THIS BODY rebinds" from "mask
       // every field name the class declares". Measured: dropping the
-      // `shadows.has(name)` test in `dartShadowedFieldsCapture` — the exact
+      // `shadows.has(name)` test in `dartShadowedFieldNames` — the exact
       // over-widening this guards — turns 28 Dart rows red, and this row is one
       // of them, while the fix as written leaves it green.
       {

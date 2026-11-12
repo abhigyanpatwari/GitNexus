@@ -138,10 +138,12 @@ export const dartProvider = defineLanguage({
   // emit-side `ScopeResolver` lives in `dart/scope-resolver.ts`; the same
   // function references flow through both interfaces.
   emitScopeCaptures: emitDartScopeCaptures,
-  // Dart's `ownsReceivers` masks FIELD NAMES a member body rebinds, not `this`
-  // (which Dart binds lexically in every closure form, so there is nothing to
-  // own). See `dartShadowedFieldsCapture` in `dart/captures.ts` for why the
-  // read side needs the mask and what it deliberately does not cover.
+  // Dart's `ownsReceivers` masks FIELD NAMES a member body rebinds and the
+  // PARAMETERS whose annotation the body's rebinding withheld, not `this` (which
+  // Dart binds lexically in every closure form, so there is nothing to own).
+  // See `dartReceiverOwnerCapture` / `dartShadowedFieldNames` in
+  // `dart/captures.ts` for why the read side needs the mask and what it
+  // deliberately does not cover.
   scopeOwnsReceivers: dartScopeOwnsReceivers,
   cfgVisitor: createDartCfgVisitor(),
   interpretImport: interpretDartImport,
