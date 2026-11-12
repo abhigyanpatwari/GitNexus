@@ -415,9 +415,10 @@ describe('warnIfNpm11NpxRisk (#1939 npm-11 nudge)', () => {
       Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
       mockedExec.mockReturnValue('11.0.0\n');
       getNpmMajorVersion();
+      // One command line, no args array: shell:true plus args makes Node >=24
+      // print a DEP0190 deprecation warning on every analyze.
       expect(mockedExec).toHaveBeenCalledWith(
-        'npm',
-        ['--version'],
+        'npm --version',
         expect.objectContaining({ shell: true }),
       );
     } finally {
