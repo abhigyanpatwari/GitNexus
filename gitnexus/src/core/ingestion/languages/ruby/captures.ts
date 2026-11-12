@@ -577,7 +577,12 @@ export function emitRubyScopeCaptures(
     if (paramMatch) {
       const [, paramName, typeName] = paramMatch;
       const methodNode = findFollowingMethod(comment);
-      if (methodNode !== null && paramName && typeName) {
+      if (
+        methodNode !== null &&
+        paramName &&
+        typeName &&
+        yardParamNameIsBindable(methodNode, paramName)
+      ) {
         out.push({
           '@type-binding.parameter': syntheticCapture('@type-binding.parameter', methodNode, text),
           '@type-binding.name': syntheticCapture('@type-binding.name', methodNode, paramName),
@@ -595,7 +600,12 @@ export function emitRubyScopeCaptures(
     if (!paramMatch && paramAltMatch) {
       const [, typeName, paramName] = paramAltMatch;
       const methodNode = findFollowingMethod(comment);
-      if (methodNode !== null && paramName && typeName) {
+      if (
+        methodNode !== null &&
+        paramName &&
+        typeName &&
+        yardParamNameIsBindable(methodNode, paramName)
+      ) {
         out.push({
           '@type-binding.parameter': syntheticCapture('@type-binding.parameter', methodNode, text),
           '@type-binding.name': syntheticCapture('@type-binding.name', methodNode, paramName),
@@ -653,24 +663,6 @@ export function emitRubyScopeCaptures(
             }
           }
         }
-      }
-    }
-
-    // @type [Type]
-    const typeMatch = text.match(/@type\s+\[([^\]]+)\]/);
-    if (typeMatch) {
-      const [, typeName] = typeMatch;
-      const methodNode = findFollowingMethod(comment);
-      if (methodNode !== null && typeName) {
-        out.push({
-          '@type-binding.parameter': syntheticCapture('@type-binding.parameter', methodNode, text),
-          '@type-binding.name': syntheticCapture('@type-binding.name', methodNode, ''),
-          '@type-binding.type': syntheticCapture(
-            '@type-binding.type',
-            methodNode,
-            normalizeYardType(typeName),
-          ),
-        });
       }
     }
   }
@@ -957,6 +949,195 @@ function scopeExtractionError(stage: string, filePath: string, err: unknown): Er
   return new Error(
     `[ruby] tree-sitter ${stage} failed for ${filePath}: ${reason}; skipping scope extraction for this file`,
   );
+}
+
+/**
+ * Every node kind that can (re)bind a local name, with the field (or `null`
+ * for the whole node) holding its binding positions, and — per kind — the
+ * walker that decides whether the name is BOUND there rather than merely
+ * mentioned (`siteBinds`). Enumerated from tree-sitter-ruby:
+ *
+ *   - `assignment` / `operator_assignment` `left`, `for` `pattern`: the
+ *     target binds the name only when it IS the identifier or reaches it
+ *     through `left_assignment_list` / `destructured_left_assignment` /
+ *     `rest_assignment` (`a, user = …`, `(a, user), b = …`, `a, *user = …`).
+ *     A `call` or `element_reference` target writes INTO a receiver
+ *     (`user.name = x`, `user[0] = 1`, `user.a, user.b = …`, `user.count += 1`)
+ *     and binds nothing.
+ *   - `rescue` `variable` (`rescue => user`).
+ *   - `block_parameters` / `lambda_parameters` / `method_parameters` of a
+ *     nested callable: the DECLARED names (incl. block locals `|x; user|`),
+ *     never a default value that reads the name (`|x, y = user|`).
+ *   - `in_clause` / `match_pattern` / `test_pattern` `pattern`: identifiers in
+ *     binding positions of a `case … in` / `=>` / `in` pattern — array/find/
+ *     hash/alternative/parenthesized patterns, `=> name` (`as_pattern`),
+ *     `*rest` / `**rest`, a `keyword_pattern` value, and the hash shorthand
+ *     `{user:}` whose `keyword_pattern` has a key and no value. A pinned
+ *     `^user` (`variable_reference_pattern`) or `^(expr)`
+ *     (`expression_reference_pattern`) only READS and binds nothing.
+ *
+ * Known rebindings the AST cannot show (documented gaps, not guarded): a
+ * regex named capture `/(?<user>…)/ =~ s`, `binding.local_variable_set`, `eval`.
+ */
+const REBINDING_POSITIONS: ReadonlyMap<string, string | null> = new Map([
+  ['assignment', 'left'],
+  ['operator_assignment', 'left'],
+  ['for', 'pattern'],
+  ['rescue', 'variable'],
+  ['block_parameters', null],
+  ['lambda_parameters', null],
+  ['method_parameters', null],
+  ['in_clause', 'pattern'],
+  ['match_pattern', 'pattern'],
+  ['test_pattern', 'pattern'],
+]);
+
+/**
+ * Parameter names a `method_parameters` / `block_parameters` /
+ * `lambda_parameters` node binds, in source order. Optional, keyword, splat,
+ * hash-splat and block parameters carry the name in a `name` field; a
+ * destructured parameter `(a, b)` nests plain identifiers; block locals
+ * (`|x; user|`) are plain identifiers too. A default VALUE is not a name.
+ */
+function rubyParameterNames(paramsNode: SyntaxNode | null): string[] {
+  const names: string[] = [];
+  if (paramsNode === null) return names;
+  const visit = (node: SyntaxNode): void => {
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child === null) continue;
+      if (child.type === 'identifier') {
+        names.push(child.text);
+      } else if (child.type === 'destructured_parameter') {
+        visit(child);
+      } else {
+        const name = child.childForFieldName('name');
+        if (name !== null && name.type === 'identifier') names.push(name.text);
+      }
+    }
+  };
+  visit(paramsNode);
+  return names;
+}
+
+/** Containers an assignment / `for` target passes through to the names it binds. */
+const LHS_CONTAINERS: ReadonlySet<string> = new Set([
+  'left_assignment_list',
+  'destructured_left_assignment',
+  'rest_assignment',
+  'exception_variable',
+]);
+
+/** Does an assignment-like TARGET bind `name` itself (not a receiver it writes into)? */
+function lhsBinds(target: SyntaxNode, name: string): boolean {
+  if (target.type === 'identifier') return target.text === name;
+  if (!LHS_CONTAINERS.has(target.type)) return false;
+  for (let i = 0; i < target.namedChildCount; i++) {
+    const child = target.namedChild(i);
+    if (child !== null && lhsBinds(child, name)) return true;
+  }
+  return false;
+}
+
+/** Does a `case … in` / `=>` / `in` pattern bind `name`? */
+function patternBinds(pattern: SyntaxNode, name: string): boolean {
+  switch (pattern.type) {
+    case 'identifier':
+      return pattern.text === name;
+    case 'variable_reference_pattern':
+    case 'expression_reference_pattern':
+      // `^user` / `^(expr)` READ the local or the expression; they bind
+      // nothing. (An assignment nested inside a pinned expression is a corner
+      // that is accepted unseen.)
+      return false;
+    case 'keyword_pattern': {
+      const value = pattern.childForFieldName('value');
+      if (value !== null) return patternBinds(value, name);
+      // `{user:}` — key with no value binds a local of the key's name.
+      const key = pattern.childForFieldName('key');
+      return key !== null && key.text.replace(/:$/, '') === name;
+    }
+    case 'as_pattern': {
+      const bound = pattern.childForFieldName('name');
+      if (bound !== null && bound.text === name) return true;
+      const value = pattern.childForFieldName('value');
+      return value !== null && patternBinds(value, name);
+    }
+    case 'splat_parameter':
+    case 'hash_splat_parameter': {
+      const bound = pattern.childForFieldName('name');
+      return bound !== null && bound.text === name;
+    }
+    default: {
+      // array/find/hash/alternative/parenthesized patterns and anything else:
+      // recurse, so an unknown pattern kind errs toward declining.
+      for (let i = 0; i < pattern.namedChildCount; i++) {
+        const child = pattern.namedChild(i);
+        if (child !== null && patternBinds(child, name)) return true;
+      }
+      return false;
+    }
+  }
+}
+
+/** Is `name` BOUND (not merely mentioned) at the binding site of a `REBINDING_POSITIONS` node? */
+function siteBinds(nodeType: string, site: SyntaxNode, name: string): boolean {
+  switch (nodeType) {
+    case 'assignment':
+    case 'operator_assignment':
+    case 'for':
+    case 'rescue':
+      return lhsBinds(site, name);
+    case 'block_parameters':
+    case 'lambda_parameters':
+    case 'method_parameters':
+      return rubyParameterNames(site).includes(name);
+    case 'in_clause':
+    case 'match_pattern':
+    case 'test_pattern':
+      return patternBinds(site, name);
+    default:
+      return false;
+  }
+}
+
+/**
+ * True when `name` can be rebound anywhere in the method body — any of the
+ * `REBINDING_POSITIONS`, at any depth (a block's `|name|` or a nested def's
+ * parameter shadows too; an untyped same-named local inside them would
+ * otherwise climb to the outer tag). The method's own parameter list is the
+ * binding being typed and is skipped.
+ */
+function isReboundInMethod(methodNode: SyntaxNode, name: string): boolean {
+  const ownParams = methodNode.childForFieldName('parameters');
+  for (const node of methodNode.descendantsOfType([...REBINDING_POSITIONS.keys()])) {
+    if (node.id === ownParams?.id) continue;
+    const field = REBINDING_POSITIONS.get(node.type);
+    const site = field === null || field === undefined ? node : node.childForFieldName(field);
+    if (site !== null && siteBinds(node.type, site, name)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a YARD `@param` tag may type `name` inside `methodNode`.
+ *
+ * The tag's binding lives in the method's own scope (`rubyBindingScopeFor`
+ * pins `@type-binding.parameter` there), where Pass 4 keeps the STRONGER of
+ * two same-named facts: `parameter-annotation` (strength 2) outranks a
+ * local's `constructor-inferred` type (strength 1, `typeBindingStrength`), so
+ * `# @param user [AuditLog]` would override `user = User.new` in the body and
+ * type `user.save` as `AuditLog#save` — before the pin the local won by scope
+ * order. The tag therefore binds only a name that IS one of the method's
+ * formal parameters (so a doc-drifted name types nothing), that is never
+ * rebound anywhere in the body (`isReboundInMethod`), and that is not `self`
+ * (the provider binds `self` itself; a `@param self` must not overwrite it).
+ * Declining costs a missing edge; accepting would cost a wrong one.
+ */
+function yardParamNameIsBindable(methodNode: SyntaxNode, name: string): boolean {
+  if (name === 'self') return false;
+  if (!rubyParameterNames(methodNode.childForFieldName('parameters')).includes(name)) return false;
+  return !isReboundInMethod(methodNode, name);
 }
 
 /**
