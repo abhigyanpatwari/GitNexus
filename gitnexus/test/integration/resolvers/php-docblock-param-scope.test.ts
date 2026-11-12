@@ -18,13 +18,20 @@
  * pre-existing flip for bodied methods, measured before the fix. A `@param`
  * therefore binds only a name that is a formal parameter, is never rebound in
  * the body (assignment, list/array destructuring, `.=`/`??=`, `foreach … as`,
- * `catch`, nested closure/arrow parameters, closure `use`, `static`, `global`,
- * `unset`, `$$x`), and is not `$this`. A declined tag types nothing: missing
- * beats wrong.
+ * `catch`, nested closure/arrow parameters, `use (&$x)`, `static`, `global`,
+ * `unset`, `$$x`), and is not `$this`.
+ *
+ * A declined tag SHADOWS its name: the declaring callable's scope masks it
+ * (`Scope.ownsReceivers`) and the local inference bindings for it in that
+ * callable are dropped, so neither a flow-insensitive local type, a call-result
+ * alias, the single-owner method-name fallback nor a same-named module-scope
+ * variable can type it. The site is suppressed before lookup with reason
+ * `receiver-owned-but-unbound`. Missing beats wrong.
  *
  * Contract: typed call → exact `User::save` ID and only it; untyped sibling →
- * no edge; a `@param` on a rebound name never yields `AuditLog::save`; the
- * decoy `AuditLog::save` is never chosen by any untyped program.
+ * no edge; a declined tag → no edge and a `receiver-owned-but-unbound`
+ * suppression at the site; the decoy is reached only where the documented
+ * type IS the decoy.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
@@ -34,10 +41,29 @@ import {
   getNodesByLabel,
   getRelationships,
   runPipelineFromRepo,
+  suppressionReasonsAt,
   writeFixtureRepo,
+  type OutcomeSite,
   type PipelineResult,
   type RelEdge,
 } from './helpers.js';
+
+/**
+ * The outcome site of the first `call` text (`$user->save(`) after
+ * `function fn(` in a fixture file (or the one after `skip` more): 1-based
+ * line, 0-based column of the receiver, member name, `call`.
+ */
+function siteIn(root: string, file: string, fn: string, call: string, skip = 0): OutcomeSite {
+  const text = fs.readFileSync(path.join(root, file), 'utf8');
+  const start = text.indexOf(`function ${fn}(`);
+  let at = start < 0 ? -1 : text.indexOf(call, start);
+  for (let i = 0; i < skip && at >= 0; i++) at = text.indexOf(call, at + 1);
+  if (at < 0) throw new Error(`fixture lost ${call} in ${fn}`);
+  const before = text.slice(0, at);
+  const arrow = call.lastIndexOf('->');
+  const member = call.slice(arrow + 2, call.indexOf('(', arrow));
+  return [file, before.split('\n').length, at - (before.lastIndexOf('\n') + 1), member, 'call'];
+}
 
 const MODELS = `<?php
 class User {
@@ -243,6 +269,8 @@ describe('PHP PHPDoc @param beside a rebound local, doc drift and $this (PHP-04 
     callsFrom(source, 'save').map((e) => e.rel.targetId);
   const declared = (name: string): boolean =>
     [...getNodesByLabel(result, 'Function'), ...getNodesByLabel(result, 'Method')].includes(name);
+  const suppressedAt = (file: string, fn: string, call = '$user->save(', skip = 0): string[] =>
+    suppressionReasonsAt(result, siteIn(tmpDir, file, fn, call, skip));
 
   beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'php-docblock-param-rebound-'));
@@ -531,6 +559,114 @@ class ForeachConsumer {
     }
 }
 `,
+      'round3.php': `<?php
+require_once 'models.php';
+
+class RoundThree {
+    /** @param User $user */
+    public function use_by_value($user) {
+        $cb = function () use ($user) { return 1; };
+        $user->save();
+    }
+
+    /** @param User $account */
+    public function use_by_value_inner($account) {
+        $inner = function () use ($account) { $account->save(); };
+    }
+
+    /** @param User $account */
+    public function dollar_brace($account, $table) {
+        $sql = "SELECT * FROM \${table}";
+        $account->save();
+    }
+
+    /** @param User $account */
+    public function dollar_brace_heredoc($account, $table) {
+        $sql = <<<SQL
+SELECT * FROM \${table}
+SQL;
+        $account->save();
+    }
+
+    /** @param AuditLog $user */
+    public function dollar_brace_variable($user, $name) {
+        $sql = "\${$name}";
+        $user->save();
+    }
+
+    /** @param AuditLog $user */
+    public function dollar_brace_expression($user, $name) {
+        $sql = "\${$name . 'x'}";
+        $user->save();
+    }
+
+    /** @param User $user */
+    public function bare_extract($user) {
+        \\extract($user);
+        $user->save();
+    }
+
+    /** @param User $user */
+    public function ns_extract($user) {
+        Foo\\extract($user);
+        $user->save();
+    }
+
+    /** @param User $user */
+    public function fq_ns_extract($user) {
+        \\Foo\\extract($user);
+        $user->save();
+    }
+
+    /** @param AuditLog $user */
+    public function arm_static($user) {
+        static $user;
+        $user->save();
+    }
+
+    /** @param AuditLog $user */
+    public function arm_global($user) {
+        global $user;
+        $user->save();
+    }
+
+    /** @param AuditLog $user */
+    public function arm_unset($user) {
+        unset($user);
+        $user->save();
+    }
+
+    /** @param AuditLog $user */
+    public function arm_eval($user) {
+        eval('$user = new User();');
+        $user->save();
+    }
+
+    /** @param AuditLog $user */
+    public function arm_parse_str_one_arg($user) {
+        parse_str('user=1');
+        $user->save();
+    }
+
+    /** @param $user User */
+    public function alt_order_kept($user) {
+        $user->save();
+    }
+
+    /** @param $user AuditLog */
+    public function alt_order_rebound($user) {
+        $user = new User();
+        $user->save();
+    }
+}
+
+class Holder {
+    /** @param User $user */
+    public function __construct(public &$user) {
+        $user->save();
+    }
+}
+`,
     });
     result = await runPipelineFromRepo(tmpDir, () => {});
 
@@ -549,53 +685,58 @@ class ForeachConsumer {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it.each(['ra', 'dd'] as const)(
-    '%s: the local `new User()` beats the `@param AuditLog $user` tag (exact User::save)',
-    (fn) => {
-      expect(saveTargets(fn)).toEqual([userSaveId]);
-    },
-  );
+  it('dd: a tag naming no formal (doc drift) is ignored; the local `new User()` types the call', () => {
+    expect(saveTargets('dd')).toEqual([userSaveId]);
+  });
 
   it.each([
-    'ra_list',
-    'ra_nested_list',
-    'ra_foreach',
-    'ra_foreach_ref',
-    'ra_coalesce',
-    'ra_ref',
-    'ra_ref_rhs',
-    'ra_dynamic',
-    'ra_extract',
-  ] as const)('%s: a rebinding the engine does not type is never typed by the tag', (fn) => {
-    // These rebinding forms get no constructor/element type from the PHP
-    // queries (pre-existing), so the call may stay untyped — but the declined
-    // tag must never fill the gap with AuditLog::save.
-    expect(saveTargets(fn)).not.toContain(decoySaveId);
-  });
-
-  it('ra_catch: `catch (Exception $user)` rebinds to an Exception — no save edge at all', () => {
-    expect(saveTargets('ra_catch')).toEqual([]);
-  });
-
-  it('ra_dynamic_read: a `$$user` READ declines the tag too (documented safe-direction boundary)', () => {
-    expect(saveTargets('ra_dynamic_read')).not.toContain(decoySaveId);
-  });
+    ['ra', 'rebound.php'],
+    ['ra_list', 'rebound.php'],
+    ['ra_nested_list', 'rebound.php'],
+    ['ra_foreach', 'rebound.php'],
+    ['ra_foreach_ref', 'rebound.php'],
+    ['ra_catch', 'rebound.php'],
+    ['ra_coalesce', 'rebound.php'],
+    ['ra_ref', 'rebound.php'],
+    ['ra_ref_rhs', 'rebound.php'],
+    ['ra_dynamic', 'rebound.php'],
+    ['ra_extract', 'rebound.php'],
+    ['ra_dynamic_read', 'rebound.php'],
+  ] as const)(
+    '%s: a declined tag shadows $user — no edge, suppressed before lookup',
+    (fn, file) => {
+      // `ra` (`$user = new User(); $user->save();`) is the recall cost of the
+      // shadow: the engine keeps one binding per name per scope, so it cannot
+      // tell this order from a write AFTER the call, where the local's type
+      // would be wrong. Neither the tag nor the local types a declined name.
+      expect(saveTargets(fn)).toEqual([]);
+      expect(suppressedAt(file, fn)).toEqual(['receiver-owned-but-unbound']);
+    },
+  );
 
   it.each([
     ['ra_closure', '$closureRun'],
     ['ra_arrow', '$arrowRun'],
-    ['ra_use', '$useRun'],
     ['ra_use_ref', '$useRefRun'],
   ] as const)(
-    '%s: the nested callable %s that shadows or captures the name is never typed by the tag',
-    (_outer, closure) => {
+    '%s: the nested callable %s that shadows or captures $user by reference is never typed',
+    (outer, closure) => {
       // The assigned closure is its own call SOURCE (query.ts: the declaration
       // sits on the inner anonymous_function / arrow_function), so the edge
-      // would be emitted from it, not from the enclosing method.
+      // would be emitted from it, not from the enclosing method. Its lookup
+      // climbs to the outer method's shadow and stops there.
       expect(declared(closure)).toBe(true);
-      expect(saveTargets(closure)).not.toContain(decoySaveId);
+      expect(saveTargets(closure)).toEqual([]);
+      expect(suppressedAt('rebound.php', outer)).toEqual(['receiver-owned-but-unbound']);
     },
   );
+
+  it('ra_use: a by-value `use ($user)` cannot rebind, so the tag still types the captured value', () => {
+    // The fixture documents `AuditLog $user`, so AuditLog::save is the correct
+    // target here, not a decoy.
+    expect(declared('$useRun')).toBe(true);
+    expect(saveTargets('$useRun')).toEqual([decoySaveId]);
+  });
 
   it('self_tagged: `@param $this` never retypes the receiver ($this->own() stays Rebound::own)', () => {
     expect(callsFrom('self_tagged', 'own').map((e) => e.rel.targetId)).toEqual([ownId]);
@@ -622,7 +763,9 @@ class ForeachConsumer {
   it.each(['foreach_rebound', 'foreach_drift'] as const)(
     '%s: the foreach element type never resurrects a declined tag',
     (fn) => {
-      expect(saveTargets(fn)).not.toContain(decoySaveId);
+      // `$user` is not a documented formal here, so nothing shadows it; it is
+      // simply untyped, and `save` has two owners.
+      expect(saveTargets(fn)).toEqual([]);
     },
   );
 
@@ -638,32 +781,265 @@ class ForeachConsumer {
     'ra_parse_str_named_reordered',
     'ra_parse_str_commented',
     'first_class_callable',
+    'ra_array_ref',
+    'ra_call_ref',
   ] as const)(
-    '%s: a qualified, upper-cased, named-argument or first-class builtin write declines every tag',
+    '%s: a qualified/upper-cased/named-argument/first-class builtin write or a reference declines the tag and shadows $user',
     (fn) => {
-      expect(saveTargets(fn)).not.toContain(decoySaveId);
+      expect(saveTargets(fn)).toEqual([]);
+      expect(suppressedAt('round2.php', fn)).toEqual(['receiver-owned-but-unbound']);
     },
   );
 
-  it.each(['ra_array_ref', 'ra_call_ref'] as const)(
-    '%s: a reference taken anywhere (array literal, call argument) counts as a rebinding',
-    (fn) => {
-      expect(saveTargets(fn)).not.toContain(decoySaveId);
-    },
-  );
-
-  it('nested_named_fn: a nested named function declines the outer tag (safe direction) and never borrows it', () => {
-    expect(saveTargets('nested_named_fn')).not.toContain(decoySaveId);
+  it('nested_named_fn: a nested named function declines the outer tag (safe direction); both calls are shadowed', () => {
+    expect(saveTargets('nested_named_fn')).toEqual([]);
+    // The outer method's own call comes after the nested function's body.
+    expect(suppressedAt('round2.php', 'nested_named_fn', '$user->save(', 1)).toEqual([
+      'receiver-owned-but-unbound',
+    ]);
+    // The nested function's untyped `$user` climbs to the outer shadow and stops there.
     expect(declared('nested_inner')).toBe(true);
-    expect(saveTargets('nested_inner')).not.toContain(decoySaveId);
+    expect(saveTargets('nested_inner')).toEqual([]);
+    expect(suppressedAt('round2.php', 'nested_inner')).toEqual(['receiver-owned-but-unbound']);
   });
 
-  it('ghost_param: a tag naming no formal types nothing in scope resolution (measured)', () => {
-    expect(saveTargets('ghost_param')).not.toContain(decoySaveId);
+  it('ghost_param: a tag naming no formal types nothing and shadows nothing', () => {
+    expect(saveTargets('ghost_param')).toEqual([]);
+    expect(suppressedAt('round2.php', 'ghost_param', '$ghost->save(')).toEqual([]);
   });
 
-  it('never picks the decoy AuditLog::save from any function', () => {
+  it.each(['use_by_value', 'use_by_value_inner'] as const)(
+    '%s: a by-value closure `use` does not decline the tag',
+    (fn) => {
+      const source = fn === 'use_by_value' ? fn : '$inner';
+      expect(saveTargets(source)).toEqual([userSaveId]);
+    },
+  );
+
+  it.each(['dollar_brace', 'dollar_brace_heredoc'] as const)(
+    '%s: `"${name}"` interpolation reads $table and does not decline the tag',
+    (fn) => {
+      expect(saveTargets(fn)).toEqual([userSaveId]);
+    },
+  );
+
+  it.each(['dollar_brace_variable', 'dollar_brace_expression'] as const)(
+    '%s: `"${$x}"` / `"${expr}"` is still a variable variable and declines every tag',
+    (fn) => {
+      expect(saveTargets(fn)).toEqual([]);
+      expect(suppressedAt('round3.php', fn)).toEqual(['receiver-owned-but-unbound']);
+    },
+  );
+
+  it('bare_extract: `\\extract()` is the builtin and declines the tag', () => {
+    expect(saveTargets('bare_extract')).toEqual([]);
+    expect(suppressedAt('round3.php', 'bare_extract')).toEqual(['receiver-owned-but-unbound']);
+  });
+
+  it.each(['ns_extract', 'fq_ns_extract'] as const)(
+    '%s: `Foo\\extract()` / `\\Foo\\extract()` is another function, so the tag still types $user',
+    (fn) => {
+      expect(saveTargets(fn)).toEqual([userSaveId]);
+    },
+  );
+
+  it.each(['arm_static', 'arm_global', 'arm_unset', 'arm_eval', 'arm_parse_str_one_arg'] as const)(
+    '%s: `static`, `global`, `unset($user)`, `eval()` and one-argument `parse_str` decline the tag',
+    (fn) => {
+      expect(saveTargets(fn)).toEqual([]);
+      expect(suppressedAt('round3.php', fn)).toEqual(['receiver-owned-but-unbound']);
+    },
+  );
+
+  it('alt_order_kept: the `@param $name Type` order types its formal', () => {
+    expect(saveTargets('alt_order_kept')).toEqual([userSaveId]);
+  });
+
+  it('alt_order_rebound: an `@param $name Type` tag on a rebound formal is declined and shadows it', () => {
+    expect(saveTargets('alt_order_rebound')).toEqual([]);
+    expect(suppressedAt('round3.php', 'alt_order_rebound')).toEqual(['receiver-owned-but-unbound']);
+  });
+
+  it('promoted by-reference formal: `public &$user` is a formal, so its tag types it', () => {
+    expect(saveTargets('__construct')).toEqual([userSaveId]);
+  });
+
+  it('reaches AuditLog::save only from the one closure whose tag documents AuditLog', () => {
     const toDecoy = getRelationships(result, 'CALLS').filter((c) => c.rel.targetId === decoySaveId);
-    expect(toDecoy.map((c) => `${c.source} -> ${c.rel.targetId}`)).toEqual([]);
+    expect(toDecoy.map((c) => `${c.source} -> ${c.rel.targetId}`)).toEqual([
+      `$useRun -> ${decoySaveId}`,
+    ]);
   });
+});
+
+describe('PHP declined @param shadows its name against every other route (PHP-04 review)', () => {
+  // The four routes a declined tag used to leave open. Each needs its trap
+  // armed: a method name with exactly ONE workspace owner (`format`, `where`,
+  // `get`), top-level code in another file binding a same-named variable, and
+  // a call BEFORE the rebinding. The untagged twins show each trap is live —
+  // they reach the decoy on base and head alike, outside this guard.
+  let result: PipelineResult;
+  let tmpDir: string;
+  const ids: Record<string, string> = {};
+
+  const callsFrom = (source: string): string[] =>
+    getRelationships(result, 'CALLS')
+      .filter((c) => c.source === source)
+      .map((c) => `${c.target} ${c.rel.targetId}`)
+      .sort();
+  const suppressedAt = (fn: string, call: string): string[] =>
+    suppressionReasonsAt(result, siteIn(tmpDir, 'routes.php', fn, call));
+
+  beforeAll(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'php-docblock-param-routes-'));
+    writeFixtureRepo(tmpDir, {
+      'models.php': `<?php
+class User {
+    public function save(): void {}
+}
+
+class AuditLog {
+    public function save(): void {}
+    public function format(string $f): string { return ''; }
+}
+
+class Report {
+    public function where(): Report { return $this; }
+    public function get(): array { return []; }
+}
+`,
+      'bootstrap.php': `<?php
+require_once 'models.php';
+$user = new AuditLog();
+`,
+      'helpers.php': `<?php
+function make_user() { return null; }
+`,
+      'routes.php': `<?php
+require_once 'models.php';
+
+class Routes {
+    /** @param User $account */
+    public function before_then_rebind($account) {
+        $account->save();
+        $account = new AuditLog();
+    }
+
+    public function before_then_rebind_untagged($account) {
+        $account->save();
+        $account = new AuditLog();
+    }
+}
+
+/** @param DateTime|null $date */
+function render_date_default($date = null) {
+    $date = $date ?? new DateTime();
+    $date->format('c');
+}
+
+function render_date_default_untagged($date = null) {
+    $date = $date ?? new DateTime();
+    $date->format('c');
+}
+
+/** @param User $user */
+function lib_reassign($user) {
+    $user = $user ?? make_user();
+    $user->save();
+}
+
+function lib_reassign_untagged($user) {
+    $user = $user ?? make_user();
+    $user->save();
+}
+
+/** @param Builder $query */
+function query_alias($query) {
+    $query = $query->where();
+    $query->get();
+}
+
+function query_alias_untagged($query) {
+    $query = $query->where();
+    $query->get();
+}
+
+/** @param User $user */
+function lib_closure_use($user) {
+    $cb = function () use ($user) { return 1; };
+    $user->save();
+}
+
+/** @param User $user */
+function kept($user) {
+    $user->save();
+}
+`,
+    });
+    result = await runPipelineFromRepo(tmpDir, () => {});
+
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    for (const [owner, method] of [
+      ['User', 'save'],
+      ['AuditLog', 'save'],
+      ['AuditLog', 'format'],
+      ['Report', 'where'],
+      ['Report', 'get'],
+    ] as const) {
+      const edge = hasMethod.find((e) => e.source === owner && e.target === method);
+      if (edge === undefined) throw new Error(`fixture lost ${owner}::${method}`);
+      ids[`${owner}::${method}`] = edge.rel.targetId;
+    }
+  }, 60000);
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('kept (control): an undeclined tag types its formal — exact User::save', () => {
+    expect(callsFrom('kept')).toEqual([`save ${ids['User::save']}`]);
+  });
+
+  it('lib_closure_use: a by-value `use ($user)` keeps the tag despite a top-level `$user = new AuditLog()`', () => {
+    expect(callsFrom('lib_closure_use')).toEqual([`save ${ids['User::save']}`]);
+  });
+
+  it('route 1, rebind after use: a later `new AuditLog()` never types the earlier call', () => {
+    // Only the constructor call itself remains.
+    expect(callsFrom('before_then_rebind').filter((c) => !c.startsWith('AuditLog '))).toEqual([]);
+    expect(suppressedAt('before_then_rebind', '$account->save(')).toEqual([
+      'receiver-owned-but-unbound',
+    ]);
+  });
+
+  it('route 2, single-owner method name: the name fallback never picks AuditLog::format', () => {
+    expect(callsFrom('render_date_default')).toEqual([]);
+    expect(suppressedAt('render_date_default', '$date->format(')).toEqual([
+      'receiver-owned-but-unbound',
+    ]);
+  });
+
+  it('route 3, module-scope climb: a top-level `$user` in another file never types the parameter', () => {
+    expect(callsFrom('lib_reassign').filter((c) => c.startsWith('save '))).toEqual([]);
+    expect(suppressedAt('lib_reassign', '$user->save(')).toEqual(['receiver-owned-but-unbound']);
+  });
+
+  it('route 4, call-result alias: `$query = $query->where()` never types the parameter by method name', () => {
+    expect(callsFrom('query_alias')).toEqual([]);
+    expect(suppressedAt('query_alias', '$query->where(')).toEqual(['receiver-owned-but-unbound']);
+    expect(suppressedAt('query_alias', '$query->get(')).toEqual(['receiver-owned-but-unbound']);
+  });
+
+  it.each([
+    ['before_then_rebind_untagged', 'AuditLog::save'],
+    ['render_date_default_untagged', 'AuditLog::format'],
+    ['lib_reassign_untagged', 'AuditLog::save'],
+    ['query_alias_untagged', 'Report::get'],
+    ['query_alias_untagged', 'Report::where'],
+  ] as const)(
+    'the trap is armed: untagged twin %s still reaches %s (pre-existing, outside the guard)',
+    (fn, target) => {
+      expect(callsFrom(fn)).toContain(`${target.split('::')[1]} ${ids[target]}`);
+    },
+  );
 });

@@ -95,9 +95,10 @@ export function phpBindingScopeFor(
   }
 
   // A parameter's type belongs to the one callable that declares it. Native
-  // hints (`function f(User $u)`) anchor inside the body and already land
-  // here; a PHPDoc `@param` anchors on the function body too — except for a
-  // BODYLESS declaration (abstract or interface method), where
+  // hints (`function f(User $u)`) anchor on the parameter node, inside the
+  // callable's range, and already land here; a PHPDoc `@param` anchors on
+  // the function body — except for a BODYLESS declaration (abstract or
+  // interface method), where
   // `synthesizePhpDocBindings` falls back to the declaration node, which is
   // also that method's `@scope.function`. The extractor's equal-range
   // auto-hoist (built for return types, which callers read by the function's

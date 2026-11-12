@@ -151,6 +151,9 @@ export function emitPhpScopeCaptures(
   const rawMatches = getPhpScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
   const receiverCallableCache = new Map<number, boolean>();
+  // One PHPDoc `@param` decision per callable, shared by the scope mask, the
+  // parameter and foreach bindings, and the local-inference drop below.
+  const docParamDecisions = createPhpDocParamDecisions();
 
   // Pre-scan: collect anchor node IDs of property_declaration nodes already
   // matched by the typed @declaration.property pattern (query.ts ~lines 95–98).
@@ -210,6 +213,20 @@ export function emitPhpScopeCaptures(
       const varCap = m.captures.find((c) => c.name === 'declaration.variable');
       if (varCap !== undefined && typedPropertyAnchorIds.has(varCap.node.id)) continue;
     }
+
+    // A local inference binding (`$x = new A()`, `$x = $y`, `$x = f()`,
+    // `$x = $o->m()`) for a documented formal whose `@param` tag was declined
+    // would type every use of the name in that callable and defeat its mask
+    // (`phpDeclinedDocParamsCapture`); drop it.
+    const localBindingAnchor =
+      nodeMap['@type-binding.constructor'] ?? nodeMap['@type-binding.alias'];
+    const localBindingName = grouped['@type-binding.name']?.text;
+    if (
+      localBindingAnchor !== undefined &&
+      localBindingName !== undefined &&
+      isDeclinedPhpDocParamLocal(localBindingAnchor, localBindingName, docParamDecisions)
+    )
+      continue;
 
     // Normalize PHP property declarations: strip leading `$` from
     // `@declaration.name` for @declaration.property matches. PHP stores
@@ -300,18 +317,23 @@ export function emitPhpScopeCaptures(
       // all leave `grouped` untouched.
       if (!receiverCreatesCallable(nodeMap['@reference.receiver'], receiverCallableCache))
         synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
-      out.push(grouped);
       const fnNode = nodeIfType(nodeMap['@scope.function'], ...FUNCTION_NODE_TYPES);
+      const docParams = fnNode === null ? NO_PHP_DOC_PARAMS : docParamDecisions(fnNode);
+      // Shadow every declined `@param` name on this callable's own scope.
+      const declinedMask =
+        fnNode === null ? undefined : phpDeclinedDocParamsCapture(fnNode, docParams);
+      if (declinedMask !== undefined) grouped[PHP_DECLINED_DOC_PARAMS_TAG] = declinedMask;
+      out.push(grouped);
       if (fnNode !== null) {
         for (const synth of synthesizePhpReceiverBinding(fnNode)) {
           out.push(synth);
         }
         // Synthesize PHPDoc @param and @return type bindings for this fn.
-        for (const synth of synthesizePhpDocBindings(fnNode)) {
+        for (const synth of synthesizePhpDocBindings(fnNode, docParams)) {
           out.push(synth);
         }
         // Synthesize foreach loop variable bindings inside this fn body.
-        for (const synth of synthesizeForeachBindings(fnNode)) {
+        for (const synth of synthesizeForeachBindings(fnNode, docParams, docParamDecisions)) {
           out.push(synth);
         }
       }
@@ -698,36 +720,41 @@ const PHP_DESTRUCTURING_CONTAINERS: ReadonlySet<string> = new Set([
   'by_ref',
 ]);
 
-/** Calls that write locals the AST cannot name; see `phpBodyHasOpaqueWrites`. */
+/** Calls that write locals the AST cannot name; see `phpBodyWriteFacts`. */
 const PHP_OPAQUE_WRITE_CALLS: ReadonlySet<string> = new Set(['extract', 'eval', 'parse_str']);
 
-/** `$name` spellings of a callable's formal parameters (simple, variadic, promoted). */
+/**
+ * `$name` spellings of a callable's formal parameters (simple, variadic,
+ * promoted). A promoted by-reference formal (`public &$user`) wraps its
+ * `variable_name` in a `by_ref` node; it is a formal like any other.
+ */
 function phpParameterNames(fnNode: SyntaxNode): string[] {
   const params = fnNode.childForFieldName('parameters');
   if (params === null) return [];
   const names: string[] = [];
   for (let i = 0; i < params.namedChildCount; i++) {
-    const name = params.namedChild(i)?.childForFieldName('name');
-    if (name !== null && name !== undefined && name.type === 'variable_name') names.push(name.text);
+    let name = params.namedChild(i)?.childForFieldName('name') ?? null;
+    if (name !== null && name.type === 'by_ref') name = name.firstNamedChild;
+    if (name !== null && name.type === 'variable_name') names.push(name.text);
   }
   return names;
 }
 
 /**
- * True when `target` — an assignment left side, a `foreach` value, an `unset`
- * operand, a `use` entry, a `global` entry — binds the variable `name` ITSELF:
- * the variable node, or a variable reached only through destructuring
- * containers. Never through a member/subscript/property access, whose base is
+ * Add to `out` every variable that `target` — an assignment left side, a
+ * `foreach` value, an `unset` operand, a `global` entry — binds ITSELF: the
+ * variable node, or a variable reached only through destructuring containers.
+ * Never one reached through a member/subscript/property access, whose base is
  * read, not rebound.
  */
-function targetBindsVariable(target: SyntaxNode, name: string): boolean {
-  if (target.type === 'variable_name') return target.text === name;
-  if (!PHP_DESTRUCTURING_CONTAINERS.has(target.type)) return false;
-  for (let i = 0; i < target.namedChildCount; i++) {
-    const child = target.namedChild(i);
-    if (child !== null && targetBindsVariable(child, name)) return true;
+function collectBoundVariables(target: SyntaxNode | null, out: Set<string>): void {
+  if (target === null) return;
+  if (target.type === 'variable_name') {
+    out.add(target.text);
+    return;
   }
-  return false;
+  if (!PHP_DESTRUCTURING_CONTAINERS.has(target.type)) return;
+  for (let i = 0; i < target.namedChildCount; i++) collectBoundVariables(target.namedChild(i), out);
 }
 
 /**
@@ -745,26 +772,23 @@ function foreachBindingSites(node: SyntaxNode): SyntaxNode[] {
   return sites;
 }
 
-/** Every named child of `node` as a binding target (`global $a, $b;`, `unset($a, $b->p)`, `use ($a, &$b)`). */
-function anyChildBinds(node: SyntaxNode, name: string): boolean {
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child !== null && targetBindsVariable(child, name)) return true;
-  }
-  return false;
+/** Every named child of `node` as a binding target (`global $a, $b;`, `unset($a, $b->p)`, `f(&$a)`). */
+function collectChildBindings(node: SyntaxNode, out: Set<string>): void {
+  for (let i = 0; i < node.namedChildCount; i++) collectBoundVariables(node.namedChild(i), out);
 }
 
-/** The parameter list of a NESTED callable (closure, arrow function, nested named function) that shadows `name`. */
-function parameterListBinds(params: SyntaxNode, name: string): boolean {
+/** The parameters of a NESTED callable (closure, arrow function, nested named function): they shadow the outer variables inside it. */
+function collectParameterBindings(params: SyntaxNode, out: Set<string>): void {
   for (let i = 0; i < params.namedChildCount; i++) {
-    const pname = params.namedChild(i)?.childForFieldName('name');
-    if (pname !== null && pname !== undefined && pname.text === name) return true;
+    let pname = params.namedChild(i)?.childForFieldName('name') ?? null;
+    if (pname !== null && pname.type === 'by_ref') pname = pname.firstNamedChild;
+    if (pname !== null && pname.type === 'variable_name') out.add(pname.text);
   }
-  return false;
 }
 
 /**
- * Does `node` (re)bind the local `name`? One clause per grammar position:
+ * Add to `out` every local that `node` (re)binds. One clause per grammar
+ * position:
  *
  *   - `assignment_expression` / `augmented_assignment_expression`: the LEFT
  *     side is the target (`$x = …`, `[$a, $x] = …`, `$x ??= …`).
@@ -775,57 +799,65 @@ function parameterListBinds(params: SyntaxNode, name: string): boolean {
  *   - `catch_clause`: the `name` field.
  *   - `formal_parameters` of a nested callable: a same-named parameter
  *     shadows the outer variable inside it.
- *   - `anonymous_function_use_clause`: `use ($x)` / `use (&$x)`.
  *   - `static_variable_declaration` (`static $x`), `global_declaration`
  *     (`global $x`), `unset_statement` (`unset($x)` — but not `unset($x->p)`).
- *   - `by_ref` anywhere (`[&$x]`, `use (&$x)`, `as &$x`) and a by-reference
- *     call `argument` (`f(&$x)`): the alias can be written through later.
+ *   - `by_ref` anywhere in the body (`[&$x]`, `use (&$x)`, `as &$x`) and the
+ *     `reference_modifier` of a call-time by-reference `argument` (`f(&$x)`,
+ *     removed in PHP 5.4): the alias can be written through later. The
+ *     modifier is collected rather than every `argument`, since it is rare.
  *   - `formal_parameters` of a nested NAMED function count too: the inner
  *     body would otherwise climb to the outer tag for its own untyped `$x`.
  *
+ * A by-VALUE closure capture (`use ($x)`) is not a rebinding: it copies the
+ * value when the closure is created, and an assignment inside the closure
+ * body is already seen by the assignment clause, since the scan covers nested
+ * bodies. A variable handed to a by-reference PARAMETER of a callee
+ * (`preg_match($re, $s, $m)`, a user `fill(&$out)`) is not seen either: the
+ * guard does not read callee signatures.
+ *
  * Writes the grammar cannot name (`$$name = …`, `extract()`, …) are handled by
- * `phpBodyHasOpaqueWrites`, which declines every tag of the callable.
+ * `phpBodyWriteFacts.opaque`, which declines every tag of the callable.
  */
-function nodeRebinds(node: SyntaxNode, name: string): boolean {
+function collectReboundNames(node: SyntaxNode, out: Set<string>): void {
   switch (node.type) {
     case 'assignment_expression':
-    case 'augmented_assignment_expression': {
-      const left = node.childForFieldName('left');
-      return left !== null && targetBindsVariable(left, name);
-    }
-    case 'reference_assignment_expression': {
-      const left = node.childForFieldName('left');
-      const right = node.childForFieldName('right');
-      return (
-        (left !== null && targetBindsVariable(left, name)) ||
-        (right !== null && targetBindsVariable(right, name))
-      );
-    }
+    case 'augmented_assignment_expression':
+      collectBoundVariables(node.childForFieldName('left'), out);
+      return;
+    case 'reference_assignment_expression':
+      collectBoundVariables(node.childForFieldName('left'), out);
+      collectBoundVariables(node.childForFieldName('right'), out);
+      return;
     case 'foreach_statement':
-      return foreachBindingSites(node).some((site) => targetBindsVariable(site, name));
-    case 'catch_clause': {
-      const caught = node.childForFieldName('name');
-      return caught !== null && targetBindsVariable(caught, name);
-    }
+      for (const site of foreachBindingSites(node)) collectBoundVariables(site, out);
+      return;
+    case 'catch_clause':
+      collectBoundVariables(node.childForFieldName('name'), out);
+      return;
     case 'formal_parameters':
-      return parameterListBinds(node, name);
-    case 'anonymous_function_use_clause':
+      collectParameterBindings(node, out);
+      return;
     case 'global_declaration':
     case 'unset_statement':
-      return anyChildBinds(node, name);
-    case 'static_variable_declaration': {
-      const declared = node.childForFieldName('name');
-      return declared !== null && targetBindsVariable(declared, name);
-    }
-    // A reference taken ANYWHERE — `[&$x]`, `use (&$x)`, `as &$x` — aliases
-    // the variable, and a write through the alias later rebinds it unseen.
+      collectChildBindings(node, out);
+      return;
+    case 'static_variable_declaration':
+      collectBoundVariables(node.childForFieldName('name'), out);
+      return;
+    // A reference taken in the body — `[&$x]`, `use (&$x)`, `as &$x` —
+    // aliases the variable, and a write through the alias later rebinds it unseen.
     case 'by_ref':
-      return targetBindsVariable(node, name);
-    // `f(&$x)`: a by-reference call argument is the same alias escape.
-    case 'argument':
-      return node.childForFieldName('reference_modifier') !== null && anyChildBinds(node, name);
+      collectBoundVariables(node, out);
+      return;
+    // `f(&$x)`: a call-time by-reference argument is the same alias escape.
+    // (A `reference_modifier` on a parameter or a callable is not a write.)
+    case 'reference_modifier': {
+      const argument = node.parent;
+      if (argument !== null && argument.type === 'argument') collectChildBindings(argument, out);
+      return;
+    }
     default:
-      return false;
+      return;
   }
 }
 
@@ -836,31 +868,40 @@ const PHP_REBINDING_NODE_TYPES: readonly string[] = [
   'foreach_statement',
   'catch_clause',
   'formal_parameters',
-  'anonymous_function_use_clause',
   'global_declaration',
   'unset_statement',
   'static_variable_declaration',
   'by_ref',
-  'argument',
+  'reference_modifier',
 ];
+
+/**
+ * Callee spellings `phpBodyWriteFacts` must inspect. A call can only reach
+ * `extract`, `eval` or `parse_str` if the body's text contains that name
+ * (case-insensitively; PHP identifiers cannot be split), so a body without it
+ * never materializes its call nodes.
+ */
+const PHP_OPAQUE_CALL_TEXT_RE = /extract|eval|parse_str/i;
 
 /**
  * The builtin a call invokes, lower-cased (PHP function names are
  * case-insensitive), when it is spelled as a bare `name` (`extract`,
  * `EXTRACT`) or a fully qualified global `qualified_name` with no namespace
- * prefix (`\\extract`). `Foo\\extract` and `namespace\\extract` are other
- * functions and yield null.
+ * prefix (`\\extract`). `Foo\\extract`, `\\Foo\\extract` and
+ * `namespace\\extract` are other functions and yield null.
  */
 function phpBuiltinCallee(call: SyntaxNode): string | null {
   const fn = call.childForFieldName('function');
   if (fn === null) return null;
   if (fn.type === 'name') return fn.text.toLowerCase();
   if (fn.type === 'qualified_name') {
-    // The leading `\\` of `\\extract` is itself the `prefix` field (an anonymous
-    // token); only a NAMED `namespace_name` prefix (`Foo\\extract`) names
-    // another function.
-    const prefix = fn.childForFieldName('prefix');
-    if (prefix !== null && prefix.isNamed) return null;
+    // `prefix` is a MULTIPLE field: `\\extract` has only the anonymous `\\`
+    // token there, while `Foo\\extract` and `\\Foo\\extract` also carry a
+    // named `namespace_name` (for the latter AFTER the leading `\\`, so the
+    // first prefix child alone cannot tell them apart). Any named prefix child
+    // names a function in another namespace.
+    if (fn.childrenForFieldName('prefix').some((child) => child !== null && child.isNamed))
+      return null;
     const tail = fn.namedChild(fn.namedChildCount - 1);
     return tail === null || tail.type !== 'name' ? null : tail.text.toLowerCase();
   }
@@ -893,7 +934,7 @@ function phpArgumentValue(arg: SyntaxNode): SyntaxNode | null {
 /**
  * How a `parse_str` call writes: `'target'` when it is the two-argument
  * positional form (it writes only into its second argument, an ordinary
- * target — `parseStrTargetBinds` reads it), `'opaque'` for the one-argument
+ * target — read by `phpBodyWriteFacts`), `'opaque'` for the one-argument
  * form (it writes the current symbol table), for any named argument
  * (`result: $x` — the writer is the label, not the position, so the call is
  * treated like the one-argument form rather than modelled), and for a
@@ -907,70 +948,254 @@ function phpParseStrMode(call: SyntaxNode): 'target' | 'opaque' {
 }
 
 /**
- * True when the body writes locals the AST cannot name: a `dynamic_variable_name`
- * (`$$name = …`, `${'user'} = …` — the overwritten variable is a runtime value),
- * or a call to `extract()`, `eval()`, or `parse_str()` in its opaque forms (see
- * `phpParseStrMode`), spelled bare, upper-cased or fully qualified
- * (`\\extract`). A first-class callable `extract(...)` counts too. When this
- * holds, EVERY `@param` tag of the callable is declined: nothing can be said
- * about which parameter survived. A `$$x` READ also trips it — the safe
- * direction, since the grammar does not distinguish the two uses.
+ * `"${name}"` / heredoc `${name}`: string interpolation of a plain variable,
+ * spelled with braces. The grammar gives it a `dynamic_variable_name` whose
+ * only named child is a bare `name`, but it READS `$name` and writes nothing.
+ * `"${$x}"` and `"${expr}"` (a variable variable inside the string) do not
+ * match and stay opaque.
  */
-function phpBodyHasOpaqueWrites(body: SyntaxNode): boolean {
-  if (body.descendantsOfType('dynamic_variable_name').length > 0) return true;
-  return body.descendantsOfType('function_call_expression').some((call) => {
-    const callee = phpBuiltinCallee(call);
-    if (callee === null || !PHP_OPAQUE_WRITE_CALLS.has(callee)) return false;
-    return callee !== 'parse_str' || phpParseStrMode(call) === 'opaque';
-  });
+function isPhpInterpolatedPlainVariable(node: SyntaxNode): boolean {
+  const parent = node.parent;
+  if (parent === null || (parent.type !== 'encapsed_string' && parent.type !== 'heredoc_body'))
+    return false;
+  return node.namedChildCount === 1 && node.firstNamedChild?.type === 'name';
 }
 
-/** `parse_str($q, $out)` binds `$out`; every other form is opaque (see above). */
-function parseStrTargetBinds(body: SyntaxNode, name: string): boolean {
-  return body.descendantsOfType('function_call_expression').some((call) => {
-    if (phpBuiltinCallee(call) !== 'parse_str' || phpParseStrMode(call) !== 'target') return false;
-    const target = phpArgumentValue(phpCallArguments(call)[1]!);
-    return target !== null && targetBindsVariable(target, name);
-  });
+/** A call to `extract()`, `eval()` or an opaque-form `parse_str()` (see `phpParseStrMode`). */
+function isPhpOpaqueWriteCall(call: SyntaxNode): boolean {
+  const callee = phpBuiltinCallee(call);
+  if (callee === null || !PHP_OPAQUE_WRITE_CALLS.has(callee)) return false;
+  return callee !== 'parse_str' || phpParseStrMode(call) === 'opaque';
 }
 
 /**
- * True when `$name` can be rebound anywhere in the callable's body — any
- * `nodeRebinds` position, at any depth. A nested closure's own `$x = …` is
- * counted too (a false decline for the outer variable, in the safe direction).
- */
-function isReboundInPhpBody(fnNode: SyntaxNode, name: string): boolean {
-  const body = fnNode.childForFieldName('body');
-  if (body === null) return false;
-  if (body.descendantsOfType([...PHP_REBINDING_NODE_TYPES]).some((node) => nodeRebinds(node, name)))
-    return true;
-  return parseStrTargetBinds(body, name);
-}
-
-/**
- * Whether a PHPDoc `@param` may type `$name` inside `fnNode`.
+ * Everything the `@param` guard needs to know about one callable body, from
+ * ONE descendant scan, so the cost is linear in the body however many tags
+ * the docblock carries.
  *
- * The binding lives in the callable's own scope (`phpBindingScopeFor` pins
- * `@type-binding.parameter` there), where Pass 4 keeps the STRONGER of two
- * same-named facts: `parameter-annotation` outranks a local's
- * `constructor-inferred` type (`typeBindingStrength`), so `@param AuditLog
- * $user` would override `$user = new User()` in the body and type
- * `$user->save()` as `AuditLog::save`. The tag therefore binds only a name
- * that IS a formal parameter (a doc-drifted name types nothing), that is
- * never rebound anywhere in the body (`isReboundInPhpBody`), in a body
- * without opaque writes (`phpBodyHasOpaqueWrites`), and that is not `$this`
- * (the provider binds the receiver itself). Every consumer of the docblock —
- * the parameter binding and the foreach element type — goes through this one
- * decision, so a declined tag types nothing anywhere. Declining costs a
- * missing edge; accepting would cost a wrong one. Mirrors the Ruby provider's
- * `yardParamNameIsBindable`.
+ * `opaque` is true when the body writes locals the AST cannot name: a
+ * `dynamic_variable_name` (`$$name = …`, `${'user'} = …` — the overwritten
+ * variable is a runtime value; a `$$x` READ trips it too, since the grammar
+ * does not distinguish the two uses, but `"${name}"` interpolation does not —
+ * see `isPhpInterpolatedPlainVariable`), or a call to `extract()`, `eval()`,
+ * or `parse_str()` in its opaque forms, spelled bare, upper-cased or fully
+ * qualified (`\\extract`); a first-class callable `extract(...)` counts too.
+ * `rebound` holds every local rebound anywhere in the body — any
+ * `collectReboundNames` position at any depth (a nested closure's own
+ * `$x = …` is counted too, a false decline in the safe direction), and the
+ * target of a positional two-argument `parse_str($q, $x)`.
  */
-function phpDocParamNameIsBindable(fnNode: SyntaxNode, name: string): boolean {
-  if (name === '$this') return false;
-  if (!phpParameterNames(fnNode).includes(name)) return false;
+interface PhpBodyWriteFacts {
+  readonly opaque: boolean;
+  readonly rebound: ReadonlySet<string>;
+}
+
+function phpBodyWriteFacts(body: SyntaxNode): PhpBodyWriteFacts {
+  const rebound = new Set<string>();
+  let opaque = false;
+  const types = PHP_OPAQUE_CALL_TEXT_RE.test(body.text)
+    ? [...PHP_REBINDING_NODE_TYPES, 'dynamic_variable_name', 'function_call_expression']
+    : [...PHP_REBINDING_NODE_TYPES, 'dynamic_variable_name'];
+  for (const node of body.descendantsOfType(types)) {
+    if (node.type === 'dynamic_variable_name') {
+      if (!isPhpInterpolatedPlainVariable(node)) opaque = true;
+    } else if (node.type === 'function_call_expression') {
+      if (isPhpOpaqueWriteCall(node)) opaque = true;
+      else if (phpBuiltinCallee(node) === 'parse_str') {
+        const out = phpCallArguments(node)[1];
+        collectBoundVariables(out === undefined ? null : phpArgumentValue(out), rebound);
+      }
+    } else {
+      collectReboundNames(node, rebound);
+    }
+  }
+  return { opaque, rebound };
+}
+
+/**
+ * What one callable's PHPDoc `@param` tags may do, decided ONCE per callable
+ * and shared by every consumer: the parameter binding
+ * (`synthesizePhpDocBindings`), the foreach element type (`synthesizeForeachBindings`),
+ * the scope mask (`phpDeclinedDocParamsCapture`) and the local-inference drop
+ * (`isDeclinedPhpDocParamLocal`).
+ *
+ *   - `types` — `$name → normalized type` for every tag allowed to type its
+ *     formal. The standard `@param Type $name` order wins over the alternate
+ *     `@param $name Type` order; a repeated tag keeps the last type, which is
+ *     what the per-tag emission used to leave in the scope.
+ *   - `declined` — formals whose tag would have typed them but was refused:
+ *     the name is rebound somewhere in the body, or the body has opaque
+ *     writes. These are SHADOWED, not just left untyped (see
+ *     `phpDeclinedDocParamsCapture`).
+ *
+ * A tag on a name that is not a formal (doc drift) or on `$this` (the
+ * provider binds the receiver itself) is in neither set: it types nothing and
+ * shadows nothing. Why a rebound documented formal is declined at all: the
+ * scope keeps the STRONGER of two same-named facts, and a
+ * `parameter-annotation` outranks a local's `constructor-inferred` type
+ * (`typeBindingStrength`), so `@param AuditLog $user` beside
+ * `$user = new User()` would type `$user->save()` as `AuditLog::save`.
+ * Mirrors the Ruby provider's `yardParamNameIsBindable`.
+ */
+interface PhpDocParamDecision {
+  readonly types: ReadonlyMap<string, string>;
+  readonly declined: ReadonlySet<string>;
+}
+
+const NO_PHP_DOC_PARAMS: PhpDocParamDecision = { types: new Map(), declined: new Set() };
+
+/** `$name → normalized type` for every `@param` tag in a comment block (standard order first). */
+function phpDocParamTags(commentBlock: string): Map<string, string> {
+  const tags = new Map<string, string>();
+  PHPDOC_PARAM_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PHPDOC_PARAM_RE.exec(commentBlock)) !== null) {
+    const typeName = normalizePhpDocType(m[1]);
+    if (typeName !== null) tags.set('$' + m[2], typeName);
+  }
+  const standard = new Set(tags.keys());
+  PHPDOC_PARAM_ALT_RE.lastIndex = 0;
+  while ((m = PHPDOC_PARAM_ALT_RE.exec(commentBlock)) !== null) {
+    const paramName = '$' + m[1];
+    if (standard.has(paramName)) continue;
+    const typeName = normalizePhpDocType(m[2]);
+    if (typeName !== null) tags.set(paramName, typeName);
+  }
+  return tags;
+}
+
+function decidePhpDocParams(fnNode: SyntaxNode): PhpDocParamDecision {
+  const commentBlock = collectPrecedingComments(fnNode);
+  if (commentBlock === '') return NO_PHP_DOC_PARAMS;
+  const tags = phpDocParamTags(commentBlock);
+  if (tags.size === 0) return NO_PHP_DOC_PARAMS;
+  const formals = new Set(phpParameterNames(fnNode));
   const body = fnNode.childForFieldName('body');
-  if (body !== null && phpBodyHasOpaqueWrites(body)) return false;
-  return !isReboundInPhpBody(fnNode, name);
+  let facts: PhpBodyWriteFacts | undefined;
+  const types = new Map<string, string>();
+  const declined = new Set<string>();
+  for (const [name, typeName] of tags) {
+    if (name === '$this' || !formals.has(name)) continue;
+    if (body !== null) {
+      facts ??= phpBodyWriteFacts(body);
+      if (facts.opaque || facts.rebound.has(name)) {
+        declined.add(name);
+        continue;
+      }
+    }
+    types.set(name, typeName);
+  }
+  return types.size === 0 && declined.size === 0 ? NO_PHP_DOC_PARAMS : { types, declined };
+}
+
+/** Per-file memo of `decidePhpDocParams`, keyed by the callable node's id. */
+type PhpDocParamDecisions = (fnNode: SyntaxNode) => PhpDocParamDecision;
+
+function createPhpDocParamDecisions(): PhpDocParamDecisions {
+  const memo = new Map<number, PhpDocParamDecision>();
+  return (fnNode) => {
+    let decision = memo.get(fnNode.id);
+    if (decision === undefined) {
+      decision = decidePhpDocParams(fnNode);
+      memo.set(fnNode.id, decision);
+    }
+    return decision;
+  };
+}
+
+/** The capture that carries a callable's shadowed names; read by `phpScopeOwnsReceivers`. */
+const PHP_DECLINED_DOC_PARAMS_TAG = '@receiver-owner.declined-doc-params';
+
+/** The callables whose `@param` tags become type bindings (`synthesizePhpDocBindings`). */
+function isPhpDocumentedCallable(node: SyntaxNode): boolean {
+  return node.type === 'method_declaration' || node.type === 'function_definition';
+}
+
+/** The nearest enclosing callable of `node` — the scope a binding anchored there lands in. */
+function enclosingPhpCallable(node: SyntaxNode): SyntaxNode | null {
+  for (let cur = node.parent; cur !== null; cur = cur.parent) {
+    if ((FUNCTION_NODE_TYPES as readonly string[]).includes(cur.type)) return cur;
+  }
+  return null;
+}
+
+/**
+ * A declined tag SHADOWS its name. Declining alone left the name to whatever
+ * other evidence the engine holds, none of it flow-sensitive: one binding per
+ * name per scope, so a later `$x = new A()` typed an EARLIER `$x->m()`; a
+ * call-result alias `$x = $x->where()` typed the name by method name; the
+ * single-owner method-name fallback (`php-unresolved-receiver-fallback`)
+ * picked the one workspace class with that method; and the walk climbed to a
+ * same-named module-scope variable. Each turned an edge the tag got right
+ * into a wrong one.
+ *
+ * So the declaring callable's scope MASKS every declined formal — the
+ * `Scope.ownsReceivers` contract (`isReceiverOwnedButUnbound`): a receiver the
+ * scope owns but cannot type is a definitive negative, recorded as a
+ * `receiver-owned-but-unbound` suppression BEFORE lookup, and the lexical walk
+ * stops there instead of climbing. The mask yields to a binding in the same
+ * scope, so the local inference bindings for a declined name are dropped in
+ * the same callable (`isDeclinedPhpDocParamLocal`); a native type hint on the
+ * formal is not dropped and still wins, as before.
+ *
+ * Rides the callable's own `@scope.function` match, outside the `@scope.`
+ * namespace so `anchorCaptureFor` cannot mistake it for the anchor. Returns
+ * `undefined` when nothing is declined, so every other callable's capture set
+ * is unchanged. Names are sorted so the capture text is order-stable.
+ */
+function phpDeclinedDocParamsCapture(
+  fnNode: SyntaxNode,
+  decision: PhpDocParamDecision,
+): Capture | undefined {
+  if (decision.declined.size === 0 || !isPhpDocumentedCallable(fnNode)) return undefined;
+  return syntheticCapture(
+    PHP_DECLINED_DOC_PARAMS_TAG,
+    fnNode,
+    JSON.stringify([...decision.declined].sort()),
+  );
+}
+
+/**
+ * `LanguageProvider.scopeOwnsReceivers` for PHP — the read side of
+ * `phpDeclinedDocParamsCapture`, kept beside it so the tag has one producer
+ * and one consumer.
+ */
+export function phpScopeOwnsReceivers(match: CaptureMatch): ReadonlySet<string> | undefined {
+  const raw = match[PHP_DECLINED_DOC_PARAMS_TAG]?.text;
+  if (raw === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed)) return undefined;
+  const names = parsed.filter(
+    (name): name is string => typeof name === 'string' && name.length > 0,
+  );
+  return names.length > 0 ? new Set(names) : undefined;
+}
+
+/**
+ * True when a local inference binding for `name` anchored at `anchor` would
+ * land in the scope of a callable that declined its `@param` tag for `name`.
+ * Such a binding (`$x = new A()`, `$x = $y`, `$x = f()`, `$x = $o->m()`, a
+ * foreach element type) is dropped: the engine applies it to every use of the
+ * name in the scope, before and after the write alike, and it would also
+ * defeat the mask (`phpDeclinedDocParamsCapture`). Cost: a documented formal
+ * that is reassigned from a constructor before use (`$x = new User();
+ * $x->save();`) loses that edge too — the engine cannot tell it from the
+ * write-after-use order.
+ */
+function isDeclinedPhpDocParamLocal(
+  anchor: SyntaxNode,
+  name: string,
+  decisions: PhpDocParamDecisions,
+): boolean {
+  const callable = enclosingPhpCallable(anchor);
+  return (
+    callable !== null && isPhpDocumentedCallable(callable) && decisions(callable).declined.has(name)
+  );
 }
 
 /** Regex for PHPDoc @param: standard `@param Type $name` */
@@ -1107,13 +1332,16 @@ function collectPrecedingComments(fnNode: SyntaxNode): string {
  * PHPDoc @param Type $name → `@type-binding.parameter` match (anchored at fn body/return_type).
  * PHPDoc @return Type → `@type-binding.return` match (anchored at fn name).
  *
- * A `@param` binds only a name that is one of the callable's formal
- * parameters, is never rebound anywhere in its body, in a body without opaque
- * writes, and is not `$this` — see `phpDocParamNameIsBindable`, which the
- * foreach element-type consumer (`buildParamTypeMap`) shares.
+ * The `@param` half emits only what the callable's `PhpDocParamDecision`
+ * allows: a formal parameter, never rebound in the body, in a body without
+ * opaque writes, and not `$this`. The foreach element-type consumer
+ * (`synthesizeForeachBindings`) reads the same decision.
  */
-function synthesizePhpDocBindings(fnNode: SyntaxNode): CaptureMatch[] {
-  if (fnNode.type !== 'method_declaration' && fnNode.type !== 'function_definition') return [];
+function synthesizePhpDocBindings(
+  fnNode: SyntaxNode,
+  docParams: PhpDocParamDecision,
+): CaptureMatch[] {
+  if (!isPhpDocumentedCallable(fnNode)) return [];
 
   const commentBlock = collectPrecedingComments(fnNode);
   if (commentBlock === '') return [];
@@ -1126,33 +1354,7 @@ function synthesizePhpDocBindings(fnNode: SyntaxNode): CaptureMatch[] {
   const anchorNode = bodyNode ?? fnNode;
 
   // ── @param annotations ────────────────────────────────────────────────────
-  PHPDOC_PARAM_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  const seenParams = new Set<string>();
-
-  while ((m = PHPDOC_PARAM_RE.exec(commentBlock)) !== null) {
-    const rawType = m[1];
-    const paramName = '$' + m[2];
-    const typeName = normalizePhpDocType(rawType);
-    if (typeName === null) continue;
-    seenParams.add(paramName);
-    if (!phpDocParamNameIsBindable(fnNode, paramName)) continue;
-    out.push({
-      '@type-binding.parameter': nodeToCapture('@type-binding.parameter', anchorNode),
-      '@type-binding.name': syntheticCapture('@type-binding.name', anchorNode, paramName),
-      '@type-binding.type': syntheticCapture('@type-binding.type', anchorNode, typeName),
-    });
-  }
-
-  // Also check alternate PHPDoc order: @param $name Type
-  PHPDOC_PARAM_ALT_RE.lastIndex = 0;
-  while ((m = PHPDOC_PARAM_ALT_RE.exec(commentBlock)) !== null) {
-    const paramName = '$' + m[1];
-    if (seenParams.has(paramName)) continue; // standard format takes priority
-    const rawType = m[2];
-    const typeName = normalizePhpDocType(rawType);
-    if (typeName === null) continue;
-    if (!phpDocParamNameIsBindable(fnNode, paramName)) continue;
+  for (const [paramName, typeName] of docParams.types) {
     out.push({
       '@type-binding.parameter': nodeToCapture('@type-binding.parameter', anchorNode),
       '@type-binding.name': syntheticCapture('@type-binding.name', anchorNode, paramName),
@@ -1201,7 +1403,11 @@ function synthesizePhpDocBindings(fnNode: SyntaxNode): CaptureMatch[] {
  *   2. Direct resolution when iterable's env type IS the element type
  *      (because PHPDoc normalizes `User[]` → `User` already).
  */
-function synthesizeForeachBindings(fnNode: SyntaxNode): CaptureMatch[] {
+function synthesizeForeachBindings(
+  fnNode: SyntaxNode,
+  docParams: PhpDocParamDecision,
+  decisions: PhpDocParamDecisions,
+): CaptureMatch[] {
   if (
     fnNode.type !== 'method_declaration' &&
     fnNode.type !== 'function_definition' &&
@@ -1213,51 +1419,19 @@ function synthesizeForeachBindings(fnNode: SyntaxNode): CaptureMatch[] {
 
   const out: CaptureMatch[] = [];
 
-  // Build a mini type map from the function's PHPDoc @param annotations.
-  // This is re-parsed here (not cached from synthesizePhpDocBindings) for simplicity;
-  // the cost is negligible given the small comment sizes.
-  const commentBlock = collectPrecedingComments(fnNode);
-  const paramTypeMap = buildParamTypeMap(fnNode, commentBlock);
+  // `$paramName → elementTypeName`: exactly the tags the callable's one
+  // `PhpDocParamDecision` (memoised per callable) lets type their formal, so
+  // the foreach element type can never resurrect a tag the parameter binding
+  // declined (a rebound `$users`, a doc-drifted name). PHPDoc `User[]` is
+  // already normalized to `User`.
+  const paramTypeMap = docParams.types;
 
   // Walk the function body for foreach_statement nodes.
   const bodyNode = fnNode.childForFieldName('body');
   if (bodyNode === null) return [];
-  collectForeachBindings(bodyNode, fnNode, paramTypeMap, out);
+  collectForeachBindings(bodyNode, fnNode, paramTypeMap, decisions, out);
 
   return out;
-}
-
-/**
- * Build a map of `$paramName → elementTypeName` from PHPDoc @param in a
- * comment block — only for tags `phpDocParamNameIsBindable` accepts, so the
- * foreach element type can never resurrect a tag the parameter binding
- * declined (a rebound `$users`, a doc-drifted name).
- */
-function buildParamTypeMap(fnNode: SyntaxNode, commentBlock: string): Map<string, string> {
-  const map = new Map<string, string>();
-  if (commentBlock === '') return map;
-
-  PHPDOC_PARAM_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = PHPDOC_PARAM_RE.exec(commentBlock)) !== null) {
-    const rawType = m[1];
-    const paramName = '$' + m[2];
-    const typeName = normalizePhpDocType(rawType);
-    if (typeName !== null && phpDocParamNameIsBindable(fnNode, paramName)) {
-      map.set(paramName, typeName);
-    }
-  }
-  PHPDOC_PARAM_ALT_RE.lastIndex = 0;
-  while ((m = PHPDOC_PARAM_ALT_RE.exec(commentBlock)) !== null) {
-    const paramName = '$' + m[1];
-    if (map.has(paramName)) continue;
-    const rawType = m[2];
-    const typeName = normalizePhpDocType(rawType);
-    if (typeName !== null && phpDocParamNameIsBindable(fnNode, paramName)) {
-      map.set(paramName, typeName);
-    }
-  }
-  return map;
 }
 
 /**
@@ -1267,17 +1441,18 @@ function buildParamTypeMap(fnNode: SyntaxNode, commentBlock: string): Map<string
 function collectForeachBindings(
   node: SyntaxNode,
   fnNode: SyntaxNode,
-  paramTypeMap: Map<string, string>,
+  paramTypeMap: ReadonlyMap<string, string>,
+  decisions: PhpDocParamDecisions,
   out: CaptureMatch[],
 ): void {
   if (node.type === 'foreach_statement') {
-    const synth = synthesizeSingleForeach(node, fnNode, paramTypeMap);
+    const synth = synthesizeSingleForeach(node, fnNode, paramTypeMap, decisions);
     if (synth !== null) out.push(synth);
   }
   for (let i = 0; i < node.childCount; i++) {
     const child = node.child(i);
     if (child !== null) {
-      collectForeachBindings(child, fnNode, paramTypeMap, out);
+      collectForeachBindings(child, fnNode, paramTypeMap, decisions, out);
     }
   }
 }
@@ -1292,7 +1467,8 @@ function collectForeachBindings(
 function synthesizeSingleForeach(
   foreachNode: SyntaxNode,
   fnNode: SyntaxNode,
-  paramTypeMap: Map<string, string>,
+  paramTypeMap: ReadonlyMap<string, string>,
+  decisions: PhpDocParamDecisions,
 ): CaptureMatch | null {
   // Collect non-body named children: [iterable, value_or_pair]
   const bodyNode = foreachNode.childForFieldName('body');
@@ -1322,6 +1498,9 @@ function synthesizeSingleForeach(
   // Loop variable must be a variable_name
   if (loopVarNode.type !== 'variable_name') return null;
   const loopVarName = loopVarNode.text; // e.g. '$user'
+  // A documented formal whose tag was declined is shadowed in its callable;
+  // an element type for it would type every use of the name in that scope.
+  if (isDeclinedPhpDocParamLocal(foreachNode, loopVarName, decisions)) return null;
 
   // Resolve the element type from the iterable
   let elementType: string | null = null;
