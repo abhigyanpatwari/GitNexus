@@ -1,0 +1,31 @@
+docs/languages/php-ingestion-gaps.md
+  s_b9690234122db7::t_a89840d6f63dfc 35-41,50
+gitnexus/src/core/ingestion/languages/php.ts
+  s_b9690234122db7::t_8383dfe5654cd3 18,333-335
+gitnexus/src/core/ingestion/languages/php/captures.ts
+  s_b9690234122db7::t_0e6022801129d6 154-156,217-230,321-326,332,336,723,726-730,736-738,744-747,750-754,756-757,775-777,780-781,783-785,790-791,804-807,811-817,819,821,824-830,832-836,838-839,842-848,850-858,860,875,878-885,890-891,898-904,937,951-955,957-961,964-968,972-986,988-1012,1016-1029,1031-1038,1040-1072,1074-1198,1335-1338,1340-1344,1357,1406-1410,1422-1427,1432,1444-1445,1449,1455,1470-1471,1501-1503
+gitnexus/src/core/ingestion/languages/php/index.ts
+  s_b9690234122db7::t_9fec2b2cad8962 62
+gitnexus/src/core/ingestion/languages/php/scope-resolver.ts
+  s_b9690234122db7::t_285273640df7ae 27,282-289
+gitnexus/src/core/ingestion/languages/php/simple-hooks.ts
+  s_b9690234122db7::t_9afa8b7a3934fe 98-101
+gitnexus/test/integration/resolvers/php-docblock-param-scope.test.ts
+  s_b9690234122db7::t_56554fc32c0b10 21-29,32-34,44,46,51-67,272-273,561-668,688-689,692-715,722-723,726-727,729-730,734-740,766-768,784-785,787,789-790,794-812,814-815,819-855,858-860,863-867,869-1012,1014-1044
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d1e06d94712a13d7dacae8e43b97aabe22af91a3",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
