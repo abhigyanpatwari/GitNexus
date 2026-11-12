@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Rename a function that is looked up only by a name built at run time (paste0); the lookup is not detected, so the rename succeeds and the lookup string keeps the old name. Documented limit.",
+  "categories": ["string-dispatch", "documented-limit"],
+  "target": { "name": "worker", "kind": "Function", "file": "dyn.R", "startLine": 0 },
+  "newName": "job",
+  "expect": { "status": "success", "edits": 1 },
+  "edges": []
+}

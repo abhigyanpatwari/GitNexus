@@ -31,6 +31,7 @@ const SAMPLES = {
   dart: 'void main() { print(1); }\n',
   kotlin: 'class A {\n  fun m() {}\n}\n',
   zig: 'pub fn main() void {}\n',
+  r: 'f <- function(x) x\n',
 };
 
 async function check(installedDir) {

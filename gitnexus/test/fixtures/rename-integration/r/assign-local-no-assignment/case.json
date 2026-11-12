@@ -1,0 +1,36 @@
+{
+  "language": "r",
+  "description": "Control for the assignment cases: a function that only calls the name has both occurrences renamed (P5).",
+  "categories": [
+    "assignment-shadowing",
+    "same-file"
+  ],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "use.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "use",
+        "kind": "Function",
+        "file": "use.R",
+        "startLine": 2
+      },
+      "to": {
+        "name": "helper",
+        "kind": "Function",
+        "file": "use.R",
+        "startLine": 0
+      }
+    }
+  ]
+}

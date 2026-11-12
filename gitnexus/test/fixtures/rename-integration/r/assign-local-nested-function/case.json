@@ -1,0 +1,20 @@
+{
+  "language": "r",
+  "description": "An assignment of the name in a nested function only (a function literal there): the outer function does not assign it, its call is renamed, the nested definition is not.",
+  "categories": [
+    "assignment-shadowing",
+    "same-file"
+  ],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "use.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": []
+}

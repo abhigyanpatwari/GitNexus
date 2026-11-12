@@ -1,0 +1,1 @@
+fmt <- function() "invisible fmt"

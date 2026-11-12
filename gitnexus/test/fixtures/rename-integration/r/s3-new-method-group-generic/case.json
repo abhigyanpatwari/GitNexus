@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a new name that registers a method of the Ops group generic (Ops.money), although the repository defines no Ops().",
+  "categories": ["s3", "name-collision", "group-generic", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "helper.R", "startLine": 0 },
+  "newName": "Ops.money",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

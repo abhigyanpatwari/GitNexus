@@ -191,6 +191,22 @@
     "moduleTypeBindings": 0,
     "typeBindings": 40999
   },
+  "r/100/20": {
+    "fingerprint": "862f164acf5e0ddcd5fc1bf8a2f9f3ca29479e97f6bfc8f163abae61197fb334",
+    "nodes": 2299,
+    "edges": 2397,
+    "crossFileCalls": 99,
+    "moduleTypeBindings": 0,
+    "typeBindings": 2198
+  },
+  "r/1000/20": {
+    "fingerprint": "a2fd8b23407c2ee55a99d4754d87eb5297d98d71d94c15431ab0599a1d871883",
+    "nodes": 22999,
+    "edges": 23997,
+    "crossFileCalls": 999,
+    "moduleTypeBindings": 0,
+    "typeBindings": 21998
+  },
   "ruby/100/20": {
     "fingerprint": "a2472fd7ca5b2493d24a354b65cd605946b19a00d65df9d5d9788d44da50865c",
     "nodes": 2299,

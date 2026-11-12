@@ -1,0 +1,15 @@
+{
+  "language": "r",
+  "description": "Rename to a name that other code only spells as a parameter, a member, an argument name or a qualified name; none of them binds the renamed function.",
+  "categories": ["name-collision", "positive", "same-file"],
+  "target": { "name": "helper", "kind": "Function", "file": "uses.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "success", "edits": 2 },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": { "name": "use", "kind": "Function", "file": "uses.R", "startLine": 2 },
+      "to": { "name": "helper", "kind": "Function", "file": "uses.R", "startLine": 0 }
+    }
+  ]
+}

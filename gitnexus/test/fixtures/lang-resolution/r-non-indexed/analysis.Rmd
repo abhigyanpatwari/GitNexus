@@ -1,0 +1,3 @@
+# Valid R on purpose: if this extension were ever routed to the R parser the
+# function below would be indexed, so the negative test can actually fail.
+rmd_fn <- function() 1

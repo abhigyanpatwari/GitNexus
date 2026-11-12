@@ -214,6 +214,11 @@ const LBUG_NATIVE = [
   'test/integration/rename-provider-objective-c.test.ts',
   'test/integration/rename-provider-php.test.ts',
   'test/integration/rename-provider-python.test.ts',
+  // Only R part 1 is listed; parts 2-5 run on the Linux coverage shards only. Each part is a
+  // real indexing run per fixture, and this list is already long. (Historical: the parts were
+  // first left off because the shard command went through cmd.exe, whose 8191-char limit left
+  // no room. run-cross-platform.ts no longer uses a shell, so that limit no longer applies.)
+  'test/integration/rename-provider-r.test.ts',
   'test/integration/rename-provider-ruby.test.ts',
   'test/integration/rename-provider-rust.test.ts',
   'test/integration/rename-provider-swift.test.ts',

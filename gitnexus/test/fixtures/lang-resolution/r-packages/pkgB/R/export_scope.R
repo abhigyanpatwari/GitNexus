@@ -1,0 +1,3 @@
+PackageScoped <- function() {
+  FALSE
+}

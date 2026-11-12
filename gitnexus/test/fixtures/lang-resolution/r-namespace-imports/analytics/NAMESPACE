@@ -1,0 +1,37 @@
+export(run_all)
+# Single-line and multi-line importFrom() directives from local packages.
+importFrom(scorelib, tidy_scores)
+importFrom(
+  scorelib,
+  normalise_scores,
+  rank_scores
+)
+importFrom("scorelib", "quoted_fn")
+# Exported by scorelib, but also defined in this package: the own package masks it.
+importFrom(scorelib, own_dup)
+# Duplicate names: the later directive wins (legacyscore).
+importFrom(scorelib, dup_fn)
+importFrom(legacyscore, dup_fn)
+# Not exported by scorelib; never exported name with no definition; whole-package import.
+importFrom(scorelib, hidden_helper)
+importFrom(scorelib, no_such_fn)
+import(reportlib)
+# Dotted names cannot bind precisely.
+importFrom(scorelib, normalise.scores)
+importFrom(scorelib, tidy)
+importFrom(scorelib, tally)
+importFrom(scorelib, plain_fn)
+# R6 members versus top-level definitions.
+importFrom(scorelib, score_it)
+importFrom(scorelib, describe_run)
+# Re-export through a local provider (scorelib imports it from corelib).
+importFrom(scorelib, reexp_fn)
+# Nested function sharing a name with a later top-level function.
+importFrom(scorelib, nest_fn)
+# External packages never bind.
+importFrom(dplyr, mutate)
+# Cross-package decoy guesses the NAMESPACE contradicts (name-guess veto).
+importFrom(dplyr, filter)
+importFrom(scorelib, dup_ext)
+importFrom(dplyr, dup_ext)
+importFrom(dplyr, scripts_only_fn)

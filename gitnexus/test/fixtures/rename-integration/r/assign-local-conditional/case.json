@@ -1,0 +1,22 @@
+{
+  "language": "r",
+  "description": "Refuse when the body assignment of the name is conditional and the name is called afterwards (probe d5, P2).",
+  "categories": [
+    "assignment-shadowing",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "use.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

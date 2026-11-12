@@ -177,6 +177,15 @@ ${previous(i, (p) => `           SET TARGET-PTR TO ENTRY 'C${p}'\n           CAL
 ${members(n, (j) => `       MAKE-${i}-${j}.\n           CONTINUE.`)}
 `,
   }),
+  r: (i, n) => ({
+    path: `src/c${i}.R`,
+    content: `${previous(i, (p) => `source("c${p}.R")`)}
+C${i} <- R6::R6Class("C${i}", public = list(
+${members(n, (j) => `  make${i}_${j} = function() self${i > 0 || j < n - 1 ? ',' : ''}`)}
+${previous(i, (p) => `  use_previous = function() {\n    value <- C${p}$new()\n    value$make${p}_0()$make${p}_1()\n  }`)}
+))
+`,
+  }),
   zig: (i, n) => ({
     path: `src/c${i}.zig`,
     content: `${previous(i, (p) => `const previous = @import("c${p}.zig");`)}

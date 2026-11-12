@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a new name that a parameter without a default carries and calls: a non-function argument makes R skip the parameter and reach the global, which the renamed function would then capture.",
+  "categories": ["name-collision", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "use.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "error", "code": "name_collision", "planningStatus": "blocked" },
+  "edges": []
+}

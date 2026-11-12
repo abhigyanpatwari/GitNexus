@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when a RefClass generator's $methods() call mentions the name: a method added that way sees the class's methods by bare name, so its call reaches the method helper, while the index binds it to the function being renamed.",
+  "categories": ["refclass", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

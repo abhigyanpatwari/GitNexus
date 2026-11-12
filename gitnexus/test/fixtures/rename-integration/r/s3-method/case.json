@@ -1,0 +1,23 @@
+{
+  "language": "r",
+  "description": "Refuse an S3 method: its dotted name is read as an owner-qualified member, so the graph identity is not a unique source declaration.",
+  "categories": [
+    "s3",
+    "dotted-name",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "area.circle",
+    "kind": "Function",
+    "file": "shapes.R",
+    "startLine": 2
+  },
+  "newName": "round_area",
+  "expect": {
+    "status": "error",
+    "code": "stale_graph",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

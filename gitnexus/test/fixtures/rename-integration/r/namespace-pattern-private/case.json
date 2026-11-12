@@ -1,0 +1,15 @@
+{
+  "language": "r",
+  "description": "Rename a package function that exportPattern() does not match; the pattern-matched sibling stays exported.",
+  "categories": ["namespace", "package-export", "export-pattern", "positive"],
+  "target": { "name": "helper_step", "kind": "Function", "file": "R/lib.R", "startLine": 2 },
+  "newName": "worker_step",
+  "expect": { "status": "success", "edits": 2 },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": { "name": "api_run", "kind": "Function", "file": "R/lib.R", "startLine": 0 },
+      "to": { "name": "helper_step", "kind": "Function", "file": "R/lib.R", "startLine": 2 }
+    }
+  ]
+}

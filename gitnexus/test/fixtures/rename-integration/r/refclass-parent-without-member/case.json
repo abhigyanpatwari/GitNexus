@@ -1,0 +1,17 @@
+{
+  "language": "r",
+  "description": "Rename the function and the call in the RefClass method: the indexed parent class defines no method or field of that name.",
+  "categories": ["refclass", "inheritance", "positive"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": []
+}

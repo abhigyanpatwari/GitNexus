@@ -6,3 +6,6 @@ c9fdab17f25ebaf332fba6e6ba55ee328f20fe66:README.md:curl-auth-header:348
 bf4fe7666212c1e2a82aea8309095f63e4b23dcc:gitnexus/tools/mutation/runner/protocol.ts:generic-api-key:11
 # The previous wording of the comment above quoted that key name and was itself flagged; no credential was present.
 02989dd688f863248993122879818ffc4cc95e11:.gitleaksignore:generic-api-key:5
+# Rcpp's public generator-token UUID in an R rename fixture (generated-rcpp-wrapper); no credential was present.
+ab0a3acf132b3a97f78d39a97988fb5b325ad3fc:gitnexus/test/fixtures/rename-integration/r/generated-rcpp-wrapper/before/R/RcppExports.R:generic-api-key:2
+ab0a3acf132b3a97f78d39a97988fb5b325ad3fc:gitnexus/test/fixtures/rename-integration/r/generated-rcpp-wrapper/after/R/RcppExports.R:generic-api-key:2

@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse when a same-named parameter defaults to a function and is called: the call may reach the parameter or the renamed function, which cannot be told apart statically.",
+  "categories": ["parameter-shadowing", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "use.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "error", "code": "ambiguous_reference", "planningStatus": "blocked" },
+  "edges": []
+}
