@@ -30,8 +30,8 @@ class B {
 
 /** `startLine:startCol-endLine:endCol` of a capture. */
 const span = (match: CaptureMatch, tag: string): string => {
-  const r = match[tag]!.range;
-  return `${r.startLine}:${r.startCol}-${r.endLine}:${r.endCol}`;
+  const r = match[tag]?.range;
+  return r === undefined ? `<no ${tag}>` : `${r.startLine}:${r.startCol}-${r.endLine}:${r.endCol}`;
 };
 
 function functionScopes(matches: readonly CaptureMatch[]): Record<string, string[]> {
@@ -49,7 +49,7 @@ function parameterBindings(matches: readonly CaptureMatch[]): string[] {
     .filter((m) => m['@type-binding.parameter'] !== undefined)
     .map(
       (m) =>
-        `${m['@type-binding.name']!.text}:${m['@type-binding.type']!.text}@${span(m, '@type-binding.parameter')}`,
+        `${m['@type-binding.name']?.text}:${m['@type-binding.type']?.text}@${span(m, '@type-binding.parameter')}`,
     )
     .sort();
 }
@@ -70,6 +70,21 @@ describe('Dart lexical names (DART-11)', () => {
       '9:10-9:24': ['x'],
       // a method
       '13:2-15:3': ['a', 'b'],
+    });
+  });
+
+  it('a closure or local function that binds nothing gets no scope: it would be transparent', () => {
+    const source = `void run(List<dynamic> items) {
+  items.forEach((x) {});
+  setState(() {
+    helper();
+  });
+  void tick() {}
+}
+`;
+    expect(functionScopes(emitDartScopeCaptures(source, 'b.dart'))).toEqual({
+      '1:0-7:1': ['items'],
+      '2:16-2:22': ['x'],
     });
   });
 
