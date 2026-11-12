@@ -270,7 +270,7 @@ export const dispatchChunkParse = async (
  * owns it.
  */
 export const dispatchChunkParseRound = async (
-  groups: ReadonlyArray<DispatchGroup<{ path: string; content: string }>>,
+  groups: ReadonlyArray<DispatchGroup<ParseWorkerInput>>,
   workerPool: WorkerPool,
   onFileProgress?: FileProgressCallback,
 ): Promise<ParseWorkerResult[][]> => {
@@ -278,7 +278,12 @@ export const dispatchChunkParseRound = async (
     const items: ParseWorkerInput[] = [];
     for (const file of group.items) {
       const lang = getLanguageForFileContent(file.path, file.content);
-      if (lang) items.push({ path: file.path, content: file.content });
+      if (lang)
+        items.push({
+          path: file.path,
+          content: file.content,
+          ...(file.cacheKey === undefined ? {} : { cacheKey: file.cacheKey }),
+        });
     }
     return { items, chunkHash: group.chunkHash };
   });

@@ -56,10 +56,13 @@ other language's cells are unchanged.
   chain walker reads `element_reference`, so it is VISIBLE-GAP there; Ruby
   still has no `elementTypeOf`.
 - Each Ruby function names its parameter after its cell (`plain_svc`,
-  `deep_svc`, ...). YARD `@param` bindings land on the Module scope, so with a
-  shared `svc` an untyped function resolves through a sibling's tag. A probe
-  showed exactly that, in either order. This is an existing product limit,
-  not fixed here and not yet filed separately.
+  `deep_svc`, ...). When this entry was measured, YARD `@param` bindings landed
+  on the Module scope, so with a shared `svc` an untyped function resolved
+  through a sibling's tag; a probe showed exactly that, in either order. Fixed
+  by #3871 (RUBY-01): the binding-target guard keeps the tag on the declaring
+  method and types only a formal parameter the body never rebinds. No bench
+  cell shares a parameter name with a sibling, so no cell measured the leak
+  and the Ruby rows are unchanged by the fix.
 - **One untyped control per language.** JavaScript and Ruby gain an extra id,
   `untypedChain`: the old untyped `plainChain` body, which reads VISIBLE-GAP.
   `save` exists on both `User` and `Address`, so an edge there would be a

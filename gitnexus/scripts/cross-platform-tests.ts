@@ -42,6 +42,9 @@ const PLATFORM_LOGIC = [
   'test/unit/setup-jsonc.test.ts',
   'test/unit/setup-codex.test.ts',
   'test/unit/setup-antigravity.test.ts',
+  'test/unit/claude-hook-launcher.test.ts',
+  'test/unit/claude-hook-runtime.test.ts',
+  'test/unit/claude-hook-build.test.ts',
   'test/integration/setup-uninstall-roundtrip.test.ts',
   'test/unit/opencode-plugin.test.ts',
   'test/integration/opencode-plugin.test.ts',
@@ -252,6 +255,8 @@ const LBUG_NATIVE = [
   // A real refresh worker must preserve active readers or report native contention.
   'test/integration/mcp-refresh-index-e2e.test.ts',
   'test/integration/fts-repair-warm-session.test.ts',
+  'test/integration/fts-empty-tables.test.ts',
+  'test/integration/persisted-mutation-rows.test.ts',
   'test/unit/lbug-pool-pinning.test.ts',
   'test/unit/hybrid-search.test.ts',
   'test/integration/lbug-readonly-init.test.ts',

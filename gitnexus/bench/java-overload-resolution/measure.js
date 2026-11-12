@@ -203,12 +203,7 @@ async function sample(shape, size) {
       const reparsed = pipeline.reparsedFileCount;
       if (scenario === 'cold') assert.equal(reparsed, input.files.size);
       else if (scenario === 'warm') assert.equal(reparsed, 0);
-      else {
-        // Cache entries contain chunks: editing one file can reparse its neighbors.
-        assert(reparsed > 0, 'The edited source must reach parser workers');
-        if (shape === 'spread')
-          assert(reparsed < input.files.size, 'The edit must retain cache hits');
-      }
+      else assert.equal(reparsed, 1, 'Only the edited source must reach parser workers');
       assert.equal(pipeline.parseCacheHitFileCount, input.files.size - reparsed);
       assert.equal(pipeline.usedWorkerPool, scenario !== 'warm');
       assert(

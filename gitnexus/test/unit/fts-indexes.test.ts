@@ -5,6 +5,7 @@ const { calls } = vi.hoisted(() => ({ calls: [] as string[] }));
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   DEFAULT_FTS_STEMMER: 'porter',
+  executeQuery: vi.fn(async () => []),
   // Row accessors and the snapshot resolver are PURE — mirror the real
   // implementations rather than stubbing them, or `verifySearchFTSIndexes`
   // and `dropSearchFTSIndexes` read `undefined` out of every catalog row and
@@ -37,7 +38,8 @@ const {
   verifySearchFTSIndexes,
 } = await import('../../src/core/search/fts-indexes.js');
 const { FTS_INDEXES, getFtsIndexes } = await import('../../src/core/search/fts-schema.js');
-const { createFTSIndex } = await import('../../src/core/lbug/lbug-adapter.js');
+const { createFTSIndex, executeQuery: readTables } =
+  await import('../../src/core/lbug/lbug-adapter.js');
 
 /** SHOW_INDEXES rows covering every configured FTS index's expected properties. */
 const fullCoverageRows = () =>
@@ -63,6 +65,27 @@ afterEach(() => {
 });
 
 describe('createSearchFTSIndexes', () => {
+  it('creates only populated indexes and removes old indexes on empty tables', async () => {
+    vi.mocked(readTables).mockResolvedValue(
+      FTS_INDEXES.map((index) => ({
+        tableName: index.table,
+        rowCount: ['File', 'Function'].includes(index.table) ? 1 : 0,
+      })),
+    );
+    const ready: string[] = [];
+    expect(await createSearchFTSIndexes({ onIndexReady: (table) => ready.push(table) })).toEqual(
+      [],
+    );
+    expect(calls.filter((call) => call.startsWith('create:'))).toEqual([
+      'create:File.file_fts:porter',
+      'create:Function.function_fts:porter',
+    ]);
+    expect(calls.filter((call) => call.startsWith('drop:'))).toEqual(
+      FTS_INDEXES.map((index) => `drop:${index.table}.${index.indexName}`),
+    );
+    expect(ready).toEqual(FTS_INDEXES.map((index) => index.table));
+  });
+
   it('drops each index before (re)creating it, in order, for every entry', async () => {
     await createSearchFTSIndexes();
     const expected = FTS_INDEXES.flatMap((i) => [
@@ -151,6 +174,25 @@ describe('verifySearchFTSIndexes', () => {
   const propertyIndex = FTS_INDEXES.find((index) => index.table === 'Property')!;
   const propertyRow = () => fullCoverageRows().find((row) => row.table_name === 'Property')!;
 
+  it('accepts absent indexes only with current proof that their tables are empty', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ tableName: 'Property', rowCount: 0 }]);
+    expect(await verifySearchFTSIndexes(query, [propertyIndex])).toEqual([]);
+    query.mockResolvedValueOnce([]).mockResolvedValueOnce([{ tableName: 'Property', rowCount: 1 }]);
+    expect(await verifySearchFTSIndexes(query, [propertyIndex])).toEqual(['Property.property_fts']);
+  });
+
+  it('still rejects a malformed existing index on an empty table', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce([{ ...propertyRow(), property_names: ['name'] }])
+      .mockResolvedValue([{ tableName: 'Property', rowCount: 0 }]);
+    expect(await verifySearchFTSIndexes(query, [propertyIndex])).toEqual(['Property.property_fts']);
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
   it('accepts exact identity/type with additional properties, using one catalog read', async () => {
     const executeQuery = vi.fn(async () => [
       { ...propertyRow(), property_names: [...propertyIndex.properties, 'extra'] },
@@ -216,7 +258,11 @@ describe('verifySearchFTSIndexes', () => {
     expect(message.length).toBeLessThanOrEqual(2048);
     expect(message).not.toContain(privateSource);
     expect(message).not.toContain('index_definition');
-    expect(executeQuery).toHaveBeenCalledTimes(1);
+    expect(executeQuery).toHaveBeenCalledTimes(2);
+    expect(executeQuery).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('count(n) AS rowCount'),
+    );
   });
 
   it('preserves unknown catalog state as an exception, without reporting absence', async () => {
@@ -320,7 +366,11 @@ describe('buildSearchIndexesOrDegrade', () => {
     expect(result.error).toContain('no build error was returned');
     expect(result.error).toContain('observed');
     expect(result.error).toContain('no matching');
-    expect(executeQuery).toHaveBeenCalledTimes(1);
+    expect(executeQuery).toHaveBeenCalledTimes(2);
+    expect(executeQuery).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('count(n) AS rowCount'),
+    );
   });
 
   it.each([

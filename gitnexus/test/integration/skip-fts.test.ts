@@ -13,9 +13,9 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:net';
 import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { loadFileResultStore, readFileResults } from '../../src/storage/file-result-store.js';
 
 describe('FTS opt-out analysis lifecycle (#3091)', () => {
   let repo: Awaited<ReturnType<typeof setupMiniRepo>>;
@@ -43,10 +43,19 @@ describe('FTS opt-out analysis lifecycle (#3091)', () => {
     const meta = await loadMeta(storagePath);
     const cacheKeys = [...(meta?.cacheKeys ?? [])].sort();
     expect(cacheKeys).not.toEqual([]);
+    const store = await loadFileResultStore(
+      path.join(storagePath, 'parse-cache', 'files'),
+      meta!.parseCacheIdentity!.base,
+    );
+    const records = await readFileResults(store, cacheKeys);
+    expect(records.size).toBe(cacheKeys.length);
     const cache = [];
     for (const key of cacheKeys) {
-      const bytes = await fs.readFile(path.join(storagePath, 'parse-cache', `${key}.v8`));
-      cache.push([key, createHash('sha256').update(bytes).digest('hex')]);
+      const record = records.get(key)!;
+      cache.push([
+        key,
+        createHash('sha256').update(record.facts).update(record.scopes).digest('hex'),
+      ]);
     }
     await adapter.initLbug(lbugPath, { skipFts: true });
     try {

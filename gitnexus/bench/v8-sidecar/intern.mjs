@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import v8 from 'node:v8';
+import { loadCachePayloads } from './cache-payloads.mjs';
 
 const [baselineRoot, candidateRoot, indexingResults, output] = process.argv.slice(2);
 assert(
@@ -28,24 +29,19 @@ for (const [variant, root] of Object.entries({
     moduleHash: createHash('sha256').update(fs.readFileSync(filename)).digest('hex'),
   };
 }
-const files = ['parse-cache', 'parsedfile-cache']
-  .flatMap((dir) =>
-    fs
-      .readdirSync(path.join(storage, dir), { recursive: true })
-      .filter((name) => name.endsWith('.v8'))
-      .map((name) => path.join(storage, dir, name)),
-  )
-  .sort();
-assert(files.length > 0, 'No real V8 shards were measured');
-const payloads = [];
+const { format: cacheFormat, payloads } = await loadCachePayloads(storage, {
+  tryLoadV8Cache: modules.baseline.tryLoadV8Cache,
+  // Older baseline runtimes need only their loose-shard reader.
+  async loadPackedModules() {
+    const load = (name) =>
+      import(pathToFileURL(path.resolve(baselineRoot, `gitnexus/dist/storage/${name}.js`)).href);
+    return { ...(await load('file-result-store')), ...(await load('file-result-codec')) };
+  },
+});
 const pools = { baseline: new Map(), candidate: new Map() };
 const fingerprint = createHash('sha256');
-for (const filename of files) {
-  const hit = await modules.baseline.tryLoadV8Cache(filename);
-  assert.equal(hit?.kind, 'hit', 'Unreadable baseline shard');
-  const payload = v8.serialize(hit.value);
+for (const payload of payloads) {
   fingerprint.update(payload);
-  payloads.push(payload);
   const before = v8.deserialize(payload);
   const after = v8.deserialize(payload);
   modules.baseline.internGraphStrings(before, pools.baseline);
@@ -90,7 +86,7 @@ for (let round = 0; round < 10; round++) {
       heapUsed: process.memoryUsage().heapUsed,
       peakRssKiB: process.resourceUsage().maxRSS,
     };
-    assert.equal(graphs.length, files.length);
+    assert.equal(graphs.length, payloads.length);
     samples.push(row);
     console.log(JSON.stringify(row));
   }
@@ -102,7 +98,9 @@ fs.writeFileSync(
       node: process.version,
       runtimes,
       corpusHead: indexing.head,
-      shards: files.length,
+      cacheFormat,
+      // One payload per legacy shard or packed facts/scope section.
+      shards: payloads.length,
       bytes: payloads.reduce((sum, p) => sum + p.length, 0),
       fingerprint: fingerprint.digest('hex'),
       strings,

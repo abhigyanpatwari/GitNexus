@@ -221,6 +221,12 @@ describe('analysis resource admission', () => {
     );
   });
 
+  it('lets vector index construction use the CPU allowance beyond the model thread cap', () => {
+    const budget = resolveAnalysisResourceBudget({ ...request, embeddingThreads: 2 });
+    expect(budget.embedding.nativeThreads).toBe(2);
+    expect(budget.embedding.indexThreads).toBe(request.availableCpus);
+  });
+
   it('admits explicit embedding concurrency and includes sidecar heap within the model reservation', () => {
     const budget = resolveAnalysisResourceBudget({ ...request, embeddingThreads: 8 });
     expect(budget.embedding.nativeThreads).toBe(8);

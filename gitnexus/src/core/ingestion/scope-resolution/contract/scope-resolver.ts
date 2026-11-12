@@ -336,9 +336,15 @@ export interface ImportResolutionContext {
  *  `RegistryProviders.constraintCompatibility`'s third parameter. */
 export type { ConstraintContext } from 'gitnexus-shared';
 
-/** How a container's element was reached in the source. */
+/** How a container's element was reached in the source. `await` is the
+ *  value an awaitable wrapper yields — name-free, like `index`; it carries
+ *  `name?: undefined` so a provider that reads `via.name` after ruling out
+ *  `index` keeps type-checking. A provider answers `undefined` for any route
+ *  it does not recognize, which is an answer ("not that kind of container"),
+ *  so a language without an await route keeps the fold's identity behaviour. */
 export type ElementAccessRoute =
   | { readonly kind: 'index' }
+  | { readonly kind: 'await'; readonly name?: undefined }
   | { readonly kind: 'accessor'; readonly name: string };
 
 /** One structurally-detected implementor plus the receiver form in which it
@@ -396,6 +402,26 @@ export interface ScopeResolver {
    *  per-language convention so consumers asserting on reason keep
    *  working. */
   readonly importEdgeReason: string;
+
+  /** Name the files that supply what a source file takes through its on-demand
+   * (wildcard) imports. Only languages whose wildcards do not execute their
+   * targets may opt in. The finalizer's imports remain intact for lookup; this
+   * narrows persisted File→File edges only.
+   *
+   * The answer governs EVERY `wildcard-expanded` import edge of the file,
+   * whatever statement produced it: an edge whose target is absent from the
+   * returned set is not persisted, so an empty set drops them all. A provider
+   * that cannot decide one kind of wildcard must put that wildcard's targets
+   * in the set. Return undefined when capture or binding evidence is
+   * incomplete; every edge of the file is then kept.
+   *
+   * Facts must survive ParsedFile hydration. The hook receives no source text,
+   * must never reparse a cached file, and must not read `parsed.scopes`: the
+   * emit phase may already have released them to disk. */
+  readonly onDemandImportTargets?: (
+    parsed: ParsedFile,
+    indexes: ScopeResolutionIndexes,
+  ) => ReadonlySet<string> | undefined;
 
   // ─── Pipeline hooks ────────────────────────────────────────────────────────
 

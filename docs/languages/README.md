@@ -30,7 +30,7 @@ receiver examples do not establish whole-language, CFG/PDG or rename completenes
 | [PHP](php-ingestion-gaps.md)                 | Retain PHPDoc container types and establish namespace owners.            |
 | [Python](python-ingestion-gaps.md)           | Audit constructor-field and module ownership coverage.                   |
 | [R](r-ingestion-gaps.md)                     | Type receivers beyond same-function constructors; revisit R-02 and R-12. |
-| [Ruby](ruby-ingestion-gaps.md)               | Isolate YARD parameter bindings before adding recall.                    |
+| [Ruby](ruby-ingestion-gaps.md)               | Isolated by #3871 (RUBY-01); add recall behind that guard.               |
 | [Rust](rust-ingestion-gaps.md)               | Measure conservative smart-pointer limits before widening them.          |
 | [Swift](swift-ingestion-gaps.md)             | Type indexed receivers, then revalidate historical reports.              |
 | [TypeScript](typescript-ingestion-gaps.md)   | Revalidate deferred narrowing contracts.                                 |

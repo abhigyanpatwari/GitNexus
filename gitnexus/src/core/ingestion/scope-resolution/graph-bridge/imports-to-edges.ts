@@ -39,8 +39,8 @@
  *
  * Three signals, because no one of them covers the others. All three ride the
  * EDGE — this function reads properties and never walks the scope tree for
- * them, for the reason spelled out under "Why nothing here is derived from the
- * scope tree" below:
+ * them, for the reason spelled out under "Why runtime presence is not derived
+ * from the scope tree" below:
  *
  *  - `ImportEdge.kind === 'dynamic-resolved'` — TS/JS `import()`.
  *  - `ImportEdge.runsOnlyWhenCalled` — the import sits inside a function body
@@ -59,10 +59,9 @@
  *    the `type` keyword says it, so it is carried from the syntax down —
  *    `typescript/import-decomposer.ts` → `interpret.ts` → `finalize-algorithm.ts`.
  *
- * ## Why nothing here is derived from the scope tree
+ * ## Why runtime presence is not derived from the scope tree
  *
- * `scopeTree` is used for exactly one thing: turning the map's key into the
- * source `filePath`. It is NOT a place to ask where an import was written.
+ * `scopeTree` supplies the source `filePath`. It is NOT a place to ask where an import was written.
  * The finalizer publishes binding-scope buckets consecutively per file. Some
  * providers bind imports in the module scope, others in lexical scopes; neither
  * choice alone establishes whether an import executes during initialization.
@@ -103,6 +102,25 @@
  * without the decomposer aggregating anything: `X` is erased, `Y` is not, and
  * `Y` carries the pair. A statement is type-only exactly when every specifier
  * it decomposes to is.
+ *
+ * ## On-demand wildcard imports name no file (#3695)
+ *
+ * `import pkg.*;` resolves to EVERY file declaring `pkg`, because any of them
+ * may supply a name. Emitting a pair for each of them is importers × package
+ * size: 1,000 files importing a 1,000-file package is a million edges, of which
+ * each importer uses a handful. One reported 24,736-file repository produced
+ * 3,742,494 IMPORTS edges this way — 81% of its graph — and ran out of heap
+ * writing them.
+ *
+ * A provider can resolve AST reference sites against finalized scope bindings
+ * and supply the target files used through on-demand imports. This bridge tests
+ * target-file membership; it neither scans source text nor guesses by spelling.
+ * Type-only uses must be included. Missing capture/binding evidence returns
+ * undefined and keeps every wildcard edge. Explicit imports are always kept.
+ *
+ * Finalized imports remain complete for name resolution. These persisted edges
+ * describe direct import dependencies, not every inherited or chained type
+ * dependency; incremental invalidation must account for those separately.
  *
  * All scopes of a source file are collected before that file's pairs are
  * emitted. The finalizer groups scopes by file, so this preserves first-seen
@@ -176,22 +194,45 @@ const REASON_SUFFIX_BY_PRESENCE: Readonly<Record<ImportPresence, string>> = {
   [PRESENCE_ERASED]: TYPE_ONLY_IMPORT_REASON_SUFFIX,
 };
 
+/** Resolved on-demand target files. Undefined means incomplete evidence. */
+export type OnDemandImportTargetsOf = (sourceFile: string) => ReadonlySet<string> | undefined;
+
 export function emitImportEdges(
   graph: KnowledgeGraph,
   imports: ReadonlyMap<ScopeId, readonly ImportEdge[]>,
   scopeTree: ScopeResolutionIndexes['scopeTree'],
   reason = 'scope-resolution: import',
+  onDemandTargetsOf?: OnDemandImportTargetsOf,
 ): number {
   const debug = isDebugHeapEnabled();
   const started = debug ? Date.now() : 0;
   let scanned = 0;
   let emitted = 0;
+  let unused = 0;
+  const incompleteFiles = debug ? new Set<string>() : undefined;
   const probe = (stage: string, detail = ''): void => {
     if (debug)
       logHeapProbe(
         `sr-emit-imports-${stage}`,
-        `elapsed_ms=${Date.now() - started} scanned=${scanned} emitted=${emitted} ${detail}`,
+        `elapsed_ms=${Date.now() - started} scanned=${scanned} emitted=${emitted} unused=${unused} incomplete_files=${incompleteFiles?.size ?? 0} ${detail}`,
       );
+  };
+
+  // Resolve once per source, including interleaved buckets. A missing entry is
+  // different from a cached undefined (incomplete AST/binding evidence).
+  const targetsBySource = new Map<string, ReadonlySet<string> | undefined>();
+  const isUnusedWildcard = (sourceFile: string, targetFile: string, edge: ImportEdge): boolean => {
+    if (onDemandTargetsOf === undefined || edge.kind !== 'wildcard-expanded') return false;
+    if (!targetsBySource.has(sourceFile))
+      targetsBySource.set(sourceFile, onDemandTargetsOf(sourceFile));
+    const targets = targetsBySource.get(sourceFile);
+    if (targets === undefined) {
+      incompleteFiles?.add(sourceFile);
+      return false;
+    }
+    if (targets.has(targetFile)) return false;
+    unused++;
+    return true;
   };
   probe('start', `scopes=${imports.size}`);
 
@@ -251,6 +292,7 @@ export function emitImportEdges(
       for (const edge of edges) {
         if (debug && ++scanned % 65536 === 0) probe('collect-progress', `pairs=${pairs.size}`);
         if (edge.targetFile === null || edge.targetFile === sourceFile) continue;
+        if (isUnusedWildcard(nextFile, edge.targetFile, edge)) continue;
         const presence = importPresence(edge);
         const existing = pairs.get(edge.targetFile);
         if (existing === undefined || presence < existing) pairs.set(edge.targetFile, presence);
@@ -276,6 +318,7 @@ export function emitImportEdges(
       if (debug && ++scanned % 65536 === 0) probe('collect-progress', `pairs=${pairs.size}`);
       if (edge.targetFile === null) continue;
       if (edge.targetFile === sourceFile) continue;
+      if (isUnusedWildcard(sourceFile, edge.targetFile, edge)) continue;
 
       const presence = importPresence(edge);
       const dedupKey = `${sourceFile}->${edge.targetFile}`;

@@ -113,11 +113,12 @@ export function hasAccessesAtSite(
   line: number,
   col: number,
 ): boolean {
+  const sitePattern = new RegExp(`^:(?:read:|write:)?${line}:${col}(?::\\d+:\\d+)?$`);
   return getRelationships(result, 'ACCESSES').some(
     (edge) =>
       edge.rel.sourceId === sourceId &&
       edge.rel.targetId === targetId &&
-      edge.rel.id.endsWith(`:${line}:${col}`),
+      sitePattern.test(edge.rel.id.slice(edge.rel.id.lastIndexOf(targetId) + targetId.length)),
   );
 }
 

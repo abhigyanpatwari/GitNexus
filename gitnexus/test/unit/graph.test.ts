@@ -32,6 +32,20 @@ function makeRel(
 }
 
 describe('createKnowledgeGraph', () => {
+  it.each([{ sourceId: 'different' }, { targetId: 'different' }, { type: 'EXTENDS' as const }])(
+    'rejects conflicting identity without a collector: %j',
+    (change) => {
+      const graph = createKnowledgeGraph();
+      const first = makeRel('fn:foo', 'fn:bar');
+      graph.addRelationship(first);
+      expect(() => graph.addRelationship({ ...first, ...change })).toThrow(
+        /Conflicting graph relationship identity/,
+      );
+      expect(graph.relationshipCount).toBe(1);
+      expect(graph.getRelationship(first.id)).toEqual(first);
+    },
+  );
+
   // ─── addNode / getNode ─────────────────────────────────────────────
 
   it('adds and retrieves a node', () => {

@@ -13,6 +13,7 @@
 // We use createRequire to load the CommonJS vendored files in ESM context.
 import Graph from 'graphology';
 import type { AbstractGraph, Attributes } from 'graphology-types';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -250,11 +251,11 @@ export const processCommunities = async (
   onProgress?.(`Found ${details.count} communities...`, 60);
 
   // Step 3: Create community nodes with heuristic labels
+  const communityIds = stableCommunityIds(details.communities);
   const communityNodes = createCommunityNodes(
     details.communities as Record<string, number>,
-    details.count,
+    communityIds,
     graph,
-    knowledgeGraph,
   );
 
   onProgress?.('Creating membership edges...', 80);
@@ -264,12 +265,13 @@ export const processCommunities = async (
   const retainedCommunityIds = new Set(communityNodes.map((community) => community.id));
   const memberships: CommunityMembership[] = [];
   const rawMemberships: CommunityMembership[] = [];
-  Object.entries(details.communities).forEach(([nodeId, communityNum]) => {
-    const communityId = `comm_${communityNum}`;
+  for (const nodeId of Object.keys(details.communities)) {
+    const communityNum = details.communities[nodeId];
+    const communityId = communityIds.get(communityNum)!;
     const membership = { nodeId, communityId };
     rawMemberships.push(membership);
     if (retainedCommunityIds.has(communityId)) memberships.push(membership);
-  });
+  }
 
   onProgress?.('Community detection complete!', 100);
 
@@ -764,30 +766,48 @@ const normalizePartition = (
 // ============================================================================
 
 /**
- * Create Community nodes with auto-generated labels based on member file paths
+ * Anchor each community to its smallest member, independent of partition numbering.
+ * The ID stays stable while that anchor remains the smallest member. Adding a
+ * smaller member or removing the anchor changes it. Anchor order makes collision
+ * suffixes deterministic even when the engine renumbers or reorders its partition.
+ * The ID follows the anchor if clustering moves it to a different member set.
  */
+export const stableCommunityIds = (communities: Record<string, number>): Map<number, string> => {
+  const smallest = new Map<number, string>();
+  // Avoid allocating an entry tuple for every symbol in the partition.
+  for (const nodeId of Object.keys(communities)) {
+    const communityNum = communities[nodeId];
+    const current = smallest.get(communityNum);
+    if (current === undefined || nodeId < current) smallest.set(communityNum, nodeId);
+  }
+
+  const ids = new Map<number, string>();
+  const used = new Set<string>();
+  const ordered = [...smallest].sort(([, a], [, b]) => (a < b ? -1 : a > b ? 1 : 0));
+  for (const [communityNum, memberId] of ordered) {
+    const base = `comm_${createHash('sha1').update(memberId).digest('hex').slice(0, 12)}`;
+    let id = base;
+    for (let n = 2; used.has(id); n++) id = `${base}_${n}`;
+    used.add(id);
+    ids.set(communityNum, id);
+  }
+  return ids;
+};
+
+/** Create Community nodes with labels based on member file paths. */
 const createCommunityNodes = (
   communities: Record<string, number>,
-  communityCount: number,
+  communityIds: ReadonlyMap<number, string>,
   graph: GraphInstance,
-  knowledgeGraph: KnowledgeGraph,
 ): CommunityNode[] => {
   // Group node IDs by community
   const communityMembers = new Map<number, string[]>();
 
-  Object.entries(communities).forEach(([nodeId, commNum]) => {
-    if (!communityMembers.has(commNum)) {
-      communityMembers.set(commNum, []);
-    }
-    communityMembers.get(commNum)!.push(nodeId);
-  });
-
-  // Build node lookup for file paths
-  const nodePathMap = new Map<string, string>();
-  for (const node of knowledgeGraph.iterNodes()) {
-    if (node.properties.filePath) {
-      nodePathMap.set(node.id, node.properties.filePath);
-    }
+  for (const nodeId of Object.keys(communities)) {
+    const commNum = communities[nodeId];
+    const members = communityMembers.get(commNum);
+    if (members) members.push(nodeId);
+    else communityMembers.set(commNum, [nodeId]);
   }
 
   // Create community nodes - SKIP SINGLETONS (isolated nodes)
@@ -797,13 +817,14 @@ const createCommunityNodes = (
     // Skip singleton communities - they're just isolated nodes
     if (memberIds.length < 2) return;
 
-    const heuristicLabel = generateHeuristicLabel(memberIds, nodePathMap, graph, commNum);
+    const communityId = communityIds.get(commNum)!;
+    const heuristicLabel = generateHeuristicLabel(memberIds, graph, communityId);
 
     communityNodes.push({
-      id: `comm_${commNum}`,
+      id: communityId,
       label: heuristicLabel,
       heuristicLabel,
-      cohesion: calculateCohesion(memberIds, graph),
+      cohesion: calculateCohesion(memberIds, graph, communities, commNum),
       symbolCount: memberIds.length,
     });
   });
@@ -823,15 +844,14 @@ const createCommunityNodes = (
  */
 const generateHeuristicLabel = (
   memberIds: string[],
-  nodePathMap: Map<string, string>,
   graph: GraphInstance,
-  commNum: number,
+  communityId: string,
 ): string => {
   // Collect folder names from file paths
   const folderCounts = new Map<string, number>();
 
   memberIds.forEach((nodeId) => {
-    const filePath = nodePathMap.get(nodeId) || '';
+    const filePath: string = graph.getNodeAttribute(nodeId, 'filePath') || '';
     const parts = filePath.split('/').filter(Boolean);
 
     // Get the most specific folder (parent directory)
@@ -880,7 +900,7 @@ const generateHeuristicLabel = (
   }
 
   // Last resort: generic name with community ID for uniqueness
-  return `Cluster_${commNum}`;
+  return `Cluster_${communityId.slice('comm_'.length)}`;
 };
 
 /**
@@ -909,10 +929,13 @@ const findCommonPrefix = (strings: string[]): string => {
  * Estimate cohesion score (0-1) based on internal edge density.
  * Uses sampling for large communities to avoid O(N^2) cost.
  */
-const calculateCohesion = (memberIds: string[], graph: GraphInstance): number => {
+const calculateCohesion = (
+  memberIds: string[],
+  graph: GraphInstance,
+  communities: Record<string, number>,
+  communityNum: number,
+): number => {
   if (memberIds.length <= 1) return 1.0;
-
-  const memberSet = new Set(memberIds);
 
   // Sample up to 50 members for large communities
   const SAMPLE_SIZE = 50;
@@ -925,7 +948,7 @@ const calculateCohesion = (memberIds: string[], graph: GraphInstance): number =>
     if (!graph.hasNode(nodeId)) continue;
     graph.forEachNeighbor(nodeId, (neighbor: string) => {
       totalEdges++;
-      if (memberSet.has(neighbor)) {
+      if (communities[neighbor] === communityNum) {
         internalEdges++;
       }
     });

@@ -43,6 +43,7 @@ import type { HeritageTypeArgumentSink } from '../../scope-resolution/utils/gene
 import { expandDartWildcardNames } from './expand-wildcards.js';
 import { dartIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 import { captureDartPackageConfig, loadDartPackageConfig } from './package-config.js';
+import { dartElementTypeOf } from './interpret.js';
 import { emitDartPackageDependencies } from './package-dependencies.js';
 
 interface ClassDefRef {
@@ -236,6 +237,10 @@ export const dartScopeResolver: ScopeResolver = {
   // inherits pre-pass; these need an explicit, kind-independent edge type).
   emitHeritageEdges: (graph, parsedFiles, nodeLookup, _scopes, recordTypeArguments) =>
     emitDartHeritageEdges(graph, parsedFiles, nodeLookup, recordTypeArguments),
+
+  // The one container route Dart answers (`await`); the same function the
+  // parse-side provider hands the extractor's chain follow. See `dartElementTypeOf`.
+  elementTypeOf: dartElementTypeOf,
 
   // Dart is statically typed — the field-fallback heuristic over-connects.
   fieldFallbackOnMethodLookup: false,

@@ -105,7 +105,19 @@ export const COMMUNITY_COLORS = [
   '#84cc16', // lime
 ];
 
-export const getCommunityColor = (communityIndex: number): string => {
+export const getCommunityColor = (communityIndex: string | number): string => {
+  if (typeof communityIndex === 'string') {
+    // Keep colors for older indexes while treating new IDs as opaque strings.
+    const legacy = /^comm_(\d+)$/.exec(communityIndex);
+    if (legacy && Number.isSafeInteger(Number(legacy[1]))) {
+      return COMMUNITY_COLORS[Number(legacy[1]) % COMMUNITY_COLORS.length];
+    }
+    let hash = 0;
+    for (let i = 0; i < communityIndex.length; i++) {
+      hash = (Math.imul(hash, 31) + communityIndex.charCodeAt(i)) >>> 0;
+    }
+    return COMMUNITY_COLORS[hash % COMMUNITY_COLORS.length];
+  }
   return COMMUNITY_COLORS[communityIndex % COMMUNITY_COLORS.length];
 };
 

@@ -83,7 +83,7 @@ for (const manager of ['npm', 'pnpm', 'bun']) {
         'export function main() { return greet("GitNexus"); }\n',
     );
     run('git', ['init', '-q', 'repo'], root, env);
-    const args = ['gitnexus', 'analyze', 'repo', '--index-only', '--workers', '1'];
+    const args = ['gitnexus', 'analyze', 'repo', '--index-only', '--workers', '1', '--verbose'];
     const [program, prefix] =
       manager === 'npm'
         ? ['npx', ['--no-install']]

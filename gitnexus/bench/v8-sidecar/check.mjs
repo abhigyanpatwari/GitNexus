@@ -42,20 +42,74 @@ export function indexingMetrics(report, lifecycle) {
   const byName = new Map(report.results.map((r) => [r.name, r]));
   assert.equal(byName.size, report.results.length, 'Duplicate indexing sample');
   assert(byName.has('baseline-seed') && byName.has('candidate-seed'), 'Missing seeds');
+  const receipts = new Map();
+  if (report.graphParity !== undefined) {
+    assert(Array.isArray(report.graphParity), 'Invalid graph parity receipts');
+    assert.equal(report.graphParity.length, report.pairs + 1, 'Incomplete graph parity receipts');
+    for (const receipt of report.graphParity) {
+      assert(!receipts.has(receipt.baselineName), 'Duplicate graph parity receipt');
+      receipts.set(receipt.baselineName, receipt);
+    }
+  }
+  const checkGraph = (baseline, candidate) => {
+    assert.deepEqual(candidate.graph.nodes, baseline.graph.nodes, 'Semantic nodes differ');
+    const receipt = receipts.get(baseline.name);
+    if (!receipt) {
+      assert.equal(report.graphParity, undefined, 'Missing graph parity receipt');
+      assert.deepEqual(
+        candidate.graph,
+        baseline.graph,
+        'Semantic graph differs without a parity receipt',
+      );
+      return;
+    }
+    assert.equal(receipt.version, 1, 'Invalid graph parity version');
+    assert.equal(receipt.candidateName, candidate.name, 'Graph parity paired to wrong sample');
+    assert.deepEqual(
+      receipt.baseline,
+      baseline.graph,
+      'Graph parity baseline does not match sample',
+    );
+    assert.deepEqual(
+      receipt.candidate,
+      candidate.graph,
+      'Graph parity candidate does not match sample',
+    );
+    assert.deepEqual(
+      receipt.comparison,
+      baseline.graph,
+      'Graph parity projection differs from baseline',
+    );
+    assert(['exact', 'point-to-span'].includes(receipt.mode), 'Invalid graph parity mode');
+    if (receipt.mode === 'exact')
+      assert.deepEqual(candidate.graph, baseline.graph, 'Exact parity requires equal graphs');
+  };
+  checkGraph(byName.get('baseline-seed'), byName.get('candidate-seed'));
   const pairs = [];
   for (let i = 1; i <= report.pairs; i++) {
     const baseline = byName.get('baseline-' + i);
     const candidate = byName.get('candidate-' + i);
     for (const [variant, sample] of Object.entries({ baseline, candidate })) {
       assert.equal(sample?.variant, variant, 'Missing or mislabeled indexing sample');
-      assert.equal(sample.incremental?.writeMode, 'incremental');
+      // Physical persistence is independent of incremental parse/cache reuse.
+      // Keep both write paths subject to the same end-to-end timing budget.
+      assert(
+        ['incremental', 'full'].includes(sample.incremental?.writeMode),
+        'Invalid physical write mode for a cached edit',
+      );
       assert.equal(sample.incremental?.changedFiles, 1);
-      assert.deepEqual(sample.rebuildReasons, []);
+      assert.deepEqual(
+        sample.rebuildReasons.filter(
+          (reason) => sample.incremental.writeMode !== 'full' || reason !== 'escalated-full-write',
+        ),
+        [],
+        'Measured edits must not invalidate the parse cache or schema',
+      );
       assert(sample.cachedFiles > 0, 'The benchmark must hydrate cached files');
       assert(sample.graph?.nodes?.count > 0 && sample.graph?.edges?.count > 0);
       assert.deepEqual(sample.persistedTargets, [{ target: i % 2 ? 'load' : 'save' }]);
     }
-    assert.deepEqual(candidate.graph, baseline.graph, 'Semantic graph differs');
+    checkGraph(baseline, candidate);
     if (i > 1) pairs.push({ baseline, candidate });
   }
   return ['ms', 'cpuMs'].map((key) => ({
@@ -124,7 +178,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     ),
     '',
     'A slowdown above 5% in either the overall median or median paired ratio of any timed metric fails. This is a regression budget, not a statistical confidence claim. Persistent pairs share processes. CPU includes GC threads active during the timed work; forced GC between rounds is excluded. Peak RSS is cumulative and descriptive. Shard graph/byte/pool equality and persisted edit targets must match. Incomplete or invalid measurements fail.',
-    "Raw hydrateCpuMs measures deserialization plus interning. Raw analysisPeakRssKiB is the process-lifetime RSS high-water mark captured before the current sample's graph verification; earlier samples can set it. It is not an interval peak.",
+    "Raw hydrateCpuMs measures deserialization plus interning. Raw analysisPeakRssKiB is the process-lifetime RSS high-water mark captured before the current sample's graph verification; earlier samples can set it. Persistent RSS can include earlier snapshot serialization and is excluded from performance comparisons. It is not an interval peak.",
     '',
   ];
   const markdown = lines.join('\n');

@@ -97,6 +97,38 @@ const readFtsIndexRows = async (lbugPath: string): Promise<Array<Record<string, 
   }
 };
 
+/** Prove exact populated-table coverage using native counts, independent of the writer. */
+const expectPopulatedFtsIndexes = async (lbugPath: string): Promise<void> => {
+  const lbugAdapter = await import('../../src/core/lbug/lbug-adapter.js');
+  await lbugAdapter.initLbug(lbugPath);
+  try {
+    const catalog = await lbugAdapter.executeQuery('CALL SHOW_INDEXES() RETURN *');
+    const actual = catalog.filter((row) => row.index_type === 'FTS');
+    const expected: string[] = [];
+    for (const { table, indexName, properties } of FTS_INDEXES) {
+      const rows = await lbugAdapter.executeQuery(
+        `MATCH (n:\`${table}\`) RETURN count(n) AS total`,
+      );
+      expect(rows).toHaveLength(1);
+      expect(['number', 'bigint']).toContain(typeof rows[0].total);
+      if (Number(rows[0].total) === 0) continue;
+      expected.push(indexName);
+      expect(actual).toContainEqual(
+        expect.objectContaining({
+          table_name: table,
+          index_name: indexName,
+          property_names: expect.arrayContaining([...properties]),
+        }),
+      );
+    }
+    expect(expected).toContain('file_fts');
+    expect(expected).toContain('function_fts');
+    expect(actual.map((row) => row.index_name).sort()).toEqual(expected.sort());
+  } finally {
+    await lbugAdapter.closeLbug();
+  }
+};
+
 /** Every File node in the published graph, as rows (duplicates stay visible). */
 const readGraphFileRows = async (
   lbugPath: string,
@@ -263,7 +295,7 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
       // and the gate must not manufacture a rebuild when FTS loads fine.
       expect(logs.some((m) => m.includes('full DB write'))).toBe(false);
       const { lbugPath } = getStoragePaths(repo.dbPath);
-      expect((await readFtsIndexRows(lbugPath)).length).toBe(FTS_INDEXES.length);
+      await expectPopulatedFtsIndexes(lbugPath);
     } finally {
       await repo.cleanup();
     }
@@ -336,7 +368,7 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
       // Hard assertion, not an environment gap: `skipUnlessVectorAvailable`
       // above already proved VECTOR loads on this host (review H6).
       expect(vectorIndexBuilt).toBe(true);
-      expect((await readFtsIndexRows(lbugPath)).length).toBe(FTS_INDEXES.length);
+      await expectPopulatedFtsIndexes(lbugPath);
 
       await touchAndCommit(repo.dbPath, '#2841 both-blocked touch');
 
@@ -386,7 +418,7 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
     try {
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
       const { lbugPath } = getStoragePaths(repo.dbPath);
-      expect((await readFtsIndexRows(lbugPath)).length).toBe(FTS_INDEXES.length);
+      await expectPopulatedFtsIndexes(lbugPath);
 
       // Real rows and NO stampEmbeddingCount, so meta reports zero embeddings
       // while the DB holds these. Explicit dropping must remove them even
@@ -427,7 +459,7 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
     try {
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
       const { lbugPath } = getStoragePaths(repo.dbPath);
-      expect((await readFtsIndexRows(lbugPath)).length).toBe(FTS_INDEXES.length);
+      await expectPopulatedFtsIndexes(lbugPath);
 
       // Run 2: FTS blocked → the forced rebuild, which leaves a DB with no FTS
       // index at all and stamps `capabilities.fts.status = 'unavailable'`.
@@ -478,7 +510,7 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
       // or have `ensureFtsRowDmlSafe` answer from that stamp instead of the
       // catalog) and this run escalates again, forever.
       expect(healedLogs.some((m) => m.includes('full DB write'))).toBe(false);
-      expect((await readFtsIndexRows(lbugPath)).length).toBe(FTS_INDEXES.length);
+      await expectPopulatedFtsIndexes(lbugPath);
 
       // Run 2's work survived into run 3's surgical write — i.e. the escalated
       // rebuild was really published at the canonical path, not left behind in
@@ -502,7 +534,7 @@ describe('runFullAnalysis incremental writeback — extension-gated DML decided 
     try {
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
       const { lbugPath, storagePath } = getStoragePaths(repo.dbPath);
-      expect((await readFtsIndexRows(lbugPath)).length).toBe(FTS_INDEXES.length);
+      await expectPopulatedFtsIndexes(lbugPath);
       // Run 1 was a full rebuild, which always stages — so any staging entry
       // observed below belongs to the escalated run, not to a leftover.
       expect(await readStagingEntries(storagePath)).toEqual([]);

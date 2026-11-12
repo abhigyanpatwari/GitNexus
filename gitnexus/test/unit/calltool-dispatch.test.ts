@@ -1586,9 +1586,42 @@ describe('LocalBackend.callTool', () => {
         .map((c: unknown[]) => String(c[1]))
         // The single-relType ADVISED_BY windows are keyed `ORDER BY uid` alone
         // (one category, nothing to starve) and are excluded by `r.type IN [`.
-        .filter((q: string) => /RETURN r\.type AS relType/.test(q) && /r\.type IN \[/.test(q));
+        .filter(
+          (q: string) =>
+            /RETURN (?:DISTINCT )?r\.type AS relType/.test(q) && /r\.type IN \[/.test(q),
+        );
       expect(windows).toHaveLength(5);
       expect(windows.filter((q: string) => /ORDER BY uid, relType/.test(q))).toHaveLength(5);
+    });
+
+    it.each([
+      ['Function', '(n:`Function` {id: $symId})'],
+      ['', '(n {id: $symId})'],
+      ['UnrecognizedLabel', '(n {id: $symId})'],
+    ])('anchors context reference windows safely for label %j', async (type, anchor) => {
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) =>
+        query.includes('$uid')
+          ? [
+              {
+                id: 'Function:src/a.ts:target',
+                name: 'target',
+                type,
+                filePath: 'src/a.ts',
+                startLine: 1,
+                endLine: 9,
+              },
+            ]
+          : [],
+      );
+      await backend.callTool('context', { uid: 'Function:src/a.ts:target' });
+      const windows = (executeParameterized as any).mock.calls
+        .map((call: unknown[]) => String(call[1]))
+        .filter((query: string) => query.includes('RETURN DISTINCT r.type AS relType'));
+      expect(windows).toHaveLength(4);
+      for (const query of windows) {
+        expect(query).toContain(anchor);
+        expect(query.indexOf('RETURN DISTINCT')).toBeLessThan(query.indexOf('LIMIT 30'));
+      }
     });
 
     it('marks the match total as a LOWER BOUND when only the COUNT leg fails (#2787 review F3)', async () => {
@@ -5800,6 +5833,116 @@ describe('LocalBackend tool-staleness signal (#2655 review)', () => {
     const raw = await backend.callTool('cypher', { statement: 'MATCH (n) RETURN n', repo: 'r' });
     expect(Array.isArray(raw)).toBe(true);
     expect(raw).toHaveLength(0);
+    expect(raw).not.toHaveProperty('graph_integrity');
+    expect(JSON.stringify(raw)).toBe('[]');
+    for (const rows of [[1, null, 'legacy'], [{}]]) {
+      lbugMocks.executeParameterized.mockResolvedValueOnce(rows);
+      const nonTabular = await backend.callTool('cypher', {
+        statement: 'MATCH (n) RETURN n',
+        repo: 'r',
+      });
+      expect(Array.isArray(nonTabular)).toBe(true);
+      expect(nonTabular).toEqual(rows);
+      expect(nonTabular).not.toHaveProperty('graph_integrity');
+    }
+  });
+
+  describe.each(['query', 'impact'] as const)('%s ingestion provenance', (method) => {
+    it.each([
+      [
+        'verified',
+        {
+          status: 'verified',
+          scope: 'source-reference-ingestion',
+          checkedSites: 7,
+          unverifiedEdges: 0,
+          duplicatesSuppressed: 2,
+          note: expect.stringContaining('checked before writing'),
+        },
+      ],
+      [
+        'missing',
+        {
+          status: 'unverified',
+          scope: 'source-reference-ingestion',
+          note: expect.stringContaining('analyze --force'),
+        },
+      ],
+      [
+        'malformed',
+        {
+          status: 'unverified',
+          scope: 'source-reference-ingestion',
+          note: expect.stringContaining('analyze --force'),
+        },
+      ],
+      [
+        'generation-unknown',
+        {
+          status: 'unverified',
+          scope: 'source-reference-ingestion',
+          note: expect.stringContaining('Retry the tool'),
+        },
+      ],
+      [
+        'replaced',
+        {
+          status: 'unverified',
+          scope: 'source-reference-ingestion',
+          note: expect.stringContaining('Retry the tool'),
+        },
+      ],
+      [
+        'metadata-unreadable',
+        {
+          status: 'unverified',
+          scope: 'source-reference-ingestion',
+          note: expect.stringContaining('metadata could not be read. Retry the tool'),
+        },
+      ],
+    ] as const)('reports %s with the correct recovery action', async (state, expected) => {
+      const storagePath = mkdtempSync(path.join(os.tmpdir(), 'gn-integrity-dispatch-'));
+      const receipt = { version: 1, checkedSites: 7, unverifiedEdges: 0, duplicatesSuppressed: 2 };
+      vi.spyOn(backend as any, method).mockResolvedValue({ ok: true });
+      const selected = {
+        ...handle,
+        storagePath,
+        lbugPath: path.join(storagePath, 'lbug'),
+        generationUnknown: state === 'generation-unknown',
+      };
+      try {
+        writeFileSync(
+          path.join(storagePath, 'meta.json'),
+          JSON.stringify({
+            repoPath: selected.repoPath,
+            indexedAt: selected.indexedAt,
+            lastCommit: selected.lastCommit,
+            ...(state === 'missing'
+              ? {}
+              : {
+                  relationshipIntegrity:
+                    state === 'malformed' ? { ...receipt, checkedSites: -1 } : receipt,
+                }),
+            ...(state === 'replaced' ? { graphPath: 'generations/new/lbug' } : {}),
+          }),
+        );
+        if (state === 'metadata-unreadable')
+          writeFileSync(path.join(storagePath, 'meta.json'), '{invalid json');
+        vi.spyOn(backend, 'selectToolRepository').mockResolvedValue(selected as any);
+        const result = await backend.callTool(method, {
+          repo: 'r',
+          search_query: 'x',
+          target: 'x',
+          direction: 'upstream',
+        });
+        expect(result.graph_integrity).toEqual(expected);
+        expect(result.staleness?.lastCommit).toBe(
+          ['generation-unknown', 'replaced'].includes(state) ? '' : handle.lastCommit,
+        );
+      } finally {
+        rmSync(storagePath, { recursive: true, force: true });
+      }
+    });
   });
 
   // F3: drift guard — exactly the four read tools route through stalenessForTool;
