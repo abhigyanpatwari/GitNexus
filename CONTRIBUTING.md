@@ -30,6 +30,29 @@ The CLI build imports `gitnexus-shared`, so `gitnexus-shared/dist` must exist
 before `gitnexus` typecheck. That emit uses a parent package's TypeScript 7
 `lib/tsc.js`, matching `setup-gitnexus`, `setup-gitnexus-web`, and Vercel.
 
+### Shared hook runtime
+
+Claude/Codex hooks and the Claude plugin call the package-owned
+`gitnexus-hook` entrypoint (`gitnexus/hooks/claude/gitnexus-hook.cjs`). Hook
+behavior lives in `claude-hook-runtime.cjs` and its sibling helpers. Edit that
+source once; there are no Claude plugin runtime copies or synchronization step.
+
+`gitnexus setup` installs a small launcher that loads the package's entrypoint.
+The Claude plugin loads the same entrypoint from an available installation.
+When none is available, the launcher obtains the pinned npm package and loads
+its hook script, including on versions published before the `gitnexus-hook`
+binary existed. Setup records the package version for cache-cleanup recovery;
+the plugin reads its version from its manifest.
+
+Recovery records the validated package location for later calls and applies a
+retry cooldown after installation failures. The install lock covers recovery;
+the package runtime controls concurrent hook execution. Event and repository
+filtering stay in that runtime.
+
+The bootstrap has one source in `gitnexus-claude-plugin/hooks/gitnexus-hook.js`.
+The normal CLI build packages it for setup automatically. It contains only
+package discovery and startup; keep hook behavior in the package runtime.
+
 ### Containerized development (optional)
 
 If you prefer an isolated environment with Claude Code, OpenAI Codex CLI, and Cursor CLI pre-installed, open the repo in VS Code with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) and run **Dev Containers: Reopen in Container**. See [`.devcontainer/README.md`](.devcontainer/README.md) for first-time auth flows and Windows WSL2 setup.

@@ -1069,24 +1069,39 @@ npx gitnexus analyze --force
 
 ### Hook augmentation and skip diagnostics
 
-The Claude Code / Antigravity hooks keep their **stderr** silent on normal skip
-paths so strict hook runners (e.g. Codex `PreToolUse`) never see unexpected
-diagnostic output.
+Claude Code and Codex hooks installed by `gitnexus setup`, and the Claude plugin,
+load the package's `gitnexus-hook` entrypoint. After upgrading an existing setup
+installation, run `gitnexus setup` again to replace the old runtime copies with
+the launcher. The launcher also supports installed `gitnexus-hook` shims, such
+as those created by pnpm.
 
-When a GitNexus process holds the repo DB write lock (the common case — the MCP
-server is running, or the DB-lock probe timed out and failed closed), the local
-CLI `augment` can't run (LadybugDB is single-writer). Rather than drop the
-augmentation, the hook hands the agent a short, conditional MCP-query hint on
+If no installation is available, recovery requires npm/npx and may need registry
+access. It fetches the exact version recorded by setup or the plugin manifest.
+The first call can wait up to 135 seconds for installation and cleanup; later
+calls load the recovered package directly from its cached location. That
+location is recorded under `~/.gitnexus/hook-launcher/`; deleting the package's
+npm cache causes recovery on the next call. Failed recovery has a five-minute
+retry cooldown. An available installation is used at its installed version;
+the exact version pin applies to recovery.
+
+The Claude Code, Codex, Claude plugin, and Antigravity hooks keep their **stderr**
+silent on normal skip paths so strict hook runners (e.g. Codex `PreToolUse`)
+never see unexpected diagnostic output.
+
+When a GitNexus process holds the repo DB write lock, or the ownership probe
+cannot rule that out, the hook skips local CLI access. It gives the agent a
+conditional MCP-query hint on
 stdout (the sanctioned `additionalContext` channel) — _"if the GitNexus MCP tools
 are live in this session, call `query` …"_ — so an agent that has the tools can
 still fetch graph-ranked context. The hint is throttled to at most once per repo
 per window (`GITNEXUS_MCP_HINT_THROTTLE_MS`, default 10 min; `0` disables), so an
-owner-locked session isn't nudged on every search. A stale-index reminder, or an
-already-current index, stays silent.
+owner-locked session isn't nudged on every search. An already-current index
+produces no reminder.
 
 To see why a hook skipped the CLI augment, set `GITNEXUS_DEBUG=1` and re-run the
-action — the hook writes the reason (e.g. `[GitNexus] augment skipped: MCP server
-owns DB`) and the stale-index hint to its stderr:
+action. This also enables launcher diagnostics for package discovery, recovery
+failures, and the retry cooldown. The stale-index reminder uses structured
+stdout; diagnostic reasons go to stderr:
 
 ```bash
 GITNEXUS_DEBUG=1 <your command>   # surfaces hook skip/diagnostic reasons on stderr
