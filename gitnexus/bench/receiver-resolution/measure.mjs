@@ -1619,6 +1619,12 @@ class Service {
         body: 'svc.getUser().address!.save();',
       },
       {
+        // A parenthesized head names no receiver text, so this call used to be
+        // resolved receiver-less and reached `Address.save` through the
+        // wildcard import's first-declared `save` (DART-04). The emitter now
+        // mints the receiver text and the chain `2|svc|cgetUserAsync|a`; the
+        // owner contract lives in
+        // test/integration/resolvers/dart-awaited-receiver-owner.test.ts.
         id: 'awaitParen',
         expectedTarget: 'Method:models.dart:User.save#0',
         member: 'save',

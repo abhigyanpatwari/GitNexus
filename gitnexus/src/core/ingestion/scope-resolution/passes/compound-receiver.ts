@@ -508,6 +508,20 @@ function classOfDeclaredType(
   // The report keeps the spelling it always had, whichever lookup answers: it
   // is read only for type ARGUMENTS (#2912), and the qualified spelling has none.
   const spelling = erasedTypeApplication(typeRef) ?? typeRef.rawName;
+  // An awaitable WRAPPER never names an owner. A spelling the language can
+  // unwrap under `await` (`Future<User>`, carried whole by a provider that
+  // keeps the wrapper so a member of the un-awaited value is not typed as a
+  // member of the result) is container evidence about what the position
+  // YIELDS, not a class the position IS. Erasing its arguments and binding the
+  // head name would let a workspace class that happens to share the wrapper's
+  // name — an SDK stub, a mock — capture every such receiver, and the
+  // unique-name fallback would then hand `(await f).save()` the stub's `save`.
+  // The position keeps its declared spelling, so an `await` step still
+  // advances it; a member folded directly off it declines. A language that
+  // strips the wrapper at capture time answers no await route and is unchanged.
+  if (options.elementTypeOf?.(spelling, { kind: 'await' }) !== undefined) {
+    return noteReceiverType(options.recordReceiverType, spelling, undefined);
+  }
   const qualified = classOfQualifiedTypeSpelling(
     typeRef,
     scopes,
@@ -966,12 +980,46 @@ function foldReceiverChainState(
     // unwrapping step. Folding an ordinary member off it would look the member
     // up on the PREVIOUS class — a wrong owner, silently.
     //
-    // `await` IS identity, and soundly so: every language whose capture layer
-    // reduces the wrapper has ALREADY done it by the time a binding reaches the
-    // fold (TypeScript strips `Promise<X>`, C# strips `Task<X>`), and awaiting a
-    // value that is NOT a thenable yields that same value — so both regimes land
-    // on the identical answer and there is nothing to distinguish.
-    if (step.kind === 'await') continue;
+    // The language is asked FIRST whether the position's declared spelling is
+    // an awaitable it can unwrap (`elementTypeOf`, route `await`). A language
+    // that keeps the wrapper WHOLE in the binding (so that a member called on
+    // the un-awaited value cannot be typed as a member of the result) answers,
+    // and the step advances to what the wrapper yields, exactly as the index
+    // step does below — whether or not a class was found for the position: a
+    // class found for an awaitable spelling can only be a workspace class that
+    // shares the wrapper's name, never the value the await produces.
+    //
+    // When the language declines, `await` IS identity, and soundly so: every
+    // language whose capture layer reduces the wrapper has ALREADY done it by
+    // the time a binding reaches the fold (TypeScript strips `Promise<X>`, C#
+    // strips `Task<X>`), and awaiting a value that is NOT a thenable yields
+    // that same value — so both regimes land on the identical answer and there
+    // is nothing to distinguish. A provider without the route answers
+    // `undefined` and the step stays identity.
+    if (step.kind === 'await') {
+      const declared = current.declaredType;
+      const awaited =
+        declared === undefined ? undefined : options.elementTypeOf?.(declared, { kind: 'await' });
+      if (awaited === undefined) continue;
+      const scopeForLookup = current.declaredAtScope ?? inScope;
+      current = {
+        def: findClassBindingInScope(
+          scopeForLookup,
+          awaited,
+          scopes,
+          options.stripTypePreservingDecoration,
+          {
+            onNameFallback: options.onNameFallback,
+            position: current.lookupPosition,
+            purpose: 'type',
+          },
+        ),
+        declaredType: awaited,
+        declaredAtScope: scopeForLookup,
+        lookupPosition: current.lookupPosition,
+      };
+      continue;
+    }
     if (step.kind === 'index') {
       // An index step is NOT identity, and that asymmetry with `await` above is
       // the whole point. `await` on a non-promise is a no-op; a subscript on a

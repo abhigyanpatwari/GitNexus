@@ -54,6 +54,7 @@ import type {
   FetchWrapperReexport,
 } from './route-extractors/fetch-wrapper.js';
 import type { ExtractedDecoratorRoute, ExtractedToolDef } from './workers/parse-worker.js';
+import type { ElementAccessRoute } from './scope-resolution/contract/scope-resolver.js';
 import type { SemanticModel } from './model/semantic-model.js';
 
 /**
@@ -1291,6 +1292,17 @@ interface LanguageProviderConfig {
     targetFile: string,
     workspaceIndex: WorkspaceIndex,
   ) => readonly string[];
+
+  /**
+   * Element or yield type of a container spelling, by access route — the same
+   * contract as `ScopeResolver.elementTypeOf`, and a provider that answers
+   * both should hand the SAME function to both. Read on the parse side by the
+   * scope extractor's chain follow for the `await` route only: a binding
+   * marked `@type-binding.awaited` takes what the followed return type yields
+   * under `await` (`Future<C>` → `C`). A provider without it, or one that
+   * answers `undefined`, leaves the follow exactly as it was.
+   */
+  readonly elementTypeOf?: (containerType: string, via: ElementAccessRoute) => string | undefined;
 
   /**
    * Decide the scope to which a `ParsedImport` attaches. Most languages
