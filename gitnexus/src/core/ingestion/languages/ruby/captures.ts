@@ -270,7 +270,7 @@ function isRubyLexicalMethod(node: SyntaxNode): boolean {
   return false;
 }
 
-// ─── Bare identifier reads (RUBY-02) ──────────────────────────────────────
+// ─── Bare identifier reads (RUBY-04) ──────────────────────────────────────
 //
 // `(body_statement (identifier)) @reference.call.free` captures a receiver-
 // less, paren-less name that is a statement of its own as a zero-arity call.
@@ -295,13 +295,23 @@ function isRubyLexicalMethod(node: SyntaxNode): boolean {
 // a circular reference), but not a later one (`def run(x = … target …,
 // target: nil)` calls the method). A nested scope's bindings never leak out
 // (a block's `|target|` or its `target = a` is invisible after the block, so
-// a bare `target` there is a call again). A header expression Ruby evaluates in the ENCLOSING scope —
-// a singleton method's receiver (`def (target = x).run`), a class's
-// superclass, a `class << value` value — binds in that enclosing scope, not
-// in the body, and a read inside such a header is answered by the enclosing
-// scope. A `BEGIN { … }` / `END { … }` body is its own scope. A pattern's
-// expression parts (a string / regex / symbol / subshell `interpolation`, a
-// `lambda` pattern's parameters, a `^pin`) are not binding positions.
+// a bare `target` there is a call again). A header expression Ruby evaluates
+// in the ENCLOSING scope — a singleton method's receiver (`def (target =
+// x).run`), a class's or module's name expression (`class (target =
+// Object)::Inner`), a class's superclass, a `class << value` value — binds in
+// that enclosing scope, not in the body, and a read inside such a header is
+// answered by the enclosing scope. A `BEGIN { … }` / `END { … }` body shares
+// the locals of the scope around it, so it is neither a scope nor a boundary.
+// A pattern's expression parts (a string / regex / symbol / subshell
+// `interpolation`, a `lambda` pattern's parameters, a `^pin`) are not binding
+// positions, and neither is a hash argument that tree-sitter-ruby parses as a
+// pattern match (`put !x => target`).
+//
+// One place where source order is not parse order: Ruby lexes a heredoc body
+// before the rest of its opener's line, so in `other(<<~EOS, target = 1)` a
+// read inside the body is parsed BEFORE the assignment. A read inside a
+// heredoc body is therefore answered only by scopes nested inside that body;
+// past the body the capture is kept (not guarded, as before this check).
 //
 // Each scope's bindings are indexed once per file — the earliest offset at
 // which every name is bound — always the offset where the name is WRITTEN:
@@ -310,10 +320,13 @@ function isRubyLexicalMethod(node: SyntaxNode): boolean {
 // a read costs one map lookup per enclosing scope instead of a re-walk.
 
 /**
- * Scopes whose body sees nothing bound outside them. `BEGIN { … }` /
- * `END { … }` bodies run outside the enclosing method (before the program,
- * at exit), so an assignment inside one binds nothing in that method — the
- * ivar walker treats them as boundaries for the same reason.
+ * Scopes whose body sees nothing bound outside them. `begin_block` /
+ * `end_block` (`BEGIN { … }` / `END { … }`) are deliberately absent, and are
+ * not open scopes either: they share the locals of the scope around them
+ * (Ruby's own example shares one local across `BEGIN`, `END` and the
+ * program), so an assignment inside one binds the enclosing scope and a read
+ * inside one sees it. (The ivar walker's `self` boundary is a different
+ * question.)
  */
 const RUBY_CLOSED_LOCAL_SCOPES: ReadonlySet<string> = new Set([
   'method',
@@ -322,19 +335,20 @@ const RUBY_CLOSED_LOCAL_SCOPES: ReadonlySet<string> = new Set([
   'module',
   'singleton_class',
   'program',
-  'begin_block',
-  'end_block',
 ]);
 
 /**
  * Header fields of a scope node that Ruby evaluates in the ENCLOSING scope:
- * a `singleton_method`'s receiver (`object`), a `class`'s `superclass`, a
- * `singleton_class`'s `value`. Their bindings belong to the scope that
- * contains the header, never to the body.
+ * a `singleton_method`'s receiver (`object`), a `class`'s `name` and
+ * `superclass`, a `module`'s `name`, a `singleton_class`'s `value`. Their
+ * bindings belong to the scope that contains the header, never to the body.
+ * A plain constant name binds nothing; only an expression such as
+ * `class (target = Object)::Inner` does.
  */
 const RUBY_SCOPE_HEADER_FIELDS: ReadonlyMap<string, readonly string[]> = new Map([
   ['singleton_method', ['object']],
-  ['class', ['superclass']],
+  ['class', ['name', 'superclass']],
+  ['module', ['name']],
   ['singleton_class', ['value']],
 ]);
 
@@ -462,8 +476,18 @@ function collectRubyPatternNames(pattern: SyntaxNode, visit: RubyBindingVisitor)
         return;
       }
       // `{target:}` — a key with no value binds a local of the key's name.
+      // The quoted form `{"target":}` binds the string's content; a key with
+      // interpolation is a SyntaxError in a pattern and binds nothing here.
       const key = pattern.childForFieldName('key');
-      if (key !== null) visit(key.text.replace(/:$/, ''), key.startIndex);
+      if (key === null) return;
+      if (key.type === 'string') {
+        const content = key.namedChildCount === 1 ? key.namedChild(0) : null;
+        if (content !== null && content.type === 'string_content') {
+          visit(content.text, key.startIndex);
+        }
+        return;
+      }
+      visit(key.text.replace(/:$/, ''), key.startIndex);
       return;
     }
     case 'as_pattern': {
@@ -491,6 +515,29 @@ function collectRubyPatternNames(pattern: SyntaxNode, visit: RubyBindingVisitor)
   }
 }
 
+/** Containers whose elements are arguments, where Ruby reads `key => value` as a hash pair. */
+const RUBY_ARGUMENT_CONTAINERS: ReadonlySet<string> = new Set([
+  'argument_list',
+  'array',
+  'element_reference',
+]);
+
+/**
+ * Whether a `match_pattern` / `test_pattern` node is tree-sitter-ruby's
+ * reading of a hash argument. The grammar parses `s.put !x => target` as
+ * `argument_list (unary operand: (match_pattern …))` with no ERROR node (also
+ * `put :a, -x => target`, `[!x => target]`, `s[!x => target]`), while Ruby
+ * reads the hash `{ !x => target }`, which binds nothing. A rightward pattern
+ * match is a statement, so climbing through the `unary` wrappers and landing
+ * in an argument container means it is an association; the statement
+ * `!x => target` (its `unary` sits in a statement list) still binds.
+ */
+function rubyPatternMatchIsHashArgument(node: SyntaxNode): boolean {
+  let container = node.parent;
+  while (container !== null && container.type === 'unary') container = container.parent;
+  return container !== null && RUBY_ARGUMENT_CONTAINERS.has(container.type);
+}
+
 /**
  * Names bound at the binding site of a `RUBY_LOCAL_BINDING_SITES` node, each
  * at the offset where it is WRITTEN. That is the one rule Ruby's parser
@@ -510,12 +557,15 @@ function collectRubyBindingSiteNames(node: SyntaxNode, visit: RubyBindingVisitor
     case 'rescue':
       collectRubyLhsNames(site, visit);
       return;
-    case 'in_clause':
     case 'match_pattern':
     case 'test_pattern':
+      if (rubyPatternMatchIsHashArgument(node)) return;
       // A rightward `value => pattern` / `value in pattern` parses the VALUE
       // before the pattern declares anything, so a bare read inside the value
       // (`[1].each do |a| target end => target`) is still a call.
+      collectRubyPatternNames(site, visit);
+      return;
+    case 'in_clause':
       collectRubyPatternNames(site, visit);
       return;
     default:
@@ -582,13 +632,19 @@ export function rubyBareNameIsLocalRead(
   const readStart = identifier.startIndex;
   let child: SyntaxNode = identifier;
   for (let scope = identifier.parent; scope !== null; child = scope, scope = scope.parent) {
+    // Ruby lexes a heredoc body before the rest of its opener's line, so
+    // past the body offsets no longer give parse order (`other(<<~EOS,
+    // target = 1)` parses the body's read first). Only scopes nested inside
+    // the body have answered so far; keep the call (not guarded).
+    if (scope.type === 'heredoc_body') return false;
     const closed = RUBY_CLOSED_LOCAL_SCOPES.has(scope.type);
     if (!closed && !RUBY_OPEN_LOCAL_SCOPES.has(scope.type)) continue;
-    // A read inside the scope's HEADER (a singleton receiver, a superclass,
-    // a `class <<` value — reachable through a `do` block or lambda body
-    // nested in it) is evaluated in the ENCLOSING scope: this scope's
-    // parameters and locals are not visible there, and its index (which
-    // excludes its own header) has nothing to say. Keep climbing.
+    // A read inside the scope's HEADER (a singleton receiver, a class or
+    // module name, a superclass, a `class <<` value — reachable through a
+    // `do` block or lambda body nested in it) is evaluated in the ENCLOSING
+    // scope: this scope's parameters and locals are not visible there, and
+    // its index (which excludes its own header) has nothing to say. Keep
+    // climbing.
     if (closed && rubyScopeHeaderNodes(scope).some((header) => header.id === child.id)) continue;
     const boundAt = rubyScopeBindings(scope, cache).get(name);
     if (boundAt !== undefined && boundAt < readStart) return true;
@@ -625,7 +681,7 @@ export function emitRubyScopeCaptures(
 
   recordRubyMemberDispatch(tree.rootNode, _filePath);
   const out: CaptureMatch[] = [];
-  // Per-scope binding index for the bare-identifier read check (RUBY-02),
+  // Per-scope binding index for the bare-identifier read check (RUBY-04),
   // built lazily and shared across every match of this file.
   const bareReadBindings = new Map<number, RubyScopeBindings>();
 
@@ -766,7 +822,7 @@ export function emitRubyScopeCaptures(
     }
 
     // A bare identifier statement that names a parameter or an earlier-bound
-    // local is a variable read, not a call (RUBY-02; see the section above).
+    // local is a variable read, not a call (RUBY-04; see the section above).
     // Only the paren-less form is in question — the pattern anchors
     // `@reference.call.free` on the `body_statement` and `@reference.name` on
     // the bare `identifier`; a `call` anchor (`target()`, `target arg`,

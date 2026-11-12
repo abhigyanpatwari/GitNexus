@@ -1,5 +1,5 @@
 /**
- * RUBY-02 — a bare identifier that names a parameter or a local is a variable
+ * RUBY-04 — a bare identifier that names a parameter or a local is a variable
  * READ, never a method call (docs/languages/ruby-ingestion-gaps.md).
  *
  * The Ruby scope query captures a receiver-less, paren-less identifier that is
@@ -19,17 +19,21 @@
  * EARLIER in the same scope by assignment (plain, multiple, `||=`), `for`,
  * `rescue =>` or a `case … in` / `=>` pattern. A nested `def` starts a fresh
  * scope, so its body sees none of the outer names; a block sees the names of
- * every enclosing block and the method.
+ * every enclosing block and the method. `BEGIN { … }` / `END { … }` bodies
+ * share the enclosing scope's locals.
  *
  * Every assertion compares full node IDs. `declared(owner, name)` reads the
  * method's ID off its HAS_METHOD edge, so an empty call list proves the edge
  * is gone, not that the fixture lost the method. The decoy `Other#target`
  * exists so that any kept edge is checked against the exact owner.
  *
- * Each case in the "no edge" suites fails with the guard removed (every one
- * then resolves to `Host#target`); the "edge kept" suite is the control set —
- * those edges held before the fix and must survive it, including `no_shadow`,
- * which pins that a bare name with NO binding is still a call.
+ * With the guard removed, every "no edge" case fails (it then resolves to
+ * `Host#target`, `Host#_target` or `top_target`) except the shapes the
+ * statement pattern never captures — `bare_read_begin_body_local` and
+ * `DEFAULT_BEGIN_NOT_CAPTURED` — which are edge-free either way and only pin
+ * that. The "edge kept" cases are the controls: those edges hold with and
+ * without the guard, including `no_shadow`, which pins that a bare name with
+ * NO binding is still a call.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
@@ -63,6 +67,12 @@ const SHADOWED_BY_LOCAL = [
   'bare_read_pattern_bind',
   'bare_read_hash_shorthand_bind',
   'bare_read_rightward_bind',
+  // tree-sitter-ruby parses the statement `!x => target` as
+  // `unary (match_pattern …)`; as a statement it is a pattern match and binds.
+  'bare_read_unary_rightward_bind',
+  'bare_read_string_key_shorthand_bind',
+  // An `END { … }` body shares the method's locals.
+  'end_block_assign_binds_method_local',
   // A `begin … end` body holds its statements directly (no `body_statement`),
   // so the statement pattern never captured this read; it is edge-free before
   // and after the fix and pins only that the shape stays that way.
@@ -75,7 +85,8 @@ const SHADOWED_INSIDE_BLOCK = [
   'bare_read_enclosing_param_in_block',
   'bare_read_enclosing_local_in_block',
   'bare_read_outer_block_param_in_inner_block',
-  'bare_read_lambda_enclosing_param',
+  // A read inside an `END { … }` body sees the method's parameter.
+  'end_block_read_sees_method_param',
 ] as const;
 
 // Parameters bind LEFT-TO-RIGHT: a read inside parameter k's default sees only
@@ -117,20 +128,21 @@ const PATTERN_VALUE_READS_BEFORE_BIND_KEPT = [
   'multi_assign_target_reads_before_bind',
 ] as const;
 
-// Round 5 (mirrored from the enterprise port's second-vendor review): three
-// shapes where the filter dropped a REAL call. A header expression Ruby
-// evaluates in the ENCLOSING scope — a singleton method's receiver, a class's
-// superclass, a `class << value` value — binds there, never in the body; a
-// `BEGIN { … }` / `END { … }` body is its own scope; a pattern's expression
-// parts (a string / regex `interpolation`, a `lambda` pattern's parameters)
-// are not binding positions.
-const HEADER_OR_PATTERN_PART_EDGE_KEPT = [
-  'begin_block_assign_does_not_bind',
-  'end_block_assign_does_not_bind',
+// Shapes that look like a binding but are not one, so the later bare name is
+// still a call: a pattern's expression parts (a string / regex
+// `interpolation`, a `lambda` pattern's parameters); a hash argument whose key
+// starts with a unary operator, which tree-sitter-ruby parses as
+// `unary (match_pattern …)` inside an argument list or array literal; and an
+// assignment on a heredoc opener's line, which Ruby parses AFTER the heredoc
+// body that holds the read.
+const NOT_A_BINDING_EDGE_KEPT = [
   'string_interpolation_pattern_does_not_bind',
   'regex_interpolation_pattern_does_not_bind',
   'lambda_pattern_param_does_not_bind',
-  'singleton_class_header_name_is_not_a_binding',
+  'hash_arg_unary_key_does_not_bind',
+  'paren_hash_arg_unary_key_does_not_bind',
+  'array_unary_key_does_not_bind',
+  'heredoc_body_read_before_opener_assign',
 ] as const;
 
 /** True pattern binding positions (controls for the pattern allow-list). */
@@ -138,7 +150,6 @@ const PATTERN_BINDING_POSITIONS_NO_EDGE = [
   'const_array_pattern_arg_binds',
   'const_hash_pattern_value_binds',
   'find_pattern_binds',
-  'alternative_pattern_binds',
   'parenthesized_pattern_binds',
 ] as const;
 
@@ -154,7 +165,7 @@ const EDGE_KEPT = [
   'block_without_binding',
 ] as const;
 
-describe('Ruby bare identifier naming a parameter or local is a read, not a call (RUBY-02)', () => {
+describe('Ruby bare identifier naming a parameter or local is a read, not a call (RUBY-04)', () => {
   let result: PipelineResult;
   let tmpDir: string;
   let hostTargetId: string;
@@ -178,6 +189,46 @@ describe('Ruby bare identifier naming a parameter or local is a read, not a call
       .filter((c) => c.source === sourceName && c.target === 'target')
       .map((e) => e.rel.targetId);
 
+  /** The ID of the one top-level `def name` in `top.rb`. */
+  const topLevelId = (name: string): string => {
+    const ids: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.properties.name === name && n.properties.filePath === 'top.rb') ids.push(n.id);
+    });
+    const [id] = ids;
+    if (ids.length !== 1 || id === undefined) {
+      throw new Error(`fixture lost top.rb ${name}: ${ids.join(', ')}`);
+    }
+    return id;
+  };
+
+  /** The ID of the one node with this label and name in `filePath`. */
+  const nodeId = (label: string, name: string, filePath: string): string => {
+    const ids: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === label && n.properties.name === name && n.properties.filePath === filePath) {
+        ids.push(n.id);
+      }
+    });
+    const [id] = ids;
+    if (ids.length !== 1 || id === undefined) {
+      throw new Error(`fixture lost ${label} ${filePath} ${name}`);
+    }
+    return id;
+  };
+
+  /** CALLS targets from the node named `sourceName` to any method named `callee`. */
+  const callsFromName = (sourceName: string, callee: string): string[] =>
+    getRelationships(result, 'CALLS')
+      .filter((c) => c.source === sourceName && c.target === callee)
+      .map((e) => e.rel.targetId);
+
+  /** CALLS targets from `sourceId` to any method named `callee`. */
+  const callsFrom = (sourceId: string, callee: string): string[] =>
+    getRelationships(result, 'CALLS')
+      .filter((c) => c.rel.sourceId === sourceId && c.target === callee)
+      .map((e) => e.rel.targetId);
+
   beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ruby-bare-read-shadows-method-'));
     writeFixtureRepo(tmpDir, {
@@ -189,6 +240,10 @@ end
 
 class Host
   def target(*args)
+    true
+  end
+
+  def _target(*args)
     true
   end
 
@@ -276,6 +331,23 @@ class Host
     target
   end
 
+  def bare_read_unary_rightward_bind(x)
+    !x => target
+    target
+  end
+
+  def bare_read_string_key_shorthand_bind(v)
+    case v
+    in {"target":}
+    end
+    target
+  end
+
+  def end_block_assign_binds_method_local
+    END { target = 1 }
+    target
+  end
+
   def bare_read_begin_body_local
     target = 1
     begin
@@ -316,6 +388,14 @@ class Host
         target
       end
     end
+  end
+
+  def end_block_read_sees_method_param(target)
+    END {
+      [1].each do
+        target
+      end
+    }
   end
 
   def bare_read_lambda_enclosing_param(target)
@@ -418,17 +498,7 @@ class Host
     make_base
   end
 
-  # ── BEGIN / END bodies and pattern expression parts do not bind ──────
-
-  def begin_block_assign_does_not_bind
-    BEGIN { target = 1 }
-    target
-  end
-
-  def end_block_assign_does_not_bind
-    END { target = 1 }
-    target
-  end
+  # ── shapes that look like a binding but are not one ─────────────────
 
   def string_interpolation_pattern_does_not_bind(v)
     case v
@@ -449,6 +519,29 @@ class Host
     in ->(target) { 0 }
     end
     target
+  end
+
+  def hash_arg_unary_key_does_not_bind(s, x)
+    s.put !x => target
+    target
+  end
+
+  def paren_hash_arg_unary_key_does_not_bind(s, x)
+    s.put(:a, -x => target)
+    target
+  end
+
+  def array_unary_key_does_not_bind(x)
+    [!x => target]
+    target
+  end
+
+  def heredoc_body_read_before_opener_assign(x)
+    other(<<~EOS, target = 1)
+      #{[1].map do
+        target
+      end}
+    EOS
   end
 
   def const_array_pattern_arg_binds(v)
@@ -474,9 +567,9 @@ class Host
 
   def alternative_pattern_binds(v)
     case v
-    in nil | target
+    in nil | _target
     end
-    target
+    _target
   end
 
   def parenthesized_pattern_binds(v)
@@ -556,6 +649,49 @@ class Host
   end
 end
 `,
+      // `BEGIN` is valid only at the top level, and its body shares the
+      // program's locals, so the lambda's `do`-body read is a read.
+      'top.rb': `def top_target(*args)
+  true
+end
+
+def top_unbound(*args)
+  true
+end
+
+BEGIN { top_target = 1 }
+
+top_begin_reader = -> do
+  top_target
+end
+
+top_unbound_reader = -> do
+  top_unbound
+end
+`,
+      // A class or module NAME expression runs in the enclosing body, not in
+      // the class it names. Each shape has its own host: the header's
+      // `target = Object` is a local of that host's body.
+      'headers.rb': `class ClassNameHeaderHost
+  def self.target(*args)
+    true
+  end
+
+  class (target = Object)::ClassNameHeaderInner
+    target
+  end
+end
+
+module ModuleNameHeaderHost
+  def self.target(*args)
+    true
+  end
+
+  module (target = Object)::ModuleNameHeaderInner
+    target
+  end
+end
+`,
     });
     result = await runPipelineFromRepo(tmpDir, () => {});
     hostTargetId = declared('Host', 'target');
@@ -582,6 +718,14 @@ end
     },
   );
 
+  it('bare_read_lambda_enclosing_param: a lambda body sees the enclosing method parameter (no edge)', () => {
+    // Without the guard the wrong edge is sourced at the assigned lambda's own
+    // Function node, not at the method, so the lambda is the node to check.
+    expect(getNodesByLabel(result, 'Function')).toContain('lambda_outer');
+    expect(targetCallsFromName('lambda_outer')).toEqual([]);
+    expect(targetCallsFrom(declared('Host', 'bare_read_lambda_enclosing_param'))).toEqual([]);
+  });
+
   it('bare_read_lambda_param: a lambda parameter shadows the method for the lambda body', () => {
     // An assigned lambda is declared as a Function named after its local and
     // is its own call source, so the assertion runs on that node.
@@ -607,12 +751,13 @@ end
   );
 
   it('lambda_default_reads_later_param: a lambda default reading a later lambda parameter is a call (kept)', () => {
-    // The default's block sits inside the lambda node, so the site is owned by
-    // whichever callable the pipeline encloses it in; assert the edge exists
-    // exactly once between the two candidates.
-    const fromLambda = targetCallsFromName('lambda_default_later');
-    const fromMethod = targetCallsFrom(declared('Host', 'lambda_default_reads_later_param'));
-    expect([...fromLambda, ...fromMethod]).toEqual([hostTargetId]);
+    // The pipeline attributes a site in the lambda's PARAMETER list to the
+    // enclosing method, not to the lambda's Function node.
+    expect(getNodesByLabel(result, 'Function')).toContain('lambda_default_later');
+    expect(targetCallsFrom(declared('Host', 'lambda_default_reads_later_param'))).toEqual([
+      hostTargetId,
+    ]);
+    expect(targetCallsFromName('lambda_default_later')).toEqual([]);
   });
 
   it.each(PATTERN_VALUE_READS_BEFORE_BIND_KEPT)(
@@ -635,25 +780,39 @@ end
 
   it('header_read_sees_enclosing_param: a do-block read inside a singleton receiver sees the ENCLOSING method parameter (no edge)', () => {
     // The receiver expression runs in `header_read_sees_enclosing_param`,
-    // whose parameter binds `target`; the pipeline may attribute the site to
-    // either callable, so neither may carry the edge.
+    // whose parameter binds `target`. Without the guard the wrong edge is
+    // sourced at `header_inner` (the pipeline attributes the receiver's block
+    // to the method it defines); the enclosing method must stay edge-free too.
     expect(getNodesByLabel(result, 'Method')).toContain('header_inner');
     expect(targetCallsFromName('header_inner')).toEqual([]);
     expect(targetCallsFrom(declared('Host', 'header_read_sees_enclosing_param'))).toEqual([]);
+  });
+
+  it('class name expression: `class (target = Object)::Inner` binds the ENCLOSING body, so the inner body read is a call (kept)', () => {
+    // The class-body read is attributed to the enclosing class.
+    const source = nodeId('Class', 'ClassNameHeaderHost', 'headers.rb');
+    expect(callsFrom(source, 'target')).toEqual([declared('ClassNameHeaderHost', 'target')]);
+  });
+
+  it('module name expression: `module (target = Object)::Inner` binds the ENCLOSING body, so the inner body read is a call (kept)', () => {
+    // The module-body read is attributed to the file.
+    const source = nodeId('File', 'headers.rb', 'headers.rb');
+    expect(callsFrom(source, 'target')).toEqual([declared('ModuleNameHeaderHost', 'target')]);
   });
 
   it('singleton_class_header_read_sees_param: a do-block read inside `class << value` sees the enclosing method parameter (no edge)', () => {
     expect(targetCallsFrom(declared('Host', 'singleton_class_header_read_sees_param'))).toEqual([]);
   });
 
-  it.each(HEADER_OR_PATTERN_PART_EDGE_KEPT)(
-    '%s: a BEGIN/END assignment, a pattern expression part or a bare header name does not bind, so the later bare name still calls',
+  it('singleton_class_header_name_is_not_a_binding: a bare `class << name` header binds nothing, so the later bare name still calls', () => {
+    const fn = declared('Host', 'singleton_class_header_name_is_not_a_binding');
+    expect(callsFrom(fn, 'make_base')).toEqual([declared('Host', 'make_base')]);
+  });
+
+  it.each(NOT_A_BINDING_EDGE_KEPT)(
+    '%s: a shape that is not a binding leaves the later bare name a call (kept)',
     (fn) => {
-      const callee = fn === 'singleton_class_header_name_is_not_a_binding' ? 'make_base' : 'target';
-      const edges = getRelationships(result, 'CALLS')
-        .filter((c) => c.rel.sourceId === declared('Host', fn) && c.target === callee)
-        .map((e) => e.rel.targetId);
-      expect(edges).toEqual([declared('Host', callee)]);
+      expect(targetCallsFrom(declared('Host', fn))).toEqual([hostTargetId]);
     },
   );
 
@@ -663,6 +822,22 @@ end
       expect(targetCallsFrom(declared('Host', fn))).toEqual([]);
     },
   );
+
+  it('alternative_pattern_binds: an `_`-prefixed name in an alternative pattern binds the later bare name (no edge)', () => {
+    // Only `_`-prefixed names may bind inside an alternative pattern; the
+    // same-named `Host#_target` keeps this assertion from being vacuous.
+    expect(callsFrom(declared('Host', 'alternative_pattern_binds'), '_target')).toEqual([]);
+  });
+
+  it('top-level BEGIN: an assignment in a `BEGIN { … }` body binds the program, so a later `do`-body read is a read (no edge)', () => {
+    topLevelId('top_target');
+    expect(getNodesByLabel(result, 'Function')).toContain('top_begin_reader');
+    expect(callsFromName('top_begin_reader', 'top_target')).toEqual([]);
+  });
+
+  it('top_unbound_reader: the same top-level `do`-body read with no binding still calls (control)', () => {
+    expect(callsFromName('top_unbound_reader', 'top_unbound')).toEqual([topLevelId('top_unbound')]);
+  });
 
   it.each(DEFAULT_BEGIN_NOT_CAPTURED)(
     '%s: a `begin … end` default is not captured by the query (pre-existing); silent, documented',

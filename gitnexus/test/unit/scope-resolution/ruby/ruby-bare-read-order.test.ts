@@ -1,11 +1,11 @@
 /**
- * RUBY-02 review round 2 — parameters bind LEFT-TO-RIGHT for a bare read.
+ * RUBY-04 — the bare-read helper, pinned directly on parsed trees.
  *
  * `rubyBareNameIsLocalRead` decides whether a bare identifier statement reads
  * a parameter or local (no CALLS edge) or calls a method. Ruby registers a
  * parameter as the parser passes its NAME, so a read inside parameter k's
  * default sees the parameters declared before k and k itself (a circular
- * reference, nil), never a later one. Verified on Ruby 2.6:
+ * reference, nil), never a later one. Checked on CRuby 2.6:
  *
  *   def later(x = …target…, target: nil)   → calls the method
  *   def earlier(target = nil, x = …target…) → reads the parameter
@@ -18,6 +18,11 @@
  * the rule is unobservable through the graph. The `do`-block spelling IS
  * captured, and the integration test pins its edges. Each "later" case here
  * flips with the position check removed (`boundAt < readStart` → `true`).
+ *
+ * The rest of the file pins where a name binds: header expressions bind the
+ * enclosing scope, `BEGIN` / `END` bodies share it, only pattern binding
+ * positions bind (not a hash argument that tree-sitter-ruby parses as a
+ * pattern match), and a read inside a heredoc body is not guarded.
  */
 import { describe, it, expect } from 'vitest';
 import type Parser from 'tree-sitter';
@@ -30,14 +35,14 @@ import {
 
 type SyntaxNode = Parser.SyntaxNode;
 
-/** Every `target` identifier in statement position (not a declaration name). */
-function targetReads(source: string): SyntaxNode[] {
+/** Every `name` identifier in statement position (not a declaration name). */
+function targetReads(source: string, name = 'target'): SyntaxNode[] {
   const tree = getRubyParser().parse(source);
   const reads: SyntaxNode[] = [];
   const walk = (node: SyntaxNode): void => {
     if (
       node.type === 'identifier' &&
-      node.text === 'target' &&
+      node.text === name &&
       node.parent !== null &&
       ['begin', 'body_statement', 'block_body'].includes(node.parent.type)
     ) {
@@ -52,9 +57,9 @@ function targetReads(source: string): SyntaxNode[] {
   return reads;
 }
 
-/** The helper's verdict for the single `target` read in `source`. */
-function readsLocal(source: string): boolean {
-  const reads = targetReads(source);
+/** The helper's verdict for the single `name` read in `source`. */
+function readsLocal(source: string, name = 'target'): boolean {
+  const reads = targetReads(source, name);
   expect(reads).toHaveLength(1);
   const cache = new Map<number, RubyScopeBindings>();
   return rubyBareNameIsLocalRead(reads[0]!, cache);
@@ -67,7 +72,7 @@ function captured(source: string): boolean {
   );
 }
 
-describe('Ruby bare read: parameters bind left-to-right (RUBY-02 round 2)', () => {
+describe('Ruby bare read: where a parameter or local binds (RUBY-04)', () => {
   it.each([
     [
       'method default, later positional',
@@ -121,14 +126,13 @@ describe('Ruby bare read: parameters bind left-to-right (RUBY-02 round 2)', () =
     (_name, source) => {
       // Ruby 3 parses the value before the pattern declares anything; the
       // binding is registered at the pattern node, not at the expression's
-      // start (cubic round 2).
+      // start.
       expect(readsLocal(source)).toBe(false);
     },
   );
 
   it('an earlier multiple-assignment target is parsed before a later target declares the name', () => {
-    // A name binds where it is WRITTEN, not at the assignment's start
-    // (cubic round 3).
+    // A name binds where it is WRITTEN, not at the assignment's start.
     expect(
       readsLocal('def run\n  arr = []\n  arr[[1].map do |x| target end], target = [], 1\nend\n'),
     ).toBe(false);
@@ -138,11 +142,13 @@ describe('Ruby bare read: parameters bind left-to-right (RUBY-02 round 2)', () =
     expect(readsLocal('def run\n  a, target = 1, 2\n  target\nend\n')).toBe(true);
   });
 
-  describe('header expressions bind the enclosing scope (round 5)', () => {
+  describe('header expressions bind the enclosing scope', () => {
     it.each([
       ['singleton receiver', 'def (target = Object.new).run\n  target\nend\n'],
       ['superclass expression', 'class Sub < (target = Object).class\n  target\nend\n'],
       ['class << value', 'class << (target = Object.new)\n  target\nend\n'],
+      ['class name expression', 'class (target = Object)::Inner\n  target\nend\n'],
+      ['module name expression', 'module (target = Object)::Inner\n  target\nend\n'],
     ])('%s: an assignment in the header does not bind the body read (call)', (_name, src) => {
       expect(readsLocal(src)).toBe(false);
     });
@@ -163,6 +169,14 @@ describe('Ruby bare read: parameters bind left-to-right (RUBY-02 round 2)', () =
         'superclass expression (program-level local)',
         'target = 1\nclass Foo < ([1].each do target end)\nend\n',
       ],
+      [
+        'class name expression (program-level local)',
+        'target = 1\nclass ([1].each do target end; Object)::Foo\nend\n',
+      ],
+      [
+        'module name expression (program-level local)',
+        'target = 1\nmodule ([1].each do target end; Object)::Foo\nend\n',
+      ],
     ])(
       '%s: a read inside a scope HEADER is answered by the enclosing scope (read)',
       (_name, src) => {
@@ -181,12 +195,23 @@ describe('Ruby bare read: parameters bind left-to-right (RUBY-02 round 2)', () =
     });
   });
 
-  describe('BEGIN / END bodies and pattern expression parts (round 5)', () => {
-    it('a BEGIN / END body is its own scope: its assignment does not bind the method body', () => {
-      expect(readsLocal('def run\n  BEGIN { target = 1 }\n  target\nend\n')).toBe(false);
-      expect(readsLocal('def run\n  END { target = 1 }\n  target\nend\n')).toBe(false);
+  describe('BEGIN / END bodies share the enclosing scope', () => {
+    it.each([
+      ['END assignment binds the method body', 'def run\n  END { target = 1 }\n  target\nend\n'],
+      [
+        'END body read sees the method parameter',
+        'def run(target)\n  END { [1].each do\n    target\n  end }\nend\n',
+      ],
+      [
+        'top-level BEGIN assignment binds a later do-block read',
+        'BEGIN { target = 1 }\n[1].each do\n  target\nend\n',
+      ],
+    ])('%s (read)', (_name, src) => {
+      expect(readsLocal(src)).toBe(true);
     });
+  });
 
+  describe('pattern expression parts and hash arguments', () => {
     it.each([
       ['string interpolation', 'def run(v)\n  case v\n  in "x#{target}"\n  end\n  target\nend\n'],
       ['regex interpolation', 'def run(v)\n  case v\n  in /#{target}/\n  end\n  target\nend\n'],
@@ -201,9 +226,30 @@ describe('Ruby bare read: parameters bind left-to-right (RUBY-02 round 2)', () =
         'def run(v)\n  case v\n  in ->(target) { 0 }\n  end\n  target\nend\n',
       ],
       ['pinned expression', 'def run(v)\n  case v\n  in ^(target)\n  end\n  target\nend\n'],
-      ['pinned variable', 'def run(v)\n  case v\n  in ^target\n  end\n  target\nend\n'],
     ])('%s: an expression part of a pattern is not a binding position (call)', (_name, src) => {
       expect(readsLocal(src)).toBe(false);
+    });
+
+    it.each([
+      ['call argument', 'def run(s, x)\n  s.put !x => target\n  target\nend\n'],
+      ['parenthesized call argument', 'def run(s, x)\n  s.put(!x => target)\n  target\nend\n'],
+      ['argument after a symbol', 'def run(s, x)\n  s.put :a, -x => target\n  target\nend\n'],
+      ['double unary', 'def run(s, x)\n  s.put !!x => target\n  target\nend\n'],
+      ['array literal element', 'def run(x)\n  [!x => target]\n  target\nend\n'],
+      ['subscript argument', 'def run(s, x)\n  s[!x => target]\n  target\nend\n'],
+      ['yield argument', 'def run(x)\n  yield !x => target\n  target\nend\n'],
+    ])(
+      '%s: a hash argument whose key starts with a unary operator binds nothing (call)',
+      (_name, src) => {
+        // tree-sitter-ruby parses it as `unary (match_pattern …)`; Ruby reads
+        // `{ !x => target }`.
+        expect(readsLocal(src)).toBe(false);
+      },
+    );
+
+    it('the statement `!x => target` is a pattern match and binds (read)', () => {
+      expect(readsLocal('def run(x)\n  !x => target\n  target\nend\n')).toBe(true);
+      expect(readsLocal('def run(x)\n  !x in target\n  target\nend\n')).toBe(true);
     });
 
     it.each([
@@ -217,13 +263,45 @@ describe('Ruby bare read: parameters bind left-to-right (RUBY-02 round 2)', () =
         'def run(v)\n  case v\n  in Other(k: target)\n  end\n  target\nend\n',
       ],
       ['hash shorthand', 'def run(v)\n  case v\n  in {target:}\n  end\n  target\nend\n'],
+      ['quoted hash shorthand', 'def run(v)\n  case v\n  in {"target":}\n  end\n  target\nend\n'],
       ['find pattern', 'def run(v)\n  case v\n  in [*, target, *]\n  end\n  target\nend\n'],
       ['splat', 'def run(v)\n  case v\n  in [1, *target]\n  end\n  target\nend\n'],
-      ['alternative', 'def run(v)\n  case v\n  in nil | target\n  end\n  target\nend\n'],
       ['parenthesized', 'def run(v)\n  case v\n  in (target)\n  end\n  target\nend\n'],
       ['as pattern', 'def run(v)\n  case v\n  in [1] => target\n  end\n  target\nend\n'],
     ])('%s: a true pattern binding position binds (read)', (_name, src) => {
       expect(readsLocal(src)).toBe(true);
+    });
+
+    it('an `_`-prefixed name in an alternative pattern binds (read)', () => {
+      // Only `_`-prefixed names may bind inside an alternative pattern.
+      expect(
+        readsLocal('def run(v)\n  case v\n  in nil | _target\n  end\n  _target\nend\n', '_target'),
+      ).toBe(true);
+    });
+  });
+
+  describe('heredoc bodies are not guarded', () => {
+    it.each([
+      [
+        'an assignment later on the opener line',
+        'def run\n  other(<<~EOS, target = 1)\n    #{[1].map do\n      target\n    end}\n  EOS\nend\n',
+      ],
+      [
+        'a parameter of the enclosing method (documented gap)',
+        'def run(target)\n  other(<<~EOS)\n    #{[1].map do\n      target\n    end}\n  EOS\nend\n',
+      ],
+    ])('%s: a read in a heredoc body keeps its call', (_name, src) => {
+      // Ruby lexes the body before the rest of the opener line, so source
+      // order is not parse order past the body.
+      expect(readsLocal(src)).toBe(false);
+    });
+
+    it('a binding made by a scope inside the heredoc body is honoured (read)', () => {
+      expect(
+        readsLocal(
+          'def run\n  other(<<~EOS)\n    #{[1].map do |target|\n      target\n    end}\n  EOS\nend\n',
+        ),
+      ).toBe(true);
     });
   });
 
