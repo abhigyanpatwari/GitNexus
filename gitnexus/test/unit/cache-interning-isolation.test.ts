@@ -94,12 +94,16 @@ describe('cache interning sample isolation', () => {
             '--predictable-gc-schedule',
             '--max-old-space-size=4096',
           ]);
-          expect(sample.ms).toBeGreaterThan(0);
-          expect(sample.cpuMs).toBeGreaterThan(0);
-          expect(sample.hydrateCpuMs).toBeGreaterThan(0);
         }
+        // The checker validates every measured timing before returning metrics.
+        // Assert the complete metric contract; elapsed times vary by machine.
+        const metrics = interningMetrics(report);
+        expect(metrics.map((metric: { name: string }) => metric.name)).toEqual([
+          'intern/ms',
+          'intern/cpuMs',
+          'deserialize+intern/cpuMs',
+        ]);
         if (variant === 'slower') {
-          const metrics = interningMetrics(report);
           expect(
             metrics.map((metric: { name: string; verdict: string }) => [
               metric.name,

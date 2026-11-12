@@ -54,6 +54,7 @@ afterEach(() => {
 
 describe('CLI admission with deterministic host inputs', () => {
   it('passes a real bounded allocation to analysis', async () => {
+    vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', String(256 * 1024 ** 2));
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
     await analyzeCommand(undefined, { resourceBudget: '8192', workers: '1' });
     expect(process.exitCode).toBeUndefined();
@@ -62,7 +63,9 @@ describe('CLI admission with deterministic host inputs', () => {
     expect(resources.totalBytes).toBe(8192 * 1024 ** 2);
     expect(resources.mainHeapMb).toBe(1024);
     expect(resources.parse.workers).toBe(1);
-    expect(resources.parse.reservedBytes).toBeLessThanOrEqual(resources.totalBytes);
+    // MiB: 984 headroom + 192 supervisor + 256 graph pool + 1024 main
+    // heap + 4096 worker heap + 128 worker native reservation.
+    expect(resources.parse.reservedBytes).toBe(6680 * 1024 ** 2);
   });
 
   it.each([{ resourceBudget: '512' }, { memoryBudget: '40000' }])(
