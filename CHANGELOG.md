@@ -4,10 +4,6 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-
-- **Ruby bare identifier reads (RUBY-02)** — a receiver-less, paren-less identifier statement that names a parameter or an earlier-bound local in the enclosing scope no longer emits a CALLS edge to a same-named method; `target()`, `self.target`, `target arg` and unbound names are unchanged, and an explicit `target()` beside a same-named parameter still resolves to nothing.
-
 ## [1.5.3] - 2026-04-01
 
 ### Added
