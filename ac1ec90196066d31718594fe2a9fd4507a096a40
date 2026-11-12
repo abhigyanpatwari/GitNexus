@@ -1,0 +1,65 @@
+docs/languages/dart-ingestion-gaps.md
+  s_9ac40d1fe843df::t_aaeb79469cf887 22,29,38-153
+gitnexus-shared/src/scope-resolution/types.ts
+  s_9ac40d1fe843df::t_be5457b34c1dd8 662-671
+gitnexus/bench/receiver-resolution/baseline.json
+  s_9ac40d1fe843df::t_c114e055331904 183,205-206,208,223-224,228,234
+gitnexus/bench/receiver-resolution/measure.mjs
+  s_9ac40d1fe843df::t_a41ec9c524b7e8 1622-1627
+gitnexus/bench/scope-capture/baselines.json
+  s_9ac40d1fe843df::t_ccbb068e1aacf5 181,183,195-196
+gitnexus/bench/scope-capture/measure.mjs
+  s_9ac40d1fe843df::t_c5eb5a0bb5eb95 258-261,266-268
+gitnexus/src/core/ingestion/language-provider.ts
+  s_9ac40d1fe843df::t_55669a87d6dff8 57,1293-1303
+gitnexus/src/core/ingestion/languages/dart.ts
+  s_9ac40d1fe843df::t_110ed4fffd5a84 41,149-152
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_9ac40d1fe843df::t_b0999f2d1f37ca 30,49,186-190,306,461,468-610,651-654,659-671,765-773,785-788,790,796-904,907-915,959-970,975-986,989-991,1133,1290-1292,1294,1296,1301,1305-1311,1313,1322,1329,1335,1344,1397
+gitnexus/src/core/ingestion/languages/dart/index.ts
+  s_9ac40d1fe843df::t_629f581c2768e1 31
+gitnexus/src/core/ingestion/languages/dart/interpret.ts
+  s_9ac40d1fe843df::t_a439aea51c2457 19,89-121,129-134,138-141
+gitnexus/src/core/ingestion/languages/dart/scope-resolver.ts
+  s_9ac40d1fe843df::t_695c579c6456f0 46,241-244
+gitnexus/src/core/ingestion/languages/dart/signature-bindings.ts
+  s_9ac40d1fe843df::t_29249630d41ae4 12-13,23-58,101-108
+gitnexus/src/core/ingestion/scope-extractor.ts
+  s_9ac40d1fe843df::t_223faf540338ff 118,145,1231-1233,1238,1251,1283-1292,1295,1310-1314,1336-1337,1962
+gitnexus/src/core/ingestion/scope-resolution/contract/scope-resolver.ts
+  s_9ac40d1fe843df::t_46a09af2357e8d 339-344,347
+gitnexus/src/core/ingestion/scope-resolution/passes/compound-receiver.ts
+  s_9ac40d1fe843df::t_bf801c81e1f02f 511-524,983-1022
+gitnexus/src/core/ingestion/scope-resolution/passes/imported-return-types.ts
+  s_9ac40d1fe843df::t_1b9b138c9bdc33 54-58,65,250-286,342,365-366,418,445,448-457,523,546-552,568
+gitnexus/src/core/ingestion/scope-resolution/passes/receiver-bound-calls.ts
+  s_9ac40d1fe843df::t_881095c7a386d3 2974-2997
+gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts
+  s_9ac40d1fe843df::t_34ae80c8eb4bed 1247
+gitnexus/src/core/ingestion/utils/type-ref-chain.ts
+  s_9ac40d1fe843df::t_390cfeff4dd6a7 1-29,37-61,63-80
+gitnexus/test/integration/resolvers/dart-awaited-receiver-owner.test.ts
+  s_9ac40d1fe843df::t_1232715acf601e 1-670
+gitnexus/test/integration/resolvers/dart.test.ts
+  s_9ac40d1fe843df::t_80e12669a1b449 173-186,189,199
+gitnexus/test/unit/scope-resolution/await-route-declines.test.ts
+  s_9ac40d1fe843df::t_ad03ec21978738 1-61
+gitnexus/test/unit/scope-resolution/awaited-call-result-follow.test.ts
+  s_9ac40d1fe843df::t_d75fede1d8fcb9 1-250
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ac1ec90196066d31718594fe2a9fd4507a096a40",
+  "prompts": {},
+  "sessions": {
+    "s_9ac40d1fe843df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_9ac40d1fe843df",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}

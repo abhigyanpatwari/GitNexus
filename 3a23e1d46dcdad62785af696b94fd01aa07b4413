@@ -1,0 +1,31 @@
+CHANGELOG.md
+  s_1762e57be8b66d::t_eedb0e60e40cf2 7-10
+docs/languages/ruby-ingestion-gaps.md
+  s_1762e57be8b66d::t_88bf0ac56eecbb 32-48,56
+gitnexus/bench/scope-capture/baselines.json
+  s_1762e57be8b66d::t_b83754f46e83a7 139-140,154-155
+gitnexus/src/core/ingestion/languages/ruby/captures.ts
+  s_1762e57be8b66d::t_10ff0c9dcde56b 273-599,628-630,768-781
+gitnexus/test/fixtures/ruby-captures-golden/expected-captures.json
+  s_1762e57be8b66d::t_a9461a9c18b0d3 55-56,63-64
+gitnexus/test/integration/resolvers/ruby-bare-read-shadows-method.test.ts
+  s_1762e57be8b66d::t_fa3f4de3b83acc 1-696
+gitnexus/test/unit/scope-resolution/ruby/ruby-bare-read-order.test.ts
+  s_1762e57be8b66d::t_d7817c5f4b0dbc 1-245
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3a23e1d46dcdad62785af696b94fd01aa07b4413",
+  "prompts": {},
+  "sessions": {
+    "s_1762e57be8b66d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_1762e57be8b66d",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}

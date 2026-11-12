@@ -1,0 +1,29 @@
+gitnexus/CHANGELOG.md
+  s_babe1e8b60a93b::t_b468711a87f3d9 7-10
+gitnexus/bench/scope-capture/baselines.json
+  s_babe1e8b60a93b::t_74e5303bfe9209 181,183
+gitnexus/src/core/ingestion/languages/dart/query.ts
+  s_babe1e8b60a93b::t_82b7d5dc7c9d0e 236-247
+gitnexus/test/fixtures/lang-resolution/dart-prefixed-factory-return/lib/deferred_callers.dart
+  s_babe1e8b60a93b::t_0647e8d6f6f343 1-8
+gitnexus/test/integration/resolvers/dart.test.ts
+  s_babe1e8b60a93b::t_325e22310a779b 177-193
+gitnexus/test/unit/dart-import-resolver.test.ts
+  s_babe1e8b60a93b::t_e248dd41248c77 24-52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fc4de15c7bdb2bc7c541c36c95e5b460a29a40d4",
+  "prompts": {},
+  "sessions": {
+    "s_babe1e8b60a93b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "s_babe1e8b60a93b",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
