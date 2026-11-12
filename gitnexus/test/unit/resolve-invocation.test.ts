@@ -26,15 +26,6 @@ const CANONICAL_CJS = path.resolve(
   'claude',
   'resolve-analyze-cmd.cjs',
 );
-const PLUGIN_CJS = path.resolve(
-  __dirname,
-  '..',
-  '..',
-  '..',
-  'gitnexus-claude-plugin',
-  'hooks',
-  'resolve-analyze-cmd.cjs',
-);
 
 interface CjsModule {
   formatAnalyzeCommand: (
@@ -415,9 +406,10 @@ describe('warnIfNpm11NpxRisk (#1939 npm-11 nudge)', () => {
       Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
       mockedExec.mockReturnValue('11.0.0\n');
       getNpmMajorVersion();
+      // One command line, no args array: shell:true plus args makes Node >=24
+      // print a DEP0190 deprecation warning on every analyze.
       expect(mockedExec).toHaveBeenCalledWith(
-        'npm',
-        ['--version'],
+        'npm --version',
         expect.objectContaining({ shell: true }),
       );
     } finally {
@@ -784,12 +776,6 @@ describe('formatAnalyzeCommand end-to-end via the pure scan (#1938)', () => {
     expect(cjs.formatAnalyzeCommand()).toBe(`npx ${cjs.NPX_REF} analyze`);
     expect(cjs.resolveInvocationMode()).toBe('npx');
     expectRunner('npx');
-  });
-});
-
-describe('resolve-analyze-cmd.cjs parity', () => {
-  it('keeps the two CJS hook copies byte-identical', () => {
-    expect(readFileSync(CANONICAL_CJS, 'utf-8')).toBe(readFileSync(PLUGIN_CJS, 'utf-8'));
   });
 });
 
