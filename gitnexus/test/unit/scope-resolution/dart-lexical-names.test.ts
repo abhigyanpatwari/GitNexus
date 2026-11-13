@@ -156,16 +156,22 @@ describe.skipIf(!dartAvailable)('Dart lexical names (DART-11)', () => {
     });
   });
 
-  it('a closure carries its own `this` only where no enclosing scope binds it: under a getter', () => {
+  it('a closure carries its own `this` only where no enclosing scope binds it: under an operator', () => {
     const source = `class Svc {
   void m(List<int> xs) {
     xs.forEach((x) {
       print(x);
     });
   }
-  int get g {
+  int operator +(int o) {
     [1].forEach((y) {
       print(y);
+    });
+    return 0;
+  }
+  int get g {
+    [1].forEach((z) {
+      print(z);
     });
     return 0;
   }
@@ -177,9 +183,10 @@ describe.skipIf(!dartAvailable)('Dart lexical names (DART-11)', () => {
       )
       .map((m) => span(m, '@type-binding.self'))
       .sort();
-    // The method's own binding, and the getter closure's; the method closure
-    // reads the method's.
-    expect(thisAt).toEqual(['2:23-6:3', '8:20-10:5']);
+    // The method's own binding; the operator closure's, because an operator
+    // body opens no scope of its own; and the getter's own (an accessor body
+    // opens a Function scope, DART-10), which the getter closure reads.
+    expect(thisAt).toEqual(['13:12-18:3', '2:23-6:3', '8:20-10:5']);
   });
 
   it('`_` declares nothing, and a function-typed parameter names itself, not its own parameters', () => {
