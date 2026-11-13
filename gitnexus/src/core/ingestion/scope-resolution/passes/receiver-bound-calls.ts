@@ -850,7 +850,7 @@ export function emitReceiverBoundCalls(
     const moduleScope = index.moduleScopeByFile.get(file);
     if (moduleScope === undefined) return [];
     const out: string[] = [];
-    for (const edge of scopes.imports.get(moduleScope.id) ?? []) {
+    for (const edge of scopes.imports.edgesAt(moduleScope.id) ?? []) {
       if (edge.kind !== 'namespace' || edge.localName !== name || edge.targetFile === null)
         continue;
       if (!out.includes(edge.targetFile)) out.push(edge.targetFile);

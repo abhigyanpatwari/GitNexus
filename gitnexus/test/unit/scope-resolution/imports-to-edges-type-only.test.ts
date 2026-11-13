@@ -22,6 +22,7 @@ import {
   TYPE_ONLY_IMPORT_REASON_SUFFIX,
   emitImportEdges,
 } from '../../../src/core/ingestion/scope-resolution/graph-bridge/imports-to-edges.js';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 
 interface Rel {
   readonly sourceId: string;
@@ -84,7 +85,7 @@ function emit(
   const { rels, graph } = makeGraph();
   const count = emitImportEdges(
     graph as never,
-    imports as never,
+    createEagerImportVisibility(imports),
     makeScopeTree(nodes) as never,
     reason,
   );

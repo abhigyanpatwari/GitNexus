@@ -23,6 +23,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import type { GraphRelationship, ImportEdge, Scope, ScopeId, ScopeTree } from 'gitnexus-shared';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../src/core/graph/types.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { GraphEmitSink } from '../../src/core/lbug/graph-emit-sink.js';
@@ -34,6 +35,8 @@ const { values } = parseArgs({
     imports: { type: 'string', default: '32' },
     'path-length': { type: 'string', default: '140' },
     emitter: { type: 'string' },
+    // An emitter from before `ImportVisibility` takes the edge map itself.
+    'map-input': { type: 'boolean', default: false },
   },
 });
 const fileCount = Number(values.files);
@@ -111,7 +114,10 @@ try {
     global.gc!();
     const inputHeap = process.memoryUsage().heapUsed;
     const started = performance.now();
-    const count = emitImportEdges(graph, imports, scopeTree);
+    const input = values['map-input']
+      ? (imports as unknown as Parameters<typeof Emitter>[1])
+      : createEagerImportVisibility(imports);
+    const count = emitImportEdges(graph, input, scopeTree);
     const elapsedMs = performance.now() - started;
     const manifest = sink.finalize();
     global.gc!();

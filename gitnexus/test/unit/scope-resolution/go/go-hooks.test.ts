@@ -6,6 +6,7 @@ import {
   buildMethodDispatchIndex,
   buildModuleScopeIndex,
 } from 'gitnexus-shared';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 import type {
   BindingRef,
   Callsite,
@@ -215,7 +216,7 @@ function scopeIndexes(
     scopeTree: buildScopeTree([...scopes]),
     bindings: new Map(),
     bindingAugmentations: options.bindingAugmentations ?? new Map(),
-    imports: options.imports ?? new Map(),
+    imports: createEagerImportVisibility(options.imports ?? new Map()),
     workspaceFqnBindings: new Map(),
     namespaceFqnBindings: new Map(),
     accessibleNamespacesByScope: new Map(),

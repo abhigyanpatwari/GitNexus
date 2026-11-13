@@ -54,6 +54,7 @@ import {
   DEFERRED_IMPORT_REASON_SUFFIX,
   emitImportEdges,
 } from '../../../src/core/ingestion/scope-resolution/graph-bridge/imports-to-edges.js';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 
 const BASE_REASON = 'scope-resolution: import';
 const PLAIN = BASE_REASON;
@@ -119,7 +120,7 @@ function runChain(
   const rels: Array<{ reason: string }> = [];
   emitImportEdges(
     { addRelationship: (r: { reason: string }) => rels.push(r) } as never,
-    out.imports as never,
+    createEagerImportVisibility(out.imports),
     scopeTree as never,
     BASE_REASON,
   );
