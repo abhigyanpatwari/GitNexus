@@ -229,6 +229,14 @@ interface ValueBindingIndex {
    */
   readonly nearestAnchorById: Map<number, SyntaxNode | null>;
   /**
+   * Terminal identifier of every node a call argument's operand search
+   * entered, memoized for the whole file (null: none). An argument that wraps
+   * a function literal holds every call nested inside it, so without the memo
+   * each nested call's argument searched the same body again and the search
+   * grew quadratically in nesting depth.
+   */
+  readonly terminalIdentifierById: Map<number, SyntaxNode | null>;
+  /**
    * Parent of every named node, recorded by the one DFS. tree-sitter's
    * `parent` is not a pointer read: it re-descends from the root, so it costs
    * the node's depth, and a leaf of a long chain is as deep as the chain.
@@ -485,6 +493,7 @@ function buildValueBindingIndex(
     anchorIds,
     parentById,
     nearestAnchorById: new Map(),
+    terminalIdentifierById: new Map(),
   };
 }
 
@@ -987,7 +996,7 @@ function emitCallFacts(
       ? callee.name
       : undefined;
   for (let index = 0; index < args.length; index++) {
-    const rawSource = operandSyntax(args[index]!, options);
+    const rawSource = operandSyntax(args[index]!, options, false, valueBindings);
     if (rawSource === undefined) continue;
     // A call/constructor/composite result is a produced value, not a reference
     // to the terminal identifier inside the expression.
@@ -1259,10 +1268,17 @@ function memberNameNode(node: SyntaxNode): SyntaxNode | null {
   );
 }
 
+/**
+ * `argumentOf` marks a call argument and carries the file's index: an
+ * argument that is no designator is dropped by `emitCallFacts`, so this
+ * returns undefined as soon as that is certain, and terminal identifiers come
+ * from the file's memo.
+ */
 function operandSyntax(
   input: SyntaxNode,
   options: CallableFlowCaptureOptions,
   declarationBinding = false,
+  argumentOf?: ValueBindingIndex,
 ): OperandSyntax | undefined {
   if (declarationBinding) {
     const binding = bindingIdentifier(input, options);
@@ -1320,10 +1336,25 @@ function operandSyntax(
     node = wrapped;
   }
 
-  const id = terminalIdentifier(node, options);
+  const id = terminalIdentifier(node, options, argumentOf?.terminalIdentifierById);
   if (id === undefined) return undefined;
-  const isQualified = id.id !== node.id && hasMultipleIdentifierLeaves(node, options);
   const singleNameText = node.text.trim().replace(/^[\$@]+/, '');
+  // A dropped argument (no designator, no indirection, no address-of) needs
+  // no qualification check. A node whose text holds a bracket is a designator
+  // only when that text IS its terminal identifier's (a qualified name has no
+  // bracket), so a mismatch settles it here, before the second-leaf search
+  // walks a function literal's body.
+  if (
+    argumentOf !== undefined &&
+    indirection === 0 &&
+    !addressOf &&
+    !options.identifierNodeTypes.has(node.type) &&
+    /[([{]/.test(node.text) &&
+    singleNameText !== id.text
+  ) {
+    return undefined;
+  }
+  const isQualified = id.id !== node.id && hasMultipleIdentifierLeaves(node, options);
   const valueProducingExpression = /call|invocation|creation|new_expression|composite_literal/.test(
     node.type,
   );
@@ -1429,23 +1460,55 @@ function bindingIdentifier(
   return undefined;
 }
 
+/** Operation count for the depth-linearity test (test hook). */
+let operandNodeVisits = 0;
+
+/** Subtree nodes the operand search has entered since the last reset. */
+export function getCallableFlowCaptureStats(): { operandNodeVisits: number } {
+  return { operandNodeVisits };
+}
+
+export function resetCallableFlowCaptureStats(): void {
+  operandNodeVisits = 0;
+}
+
+/**
+ * With `memo` (node id → identifier, null for none), each node's answer is
+ * computed once per file: it depends on the node's subtree alone.
+ */
 function terminalIdentifier(
   node: SyntaxNode,
   options: CallableFlowCaptureOptions,
+  memo?: Map<number, SyntaxNode | null>,
 ): SyntaxNode | undefined {
+  if (memo !== undefined) {
+    const known = memo.get(node.id);
+    if (known !== undefined) return known ?? undefined;
+  }
+  const found = searchTerminalIdentifier(node, options, memo);
+  memo?.set(node.id, found ?? null);
+  return found;
+}
+
+function searchTerminalIdentifier(
+  node: SyntaxNode,
+  options: CallableFlowCaptureOptions,
+  memo: Map<number, SyntaxNode | null> | undefined,
+): SyntaxNode | undefined {
+  operandNodeVisits++;
   if (options.identifierNodeTypes.has(node.type)) return node;
   const base = subscriptBase(node);
-  if (base !== null) return terminalIdentifier(base, options);
+  if (base !== null) return terminalIdentifier(base, options, memo);
   for (const fieldName of ['name', 'property', 'field', 'method', 'declarator']) {
     const field = node.childForFieldName(fieldName);
     if (field === null || field.id === node.id) continue;
-    const found = terminalIdentifier(field, options);
+    const found = terminalIdentifier(field, options, memo);
     if (found !== undefined) return found;
   }
   for (let i = node.namedChildCount - 1; i >= 0; i--) {
     const child = node.namedChild(i);
     if (child === null) continue;
-    const found = terminalIdentifier(child, options);
+    const found = terminalIdentifier(child, options, memo);
     if (found !== undefined) return found;
   }
   return undefined;
@@ -1459,6 +1522,7 @@ function hasMultipleIdentifierLeaves(
   const stack: SyntaxNode[] = [node];
   while (stack.length > 0) {
     const current = stack.pop()!;
+    operandNodeVisits++;
     if (options.identifierNodeTypes.has(current.type)) {
       if (++count > 1) return true;
       continue;
