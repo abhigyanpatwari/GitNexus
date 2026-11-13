@@ -1,0 +1,23 @@
+.github/workflows/ci-tests.yml
+  s_b9690234122db7::t_31e7f0712c3889 1578-1582
+gitnexus/bench/dart-closure-binders/baseline.json
+  s_b9690234122db7::t_66b841bf3e3a96 105,110,112-113
+gitnexus/bench/dart-closure-binders/measure.mjs
+  s_b9690234122db7::t_b3284de9adaeb5 10-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c4f09a06eb324e8f5b2edd88b99bebb2fdaa7a98",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
