@@ -1,0 +1,19 @@
+docs/languages/dart-ingestion-gaps.md
+  s_b9690234122db7::t_9bf6735eebde93 44,46,161-162,165-167,171-177
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "828901f7dcfed5af2d91483f990e8dd33193a75f",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
