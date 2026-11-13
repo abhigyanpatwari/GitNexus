@@ -1,0 +1,21 @@
+gitnexus/src/core/ingestion/languages/ruby/captures.ts
+  s_b9690234122db7::t_f6fa05305081a0 661-664,667-675,677-707,709-726,728,757
+gitnexus/test/unit/scope-resolution/ruby/ruby-bare-read-cost.test.ts
+  s_b9690234122db7::t_b0240472dc7bf7 170-190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "eddb13fea8340fe005ac8a76d95c5d67761568ca",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
