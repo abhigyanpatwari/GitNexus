@@ -1860,22 +1860,29 @@ const analyzeCommandImpl = async (
       // on the next invocation unless we check the registry here too.
       await assertAnalysisFinalized(repoPath, result.storagePath);
       // The fast path skips context regeneration, but a changed `.gitnexusrc`
-      // defaultBranch / `--default-branch` must still take effect. Surgically
-      // refresh just the `base_ref` line in AGENTS.md/CLAUDE.md in place,
+      // defaultBranch / `--default-branch` must still take effect, and so must
+      // `--no-stats` on an index that is already up to date (#3618). Surgically
+      // refresh the `base_ref` and counts lines in AGENTS.md/CLAUDE.md in place,
       // preserving the rest of the block (incl. --skills community rows). No-op
-      // when the value already matches, so a routine up-to-date run is silent
+      // when the values already match, so a routine up-to-date run is silent
       // (#1996 tri-review P2).
-      // Only refresh the repo-root AGENTS.md/CLAUDE.md base_ref for the flat
-      // WORKSPACE index (#2106 R2, #2354). A pinned --branch sub-index's
-      // up-to-date analyze must not churn the committed AGENTS.md — this
-      // mirrors the in-pipeline `if (!placement.branch)` gate around
-      // generateAIContextFiles.
+      // Only refresh the repo-root AGENTS.md/CLAUDE.md for the flat WORKSPACE
+      // index (#2106 R2, #2354). A pinned --branch sub-index's up-to-date
+      // analyze must not churn the committed AGENTS.md — this mirrors the
+      // in-pipeline `if (!placement.branch)` gate around generateAIContextFiles.
       let baseRefRefreshed: string[] = [];
+      let statsRefreshed: string[] = [];
       if (result.isPrimaryBranch !== false) {
         try {
-          const { refreshBaseRefLine } = await import('./ai-context.js');
+          const { refreshBaseRefLine, refreshStatsLine } = await import('./ai-context.js');
           baseRefRefreshed = (
             await refreshBaseRefLine(repoPath, resolvedDefaultBranch, { skipAgentsMd })
+          ).files;
+          statsRefreshed = (
+            await refreshStatsLine(repoPath, result.stats, {
+              noStats: options.stats === false,
+              skipAgentsMd,
+            })
           ).files;
         } catch {
           /* best-effort — never fail the fast path over a context refresh */
@@ -1899,6 +1906,11 @@ const analyzeCommandImpl = async (
       if (baseRefRefreshed.length > 0) {
         console.log(
           `  Updated regression-review target to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,
+        );
+      }
+      if (statsRefreshed.length > 0) {
+        console.log(
+          `  ${options.stats === false ? 'Omitted' : 'Restored'} volatile counts in ${statsRefreshed.join(', ')}\n`,
         );
       }
       // #2639: opt-in self-commit of any AGENTS.md/CLAUDE.md churn from this

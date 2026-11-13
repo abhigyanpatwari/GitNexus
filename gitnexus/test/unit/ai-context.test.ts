@@ -6,6 +6,7 @@ import {
   generateAIContextFiles,
   generateGitNexusContent,
   refreshBaseRefLine,
+  refreshStatsLine,
   markdownSafeBranch,
 } from '../../src/cli/ai-context.js';
 import { _captureLogger } from '../../src/core/logger.js';
@@ -2057,6 +2058,124 @@ describe('count-only reindex does not churn the committed block (#2907)', () => 
     const content = await read('CLAUDE.md');
     expect(content).toContain('indexed by GitNexus as **RenamedProject**.');
     expect(content).not.toContain('(10 symbols, 20 relationships, 3 execution flows)');
+  });
+});
+
+// The `alreadyUpToDate` fast path returns before generateAIContextFiles, so
+// `--no-stats` used to be a no-op on any repo that was already indexed (#3618).
+// These cover the surgical in-place refresh that fast path now runs instead.
+describe('refreshStatsLine takes --no-stats on an up-to-date index (#3618)', () => {
+  const STATS = { files: 3, nodes: 493905, edges: 698316, processes: 300 };
+
+  async function seed(files: string[], body: string): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-statsline-'));
+    for (const f of files) await fs.writeFile(path.join(dir, f), body, 'utf-8');
+    return dir;
+  }
+
+  async function read(dir: string, name: string): Promise<string> {
+    return fs.readFile(path.join(dir, name), 'utf-8');
+  }
+
+  it('drops the counts and per-skill counts, preserving the rest of the block', async () => {
+    const dir = await seed(
+      ['AGENTS.md', 'CLAUDE.md'],
+      `# Project
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **my-repo** (493905 symbols, 698316 relationships, 300 execution flows). MCP tools.
+
+| Task | Read this skill file |
+|------|---------------------|
+| Work in the Auth area (40 symbols) | \`.claude/skills/gitnexus-area-auth/SKILL.md\` |
+<!-- gitnexus:end -->
+`,
+    );
+    try {
+      const res = await refreshStatsLine(dir, STATS, { noStats: true });
+      expect(res.files.sort()).toEqual(['AGENTS.md', 'CLAUDE.md']);
+      for (const f of ['AGENTS.md', 'CLAUDE.md']) {
+        const after = await read(dir, f);
+        expect(after).toContain('This project is indexed by GitNexus as **my-repo**. MCP tools.');
+        expect(after).not.toContain('493905 symbols');
+        // Trimmed block shape (#3800) is refreshed too.
+        expect(after).toContain('| Work in the Auth area | `.claude/skills/');
+        // Everything else, incl. community rows and same-line text, survives.
+        expect(after).toContain('.claude/skills/gitnexus-area-auth/SKILL.md');
+        expect(after.startsWith('# Project\n')).toBe(true);
+      }
+
+      // Idempotent: nothing left to omit.
+      expect((await refreshStatsLine(dir, STATS, { noStats: true })).files).toEqual([]);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('restores the counts when --no-stats is dropped again (#1706)', async () => {
+    const dir = await seed(
+      ['AGENTS.md'],
+      `<!-- gitnexus:start -->
+Indexed as **my-repo**. Custom sentence.
+<!-- gitnexus:end -->
+`,
+    );
+    try {
+      expect((await refreshStatsLine(dir, STATS)).files).toEqual(['AGENTS.md']);
+      expect(await read(dir, 'AGENTS.md')).toContain(
+        'Indexed as **my-repo** (493905 symbols, 698316 relationships, 300 execution flows). Custom sentence.',
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves stale counts alone so an up-to-date run never churns them (#2907)', async () => {
+    const dir = await seed(
+      ['AGENTS.md'],
+      `<!-- gitnexus:start -->
+This project is indexed by GitNexus as **my-repo** (1 symbols, 2 relationships, 3 execution flows).
+<!-- gitnexus:end -->
+`,
+    );
+    try {
+      const before = await read(dir, 'AGENTS.md');
+      expect((await refreshStatsLine(dir, STATS)).files).toEqual([]);
+      expect(await read(dir, 'AGENTS.md')).toBe(before);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('is a no-op without files, a block, or usable stats', async () => {
+    const empty = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-statsline-none-'));
+    try {
+      expect((await refreshStatsLine(empty, STATS, { noStats: true })).files).toEqual([]);
+      await fs.writeFile(path.join(empty, 'AGENTS.md'), '# no block here\n', 'utf-8');
+      expect((await refreshStatsLine(empty, STATS, { noStats: true })).files).toEqual([]);
+    } finally {
+      await fs.rm(empty, { recursive: true, force: true });
+    }
+
+    // A count-free block with no recorded stats must not be restored to zeros.
+    const dir = await seed(
+      ['AGENTS.md'],
+      `<!-- gitnexus:start -->
+This project is indexed by GitNexus as **my-repo**.
+<!-- gitnexus:end -->
+`,
+    );
+    try {
+      expect((await refreshStatsLine(dir, {})).files).toEqual([]);
+      expect(
+        (await refreshStatsLine(dir, STATS, { skipAgentsMd: true })).files,
+      ).toEqual([]);
+      expect(await read(dir, 'AGENTS.md')).not.toContain('(0 symbols');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

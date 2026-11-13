@@ -852,3 +852,82 @@ export async function refreshBaseRefLine(
   }
   return { files: updated };
 }
+
+/**
+ * Refresh the volatile counts inside an already-generated block, in place
+ * (#3618).
+ *
+ * The `alreadyUpToDate` analyze fast path returns before
+ * {@link generateAIContextFiles}, so `--no-stats` had no effect on any repo that
+ * was already indexed: the block kept its `(N symbols, N relationships, N
+ * execution flows)` parenthetical however often the flag was passed. Like
+ * {@link refreshBaseRefLine} this is a surgical edit, not a regeneration, so
+ * community-skill rows written by a prior `--skills` run survive.
+ *
+ * Only the PRESENCE of the parenthetical is decided here. A block that already
+ * carries counts keeps the numbers it has (even stale ones) so an up-to-date
+ * run never rewrites committed figures for no reader benefit (#2907); the
+ * missing ones are restored from `stats` when `--no-stats` is dropped (#1706).
+ * Best-effort: a missing file, missing/blank block or unmatched header line is
+ * silently skipped, and nothing is written unless the line actually changes.
+ *
+ * shortcut: per-skill counts in an existing skills table are only dropped under
+ * `--no-stats`, never restored — the fast path has no per-skill numbers, and
+ * the next re-index regenerates them.
+ */
+export async function refreshStatsLine(
+  repoPath: string,
+  stats: RepoStats,
+  options?: { noStats?: boolean; skipAgentsMd?: boolean },
+): Promise<{ files: string[] }> {
+  if (options?.skipAgentsMd) return { files: [] };
+  const noStats = options?.noStats === true;
+  // `alreadyUpToDate` hands us `meta.stats ?? {}`; restoring from that would
+  // print zeros, so a repo whose index predates `stats` keeps its count-free
+  // block until a real re-index.
+  const counts =
+    typeof stats.nodes === 'number'
+      ? `${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows`
+      : undefined;
+  if (!noStats && counts === undefined) return { files: [] };
+  // Same two canonical phrasings the keep path accepts (#3800): the verbose
+  // template's sentence and a trimmed block's `Indexed as **name**` line. No
+  // `$` anchor, so a trailing sentence or the period stays as it is.
+  const statsPattern =
+    /^((?:This project is )?(?:Indexed as|indexed by GitNexus as)) (\*\*[^*\n]+\*\*)( \((\d+ symbols, \d+ relationships, \d+ execution flows)\))?/m;
+  const skillCountPattern = /^(\| Work in the .+? area) \(\d+ symbols\)(?= \|)/gm;
+  const updated: string[] = [];
+  for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+    const filePath = path.join(repoPath, name);
+    if (!(await fileExists(filePath))) continue;
+    let content: string;
+    try {
+      content = await fs.readFile(filePath, 'utf-8');
+    } catch {
+      continue;
+    }
+    const startIdx = findSectionMarkerIndex(content, GITNEXUS_START_MARKER);
+    if (startIdx === -1) continue;
+    const endIdx = findSectionMarkerIndex(content, GITNEXUS_END_MARKER, startIdx);
+    if (endIdx === -1 || endIdx <= startIdx) continue;
+    const blockEnd = endIdx + GITNEXUS_END_MARKER.length;
+    const block = content.substring(startIdx, blockEnd);
+    let newBlock = block.replace(
+      statsPattern,
+      (match, prefix: string, project: string, existingCounts?: string) => {
+        if (noStats) return `${prefix} ${project}`;
+        return existingCounts === undefined ? `${prefix} ${project} (${counts})` : match;
+      },
+    );
+    if (noStats) newBlock = newBlock.replace(skillCountPattern, '$1');
+    if (newBlock === block) continue;
+    const newContent = content.substring(0, startIdx) + newBlock + content.substring(blockEnd);
+    try {
+      await fs.writeFile(filePath, newContent, 'utf-8');
+      updated.push(name);
+    } catch {
+      // best-effort — never fail analyze over a context refresh
+    }
+  }
+  return { files: updated };
+}
