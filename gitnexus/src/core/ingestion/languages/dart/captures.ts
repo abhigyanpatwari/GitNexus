@@ -151,6 +151,7 @@ interface DartTreeLink {
   readonly previous: SyntaxNode | null;
   readonly next: SyntaxNode | null;
   readonly functionOwner: SyntaxNode | undefined;
+  readonly enclosingType: SyntaxNode | null;
 }
 type DartTreeLinks = ReadonlyMap<number, DartTreeLink>;
 
@@ -158,7 +159,13 @@ type DartTreeLinks = ReadonlyMap<number, DartTreeLink>;
  *  once so a reference inside a deep closure still costs a constant lookup. */
 function indexDartTreeLinks(root: SyntaxNode): DartTreeLinks {
   const links = new Map<number, DartTreeLink>();
-  links.set(root.id, { parent: null, previous: null, next: null, functionOwner: undefined });
+  links.set(root.id, {
+    parent: null,
+    previous: null,
+    next: null,
+    functionOwner: undefined,
+    enclosingType: null,
+  });
   const stack = [root];
   while (stack.length > 0) {
     const node = stack.pop()!;
@@ -171,6 +178,7 @@ function indexDartTreeLinks(root: SyntaxNode): DartTreeLinks {
           ? link.previous
           : link.functionOwner;
     if (functionOwner !== link.functionOwner) links.set(node.id, { ...link, functionOwner });
+    const enclosingType = isDartReceiverType(type) ? node : link.enclosingType;
     const children = node.namedChildren;
     for (let i = children.length - 1; i >= 0; i--) {
       const child = children[i]!;
@@ -179,6 +187,7 @@ function indexDartTreeLinks(root: SyntaxNode): DartTreeLinks {
         previous: children[i - 1] ?? null,
         next: children[i + 1] ?? null,
         functionOwner,
+        enclosingType,
       });
       stack.push(child);
     }
@@ -208,6 +217,7 @@ export function emitDartScopeCaptures(
 
   const root = tree.rootNode;
   const treeLinks = indexDartTreeLinks(root);
+  const staticBefore = new Map<number, boolean>();
   const out: CaptureMatch[] = [];
 
   // A named constructor (`A.named()`) parses as ONE `constructor_signature`
@@ -289,7 +299,11 @@ export function emitDartScopeCaptures(
         };
         out.push(scopeMatch);
         // DART-11: the names this scope binds are filled in by Pass B.
-        const receiver = synthesizeDartReceiverBinding(declNode, bodyNode);
+        const link = treeLinks.get(declNode.id)!;
+        const receiver = synthesizeDartReceiverBinding(declNode, bodyNode, link.enclosingType, {
+          parent: link.parent,
+          staticBefore,
+        });
         for (const cm of receiver) out.push(cm);
         // Parameter bindings are published with the scope once Pass B has
         // counted what it declares (`attachDartLexicalNames`): an annotation is
@@ -421,7 +435,7 @@ export function emitDartScopeCaptures(
       return;
     }
   });
-  attachDartLexicalNames(lexicalScopes, out);
+  attachDartLexicalNames(lexicalScopes, out, treeLinks, staticBefore);
 
   out.push(
     ...synthesizeCallableFlowCaptures(root, {
@@ -800,7 +814,12 @@ function recordDartLexicalName(
  * scope that binds nothing carries no tag, and a deferred scope that binds
  * nothing is not emitted at all.
  */
-function attachDartLexicalNames(scopes: DartLexicalScopes, out: CaptureMatch[]): void {
+function attachDartLexicalNames(
+  scopes: DartLexicalScopes,
+  out: CaptureMatch[],
+  treeLinks: DartTreeLinks,
+  staticBefore: Map<number, boolean>,
+): void {
   // Whether `this` is bound at or above each scope once deferred scopes are
   // decided. Registration order is the walk's pre-order, so a parent is always
   // settled before its children.
@@ -845,7 +864,10 @@ function attachDartLexicalNames(scopes: DartLexicalScopes, out: CaptureMatch[]):
     // getter, setter, operator or field initializer, which have no scope.
     let ownThis = false;
     if (!inherited) {
-      const receiver = synthesizeDartReceiverBinding(nested.node, anchor, nested.enclosingType);
+      const receiver = synthesizeDartReceiverBinding(nested.node, anchor, nested.enclosingType, {
+        parent: treeLinks.get(nested.node.id)!.parent,
+        staticBefore,
+      });
       for (const cm of receiver) out.push(cm);
       ownThis = receiver.length > 0;
     }
