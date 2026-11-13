@@ -1799,9 +1799,9 @@ function enclosingScopeSegments(
  * different headers/namespaces).
  *
  * Disambiguates by the referencing file's import graph: the enclosing
- * module scope's finalized `ImportEdge[]` (C++ `#include`, C# `using`, etc.)
- * each carry the exporting file in `targetFile`. A candidate whose defining
- * file is brought in by one of those edges is preferred. Resolution is
+ * module scope's `ImportVisibility` covers explicit edges and shared wildcard
+ * targets. A candidate whose defining file is reachable through those imports
+ * is preferred. Resolution is
  * tiered, strictest first, and only commits when EXACTLY ONE candidate
  * survives a tier — so a still-ambiguous name keeps the historical
  * "return undefined" refusal:
@@ -1813,7 +1813,7 @@ function enclosingScopeSegments(
  *      namespace import resolves to ONE representative file in the namespace's
  *      directory, not necessarily the file declaring the referenced type).
  *
- * Language-neutral: keyed only on the finalized import edges and the
+ * Language-neutral: keyed only on finalized import visibility and the
  * candidate defs' `filePath`. Returns `undefined` (preserving refusal) when
  * the name is single-match-resolvable already (never reached — caller gates
  * on `findClassBindingInScope` miss), when no import disambiguates, or when
