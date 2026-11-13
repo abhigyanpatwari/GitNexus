@@ -1,0 +1,25 @@
+gitnexus/src/core/ingestion/utils/ancestor-climb.ts
+  s_b9690234122db7::t_bdd92fb6a268dc 1-94
+gitnexus/test/unit/ancestor-climb.test.ts
+  s_b9690234122db7::t_6079ab367b9f0b 1-113
+gitnexus/src/core/ingestion/type-env.ts
+  s_b9690234122db7::t_35c7b03fe00221 8,161,180,413,415-426,428-441,1315-1316,1328
+gitnexus/src/core/ingestion/workers/parse-worker.ts
+  s_b9690234122db7::t_fa44bae04bb37d 139,688-691,697,1140-1153,1155-1171,1173-1237,1239,1241-1243,1245-1246,1248-1253,1259-1261,1263,1265-1327,1329-1330
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8bbceb55bf9e04055c4dbab6c85168c11414a726",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
