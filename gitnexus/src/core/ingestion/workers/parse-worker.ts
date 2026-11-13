@@ -136,6 +136,7 @@ import {
   LOCAL_SCOPE_BODY_NODE_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
+import { climbAncestors } from '../utils/ancestor-climb.js';
 import { isPositionQualifiedLocalLabel } from '../utils/callable-labels.js';
 import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
 import { buildTypeEnv } from '../type-env.js';
@@ -684,11 +685,16 @@ const setLanguage = (language: SupportedLanguages, filePath: string): void => {
 
 const classIdCache = new Map<SyntaxNode, EnclosingClassInfo | null>();
 const functionIdCache = new Map<SyntaxNode, string | null>();
+// `findEnclosingFunctionId`'s answer at every ancestor a climb examined, by node
+// id: a node object is a fresh wrapper on every read, so the cache above only
+// hits for the very node it was filled for.
+const functionIdAtAncestor = new Map<number, string | null>();
 const exportCache = new Map<SyntaxNode, boolean>();
 
 const clearCaches = (): void => {
   classIdCache.clear();
   functionIdCache.clear();
+  functionIdAtAncestor.clear();
   exportCache.clear();
   fieldInfoCache.clear();
   methodInfoCache.clear();
@@ -1131,185 +1137,197 @@ const findEnclosingFunctionId = (
 ): string | null => {
   const cached = functionIdCache.get(node);
   if (cached !== undefined) return cached;
+  // The answer at an ancestor does not depend on where the climb started, so
+  // every ancestor this climb examines keeps it, and the next climb through it
+  // stops there (`climbAncestors`). Parents come from the tree's parent index:
+  // a native `parent` read re-descends from the root and costs the node's
+  // depth, which made every call in a deep nest pay depth^2.
+  const result = climbAncestors(
+    node,
+    functionIdAtAncestor,
+    (current) => enclosingFunctionIdAt(current, filePath, provider),
+    null,
+  );
+  functionIdCache.set(node, result);
+  return result;
+};
 
-  let current = node.parent;
-  while (current) {
-    if (FUNCTION_NODE_TYPES.has(current.type)) {
-      const efnResult = provider.methodExtractor?.extractFunctionName?.(current, filePath);
-      const funcName = efnResult?.funcName ?? genericFuncName(current);
-      const label = efnResult?.label ?? inferFunctionLabel(current.type);
-      if (funcName) {
-        // Apply labelOverride so label matches definition phase (e.g., Kotlin Function→Method).
-        // null means "skip as definition" — keep original label for scope identification.
-        let finalLabel = label;
-        if (provider.labelOverride) {
-          const override = provider.labelOverride(current, label);
-          if (override !== null) finalLabel = override;
-        }
-        // Qualify with enclosing class to match definition-phase node IDs
-        const classInfo = cachedFindEnclosingClassInfo(current, filePath, provider);
-        const encLang = getLanguageFromFilename(filePath);
-        const standaloneMethodInfo =
-          (finalLabel === 'Method' || finalLabel === 'Constructor') &&
-          encLang === SupportedLanguages.Go &&
-          provider.methodExtractor?.extractFromNode
-            ? provider.methodExtractor.extractFromNode(current, {
-                filePath,
-                language: encLang,
-              })
-            : null;
-        // A nested callable is qualified by its enclosing callable (#2699) and
-        // wins over the class/receiver owner: a closure inside a method belongs
-        // to the METHOD, not directly to the class, and a Go receiver method can
-        // never itself be nested inside another callable.
-        const nestedPrefix = enclosingCallablePrefix(current, filePath, provider);
-        const objectOwnerName =
-          nestedPrefix === undefined &&
-          classInfo === null &&
-          shouldObjectOwnerQualifyCallable(finalLabel)
-            ? findObjectLiteralBindingInfo(current, filePath, { includeOwnerName: true })?.ownerName
-            : undefined;
-        const ownerName =
-          nestedPrefix ??
-          classInfo?.className ??
-          standaloneMethodInfo?.receiverType ??
-          objectOwnerName;
-        const needsArrayPosition =
-          ownerName === undefined &&
-          shouldObjectOwnerQualifyCallable(finalLabel) &&
-          isArrayContainedObjectLiteralMember(current);
-        // Lockstep with the other two id-building phases — see
-        // `nestedCallableQualifiedName`, which is the shared rule. When a
-        // nested prefix exists it IS `ownerName`, so this branch and the
-        // owner branch below cannot disagree about which prefix applies.
-        const qualifiedName =
-          efnResult?.identityName === null
-            ? callableOwnQualifiedName(current, filePath, provider)
-            : nestedPrefix !== undefined
-              ? nestedCallableQualifiedName(nestedPrefix, current, funcName)
-              : ownerName
-                ? `${ownerName}.${funcName}`
-                : needsArrayPosition
-                  ? positionQualifiedCallableName(funcName, current.startPosition)
-                  : funcName;
-        // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
-        // Use the same MethodExtractor (getMethodInfo) as the definition phase.
-        // When same-arity collisions exist, also append ~type1,type2.
-        let arity: number | undefined;
-        let encTypeTag = '';
-        if (finalLabel === 'Method' || finalLabel === 'Constructor') {
-          if (standaloneMethodInfo) {
-            arity = standaloneMethodInfo.parameters.some((p) => p.isVariadic)
-              ? undefined
-              : standaloneMethodInfo.parameters.length;
-          } else {
-            // Same owner lookup as the definition-phase Method id builder: a Zig
-            // file-struct's top-level fn is owned by the file root, and its
-            // id carries the `#<arity>` suffix only if that owner is found.
-            const classNode =
-              findEnclosingClassNodeOrFileOwner(current, provider, filePath) ??
-              findClassNodeByQualifiedName(current);
-            if (classNode && encLang) {
-              const methodMap = getMethodInfo(classNode, provider, {
-                filePath,
-                language: encLang,
-              });
-              const defLine = current.startPosition.row + 1;
-              const info = methodMap?.get(
-                methodInfoKey(funcName, defLine, current.startPosition.column),
-              );
-              if (info) {
-                arity = info.parameters.some((p) => p.isVariadic)
-                  ? undefined
-                  : info.parameters.length;
-                if (methodMap && arity !== undefined) {
-                  const g = getMethodCollisionGroups(methodMap);
-                  encTypeTag =
-                    typeTagForId(methodMap, funcName, arity, info, encLang, g) +
-                    constTagForId(methodMap, funcName, arity, info, g);
-                }
-              }
-            }
-          }
-        }
-        const arityTag = arity !== undefined ? `#${arity}${encTypeTag}` : '';
-        const result = generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag}`);
-        functionIdCache.set(node, result);
-        return result;
+/** The caller id `current` itself names, or undefined when the climb goes on past it. */
+const enclosingFunctionIdAt = (
+  current: SyntaxNode,
+  filePath: string,
+  provider: LanguageProvider,
+): string | undefined => {
+  if (FUNCTION_NODE_TYPES.has(current.type)) {
+    const efnResult = provider.methodExtractor?.extractFunctionName?.(current, filePath);
+    const funcName = efnResult?.funcName ?? genericFuncName(current);
+    const label = efnResult?.label ?? inferFunctionLabel(current.type);
+    if (funcName) {
+      // Apply labelOverride so label matches definition phase (e.g., Kotlin Function→Method).
+      // null means "skip as definition" — keep original label for scope identification.
+      let finalLabel = label;
+      if (provider.labelOverride) {
+        const override = provider.labelOverride(current, label);
+        if (override !== null) finalLabel = override;
       }
-    }
-
-    // Language-specific enclosing function resolution (e.g., Dart where
-    // function_body is a sibling of function_signature, not a child).
-    if (provider.enclosingFunctionFinder) {
-      const customResult = provider.enclosingFunctionFinder(current);
-      if (customResult) {
-        let finalLabel: NodeLabel = customResult.label;
-        if (provider.labelOverride) {
-          const override = provider.labelOverride(current.previousSibling, finalLabel);
-          if (override !== null) finalLabel = override;
-        }
-        // Qualify custom result with enclosing class
-        const classInfo = cachedFindEnclosingClassInfo(
-          current.previousSibling ?? current,
-          filePath,
-          provider,
-        );
-        // Same nesting rule as the generic branch above (#2699). Anchored on
-        // `sigNode`-equivalent (`current.previousSibling ?? current`) so Dart,
-        // whose body is a SIBLING of the signature, walks from the same node
-        // the class lookup already uses.
-        const nestedPrefix2 = enclosingCallablePrefix(
-          current.previousSibling ?? current,
-          filePath,
-          provider,
-        );
-        const customOwner = nestedPrefix2 ?? classInfo?.className;
-        const qualifiedName = customOwner
-          ? `${customOwner}.${customResult.funcName}`
-          : customResult.funcName;
-        // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
-        // When same-arity collisions exist, also append ~type1,type2.
-        const sigNode = current.previousSibling ?? current;
-        let arity2: number | undefined;
-        let encTypeTag2 = '';
-        if (finalLabel === 'Method' || finalLabel === 'Constructor') {
-          const encLang2 = getLanguageFromFilename(filePath);
-          const classNode2 =
-            findEnclosingClassNode(sigNode) ?? findClassNodeByQualifiedName(sigNode);
-          if (classNode2 && encLang2) {
-            const methodMap2 = getMethodInfo(classNode2, provider, {
+      // Qualify with enclosing class to match definition-phase node IDs
+      const classInfo = cachedFindEnclosingClassInfo(current, filePath, provider);
+      const encLang = getLanguageFromFilename(filePath);
+      const standaloneMethodInfo =
+        (finalLabel === 'Method' || finalLabel === 'Constructor') &&
+        encLang === SupportedLanguages.Go &&
+        provider.methodExtractor?.extractFromNode
+          ? provider.methodExtractor.extractFromNode(current, {
               filePath,
-              language: encLang2,
+              language: encLang,
+            })
+          : null;
+      // A nested callable is qualified by its enclosing callable (#2699) and
+      // wins over the class/receiver owner: a closure inside a method belongs
+      // to the METHOD, not directly to the class, and a Go receiver method can
+      // never itself be nested inside another callable.
+      const nestedPrefix = enclosingCallablePrefix(current, filePath, provider);
+      const objectOwnerName =
+        nestedPrefix === undefined &&
+        classInfo === null &&
+        shouldObjectOwnerQualifyCallable(finalLabel)
+          ? findObjectLiteralBindingInfo(current, filePath, { includeOwnerName: true })?.ownerName
+          : undefined;
+      const ownerName =
+        nestedPrefix ??
+        classInfo?.className ??
+        standaloneMethodInfo?.receiverType ??
+        objectOwnerName;
+      const needsArrayPosition =
+        ownerName === undefined &&
+        shouldObjectOwnerQualifyCallable(finalLabel) &&
+        isArrayContainedObjectLiteralMember(current);
+      // Lockstep with the other two id-building phases — see
+      // `nestedCallableQualifiedName`, which is the shared rule. When a
+      // nested prefix exists it IS `ownerName`, so this branch and the
+      // owner branch below cannot disagree about which prefix applies.
+      const qualifiedName =
+        efnResult?.identityName === null
+          ? callableOwnQualifiedName(current, filePath, provider)
+          : nestedPrefix !== undefined
+            ? nestedCallableQualifiedName(nestedPrefix, current, funcName)
+            : ownerName
+              ? `${ownerName}.${funcName}`
+              : needsArrayPosition
+                ? positionQualifiedCallableName(funcName, current.startPosition)
+                : funcName;
+      // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
+      // Use the same MethodExtractor (getMethodInfo) as the definition phase.
+      // When same-arity collisions exist, also append ~type1,type2.
+      let arity: number | undefined;
+      let encTypeTag = '';
+      if (finalLabel === 'Method' || finalLabel === 'Constructor') {
+        if (standaloneMethodInfo) {
+          arity = standaloneMethodInfo.parameters.some((p) => p.isVariadic)
+            ? undefined
+            : standaloneMethodInfo.parameters.length;
+        } else {
+          // Same owner lookup as the definition-phase Method id builder: a Zig
+          // file-struct's top-level fn is owned by the file root, and its
+          // id carries the `#<arity>` suffix only if that owner is found.
+          const classNode =
+            findEnclosingClassNodeOrFileOwner(current, provider, filePath) ??
+            findClassNodeByQualifiedName(current);
+          if (classNode && encLang) {
+            const methodMap = getMethodInfo(classNode, provider, {
+              filePath,
+              language: encLang,
             });
-            const defLine2 = sigNode.startPosition.row + 1;
-            const info2 = methodMap2?.get(
-              methodInfoKey(customResult.funcName, defLine2, sigNode.startPosition.column),
+            const defLine = current.startPosition.row + 1;
+            const info = methodMap?.get(
+              methodInfoKey(funcName, defLine, current.startPosition.column),
             );
-            if (info2) {
-              arity2 = info2.parameters.some((p) => p.isVariadic)
+            if (info) {
+              arity = info.parameters.some((p) => p.isVariadic)
                 ? undefined
-                : info2.parameters.length;
-              if (methodMap2 && arity2 !== undefined) {
-                const g2 = getMethodCollisionGroups(methodMap2);
-                encTypeTag2 =
-                  typeTagForId(methodMap2, customResult.funcName, arity2, info2, encLang2, g2) +
-                  constTagForId(methodMap2, customResult.funcName, arity2, info2, g2);
+                : info.parameters.length;
+              if (methodMap && arity !== undefined) {
+                const g = getMethodCollisionGroups(methodMap);
+                encTypeTag =
+                  typeTagForId(methodMap, funcName, arity, info, encLang, g) +
+                  constTagForId(methodMap, funcName, arity, info, g);
               }
             }
           }
         }
-        const arityTag2 = arity2 !== undefined ? `#${arity2}${encTypeTag2}` : '';
-        const result = generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag2}`);
-        functionIdCache.set(node, result);
-        return result;
       }
+      const arityTag = arity !== undefined ? `#${arity}${encTypeTag}` : '';
+      const result = generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag}`);
+      return result;
     }
-
-    current = current.parent;
   }
-  functionIdCache.set(node, null);
-  return null;
+
+  // Language-specific enclosing function resolution (e.g., Dart where
+  // function_body is a sibling of function_signature, not a child).
+  if (provider.enclosingFunctionFinder) {
+    const customResult = provider.enclosingFunctionFinder(current);
+    if (customResult) {
+      let finalLabel: NodeLabel = customResult.label;
+      if (provider.labelOverride) {
+        const override = provider.labelOverride(current.previousSibling, finalLabel);
+        if (override !== null) finalLabel = override;
+      }
+      // Qualify custom result with enclosing class
+      const classInfo = cachedFindEnclosingClassInfo(
+        current.previousSibling ?? current,
+        filePath,
+        provider,
+      );
+      // Same nesting rule as the generic branch above (#2699). Anchored on
+      // `sigNode`-equivalent (`current.previousSibling ?? current`) so Dart,
+      // whose body is a SIBLING of the signature, walks from the same node
+      // the class lookup already uses.
+      const nestedPrefix2 = enclosingCallablePrefix(
+        current.previousSibling ?? current,
+        filePath,
+        provider,
+      );
+      const customOwner = nestedPrefix2 ?? classInfo?.className;
+      const qualifiedName = customOwner
+        ? `${customOwner}.${customResult.funcName}`
+        : customResult.funcName;
+      // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
+      // When same-arity collisions exist, also append ~type1,type2.
+      const sigNode = current.previousSibling ?? current;
+      let arity2: number | undefined;
+      let encTypeTag2 = '';
+      if (finalLabel === 'Method' || finalLabel === 'Constructor') {
+        const encLang2 = getLanguageFromFilename(filePath);
+        const classNode2 = findEnclosingClassNode(sigNode) ?? findClassNodeByQualifiedName(sigNode);
+        if (classNode2 && encLang2) {
+          const methodMap2 = getMethodInfo(classNode2, provider, {
+            filePath,
+            language: encLang2,
+          });
+          const defLine2 = sigNode.startPosition.row + 1;
+          const info2 = methodMap2?.get(
+            methodInfoKey(customResult.funcName, defLine2, sigNode.startPosition.column),
+          );
+          if (info2) {
+            arity2 = info2.parameters.some((p) => p.isVariadic)
+              ? undefined
+              : info2.parameters.length;
+            if (methodMap2 && arity2 !== undefined) {
+              const g2 = getMethodCollisionGroups(methodMap2);
+              encTypeTag2 =
+                typeTagForId(methodMap2, customResult.funcName, arity2, info2, encLang2, g2) +
+                constTagForId(methodMap2, customResult.funcName, arity2, info2, g2);
+            }
+          }
+        }
+      }
+      const arityTag2 = arity2 !== undefined ? `#${arity2}${encTypeTag2}` : '';
+      const result = generateId(finalLabel, `${filePath}:${qualifiedName}${arityTag2}`);
+      return result;
+    }
+  }
+
+  return undefined;
 };
 
 /** Cached wrapper for findEnclosingClassInfo — avoids repeated parent walks. */

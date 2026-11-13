@@ -5,6 +5,7 @@ import {
   genericFuncName,
 } from './utils/ast-helpers.js';
 import { CALL_EXPRESSION_TYPES } from './utils/call-analysis.js';
+import { climbAncestors } from './utils/ancestor-climb.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { TYPED_PARAMETER_TYPES } from './type-extractors/shared.js';
 import { getProvider } from './languages/index.js';
@@ -157,6 +158,7 @@ const lookupInEnv = (
   ) => { funcName: string | null; label: NodeLabel } | null,
   filePath?: string,
   thisBoundaryNodeTypes?: ReadonlySet<string>,
+  scopeKeyAt?: Map<number, string | null>,
 ): string | undefined => {
   // Self/this receiver: resolve to enclosing class name via AST walk
   if (varName === 'self' || varName === 'this' || varName === '$this') {
@@ -175,6 +177,7 @@ const lookupInEnv = (
     enclosingFunctionFinder,
     extractFunctionNameHook,
     filePath,
+    scopeKeyAt,
   );
 
   // Check position-indexed pattern overrides first (e.g., Kotlin when/is smart casts).
@@ -407,26 +410,35 @@ const findEnclosingScopeKey = (
     filePath?: string,
   ) => { funcName: string | null; label: NodeLabel } | null,
   filePath?: string,
+  scopeKeyAt?: Map<number, string | null>,
 ): string | undefined => {
-  let current = node.parent;
-  while (current) {
-    if (FUNCTION_NODE_TYPES.has(current.type)) {
-      const funcName =
-        extractFunctionNameHook?.(current, filePath)?.funcName ?? genericFuncName(current);
-      if (funcName) return `${funcName}@${current.startIndex}`;
-    }
-    // Language-specific hook (e.g., Dart function_body → sibling function_signature)
-    if (enclosingFunctionFinder) {
-      const result = enclosingFunctionFinder(current);
-      if (result) {
-        const sigNode = current.previousSibling;
-        const startIdx = sigNode?.startIndex ?? current.startIndex;
-        return `${result.funcName}@${startIdx}`;
+  // With `scopeKeyAt` (one per file), every ancestor this climb examines keeps
+  // the answer, and parents come from the tree's parent index: a native
+  // `parent` read re-descends from the root, so a lookup in a deep nest paid
+  // depth^2 (`climbAncestors`).
+  const key = climbAncestors(
+    node,
+    scopeKeyAt ?? new Map<number, string | null>(),
+    (current): string | undefined => {
+      if (FUNCTION_NODE_TYPES.has(current.type)) {
+        const funcName =
+          extractFunctionNameHook?.(current, filePath)?.funcName ?? genericFuncName(current);
+        if (funcName) return `${funcName}@${current.startIndex}`;
       }
-    }
-    current = current.parent;
-  }
-  return undefined;
+      // Language-specific hook (e.g., Dart function_body → sibling function_signature)
+      if (enclosingFunctionFinder) {
+        const result = enclosingFunctionFinder(current);
+        if (result) {
+          const sigNode = current.previousSibling;
+          const startIdx = sigNode?.startIndex ?? current.startIndex;
+          return `${result.funcName}@${startIdx}`;
+        }
+      }
+      return undefined;
+    },
+    null,
+  );
+  return key ?? undefined;
 };
 
 /**
@@ -1300,6 +1312,8 @@ export const buildTypeEnv = (
     }
   }
 
+  // Every lookup of this file climbs to the same enclosing scopes.
+  const scopeKeyAt = new Map<number, string | null>();
   return {
     lookup: (varName, callNode) =>
       lookupInEnv(
@@ -1311,6 +1325,7 @@ export const buildTypeEnv = (
         extractFuncNameHook,
         options?.filePath,
         config.thisBoundaryNodeTypes,
+        scopeKeyAt,
       ),
     constructorBindings: bindings,
     fileScope: () => env.get(FILE_SCOPE) ?? emptyFileScope(),
