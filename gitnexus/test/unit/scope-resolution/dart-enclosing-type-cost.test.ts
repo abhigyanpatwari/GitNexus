@@ -13,11 +13,11 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { CaptureMatch } from 'gitnexus-shared';
+import { emitDartScopeCaptures } from '../../../src/core/ingestion/languages/dart/captures.js';
 import {
-  emitDartScopeCaptures,
-  getDartFunctionOwnerStats,
-  resetDartFunctionOwnerStats,
-} from '../../../src/core/ingestion/languages/dart/captures.js';
+  getDartCaptureWalkStats,
+  resetDartCaptureWalkStats,
+} from '../../../src/core/ingestion/languages/dart/walk-stats.js';
 import {
   getDartEnclosingTypeStats,
   resetDartEnclosingTypeStats,
@@ -132,9 +132,25 @@ describe.skipIf(!dartAvailable)('Dart callable-flow owner is read, not climbed',
       inlineNest(64, 'class Svc {\n  int operator +(List<int> items) {', '    return 0;\n  }\n}\n'),
       namedNest(64),
     ]) {
-      resetDartFunctionOwnerStats();
+      resetDartCaptureWalkStats();
       emitDartScopeCaptures(source, 'lib/nest.dart');
-      expect(getDartFunctionOwnerStats().parentSteps).toBe(0);
+      expect(getDartCaptureWalkStats().ownerParentSteps).toBe(0);
+    }
+  });
+
+  it('a call reads its callee, and a closure its static check, without a sibling read', () => {
+    // The shared pass asks for the callee of every call (the named sibling
+    // before its selector), and every closure that synthesizes `this` checks
+    // for a `static` token before it. A sibling read costs the node's depth;
+    // the walk passes both answers down.
+    for (const source of [
+      inlineNest(64, 'void f(List<int> items) {', '}\n'),
+      inlineNest(64, 'class Svc {\n  int operator +(List<int> items) {', '    return 0;\n  }\n}\n'),
+      namedNest(64),
+    ]) {
+      resetDartCaptureWalkStats();
+      emitDartScopeCaptures(source, 'lib/nest.dart');
+      expect(getDartCaptureWalkStats().siblingReads).toBe(0);
     }
   });
 });

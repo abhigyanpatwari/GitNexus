@@ -23,6 +23,7 @@
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import type { CaptureMatch } from 'gitnexus-shared';
 import { dartMethodConfig } from '../../method-extractors/configs/dart.js';
+import { recordSiblingRead } from './walk-stats.js';
 
 /** Node types that give the members and closures inside them a `this`. */
 export const DART_TYPE_DECLARATION_TYPES: ReadonlySet<string> = new Set([
@@ -146,13 +147,60 @@ export function synthesizeDartReceiverBinding(
 
 /**
  * A closure or local function (Pass B), whose nearest enclosing type
- * declaration the capture walk carried down the tree (null: it has none).
+ * declaration the capture walk carried down the tree (null: it has none), and
+ * whose parent it passed down too, for the static check.
  */
 export function synthesizeDartReceiverBindingWithin(
   declNode: SyntaxNode,
   bodyNode: SyntaxNode,
   enclosingType: SyntaxNode | null,
+  parent: SyntaxNode | null,
+  staticBefore: Map<number, boolean>,
 ): CaptureMatch[] {
-  if (dartMethodConfig.isStatic(declNode)) return [];
+  if (isDartStaticWithin(declNode, parent, staticBefore)) return [];
   return receiverBindings(enclosingType, bodyNode);
+}
+
+/**
+ * `dartMethodConfig.isStatic` for a node whose parent is known, without its
+ * `previousSibling` reads (each re-descends from the root in node-tree-sitter).
+ * The same two checks: an anonymous `static` among the node's own leading
+ * children, or among the siblings before it, back to the nearest named sibling
+ * that is not an annotation. The siblings' answer comes from one forward pass
+ * over the parent's children, recorded per child in `staticBefore`.
+ */
+function isDartStaticWithin(
+  node: SyntaxNode,
+  parent: SyntaxNode | null,
+  staticBefore: Map<number, boolean>,
+): boolean {
+  if (parent === null) {
+    recordSiblingRead();
+    return dartMethodConfig.isStatic(node);
+  }
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child && !child.isNamed && child.text.trim() === 'static') return true;
+    if (child?.isNamed) break;
+  }
+  let known = staticBefore.get(node.id);
+  if (known === undefined) {
+    // Forward: a `static` token stays pending until a named sibling that is
+    // not an annotation; that is the backward walk's answer at each child.
+    let pending = false;
+    for (const child of parent.children) {
+      staticBefore.set(child.id, pending);
+      if (child.isNamed) {
+        if (child.type !== 'annotation') pending = false;
+      } else if (child.text.trim() === 'static') {
+        pending = true;
+      }
+    }
+    known = staticBefore.get(node.id);
+    if (known === undefined) {
+      recordSiblingRead();
+      return dartMethodConfig.isStatic(node);
+    }
+  }
+  return known;
 }
