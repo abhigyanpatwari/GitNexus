@@ -37,6 +37,7 @@ const DEFAULT_DETECT = {
   topics: true,
   includes: false,
   workspace_deps: false,
+  sofa: false,
 };
 
 const DEFAULT_MATCHING = {
