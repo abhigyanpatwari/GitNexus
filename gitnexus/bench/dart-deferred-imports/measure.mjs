@@ -4,8 +4,9 @@
  * `import 'm.dart' deferred as p;` is captured as a namespace import, like
  * `import 'm.dart' as p;`, except that `p.loadLibrary` is the loader the
  * language adds to a deferred prefix and is dropped at capture time. This gate
- * pins what that path resolves and checks that its cost grows linearly in the
- * number of deferred prefixes and in the number of uses per prefix.
+ * pins what that path resolves and bounds its growth as deferred prefixes or
+ * uses per prefix increase. Prefix resolution has a pre-existing superlinear
+ * term; passing the budgets is not a proof of linear complexity. See README.md.
  *
  * Workload: N libraries `lib/m<i>.dart` that all declare the same names (class
  * `Svc` with `run()` and static `sm()`, top-level `make()`, `helper()` and
@@ -324,8 +325,24 @@ function child(args) {
 }
 
 const shapeArg = process.argv.indexOf('--shape');
+const sweepArg = process.argv.indexOf('--sweep-cell');
 try {
-  if (shapeArg >= 0) {
+  if (sweepArg >= 0) {
+    const [form, p, u, warmup, reps, order] = process.argv.slice(sweepArg + 1, sweepArg + 7);
+    console.log(
+      MARKER +
+        JSON.stringify(
+          await measureSweepCell(
+            form,
+            Number(p),
+            Number(u),
+            Number(warmup),
+            Number(reps),
+            Number(order),
+          ),
+        ),
+    );
+  } else if (shapeArg >= 0) {
     const [form, prefixes, uses] = process.argv.slice(shapeArg + 1, shapeArg + 4);
     assert.ok(FORMS.includes(form), `unknown form ${form}`);
     console.log(MARKER + JSON.stringify(await measureShape(form, Number(prefixes), Number(uses))));
@@ -336,6 +353,61 @@ try {
   }
 } finally {
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
+}
+
+/** Fresh-process sweep cell; retains samples and checks every resolved graph. */
+async function measureSweepCell(form, prefixes, uses, warmup, reps, order) {
+  assert.ok(FORMS.includes(form), `unknown form ${form}`);
+  for (const value of [prefixes, uses, reps]) assert.ok(Number.isSafeInteger(value) && value > 0);
+  for (const value of [warmup, order]) assert.ok(Number.isSafeInteger(value) && value >= 0);
+  const input = await prepare(form, prefixes, uses);
+  const groups = captureGroups(input.files);
+  const shape = correctness(prefixes, uses, input.parsed.graph, input.first.stats, groups);
+  assert.equal(shape.expected_missing, 0, 'expected edges missing');
+  assert.equal(shape.wrong_prefix_edges, 0, 'an edge left its own prefix');
+  assert.equal(shape.load_library_edges, 0, 'an edge reached loadLibrary');
+  // Workload-specific closed forms extend the pinned small shapes to all sizes.
+  assert.equal(shape.files, prefixes + 1);
+  assert.equal(shape.capture_groups, prefixes * (12 * uses + 20) + 1);
+  assert.equal(shape.relationships, prefixes * (7 * uses + 8));
+  assert.equal(shape.imports, prefixes);
+  assert.equal(shape.calls, 5 * prefixes * uses);
+  assert.equal(shape.accesses, prefixes * uses);
+  assert.deepEqual(shape.declines, { 'receiver-unresolved': prefixes * uses });
+  const samples = [];
+  for (let iteration = 0; iteration < warmup + reps; iteration++) {
+    const sample = { iteration, warmup: iteration < warmup };
+    const phases = (iteration + order) % 2 === 0 ? ['capture', 'resolve'] : ['resolve', 'capture'];
+    sample.phase_order = phases;
+    for (const phase of phases) {
+      if (phase === 'capture') {
+        const start = performance.now();
+        const count = captureGroups(input.files);
+        sample.capture_ms = performance.now() - start;
+        assert.equal(count, groups, 'capture pass must be the same work');
+      } else {
+        const pass = replay(input.files, input.raw);
+        const result = resolve(input.files, input.config, pass);
+        sample.resolve_ms = result.ms;
+        // Hashing is outside the timer; count-only parity could miss wrong edges.
+        assert.deepEqual(correctness(prefixes, uses, pass.graph, result.stats, groups), shape);
+      }
+      assert.ok(Number.isFinite(sample[`${phase}_ms`]) && sample[`${phase}_ms`] > 0);
+    }
+    samples.push(sample);
+  }
+  return {
+    form,
+    prefixes,
+    uses,
+    warmup,
+    reps,
+    shape,
+    samples,
+    source_bytes: input.files.reduce((sum, file) => sum + Buffer.byteLength(file.content), 0),
+    source_lines: input.files.reduce((sum, file) => sum + file.content.split('\n').length, 0),
+    peak_rss_mib: process.resourceUsage().maxRSS / 1024,
+  };
 }
 
 async function report() {
