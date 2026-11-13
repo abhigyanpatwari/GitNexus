@@ -1,0 +1,22 @@
+gitnexus/src/core/ingestion/utils/callable-flow-captures.ts
+  s_b9690234122db7::t_4e7d02e6444e4d 231-238,496,999,1271-1276,1281,1339,1342-1357,1463-1478,1482-1496,1498,1501,1505,1511,1525
+gitnexus/test/unit/scope-resolution/callable-flow-depth-cost.test.ts
+  s_b9690234122db7::t_64d4bdfe4dc77d 2-113
+  s_b9690234122db7::t_075a63088f451e 1,114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "29b0a4d8f15194b4ed70530be83fd97c1a6df7d1",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
