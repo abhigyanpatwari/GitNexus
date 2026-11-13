@@ -82,9 +82,20 @@ marker therefore points into finalization after extraction.
 ```sh
 node --expose-gc --import tsx bench/scope-resolution/call-signature-memory.mts 500000
 GITNEXUS_DEBUG_HEAP=1 node --import tsx bench/scope-resolution/dense-java.mts 300 20 10
+node --expose-gc --import tsx bench/scope-resolution/wildcard-java.mts 700 700
 ```
 
-CI runs both probes once with `--check` in the existing
+`wildcard-java.mts` has 700 files that each write `import big.*;` over a 700-file
+package and use one of its types: 490,000 (importer, package file) pairs, 700
+`IMPORTS` edges. With `--check` it requires that no wildcard import is stored as
+one edge per package file, that every importer still reaches every package file,
+the reviewed graph fingerprint, and at most 16 MiB of heap retained by the pass.
+The pass retains about 4 MiB when on-demand imports are stored as groups and about
+54 MiB with one edge per package file; set `GITNEXUS_DISABLE_IMPORT_GROUPS=1`
+(without `--check`) to measure the second form on the same build. This is one
+synthetic shape, not a representative repository.
+
+CI runs these probes once with `--check` in the existing
 `scope-resolution-benchmark` job, alongside its all-language measurements.
 The ordinary-call check rejects any retained signatures. The dense Java check
 requires the default 300/20/10 workload and its reviewed full graph fingerprint
