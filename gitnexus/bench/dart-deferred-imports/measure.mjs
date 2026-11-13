@@ -17,14 +17,12 @@
  * (`as p<i> hide loadLibrary`, the pre-existing form, as the control). The
  * deferred form must produce exactly the prefixed form's graph.
  *
- * Shapes: small = 16 prefixes x 16 uses; large = 64 x 16 (prefixes 4x);
- * dense = 16 x 64 (uses per prefix 4x). Each shape's accuracy cells and peak
- * RSS come from a fresh child process (`--shape`), so the RSS is its own.
+ * Shapes: small = 8 prefixes x 16 uses; large = 32 x 16 (prefixes 4x);
+ * dense = 8 x 64 (uses per prefix 4x).
  *
- * Timing runs in one more child (`--timings`) that holds all six workloads and
- * interleaves them: each round times every workload once, in rotating order,
- * so a burst of machine load lands on both sides of a ratio. Min of 15 rounds
- * after 2 warmups (the estimator of bench/ruby-gem-resolution). Two phases:
+ * Two phases are timed, interleaved: each round times every timed workload
+ * once, in rotating order, so a burst of machine load lands on both sides of
+ * a ratio.
  *  - capture_ms: emitDartScopeCaptures over every file (tree-sitter parse,
  *    scope query and the deferred-prefix filter). Build-free.
  *  - resolve_ms: runScopeResolution over the worker-extracted files. The corpus
@@ -33,7 +31,15 @@
  *    mergeChunkResults (the parse-cache replay path) into a fresh graph and
  *    model, outside the timer.
  *
- * node --import tsx bench/dart-deferred-imports/measure.mjs [--check]
+ * Two profiles:
+ *  - default (CI, also with --check): one process prepares every workload and
+ *    runs every accuracy gate, but times only the deferred shapes and the
+ *    `as p` control at `large`, min of 5 after 1 warmup. About 20 s locally.
+ *  - `--full`: one child times all six workloads, min of 15 after 2 warmups
+ *    (the estimator of bench/ruby-gem-resolution), and each shape's accuracy
+ *    cells and peak RSS come from a fresh child process (`--shape`).
+ *
+ * node --import tsx bench/dart-deferred-imports/measure.mjs [--check] [--full]
  */
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -54,11 +60,17 @@ import { parseFilesWithWorkers } from '../../test/helpers/worker-parse.ts';
 const script = fileURLToPath(import.meta.url);
 const baselinePath = fileURLToPath(new URL('./baseline.json', import.meta.url));
 const CHECK = process.argv.includes('--check');
-const WARMUP = 2;
-const REPS = 15;
+// Two profiles. The default (CI, also under --check) prepares every workload
+// and runs every accuracy gate, but times only CI_TIMED, min of 5 after 1
+// warmup, in this one process. `--full` times every workload, min of 15 after
+// 2 warmups, and takes each shape's peak RSS from a fresh process.
+const FULL = process.argv.includes('--full');
+const WARMUP = FULL ? 2 : 1;
+const REPS = FULL ? 15 : 5;
+const CI_TIMED = ['deferred_small', 'deferred_large', 'deferred_dense', 'prefixed_large'];
 const MARKER = 'DART_DEFERRED_RESULT ';
 const FORMS = ['deferred', 'prefixed'];
-const SHAPES = { small: [16, 16], large: [64, 16], dense: [16, 64] };
+const SHAPES = { small: [8, 16], large: [32, 16], dense: [8, 64] };
 const MAIN = 'lib/main.dart';
 const roots = [];
 
@@ -235,28 +247,17 @@ async function measureShape(form, prefixes, uses) {
 }
 
 /**
- * Every workload in ONE process, interleaved: each round times one capture
- * pass and one resolution pass per workload, rotating the order, so a burst
- * of machine load lands on numerator and denominator alike.
+ * Times capture and resolution of each input, interleaved: each round times
+ * every input once, rotating the order, so a burst of machine load lands on
+ * numerator and denominator alike. Min of `reps` after `warmup` rounds.
  */
-async function measureTimings() {
-  const inputs = {};
-  for (const form of FORMS) {
-    for (const [name, [prefixes, uses]] of Object.entries(SHAPES)) {
-      const { files, config, raw, parsed } = await prepare(form, prefixes, uses);
-      inputs[`${form}_${name}`] = {
-        files,
-        config,
-        raw,
-        groups: captureGroups(files),
-        relationships: parsed.graph.relationshipCount,
-        capture: [],
-        resolution: [],
-      };
-    }
-  }
+function timeInputs(inputs, warmup, reps) {
   const names = Object.keys(inputs);
-  for (let run = 0; run < WARMUP + REPS; run++) {
+  for (const input of Object.values(inputs)) {
+    input.capture = [];
+    input.resolution = [];
+  }
+  for (let run = 0; run < warmup + reps; run++) {
     for (let k = 0; k < names.length; k++) {
       const input = inputs[names[(k + run) % names.length]];
       const start = performance.now();
@@ -269,7 +270,7 @@ async function measureTimings() {
         input.relationships,
         'timed pass must do the validated work',
       );
-      if (run >= WARMUP) {
+      if (run >= warmup) {
         input.capture.push(captureMs);
         input.resolution.push(ms);
       }
@@ -285,6 +286,27 @@ async function measureTimings() {
     };
   }
   return timings;
+}
+
+function timedInput({ files, config, raw, parsed }) {
+  return {
+    files,
+    config,
+    raw,
+    groups: captureGroups(files),
+    relationships: parsed.graph.relationshipCount,
+  };
+}
+
+/** `--full`: every workload in ONE process, interleaved. */
+async function measureTimings() {
+  const inputs = {};
+  for (const form of FORMS) {
+    for (const [name, [prefixes, uses]] of Object.entries(SHAPES)) {
+      inputs[`${form}_${name}`] = timedInput(await prepare(form, prefixes, uses));
+    }
+  }
+  return timeInputs(inputs, WARMUP, REPS);
 }
 
 function child(args) {
@@ -310,34 +332,52 @@ try {
   } else if (process.argv.includes('--timings')) {
     console.log(MARKER + JSON.stringify(await measureTimings()));
   } else {
-    report();
+    await report();
   }
 } finally {
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
 }
 
-function report() {
+async function report() {
   const shapes = {};
-  const timings = child(['--timings']);
-  for (const form of FORMS) {
-    for (const [name, [prefixes, uses]] of Object.entries(SHAPES)) {
-      const key = `${form}_${name}`;
-      const result = child(['--shape', form, String(prefixes), String(uses)]);
-      shapes[key] = result.shape;
-      assert.equal(
-        timings[key].relationships,
-        result.shape.relationships,
-        `${key}: the timed workload is not the validated one`,
-      );
-      delete timings[key].relationships;
-      timings[key].peak_rss_mib = result.peak_rss_mib;
+  let timings;
+  if (FULL) {
+    timings = child(['--timings', '--full']);
+    for (const form of FORMS) {
+      for (const [name, [prefixes, uses]] of Object.entries(SHAPES)) {
+        const key = `${form}_${name}`;
+        const result = child(['--shape', form, String(prefixes), String(uses)]);
+        shapes[key] = result.shape;
+        timings[key].peak_rss_mib = result.peak_rss_mib;
+      }
     }
+  } else {
+    const inputs = {};
+    for (const form of FORMS) {
+      for (const [name, [prefixes, uses]] of Object.entries(SHAPES)) {
+        const key = `${form}_${name}`;
+        const input = await prepare(form, prefixes, uses);
+        const groups = captureGroups(input.files);
+        shapes[key] = correctness(prefixes, uses, input.parsed.graph, input.first.stats, groups);
+        if (CI_TIMED.includes(key)) inputs[key] = timedInput(input);
+      }
+    }
+    timings = timeInputs(inputs, WARMUP, REPS);
+  }
+  for (const [key, timing] of Object.entries(timings)) {
+    assert.equal(
+      timing.relationships,
+      shapes[key].relationships,
+      `${key}: the timed workload is not the validated one`,
+    );
+    delete timing.relationships;
   }
   const scale = SHAPES.large[0] / SHAPES.small[0];
   assert.equal(SHAPES.dense[1] / SHAPES.small[1], scale, 'both growth axes use the same factor');
   const metrics = {};
   for (const form of FORMS) {
     const at = (name) => timings[`${form}_${name}`];
+    if (at('small') === undefined) continue; // the CI profile times the `as p` control at large only
     for (const phase of ['capture', 'resolve']) {
       const key = `${phase}_ms`;
       metrics[`${form}_${phase}_prefix_scaling_ratio`] =
@@ -354,7 +394,13 @@ function report() {
     shapes,
     timings,
     metrics,
-    estimator: { warmup: WARMUP, samples: REPS, statistic: 'minimum', interleaved: true },
+    estimator: {
+      profile: FULL ? 'full' : 'ci',
+      warmup: WARMUP,
+      samples: REPS,
+      statistic: 'minimum',
+      interleaved: true,
+    },
   };
   console.log(JSON.stringify(out, null, 2));
   // Correctness holds on every run, not only under --check: each use reaches
