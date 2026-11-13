@@ -303,6 +303,53 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 /**
+ * Whether `markdown` has a level-1 heading of its own: an ATX `# Title` or a
+ * setext title underlined with `=`. Lines inside fenced code blocks are not
+ * headings.
+ */
+function hasTopLevelHeading(markdown: string): boolean {
+  let fence: { char: string; length: number } | undefined;
+  let previous = '';
+  for (const line of markdown.split('\n')) {
+    const fenceMatch = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (
+        fenceMatch &&
+        fenceMatch[1][0] === fence.char &&
+        fenceMatch[1].length >= fence.length &&
+        line.trim() === fenceMatch[1]
+      ) {
+        fence = undefined;
+      }
+      previous = '';
+      continue;
+    }
+    if (fenceMatch) {
+      fence = { char: fenceMatch[1][0], length: fenceMatch[1].length };
+      previous = '';
+      continue;
+    }
+    if (/^ {0,3}#(?:[ \t]|$)/.test(line)) return true;
+    if (/^ {0,3}=+[ \t]*$/.test(line) && previous.trim() !== '' && !/^ {0,3}#/.test(previous)) {
+      return true;
+    }
+    previous = line;
+  }
+  return false;
+}
+
+/**
+ * The block opens with a level-1 heading, which is right for a file GitNexus
+ * creates. Inside a file that already has its own title, a second level-1
+ * heading breaks markdownlint's MD025 (single-title), so the block's headings
+ * move down one level there (#2774). Every line of the block that starts with
+ * `#` is one of its own headings.
+ */
+function nestUnderExistingTitle(block: string, surrounding: string): string {
+  return hasTopLevelHeading(surrounding) ? block.replace(/^(#{1,5}) /gm, '#$1 ') : block;
+}
+
+/**
  * Replace the block's volatile counts — the header parenthetical and the
  * per-cluster symbol counts in the skills table — with fixed placeholders, so
  * two renderings that differ only in those numbers compare equal.
@@ -441,18 +488,20 @@ async function upsertGitNexusSection(
 
     // No keep marker — replace existing section with full verbose content,
     // unless the counts are the only thing that moved (#2907).
-    if (stripVolatileCounts(existingSection) === stripVolatileCounts(content)) {
-      return repairLineEndings();
-    }
     const before = existingContent.substring(0, startIdx);
     const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
-    const newContent = before + content + after;
+    const placed = nestUnderExistingTitle(content, before + after);
+    if (stripVolatileCounts(existingSection) === stripVolatileCounts(placed)) {
+      return repairLineEndings();
+    }
+    const newContent = before + placed + after;
     await writeWithLineEnding(filePath, newContent.trim() + '\n', eol);
     return 'updated';
   }
 
   // Append new section
-  const newContent = existingContent.trim() + '\n\n' + content + '\n';
+  const newContent =
+    existingContent.trim() + '\n\n' + nestUnderExistingTitle(content, existingContent) + '\n';
   await writeWithLineEnding(filePath, newContent, eol);
   return 'appended';
 }

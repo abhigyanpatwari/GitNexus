@@ -2147,3 +2147,156 @@ indexed by GitNexus as **OldName** (10 symbols, 20 relationships, 3 execution fl
     }
   });
 });
+
+describe('block heading levels follow the file (#2774)', () => {
+  const stats = { nodes: 10, edges: 20, processes: 3 };
+
+  async function withRepo(run: (dir: string, storage: string) => Promise<void>) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-2774-'));
+    const storage = path.join(dir, '.gitnexus');
+    await fs.mkdir(storage, { recursive: true });
+    try {
+      await run(dir, storage);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  /** ATX heading lines outside fenced code, as `level text`. */
+  const headings = (content: string): string[] => {
+    const out: string[] = [];
+    let inFence = false;
+    for (const line of content.split(/\r?\n/)) {
+      if (/^```/.test(line)) inFence = !inFence;
+      const match = !inFence && /^(#{1,6}) (.*)$/.exec(line);
+      if (match) out.push(`${match[1].length} ${match[2]}`);
+    }
+    return out;
+  };
+  const levelOne = (content: string) => headings(content).filter((h) => h.startsWith('1 '));
+
+  it('keeps the level-1 title in a file GitNexus creates', async () => {
+    await withRepo(async (dir, storage) => {
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8');
+      expect(content.startsWith('<!-- gitnexus:start -->\n# GitNexus — Code Intelligence\n')).toBe(
+        true,
+      );
+      expect(headings(content)).toContain('2 Always Do');
+    });
+  });
+
+  it('nests the block under a file that already has a title', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, '# CLAUDE.md\n\n## Project Overview\n\nNotes.\n', 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(levelOne(content)).toEqual(['1 CLAUDE.md']);
+      expect(headings(content)).toEqual([
+        '1 CLAUDE.md',
+        '2 Project Overview',
+        '2 GitNexus — Code Intelligence',
+        '3 Always Do',
+        '3 Never Do',
+        '3 Resources',
+        '3 CLI',
+      ]);
+    });
+  });
+
+  it('nests a block an earlier version wrote at level 1, once', async () => {
+    await withRepo(async (dir, storage) => {
+      // A block-only file is what earlier versions created; putting a title
+      // above it gives the two-H1 file the issue reports.
+      await generateAIContextFiles(dir, storage, 'P', stats);
+      const file = path.join(dir, 'AGENTS.md');
+      const legacy = '# AGENTS.md\n\n' + (await fs.readFile(file, 'utf-8'));
+      await fs.writeFile(file, legacy, 'utf-8');
+      expect(levelOne(legacy)).toHaveLength(2);
+
+      const first = await generateAIContextFiles(dir, storage, 'P', stats);
+      const migrated = await fs.readFile(file, 'utf-8');
+      expect(first.files).toContain('AGENTS.md (updated)');
+      expect(levelOne(migrated)).toEqual(['1 AGENTS.md']);
+      expect(migrated).toContain('\n## GitNexus — Code Intelligence\n');
+
+      const second = await generateAIContextFiles(dir, storage, 'P', stats);
+      expect(second.files).toContain('AGENTS.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(migrated);
+    });
+  });
+
+  it('leaves a block-only file at level 1 without rewriting it', async () => {
+    await withRepo(async (dir, storage) => {
+      await generateAIContextFiles(dir, storage, 'P', stats);
+      const file = path.join(dir, 'CLAUDE.md');
+      const created = await fs.readFile(file, 'utf-8');
+
+      const result = await generateAIContextFiles(dir, storage, 'P', stats);
+
+      expect(result.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(created);
+    });
+  });
+
+  it('treats a setext title as the file title', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, 'Project Guide\n=============\n\nNotes.\n', 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(levelOne(content)).toEqual([]);
+      expect(headings(content)).toContain('2 GitNexus — Code Intelligence');
+    });
+  });
+
+  it('does not take a # line inside fenced code for a title', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, 'Notes.\n\n```sh\n# install\nnpm ci\n```\n', 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(levelOne(content)).toEqual(['1 GitNexus — Code Intelligence']);
+    });
+  });
+
+  it('nests the block in a CRLF file with a title and keeps CRLF', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, '# Guide\r\n\r\nNotes.\r\n', 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(content).toContain('\r\n## GitNexus — Code Intelligence\r\n');
+      expect(content.replace(/\r\n/g, '').includes('\n')).toBe(false);
+    });
+  });
+
+  it('leaves a keep-marker block as the user wrote it', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      const original = `# Guide
+
+<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+# Code graph
+indexed by GitNexus as **P** (10 symbols, 20 relationships, 3 execution flows).
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(file, original, 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      expect(await fs.readFile(file, 'utf-8')).toBe(original);
+    });
+  });
+});
