@@ -89,6 +89,9 @@ const SHADOWED_INSIDE_BLOCK = [
   'end_block_read_sees_method_param',
   // A heredoc body is parsed at its opener, after the method's parameters.
   'heredoc_body_read_sees_param_before_opener',
+  'heredoc_closed_block_param',
+  'heredoc_body_binds_opener_tail',
+  'heredoc_first_body_binds_between_openers',
 ] as const;
 
 // Parameters bind LEFT-TO-RIGHT: a read inside parameter k's default sees only
@@ -145,6 +148,10 @@ const NOT_A_BINDING_EDGE_KEPT = [
   'paren_hash_arg_unary_key_does_not_bind',
   'array_unary_key_does_not_bind',
   'heredoc_body_read_before_opener_assign',
+  'heredoc_closed_nested_method',
+  'heredoc_nested_method_local_does_not_leak',
+  'heredoc_block_local_does_not_leak',
+  'heredoc_second_body_does_not_bind_between_openers',
 ] as const;
 
 /** True pattern binding positions (controls for the pattern allow-list). */
@@ -552,6 +559,59 @@ class Host
         target
       end}
     EOS
+  end
+
+  def heredoc_closed_nested_method(target)
+    def heredoc_inner; other(<<~EOS); end
+      #{[1].each do
+        target
+      end}
+    EOS
+  end
+
+  def heredoc_nested_method_local_does_not_leak
+    nil
+    def heredoc_binding_inner; other(<<~EOS); end
+      #{target = 1}
+    EOS
+    target
+  end
+
+  def heredoc_block_local_does_not_leak
+    [1].each do; other(<<~EOS); end
+      #{target = 1}
+    EOS
+    target
+  end
+
+  def heredoc_closed_block_param
+    [1].each do |target|; other(<<~EOS); end
+      #{[1].each do
+        target
+      end}
+    EOS
+  end
+
+  def heredoc_body_binds_opener_tail
+    other(<<~EOS); [1].each do; target; end
+      #{target = 1}
+    EOS
+  end
+
+  def heredoc_first_body_binds_between_openers
+    other(<<~A, [1].each do; target; end, <<~B)
+      #{target = 1}
+    A
+      b
+    B
+  end
+
+  def heredoc_second_body_does_not_bind_between_openers
+    other(<<~A, [1].each do; target; end, <<~B)
+      a
+    A
+      #{target = 1}
+    B
   end
 
   def const_array_pattern_arg_binds(v)

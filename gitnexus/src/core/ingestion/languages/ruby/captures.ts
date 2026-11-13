@@ -315,11 +315,11 @@ function isRubyLexicalMethod(node: SyntaxNode): boolean {
 // assignment later on the opener line has not happened yet — in
 // `other(<<~EOS, target = 1)` a read inside the body is a call.
 //
-// Each scope's bindings are indexed once per file — the earliest offset at
-// which every name is bound — always the offset where the name is WRITTEN:
-// a parameter at its name node, an assignment target or pattern variable at
-// its identifier — and cached by scope node id for the capture pass, so
-// a read costs one map lookup per enclosing scope instead of a re-walk.
+// Each scope's bindings are indexed once per file at their earliest parse
+// position and cached by scope node id. Files with heredocs also get a parse-
+// order index: their bodies belong at the opener, including when the opener's
+// method or block closes before the physical body. Both binding collection
+// and the read's ancestor walk follow that same connection.
 
 /**
  * Scopes whose body sees nothing bound outside them. `begin_block` /
@@ -394,7 +394,7 @@ const RUBY_LHS_CONTAINERS: ReadonlySet<string> = new Set([
   'exception_variable',
 ]);
 
-/** Name → earliest source offset at which one scope binds it. */
+/** Name → earliest parse position at which one scope binds it. */
 export type RubyScopeBindings = ReadonlyMap<string, number>;
 type RubyBindingVisitor = (name: string, start: number) => void;
 
@@ -582,7 +582,11 @@ function collectRubyBindingSiteNames(node: SyntaxNode, visit: RubyBindingVisitor
  * not in them), minus this scope's own header expressions (evaluated in ITS
  * enclosing scope) — each at the offset where the name is written.
  */
-function forEachRubyScopeBinding(scope: SyntaxNode, visit: RubyBindingVisitor): void {
+function forEachRubyScopeBinding(
+  scope: SyntaxNode,
+  visit: RubyBindingVisitor,
+  heredocs: RubyHeredocLayout | null,
+): void {
   collectRubyParameterNames(scope.childForFieldName('parameters'), visit);
   const ownHeaders = new Set(rubyScopeHeaderNodes(scope).map((n) => n.id));
   const pending: SyntaxNode[] = [];
@@ -592,6 +596,16 @@ function forEachRubyScopeBinding(scope: SyntaxNode, visit: RubyBindingVisitor): 
   }
   while (pending.length > 0) {
     const node = pending.pop()!;
+    // A physical body may be outside the scope that opened it. Only enter
+    // it through its opener; otherwise its assignments leak into this scope.
+    if (node.type === 'heredoc_body') continue;
+    if (node.type === 'heredoc_beginning') {
+      const body = heredocs?.bodies.get(node.id);
+      if (body !== undefined) {
+        for (const child of body.namedChildren) pending.push(child);
+      }
+      continue;
+    }
     if (RUBY_CLOSED_LOCAL_SCOPES.has(node.type) || RUBY_OPEN_LOCAL_SCOPES.has(node.type)) {
       // A nested scope's bindings do not leak into this one — but its header
       // expressions run here.
@@ -607,28 +621,33 @@ function forEachRubyScopeBinding(scope: SyntaxNode, visit: RubyBindingVisitor): 
 }
 
 /**
- * One scope's bindings keyed by name with the earliest offset each is bound
+ * One scope's bindings keyed by name with the earliest parse position it binds
  * at. Built once per scope and cached for the file's capture pass.
  */
 function rubyScopeBindings(
   scope: SyntaxNode,
   cache: Map<number, RubyScopeBindings>,
+  heredocs: RubyHeredocLayout | null,
 ): RubyScopeBindings {
   const cached = cache.get(scope.id);
   if (cached !== undefined) return cached;
   const earliest = new Map<string, number>();
-  forEachRubyScopeBinding(scope, (name, start) => {
-    const prev = earliest.get(name);
-    if (prev === undefined || start < prev) earliest.set(name, start);
-  });
+  forEachRubyScopeBinding(
+    scope,
+    (name, start) => {
+      const position = heredocs === null ? start : heredocs.order.get(start);
+      if (position === undefined) return;
+      const prev = earliest.get(name);
+      if (prev === undefined || position < prev) earliest.set(name, position);
+    },
+    heredocs,
+  );
   cache.set(scope.id, earliest);
   return earliest;
 }
 
 /** A source span `[from, to)` of offsets. */
 type RubySourceSpan = readonly [number, number];
-
-const NO_RUBY_SPANS: readonly RubySourceSpan[] = [];
 
 /**
  * The rest of a heredoc body's opener line: from the end of the body's own
@@ -640,9 +659,8 @@ const NO_RUBY_SPANS: readonly RubySourceSpan[] = [];
  * tree-sitter-ruby does not link a body to its opener. The bodies opened on
  * one line are contiguous siblings in token order, and the first starts at
  * that line's end, so the body's index in that run picks its opener among
- * the line's `heredoc_beginning` nodes. When the counts disagree, the line's
- * first opener is used: its span contains the true one, so the answer can
- * only keep a call, never invent a read. `null` when no opener is found.
+ * the line's `heredoc_beginning` nodes. When the counts disagree, return
+ * `null`: guessing an opener could assign the body's locals to another scope.
  */
 function rubyHeredocOpenerTail(body: SyntaxNode): RubySourceSpan | null {
   let first = body;
@@ -665,42 +683,59 @@ function rubyHeredocOpenerTail(body: SyntaxNode): RubySourceSpan | null {
   const openers = body.tree.rootNode
     .descendantsOfType('heredoc_beginning', { row, column: 0 }, first.startPosition)
     .filter((n) => n.startPosition.row === row && n.endIndex <= first.startIndex);
-  const opener = openers.length === count ? openers[index] : openers[0];
+  const opener = openers.length === count ? openers[index] : undefined;
   return opener === undefined ? null : [opener.endIndex, first.startIndex];
 }
 
-/** Whether `offset` lies outside every span in `unseen`. */
-function rubyOffsetIsSeen(offset: number, unseen: readonly RubySourceSpan[]): boolean {
-  for (const [from, to] of unseen) {
-    if (offset >= from && offset < to) return false;
-  }
-  return true;
+interface RubyHeredocLayout {
+  /** Opener id → physical body, and body id → lexical opener. */
+  bodies: ReadonlyMap<number, SyntaxNode>;
+  openers: ReadonlyMap<number, SyntaxNode>;
+  /** Source offset → parse position, visiting a body at its opener. */
+  order: ReadonlyMap<number, number>;
 }
 
+// Keyed by the capture pass's cache, so no tree survives that pass's lifetime.
+const rubyHeredocLayouts = new WeakMap<Map<number, RubyScopeBindings>, RubyHeredocLayout | null>();
+
 /**
- * Whether `scope` binds `name` before `readStart`, ignoring a binding written
- * in an `unseen` span (a heredoc opener's tail, parsed after the body that
- * holds the read). The cached index keeps only the earliest offset per name;
- * when that one is unseen the scope is walked again for another binding,
- * which happens only for a read inside a heredoc body.
+ * Build the lexical connections and parse order once, only for files with
+ * heredocs. An unmatched body is omitted: neither its reads nor its bindings
+ * can prove a local read. Ordinary files continue to compare source offsets.
  */
-function rubyScopeBindsBefore(
-  scope: SyntaxNode,
-  name: string,
-  readStart: number,
-  unseen: readonly RubySourceSpan[],
+function rubyHeredocLayout(
+  root: SyntaxNode,
   cache: Map<number, RubyScopeBindings>,
-): boolean {
-  const boundAt = rubyScopeBindings(scope, cache).get(name);
-  if (boundAt === undefined || boundAt >= readStart) return false;
-  if (rubyOffsetIsSeen(boundAt, unseen)) return true;
-  let found = false;
-  forEachRubyScopeBinding(scope, (bound, start) => {
-    if (!found && bound === name && start < readStart && rubyOffsetIsSeen(start, unseen)) {
-      found = true;
+): RubyHeredocLayout | null {
+  const cached = rubyHeredocLayouts.get(cache);
+  if (cached !== undefined) return cached;
+  const physicalBodies = root.descendantsOfType('heredoc_body');
+  if (physicalBodies.length === 0) {
+    rubyHeredocLayouts.set(cache, null);
+    return null;
+  }
+  const byEnd = new Map(root.descendantsOfType('heredoc_beginning').map((n) => [n.endIndex, n]));
+  const bodies = new Map<number, SyntaxNode>();
+  const openers = new Map<number, SyntaxNode>();
+  for (const body of physicalBodies) {
+    const tail = rubyHeredocOpenerTail(body);
+    const opener = tail === null ? undefined : byEnd.get(tail[0]);
+    if (opener !== undefined) {
+      bodies.set(opener.id, body);
+      openers.set(body.id, opener);
     }
-  });
-  return found;
+  }
+  const order = new Map<number, number>();
+  const pending = [root];
+  for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+    if (node.type === 'heredoc_body') continue;
+    if (!order.has(node.startIndex)) order.set(node.startIndex, order.size);
+    const children = (bodies.get(node.id) ?? node).namedChildren;
+    for (const child of children.reverse()) pending.push(child);
+  }
+  const layout = { bodies, openers, order };
+  rubyHeredocLayouts.set(cache, layout);
+  return layout;
 }
 
 /**
@@ -715,18 +750,18 @@ export function rubyBareNameIsLocalRead(
   cache: Map<number, RubyScopeBindings>,
 ): boolean {
   const name = identifier.text;
-  const readStart = identifier.startIndex;
+  const heredocs = rubyHeredocLayout(identifier.tree.rootNode, cache);
+  const readStart =
+    heredocs === null ? identifier.startIndex : heredocs.order.get(identifier.startIndex);
+  if (readStart === undefined) return false;
   let child: SyntaxNode = identifier;
-  let unseen = NO_RUBY_SPANS;
   for (let scope = identifier.parent; scope !== null; child = scope, scope = scope.parent) {
-    // Past a heredoc body, the read sits at its opener's `<<~` token: a
-    // binding later on the opener line has not been parsed yet (`other(<<~EOS,
-    // target = 1)` reads the method). Scopes nested inside the body were
-    // already answered in source order.
+    // The physical parent may be outside a method/block that closed on the
+    // opener line. Continue through the opener's lexical ancestors instead.
     if (scope.type === 'heredoc_body') {
-      const tail = rubyHeredocOpenerTail(scope);
-      if (tail === null) return false;
-      unseen = [...unseen, tail];
+      const opener = heredocs?.openers.get(scope.id);
+      if (opener === undefined) return false;
+      scope = opener;
       continue;
     }
     const closed = RUBY_CLOSED_LOCAL_SCOPES.has(scope.type);
@@ -738,7 +773,8 @@ export function rubyBareNameIsLocalRead(
     // its index (which excludes its own header) has nothing to say. Keep
     // climbing.
     if (closed && rubyScopeHeaderNodes(scope).some((header) => header.id === child.id)) continue;
-    if (rubyScopeBindsBefore(scope, name, readStart, unseen, cache)) return true;
+    const boundAt = rubyScopeBindings(scope, cache, heredocs).get(name);
+    if (boundAt !== undefined && boundAt < readStart) return true;
     if (closed) return false;
   }
   return false;

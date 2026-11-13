@@ -281,6 +281,53 @@ describe('Ruby bare read: where a parameter or local binds (RUBY-04)', () => {
   });
 
   describe('a heredoc body is parsed at its opener', () => {
+    it.each([
+      [
+        'a nested method closed on the opener line cannot see the outer parameter',
+        'def outer(target)\n  def inner; foo(<<~A); end\n#{[1].each do; target; end}\nA\nend\n',
+        false,
+      ],
+      [
+        'an assignment in a closed nested method does not leak',
+        'def outer\n  def inner; foo(<<~A); end\n#{target = 1}\nA\ntarget\nend\n',
+        false,
+      ],
+      [
+        'an assignment in a closed block does not leak',
+        'def outer\n  foo do; puts <<~A; end\n#{target = 1}\nA\ntarget\nend\n',
+        false,
+      ],
+      [
+        'a closed block parameter remains visible to its body',
+        'def run\n  foo do |target|; puts <<~A; end\n#{[1].each do; target; end}\nA\nend\n',
+        true,
+      ],
+      [
+        'a default in a closed method sees its own parameter',
+        'def run(target = <<~A); end\n#{[1].each do; target; end}\nA\n',
+        true,
+      ],
+      [
+        'a later opener-line read sees the body binding',
+        'def run\n  foo(<<~A); [1].each do; target; end\n#{target = 1}\nA\nend\n',
+        true,
+      ],
+      [
+        'a read between openers sees the first body binding',
+        'def run\nfoo(<<~A, [1].each do; target; end, <<~B)\n#{target = 1}\nA\nb\nB\nend\n',
+        true,
+      ],
+      [
+        'a read between openers cannot see the second body binding',
+        'def run\nfoo(<<~A, [1].each do; target; end, <<~B)\na\nA\n#{target = 1}\nB\nend\n',
+        false,
+      ],
+    ] as const)('%s', (_name, source, local) => {
+      // Prism 2.1.0 accepts each source and classifies these statement reads.
+      expect(readsLocal(source)).toBe(local);
+      expect(captured(source)).toBe(!local);
+    });
+
     // Ruby lexes a body when it reaches the body's `<<~` token, before the
     // rest of that line: a read in the body sees what was bound before the
     // token, but not an assignment later on the opener line.
