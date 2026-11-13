@@ -38,7 +38,12 @@ import {
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
 import { computeDartArityMetadata } from './arity-metadata.js';
-import { synthesizeDartReceiverBinding } from './receiver-binding.js';
+import {
+  DART_TYPE_DECLARATION_TYPES,
+  synthesizeDartReceiverBinding,
+  synthesizeDartReceiverBindingWithin,
+  type DartEnclosingTypeMemo,
+} from './receiver-binding.js';
 import {
   synthesizeDartParameterBindings,
   synthesizeDartSignatureBindings,
@@ -210,6 +215,11 @@ export function emitDartScopeCaptures(
   // names ride the scope match as `@scope.lexical-names` once the walk ends.
   const lexicalScopes: DartLexicalScopes = new Map();
 
+  // The enclosing type declaration of each node a member's receiver lookup
+  // climbed past, so a member nested in another (a named closure) stops where
+  // the outer lookup did instead of climbing to the root again.
+  const enclosingTypes: DartEnclosingTypeMemo = new Map();
+
   // ── Pass A: query-driven scopes / declarations / imports ────────────────
   for (const match of getDartScopeQuery().matches(root)) {
     const grouped: Record<string, Capture> = {};
@@ -260,7 +270,7 @@ export function emitDartScopeCaptures(
         };
         out.push(scopeMatch);
         // DART-11: the names this scope binds are filled in by Pass B.
-        const receiver = synthesizeDartReceiverBinding(declNode, bodyNode);
+        const receiver = synthesizeDartReceiverBinding(declNode, bodyNode, enclosingTypes);
         for (const cm of receiver) out.push(cm);
         // Parameter bindings are published with the scope once Pass B has
         // counted what it declares (`attachDartLexicalNames`): an annotation is
@@ -350,7 +360,7 @@ export function emitDartScopeCaptures(
 
   // ── Pass B: tree-walked references, type inference, heritage ────────────
   const seenReadSpans = new Set<string>();
-  walkDartTree(root, null, null, (node, type, owner, opensBlock) => {
+  walkDartTree(root, null, null, null, (node, type, owner, opensBlock, enclosingType) => {
     // A statement that opens a Dart scope gets a Block scope if it binds a
     // name; a catch clause's parameters belong to the body block after it.
     if (opensBlock) registerDartBlockScope(lexicalScopes, node, owner);
@@ -388,7 +398,7 @@ export function emitDartScopeCaptures(
       return;
     }
     if (type === 'function_expression' || type === 'local_function_declaration') {
-      emitDartNestedFunctionScope(node, seenFnDeclNodes, lexicalScopes, owner);
+      emitDartNestedFunctionScope(node, seenFnDeclNodes, lexicalScopes, owner, enclosingType);
       return;
     }
   });
@@ -526,6 +536,7 @@ function emitDartNestedFunctionScope(
   seenFnDeclNodes: ReadonlySet<string>,
   lexicalScopes: DartLexicalScopes,
   owner: SyntaxNode | null,
+  enclosingType: SyntaxNode | null,
 ): void {
   let scopeNode: SyntaxNode | null;
   let paramOwner: SyntaxNode | null;
@@ -553,7 +564,7 @@ function emitDartNestedFunctionScope(
   // enclosing scope already provides `this` (`attachDartLexicalNames`).
   registerDartLexicalScope(lexicalScopes, body, 'nested', {
     parent: owner,
-    nested: { node, scopeNode, paramOwner },
+    nested: { node, scopeNode, paramOwner, enclosingType },
   });
 }
 
@@ -591,6 +602,9 @@ interface DartLexicalScope {
     readonly node: SyntaxNode;
     readonly scopeNode: SyntaxNode;
     readonly paramOwner: SyntaxNode;
+    /** The nearest enclosing type declaration, or null for none, as the walk
+     *  carried it down: its receiver binding never searches the ancestors. */
+    readonly enclosingType: SyntaxNode | null;
   } | null;
   /** A member scope that binds `this` itself (an instance member). */
   readonly providesThis: boolean;
@@ -686,17 +700,28 @@ function dartCatchBody(catchClause: SyntaxNode): SyntaxNode | null {
  * signature that declares it (a comment between the two is skipped). `null`
  * outside every function (a field, a top-level variable). Tracking it on the
  * way down makes the owner of a binder a field read, not a climb.
+ *
+ * It carries the nearest enclosing type declaration the same way (`null`: the
+ * node has none), so a closure's receiver binding is a field read too.
  */
 function walkDartTree(
   node: SyntaxNode,
   owner: SyntaxNode | null,
+  enclosingType: SyntaxNode | null,
   parentType: string | null,
-  visit: (node: SyntaxNode, type: string, owner: SyntaxNode | null, opensBlock: boolean) => void,
+  visit: (
+    node: SyntaxNode,
+    type: string,
+    owner: SyntaxNode | null,
+    opensBlock: boolean,
+    enclosingType: SyntaxNode | null,
+  ) => void,
 ): void {
   // Read once: `type` is a native call on every access.
   const type = node.type;
   const opensBlock = owner !== null && opensDartBlockScope(type, parentType);
-  visit(node, type, owner, opensBlock);
+  visit(node, type, owner, opensBlock, enclosingType);
+  const childEnclosingType = DART_TYPE_DECLARATION_TYPES.has(type) ? node : enclosingType;
   let childOwner = owner;
   if (type === 'function_body' || type === 'function_expression_body') childOwner = node;
   else if (type === 'function_expression') childOwner = findFunctionBody(node);
@@ -712,7 +737,7 @@ function walkDartTree(
   }
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
-    if (child !== null) walkDartTree(child, childOwner, type, visit);
+    if (child !== null) walkDartTree(child, childOwner, childEnclosingType, type, visit);
   }
 }
 
@@ -797,7 +822,11 @@ function attachDartLexicalNames(scopes: DartLexicalScopes, out: CaptureMatch[]):
     // getter, setter, operator or field initializer, which have no scope.
     let ownThis = false;
     if (!inherited) {
-      const receiver = synthesizeDartReceiverBinding(nested.node, anchor);
+      const receiver = synthesizeDartReceiverBindingWithin(
+        nested.node,
+        anchor,
+        nested.enclosingType,
+      );
       for (const cm of receiver) out.push(cm);
       ownThis = receiver.length > 0;
     }
