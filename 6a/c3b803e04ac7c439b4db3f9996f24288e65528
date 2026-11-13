@@ -1,0 +1,21 @@
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_836e7de96cc2d9 157-174,183,242-245,386-388,401,429-438,736-739,745-746,748,753-759,774,777-780,784-795
+gitnexus/test/unit/scope-resolution/dart-enclosing-type-cost.test.ts
+  s_b9690234122db7::t_cc67ff0da3bf43 16-20,124-140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6ac3b803e04ac7c439b4db3f9996f24288e65528",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
