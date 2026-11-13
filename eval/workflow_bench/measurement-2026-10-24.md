@@ -1,5 +1,10 @@
 # Agent evaluation evidence, 24 October 2026
 
+Historical snapshot: the isolated rerun requested below completed on 1 November.
+See the [new report and retained measurements](measurement-2026-11-01.md) for
+its results and the work still needed for #3500. The observations and pending
+steps below describe the state on 24 October.
+
 The latest completed comparison does **not** demonstrate an accuracy gain or
 cost saving. Its MCP arm could read compiled code containing later task fixes,
 so it also cannot isolate the effect of tool assistance.

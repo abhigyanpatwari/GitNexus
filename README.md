@@ -117,6 +117,18 @@ Ruby, Rust, Swift, TypeScript, Vue and Zig have registered providers. Support
 varies by construct; see the [language inventories](docs/languages/README.md)
 for measured behavior, exclusions and remaining gaps.
 
+## Evaluation evidence
+
+The [1 November agent comparison](eval/workflow_bench/measurement-2026-11-01.md)
+tested four GitNexus development tasks, three times per arm, with `gpt-5.6-sol`.
+Both the MCP and no-GitNexus arms solved all tasks. Candidate MCP reported model
+cost averaged 9.7% less, but three of the four tasks cost more; the parse-retry task accounts
+for the saving. This small workflow study does not establish a general accuracy,
+cost or time benefit, or show that smaller models match larger ones.
+The report includes per-task results, retained measurements and reproduction
+steps. The separate [SWE-bench harness](eval/README.md) measures real issue repairs;
+this workflow study is not a SWE-bench result.
+
 ## Documentation
 
 <a id="cli-reference"></a>
