@@ -1,0 +1,23 @@
+.github/workflows/ci-tests.yml
+  s_b9690234122db7::t_f7cfe377600a67 1298-1306
+gitnexus/bench/dart-accessor-scopes/baseline.json
+  s_b9690234122db7::t_7aa4009447c756 1-173
+gitnexus/bench/dart-accessor-scopes/measure.mjs
+  s_b9690234122db7::t_67ca3d9a5de583 1-479
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8fe87e1a8a65e4068e8d2b009a40724b422c84cc",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
