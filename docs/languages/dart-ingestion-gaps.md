@@ -41,7 +41,9 @@ Typed plain, deep, optional and field chains resolve. Before DART-04 was fixed, 
 | DART-07 | Fixed                 | Un-awaited call-result binding took the FIRST call: `var x = Foo().bar(); x.save()` bound `x` to `Foo`. | Fixed in the DART-04 review round 2: `findDirectCallValue`'s identifier branch now requires the call to be the whole initializer, as the awaited branch already did. The DART-04 fold had made the old behaviour a typed wrong edge — `final f = makeUserAsync().then((u) => u.address); (await f).save()` bound `f` to `makeUserAsync`, whose whole `Future<User>` the await step unwrapped to `User.save`; pinned as no-edge (`thenChainUnawaited`). |
 | DART-08 | Recorded gap          | A cascade call on a parenthesized awaited head is still a name guess: `(await svc.getUserAsync())..save()` reaches `Address.save` (the first same-named method the wildcard import declares) instead of `User.save`. | Pre-existing, unchanged by DART-04, which covers member-call selectors only: `emitCascadeReference` classifies every cascade call as a FREE call (legacy parity) and mints no receiver. Fix shape: give a cascade whose head is a parenthesized run the same receiver text and chain `parenthesizedReceiver` mints for a selector run, so an untypable head becomes a recorded drop; a measured change on its own, since it moves every cascade on an expression head. |
 | DART-09 | Recorded gap          | A workspace class named `Future` (an SDK stub, a mock SDK) must never capture a whole-`Future<T>` binding. | Closed in the DART-04 review round 2 for every receiver route: `classOfDeclaredType` (`passes/compound-receiver.ts`, the fold's one owner lookup) and the simple-binding owner lookup (`passes/receiver-bound-calls.ts`, Case 4) refuse to bind a spelling the language's `elementTypeOf` await route can unwrap — an awaitable wrapper is container evidence about what the position yields, not a class the position is — and the fold's `await` step consults that route BEFORE any class found for the position. `final f = makeUserAsync(); f.save()` is a recorded `receiver-unresolved` drop with a stray `class Future<T> { int save() => 0; }` in the repo, and `(await svc.getUserAsync()).save()` still reaches `User.save` beside it (`dart-awaited-receiver-owner.test.ts`, `stray.dart`). |
+| DART-10 | Fixed (the two shapes named here) | A getter / setter body, and a function or method whose body is separated from its signature by a comment (`//`, `/* */`, `///` or `/** */`), opened no Function scope: their parameters bound nothing and their locals landed in the enclosing Module / Class scope, where they typed same-named receivers in other functions (`User get topGetter { final v = User(); … }` made `void reader() { v.save(); }` a wrong `User.save` edge beside an untyped `var v;`). Not covered, pre-existing and unchanged: operator and factory-constructor bodies still open no scope and still leak their locals into the Class scope. | Fixed: top-level and member getters / setters carry a private `@dart.accessor` capture (query.ts) and open their own scope, with lexical names like every other Function scope (DART-11) — the declaration stays a Property and its NAME still binds on the enclosing Class / Module scope (`dartBindingScopeFor` hoists it, so a bare `cs` read in a sibling member stops at `this.cs`), a field is never captured, a static accessor binds no `this`. `findFunctionBody`, the parameter-owner walk and `signatureBefore` skip both comment node kinds (`comment`, `documentation_comment`) and nothing else, so a bodiless signature followed by a comment never takes the next member's body and a commented signature's parameters still belong to its body; the binder census and the field-shadow set read the signature behind a comment too (the census also counts a top-level setter's parameter). An accessor publishes no return binding: hoisted to the Module scope it would answer a same-named receiver anywhere in the file, where before it had a scope it published nothing. A parameter annotation is withheld when the parameter's OWN scope declares the name again (`dartParameterRedeclared`, counted with the DART-11 declaration reader): one scope keeps one binding per name, so the annotation would type the redeclared sites too. A binder in a closure, local function, nested block, loop, case or catch body belongs to that scope and leaves the annotation alone; a plain assignment, a pattern assignment, a field label and a function-typed parameter's own parameter declare nothing. A withheld name stays the scope's untyped binder, so its sites stop there (`receiver-type-unresolved`) instead of reaching a same-named binding further out. Recall costs under "Scope-opener recall boundaries" below. [dart-scope-openers.test.ts](../../gitnexus/test/integration/resolvers/dart-scope-openers.test.ts) pins the exact edges and drops. |
 | SHARED  | Recorded gap          | Silent drop for classless typed receivers (shared, all languages).                               | A bare receiver whose type binding resolves to no class records NOTHING — no edge and no `receiver-unresolved` outcome. The drop guard in `gitnexus/src/core/ingestion/scope-resolution/passes/receiver-bound-calls.ts` (~:3783) fires for an untyped compound receiver, a namespace receiver, or a receiver bound to a namespace/qualified callee the analyzer could not type (#3498), but not for a receiver typed by a spelling that names no class. Exposed by `dart-prefixed-factory-return/lib/callers.dart:22` while DART-06 was open: with `x` typed `Future<C>` the `22:m` drop vanished without an edge. Not a Dart fix: widening the guard is a measured shared change (expect other languages' count-arm drops to surface), to be done on its own. |
+| DART-11 | Fixed                 | A closure, local function or nested statement that rebinds a name climbed to the enclosing binding: in `void f(Address cs, List items) { items.forEach((cs) { cs.save(); }); cs.save(); }` both calls reached `Address.save`, a typed `(Other cs)` closure parameter reached `Address.save`, and a loop variable or block-local `cs` borrowed the parameter's type. | Fixed. The receiver walk stops at the nearest scope that declares the name, typed or not (`Scope.lexicalNames`, honoured by the shared claim walk). Dart publishes `@scope.lexical-names` on every scope and gives each binder the scope Dart gives it: inline closures and local functions get a Function scope (with the enclosing class's `this` and their typed parameters inside it), and a nested block, a `for`, a switch case, an if-case and the body a catch clause guards get a Block scope when they declare a name. Only declarations count: a constant in a matching pattern (`case Address:`), a field label (`(api: v)`, `Box(cs: var x)`), a pattern assignment and `_` (Dart 3.7 wildcard) declare nothing. A stop at a binder with no type fact is recorded as `receiver-type-unresolved` / `untyped-binder` naming the binder's scope ("untyped" is the resolver's view: no annotation, `dynamic`, or a container type Dart does not model). Pinned in `receiver-walk-untyped-binder.test.ts` and `dart-lexical-names.test.ts`. Remaining limits: within one scope the walk is position-insensitive, and a function's parameters share its top-level body scope; collection `for` elements (`[for (var x in xs) x]`) bind into the enclosing scope. A typed parameter whose own scope declares its name again — a collection `for` element, or a top-level local or local function of that name (`void q(Address cs) { void cs() {} cs.save(); }`) — keeps no annotation (DART-10), so its sites stop at the untyped binder. The awaited-inference binder census (recall boundary 3 below) still counts per outermost body. |
 
 ## Awaited-inference recall boundaries (review 3)
 
@@ -106,14 +108,14 @@ void h() {
 }
 ```
 
-Missing edges: both `r.save()` sites. This emitter opens no binding scope for an argument closure,
-a local function, a block, a `catch` clause or a loop, so every `r` in `h` shares one flow-insensitive
-binding and the last declaration emitted would type both sites (at the DART-04 head both reached
-`Address.save`). `dartLocalInferenceAllowed` (`gitnexus/src/core/ingestion/languages/dart/captures.ts`)
-therefore infers a name only when its outermost body declares it exactly once. Fix shape for the
-recall: give an argument closure and a local function a Function scope of their own in the Dart
-emitter (the query already does this for a closure bound to a local), so each `r` is declared once
-in its own table; then the census can be taken per scope instead of per outermost body.
+Missing edges: both `r.save()` sites. When DART-04 landed, this emitter opened no binding scope for
+an argument closure, a local function, a block, a `catch` clause or a loop, so every `r` in `h` shared
+one flow-insensitive binding and the last declaration emitted would type both sites (at the DART-04
+head both reached `Address.save`). `dartLocalInferenceAllowed` (`gitnexus/src/core/ingestion/languages/dart/captures.ts`)
+therefore infers a name only when its outermost body declares it exactly once. DART-11 now gives
+argument closures, local functions and name-binding blocks, loops, cases and catch bodies scopes of
+their own, so each `r` above is declared once in its own table. The remaining fix shape for the
+recall: take the census per scope instead of per outermost body.
 
 ### 4. An awaited member call on a class instance is not followed
 
@@ -152,12 +154,42 @@ qualified await hop through `qualifiedYieldAt` in `api.dart`'s scope — and tod
 the first followed step only. Not traced further in this round; the fix must keep the producer-scope
 rule for the qualifier.
 
+## Scope-opener recall boundaries (DART-10)
+
+Each of these trades a correct edge for a recorded drop; none produces a wrong owner.
+
+1. **A parameter whose own scope declares its name again keeps no annotation.** In valid Dart the
+   case is a collection `for` element, which binds into the enclosing scope:
+
+   ```dart
+   void collect(Address fs, List<Other> others) {
+     final thunks = [for (final fs in others) () => fs.save()];
+     fs.save();
+   }
+   ```
+
+   Both `fs.save()` sites stop at the untyped binder (`receiver-type-unresolved`). The inner one is
+   an `Other`, which a surviving annotation would type as `Address.save`, a wrong edge; the outer
+   one loses its correct `Address.save` edge. `dartParameterRedeclared`
+   (`gitnexus/src/core/ingestion/languages/dart/captures.ts`) counts declarations per scope, so a
+   closure, local function, nested block, loop, case or catch body that rebinds the name has a scope
+   of its own (DART-11) and costs nothing. Fix shape for the recall: give collection elements a
+   scope of their own.
+
+2. **An accessor body inherits the body-wide field-shadow mask.** Like a method body, an accessor body
+   that binds a field's name anywhere masks that field for its bare reads:
+   `Repo? get found { final repo = this.repo; if (repo == null) return null; return repo.find(); }`
+   has no `Repo.find` edge (a recorded `receiver-owned-but-unbound`, the same as the method twin), and a
+   comment-separated constructor with an initializing formal, `Box(this.cs) /* c */ { cs.save(); }`,
+   behaves like its uncommented twin. Before DART-10 neither body had a scope to carry the mask.
+
 ## Code and regression entry points
 
 - [Language provider directory](../../gitnexus/src/core/ingestion/languages/dart/).
 - [Scope resolver](../../gitnexus/src/core/ingestion/languages/dart/scope-resolver.ts).
 - [dart-coverage.test.ts](../../gitnexus/test/integration/resolvers/dart-coverage.test.ts).
 - [dart.test.ts](../../gitnexus/test/integration/resolvers/dart.test.ts).
+- [dart-scope-openers.test.ts](../../gitnexus/test/integration/resolvers/dart-scope-openers.test.ts).
 - [dart-type-extractor.test.ts](../../gitnexus/test/unit/dart-type-extractor.test.ts).
 
 Evidence details: [receiver baseline notes](../../gitnexus/bench/receiver-resolution/BASELINE.md) and
