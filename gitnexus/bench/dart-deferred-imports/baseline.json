@@ -1,0 +1,166 @@
+{
+  "_what": "Synthetic Dart deferred-import gate for #3882, following bench/ruby-gem-resolution: exact accuracy cells and fingerprints, with ratios as the only timing gates. Real capture emitter, real parse worker (dist/), real Dart ScopeResolver and pubspec loader; analyze, persistence and full-pipeline memory are outside this benchmark.",
+  "_triage": "Shape and fingerprint failures are deterministic: inspect the corpus and the resolved edges, never rebaseline just to make CI green. The runner also fails, before any baseline comparison, when a use misses one of its expected edges, when an edge leaves its own prefix, when anything reaches a `loadLibrary`, or when the deferred graph differs from the `as p` control. For a timing failure, rerun on an idle machine and verify the report shows 15 interleaved samples after 2 warmups before investigating a regression. Millisecond observations are context, not gates.",
+  "shapes": {
+    "deferred_small": {
+      "prefixes": 16,
+      "uses_per_prefix": 16,
+      "files": 17,
+      "capture_groups": 3393,
+      "relationships": 1920,
+      "imports": 16,
+      "calls": 1280,
+      "accesses": 256,
+      "declines": {
+        "receiver-unresolved": 256
+      },
+      "expected_missing": 0,
+      "wrong_prefix_edges": 0,
+      "load_library_edges": 0,
+      "fingerprint": "9820761fa7734f2d2dec0cbe8eb7d9cf8680641ffd4df67d1e21201537052258"
+    },
+    "deferred_large": {
+      "prefixes": 64,
+      "uses_per_prefix": 16,
+      "files": 65,
+      "capture_groups": 13569,
+      "relationships": 7680,
+      "imports": 64,
+      "calls": 5120,
+      "accesses": 1024,
+      "declines": {
+        "receiver-unresolved": 1024
+      },
+      "expected_missing": 0,
+      "wrong_prefix_edges": 0,
+      "load_library_edges": 0,
+      "fingerprint": "2d69f9d3983e2073330b59007bdf510b2e2711d6126b322394355f9e7a68807f"
+    },
+    "deferred_dense": {
+      "prefixes": 16,
+      "uses_per_prefix": 64,
+      "files": 17,
+      "capture_groups": 12609,
+      "relationships": 7296,
+      "imports": 16,
+      "calls": 5120,
+      "accesses": 1024,
+      "declines": {
+        "receiver-unresolved": 1024
+      },
+      "expected_missing": 0,
+      "wrong_prefix_edges": 0,
+      "load_library_edges": 0,
+      "fingerprint": "8709d7d4c651f26f5b92ec54c91007d7f1ec8baa9fa8c19808c8e7609d92a69d"
+    },
+    "prefixed_small": {
+      "prefixes": 16,
+      "uses_per_prefix": 16,
+      "files": 17,
+      "capture_groups": 3393,
+      "relationships": 1920,
+      "imports": 16,
+      "calls": 1280,
+      "accesses": 256,
+      "declines": {
+        "receiver-unresolved": 256
+      },
+      "expected_missing": 0,
+      "wrong_prefix_edges": 0,
+      "load_library_edges": 0,
+      "fingerprint": "9820761fa7734f2d2dec0cbe8eb7d9cf8680641ffd4df67d1e21201537052258"
+    },
+    "prefixed_large": {
+      "prefixes": 64,
+      "uses_per_prefix": 16,
+      "files": 65,
+      "capture_groups": 13569,
+      "relationships": 7680,
+      "imports": 64,
+      "calls": 5120,
+      "accesses": 1024,
+      "declines": {
+        "receiver-unresolved": 1024
+      },
+      "expected_missing": 0,
+      "wrong_prefix_edges": 0,
+      "load_library_edges": 0,
+      "fingerprint": "2d69f9d3983e2073330b59007bdf510b2e2711d6126b322394355f9e7a68807f"
+    },
+    "prefixed_dense": {
+      "prefixes": 16,
+      "uses_per_prefix": 64,
+      "files": 17,
+      "capture_groups": 12609,
+      "relationships": 7296,
+      "imports": 16,
+      "calls": 5120,
+      "accesses": 1024,
+      "declines": {
+        "receiver-unresolved": 1024
+      },
+      "expected_missing": 0,
+      "wrong_prefix_edges": 0,
+      "load_library_edges": 0,
+      "fingerprint": "8709d7d4c651f26f5b92ec54c91007d7f1ec8baa9fa8c19808c8e7609d92a69d"
+    }
+  },
+  "_shape_note": "Exact counts are the workload FLOOR: a shrunken corpus or a resolver that stops binding through the prefix cannot pass by doing less work. small = 16 prefixes x 16 uses, large = 64 x 16 (prefixes and libraries 4x), dense = 16 x 64 (uses per prefix 4x). Each use resolves make, helper, Svc.sm, Svc.run and the Svc constructor (CALLS) plus Svc (ACCESSES) in its own library. One decline per use is expected and identical for both forms: `p<i>.Svc().run()`, a member call on a constructor result reached through a prefix, is recorded as receiver-unresolved for `as p` on main too.",
+  "_fingerprint_note": "Hashes pin every relationship (endpoints, type, confidence, reason) and every decline (reason, file, name, position). Each deferred shape must hash equal to its prefixed control: the deferred form resolves exactly what `as p` resolves, and its `p<i>.loadLibrary()` calls (on the same line as the next statement, so positions match) add nothing, although every library declares a top-level `loadLibrary` the import hides.",
+  "budgets": {
+    "deferred_capture_prefix_scaling_ratio": 1.5,
+    "deferred_capture_use_scaling_ratio": 1.5,
+    "deferred_resolve_prefix_scaling_ratio": 2.2,
+    "deferred_resolve_use_scaling_ratio": 1.5,
+    "deferred_to_prefixed_capture_ratio": 2,
+    "deferred_to_prefixed_resolve_ratio": 1.5
+  },
+  "_scaling_note": "Scaling ratios are (t_4n/t_n)/4: about 1 is linear, about 4 is quadratic. Capture uses the 1.5 budget of bench/scope-capture (the same emitter family); resolution along the use axis uses it too. The prefixed_* ratios are reported as the control and are not gated.",
+  "_prefix_resolution_note": "deferred_resolve_prefix_scaling_ratio is the one ratio not near 1, and the cause predates #3882. Resolution builds a namespace snapshot per Function scope (collectNamespaceTargets via createNamespaceTargetCache in scope-resolution/scope/), and each snapshot visits every namespace import of the file, so resolution costs O(functions x prefixed imports). It measures the same for `as p` (prefixed_resolve_prefix_scaling_ratio) and for `as p` on main, with identical graphs. It keeps the ruby-gem-resolution budget of 2.2 so the deferred path cannot add a second such term; tighten it to 1.5 once that snapshot is shared across scopes that bind no import name.",
+  "_overhead_note": "deferred_to_prefixed_*_ratio divides the deferred large shape by the same workload spelled `as p`. Resolution measures about 1.00: same graph, same path. Capture measures about 1.15 because the deferred source carries one more statement per use (`await p<i>.loadLibrary();`); the deferred-prefix filter itself is one pass over the file's captures and runs only when the file has a deferred import.",
+  "_negative_controls_note": "Rebuilding the deferred-prefix set from all captures for every capture (O(captures^2), a temporary edit of languages/dart/captures.ts) gave deferred_to_prefixed_capture_ratio 2.866 > 2, deferred_capture_prefix_scaling_ratio 1.944 > 1.5 and deferred_capture_use_scaling_ratio 1.909 > 1.5 with an unchanged fingerprint. Testing each prefix separately (O(captures x prefixes), one Set per prefix) moved nothing measurably at these sizes (1.119 / 1.135 / 1.222): that is below what this gate resolves. These are deliberate regressions, not baseline observations.",
+  "_measured": {
+    "environment": "macOS arm64 / Node 24.16.0, 2026-11-13, shared host (load average 20-38 on 15 cores)",
+    "deferred_capture_prefix_scaling_ratio": 1.138,
+    "deferred_capture_prefix_scaling_ratio_samples": [1.096, 1.082, 1.084, 1.117, 1.138],
+    "deferred_capture_use_scaling_ratio": 1.107,
+    "deferred_capture_use_scaling_ratio_samples": [1.089, 1.067, 1.097, 1.092, 1.107],
+    "deferred_resolve_prefix_scaling_ratio": 1.714,
+    "deferred_resolve_prefix_scaling_ratio_samples": [1.66, 1.681, 1.661, 1.571, 1.714],
+    "deferred_resolve_use_scaling_ratio": 1.035,
+    "deferred_resolve_use_scaling_ratio_samples": [1.026, 1.031, 1.031, 0.95, 1.035],
+    "prefixed_capture_prefix_scaling_ratio": 1.171,
+    "prefixed_capture_prefix_scaling_ratio_samples": [1.078, 1.08, 1.128, 1.171, 1.018],
+    "prefixed_capture_use_scaling_ratio": 1.083,
+    "prefixed_capture_use_scaling_ratio_samples": [1.048, 1.079, 1.083, 1.053, 1.017],
+    "prefixed_resolve_prefix_scaling_ratio": 1.692,
+    "prefixed_resolve_prefix_scaling_ratio_samples": [1.616, 1.692, 1.68, 1.425, 1.676],
+    "prefixed_resolve_use_scaling_ratio": 1.045,
+    "prefixed_resolve_use_scaling_ratio_samples": [0.995, 1.044, 1.021, 0.866, 1.045],
+    "deferred_to_prefixed_capture_ratio": 1.219,
+    "deferred_to_prefixed_capture_ratio_samples": [1.186, 1.155, 1.126, 1.098, 1.219],
+    "deferred_to_prefixed_resolve_ratio": 1.006,
+    "deferred_to_prefixed_resolve_ratio_samples": [1.006, 0.999, 1.004, 0.979, 0.998],
+    "deferred_small_capture_ms": 137.6,
+    "deferred_small_resolve_ms": 23.3,
+    "deferred_small_peak_rss_mib": 322.8,
+    "deferred_large_capture_ms": 615.0,
+    "deferred_large_resolve_ms": 146.4,
+    "deferred_large_peak_rss_mib": 504.4,
+    "deferred_dense_capture_ms": 601.4,
+    "deferred_dense_resolve_ms": 88.5,
+    "deferred_dense_peak_rss_mib": 500.4,
+    "prefixed_small_capture_ms": 120.1,
+    "prefixed_small_resolve_ms": 26.2,
+    "prefixed_small_peak_rss_mib": 313.5,
+    "prefixed_large_capture_ms": 559.9,
+    "prefixed_large_resolve_ms": 149.5,
+    "prefixed_large_peak_rss_mib": 550.5,
+    "prefixed_dense_capture_ms": 505.6,
+    "prefixed_dense_resolve_ms": 90.9,
+    "prefixed_dense_peak_rss_mib": 549.0,
+    "reps": 15,
+    "warmup": 2
+  },
+  "_measured_note": "Five consecutive local runs of the default command. Scalar ratios and millisecond values are per-metric maxima across those runs (rounded), not one combined run. peak_rss_mib is each --shape child's high-water mark after one worker parse and one resolution, worker thread included; it is context, not gated. Exact shapes and fingerprints were identical in all runs."
+}

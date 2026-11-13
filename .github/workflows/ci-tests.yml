@@ -1533,6 +1533,16 @@ jobs:
         run: node --import tsx bench/ruby-gem-resolution/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Dart deferred-import correctness + scaling guards (#3882)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins the graph `deferred as p` produces, which must
+        # equal the `as p` control, and checks capture and resolution scaling as
+        # deferred prefixes or uses per prefix grow 4x. Budgets and the measured
+        # pre-existing resolution term: see baseline.json.
+        run: node --import tsx bench/dart-deferred-imports/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Receiver-resolution drop guards
         if: ${{ !cancelled() }}
         # NOT build-free: this one runs the real pipeline, so it needs dist/
