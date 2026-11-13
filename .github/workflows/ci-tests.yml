@@ -1569,6 +1569,16 @@ jobs:
         run: node --import tsx bench/receiver-resolution/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Dart closure-binder correctness + scaling guards (#3903)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins every function's CALLS edges when closures rebind a
+        # receiver name, side by side or nested, and checks capture and resolution
+        # scaling as functions, closures per function or nesting depth grow 4x.
+        # Budgets and the measured pre-existing depth term: see baseline.json.
+        run: node --import tsx bench/dart-closure-binders/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Scope-emission guards (#2699)
         if: ${{ !cancelled() }}
         # Build-free: asserts the JS/TS scope set is unchanged. Block scopes are
