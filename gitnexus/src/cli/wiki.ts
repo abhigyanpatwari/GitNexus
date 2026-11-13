@@ -21,6 +21,9 @@ import { WikiGenerator, type WikiOptions } from '../core/wiki/generator.js';
 import {
   ANTHROPIC_BASE_URL,
   ANTHROPIC_DEFAULT_MODEL,
+  ATLAS_CLOUD_BASE_URL,
+  ATLAS_CLOUD_DEFAULT_MODEL,
+  getProviderEnvApiKey,
   MINIMAX_MODEL_IDS,
   MINIMAX_OPENAI_BASE_URLS,
   parseLLMAllowedInsecureHttpHosts,
@@ -241,6 +244,14 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     if (options.apiKey) updates.apiKey = options.apiKey;
     if (options.baseUrl) updates.baseUrl = options.baseUrl;
     if (options.provider) updates.provider = options.provider;
+    if (options.provider === 'atlascloud') {
+      if (!options.baseUrl && (providerChanged || !existing.baseUrl)) {
+        updates.baseUrl = ATLAS_CLOUD_BASE_URL;
+      }
+      if (!options.model && (providerChanged || !existing.model)) {
+        updates.model = ATLAS_CLOUD_DEFAULT_MODEL;
+      }
+    }
     if (options.apiVersion) updates.apiVersion = options.apiVersion;
     if (options.reasoningModel !== undefined) updates.isReasoningModel = options.reasoningModel;
     if (options.provider === 'minimax') {
@@ -315,7 +326,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       if (!llmConfig.apiKey && !isLocalProvider(llmConfig.provider)) {
         console.log('  Error: No LLM API key found.');
         console.log(
-          '  Set MINIMAX_API_KEY, ANTHROPIC_API_KEY, GITNEXUS_API_KEY, or OPENAI_API_KEY,',
+          '  Set MINIMAX_API_KEY, ANTHROPIC_API_KEY, ATLASCLOUD_API_KEY, GITNEXUS_API_KEY, or OPENAI_API_KEY,',
         );
         console.log(
           '  or pass --api-key <key>, or use --provider cursor|claude|codex|opencode|grok.\n',
@@ -326,7 +337,9 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       // Non-interactive with env var or cursor — just use it
     } else {
       console.log("  No LLM configured. Let's set it up.\n");
-      console.log('  Supports MiniMax, Anthropic, OpenAI-compatible APIs, and local agent CLIs.\n');
+      console.log(
+        '  Supports MiniMax, Anthropic, Atlas Cloud, OpenAI-compatible APIs, and local agent CLIs.\n',
+      );
 
       // Check if local agent CLIs are available.
       const hasCursor = detectCursorCLI();
@@ -347,7 +360,8 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       console.log('  [5] MiniMax Global (api.minimax.io)');
       console.log('  [6] MiniMax China (api.minimaxi.com)');
       console.log('  [7] Anthropic (api.anthropic.com)');
-      let nextChoice = 8;
+      console.log('  [8] Atlas Cloud (api.atlascloud.ai)');
+      let nextChoice = 9;
       if (hasCursor) {
         const choice = String(nextChoice++);
         localChoices.push({
@@ -499,6 +513,10 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
           baseUrl = ANTHROPIC_BASE_URL;
           defaultModel = ANTHROPIC_DEFAULT_MODEL;
           provider = 'anthropic';
+        } else if (choice === '8') {
+          baseUrl = ATLAS_CLOUD_BASE_URL;
+          defaultModel = ATLAS_CLOUD_DEFAULT_MODEL;
+          provider = 'atlascloud';
         } else {
           baseUrl = 'https://api.openai.com/v1';
           defaultModel = 'gpt-4o-mini';
@@ -518,11 +536,13 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
 
         // API key — pre-fill hint if env var exists
         const envKey =
-          (provider === 'minimax' ? process.env.MINIMAX_API_KEY : undefined) ||
-          (provider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : undefined) ||
-          process.env.GITNEXUS_API_KEY ||
-          (provider === 'anthropic' ? undefined : process.env.OPENAI_API_KEY) ||
-          '';
+          provider === 'atlascloud'
+            ? getProviderEnvApiKey(provider)
+            : (provider === 'minimax' ? process.env.MINIMAX_API_KEY : undefined) ||
+              (provider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : undefined) ||
+              process.env.GITNEXUS_API_KEY ||
+              (provider === 'anthropic' ? undefined : process.env.OPENAI_API_KEY) ||
+              '';
         if (envKey) {
           const masked = envKey.slice(0, 6) + '...' + envKey.slice(-4);
           const useEnv = await prompt(`  Use existing env key (${masked})? (Y/n): `);

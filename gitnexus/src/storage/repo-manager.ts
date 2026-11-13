@@ -1830,6 +1830,7 @@ export interface CLIConfig {
   provider?:
     | 'openai'
     | 'openrouter'
+    | 'atlascloud'
     | 'azure'
     | 'custom'
     | 'cursor'
