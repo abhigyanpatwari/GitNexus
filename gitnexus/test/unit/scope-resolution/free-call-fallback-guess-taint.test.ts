@@ -36,6 +36,7 @@ import {
   summarizeNameFallback,
 } from '../../../src/core/ingestion/scope-resolution/name-fallback-summary.js';
 import type { ResolutionOutcome } from '../../../src/core/ingestion/scope-resolution/resolution-outcome.js';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 
 const CALLER_FILE = 'caller.ts';
 const TARGET_FILE = 'target.ts';
@@ -144,7 +145,7 @@ function run(sites: readonly ReferenceSite[]) {
       computeMro: () => [],
       implementsOf: () => [],
     }),
-    imports: new Map(),
+    imports: createEagerImportVisibility(new Map()),
     bindings: new Map(),
     bindingAugmentations: new Map(),
     workspaceFqnBindings: new Map(),
@@ -337,25 +338,27 @@ function runConstructor(
       computeMro: () => [],
       implementsOf: () => [],
     }),
-    imports: new Map(
-      options.importTargetFile !== undefined
-        ? [
-            [
-              'scope:caller-mod',
+    imports: createEagerImportVisibility(
+      new Map(
+        options.importTargetFile !== undefined
+          ? [
               [
-                {
-                  localName: options.importExportedName ?? 'UniqueWidget',
-                  targetFile: options.importTargetFile,
-                  targetExportedName: options.importExportedName ?? 'UniqueWidget',
-                  ...(options.importTargetDefId !== undefined
-                    ? { targetDefId: options.importTargetDefId }
-                    : {}),
-                  kind: 'named' as const,
-                },
+                'scope:caller-mod',
+                [
+                  {
+                    localName: options.importExportedName ?? 'UniqueWidget',
+                    targetFile: options.importTargetFile,
+                    targetExportedName: options.importExportedName ?? 'UniqueWidget',
+                    ...(options.importTargetDefId !== undefined
+                      ? { targetDefId: options.importTargetDefId }
+                      : {}),
+                    kind: 'named' as const,
+                  },
+                ],
               ],
-            ],
-          ]
-        : [],
+            ]
+          : [],
+      ),
     ),
     bindings: new Map(
       options.bindImportedClass === true

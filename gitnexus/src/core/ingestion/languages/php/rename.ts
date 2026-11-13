@@ -220,8 +220,8 @@ export const phpRenameProvider: RenameProvider = {
         .at(-1)
         ?.replace(/\.php$/i, '') === simpleQualifiedName(target) &&
       newName !== simpleQualifiedName(target) &&
-      [...indexes.imports.values()].some((imports) =>
-        imports.some((entry) => entry.targetDefId === target.nodeId),
+      [...indexes.imports.scopes()].some((scope) =>
+        (indexes.imports.edgesAt(scope) ?? []).some((entry) => entry.targetDefId === target.nodeId),
       )
     )
       return {

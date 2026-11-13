@@ -6,6 +6,7 @@ import {
   pythonNamespaceBindingIdentity,
 } from '../../../src/core/ingestion/languages/python/import-target.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 
 // The module-only cases need just a module scope and `scopes.imports`; the
 // lexical cases also supply parent scopes. This keeps the test about the keying
@@ -28,7 +29,9 @@ function edge(partial: Partial<ImportEdge>): ImportEdge {
 /** Collect with Python's hook, against a workspace containing `files`. */
 function collectPython(edges: readonly ImportEdge[], files: readonly string[] = []) {
   const parsed = { filePath: 'caller.py', moduleScope: MODULE_SCOPE } as ParsedFile;
-  const scopes = { imports: new Map([[MODULE_SCOPE, edges]]) } as unknown as ScopeResolutionIndexes;
+  const scopes = {
+    imports: createEagerImportVisibility(new Map([[MODULE_SCOPE, edges]])),
+  } as unknown as ScopeResolutionIndexes;
   const present = new Set(files);
   return collectNamespaceTargets(parsed, scopes, {
     receiverPaths: pythonNamespaceReceiverPaths,
@@ -40,7 +43,9 @@ function collectPython(edges: readonly ImportEdge[], files: readonly string[] = 
 /** Collect the way a provider with no hook does. */
 function collectDefault(edges: readonly ImportEdge[]) {
   const parsed = { filePath: 'caller.ts', moduleScope: MODULE_SCOPE } as ParsedFile;
-  const scopes = { imports: new Map([[MODULE_SCOPE, edges]]) } as unknown as ScopeResolutionIndexes;
+  const scopes = {
+    imports: createEagerImportVisibility(new Map([[MODULE_SCOPE, edges]])),
+  } as unknown as ScopeResolutionIndexes;
   return collectNamespaceTargets(parsed, scopes);
 }
 
@@ -225,10 +230,12 @@ describe('collectNamespaceTargets — lexical import scopes', () => {
 
   function collect(inScope: ScopeId, innerEdge: ImportEdge = edge({ targetFile: 'local.py' })) {
     const scopes = {
-      imports: new Map([
-        [MODULE_SCOPE, [edge({})]],
-        [inner, [innerEdge]],
-      ]),
+      imports: createEagerImportVisibility(
+        new Map([
+          [MODULE_SCOPE, [edge({})]],
+          [inner, [innerEdge]],
+        ]),
+      ),
       scopeTree: { getScope: (id: ScopeId) => ({ parent: parents.get(id) ?? null }) },
     } as unknown as ScopeResolutionIndexes;
     return collectNamespaceTargets(parsed, scopes, { inScope });
@@ -253,10 +260,12 @@ describe('collectNamespaceTargets — lexical import scopes', () => {
 
   function compatibleTargets(outer: ImportEdge, nearest: ImportEdge) {
     const scopes = {
-      imports: new Map([
-        [MODULE_SCOPE, [outer]],
-        [inner, [nearest]],
-      ]),
+      imports: createEagerImportVisibility(
+        new Map([
+          [MODULE_SCOPE, [outer]],
+          [inner, [nearest]],
+        ]),
+      ),
       scopeTree: { getScope: (id: ScopeId) => ({ parent: parents.get(id) ?? null }) },
     } as unknown as ScopeResolutionIndexes;
     return collectNamespaceTargets(parsed, scopes, {
@@ -322,10 +331,12 @@ describe('collectNamespaceTargets — same-scope import ownership', () => {
   it('does not revive an outer namespace after suppressing an inner conflict', () => {
     const inner = 'scope:conflicting' as ScopeId;
     const scopes = {
-      imports: new Map([
-        [MODULE_SCOPE, [first]],
-        [inner, [first, named]],
-      ]),
+      imports: createEagerImportVisibility(
+        new Map([
+          [MODULE_SCOPE, [first]],
+          [inner, [first, named]],
+        ]),
+      ),
       scopeTree: { getScope: () => ({ parent: MODULE_SCOPE }) },
     } as unknown as ScopeResolutionIndexes;
     expect([

@@ -26,8 +26,8 @@
  *   - `scopeTree` / `moduleScopes` / `defs` / `qualifiedNames` — the
  *     four Ring 2 SHARED indexes built over per-file artifacts.
  *   - `methodDispatch` — MRO + implements materialized view (#914).
- *   - `imports` — finalized `ImportEdge[]` per module scope (`parsedImports`
- *     resolved through cross-file link + wildcard expansion).
+ *   - `imports` — what each scope imports, behind `ImportVisibility`
+ *     (`parsedImports` resolved through cross-file link + wildcard expansion).
  *   - `bindings` — merged bindings per module scope (local + import +
  *     wildcard + re-export), with the provider's precedence applied.
  *   - `referenceSites` — union of every file's pre-resolution usage
@@ -45,7 +45,7 @@ import type {
   DefIndex,
   FinalizedScc,
   FinalizeStats,
-  ImportEdge,
+  ImportVisibility,
   MethodDispatchIndex,
   ModuleScopeIndex,
   QualifiedNameIndex,
@@ -61,8 +61,10 @@ export interface ScopeResolutionIndexes {
   readonly qualifiedNames: QualifiedNameIndex;
   readonly moduleScopes: ModuleScopeIndex;
   readonly methodDispatch: MethodDispatchIndex;
-  /** Finalized `ImportEdge[]` per module scope. */
-  readonly imports: ReadonlyMap<ScopeId, readonly ImportEdge[]>;
+  /** What each scope imports, as finalize resolved it. The only access path:
+   *  ask `reaches` / `membership` / `forEachTarget` for everything a scope can
+   *  reach, and `edgesAt` for the edges bound by name or kind. */
+  readonly imports: ImportVisibility;
   /** Finalize-output bindings (local + imports + wildcards) per module scope.
    *  Inner `BindingRef[]` arrays are frozen by `materializeBindings`;
    *  this channel is permanently immutable post-finalize. Consumers

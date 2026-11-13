@@ -338,6 +338,14 @@ authoritative declaration registries.
    for downstream resolution passes. `finalizeScopeModel` returns the scope/index
    bundle that the orchestrator consumes directly.
 
+The bundle's `imports` field is an `ImportVisibility` (`gitnexus-shared`,
+`scope-resolution/import-visibility.ts`), the only way to ask what a scope
+imports. A reader that needs every file a scope reaches asks `reaches`,
+`membership` or `forEachTarget`; a reader that picks an import by name,
+definition or kind uses `edgesAt`. How finalize stores imports is not visible to
+either, so no reader can hold a collection that omits part of what a scope
+reaches.
+
 This read-only model handle restricts registry writes. It does not freeze every
 scope map: imported-return propagation and precise call-result binding deliberately
 refine `Scope.typeBindings` in ordered passes. Graph-query MCP and HTTP endpoints read the

@@ -204,7 +204,8 @@ const typescriptScopeResolver: ScopeResolver = {
     // Pre-build a file -> explicit imported local names index so importing one
     // symbol from a source does not suppress other auto-imported symbols from it.
     const explicitImportNamesByFile = new Map<string, Set<string>>();
-    for (const [scopeId, edges] of indexes.imports) {
+    for (const scopeId of indexes.imports.scopes()) {
+      const edges = indexes.imports.edgesAt(scopeId) ?? [];
       const scope = indexes.scopeTree.getScope(scopeId);
       if (!scope?.filePath) continue;
       let names = explicitImportNamesByFile.get(scope.filePath);

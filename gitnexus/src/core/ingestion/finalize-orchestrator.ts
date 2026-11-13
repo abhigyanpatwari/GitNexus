@@ -48,6 +48,7 @@ import {
   buildModuleScopeIndex,
   buildQualifiedNameIndex,
   buildScopeTree,
+  createEagerImportVisibility,
   finalize,
 } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from './model/scope-resolution-indexes.js';
@@ -158,7 +159,7 @@ export function finalizeScopeModel(
     qualifiedNames,
     moduleScopes,
     methodDispatch,
-    imports: finalizeOut.imports,
+    imports: createEagerImportVisibility(finalizeOut.imports),
     bindings: finalizeOut.bindings,
     // Empty post-finalize augmentation channel. Populated (if at all)
     // by language hooks like `populateCsharpNamespaceSiblings` running
