@@ -159,7 +159,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const lines = [
     '## Cache interning and indexing performance',
     '',
-    'Warm-up samples excluded; execution order alternates. Times in ms.',
+    'Warm-up samples excluded; execution order alternates. Times in ms. Interning process IDs, GC flags and local warmups are recorded per sample when available.',
     '',
     '| Measurement | Base median | Candidate median | Median change | Median paired change | Result |',
     '| --- | ---: | ---: | ---: | ---: | --- |',

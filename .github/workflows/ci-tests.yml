@@ -10,7 +10,9 @@ jobs:
   file-result-reuse-benchmark:
     name: parse cache / speed and memory (${{ matrix.corpus }})
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # A noisy runner extends the comparison from 7 to at most 21 pairs. The
+    # real corpus takes about five minutes per pair, plus one warmup pair.
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
@@ -55,7 +57,7 @@ jobs:
           fi
           node bench/file-result-reuse/benchmark.js --check \
             --baseline-dist "$GITHUB_WORKSPACE/baseline/gitnexus/dist" \
-            --pairs 7 --files 1024 --workers 2 \
+            --pairs 7 --max-pairs 21 --files 1024 --workers 2 \
             --output "$RUNNER_TEMP/file-result-reuse/measure.json" \
             "${corpus_args[@]}"
       - name: Publish speed and memory summary
@@ -1265,6 +1267,16 @@ jobs:
         run: node --import tsx bench/trpc-route-extractor/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Ruby bare-read correctness + scaling guards (#3880)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins bare parameter reads in nested blocks and heredoc
+        # bodies (and the opener rule's kept call), and checks capture and
+        # resolution scaling as methods, block depth, heredocs per opener line or
+        # reads per heredoc body grow 4x. Budgets: see baseline.json.
+        run: node --import tsx bench/ruby-bare-reads/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Go route-fact correctness and linear scaling (#3750)
         if: ${{ !cancelled() }}
         run: node --expose-gc --import tsx bench/go-route-facts/measure.js --check --output go-route-facts.json
@@ -1291,6 +1303,16 @@ jobs:
         # (fingerprint) and stays linear (scaling < 1.5) for go/csharp/rust/php/
         # ruby/cobol. Catches an O(n^2) re-regression without the worker pool.
         run: node --import tsx bench/scope-capture/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Dart accessor-scope correctness + scaling guards (#3904)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins getter, setter and redeclared-parameter edges and
+        # checks capture and resolution scaling as classes (one per file),
+        # functions, accessors per class or parameters per function grow 4x.
+        # Budgets: baseline.json (all 1.5).
+        run: node --import tsx bench/dart-accessor-scopes/measure.mjs --check
         working-directory: gitnexus
 
       - name: Rename output construction scaling guard
@@ -1524,11 +1546,31 @@ jobs:
         run: node --import tsx bench/kotlin-import-target/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Ruby block-parameter stop correctness + scaling guards (#3905)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins every method's CALLS edges when blocks rebind a
+        # typed local, side by side or nested, and checks capture and resolution
+        # scaling as methods (4x), blocks per method (16x) or nesting depth (4x)
+        # grow. Budgets: see baseline.json.
+        run: node --import tsx bench/ruby-block-param-stop/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Ruby gem-boundary correctness + scaling guards (#3096)
         if: ${{ !cancelled() }}
         # Includes real manifest loading; checks scoped resolution and scaling
         # as sibling projects or declared gem counts grow independently.
         run: node --import tsx bench/ruby-gem-resolution/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Dart deferred-import correctness + scaling guards (#3882)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins the graph `deferred as p` produces, which must
+        # equal the `as p` control, and checks capture and resolution scaling as
+        # deferred prefixes or uses per prefix grow 4x. Budgets and the measured
+        # pre-existing resolution term: see baseline.json.
+        run: node --import tsx bench/dart-deferred-imports/measure.mjs --check
         working-directory: gitnexus
 
       - name: Receiver-resolution drop guards
@@ -1555,6 +1597,18 @@ jobs:
         # rebaseline path demands the movement be explained. No separate
         # drop-ratchet gate is needed on top of this.
         run: node --import tsx bench/receiver-resolution/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Dart closure-binder correctness + scaling guards (#3903)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins every function's CALLS edges when closures rebind a
+        # receiver name, side by side or nested, checks capture and resolution
+        # scaling against input and output growth as functions, closures per
+        # function or nesting depth grow 16x (budget 1.5 everywhere), and counts
+        # the enclosing-type search's ancestor steps per Function scope. Fails
+        # on main until the depth terms in baseline.json's _depth_note are fixed.
+        run: node --import tsx bench/dart-closure-binders/measure.mjs --check
         working-directory: gitnexus
 
       - name: Scope-emission guards (#2699)

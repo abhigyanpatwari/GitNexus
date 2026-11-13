@@ -596,6 +596,47 @@ export function findReceiverTypeBinding(
 }
 
 /**
+ * The scope that stopped the receiver walk for `receiverName` ONLY because it
+ * lists the name in `Scope.lexicalNames` and gives it no type: an untyped
+ * parameter, local, catch or pattern variable (DART-11).
+ *
+ * `findReceiverTypeBinding` already honours that stop. The shared claim walk
+ * treats a lexical name as ownership, so it returns `undefined` there instead
+ * of climbing to an enclosing scope's binding of the same spelling, and it
+ * skips the namespace and workspace fallbacks. What `undefined` cannot say is
+ * WHY. This answers it, so a caller can record the decline instead of letting
+ * a later, name-only route treat the site as an ordinary miss.
+ *
+ * Deliberately narrow. Returns `undefined` when the owning scope also carries
+ * a type, a value binding or an import for the name (those are answers, not
+ * stops), and when explicit name claims decide the name: claims are the
+ * provider's own ownership model and govern instead of `lexicalNames`.
+ * `scope.bindings` is never read as a binder signal on its own, because it
+ * also holds imports, classes and functions.
+ */
+export function findUntypedReceiverBinder(
+  startScope: ScopeId,
+  receiverName: string,
+  scopes: ScopeResolutionIndexes,
+  options?: NameLookupOptions,
+): Scope | undefined {
+  const claim = lookupNameClaim(startScope, receiverName, scopes, options);
+  const scope = claim.scope;
+  if (
+    scope === undefined ||
+    claim.status !== 'blocked' ||
+    claim.typeBinding !== undefined ||
+    claim.claims.length > 0 ||
+    claim.bindings.length > 0 ||
+    claim.imports.length > 0 ||
+    scope.lexicalNames?.has(receiverName) !== true
+  ) {
+    return undefined;
+  }
+  return scope;
+}
+
+/**
  * Resolve a typeBinding for `name` from the per-namespace channel
  * (`namespaceTypeBindings`) from the nearest scope carrying an accessibility
  * entry. First accessible-namespace hit wins. Missing entries and parent cycles

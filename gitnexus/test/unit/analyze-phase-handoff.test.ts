@@ -1,3 +1,4 @@
+import '../helpers/mock-analysis-host.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { AnalyzeResult } from '../../src/core/run-analyze.js';
