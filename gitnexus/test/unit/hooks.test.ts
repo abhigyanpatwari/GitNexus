@@ -1385,6 +1385,111 @@ describe.runIf(process.platform === 'win32')('win-rm-list-json.ps1 runs on Windo
   });
 });
 
+// ─── The two shipped hook trees stay in lockstep (#1591) ─────────────
+
+// `setup` installs gitnexus/hooks/claude/; the Claude Code plugin ships its own
+// copy in gitnexus-claude-plugin/hooks/. Per-file parity tests already covered
+// some of the helpers, but not win-rm-list-json.ps1, the file a one-sided patch
+// broke in #1493. This pins every helper the two trees share, and the files each
+// tree keeps to itself, so a helper added to one tree only, or edited in one
+// tree only, fails here.
+describe('Claude hook trees ship identical helpers (#1591)', () => {
+  const CANONICAL_DIR = path.resolve(__dirname, '..', '..', 'hooks', 'claude');
+  const PLUGIN_DIR = path.resolve(__dirname, '..', '..', '..', 'gitnexus-claude-plugin', 'hooks');
+  // Each helper both trees ship, as [canonical file, plugin file]: the plugin
+  // names its CommonJS files `.js`, the canonical tree `.cjs`. The adapters
+  // (`gitnexus-hook.cjs` / `gitnexus-hook.js`) differ on purpose and are left
+  // out; their shared functions are compared by the source-level parity tests
+  // further down.
+  const TWINS = [
+    ['hook-db-lock-probe.cjs', 'hook-db-lock-probe.cjs'],
+    ['hook-lock.cjs', 'hook-lock.js'],
+    ['registry-query.cjs', 'registry-query.cjs'],
+    ['resolve-analyze-cmd.cjs', 'resolve-analyze-cmd.cjs'],
+    ['win-rm-list-json.ps1', 'win-rm-list-json.ps1'],
+  ] as const;
+
+  // Whole listings rather than a pairing derived from them: a file added to
+  // either tree, including a second spelling of an existing helper, fails here
+  // until it is listed as a twin or as one tree's own.
+  it('ships exactly the known files in each tree', () => {
+    expect(fs.readdirSync(CANONICAL_DIR).sort()).toEqual(
+      [
+        ...TWINS.map(([file]) => file),
+        'gitnexus-hook.cjs',
+        'pre-tool-use.sh',
+        'session-start.sh',
+      ].sort(),
+    );
+    expect(fs.readdirSync(PLUGIN_DIR).sort()).toEqual(
+      [...TWINS.map(([, file]) => file), 'gitnexus-hook.js', 'hooks.json'].sort(),
+    );
+  });
+
+  // `.gitattributes` pins `eol=lf`, so a byte comparison holds on Windows too.
+  it.each(TWINS)('%s is byte-identical to the plugin copy %s', (file, pluginFile) => {
+    const canonicalBytes = fs.readFileSync(path.join(CANONICAL_DIR, file));
+    const pluginBytes = fs.readFileSync(path.join(PLUGIN_DIR, pluginFile));
+    expect(pluginBytes.equals(canonicalBytes)).toBe(true);
+  });
+});
+
+// Parity cannot catch a broken edit made to both copies. The hook treats any
+// PowerShell failure as "no owner" and carries on, so a script whose embedded
+// C# no longer compiles (#1591: a duplicated struct inside one body) would
+// silently disable the Windows DB-owner check. Run it the way the probe does,
+// against a file nobody holds: `Add-Type` compiles the C# before Restart Manager
+// is called, so a compile error fails this run.
+describe.runIf(process.platform === 'win32')('win-rm-list-json.ps1 runs on Windows (#1591)', () => {
+  it('compiles its Restart Manager types and reports no holder for an unused file', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rm-list-'));
+    try {
+      const target = path.join(dir, 'unused.lbug');
+      fs.writeFileSync(target, '');
+      // Built exactly as getWindowsRmListEncodedCommand() builds it.
+      const source = fs
+        .readFileSync(
+          path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'win-rm-list-json.ps1'),
+          'utf8',
+        )
+        .replace(/^\uFEFF/, '')
+        .replace(/\r\n/g, '\n');
+      const encoded = Buffer.from(source, 'utf16le').toString('base64');
+      const powershell = path.join(
+        process.env.SystemRoot || 'C:\\Windows',
+        'System32',
+        'WindowsPowerShell',
+        'v1.0',
+        'powershell.exe',
+      );
+      const result = spawnSync(
+        powershell,
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-STA',
+          '-EncodedCommand',
+          encoded,
+        ],
+        {
+          encoding: 'utf-8',
+          timeout: 60_000,
+          windowsHide: true,
+          env: { ...process.env, GITNEXUS_HOOK_RM_TARGET: target },
+        },
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout.trim())).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── Source: hook slot must gate the DB-owner probe (#2163) ──────────
 
 describe('PreToolUse source order: tool guard before registry scan', () => {
