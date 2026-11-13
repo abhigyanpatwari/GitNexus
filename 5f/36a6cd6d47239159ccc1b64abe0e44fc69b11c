@@ -1,0 +1,57 @@
+docs/languages/dart-ingestion-gaps.md
+  s_b9690234122db7::t_ded3f6b68e5d66 47,112-119
+gitnexus/bench/scope-capture/baselines.json
+  s_b9690234122db7::t_3e9b2683e6e967 181,183,186-187
+gitnexus/src/core/ingestion/languages/dart.ts
+  s_b9690234122db7::t_3cf9ecc6564964 141-144
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_62b44214a6b2ba 13-15,42-45,59,203-207,247-252,254-275,279-280,344-356,358-359,364,368,372,377,381-384,386,461-898,1365-1366,1370,1373,1380,1756-1759,1761,1767,1769,1772,1774,1780-1782,1833-1851,1863-1868,1871
+gitnexus/src/core/ingestion/languages/dart/signature-bindings.ts
+  s_b9690234122db7::t_d66b3110d6845e 21-25,117-158
+gitnexus/src/core/ingestion/languages/php/scope-resolver.ts
+  s_b9690234122db7::t_0e142a3fc591fc 27,260-264,297-308
+gitnexus/src/core/ingestion/method-extractors/configs/dart.ts
+  s_b9690234122db7::t_3098406a834b14 201-209
+gitnexus/src/core/ingestion/scope-resolution/passes/receiver-bound-calls.ts
+  s_b9690234122db7::t_1ab3b834ec347f 87,3855-3894
+gitnexus/src/core/ingestion/scope-resolution/resolution-outcome.ts
+  s_b9690234122db7::t_104da8a913c2f7 26-46,75-78
+gitnexus/src/core/ingestion/scope-resolution/scope/walkers.ts
+  s_b9690234122db7::t_070b3c412e3e42 598-638
+gitnexus/test/fixtures/lang-resolution/dart-scope-openers/declares_nothing.dart
+  s_b9690234122db7::t_dd7f0a5baee760 37-38
+gitnexus/test/fixtures/lang-resolution/dart-scope-openers/nested_rebinding.dart
+  s_b9690234122db7::t_b18177f6033c30 1-7,21-22,47-58
+gitnexus/test/integration/resolvers/dart-awaited-receiver-owner.test.ts
+  s_b9690234122db7::t_64c8d9d7691127 54-58,427-432,603-612,684-690
+gitnexus/test/integration/resolvers/dart-scope-openers.test.ts
+  s_b9690234122db7::t_8457b31c872011 31-38,175,178,180-192,194-202,206-209,211-215,217-218,220-221,223-224,226-227,230,232-233,235-236,304-306,312,314,317-335,342-344,347,352,380-383,385-390
+gitnexus/test/integration/resolvers/inferred-field-receiver-matrix.test.ts
+  s_b9690234122db7::t_2c80674f3bddce 111,1998,2036
+gitnexus/test/integration/resolvers/receiver-walk-untyped-binder.test.ts
+  s_b9690234122db7::t_565650f9212057 1-1017
+gitnexus/test/unit/scope-resolution/dart-lexical-names.test.ts
+  s_b9690234122db7::t_c9d86c7b63ffd0 1-208
+gitnexus/test/unit/scope-resolution/php/php-unresolved-receiver-fallback.test.ts
+  s_b9690234122db7::t_3250ebc1935384 1-177
+gitnexus/test/unit/scope-resolution/registries.test.ts
+  s_b9690234122db7::t_77b62c83f33acc 592-624
+gitnexus/test/unit/scope-resolution/untyped-receiver-binder.test.ts
+  s_b9690234122db7::t_b9b6d7aeb090a2 1-141
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5f36a6cd6d47239159ccc1b64abe0e44fc69b11c",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
