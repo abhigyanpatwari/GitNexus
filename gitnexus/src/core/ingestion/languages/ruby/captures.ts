@@ -316,10 +316,13 @@ function isRubyLexicalMethod(node: SyntaxNode): boolean {
 // `other(<<~EOS, target = 1)` a read inside the body is a call.
 //
 // Each scope's bindings are indexed once per file at their earliest parse
-// position and cached by scope node id. Files with heredocs also get a parse-
-// order index: their bodies belong at the opener, including when the opener's
-// method or block closes before the physical body. Both binding collection
-// and the read's ancestor walk follow that same connection.
+// position and cached by scope node id, and every read of the file is
+// classified in one walk that carries the bindings of the open scope chain
+// down the tree (`rubyBoundReadIds`), so the check costs O(file) however deep
+// blocks nest. Files with heredocs also get a parse-order index: their bodies
+// belong at the opener, including when the opener's method or block closes
+// before the physical body. Both binding collection and the read walk follow
+// that same connection.
 
 /**
  * Scopes whose body sees nothing bound outside them. `begin_block` /
@@ -688,9 +691,8 @@ function rubyHeredocOpenerTail(body: SyntaxNode): RubySourceSpan | null {
 }
 
 interface RubyHeredocLayout {
-  /** Opener id → physical body, and body id → lexical opener. */
+  /** Opener id → physical body. */
   bodies: ReadonlyMap<number, SyntaxNode>;
-  openers: ReadonlyMap<number, SyntaxNode>;
   /** Source offset → parse position, visiting a body at its opener. */
   order: ReadonlyMap<number, number>;
 }
@@ -716,14 +718,10 @@ function rubyHeredocLayout(
   }
   const byEnd = new Map(root.descendantsOfType('heredoc_beginning').map((n) => [n.endIndex, n]));
   const bodies = new Map<number, SyntaxNode>();
-  const openers = new Map<number, SyntaxNode>();
   for (const body of physicalBodies) {
     const tail = rubyHeredocOpenerTail(body);
     const opener = tail === null ? undefined : byEnd.get(tail[0]);
-    if (opener !== undefined) {
-      bodies.set(opener.id, body);
-      openers.set(body.id, opener);
-    }
+    if (opener !== undefined) bodies.set(opener.id, body);
   }
   const order = new Map<number, number>();
   const pending = [root];
@@ -733,51 +731,147 @@ function rubyHeredocLayout(
     const children = (bodies.get(node.id) ?? node).namedChildren;
     for (const child of children.reverse()) pending.push(child);
   }
-  const layout = { bodies, openers, order };
+  const layout = { bodies, order };
   rubyHeredocLayouts.set(cache, layout);
   return layout;
+}
+
+/** One name's visibility on the scope chain open at a point of the bare-read walk. */
+interface RubyVisibleBinding {
+  /** The closed scope (method, class, …) whose chain this entry belongs to. */
+  readonly chain: number;
+  /** Earliest position the chain, from its closed scope down to here, binds the name at. */
+  readonly earliest: number;
+}
+
+/** A scope frame of the bare-read walk: opened after its headers, closed after its body. */
+interface RubyBareReadFrame {
+  readonly scope: SyntaxNode;
+  readonly closed: boolean;
+  /** Set when the frame opens: the names it pushed and the chain it replaced. */
+  names: RubyScopeBindings;
+  outerChain: number;
+}
+
+const NO_RUBY_BINDINGS: RubyScopeBindings = new Map();
+
+type RubyBareReadStep =
+  | { readonly kind: 'visit'; readonly node: SyntaxNode }
+  | { readonly kind: 'open'; readonly frame: RubyBareReadFrame }
+  | { readonly kind: 'close'; readonly frame: RubyBareReadFrame };
+
+// Keyed by the capture pass's cache, so no tree survives that pass's lifetime.
+const rubyBoundReads = new WeakMap<Map<number, RubyScopeBindings>, ReadonlySet<number>>();
+
+/**
+ * The ids of every identifier in the file that names a parameter or local
+ * bound before it on its scope chain, found in ONE walk of the tree. The
+ * per-read alternative — climbing from each read through every enclosing
+ * block to its method — costs O(reads x depth), O(depth^2) for a nest that
+ * reads at every level; this walk costs O(file) however deep blocks nest.
+ *
+ * A read sees the scopes on its chain: each enclosing block / lambda, up to
+ * and including the nearest method, class, module or program body. The walk
+ * keeps, per name, a stack with one entry per open scope that binds it, each
+ * holding the earliest position its chain binds the name at so far. A closed
+ * scope starts a new chain, so an entry of an outer chain is invisible inside
+ * it. A read is then one peek: bound when the top entry belongs to the
+ * current chain and binds before the read (`earliest < readStart`, the same
+ * per-scope comparison the climb made, folded with `min` along the chain).
+ *
+ * The walk follows the connections the climb followed: a closed scope's
+ * header expressions are visited in the enclosing chain before the scope's
+ * own frame opens, and a heredoc body is visited at its opener (its physical
+ * position is skipped), so an unmatched body is never visited and none of its
+ * reads is bound.
+ */
+function rubyBoundReadIds(
+  root: SyntaxNode,
+  cache: Map<number, RubyScopeBindings>,
+): ReadonlySet<number> {
+  const cached = rubyBoundReads.get(cache);
+  if (cached !== undefined) return cached;
+  const heredocs = rubyHeredocLayout(root, cache);
+  const bound = new Set<number>();
+  const visible = new Map<string, RubyVisibleBinding[]>();
+  // No chain is open above the root; `program` opens the first.
+  let chain = -1;
+  const steps: RubyBareReadStep[] = [{ kind: 'visit', node: root }];
+  for (let step = steps.pop(); step !== undefined; step = steps.pop()) {
+    if (step.kind === 'open') {
+      const frame = step.frame;
+      frame.outerChain = chain;
+      if (frame.closed) chain = frame.scope.id;
+      frame.names = rubyScopeBindings(frame.scope, cache, heredocs);
+      for (const [name, position] of frame.names) {
+        let entries = visible.get(name);
+        if (entries === undefined) visible.set(name, (entries = []));
+        const top = entries[entries.length - 1];
+        const earliest =
+          top !== undefined && top.chain === chain ? Math.min(top.earliest, position) : position;
+        entries.push({ chain, earliest });
+      }
+      continue;
+    }
+    if (step.kind === 'close') {
+      for (const name of step.frame.names.keys()) visible.get(name)?.pop();
+      chain = step.frame.outerChain;
+      continue;
+    }
+    const node = step.node;
+    // Visited through its opener, never where it physically sits.
+    if (node.type === 'heredoc_body') continue;
+    if (node.type === 'identifier') {
+      const readStart = heredocs === null ? node.startIndex : heredocs.order.get(node.startIndex);
+      if (readStart !== undefined) {
+        const entries = visible.get(node.text);
+        const top = entries?.[entries.length - 1];
+        if (top !== undefined && top.chain === chain && top.earliest < readStart) {
+          bound.add(node.id);
+        }
+      }
+    }
+    const children = (heredocs?.bodies.get(node.id) ?? node).namedChildren;
+    const closed = RUBY_CLOSED_LOCAL_SCOPES.has(node.type);
+    if (!closed && !RUBY_OPEN_LOCAL_SCOPES.has(node.type)) {
+      for (const child of children.reverse()) steps.push({ kind: 'visit', node: child });
+      continue;
+    }
+    // Pushed in reverse, so they run as: header expressions (enclosing
+    // chain), open this scope's frame, the rest of its children, close it.
+    const headers = rubyScopeHeaderNodes(node);
+    const headerIds = new Set(headers.map((header) => header.id));
+    const frame: RubyBareReadFrame = {
+      scope: node,
+      closed,
+      names: NO_RUBY_BINDINGS,
+      outerChain: chain,
+    };
+    steps.push({ kind: 'close', frame });
+    for (const child of children.reverse()) {
+      if (!headerIds.has(child.id)) steps.push({ kind: 'visit', node: child });
+    }
+    steps.push({ kind: 'open', frame });
+    for (const header of headers.reverse()) steps.push({ kind: 'visit', node: header });
+  }
+  rubyBoundReads.set(cache, bound);
+  return bound;
 }
 
 /**
  * Whether a bare `identifier` statement reads a parameter or local that is
  * bound before that point in an enclosing scope — in which case it is not a
  * method call and the `@reference.call.free` capture must not be emitted.
- * Exported for the unit test that pins the ordering rule on parsed trees,
- * including default-expression shapes the statement pattern never captures.
+ * The first call for a file indexes every read of it (`rubyBoundReadIds`);
+ * each call after that is a set lookup. Exported for the unit tests that pin
+ * the ordering rule on parsed trees, including default-expression shapes the
+ * statement pattern never captures, and the cost of the check.
  */
 export function rubyBareNameIsLocalRead(
   identifier: SyntaxNode,
   cache: Map<number, RubyScopeBindings>,
 ): boolean {
-  const name = identifier.text;
-  const heredocs = rubyHeredocLayout(identifier.tree.rootNode, cache);
-  const readStart =
-    heredocs === null ? identifier.startIndex : heredocs.order.get(identifier.startIndex);
-  if (readStart === undefined) return false;
-  let child: SyntaxNode = identifier;
-  for (let scope = identifier.parent; scope !== null; child = scope, scope = scope.parent) {
-    // The physical parent may be outside a method/block that closed on the
-    // opener line. Continue through the opener's lexical ancestors instead.
-    if (scope.type === 'heredoc_body') {
-      const opener = heredocs?.openers.get(scope.id);
-      if (opener === undefined) return false;
-      scope = opener;
-      continue;
-    }
-    const closed = RUBY_CLOSED_LOCAL_SCOPES.has(scope.type);
-    if (!closed && !RUBY_OPEN_LOCAL_SCOPES.has(scope.type)) continue;
-    // A read inside the scope's HEADER (a singleton receiver, a class or
-    // module name, a superclass, a `class <<` value — reachable through a
-    // `do` block or lambda body nested in it) is evaluated in the ENCLOSING
-    // scope: this scope's parameters and locals are not visible there, and
-    // its index (which excludes its own header) has nothing to say. Keep
-    // climbing.
-    if (closed && rubyScopeHeaderNodes(scope).some((header) => header.id === child.id)) continue;
-    const boundAt = rubyScopeBindings(scope, cache, heredocs).get(name);
-    if (boundAt !== undefined && boundAt < readStart) return true;
-    if (closed) return false;
-  }
-  return false;
+  return rubyBoundReadIds(identifier.tree.rootNode, cache).has(identifier.id);
 }
 
 export function emitRubyScopeCaptures(
