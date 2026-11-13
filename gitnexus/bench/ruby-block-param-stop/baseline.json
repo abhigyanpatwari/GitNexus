@@ -1,0 +1,181 @@
+{
+  "_what": "Synthetic Ruby block-parameter gate for #3905 (RUBY-03), following bench/ruby-gem-resolution: exact accuracy cells and fingerprints, with ratios as the only timing gates. Real capture emitter, real parse worker (dist/), real Ruby ScopeResolver and manifest loader; analyze, persistence and full-pipeline memory are outside this benchmark.",
+  "_triage": "Shape and fingerprint failures are deterministic: inspect the corpus and the resolved edges, never rebaseline just to make CI green. The runner also fails, before any baseline comparison, when a method misses an expected CALLS edge or gains one the source never makes. For a timing failure, rerun on an idle machine and verify the report shows its profile (ci: 5 interleaved samples after 1 warmup; full: 15 after 2) before investigating a regression. Millisecond observations are context, not gates.",
+  "shapes": {
+    "sibling_small": {
+      "methods": 64,
+      "blocks_per_method": 6,
+      "capture_groups": 2001,
+      "relationships": 390,
+      "calls": 192,
+      "declines": {
+        "member-lookup-ambiguous": 64,
+        "receiver-type-unresolved/untyped-binder": 640
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "aa773f2b3162324e7427e530a3acb9aefe9238a0f072da831fc257edc44a3bb1"
+    },
+    "sibling_large": {
+      "methods": 256,
+      "blocks_per_method": 6,
+      "capture_groups": 7953,
+      "relationships": 1542,
+      "calls": 768,
+      "declines": {
+        "member-lookup-ambiguous": 256,
+        "receiver-type-unresolved/untyped-binder": 2560
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "5e6a8bb5074c1af40b74932a2a1b7404c0fdc2bd6962044edcfd610b746ea279"
+    },
+    "sibling_dense": {
+      "methods": 64,
+      "blocks_per_method": 24,
+      "capture_groups": 5457,
+      "relationships": 774,
+      "calls": 576,
+      "declines": {
+        "member-lookup-ambiguous": 64,
+        "receiver-type-unresolved/untyped-binder": 2560
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "511bf860d725cbf3c231c40c456fe40989da20344f867b2d3bd356ce481e7af3"
+    },
+    "nested_small": {
+      "methods": 64,
+      "blocks_per_method": 6,
+      "capture_groups": 2001,
+      "relationships": 326,
+      "calls": 128,
+      "declines": {
+        "member-lookup-ambiguous": 64,
+        "receiver-type-unresolved/untyped-binder": 704
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "408289582ac892e7f96d7f64520db2137a1cb3f1c0b34ada9c978a241b1b2ffd"
+    },
+    "nested_large": {
+      "methods": 256,
+      "blocks_per_method": 6,
+      "capture_groups": 7953,
+      "relationships": 1286,
+      "calls": 512,
+      "declines": {
+        "member-lookup-ambiguous": 256,
+        "receiver-type-unresolved/untyped-binder": 2816
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "66daa484b8978db059dec7b59522bc73dcac5f03df7428894c3b479c75364a3d"
+    },
+    "nested_dense": {
+      "methods": 64,
+      "blocks_per_method": 24,
+      "capture_groups": 5457,
+      "relationships": 326,
+      "calls": 128,
+      "declines": {
+        "member-lookup-ambiguous": 64,
+        "receiver-type-unresolved/untyped-binder": 3008
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "5678ecd693f5b46050a32329004c56e8c11f98bfa29fc4fb0a741803ebbdb924"
+    }
+  },
+  "_shape_note": "Exact counts are the workload FLOOR. small = 64 methods x 6 blocks, large = 256 x 6 (methods 4x), dense = 64 x 24 (blocks per method 4x; in `nested`, nesting depth 4x). One class with one method per file. Expected edges per method are computed from the binder rule, not read back from the graph: a block that rebinds `user` (`|user|`, `|user, i|`) gets no edge, `|x|` reaches the nearest `user` (the local `User` unless an enclosing block rebinds it), and the closing `user.save` reaches User#save. main misses that rule (128 wrong edges at 32 x 6 side by side), so this gate fails without #3905. The one `member-lookup-ambiguous` decline per method is identical on main.",
+  "_fingerprint_note": "Hashes pin every relationship (endpoints, type, confidence, reason) and every decline (reason, file, name, position).",
+  "budgets": {
+    "sibling_capture_method_scaling_ratio": 1.5,
+    "sibling_capture_block_scaling_ratio": 1.5,
+    "sibling_resolve_method_scaling_ratio": 1.5,
+    "sibling_resolve_block_scaling_ratio": 1.5,
+    "nested_capture_method_scaling_ratio": 1.5,
+    "nested_capture_block_scaling_ratio": 1.5,
+    "nested_resolve_method_scaling_ratio": 1.5,
+    "nested_resolve_block_scaling_ratio": 1.5
+  },
+  "_scaling_note": "Scaling ratios are (t_4n/t_n)/4: about 1 is linear, about 4 is quadratic. 1.5 (bench/scope-capture) on every ratio: at these sizes main is linear along all three axes.",
+  "_one_file_note": "Not gated: on main, Ruby resolution is super-linear in the number of classes or methods in ONE file. With every class in one file (`--shape crowded`), 256 -> 2048 methods, resolution's fitted exponent is 1.60 (1.48-1.72) on main and 1.61 (1.52-1.70) with #3905, per-doubling ratios 2.8 -> 3.5 on both; in a profile at 2048 classes the time is in ruby/merge-bindings.ts and in findClassBindingInScope / lookupMatchingNameClaim (scope-resolution/scope/walkers.ts). #3905 changes neither, and its absolute time there is lower (1180 vs 1641 ms at 2048). The gated shapes therefore use one class per file.",
+  "_profiles_note": "Two profiles share the shapes and every accuracy gate. CI (the default, and what --check runs in the benchmarks job): one process, one parse worker, every workload timed, min of 5 after 1 warmup, interleaved. --full: one child times every workload, min of 15 after 2 warmups, and each shape runs in a fresh child for its peak RSS. Wall times are in _measured_ci.",
+  "_negative_controls_note": "Re-running the Ruby scope query over the enclosing method for every block scope (O(blocks^2) per method, a temporary edit of languages/ruby/captures.ts) fails nested_capture_block_scaling_ratio 2.242 > 1.5 in the CI profile (sibling 1.473), with unchanged fingerprints. Two lighter O(blocks^2) edits (a walk of the method per block; collecting every block's parameters per block) raised the block ratios but stayed under 1.5 with 3 blocks per method, where per-file overhead dominates; that is why the shapes carry 6 blocks per method. These are deliberate regressions, not baseline observations.",
+  "_measured_ci": {
+    "environment": "macOS arm64 / Node 24.16.0, 2026-11-13, shared host (load average 7-40 on 15 cores)",
+    "wall_seconds": [15.18, 16.43, 14.58],
+    "reps": 5,
+    "warmup": 1,
+    "sibling_capture_method_scaling_ratio": 1.044,
+    "sibling_capture_method_scaling_ratio_samples": [1.044, 1.029, 0.914],
+    "sibling_capture_block_scaling_ratio": 0.793,
+    "sibling_capture_block_scaling_ratio_samples": [0.793, 0.785, 0.705],
+    "sibling_resolve_method_scaling_ratio": 1.185,
+    "sibling_resolve_method_scaling_ratio_samples": [1.113, 1.185, 1.131],
+    "sibling_resolve_block_scaling_ratio": 0.759,
+    "sibling_resolve_block_scaling_ratio_samples": [0.759, 0.669, 0.692],
+    "nested_capture_method_scaling_ratio": 1.005,
+    "nested_capture_method_scaling_ratio_samples": [1.005, 0.925, 0.986],
+    "nested_capture_block_scaling_ratio": 1.327,
+    "nested_capture_block_scaling_ratio_samples": [1.165, 1.176, 1.327],
+    "nested_resolve_method_scaling_ratio": 1.122,
+    "nested_resolve_method_scaling_ratio_samples": [0.962, 0.971, 1.122],
+    "nested_resolve_block_scaling_ratio": 1.128,
+    "nested_resolve_block_scaling_ratio_samples": [0.872, 1.006, 1.128],
+    "sibling_small_capture_ms": 75,
+    "sibling_small_resolve_ms": 10.9,
+    "sibling_large_capture_ms": 309,
+    "sibling_large_resolve_ms": 51.8,
+    "sibling_dense_capture_ms": 235.6,
+    "sibling_dense_resolve_ms": 29.2,
+    "nested_small_capture_ms": 77.8,
+    "nested_small_resolve_ms": 11.7,
+    "nested_large_capture_ms": 287.8,
+    "nested_large_resolve_ms": 45.4,
+    "nested_dense_capture_ms": 366,
+    "nested_dense_resolve_ms": 47
+  },
+  "_measured_full": {
+    "environment": "macOS arm64 / Node 24.16.0, 2026-11-13, shared host (load average 7-40 on 15 cores)",
+    "reps": 15,
+    "warmup": 2,
+    "sibling_capture_method_scaling_ratio": 0.961,
+    "sibling_capture_method_scaling_ratio_samples": [0.961],
+    "sibling_capture_block_scaling_ratio": 0.757,
+    "sibling_capture_block_scaling_ratio_samples": [0.757],
+    "sibling_resolve_method_scaling_ratio": 1.093,
+    "sibling_resolve_method_scaling_ratio_samples": [1.093],
+    "sibling_resolve_block_scaling_ratio": 0.694,
+    "sibling_resolve_block_scaling_ratio_samples": [0.694],
+    "nested_capture_method_scaling_ratio": 0.994,
+    "nested_capture_method_scaling_ratio_samples": [0.994],
+    "nested_capture_block_scaling_ratio": 1.158,
+    "nested_capture_block_scaling_ratio_samples": [1.158],
+    "nested_resolve_method_scaling_ratio": 1.009,
+    "nested_resolve_method_scaling_ratio_samples": [1.009],
+    "nested_resolve_block_scaling_ratio": 0.908,
+    "nested_resolve_block_scaling_ratio_samples": [0.908],
+    "sibling_small_capture_ms": 62.4,
+    "sibling_small_resolve_ms": 9.1,
+    "sibling_small_peak_rss_mib": 284.8,
+    "sibling_large_capture_ms": 240,
+    "sibling_large_resolve_ms": 39.6,
+    "sibling_large_peak_rss_mib": 372.1,
+    "sibling_dense_capture_ms": 189.2,
+    "sibling_dense_resolve_ms": 25.1,
+    "sibling_dense_peak_rss_mib": 353,
+    "nested_small_capture_ms": 67.4,
+    "nested_small_resolve_ms": 9.8,
+    "nested_small_peak_rss_mib": 287.9,
+    "nested_large_capture_ms": 267.9,
+    "nested_large_resolve_ms": 39.7,
+    "nested_large_peak_rss_mib": 369.6,
+    "nested_dense_capture_ms": 312,
+    "nested_dense_resolve_ms": 35.8,
+    "nested_dense_peak_rss_mib": 354.2
+  },
+  "_measured_note": "Three CI-profile runs and one --full run. Scalar ratios and millisecond values are per-metric maxima across the runs of that profile (rounded). peak_rss_mib (--full only) is each --shape child's high-water mark after one worker parse and one resolution, worker thread included; context, not gated. Exact shapes and fingerprints were identical in all runs. The doubling sweep in the PR comment (methods 256 -> 4096, blocks and depth 3 -> 48, three rounds, main and head) was measured separately with --shape --reps 3 --warmup 1 and is part of neither profile.",
+  "_rebaselined_on_main": "Rebased #3905 onto 14d5405a5 after #3903 and #3880 merged. All six workloads retain their capture groups, CALLS, relationship counts, and zero missing/unexpected edges. DART-11 now records receiver-type-unresolved/untyped-binder declines: sibling small/large/dense 640/2560/2560; nested small/large/dense 704/2816/3008. Only those recorded declines and their fingerprints change; the pre-existing member-lookup-ambiguous counts and all scaling budgets are unchanged. Measured scaling ratios range from 0.692 to 1.056, below 1.5."
+}

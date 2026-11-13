@@ -1536,6 +1536,16 @@ jobs:
         run: node --import tsx bench/kotlin-import-target/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Ruby block-parameter stop correctness + scaling guards (#3905)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins every method's CALLS edges when blocks rebind a
+        # typed local, side by side or nested, and checks capture and resolution
+        # scaling as methods, blocks per method or nesting depth grow 4x.
+        # Budgets: see baseline.json.
+        run: node --import tsx bench/ruby-block-param-stop/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Ruby gem-boundary correctness + scaling guards (#3096)
         if: ${{ !cancelled() }}
         # Includes real manifest loading; checks scoped resolution and scaling
