@@ -83,6 +83,12 @@ const FUNCTION_DECL_TAGS = [
   '@declaration.function',
   '@declaration.method',
   '@declaration.constructor',
+  // A getter / setter stays a graph Property, but its body is executable code:
+  // without its own Function scope a setter's parameter and an accessor's
+  // locals land in the enclosing Module / Class scope and type same-named
+  // receivers elsewhere. This private capture (query.ts) marks accessors only;
+  // a class field is a Property too but has no body and never carries it.
+  '@dart.accessor',
 ] as const;
 
 const DART_CALLABLE_CAPTURE_OPTIONS = {
@@ -222,6 +228,15 @@ export function emitDartScopeCaptures(
       if (seenFnDeclNodes.has(declKey)) continue; // dedup named-ctor double-match
       seenFnDeclNodes.add(declKey);
       const bodyNode = findFunctionBody(declNode);
+      // An accessor opens its scope for its BODY; it publishes no return
+      // binding. `dartBindingScopeFor` hoists every return binding to the
+      // Module scope, and the receiver walk climbs past an untyped nearest
+      // binding (a `dynamic` parameter, a local of unknown type) to a
+      // same-named module binding, so `Addr get cs` — a member of any class, or
+      // a top-level getter — would type `void g(dynamic cs) { cs.save(); }` as
+      // `Addr.save`: a wrong owner, where before this scope existed the getter
+      // published nothing. Withheld until that walk stops at an untyped binder.
+      const accessor = declTag === '@dart.accessor';
 
       attachArityMetadata(grouped, declNode);
       // Structural receiver chain for a call whose receiver is itself an
@@ -232,6 +247,7 @@ export function emitDartScopeCaptures(
       synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
       out.push(grouped);
 
+      const signatureBindings = synthesizeDartSignatureBindings(declNode, bodyNode);
       if (bodyNode !== null) {
         // The READ-side half of the bare-name field discipline (#2807 review).
         // Rides the SAME synthesized match as `@scope.function` so the mask
@@ -246,18 +262,30 @@ export function emitDartScopeCaptures(
         // DART-11: the names this scope binds are filled in by Pass B.
         const receiver = synthesizeDartReceiverBinding(declNode, bodyNode);
         for (const cm of receiver) out.push(cm);
+        // Parameter bindings are published with the scope once Pass B has
+        // counted what it declares (`attachDartLexicalNames`): an annotation is
+        // withheld when the SAME scope declares the name again (DART-10).
+        const parameterBindings = signatureBindings.filter(
+          (cm) => cm['@type-binding.parameter'] !== undefined,
+        );
+        // A closure bound to a name keeps its parameter list as a child, which
+        // the signature helper above cannot read, so its typed parameters
+        // were never bound at all.
+        if (declNode.type === 'function_expression') {
+          parameterBindings.push(...synthesizeDartParameterBindings(declNode, bodyNode));
+        }
         registerDartLexicalScope(lexicalScopes, bodyNode, 'member', {
           match: scopeMatch,
           providesThis: receiver.length > 0,
+          parameterBindings,
         });
-        // A closure bound to a name keeps its parameter list as a child, which
-        // the signature helper below cannot read, so its typed parameters
-        // were never bound at all.
-        if (declNode.type === 'function_expression') {
-          for (const cm of synthesizeDartParameterBindings(declNode, bodyNode)) out.push(cm);
-        }
       }
-      for (const cm of synthesizeDartSignatureBindings(declNode, bodyNode)) out.push(cm);
+      for (const cm of signatureBindings) {
+        // Emitted with the scope, above; a bodiless declaration has none.
+        if (cm['@type-binding.parameter'] !== undefined) continue;
+        if (accessor && cm['@type-binding.return'] !== undefined) continue;
+        out.push(cm);
+      }
       continue;
     }
 
@@ -441,9 +469,21 @@ function findFunctionBody(declNode: SyntaxNode): SyntaxNode | null {
     declNode.parent !== null && declNode.parent.type === 'method_signature'
       ? declNode.parent
       : declNode;
-  const next = node.nextNamedSibling;
+  // tree-sitter keeps comments as NAMED siblings, so a comment between a
+  // signature and its body (`void f(User v) /* note */ { … }`, or a `///` /
+  // `/** */` doc comment) would stop the walk one node early and the
+  // declaration would open no scope. Only comments are skipped: any other
+  // named sibling still means there is no body (a bodiless `void a();`
+  // followed by a comment and the next member must not take that member's
+  // body).
+  let next = node.nextNamedSibling;
+  while (next !== null && DART_COMMENT_TYPES.has(next.type)) next = next.nextNamedSibling;
   return next !== null && next.type === 'function_body' ? next : null;
 }
+
+/** Both comment node kinds tree-sitter-dart emits; to the language each is an
+ *  ordinary comment. Same set as the CFG visitor's (`cfg/visitors/dart.ts`). */
+const DART_COMMENT_TYPES: ReadonlySet<string> = new Set(['comment', 'documentation_comment']);
 
 /** A capture whose range spans two nodes (Dart has no node wrapping both a
  *  signature and its sibling body). */
@@ -527,6 +567,11 @@ interface DartLexicalScope {
   /** The node the `@scope.lexical-names` capture anchors on. */
   readonly anchor: SyntaxNode;
   readonly names: Set<string>;
+  /** How many declarations of each name this scope holds (DART-10): a typed
+   *  parameter whose name the same scope declares again keeps no annotation. */
+  readonly declared: Map<string, number>;
+  /** A member's parameter bindings, published once `declared` is complete. */
+  readonly parameterBindings: readonly CaptureMatch[];
   /**
    * `member`: a declared function's scope, always emitted (Pass A).
    * `nested`: a closure or local function, and `block`: a statement that opens
@@ -561,6 +606,7 @@ function registerDartLexicalScope(
     readonly parent?: SyntaxNode | null;
     readonly nested?: DartLexicalScope['nested'];
     readonly providesThis?: boolean;
+    readonly parameterBindings?: readonly CaptureMatch[];
   } = {},
 ): void {
   const key = nodeSpanKey(anchor);
@@ -569,6 +615,8 @@ function registerDartLexicalScope(
     match: options.match ?? null,
     anchor,
     names: new Set(),
+    declared: new Map(),
+    parameterBindings: options.parameterBindings ?? [],
     kind,
     parent: options.parent == null ? null : nodeSpanKey(options.parent),
     nested: options.nested ?? null,
@@ -618,10 +666,10 @@ function opensDartBlockScope(type: string, parentType: string | null): boolean {
   );
 }
 
-/** The next named sibling that is not a comment. */
+/** The next named sibling that is not a comment of either kind. */
 function nextDartNonCommentSibling(node: SyntaxNode): SyntaxNode | null {
   let next = node.nextNamedSibling;
-  while (next !== null && next.type === 'comment') next = next.nextNamedSibling;
+  while (next !== null && DART_COMMENT_TYPES.has(next.type)) next = next.nextNamedSibling;
   return next;
 }
 
@@ -679,6 +727,7 @@ function recordDartLexicalName(
   if (scope === undefined) return; // a body with no Function scope (a class accessor)
   visitDartDeclaredName(node, type, (name) => {
     scope.names.add(name);
+    scope.declared.set(name, (scope.declared.get(name) ?? 0) + 1);
   });
 }
 
@@ -719,6 +768,9 @@ function attachDartLexicalNames(scopes: DartLexicalScopes, out: CaptureMatch[]):
       if (lexical !== undefined && scope.match !== null) {
         scope.match['@scope.lexical-names'] = lexical;
       }
+      for (const cm of scope.parameterBindings) {
+        if (!dartParameterRedeclared(cm, scope)) out.push(cm);
+      }
       thisBound.set(key, providesThis);
       continue;
     }
@@ -738,7 +790,9 @@ function attachDartLexicalNames(scopes: DartLexicalScopes, out: CaptureMatch[]):
       '@scope.function': spanCapture('@scope.function', nested.scopeNode, nested.scopeNode),
       '@scope.lexical-names': lexical,
     });
-    for (const cm of synthesizeDartParameterBindings(nested.paramOwner, anchor)) out.push(cm);
+    for (const cm of synthesizeDartParameterBindings(nested.paramOwner, anchor)) {
+      if (!dartParameterRedeclared(cm, scope)) out.push(cm);
+    }
     // Only where no emitted enclosing scope binds `this` already: under a
     // getter, setter, operator or field initializer, which have no scope.
     let ownThis = false;
@@ -749,6 +803,26 @@ function attachDartLexicalNames(scopes: DartLexicalScopes, out: CaptureMatch[]):
     }
     thisBound.set(key, inherited || ownThis);
   }
+}
+
+/**
+ * Does the scope that owns this parameter binding DECLARE the parameter's name
+ * a second time (DART-10)? One scope keeps one binding per name, so an
+ * annotation that survives a same-scope redeclaration types the redeclared
+ * sites too; it is withheld, and the name stays in the scope's lexical names,
+ * so the receiver walk stops there as an untyped binder instead of reaching a
+ * same-named binding further out.
+ *
+ * Counted per scope with `visitDartDeclaredName`, so only real declarations
+ * count (a pattern field label, a function-typed parameter's own parameter, a
+ * pattern assignment or `_` do not), and a binder in a closure, local
+ * function, nested block, loop, case or catch body belongs to that scope and
+ * leaves the outer annotation alone. Plain assignment is not a declaration:
+ * Dart requires the value to be assignable to the declared type.
+ */
+function dartParameterRedeclared(cm: CaptureMatch, scope: DartLexicalScope): boolean {
+  const name = cm['@type-binding.name']?.text;
+  return name !== undefined && (scope.declared.get(name) ?? 0) > 1;
 }
 
 /** Every node type `visitDartDeclaredName` reads a declared name from. */
@@ -1333,7 +1407,7 @@ function dartBodyCensus(body: SyntaxNode, memo: DartClassMemo): DartBodyCensus {
   const count = (name: string): void => {
     binders.set(name, (binders.get(name) ?? 0) + 1);
   };
-  const signature = body.previousNamedSibling;
+  const signature = signatureBefore(body);
   if (signature !== null && OWN_SIGNATURE_TYPES.has(signature.type)) {
     walkNamedTree(signature, (n) => visitDartBinderName(n, count));
   }
@@ -1354,7 +1428,21 @@ const OWN_SIGNATURE_TYPES: ReadonlySet<string> = new Set([
   'method_signature',
   'function_signature',
   'formal_parameter_list',
+  // A top-level setter (a class member's is wrapped in a `method_signature`);
+  // its body opens a Function scope (DART-10). A getter declares no parameter.
+  'setter_signature',
 ]);
+
+/** The signature a body belongs to: its previous named sibling, past the
+ *  comments tree-sitter keeps as named siblings between the two (the inverse
+ *  of the walk in `findFunctionBody`). */
+function signatureBefore(body: SyntaxNode): SyntaxNode | null {
+  let sibling = body.previousNamedSibling;
+  while (sibling !== null && DART_COMMENT_TYPES.has(sibling.type)) {
+    sibling = sibling.previousNamedSibling;
+  }
+  return sibling;
+}
 
 /**
  * May a call-result type be inferred for the local `name` declared at
@@ -1771,8 +1859,9 @@ function collectDartBodyShadows(bodyNode: SyntaxNode): Set<string> {
   // The enclosing function's own formal parameters live OUTSIDE the body, on
   // the `method_signature` sibling that precedes it — the shape every class
   // member takes (method, constructor, factory, static, getter, setter,
-  // operator, `async`/`async*`).
-  const signature = bodyNode.previousNamedSibling;
+  // operator, `async`/`async*`) — past any comment between the two, now that
+  // such a member opens its own scope (DART-10) for the mask to ride on.
+  const signature = signatureBefore(bodyNode);
   const add = (name: string): void => {
     shadows.add(name);
   };
