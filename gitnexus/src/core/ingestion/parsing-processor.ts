@@ -98,6 +98,57 @@ function nodesInSourceOrder(nodes: readonly ParsedGraphNode[]): readonly ParsedG
   return nodes;
 }
 
+function nodeFilePath(node: ParsedGraphNode): string {
+  return typeof node.properties.filePath === 'string' ? node.properties.filePath : '';
+}
+
+/**
+ * Stable path order: files in ordinal path order, each file's items in the
+ * order its parse produced them. Input already in order is returned as is (one
+ * linear check, no copy). Otherwise a sorted copy is returned, so an array the
+ * parse cache may still hold is never reordered in place.
+ */
+function inPathOrder<T>(items: T[], pathOf: (item: T) => string): T[] {
+  for (let index = 1; index < items.length; index++) {
+    if (compareText(pathOf(items[index - 1]), pathOf(items[index])) > 0) {
+      return [...items].sort((left, right) => compareText(pathOf(left), pathOf(right)));
+    }
+  }
+  return items;
+}
+
+/** {@link inPathOrder} for per-file items, which carry their file's path. */
+function byFilePath<T extends { readonly filePath: string }>(items: T[]): T[] {
+  return inPathOrder(items, (item) => item.filePath);
+}
+
+/**
+ * Index of the first item whose file path does not sort before `filePath`, in
+ * an array already in file-path order: where that file's items begin, or would
+ * begin if it has none.
+ */
+function filePathStart(items: readonly { readonly filePath: string }[], filePath: string): number {
+  let low = 0;
+  let high = items.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (compareText(items[middle].filePath, filePath) < 0) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+/** Every result's items as one list; a single result's own array is not copied. */
+function chunkItems<T>(
+  results: readonly ParseWorkerResult[],
+  itemsOf: (r: ParseWorkerResult) => T[] | undefined,
+): T[] {
+  if (results.length === 1) return itemsOf(results[0]) ?? [];
+  const items: T[] = [];
+  for (const result of results) for (const item of itemsOf(result) ?? []) items.push(item);
+  return items;
+}
+
 // ============================================================================
 // Worker-based parallel parsing
 // ============================================================================
@@ -138,50 +189,57 @@ export const mergeChunkResults = (
   const allParsedFiles: ParsedFile[] = [];
   const scopeExtractionFailures: string[] = [];
 
+  // A chunk arrives either as a few batched worker results (files grouped by
+  // language inside each) or as one result per file (the per-file reuse
+  // store), and how files are batched depends on the worker count. Graph
+  // nodes, the symbol table and the route registry are all first-wins, so the
+  // chunk is merged in one canonical order however it arrived: nodes in source
+  // order (path, line, id) across the whole chunk, and symbols and every
+  // per-file list stably by file path. A batched result can hold many files
+  // out of path order, so no result count skips the check; input already in
+  // order costs one linear pass and no copy.
+  const chunkNodes = chunkItems(chunkResults, (result) => result.nodes);
+  for (const node of nodesInSourceOrder(chunkNodes)) {
+    graph.addNode({
+      id: node.id,
+      label: node.label as NodeLabel,
+      properties: node.properties,
+    });
+  }
   for (const result of chunkResults) {
-    // Worker jobs and input files are already merged in stable start-index/path
-    // order. Canonicalize the final per-result node boundary once so graph
-    // insertion, cache replay, and first-wins graph indexes share source order.
-    // The common already-ordered path stays allocation-free and linear.
-    for (const node of nodesInSourceOrder(result.nodes)) {
-      graph.addNode({
-        id: node.id,
-        label: node.label as NodeLabel,
-        properties: node.properties,
-      });
-    }
     for (const rel of result.relationships) {
       graph.addRelationship(rel);
     }
-    for (const sym of result.symbols) {
-      symbolTable.add(sym.filePath, sym.name, sym.nodeId, sym.type, {
-        parameterCount: sym.parameterCount,
-        requiredParameterCount: sym.requiredParameterCount,
-        parameterTypes: sym.parameterTypes,
-        parameterTypeClasses: sym.parameterTypeClasses,
-        returnType: sym.returnType,
-        declaredType: sym.declaredType,
-        templateArguments: sym.templateArguments,
-        ownerId: sym.ownerId,
-        qualifiedName: sym.qualifiedName,
-        isDeleted: sym.isDeleted,
-      });
+  }
+  for (const sym of byFilePath(chunkItems(chunkResults, (result) => result.symbols))) {
+    symbolTable.add(sym.filePath, sym.name, sym.nodeId, sym.type, {
+      parameterCount: sym.parameterCount,
+      requiredParameterCount: sym.requiredParameterCount,
+      parameterTypes: sym.parameterTypes,
+      parameterTypeClasses: sym.parameterTypeClasses,
+      returnType: sym.returnType,
+      declaredType: sym.declaredType,
+      templateArguments: sym.templateArguments,
+      ownerId: sym.ownerId,
+      qualifiedName: sym.qualifiedName,
+      isDeleted: sym.isDeleted,
+    });
+  }
+  if (exportedTypeMap) {
+    // Each file's nodes in the order its parse produced them (a later export
+    // of the same name wins within a file); files in path order.
+    for (const node of inPathOrder(chunkNodes, nodeFilePath)) {
+      accumulateExportedTypesFromParsedNode(exportedTypeMap, node, symbolTable);
     }
-    if (exportedTypeMap) {
-      for (const node of result.nodes) {
-        accumulateExportedTypesFromParsedNode(exportedTypeMap, node, symbolTable);
-      }
-    }
+  }
+
+  for (const result of chunkResults) {
     for (const item of result.routes) allRoutes.push(item);
     for (const item of result.fetchCalls) allFetchCalls.push(item);
     for (const item of result.fetchWrapperDefs ?? []) allFetchWrapperDefs.push(item);
     for (const item of result.fetchWrapperCalls ?? []) allFetchWrapperCalls.push(item);
     for (const item of result.fetchWrapperReexports ?? []) allFetchWrapperReexports.push(item);
-    for (const item of result.routeFacts ?? [])
-      allRouteFacts.push({
-        ...item,
-        routePosition: item.routePosition + allDecoratorRoutes.length,
-      });
+    for (const item of result.routeFacts ?? []) allRouteFacts.push(item);
     for (const item of result.decoratorRoutes) allDecoratorRoutes.push(item);
     for (const item of result.routerIncludes ?? []) allRouterIncludes.push(item);
     for (const item of result.routerImports ?? []) allRouterImports.push(item);
@@ -201,25 +259,37 @@ export const mergeChunkResults = (
     }
   }
 
+  // A file's route facts resolve into routes inserted at `routePosition`, the
+  // index in this chunk's decorator routes where that file's own decorator
+  // routes begin (the worker records it before extracting them). Reordering the
+  // decorator routes moves those starts, so each position is recomputed against
+  // the final order: the start of the file's routes, or where they would start
+  // when the file has none. That depends only on the paths, never on arrival.
+  const decoratorRoutes = byFilePath(allDecoratorRoutes);
+  const routeFacts = byFilePath(allRouteFacts).map((item) => ({
+    ...item,
+    routePosition: filePathStart(decoratorRoutes, item.filePath),
+  }));
+
   return {
-    routes: allRoutes,
-    fetchCalls: allFetchCalls,
-    fetchWrapperDefs: allFetchWrapperDefs,
-    fetchWrapperCalls: allFetchWrapperCalls,
-    fetchWrapperReexports: allFetchWrapperReexports,
-    decoratorRoutes: allDecoratorRoutes,
-    routeFacts: allRouteFacts,
-    routerIncludes: allRouterIncludes,
-    routerImports: allRouterImports,
-    routerConstructorPrefixes: allRouterConstructorPrefixes,
-    routerModuleAliases: allRouterModuleAliases,
-    moduleConstants: allModuleConstants,
-    toolDefs: allToolDefs,
-    ormQueries: allORMQueries,
-    springTypes: allSpringTypes,
-    fileScopeBindings: fileScopeBindingsByFile,
-    parsedFiles: allParsedFiles,
-    scopeExtractionFailures,
+    routes: byFilePath(allRoutes),
+    fetchCalls: byFilePath(allFetchCalls),
+    fetchWrapperDefs: byFilePath(allFetchWrapperDefs),
+    fetchWrapperCalls: byFilePath(allFetchWrapperCalls),
+    fetchWrapperReexports: byFilePath(allFetchWrapperReexports),
+    decoratorRoutes,
+    routeFacts,
+    routerIncludes: byFilePath(allRouterIncludes),
+    routerImports: byFilePath(allRouterImports),
+    routerConstructorPrefixes: byFilePath(allRouterConstructorPrefixes),
+    routerModuleAliases: byFilePath(allRouterModuleAliases),
+    moduleConstants: byFilePath(allModuleConstants),
+    toolDefs: byFilePath(allToolDefs),
+    ormQueries: byFilePath(allORMQueries),
+    springTypes: byFilePath(allSpringTypes),
+    fileScopeBindings: byFilePath(fileScopeBindingsByFile),
+    parsedFiles: byFilePath(allParsedFiles),
+    scopeExtractionFailures: inPathOrder(scopeExtractionFailures, (filePath) => filePath),
   };
 };
 
