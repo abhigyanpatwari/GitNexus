@@ -301,7 +301,9 @@ describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () =
 
   it('fast path: a failed CONTAINING_QUERY is cached as empty and not retried per route', async () => {
     // Failures previously fell through to the uid + basename fallback per route;
-    // memoizing must keep that fallback while collapsing the retries.
+    // memoizing must keep that fallback while collapsing the retries. The file
+    // is first asked for in a batch; when that fails it gets one query of its
+    // own, and when that fails too the empty result is what is cached.
     const ids = ['listOrders', 'createOrder'].map(
       (name) => [name, `Method:OrderController.java:OrderController.${name}#0`] as const,
     );
@@ -327,7 +329,10 @@ describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () =
       url: 'r',
     } as never);
 
-    expect(db.mock.calls.filter(([query]) => query.includes('UNION ALL'))).toHaveLength(1);
+    const symbolQueries = db.mock.calls.filter(([query]) => query.includes('UNION ALL'));
+    expect(symbolQueries.filter(([query]) => query.includes('IN $filePaths'))).toHaveLength(1);
+    expect(symbolQueries.filter(([query]) => query.includes('= $filePath'))).toHaveLength(1);
+    expect(symbolQueries).toHaveLength(2);
     expect(out.map((c) => c.symbolUid).sort()).toEqual(ids.map(([, uid]) => uid).sort());
     // The authoritative uid survives; only the display name falls back.
     for (const contract of out) expect(contract.symbolName).toBe('OrderController.java');
