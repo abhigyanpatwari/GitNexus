@@ -520,6 +520,20 @@ entirely (logged as `skipping package with N files`) and every file in them is
 marked visibility-incomplete. `GITNEXUS_MAX_INJECTED_SIBLINGS` does not lift
 that skip — including at `0`.
 
+## Wildcard Import Storage
+
+For Java, an on-demand import (`import pkg.*;`) is stored once per statement
+and once per package, not once per importing file and package file. This
+changes memory use only; the graph is the same. Set
+`GITNEXUS_DISABLE_IMPORT_GROUPS=1` to store one import edge per imported file
+again, for example to compare memory or to rule the grouped form out while
+investigating a result.
+
+```bash
+export GITNEXUS_DISABLE_IMPORT_GROUPS=1
+gitnexus analyze .
+```
+
 ## Multi-Repo Support
 
 GitNexus supports indexing multiple repositories. Each `gitnexus analyze` registers the repo in a global registry (`~/.gitnexus/registry.json`). The MCP server serves all indexed repos automatically.
