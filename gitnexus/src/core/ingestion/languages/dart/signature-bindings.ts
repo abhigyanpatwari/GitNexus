@@ -87,7 +87,10 @@ export function synthesizeDartSignatureBindings(
   if (bodyNode !== null) {
     const params = dartMethodConfig.extractParameters?.(declNode) ?? [];
     for (const p of params) {
-      if (p.type === null || p.name === '') continue;
+      // `_` declares nothing (Dart 3.7 wildcard variables), the same rule as
+      // `synthesizeDartParameterBindings` below: `_` in the body is whatever an
+      // enclosing scope calls `_`, never this parameter.
+      if (p.type === null || p.name === '' || p.name === '_') continue;
       out.push(buildBindingMatch(bodyNode, '@type-binding.parameter', p.name, p.type));
     }
   }
