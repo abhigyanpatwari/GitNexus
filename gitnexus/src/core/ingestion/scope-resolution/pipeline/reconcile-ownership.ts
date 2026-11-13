@@ -80,6 +80,12 @@ export function reconcileOwnership(
   let fieldsRegistered = 0;
   let nestedTypesRegistered = 0;
   let skippedAlreadyPresent = 0;
+  const fieldNodeIds = registeredNodeIds((owner, name) =>
+    model.fields.lookupAllByOwner(owner, name),
+  );
+  const nestedTypeNodeIds = registeredNodeIds((owner, name) =>
+    model.types.lookupAllByOwner(owner, name),
+  );
 
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
@@ -109,6 +115,8 @@ export function reconcileOwnership(
           });
           continue;
         }
+        // Only owned callables reach this scan, so the bucket holds one owner's
+        // overloads; it also matches a deleted def by signature, not node id.
         const existing = model.methods.lookupAllByOwner(ownerId, simple);
         const existingDef = existing.find(
           (candidate) =>
@@ -130,26 +138,61 @@ export function reconcileOwnership(
         def.type === 'Const' ||
         def.type === 'Static'
       ) {
-        const existing = model.fields.lookupAllByOwner(ownerId, simple);
-        if (existing.some((e) => e.nodeId === def.nodeId)) {
+        const registered = fieldNodeIds(ownerId, simple);
+        if (registered.has(def.nodeId)) {
           skippedAlreadyPresent++;
           continue;
         }
         model.fields.register(ownerId, simple, def);
+        registered.add(def.nodeId);
         fieldsRegistered++;
       } else if (NESTED_TYPE_KINDS.has(def.type)) {
-        const existing = model.types.lookupAllByOwner(ownerId, simple);
-        if (existing.some((e) => e.nodeId === def.nodeId)) {
+        const registered = nestedTypeNodeIds(ownerId, simple);
+        if (registered.has(def.nodeId)) {
           skippedAlreadyPresent++;
           continue;
         }
         model.types.registerByOwner(ownerId, simple, def);
+        registered.add(def.nodeId);
         nestedTypesRegistered++;
       }
     }
   }
 
   return { methodsRegistered, fieldsRegistered, nestedTypesRegistered, skippedAlreadyPresent };
+}
+
+/**
+ * The node ids registered under each `(owner, name)` of one owner-keyed
+ * registry. A key's set is read from the registry the first time the key is
+ * asked for, then kept current by the caller as it registers; nothing else
+ * writes these registries while the pass runs. Keyed by owner, then name, like
+ * the registries themselves, so an ownerless key is a bucket of its own.
+ *
+ * Defs without an owner (module-level values, top-level types and, where the
+ * extractor assigns none, locals of free functions) share ONE bucket per name
+ * across the repository: every `logger`, every `result`. Scanning that bucket
+ * for every def made the duplicate check quadratic in the number of same-named
+ * ownerless declarations; a set answers it in constant time.
+ */
+function registeredNodeIds(
+  lookupAll: (owner: string | undefined, name: string) => readonly { readonly nodeId: string }[],
+): (owner: string | undefined, name: string) => Set<string> {
+  const byOwner = new Map<string | undefined, Map<string, Set<string>>>();
+  return (owner, name) => {
+    let byName = byOwner.get(owner);
+    if (byName === undefined) {
+      byName = new Map();
+      byOwner.set(owner, byName);
+    }
+    let ids = byName.get(name);
+    if (ids === undefined) {
+      ids = new Set();
+      for (const def of lookupAll(owner, name)) ids.add(def.nodeId);
+      byName.set(name, ids);
+    }
+    return ids;
+  };
 }
 
 function callableSignatureMatches(
