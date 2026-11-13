@@ -6,10 +6,9 @@
  * walk that carries the open scope chain's bindings down the tree
  * (`rubyBoundReadIds`); a heredoc body is read at its opener, and bodies are
  * paired with openers in one pass (`rubyHeredocOpeners`). This gate pins what
- * that produces and checks that capture grows linearly in methods, block
- * depth, heredocs per opener line and reads per heredoc body, and resolution
- * in each of those but block depth (reported, not gated: see baseline.json
- * `_depth_note`).
+ * that produces and gates capture and resolution growth in methods, block
+ * depth, heredocs per opener line and reads per heredoc body. Every normalized
+ * scaling ratio has a 1.5 budget in baseline.json.
  *
  * Workload: N files `lib/host<i>.rb`, each holding class `Host<i>` that
  * declares `target`, `helper` and `other(*args)` plus the method under test.

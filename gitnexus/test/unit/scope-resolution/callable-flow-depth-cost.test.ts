@@ -32,7 +32,7 @@ import {
 } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 
-// The Dart grammar is optional; its case skips where it cannot load.
+// Optional grammar cases skip where their parser cannot load.
 let dartAvailable = isLanguageAvailable(SupportedLanguages.Dart);
 if (dartAvailable) {
   try {
@@ -40,6 +40,16 @@ if (dartAvailable) {
     await loadLanguage(SupportedLanguages.Dart);
   } catch {
     dartAvailable = false;
+  }
+}
+
+let kotlinAvailable = isLanguageAvailable(SupportedLanguages.Kotlin);
+if (kotlinAvailable) {
+  try {
+    await loadParser();
+    await loadLanguage(SupportedLanguages.Kotlin);
+  } catch {
+    kotlinAvailable = false;
   }
 }
 
@@ -113,7 +123,7 @@ function expectLinear(nest: Nest): void {
 
 describe('a call argument wrapping a function literal is not searched again per nested call', () => {
   it.skipIf(!dartAvailable)('Dart', () => expectLinear(NESTS.dart));
-  it('Kotlin', () => expectLinear(NESTS.kotlin));
+  it.skipIf(!kotlinAvailable)('Kotlin', () => expectLinear(NESTS.kotlin));
   it('C#', () => expectLinear(NESTS.csharp));
   it('PHP', () => expectLinear(NESTS.php));
 });
