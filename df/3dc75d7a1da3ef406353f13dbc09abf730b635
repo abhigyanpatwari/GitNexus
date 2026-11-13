@@ -1,0 +1,22 @@
+gitnexus/test/unit/scope-resolution/ruby/ruby-bare-read-cost.test.ts
+  s_b9690234122db7::t_ef56ff7d0f7004 1-152
+  s_b9690234122db7::t_451e94a2620331 153-158
+gitnexus/src/core/ingestion/languages/ruby/captures.ts
+  s_b9690234122db7::t_b27786fddc11df 319-325,694,724,734,739-860,865-868,874
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "df3dc75d7a1da3ef406353f13dbc09abf730b635",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
