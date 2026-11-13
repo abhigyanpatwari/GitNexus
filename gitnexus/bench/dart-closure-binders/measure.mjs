@@ -7,7 +7,9 @@
  * with `@scope.lexical-names`, and the walk climbs those scopes. This gate
  * pins what that produces and checks that its cost grows linearly in the
  * input and the emitted output as the number of functions, the number of
- * closures per function, or the nesting depth of closures grows 16x.
+ * closures per function, or the nesting depth of closures grows 16x. Resolution
+ * over nesting depth is reported, not gated (baseline.json
+ * `_resolve_depth_note`): the shared lexical lookup still climbs per reference.
  *
  * Workload: `lib/types.dart` declares `Address` and `Other`, each with
  * `save()` and `run()`, so a name-only guess cannot pick the owner. Each
