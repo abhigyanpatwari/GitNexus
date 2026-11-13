@@ -1306,6 +1306,16 @@ jobs:
         run: node --import tsx bench/scope-capture/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Dart accessor-scope correctness + scaling guards (#3904)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins getter, setter and redeclared-parameter edges and
+        # checks capture and resolution scaling as classes (one per file),
+        # functions, accessors per class or parameters per function grow 4x.
+        # Budgets: baseline.json (all 1.5).
+        run: node --import tsx bench/dart-accessor-scopes/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Rename output construction scaling guard
         if: ${{ !cancelled() }}
         run: node --import tsx bench/rename/measure.mjs --check
