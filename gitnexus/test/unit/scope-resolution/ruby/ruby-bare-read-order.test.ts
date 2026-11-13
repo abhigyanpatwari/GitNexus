@@ -22,7 +22,7 @@
  * The rest of the file pins where a name binds: header expressions bind the
  * enclosing scope, `BEGIN` / `END` bodies share it, only pattern binding
  * positions bind (not a hash argument that tree-sitter-ruby parses as a
- * pattern match), and a read inside a heredoc body is not guarded.
+ * pattern match), and a read inside a heredoc body is placed at its opener.
  */
 import { describe, it, expect } from 'vitest';
 import type Parser from 'tree-sitter';
@@ -280,28 +280,50 @@ describe('Ruby bare read: where a parameter or local binds (RUBY-04)', () => {
     });
   });
 
-  describe('heredoc bodies are not guarded', () => {
+  describe('a heredoc body is parsed at its opener', () => {
+    // Ruby lexes a body when it reaches the body's `<<~` token, before the
+    // rest of that line: a read in the body sees what was bound before the
+    // token, but not an assignment later on the opener line.
+    it.each([
+      [
+        'a parameter bound before the opener',
+        'def run(target)\n  other(<<~EOS)\n    #{[1].map do\n      target\n    end}\n  EOS\nend\n',
+      ],
+      [
+        'a local bound before the opener line',
+        'def run\n  target = 1\n  other(<<~EOS)\n    #{[1].map do\n      target\n    end}\n  EOS\nend\n',
+      ],
+      [
+        'a binding in an earlier body of the same line',
+        'def run\n  foo(<<~A, <<~B)\n    #{target = 1}\n  A\n    #{[1].map do\n      target\n    end}\n  B\nend\n',
+      ],
+      [
+        "an assignment before the second body's opener",
+        'def run\n  foo(<<~A, target = 1, <<~B)\n    a\n  A\n    #{[1].map do\n      target\n    end}\n  B\nend\n',
+      ],
+      [
+        'a binding earlier in the same body after an opener-line assignment',
+        'def run\n  other(<<~EOS, target = 1)\n    #{target = 2}\n    #{[1].map do\n      target\n    end}\n  EOS\nend\n',
+      ],
+      [
+        'a binding made by a scope inside the body',
+        'def run\n  other(<<~EOS)\n    #{[1].map do |target|\n      target\n    end}\n  EOS\nend\n',
+      ],
+    ])('%s: the body read is a read', (_name, src) => {
+      expect(readsLocal(src)).toBe(true);
+    });
+
     it.each([
       [
         'an assignment later on the opener line',
         'def run\n  other(<<~EOS, target = 1)\n    #{[1].map do\n      target\n    end}\n  EOS\nend\n',
       ],
       [
-        'a parameter of the enclosing method (documented gap)',
-        'def run(target)\n  other(<<~EOS)\n    #{[1].map do\n      target\n    end}\n  EOS\nend\n',
+        "an assignment after the second body's opener",
+        'def run\n  foo(<<~A, <<~B, target = 1)\n    a\n  A\n    #{[1].map do\n      target\n    end}\n  B\nend\n',
       ],
-    ])('%s: a read in a heredoc body keeps its call', (_name, src) => {
-      // Ruby lexes the body before the rest of the opener line, so source
-      // order is not parse order past the body.
+    ])('%s: not yet parsed, so the body read is a call', (_name, src) => {
       expect(readsLocal(src)).toBe(false);
-    });
-
-    it('a binding made by a scope inside the heredoc body is honoured (read)', () => {
-      expect(
-        readsLocal(
-          'def run\n  other(<<~EOS)\n    #{[1].map do |target|\n      target\n    end}\n  EOS\nend\n',
-        ),
-      ).toBe(true);
     });
   });
 

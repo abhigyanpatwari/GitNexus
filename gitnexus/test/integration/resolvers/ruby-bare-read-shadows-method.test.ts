@@ -87,6 +87,8 @@ const SHADOWED_INSIDE_BLOCK = [
   'bare_read_outer_block_param_in_inner_block',
   // A read inside an `END { … }` body sees the method's parameter.
   'end_block_read_sees_method_param',
+  // A heredoc body is parsed at its opener, after the method's parameters.
+  'heredoc_body_read_sees_param_before_opener',
 ] as const;
 
 // Parameters bind LEFT-TO-RIGHT: a read inside parameter k's default sees only
@@ -133,8 +135,8 @@ const PATTERN_VALUE_READS_BEFORE_BIND_KEPT = [
 // `interpolation`, a `lambda` pattern's parameters); a hash argument whose key
 // starts with a unary operator, which tree-sitter-ruby parses as
 // `unary (match_pattern …)` inside an argument list or array literal; and an
-// assignment on a heredoc opener's line, which Ruby parses AFTER the heredoc
-// body that holds the read.
+// assignment later on a heredoc opener's line, which Ruby parses AFTER the
+// heredoc body that holds the read (the body is parsed at its `<<~` token).
 const NOT_A_BINDING_EDGE_KEPT = [
   'string_interpolation_pattern_does_not_bind',
   'regex_interpolation_pattern_does_not_bind',
@@ -396,6 +398,14 @@ class Host
         target
       end
     }
+  end
+
+  def heredoc_body_read_sees_param_before_opener(target)
+    other(<<~EOS)
+      #{[1].map do
+        target
+      end}
+    EOS
   end
 
   def bare_read_lambda_enclosing_param(target)
