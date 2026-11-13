@@ -28,14 +28,14 @@
  *   - a member parameter that shadows a field masks it for a bare read in its
  *     body even with a comment before that body (the shadow set, like the
  *     binder census, walks back past comments to the signature);
- *   - a parameter annotation is withheld when the body DECLARES the name again
- *     (declarator, closure parameter, for-in / catch / pattern variable),
- *     because the scope keeps one binding per name; a plain assignment, a
- *     pattern assignment, a pattern field label and a function-typed
- *     parameter's own parameter declare nothing and keep it. The scope then
- *     owns the withheld name, so its sites are recorded drops and never reach
- *     a same-named binding further out. The cost is recall: an outer
- *     `cs.save()` beside a closure `(cs) => …` has no edge.
+ *   - a parameter annotation is withheld when its OWN scope declares the name
+ *     again, because that scope keeps one binding per name. A binder in a
+ *     closure, local function, nested block, loop, case or catch body has a
+ *     scope of its own (DART-11) and leaves the annotation alone; a plain
+ *     assignment, a pattern assignment, a pattern field label and a
+ *     function-typed parameter's own parameter declare nothing. A withheld
+ *     name stays the scope's untyped binder, so its sites stop there and
+ *     never reach a same-named binding further out.
  */
 import { describe, expect, it, beforeAll } from 'vitest';
 import path from 'node:path';
@@ -172,50 +172,68 @@ void blockDoc(User v)
     expect(functionScopeLines(captures)).toEqual([4, 7]);
   });
 
-  it('withholds a parameter annotation the body rebinds under the same name', () => {
+  it('withholds a parameter annotation only when its own scope declares the name again', () => {
     const PRE =
       'class User { void save() {} }\nclass Address { void save() {} }\nUser make() => User();\n';
-    const parameterBindings = (source: string): string[] =>
+    const bindingsFor = (name: string, source: string): string[] =>
       (emitDartScopeCaptures(PRE + source, 'rebound.dart') as CaptureMatch[])
-        .filter((m) => m['@type-binding.parameter'] !== undefined)
-        .map((m) => `${m['@type-binding.name']?.text}:${m['@type-binding.type']?.text}`);
-    // The scope opens, so without the rule the annotation would type the
-    // rebound `cs.save()` as `Address.save`.
+        .filter(
+          (m) =>
+            m['@type-binding.name']?.text === name &&
+            (m['@type-binding.parameter'] !== undefined ||
+              m['@type-binding.constructor'] !== undefined),
+        )
+        .map(
+          (m) =>
+            `${m['@type-binding.parameter'] ? 'param' : 'local'} ${name}:${m['@type-binding.type']?.text}`,
+        );
+    // The function's own scope declares `cs` twice, so neither the annotation
+    // nor the declarator's call-result inference types it — behind a comment
+    // and in a top-level setter alike.
     expect(
-      parameterBindings('void f(Address cs) /* c */ { final cs = make(); cs.save(); }\n'),
+      bindingsFor('cs', 'void f(Address cs) /* c */ { final cs = make(); cs.save(); }\n'),
     ).toEqual([]);
-    expect(parameterBindings('set s(Address cs) { final cs = make(); cs.save(); }\n')).toEqual([]);
+    expect(bindingsFor('cs', 'set s(Address cs) { final cs = make(); cs.save(); }\n')).toEqual([]);
+    // A collection `for` element shares the function's scope: withheld.
+    expect(
+      bindingsFor(
+        'cs',
+        'void c(Address cs, List<User> us) { final t = [for (final cs in us) cs]; }\n',
+      ),
+    ).toEqual([]);
     // A different local name, or a plain assignment, keeps the annotation.
     expect(
-      parameterBindings('void g(Address cs) /* c */ { final w = make(); cs.save(); }\n'),
-    ).toEqual(['cs:Address']);
-    expect(parameterBindings('void h(Address cs) { cs = Address(); cs.save(); }\n')).toEqual([
-      'cs:Address',
+      bindingsFor('cs', 'void g(Address cs) /* c */ { final w = make(); cs.save(); }\n'),
+    ).toEqual(['param cs:Address']);
+    expect(bindingsFor('cs', 'void h(Address cs) { cs = Address(); cs.save(); }\n')).toEqual([
+      'param cs:Address',
     ]);
-    // A closure parameter is a rebinding too: the outer annotation is lost
-    // rather than allowed to type the closure's receiver. So are a for-in,
-    // a catch and a pattern variable, a closure bound to a local and a local
-    // in a nested block.
+    // A closure, a for-in, a catch body, an if-case, a closure bound to a
+    // local and a nested block each declare in a scope of their own: the
+    // outer annotation is kept. (The block local itself is not inferred: the
+    // call-result census still counts per outermost body.)
+    const KEPT = ['param x:Address'];
     expect(
-      parameterBindings('void closure(Address cs) { items.forEach((cs) => cs.save()); }\n'),
-    ).toEqual([]);
+      bindingsFor('x', 'void closure(Address x) { items.forEach((x) => use(x)); x.save(); }\n'),
+    ).toEqual(KEPT);
     expect(
-      parameterBindings('void loop(Address x) { for (final x in items) { use(x); } x.save(); }\n'),
-    ).toEqual([]);
+      bindingsFor('x', 'void loop(Address x) { for (final x in items) { use(x); } x.save(); }\n'),
+    ).toEqual(KEPT);
     expect(
-      parameterBindings('void caught(Address x) { try {} catch (x) { use(x); } x.save(); }\n'),
-    ).toEqual([]);
+      bindingsFor('x', 'void caught(Address x) { try {} catch (x) { use(x); } x.save(); }\n'),
+    ).toEqual(KEPT);
     expect(
-      parameterBindings(
+      bindingsFor(
+        'x',
         'void pat(Object o, Address x) { if (o case Address x) { use(x); } x.save(); }\n',
       ),
-    ).toEqual(['o:Object']);
+    ).toEqual(KEPT);
     expect(
-      parameterBindings('void bound(Address x) { final g = (x) => use(x); g(x); x.save(); }\n'),
-    ).toEqual([]);
+      bindingsFor('x', 'void bound(Address x) { final g = (x) => use(x); g(x); x.save(); }\n'),
+    ).toEqual(KEPT);
     expect(
-      parameterBindings('void block(Address x) { { final x = make(); use(x); } x.save(); }\n'),
-    ).toEqual([]);
+      bindingsFor('x', 'void block(Address x) { { final x = make(); use(x); } x.save(); }\n'),
+    ).toEqual(KEPT);
   });
 
   it('keeps a parameter annotation when the second spelling declares nothing', () => {
@@ -283,44 +301,55 @@ void blockDoc(User v)
       // read the untyped library variable / field `v`, which a getter's local
       // `v` used to leak into and type. No edge from `topLevelBare` /
       // `memberBare`: a getter publishes no return binding — pinned recall
-      // gaps. `moduleVarRebound`'s `Address cs` is withheld beside the closure
-      // `(cs)` (the recall cost) and its scope owns `cs`, so the site is a
-      // recorded drop and never reaches `Factory.cs`'s hoisted `Other`.
+      // gaps. The closure `(cs)` in `moduleVarRebound` owns its own `cs`, so
+      // the outer `Address cs` keeps its annotation and `Factory.cs`'s hoisted
+      // `Other` never answers.
       expect(callEdges('save', 'main.dart')).toEqual([
         'Class:main.dart:Box -> Method:models.dart:User.save#0',
         'File:main.dart -> Method:models.dart:User.save#0',
         'Function:main.dart:commented -> Method:models.dart:User.save#0',
         'Function:main.dart:documented -> Method:models.dart:User.save#0',
+        'Function:main.dart:moduleVarRebound -> Method:models.dart:Address.save#0',
       ]);
-      expect(outcomesIn('main.dart')).toEqual(['44:5 save receiver-owned-but-unbound']);
+      expect(outcomesIn('main.dart')).toEqual([]);
     });
 
-    it('a withheld parameter is owned by its scope: no same-named binding further out answers it', () => {
-      // Each typed parameter is rebound in its own body (a for-in, a catch, a
-      // for-in inside an enum method), and each name has a typed binding
-      // further out: the hoisted return of the top-level `Other ds()`, of the
-      // method `Depot.es`, and the enum field `Kind.depot`. None may answer.
-      expect(callEdges('save', 'withheld.dart')).toEqual([]);
-      expect(outcomesIn('withheld.dart')).toEqual([
-        '12:5 save receiver-owned-but-unbound',
-        '25:5 save receiver-owned-but-unbound',
-        '38:10 save receiver-owned-but-unbound',
+    it('a nested rebinding keeps the annotation; a same-scope one stops at the untyped binder', () => {
+      // A for-in, a catch body and an enum method's for-in each rebind the
+      // name in a scope of their own, so the outer typed parameter answers —
+      // never the same-named hoisted return of `Other ds()` / `Depot.es()` or
+      // the enum field `Kind.depot`. In `collect` the collection `for` shares
+      // the function's scope: `fs` is withheld, and both `fs.save()` sites —
+      // the `Other` element inside the closure and the `Address` parameter
+      // after it — stop at the untyped binder rather than reach `Depot.fs()`.
+      // `docUntyped`'s parameter, behind a `///` comment, is still its
+      // function's binder, so `Depot.gs()` never answers it either.
+      expect(callEdges('save', 'nested_rebinding.dart')).toEqual([
+        'Function:nested_rebinding.dart:caught -> Method:models.dart:Address.save#0',
+        'Function:nested_rebinding.dart:forIn -> Method:models.dart:Address.save#0',
+        'Method:nested_rebinding.dart:Kind.moved#1 -> Method:models.dart:Address.save#0',
+      ]);
+      expect(outcomesIn('nested_rebinding.dart')).toEqual([
+        '49:52 save receiver-type-unresolved',
+        '51:5 save receiver-type-unresolved',
+        '57:5 save receiver-type-unresolved',
       ]);
     });
 
     it('a second spelling that declares nothing keeps the annotation beside a same-named method', () => {
       // `Maker.x()` publishes a hoisted `Other` for `x`. The function-typed
       // parameter's own `x`, the object- and record-pattern labels and the
-      // pattern assignment declare nothing, so each `x.save()` stays the
-      // `Address` parameter's; the for-in variable does declare `x`, so `loop`
-      // is a recorded drop — never `Other.save`.
+      // pattern assignment declare nothing, and the for-in variable declares
+      // `x` in the loop's own scope, so each `x.save()` stays the `Address`
+      // parameter's.
       expect(callEdges('save', 'declares_nothing.dart')).toEqual([
         'Function:declares_nothing.dart:fnTyped -> Method:models.dart:Address.save#0',
+        'Function:declares_nothing.dart:loop -> Method:models.dart:Address.save#0',
         'Function:declares_nothing.dart:objectLabel -> Method:models.dart:Address.save#0',
         'Function:declares_nothing.dart:recordLabel -> Method:models.dart:Address.save#0',
         'Function:declares_nothing.dart:swap -> Method:models.dart:Address.save#0',
       ]);
-      expect(outcomesIn('declares_nothing.dart')).toEqual(['42:4 save receiver-owned-but-unbound']);
+      expect(outcomesIn('declares_nothing.dart')).toEqual([]);
     });
 
     it("an accessor's name binds on its class, so a bare read in a sibling member stops there", () => {
@@ -348,11 +377,17 @@ void blockDoc(User v)
     it('no accessor return binding types an untyped same-named receiver', () => {
       // `Box2.own` / `Crate.own` (each class's own getter), `f` / `g` (a local
       // and a `dynamic` parameter named like a member getter), `untypedParam` /
-      // `untypedLocal` (named like the top-level getter) and the closure in
-      // `moduleGetterRebound`, whose outer annotation is withheld and owned:
-      // no edge; only the closure's site is a recorded drop.
+      // `untypedLocal` (named like the top-level getter) and the closure's own
+      // `top` in `moduleGetterRebound`: no edge. The untyped binders stop the
+      // walk where they are declared (`g`, `untypedParam`, `untypedLocal`, the
+      // closure); `f`'s local is typed by its classless initializer.
       expect(callEdges('save', 'getters.dart')).toEqual([]);
-      expect(outcomesIn('getters.dart')).toEqual(['48:29 save receiver-owned-but-unbound']);
+      expect(outcomesIn('getters.dart')).toEqual([
+        '33:5 save receiver-type-unresolved',
+        '39:6 save receiver-type-unresolved',
+        '44:6 save receiver-type-unresolved',
+        '48:29 save receiver-type-unresolved',
+      ]);
     });
   });
 });

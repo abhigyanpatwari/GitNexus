@@ -34,7 +34,8 @@ void swap(Address x, Address y) {
   x.save();
 }
 
-// A for-in variable DOES declare `x`: withheld, owned, a recorded drop.
+// A for-in variable declares `x` in the loop's own scope: the outer `x` keeps
+// its annotation.
 void loop(Address x) {
   for (final x in items) {
     use(x);
