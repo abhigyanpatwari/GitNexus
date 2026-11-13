@@ -1,0 +1,21 @@
+gitnexus/bench/dart-deferred-imports/baseline.json
+  s_b9690234122db7::t_04fa5f94e52494 3,6,8-13,15,20,23,25-30,32,37,40,42-47,49,54,57,59-64,66,71,74,76-81,83,88,91,93-98,100,105,108,121-150,152-190,192
+gitnexus/bench/dart-deferred-imports/measure.mjs
+  s_b9690234122db7::t_aee0adc643f24b 20-21,23-25,34-42,63-70,73,250-252,254,256-260,273,291-311,335,341,343-363,365-373,380,397-403
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4f0fd84fd4eb281400e3ba1096cd2d4c15b78b89",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
