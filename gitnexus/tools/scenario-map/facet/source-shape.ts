@@ -66,6 +66,7 @@ const IDENT_LANG: ReadonlyMap<string, SupportedLanguages> = new Map([
   ['Zig', SupportedLanguages.Zig],
   ['ObjectiveC', SupportedLanguages.ObjectiveC],
   ['Cobol', SupportedLanguages.Cobol],
+  ['R', SupportedLanguages.R],
 ]);
 
 /** File extension → language, for fixture files and file-name literals. */
@@ -92,6 +93,8 @@ export const EXT_LANG: ReadonlyMap<string, SupportedLanguages> = new Map([
   ['m', SupportedLanguages.ObjectiveC],
   ['cbl', SupportedLanguages.Cobol],
   ['cob', SupportedLanguages.Cobol],
+  ['r', SupportedLanguages.R],
+  ['R', SupportedLanguages.R],
 ]);
 
 const CALL_LANG: readonly [RegExp, SupportedLanguages][] = [
@@ -119,6 +122,7 @@ const PATH_LANG: readonly [RegExp, SupportedLanguages][] = [
   [/swift/, SupportedLanguages.Swift],
   [/dart/, SupportedLanguages.Dart],
   [/zig/, SupportedLanguages.Zig],
+  [/\/r[-/]/, SupportedLanguages.R],
 ];
 
 const LANG_ARG =
