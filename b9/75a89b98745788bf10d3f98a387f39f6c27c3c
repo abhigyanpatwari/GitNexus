@@ -1,0 +1,39 @@
+gitnexus/bench/ownership-reconcile/measure.mjs
+  s_b9690234122db7::t_a6cc7d22919b5d 32-39,42-45
+  s_b9690234122db7::t_6b6d18fcba8f05 1-22,24-31,40-41,46-62,65,67-300,303-304
+  s_b9690234122db7::t_789d807694769e 23,63-64,66,301-302,305-313
+gitnexus/bench/ownership-reconcile/README.md
+  s_b9690234122db7::t_dd66e436ab453e 1-55
+gitnexus/test/unit/scope-resolution/reconcile-ownership.test.ts
+  s_b9690234122db7::t_3bca6e7fa3d609 348-457
+  s_b9690234122db7::t_afbacba8a9cdb1 458-460
+gitnexus/src/core/ingestion/scope-resolution/pipeline/reconcile-ownership.ts
+  s_b9690234122db7::t_51f45010e8a373 165-171,177-197
+  s_b9690234122db7::t_e57f9b9e00060b 118-119
+  s_b9690234122db7::t_c3b73860553261 83-88
+  s_b9690234122db7::t_20611fb2e9e171 141-142,147,150-151,156
+  s_b9690234122db7::t_7b1e621afbc6fc 172-176
+.github/workflows/ci-tests.yml
+  s_b9690234122db7::t_55081cd455c724 1614-1624
+gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts
+  s_b9690234122db7::t_2c00bfe4233b8c 1811-1812
+  s_b9690234122db7::t_4758d4b17bdd33 1808-1810,1813-1817
+gitnexus/bench/ownership-reconcile/baseline.json
+  s_b9690234122db7::t_5b6f9781ec7457 1-93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b975a89b98745788bf10d3f98a387f39f6c27c3c",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
