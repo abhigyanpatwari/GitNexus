@@ -126,6 +126,7 @@ describe('group impact fan-out is bounded by a count, not by the clock (#2787)',
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await fsp.rm(home, { recursive: true, force: true });
     vi.restoreAllMocks();
   });
@@ -376,6 +377,36 @@ describe('group impact fan-out is bounded by a count, not by the clock (#2787)',
     // The second neighbour is never fanned out: whichever clock exit fired, the
     // budget was gone before it.
     expect(fanoutUids(port)).not.toContain(crossingRow(1).neighborUid);
+  });
+
+  it('does not restart fan-out after a timeout when the wall clock trails the timer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    let started!: () => void;
+    const firstCall = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    bridgeRows.value = [crossingRow(0), crossingRow(1)];
+    const port = makePort({
+      impactByUid: vi.fn(() => {
+        started();
+        return new Promise<unknown>(() => {});
+      }) as GroupToolPort['impactByUid'],
+    });
+    const pending = run(port, { timeoutMs: 200 });
+    await firstCall;
+    await vi.runAllTimersAsync();
+
+    expect(await pending).toMatchObject({
+      truncated: true,
+      truncationReason: 'timeout',
+      riskEpistemic: 'lower-bound',
+      truncatedRepos: [repoKey(0), repoKey(1)],
+      risk: 'LOW',
+      cross: [],
+    });
+    expect(fanoutUids(port)).toEqual([crossingRow(0).neighborUid]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('marks the floor when the fan-out completed and only the local walk was partial', async () => {
