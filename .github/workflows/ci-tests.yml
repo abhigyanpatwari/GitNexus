@@ -1611,6 +1611,17 @@ jobs:
         run: node --import tsx bench/dart-closure-binders/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Ownership-reconciliation correctness + scaling guards
+        if: ${{ !cancelled() }}
+        # Build-free: extracts the corpus with the TypeScript scope extractor on
+        # the main thread. Pins what reconcileOwnership registers (exact cells and
+        # fingerprints) when many files declare the same ownerless names, checks
+        # its time scaling as the file count grows 4x (budget 1.5), and counts the
+        # registry entries the pass reads: they must grow with the defs, not with
+        # defs x shared-bucket size (budget 1.1).
+        run: node --import tsx bench/ownership-reconcile/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Scope-emission guards (#2699)
         if: ${{ !cancelled() }}
         # Build-free: asserts the JS/TS scope set is unchanged. Block scopes are
