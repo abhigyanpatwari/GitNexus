@@ -179,6 +179,35 @@ function findMatchingKeys(contractId: string, index: Map<string, StoredContract[
   return [];
 }
 
+/**
+ * The provider repo a group.yaml link names for this consumer, or undefined
+ * for a consumer the extractors found in source. An operator who declares
+ * `gen-question → learning POST /import` has said where that call goes, so
+ * the consumer contract the link creates must not also match a `POST /import`
+ * that some other repo in the group happens to expose (#1188).
+ */
+function declaredProviderRepo(consumer: StoredContract): string | undefined {
+  if (consumer.meta.source !== 'manifest') return undefined;
+  const repo = consumer.meta.providerRepo;
+  return typeof repo === 'string' ? repo : undefined;
+}
+
+function isAllowedProvider(consumer: StoredContract, provider: StoredContract): boolean {
+  const declared = declaredProviderRepo(consumer);
+  return declared === undefined || provider.repo === declared;
+}
+
+/**
+ * Drops `meta.providerRepo` once matching is done. It only steers matching,
+ * so the registry keeps the shape it had before #1188, and a consumer whose
+ * provider could not be read does not name that repo in contracts.json.
+ */
+export function withoutDeclaredProvider(contract: StoredContract): StoredContract {
+  if (contract.meta.source !== 'manifest' || !('providerRepo' in contract.meta)) return contract;
+  const { providerRepo: _matchingOnly, ...meta } = contract.meta;
+  return { ...contract, meta };
+}
+
 export function buildProviderIndex(
   contracts: StoredContract[],
   matchingConfig?: MatchingConfig,
@@ -218,6 +247,7 @@ export function runExactMatch(
 
     const allMatchingProviders = matchingKeys.flatMap((k) => index.get(k) || []);
     for (const provider of allMatchingProviders) {
+      if (!isAllowedProvider(consumer, provider)) continue;
       if (provider.repo === consumer.repo) {
         if (!provider.service || !consumer.service || provider.service === consumer.service) {
           continue;
@@ -301,8 +331,13 @@ export function runWildcardMatch(
 
       if (!isMatch) continue;
 
+      // Filtered before the thrift ambiguity check below: a same-named
+      // service in a repo the link does not point to is not a rival.
+      const allowed = providers.filter((p) => isAllowedProvider(consumer, p));
+      if (allowed.length === 0) continue;
+
       matchedProviderServices.add(providerFqService);
-      candidateProviders.push(...providers);
+      candidateProviders.push(...allowed);
     }
 
     if (consumerType === 'thrift' && !fqService.includes('.') && matchedProviderServices.size > 1) {

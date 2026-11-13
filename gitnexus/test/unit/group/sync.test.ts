@@ -1232,6 +1232,54 @@ service OrderService {
     }
   });
 
+  it('a manifest link does not spread to another repo exposing the same route (#1188)', async () => {
+    const importRoute = (repo: string, name: string): StoredContract => ({
+      contractId: 'http::POST::/import',
+      type: 'http',
+      role: 'provider',
+      symbolUid: `uid-${name}`,
+      symbolRef: { filePath: `src/${name}.ts`, name },
+      symbolName: name,
+      confidence: 0.9,
+      meta: { method: 'POST', path: '/import' },
+      repo,
+    });
+    const config: GroupConfig = {
+      ...makeConfig({
+        'backend/gen-question': 'gen-question',
+        'backend/learning': 'learning',
+        'backend/user-service': 'user-service',
+      }),
+      links: [
+        {
+          from: 'backend/gen-question',
+          to: 'backend/learning',
+          type: 'http',
+          contract: 'POST::/import',
+          role: 'consumer',
+        },
+      ],
+    };
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => [
+        importRoute('backend/learning', 'importLessons'),
+        importRoute('backend/user-service', 'importUsers'),
+      ],
+      skipWrite: true,
+    });
+
+    expect(
+      result.crossLinks.map((l) => [l.matchType, l.from.repo, l.to.repo, l.to.symbolRef.name]),
+    ).toEqual([
+      ['manifest', 'backend/gen-question', 'backend/learning', 'POST::/import'],
+      ['exact', 'backend/gen-question', 'backend/learning', 'importLessons'],
+    ]);
+    // The declared provider only steers matching; the registry keeps its shape.
+    const consumer = result.contracts.find((c) => c.role === 'consumer');
+    expect(consumer?.meta).toEqual({ source: 'manifest' });
+  });
+
   it('extractorOverride no-DB path still produces synthetic manifest UIDs', async () => {
     const links: GroupManifestLink[] = [
       {
