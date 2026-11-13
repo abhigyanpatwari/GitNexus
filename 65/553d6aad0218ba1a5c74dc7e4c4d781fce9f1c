@@ -1,0 +1,23 @@
+gitnexus/test/unit/scope-resolution/ruby/ruby-call-arguments.test.ts
+  s_b9690234122db7::t_1c43cace76d15c 1-45
+gitnexus/src/core/ingestion/languages/ruby/captures.ts
+  s_b9690234122db7::t_821055cd53a1af 51-58
+gitnexus/test/unit/scope-resolution/ruby/ruby-bare-read-cost.test.ts
+  s_b9690234122db7::t_27796381c6891f 23,142-151,169-182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "65553d6aad0218ba1a5c74dc7e4c4d781fce9f1c",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
