@@ -3,6 +3,7 @@
   "protocol": "fresh-process-per-phase-v1",
   "defaults": {
     "pairs": 7,
+    "maxPairs": 21,
     "files": 1024,
     "workers": 2,
     "heapMiB": 4096
