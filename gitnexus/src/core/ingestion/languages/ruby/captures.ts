@@ -811,7 +811,8 @@ export function emitRubyScopeCaptures(
   // Per-scope binding index for the bare-identifier read check (RUBY-04),
   // built lazily and shared across every match of this file.
   const bareReadBindings = new Map<number, RubyScopeBindings>();
-  const lexicalNamesByScope = new Map<number, readonly string[]>();
+  const lexicalNamesByScope = new Map<number, ReadonlySet<string>>();
+  const receiverlessCallSites = new Set<string>();
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
@@ -828,6 +829,12 @@ export function emitRubyScopeCaptures(
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+    const freeCall = nodeIfType(nodeMap['@reference.call.free'], 'call');
+    if (freeCall !== null && freeCall.childForFieldName('receiver') === null) {
+      receiverlessCallSites.add(
+        `${freeCall.startPosition.row + 1}:${freeCall.startPosition.column}`,
+      );
+    }
 
     // A tree-sitter pattern cannot say "and no singleton ancestor", so the
     // ownership test is a walk and the whole binding is dropped here when `self`
@@ -892,7 +899,11 @@ export function emitRubyScopeCaptures(
     // so the receiver walk stops on them (RUBY-03). The match carries only
     // `@scope.block`, so nothing below this branch applies to it.
     if (grouped['@scope.block'] !== undefined) {
-      attachRubyLexicalNames(grouped, nodeMap['@scope.block']);
+      const block = nodeMap['@scope.block'];
+      attachRubyLexicalNames(grouped, block);
+      if (block?.parent?.type === 'lambda') {
+        emitRubyLambdaDefaultScopes(block.parent, out);
+      }
       out.push(grouped);
       continue;
     }
@@ -971,16 +982,6 @@ export function emitRubyScopeCaptures(
     ) {
       const bare = nodeIfType(nodeMap['@reference.name'], 'identifier');
       if (bare !== null && rubyBareNameIsLocalRead(bare, bareReadBindings)) continue;
-      // The read check accounts for declaration order and closed Ruby scopes;
-      // lexical-names deliberately carries neither. A surviving bare call
-      // can therefore share a name with a later parameter or one in an outer
-      // method. Dispatch it on self so that flat lexical claims do not erase
-      // a call which the Ruby read check has already proved is not a local.
-      if (bare !== null && rubyBareCallNeedsSelfReceiver(bare, lexicalNamesByScope)) {
-        grouped['@reference.call.member'] = grouped['@reference.call.free']!;
-        delete grouped['@reference.call.free'];
-        grouped['@reference.receiver'] = syntheticCapture('@reference.receiver', bare, 'self');
-      }
     }
 
     // Intercept heritage calls (include/extend/prepend) — encode as
@@ -1077,6 +1078,21 @@ export function emitRubyScopeCaptures(
         const arity = computeRubyCallArity(callNode);
         grouped['@reference.arity'] = syntheticCapture('@reference.arity', callNode, String(arity));
       }
+    }
+
+    // Explicit calls always dispatch on self, even beside a same-named
+    // parameter. Surviving bare calls have already passed the local-read
+    // check above. Give both an explicit receiver when a lexical claim would
+    // otherwise stop free-call lookup; retain the arity from the call node.
+    const nameNode = nodeMap['@reference.name'];
+    if (
+      grouped['@reference.call.free'] !== undefined &&
+      nameNode !== undefined &&
+      rubyBareCallNeedsSelfReceiver(nameNode, lexicalNamesByScope)
+    ) {
+      grouped['@reference.call.member'] = grouped['@reference.call.free']!;
+      delete grouped['@reference.call.free'];
+      grouped['@reference.receiver'] = syntheticCapture('@reference.receiver', nameNode, 'self');
     }
 
     // Structural receiver chain for a call whose receiver is itself an
@@ -1291,7 +1307,22 @@ export function emitRubyScopeCaptures(
   // flow through `emitHeritageEdges` (the `__heritage__:` import path above),
   // an independent lane that stays intact when the legacy heritage leg is gated off.
   out.push(...synthesizeRubySuperclassReferences(tree.rootNode));
-  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, RUBY_CALLABLE_CAPTURE_OPTIONS));
+  for (const match of synthesizeCallableFlowCaptures(
+    tree.rootNode,
+    RUBY_CALLABLE_CAPTURE_OPTIONS,
+  )) {
+    // Ruby invokes a callable local through `.call` or `.()`, never `name()`.
+    // Drop only invocation facts for receiver-less AST calls; `.()` also
+    // uses the generic indirect kind but must retain its callable-cell fact.
+    const invoke = match['@callable-flow.invoke'];
+    if (
+      invoke !== undefined &&
+      match['@callable-flow.invocation-kind']?.text === 'indirect' &&
+      receiverlessCallSites.has(`${invoke.range.startLine}:${invoke.range.startCol}`)
+    )
+      continue;
+    out.push(match);
+  }
 
   return out;
 }
@@ -1513,13 +1544,6 @@ function scopeExtractionError(stage: string, filePath: string, err: unknown): Er
  *     (`user.name = x`, `user[0] = 1`, `user.a, user.b = …`, `user.count += 1`)
  *     and binds nothing.
  *   - `rescue` `variable` (`rescue => user`).
- *   - `lambda_parameters` of a stabby lambda, only when it declares the name
- *     AND one of its default values reads it (`->(user, x = user.save) { … }`).
- *     The parameter list sits outside the body block that lists the lambda's
- *     names (RUBY-03), so a read there would climb to the outer tag. A block
- *     (`|user|`, `|x; user|`), a lambda body and a nested `def inner(user)`
- *     declare their names on their own scope, where the receiver walk stops,
- *     so their shadowing no longer declines the tag.
  *   - `in_clause` / `match_pattern` / `test_pattern` `pattern`: identifiers in
  *     binding positions of a `case … in` / `=>` / `in` pattern — array/find/
  *     hash/alternative/parenthesized patterns, `=> name` (`as_pattern`),
@@ -1527,6 +1551,9 @@ function scopeExtractionError(stage: string, filePath: string, err: unknown): Er
  *     `{user:}` whose `keyword_pattern` has a key and no value. A pinned
  *     `^user` (`variable_reference_pattern`) or `^(expr)`
  *     (`expression_reference_pattern`) only READS and binds nothing.
+ *
+ * Parameter shadows belong to their own scopes, including lambda defaults
+ * (RUBY-03), so they do not rebind the outer tagged parameter.
  *
  * Known rebindings the AST cannot show (documented gaps, not guarded): a
  * regex named capture `/(?<user>…)/ =~ s`, `binding.local_variable_set`, `eval`.
@@ -1536,7 +1563,6 @@ const REBINDING_POSITIONS: ReadonlyMap<string, string | null> = new Map([
   ['operator_assignment', 'left'],
   ['for', 'pattern'],
   ['rescue', 'variable'],
-  ['lambda_parameters', null],
   ['in_clause', 'pattern'],
   ['match_pattern', 'pattern'],
   ['test_pattern', 'pattern'],
@@ -1605,10 +1631,10 @@ function rubyScopeLexicalNames(scopeNode: SyntaxNode): string[] {
   return names;
 }
 
-/** Does a non-local bare call cross a parameter claim with an available self binding? */
+/** Does a method call cross a parameter claim with an available self binding? */
 function rubyBareCallNeedsSelfReceiver(
   identifier: SyntaxNode,
-  namesByScope: Map<number, readonly string[]>,
+  namesByScope: Map<number, ReadonlySet<string>>,
 ): boolean {
   let hasMethod = false;
   let hasClaim = false;
@@ -1616,14 +1642,15 @@ function rubyBareCallNeedsSelfReceiver(
     if (scope.type === 'program') return false;
     if (scope.type === 'class' || scope.type === 'module') return hasMethod && hasClaim;
     const method = scope.type === 'method' || scope.type === 'singleton_method';
-    if (!method && scope.type !== 'block' && scope.type !== 'do_block') continue;
+    if (!method && scope.type !== 'block' && scope.type !== 'do_block' && scope.type !== 'lambda')
+      continue;
     hasMethod ||= method;
     let names = namesByScope.get(scope.id);
     if (names === undefined) {
-      names = rubyScopeLexicalNames(scope);
+      names = new Set(rubyScopeLexicalNames(scope));
       namesByScope.set(scope.id, names);
     }
-    hasClaim ||= names.includes(identifier.text);
+    hasClaim ||= names.has(identifier.text);
   }
   return false;
 }
@@ -1641,6 +1668,35 @@ function attachRubyLexicalNames(
     scopeNode,
     JSON.stringify(names),
   );
+}
+
+/** Lambda defaults live outside the body block and see only earlier binders. */
+function emitRubyLambdaDefaultScopes(lambda: SyntaxNode, out: CaptureMatch[]): void {
+  const params = lambda.childForFieldName('parameters');
+  if (params === null) return;
+  const boundAt = new Map<string, number>();
+  collectRubyParameterNames(params, (name, offset) => boundAt.set(name, offset));
+  for (const parameter of params.namedChildren) {
+    const value = parameter.childForFieldName('value');
+    if (value === null) continue;
+    const names = new Set<string>();
+    // Store only claims used by this expression, not every preceding name:
+    // N defaults reading one parameter must emit O(N), not O(N²), metadata.
+    walkNamedTree(value, (node) => {
+      if (node.type !== 'identifier') return;
+      const offset = boundAt.get(node.text);
+      if (offset !== undefined && offset < value.startIndex) names.add(node.text);
+    });
+    if (names.size === 0) continue;
+    out.push({
+      '@scope.block': nodeToCapture('@scope.block', value),
+      '@scope.lexical-names': syntheticCapture(
+        '@scope.lexical-names',
+        value,
+        JSON.stringify([...names]),
+      ),
+    });
+  }
 }
 
 /** Containers an assignment / `for` target passes through to the names it binds. */
@@ -1711,8 +1767,6 @@ function siteBinds(nodeType: string, site: SyntaxNode, name: string): boolean {
     case 'for':
     case 'rescue':
       return lhsBinds(site, name);
-    case 'lambda_parameters':
-      return rubyParameterNames(site).includes(name) && parameterDefaultReads(site, name);
     case 'in_clause':
     case 'match_pattern':
     case 'test_pattern':
@@ -1720,27 +1774,6 @@ function siteBinds(nodeType: string, site: SyntaxNode, name: string): boolean {
     default:
       return false;
   }
-}
-
-/**
- * Does a default value in a parameter list read `name`? Optional and keyword
- * parameters hold their default in a `value` field; a destructured parameter
- * nests further parameters. Any identifier spelled `name` counts as a read.
- */
-function parameterDefaultReads(paramsNode: SyntaxNode, name: string): boolean {
-  for (let i = 0; i < paramsNode.namedChildCount; i++) {
-    const child = paramsNode.namedChild(i);
-    if (child === null) continue;
-    if (child.type === 'destructured_parameter') {
-      if (parameterDefaultReads(child, name)) return true;
-      continue;
-    }
-    const value = child.childForFieldName('value');
-    if (value === null) continue;
-    if (value.type === 'identifier' && value.text === name) return true;
-    if (value.descendantsOfType('identifier').some((id) => id.text === name)) return true;
-  }
-  return false;
 }
 
 /**

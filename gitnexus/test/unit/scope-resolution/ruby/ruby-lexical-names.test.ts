@@ -55,6 +55,39 @@ function scopeNames(matches: readonly CaptureMatch[]): Record<string, string[]> 
 }
 
 describe('Ruby lexical names (RUBY-03)', () => {
+  it('preserves callable .() and .call invocations while dropping the false name() invocation', () => {
+    const matches = emitRubyScopeCaptures(
+      'class Host; def run(f); f.(); f.call; f(); end; end',
+      'calls.rb',
+    );
+    expect(
+      matches
+        .filter((match) => match['@callable-flow.invoke'])
+        .map((match) => match['@callable-flow.invoke']?.text),
+    ).toEqual(['f.()', 'f.call']);
+    const call = matches.find((match) => match['@reference.call.member']?.text === 'f()');
+    expect(call?.['@reference.receiver']?.text).toBe('self');
+    expect(call?.['@reference.arity']?.text).toBe('0');
+  });
+
+  it('lambda defaults claim only referenced names declared before the expression', () => {
+    const matches = emitRubyScopeCaptures(
+      'def run(user)\n  f = ->(x = user.save, user: nil, y: user.save) { user.save }\nend\n',
+      'defaults.rb',
+    );
+    expect(
+      matches
+        .filter((match) => match['@scope.block'])
+        .map((match) => [
+          match['@scope.block']?.text,
+          JSON.parse(match['@scope.lexical-names']?.text ?? '[]'),
+        ]),
+    ).toEqual([
+      ['user.save', ['user']],
+      ['{ user.save }', ['x', 'user', 'y']],
+    ]);
+  });
+
   it('each scope lists the parameters IT declares; nested blocks keep their own', () => {
     expect(scopeNames(emitRubyScopeCaptures(SOURCE, 'svc.rb'))).toEqual({
       // a method: positional, splat, keyword, optional keyword, double splat, block

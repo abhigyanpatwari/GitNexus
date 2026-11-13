@@ -20,22 +20,16 @@
  *
  * With the stop in place, the YARD `@param` decline (RUBY-01) no longer fires
  * for a block, lambda or nested-def parameter of the tagged name: the tagged
- * use beside the shadow resolves, and the shadow stays untyped. A stabby lambda
- * whose parameter DEFAULT reads the name still declines, because the parameter
- * list sits outside the lambda body.
+ * use beside the shadow resolves, and the shadow stays untyped. Lambda defaults
+ * have their own lexical stops for parameters declared before the expression.
  *
  * Every call site is asserted exactly against owner node IDs, with a decoy
  * `AuditLog#save` so that an untyped receiver has two candidates and a
  * name-only guess would show up as a wrong edge instead of hiding behind a
  * unique name.
  *
- * Recall note (pinned below): an explicit call — `target()`, `target(1)`,
- * `target 1` — inside a block whose parameter is also named `target` now
- * resolves to nothing. In Ruby it still calls the method; the lexical name
- * blocks free-call lookup for that name, as it already did beside a method
- * parameter of that name (ruby-param-shadow-call.test.ts). The same lookup
- * makes a BARE `target` beside such a parameter a read rather than a call,
- * which is what Ruby does.
+ * Explicit calls (`target()`, `target(1)`, `target 1`) keep their method
+ * targets beside parameters. A bare `target` still reads the parameter.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
@@ -453,11 +447,41 @@ end
     expect(callsFrom(run(), 'yard_block_chain', 'save')).toEqual([`${userSave} @36:2`]);
   });
 
-  it('a stabby lambda whose parameter default reads the shadowing name still declines the tag', () => {
-    // `->(user, fallback = user.save)`: the parameter list sits outside the
-    // lambda body, so the default's `user` would otherwise climb to the tag.
-    expect(callsFrom(run(), 'yard_lambda_default_read', 'save')).toEqual([]);
+  it('a lambda default stops at its parameter while the outer tagged use keeps its type', () => {
+    expect(callsFrom(run(), 'yard_lambda_default_read', 'save')).toEqual([`${userSave} @42:2`]);
     expect(callsFrom(run(), 'pick', 'save')).toEqual([]);
+  });
+});
+
+describe.each([
+  ['earlier positional', 'user, fallback = user.save', false],
+  ['earlier destructured', '(user, other), fallback = user.save', false],
+  ['earlier splat', '*user, fallback: user.save', false],
+  ['earlier keyword', 'user:, fallback: user.save', false],
+  ['current parameter', 'user = user.save', false],
+  ['later parameter', 'fallback = user.save, user: nil', true],
+  ['unshadowed outer', 'fallback = user.save', true],
+] as const)('Ruby lambda defaults: %s', (_label, parameters, readsOuter) => {
+  const run = useFixture('ruby03-default-order', {
+    'models.rb': MODELS,
+    'app.rb': `require_relative 'models'
+# @param user [User]
+def outer(user)
+  pick = ->(${parameters}) { user.save }
+  user.save
+end
+`,
+  });
+
+  it('preserves the outer tag and resolves only reads that precede the lambda binding', () => {
+    const userSave = methodId(run(), 'User', 'save');
+    const defaultCol = 12 + parameters.indexOf('user.save');
+    expect(callsFrom(run(), 'outer', 'save')).toEqual(
+      [...(readsOuter ? [`${userSave} @4:${defaultCol}`] : []), `${userSave} @5:2`].sort(),
+    );
+    expect(callsFrom(run(), 'pick', 'save')).toEqual(
+      parameters === 'fallback = user.save' ? [`${userSave} @4:${parameters.length + 16}`] : [],
+    );
   });
 });
 
@@ -536,12 +560,15 @@ end
   });
 
   it.each(['explicit_call_with_arg', 'explicit_call_paren', 'explicit_call_command'] as const)(
-    'recall cost: %s, an explicit call beside a same-named block parameter, resolves to nothing',
+    '%s: an explicit call beside a same-named block parameter calls Host#target',
     (fn) => {
-      // Ruby still calls the method here. The block parameter's lexical name
-      // blocks free-call lookup for that name, as a same-named method
-      // parameter already did (ruby-param-shadow-call.test.ts).
-      expect(callsFrom(run(), fn, 'target')).toEqual([]);
+      const hostTarget = methodId(run(), 'Host', 'target');
+      const line = {
+        explicit_call_with_arg: 19,
+        explicit_call_paren: 23,
+        explicit_call_command: 27,
+      }[fn];
+      expect(callsFrom(run(), fn, 'target')).toEqual([`${hostTarget} @${line}:24`]);
     },
   );
 });
@@ -571,5 +598,32 @@ end
   it('the block site (6:4) has no edge; the outer use (8:2) keeps Address#save_rb', () => {
     const addressSave = methodId(run(), 'Address', 'save_rb');
     expect(callsFrom(run(), 'f_rb', 'save_rb')).toEqual([`${addressSave} @8:2`]);
+  });
+});
+
+describe.each([
+  '->(target) { target(1) }',
+  '->(target) do target(1) end',
+  'lambda { |target| target(1) }',
+  'proc { |target| target(1) }',
+  'Proc.new { |target| target(1) }',
+] as const)('Ruby explicit calls inside %s', (closure) => {
+  const run = useFixture('ruby03-explicit-closure', {
+    'host.rb': `class Other
+  def target(*args); end
+end
+class Host
+  def target(*args); end
+  def run
+    pick = ${closure}
+  end
+end
+`,
+  });
+  it('resolves the method, never the parameter cell or the decoy owner', () => {
+    const target = methodId(run(), 'Host', 'target');
+    expect(callsFrom(run(), 'pick', 'target')).toEqual([
+      `${target} @7:${11 + closure.indexOf('target(1)')}`,
+    ]);
   });
 });
