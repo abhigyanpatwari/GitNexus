@@ -1,0 +1,53 @@
+gitnexus/test/helpers/admitted-host-memory.ts
+  s_b9690234122db7::t_882cd1ad8443f9 1-31
+gitnexus/test/unit/analyze-embedding-endpoint-flags.test.ts
+  s_b9690234122db7::t_a0bd55826b3ff1 9-13
+gitnexus/test/unit/analyze-embeddings-limit.test.ts
+  s_b9690234122db7::t_68a3474e3dfdfb 9-13
+gitnexus/test/unit/analyze-finalize-failure-exits.test.ts
+  s_b9690234122db7::t_c5f3fb0ee84de3 62-65
+gitnexus/test/unit/analyze-gitnexusrc.test.ts
+  s_b9690234122db7::t_34d9c2afa8c0c8 40-43
+gitnexus/test/unit/analyze-http-endpoint-error.test.ts
+  s_b9690234122db7::t_86ea1de4ae7fd4 49-53
+gitnexus/test/unit/analyze-lbug-checkpoint-threshold.test.ts
+  s_b9690234122db7::t_440644021dc3d0 9-13
+gitnexus/test/unit/analyze-local-embedding-error.test.ts
+  s_b9690234122db7::t_52fefe8e72e767 57-61
+gitnexus/test/unit/analyze-no-stats-bridge.test.ts
+  s_b9690234122db7::t_bdc88658f88d3c 26-30
+gitnexus/test/unit/analyze-pagesize-error.test.ts
+  s_b9690234122db7::t_6c38be2278ea73 24-28
+gitnexus/test/unit/analyze-phase-handoff.test.ts
+  s_b9690234122db7::t_0c301b3568e5ca 45-48
+gitnexus/test/unit/analyze-process-budget.test.ts
+  s_b9690234122db7::t_9feb4d1c33a221 9-13
+gitnexus/test/unit/analyze-respawn-progress-terminal.test.ts
+  s_b9690234122db7::t_c7ceccc5145cd4 41-45
+gitnexus/test/unit/analyze-self-commit-bridge.test.ts
+  s_b9690234122db7::t_fbacc6f966a460 40-44
+gitnexus/test/unit/analyze-undeclared-pair-error.test.ts
+  s_b9690234122db7::t_05ff8964a0eb09 33-37
+gitnexus/test/unit/analyze-wal-error.test.ts
+  s_b9690234122db7::t_de371e10f25a53 30-34
+gitnexus/test/unit/analyze-wipe-error.test.ts
+  s_b9690234122db7::t_2b5752313d2cd1 40-44
+gitnexus/test/unit/analyze-worker-timeout.test.ts
+  s_b9690234122db7::t_523b504b2d8117 9-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bd2cd5551db6188a16c12db14fdcf4a8a8845c45",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
