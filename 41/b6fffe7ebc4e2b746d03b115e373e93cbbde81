@@ -1,0 +1,59 @@
+.github/workflows/ci-tests.yml
+  s_b9690234122db7::t_9a934c8460a233 1270-1279
+docs/languages/ruby-ingestion-gaps.md
+  s_b9690234122db7::t_1d91f05fb3e8b2 38,57-73,81
+gitnexus/bench/ruby-bare-reads/baseline.json
+  s_b9690234122db7::t_3d786c2a3032a0 1-189
+gitnexus/bench/ruby-bare-reads/measure.mjs
+  s_b9690234122db7::t_7a0457a64891a9 1-475
+gitnexus/bench/scope-capture/baselines.json
+  s_b9690234122db7::t_88e903cdbd79ae 139-140,154-155,182-186
+gitnexus/package-lock.json
+  s_b9690234122db7::t_261a995e076292 1356-1358,4581-4583,4586,5638-5640
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_e7dd29c29161ea 203-207,338-341,399-432
+gitnexus/src/core/ingestion/languages/dart/query.ts
+  s_b9690234122db7::t_0122dab872bb71 247-262
+gitnexus/src/core/ingestion/languages/ruby/captures.ts
+  s_b9690234122db7::t_4c18a87f5c8a6e 273-782,811-813,951-964
+gitnexus/test/fixtures/lang-resolution/dart-deferred-load-library/lib/decoy.dart
+  s_b9690234122db7::t_09b5c1274fdb7f 1-9
+gitnexus/test/fixtures/lang-resolution/dart-deferred-load-library/lib/deferred_callers.dart
+  s_b9690234122db7::t_5726bb8588ff7c 1-26
+gitnexus/test/fixtures/lang-resolution/dart-deferred-load-library/lib/immediate_callers.dart
+  s_b9690234122db7::t_1d2ddb99754592 1-22
+gitnexus/test/fixtures/lang-resolution/dart-deferred-load-library/lib/mod.dart
+  s_b9690234122db7::t_1a8f3a868647e8 1-13
+gitnexus/test/fixtures/lang-resolution/dart-deferred-load-library/pubspec.yaml
+  s_b9690234122db7::t_fdc2845f956f41 1
+gitnexus/test/fixtures/lang-resolution/dart-prefixed-factory-return/lib/deferred_callers.dart
+  s_b9690234122db7::t_d6b9d65a679ca1 1-8
+gitnexus/test/fixtures/ruby-captures-golden/expected-captures.json
+  s_b9690234122db7::t_bf8c59da82a8bc 55-56,63-64
+gitnexus/test/integration/resolvers/dart.test.ts
+  s_b9690234122db7::t_d76a39b35f4ff7 189-205,220-286
+gitnexus/test/integration/resolvers/ruby-bare-read-shadows-method.test.ts
+  s_b9690234122db7::t_c0f91f11a44c71 1-941
+gitnexus/test/unit/dart-import-resolver.test.ts
+  s_b9690234122db7::t_9872bf082bac3c 24-97
+gitnexus/test/unit/scope-resolution/dart-lexical-names.test.ts
+  s_b9690234122db7::t_322551e725e96c 203
+gitnexus/test/unit/scope-resolution/ruby/ruby-bare-read-order.test.ts
+  s_b9690234122db7::t_2a9e131dafdb93 1-392
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "41b6fffe7ebc4e2b746d03b115e373e93cbbde81",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
