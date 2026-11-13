@@ -1,0 +1,21 @@
+gitnexus/test/unit/scope-resolution/untyped-receiver-binder.test.ts
+  s_b9690234122db7::t_adffd73cb3e841 11,54
+gitnexus/test/unit/scope-resolution/php/php-unresolved-receiver-fallback.test.ts
+  s_b9690234122db7::t_1c481a5b4f9270 22,120
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "958304e6640d25ba1d9f0032c5689b919690a87a",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
