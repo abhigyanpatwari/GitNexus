@@ -6,6 +6,11 @@ vi.mock('../../src/core/run-analyze.js', () => ({
   runFullAnalysis: runFullAnalysisMock,
 }));
 
+// Host RAM admission runs before the mocked pipeline; pin it (see the helper).
+vi.mock('../../src/core/ingestion/utils/effective-ram.js', async (importOriginal) =>
+  (await import('../helpers/admitted-host-memory.js')).withAdmittedHostMemory(importOriginal),
+);
+
 // Flag validation must not install the optional runtime from the npm registry.
 // Runtime readiness and installation have their own analyze-local-embedding-error tests.
 vi.mock('../../src/core/embeddings/runtime-support.js', async (importOriginal) => ({

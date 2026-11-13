@@ -42,6 +42,10 @@ vi.mock('../../src/cli/analyze-phase-ipc.js', async (importOriginal) => {
   };
 });
 vi.mock('../../src/core/run-analyze.js', () => ({ runFullAnalysis: mocks.run }));
+// Host RAM admission runs before the mocked pipeline; pin it (see the helper).
+vi.mock('../../src/core/ingestion/utils/effective-ram.js', async (importOriginal) =>
+  (await import('../helpers/admitted-host-memory.js')).withAdmittedHostMemory(importOriginal),
+);
 vi.mock('../../src/cli/ai-context.js', () => ({ generateAIContextFiles: mocks.context }));
 vi.mock('../../src/cli/skill-gen.js', () => ({ generateSkillFiles: mocks.skills }));
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
