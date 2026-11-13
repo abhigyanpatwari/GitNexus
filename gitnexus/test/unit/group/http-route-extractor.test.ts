@@ -46,6 +46,16 @@ describe('HttpRouteExtractor', () => {
 
   const toPosixPath = (filePath: string): string => filePath.replace(/\\/g, '/');
 
+  /**
+   * The files a symbol query asks for: one `$filePath` (CONTAINING_QUERY) or a
+   * `$filePaths` list (CONTAINING_FILES_QUERY, which the extractor issues for the
+   * files it expects to look up, such as those with Express route detections).
+   */
+  const askedSymbolFiles = (params?: Record<string, unknown>): string[] =>
+    Array.isArray(params?.filePaths)
+      ? (params.filePaths as unknown[]).map(String)
+      : [String(params?.filePath ?? '')];
+
   describe('repo-relative path normalization', () => {
     it('normalizes Windows source-scan paths before symbol lookup', () => {
       expect(normalizeRepoRelPath('src\\api\\users.ts')).toBe('src/api/users.ts');
@@ -73,7 +83,10 @@ describe('HttpRouteExtractor', () => {
         query: string,
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
-        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('users.ts')) {
+        if (
+          query.includes('UNION ALL') &&
+          askedSymbolFiles(params).some((f) => f.includes('users.ts'))
+        ) {
           return [
             {
               uid: 'fn-fetchUsers',
@@ -115,7 +128,10 @@ export default router;
         query: string,
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
-        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('routes.ts')) {
+        if (
+          query.includes('UNION ALL') &&
+          askedSymbolFiles(params).some((f) => f.includes('routes.ts'))
+        ) {
           // `function handler` is on source line 3 → 0-based span [2,2]. The
           // anonymous route handler is on line 4, so it is NOT inside this span.
           return [
@@ -158,7 +174,10 @@ export default router;
         query: string,
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
-        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('routes.ts')) {
+        if (
+          query.includes('UNION ALL') &&
+          askedSymbolFiles(params).some((f) => f.includes('routes.ts'))
+        ) {
           return [
             {
               uid: 'fn-listUsers',
@@ -218,7 +237,9 @@ export default router;
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
         if (query.includes('UNION ALL'))
-          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+          return askedSymbolFiles(params).some((f) => f.includes('routes.ts'))
+            ? routesFileSyms
+            : [];
         if (query.includes('filePath IN $filePaths')) return [];
         if (query.includes('n.name = $name'))
           return params?.name === 'listUsers'
@@ -267,7 +288,9 @@ app.add_url_rule('/api/users', view_func=list_users)
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
         if (query.includes('UNION ALL'))
-          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+          return askedSymbolFiles(params).some((f) => f.includes('routes.ts'))
+            ? routesFileSyms
+            : [];
         if (query.includes('n.name = $name'))
           return [
             { uid: 'fn-a', name: 'listUsers', filePath: 'src/a.ts' },
@@ -286,7 +309,9 @@ app.add_url_rule('/api/users', view_func=list_users)
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
         if (query.includes('UNION ALL'))
-          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+          return askedSymbolFiles(params).some((f) => f.includes('routes.ts'))
+            ? routesFileSyms
+            : [];
         return [];
       };
       const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
@@ -316,7 +341,7 @@ export default router;
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
         if (query.includes('UNION ALL'))
-          return String(params?.filePath ?? '').includes('routes.ts')
+          return askedSymbolFiles(params).some((f) => f.includes('routes.ts'))
             ? [
                 {
                   uid: 'fn-samefile',
@@ -346,7 +371,9 @@ export default router;
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
         if (query.includes('UNION ALL'))
-          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+          return askedSymbolFiles(params).some((f) => f.includes('routes.ts'))
+            ? routesFileSyms
+            : [];
         if (query.includes('n.name = $name')) throw new Error('DB locked');
         return [];
       };
@@ -375,7 +402,9 @@ export default router;
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
         if (query.includes('UNION ALL'))
-          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+          return askedSymbolFiles(params).some((f) => f.includes('routes.ts'))
+            ? routesFileSyms
+            : [];
         if (query.includes('n.name = $name')) {
           globalQueries += 1;
           return [{ uid: 'fn-listUsers-x', name: 'listUsers', filePath: 'src/handlers/users.ts' }];
@@ -405,7 +434,7 @@ export default router;
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
         if (query.includes('UNION ALL'))
-          return String(params?.filePath ?? '').includes('api.ts')
+          return askedSymbolFiles(params).some((f) => f.includes('api.ts'))
             ? [
                 {
                   uid: 'fn-fetchUsers',
@@ -452,7 +481,7 @@ export default router;
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
         if (query.includes('UNION ALL'))
-          return String(params?.filePath ?? '').includes('routes.ts')
+          return askedSymbolFiles(params).some((f) => f.includes('routes.ts'))
             ? [
                 {
                   uid: 'fn-setupRoutes',
@@ -485,7 +514,9 @@ export default router;
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
         if (query.includes('UNION ALL'))
-          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+          return askedSymbolFiles(params).some((f) => f.includes('routes.ts'))
+            ? routesFileSyms
+            : [];
         if (query.includes('n.name = $name'))
           return [{ uid: 'orm-listUsers', name: 'listUsers', filePath: '' }];
         return [];
@@ -7771,6 +7802,278 @@ export default r;
       expect(providers.find((c) => c.contractId === 'http::GET::/api/users')).toBeDefined();
       expect(providers.find((c) => c.contractId === 'http::GET::/api/leaked')).toBeUndefined();
       expect(contracts.some((c) => c.symbolRef?.filePath?.startsWith('mentor_env/'))).toBe(false);
+    });
+  });
+
+  describe('handler symbols load in one query per batch of files', () => {
+    interface SymbolRow {
+      uid: string;
+      name: string;
+      filePath: string;
+      startLine: number;
+      endLine: number;
+      labels: string[];
+    }
+    const isFileQuery = (q: string): boolean =>
+      q.includes('UNION ALL') && q.includes('sym.filePath = $filePath');
+    const isFilesQuery = (q: string): boolean =>
+      q.includes('UNION ALL') && q.includes('sym.filePath IN $filePaths');
+
+    /**
+     * A graph that answers the extractor's queries from `symbols` (kept in
+     * storage order) and records every query. Like the engine's UNION ALL, a
+     * symbol query returns the Function rows, then Method, then CodeElement,
+     * each in storage order, so in a batch the rows of different files
+     * interleave. `failBatch` makes every CONTAINING_FILES_QUERY throw.
+     */
+    const recordingGraph = (opts: {
+      routes?: Record<string, unknown>[];
+      symbols: SymbolRow[];
+      failBatch?: boolean;
+    }) => {
+      const calls: Array<{ query: string; params: Record<string, unknown> }> = [];
+      const rowsOf = (files: ReadonlySet<string>): Record<string, unknown>[] =>
+        ['Function', 'Method', 'CodeElement'].flatMap((label) =>
+          opts.symbols
+            .filter((sym) => sym.labels[0] === label && files.has(sym.filePath))
+            .map((sym) => ({ ...sym })),
+        );
+      const db = async (
+        query: string,
+        params: Record<string, unknown> = {},
+      ): Promise<Record<string, unknown>[]> => {
+        calls.push({ query, params });
+        if (query.includes("type: 'HANDLES_ROUTE'")) return opts.routes ?? [];
+        if (isFilesQuery(query)) {
+          if (opts.failBatch) throw new Error('batch query failed');
+          return rowsOf(new Set(params.filePaths as string[]));
+        }
+        if (isFileQuery(query)) return rowsOf(new Set([String(params.filePath)]));
+        return [];
+      };
+      return {
+        db,
+        batches: (): string[][] =>
+          calls.filter((c) => isFilesQuery(c.query)).map((c) => c.params.filePaths as string[]),
+        singles: (): string[] =>
+          calls.filter((c) => isFileQuery(c.query)).map((c) => String(c.params.filePath)),
+      };
+    };
+
+    const ORDERS = 'src/main/java/shop/OrderController.java';
+    const USERS = 'src/main/java/shop/UserController.java';
+    const ITEMS = 'src/main/java/shop/ItemController.java';
+    const handler = (filePath: string, name: string, startLine: number): SymbolRow => ({
+      uid: `Method:${filePath}:${name}`,
+      name,
+      filePath,
+      startLine,
+      endLine: startLine + 3,
+      labels: ['Method'],
+    });
+    // Storage order mixes the files.
+    const handlerSymbols = [
+      handler(ORDERS, 'listOrders', 10),
+      handler(USERS, 'listUsers', 8),
+      handler(ORDERS, 'createOrder', 20),
+      handler(ITEMS, 'listItems', 5),
+    ];
+    const route = (filePath: string, routeMethod: string, routePath: string, name: string) => ({
+      fileId: `File:${filePath}`,
+      filePath,
+      routePath,
+      routeId: `Route:${routeMethod}:${routePath}`,
+      routeMethod,
+      handlerSymbolId: `Method:${filePath}:${name}`,
+      routeSource: 'framework-route',
+    });
+    const handlerRoutes = [
+      route(ORDERS, 'GET', '/api/orders', 'listOrders'),
+      route(ORDERS, 'POST', '/api/orders', 'createOrder'),
+      route(USERS, 'GET', '/api/users', 'listUsers'),
+      route(ITEMS, 'GET', '/api/items', 'listItems'),
+    ];
+    const summary = (contracts: { contractId: string; symbolUid: string; symbolName: string }[]) =>
+      contracts.map((c) => [c.contractId, c.symbolUid, c.symbolName]);
+
+    it('loads every handler file in one query instead of one query per file', async () => {
+      const dir = fs.mkdtempSync(path.join(tmpDir, 'batch-handlers-'));
+      const graph = recordingGraph({ routes: handlerRoutes, symbols: handlerSymbols });
+
+      const contracts = await extractor.extract(graph.db, dir, makeRepo(dir));
+
+      expect(graph.batches()).toEqual([[ORDERS, USERS, ITEMS]]);
+      expect(graph.singles()).toEqual([]);
+      expect(summary(contracts)).toEqual([
+        ['http::GET::/api/orders', `Method:${ORDERS}:listOrders`, 'listOrders'],
+        ['http::POST::/api/orders', `Method:${ORDERS}:createOrder`, 'createOrder'],
+        ['http::GET::/api/users', `Method:${USERS}:listUsers`, 'listUsers'],
+        ['http::GET::/api/items', `Method:${ITEMS}:listItems`, 'listItems'],
+      ]);
+    });
+
+    it('gives a file nobody expected its own query', async () => {
+      const dir = fs.mkdtempSync(path.join(tmpDir, 'batch-unexpected-'));
+      // A FastAPI provider: found by the per-file source scan, so nothing names
+      // main.py before its symbols are asked for.
+      fs.writeFileSync(
+        path.join(dir, 'main.py'),
+        `from fastapi import FastAPI
+app = FastAPI()
+
+@app.get("/api/health")
+def health():
+    return {}
+`,
+      );
+      const graph = recordingGraph({
+        routes: handlerRoutes,
+        symbols: [
+          ...handlerSymbols,
+          {
+            uid: 'Function:main.py:health',
+            name: 'health',
+            filePath: 'main.py',
+            startLine: 4,
+            endLine: 5,
+            labels: ['Function'],
+          },
+        ],
+      });
+
+      const contracts = await extractor.extract(graph.db, dir, makeRepo(dir));
+
+      expect(graph.batches()).toEqual([[ORDERS, USERS, ITEMS]]);
+      expect(graph.singles()).toEqual(['main.py']);
+      expect(contracts.find((c) => c.contractId === 'http::GET::/api/health')).toMatchObject({
+        symbolUid: 'Function:main.py:health',
+        symbolName: 'health',
+      });
+    });
+
+    it('falls back to one query per file when the batch query fails, with the same contracts', async () => {
+      const dir = fs.mkdtempSync(path.join(tmpDir, 'batch-fails-'));
+      const working = recordingGraph({ routes: handlerRoutes, symbols: handlerSymbols });
+      const failing = recordingGraph({
+        routes: handlerRoutes,
+        symbols: handlerSymbols,
+        failBatch: true,
+      });
+
+      const expected = await extractor.extract(working.db, dir, makeRepo(dir));
+      const actual = await new HttpRouteExtractor().extract(failing.db, dir, makeRepo(dir));
+
+      expect(failing.batches()).toEqual([[ORDERS, USERS, ITEMS]]);
+      // Each file once, when the loop first reaches it: no retry per route.
+      expect(failing.singles()).toEqual([ORDERS, USERS, ITEMS]);
+      expect(actual).toEqual(expected);
+      expect(actual.map((c) => c.symbolName)).toEqual([
+        'listOrders',
+        'createOrder',
+        'listUsers',
+        'listItems',
+      ]);
+    });
+
+    it('caches an empty result for a file the batch found no symbols in', async () => {
+      const dir = fs.mkdtempSync(path.join(tmpDir, 'batch-empty-'));
+      const LEGACY = 'src/main/java/shop/LegacyController.java';
+      const graph = recordingGraph({
+        routes: [
+          ...handlerRoutes,
+          route(LEGACY, 'GET', '/api/legacy', 'getLegacy'),
+          route(LEGACY, 'DELETE', '/api/legacy', 'dropLegacy'),
+        ],
+        // No symbol rows for LEGACY at all.
+        symbols: handlerSymbols,
+      });
+
+      const contracts = await extractor.extract(graph.db, dir, makeRepo(dir));
+
+      expect(graph.batches()).toEqual([[ORDERS, USERS, ITEMS, LEGACY]]);
+      // The empty answer is cached: neither LEGACY route queries it again.
+      expect(graph.singles()).toEqual([]);
+      expect(summary(contracts.filter((c) => c.contractId.endsWith('/api/legacy')))).toEqual([
+        ['http::GET::/api/legacy', `Method:${LEGACY}:getLegacy`, 'LegacyController.java'],
+        ['http::DELETE::/api/legacy', `Method:${LEGACY}:dropLegacy`, 'LegacyController.java'],
+      ]);
+    });
+
+    it('resolves the same symbols from a batch as from one query per file', async () => {
+      const dir = fs.mkdtempSync(path.join(tmpDir, 'batch-parity-'));
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      // Express routes found by the project scan, so their files are expected
+      // before the source-scan passes resolve them.
+      fs.writeFileSync(
+        path.join(dir, 'src/routes.ts'),
+        `import { Router } from 'express';
+const router = Router();
+router.get('/api/ping', (req, res) => {
+  res.json({ ok: true });
+});
+export default router;
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'src/admin.ts'),
+        `import { Router } from 'express';
+const admin = Router();
+export function resetCache(req, res) { res.sendStatus(204); }
+admin.post('/api/admin/reset', resetCache);
+export default admin;
+`,
+      );
+      const symbols: SymbolRow[] = [
+        // Two symbols with the same span around the inline /api/ping handler
+        // (0-based rows 2-4). Containment keeps the first of equal spans, so
+        // the row order a file's symbols arrive in decides which one wins.
+        {
+          uid: 'z-ping-function',
+          name: 'pingFunction',
+          filePath: 'src/routes.ts',
+          startLine: 2,
+          endLine: 4,
+          labels: ['Function'],
+        },
+        handlerSymbols[0],
+        {
+          uid: 'a-ping-element',
+          name: 'pingElement',
+          filePath: 'src/routes.ts',
+          startLine: 2,
+          endLine: 4,
+          labels: ['CodeElement'],
+        },
+        {
+          uid: 'Function:src/admin.ts:resetCache',
+          name: 'resetCache',
+          filePath: 'src/admin.ts',
+          startLine: 2,
+          endLine: 2,
+          labels: ['Function'],
+        },
+        ...handlerSymbols.slice(1),
+      ];
+      const batched = recordingGraph({ routes: handlerRoutes, symbols });
+      const perFile = recordingGraph({ routes: handlerRoutes, symbols, failBatch: true });
+
+      const fromBatches = await extractor.extract(batched.db, dir, makeRepo(dir));
+      const fromSingles = await new HttpRouteExtractor().extract(perFile.db, dir, makeRepo(dir));
+
+      // The handler files in one query, then the files with Express detections in one more.
+      expect(batched.batches()).toHaveLength(2);
+      expect(batched.batches()[0]).toEqual([ORDERS, USERS, ITEMS]);
+      expect([...batched.batches()[1]].sort()).toEqual(['src/admin.ts', 'src/routes.ts']);
+      expect(batched.singles()).toEqual([]);
+      expect(perFile.singles().length).toBeGreaterThan(0);
+      expect(fromBatches).toEqual(fromSingles);
+      expect(fromBatches.find((c) => c.contractId === 'http::GET::/api/ping')).toMatchObject({
+        symbolUid: 'z-ping-function',
+        symbolName: 'pingFunction',
+      });
+      expect(
+        fromBatches.find((c) => c.contractId === 'http::POST::/api/admin/reset'),
+      ).toMatchObject({ symbolUid: 'Function:src/admin.ts:resetCache', symbolName: 'resetCache' });
     });
   });
 
