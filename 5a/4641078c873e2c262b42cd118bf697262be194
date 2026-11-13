@@ -1,0 +1,23 @@
+.github/workflows/ci-tests.yml
+  s_b9690234122db7::t_621eedcf7f33ff 1275-1277
+gitnexus/bench/ruby-bare-reads/baseline.json
+  s_b9690234122db7::t_fc8ea1b9d65246 8,20,31-33,44,56,68,80,90,103-104,107,109-110,113-146,149,152-192,194
+gitnexus/bench/ruby-bare-reads/measure.mjs
+  s_b9690234122db7::t_90fad9071a06ce 5-12,30-37,39-43,91,93,109,111-112,172-176,220,313-320,430,452,454-455,460
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5a4641078c873e2c262b42cd118bf697262be194",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
