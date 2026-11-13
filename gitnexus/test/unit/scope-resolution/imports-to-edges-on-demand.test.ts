@@ -6,6 +6,7 @@ import {
   type Scope,
   type ScopeId,
 } from 'gitnexus-shared';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 import {
   emitImportEdges,
   type OnDemandImportTargetsOf,
@@ -38,7 +39,7 @@ function emit(selected?: OnDemandImportTargetsOf, buckets = imports) {
   const edges: GraphRelationship[] = [];
   emitImportEdges(
     { addRelationship: (edge: GraphRelationship) => edges.push(edge) } as unknown as KnowledgeGraph,
-    buckets,
+    createEagerImportVisibility(buckets),
     buildScopeTree([scope('Main.java'), scope('Other.java'), scope('Main.java', 'late')]),
     'test',
     selected,

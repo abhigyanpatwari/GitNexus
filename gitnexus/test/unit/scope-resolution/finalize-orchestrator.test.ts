@@ -67,7 +67,7 @@ describe('finalizeScopeModel: empty input', () => {
     expect(out.qualifiedNames.size).toBe(0);
     expect(out.moduleScopes.size).toBe(0);
     expect(out.methodDispatch.mroByOwnerDefId.size).toBe(0);
-    expect(out.imports.size).toBe(0);
+    expect([...out.imports.scopes()]).toEqual([]);
     expect(out.bindings.size).toBe(0);
     expect(out.referenceSites).toEqual([]);
     expect(out.sccs).toEqual([]);
@@ -153,7 +153,7 @@ describe('finalizeScopeModel: cross-file imports', () => {
       },
     });
 
-    const appImports = out.imports.get(appFile.moduleScope) ?? [];
+    const appImports = out.imports.edgesAt(appFile.moduleScope) ?? [];
     expect(appImports).toHaveLength(1);
     expect(appImports[0]!.linkStatus).toBeUndefined();
     expect(appImports[0]!.targetFile).toBe('models.ts');
@@ -182,7 +182,7 @@ describe('finalizeScopeModel: cross-file imports', () => {
       },
     });
 
-    const edge = out.imports.get(appFile.moduleScope)?.[0];
+    const edge = out.imports.edgesAt(appFile.moduleScope)?.[0];
     expect(edge?.kind).toBe('namespace');
     expect(edge?.linkStatus).toBeUndefined();
     expect(edge?.targetModuleScope).toBe(modelsFile.moduleScope);
@@ -201,7 +201,7 @@ describe('finalizeScopeModel: cross-file imports', () => {
     const appFile = mkFile('app.ts', { parsedImports: [importOfUser] });
 
     const out = finalizeScopeModel([appFile]);
-    const appImports = out.imports.get(appFile.moduleScope) ?? [];
+    const appImports = out.imports.edgesAt(appFile.moduleScope) ?? [];
     expect(appImports).toHaveLength(1);
     expect(appImports[0]!.linkStatus).toBe('unresolved');
   });

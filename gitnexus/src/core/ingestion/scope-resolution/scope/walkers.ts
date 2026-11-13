@@ -20,7 +20,7 @@
  * as-is for TypeScript, Java, Kotlin, Ruby, etc.
  */
 
-import { lookupLexicalName, nameClaimsFor } from 'gitnexus-shared';
+import { importTargetDirectory, lookupLexicalName, nameClaimsFor } from 'gitnexus-shared';
 import type {
   NameLookupOptions,
   NameClaimResult,
@@ -80,7 +80,7 @@ export function lookupNameClaim(
     name,
     {
       scopes: scopes.scopeTree,
-      importsAt: (scope) => scopes.imports?.get(scope.id) ?? scope.imports,
+      importsAt: (scope) => scopes.imports?.edgesAt(scope.id) ?? scope.imports,
       bindingsAt: (scope, spelling) => {
         const local = compatibleClassBindings(
           scope.bindings.get(spelling) ?? EMPTY_BINDINGS,
@@ -1842,39 +1842,23 @@ export function resolveAmbiguousInheritanceBaseViaImports(
   // module scope is where `#include` / `using` land).
   const moduleScopeId = moduleScopeIdOf(startScope, scopes);
   if (moduleScopeId === null) return undefined;
-  const importEdges = scopes.imports.get(moduleScopeId);
-  if (importEdges === undefined || importEdges.length === 0) return undefined;
-  const importedFiles = new Set<string>();
-  const importedDirs = new Set<string>();
-  for (const edge of importEdges) {
-    if (edge.targetFile === null) continue;
-    importedFiles.add(edge.targetFile);
-    importedDirs.add(dirnameOf(edge.targetFile));
-  }
-  if (importedFiles.size === 0) return undefined;
+  // A scope that imports nothing reaches no candidate, so both tiers below
+  // come up empty and the name stays refused.
+  const imports = scopes.imports;
 
   // Tier 1 — exact file match (C++ `#include "handler_a.h"`).
-  const exact = candidates.filter((c) => importedFiles.has(c.filePath));
+  const exact = candidates.filter((c) => imports.reaches(moduleScopeId, c.filePath));
   if (exact.length === 1) return exact[0];
   if (exact.length > 1) return undefined; // still ambiguous → refuse
 
   // Tier 2 — same-directory match (C# namespace `using`, where the namespace
   // import resolves to one representative file in the namespace's directory).
-  const sameDir = candidates.filter((c) => importedDirs.has(dirnameOf(c.filePath)));
+  const sameDir = candidates.filter((c) =>
+    imports.reachesDirectory(moduleScopeId, importTargetDirectory(c.filePath)),
+  );
   if (sameDir.length === 1) return sameDir[0];
 
   return undefined;
-}
-
-/**
- * Directory portion of a forward-slash workspace-relative path. Returns `''`
- * for a bare filename (no directory). Workspace paths are always normalized to
- * `/` separators upstream, so a simple `lastIndexOf('/')` is sufficient and
- * keeps this dependency-free.
- */
-function dirnameOf(filePath: string): string {
-  const idx = filePath.lastIndexOf('/');
-  return idx === -1 ? '' : filePath.slice(0, idx);
 }
 
 /**
@@ -1954,13 +1938,15 @@ export function isClassFileImportGrounded(
   const callerFile = scopes.scopeTree.getScope(startScope)?.filePath;
   if (callerFile !== undefined && classDef.filePath === callerFile) return true;
   if (callerModule === null) return false;
-  const importEdges = scopes.imports.get(callerModule);
-  if (importEdges === undefined || importEdges.length === 0) return false;
-  for (const edge of importEdges) {
+  if (scopes.imports.reaches(callerModule, classDef.filePath)) return true;
+  for (const edge of scopes.imports.edgesAt(callerModule) ?? []) {
     if (edge.targetDefId !== undefined && edge.targetDefId === classDef.nodeId) return true;
-    if (edge.targetFile === null) continue;
-    if (edge.targetFile === classDef.filePath) return true;
-    if (importedName.length > 0 && edge.targetExportedName === importedName) return true;
+    if (
+      edge.targetFile !== null &&
+      importedName.length > 0 &&
+      edge.targetExportedName === importedName
+    )
+      return true;
   }
   return false;
 }

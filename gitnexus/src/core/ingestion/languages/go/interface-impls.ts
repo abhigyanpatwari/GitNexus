@@ -1271,7 +1271,7 @@ function signatureContextForFile(
   // no qualifier either side can agree on exists. It still has to occupy the
   // name, or the fallback below would label a repo package external.
   const importQualifiers = new Map<string, string | undefined>();
-  const importEdges = indexes.imports?.get(parsed.moduleScope) ?? [];
+  const importEdges = indexes.imports?.edgesAt(parsed.moduleScope) ?? [];
   for (const edge of importEdges) {
     if (edge.kind !== 'namespace' || edge.targetFile === null) continue;
     importQualifiers.set(edge.localName, packageQualifierForFile(edge.targetFile));

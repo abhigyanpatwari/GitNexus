@@ -23,6 +23,7 @@ import {
   type ScopeId,
   type SymbolDefinition,
 } from 'gitnexus-shared';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import {
   emitReferencesToGraph,
@@ -97,7 +98,7 @@ function makeIndexes(scopes: Scope[], allDefs: SymbolDefinition[]): ScopeResolut
       computeMro: () => [],
       implementsOf: () => [],
     }),
-    imports: new Map(),
+    imports: createEagerImportVisibility(new Map()),
     bindings: new Map(),
     bindingAugmentations: new Map(),
     workspaceFqnBindings: new Map(),

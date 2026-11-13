@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildScopeTree, finalize, type FinalizeHooks, type ParsedFile } from 'gitnexus-shared';
+import {
+  buildScopeTree,
+  createEagerImportVisibility,
+  finalize,
+  type FinalizeHooks,
+  type ParsedFile,
+} from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import { emitImportEdges } from '../../../src/core/ingestion/scope-resolution/graph-bridge/imports-to-edges.js';
 import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
@@ -48,7 +54,7 @@ describe('import lexical provenance', () => {
     const graph = createKnowledgeGraph();
     emitImportEdges(
       graph,
-      out.imports,
+      createEagerImportVisibility(out.imports),
       buildScopeTree([...parsed.scopes, ...target.scopes]),
       'scope import',
     );

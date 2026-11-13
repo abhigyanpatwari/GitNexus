@@ -77,7 +77,7 @@ function run(aDefs: SymbolDefinition[], bDefs: SymbolDefinition[], name: string)
     },
   });
   return {
-    edge: out.imports.get(c.moduleScope)?.[0],
+    edge: out.imports.edgesAt(c.moduleScope)?.[0],
     ambiguous: out.stats.ambiguousWildcardExports,
   };
 }
@@ -116,7 +116,7 @@ describe('export * collisions with export evidence', () => {
         wildcardCollisionIsAmbiguous: true,
       },
     });
-    expect(out.imports.get(caller.moduleScope)?.[0]?.linkStatus).toBe('unresolved');
+    expect(out.imports.edgesAt(caller.moduleScope)?.[0]?.linkStatus).toBe('unresolved');
     expect(out.stats.ambiguousWildcardExports).toEqual([]);
   });
 
@@ -203,7 +203,7 @@ describe('export * collisions with export evidence', () => {
           },
         },
       );
-      const edge = out.imports.get(c.moduleScope)?.[0];
+      const edge = out.imports.edgesAt(c.moduleScope)?.[0];
       expect(edge?.linkStatus).toBe('unresolved');
       expect(out.stats.ambiguousWildcardExports.map((x) => x.name)).toEqual(['clash']);
     }

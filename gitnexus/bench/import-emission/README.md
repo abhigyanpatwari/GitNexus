@@ -37,7 +37,9 @@ and persisted CSV. The default workload has 547,040 distinct import pairs and
 
 To compare an older checkout, pass `--emitter` with the path to its
 `src/core/ingestion/scope-resolution/graph-bridge/imports-to-edges.ts`; that checkout
-must have its dependencies available. Alternate baseline and candidate order
+must have its dependencies available. An emitter older than `ImportVisibility`
+takes the edge map itself: add `--map-input` when running the probe against
+one. Alternate baseline and candidate order
 in fresh processes. Compare both hashes, not just edge counts. GC and hashing
 are part of the probe, so its elapsed time is not a speed benchmark. The signed
 first-emission heap delta includes runtime bookkeeping and may be negative;

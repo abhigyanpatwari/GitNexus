@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import { populateGoPackageSiblings } from '../../../../src/core/ingestion/languages/go/index.js';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 
 describe('Go package siblings', () => {
   it('augments bindings only for files in the same package directory', () => {
@@ -22,7 +23,7 @@ describe('Go package siblings', () => {
           ['cmd/bar/a.go', 'module:bar-a'],
         ]),
       },
-      imports: new Map(),
+      imports: createEagerImportVisibility(new Map()),
       bindings: new Map(),
       bindingAugmentations: new Map(),
     } as unknown as ScopeResolutionIndexes;
@@ -61,7 +62,7 @@ describe('Go package siblings', () => {
           ['pkg/a/c.go', 'module:c'],
         ]),
       },
-      imports: new Map(),
+      imports: createEagerImportVisibility(new Map()),
       bindings: new Map(),
       bindingAugmentations: new Map(),
     } as unknown as ScopeResolutionIndexes;
