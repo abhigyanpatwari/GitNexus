@@ -1,0 +1,25 @@
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_cf21910e31a167 53,172,234-239,381,383-385,420-427,431,441-444,484-492,494-498,591,619,660-661,770,783-791,810-819,834-836,876-880,929-930
+gitnexus/src/core/ingestion/languages/dart/receiver-binding.ts
+  s_b9690234122db7::t_cfe3c54fcf081d 26,150-151,157-158,160,163-206
+gitnexus/src/core/ingestion/languages/dart/walk-stats.ts
+  s_b9690234122db7::t_e39d8cb352399b 1-30
+gitnexus/test/unit/scope-resolution/dart-enclosing-type-cost.test.ts
+  s_b9690234122db7::t_4b8b26031fce2f 16,18-20,135,137-153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "545eb3412f690bf411e0188b8c06199ac73849f2",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
