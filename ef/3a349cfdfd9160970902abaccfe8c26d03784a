@@ -1,0 +1,23 @@
+gitnexus/test/unit/merge-chunk-order.test.ts
+  s_b9690234122db7::t_50639a2e4ea0a8 1-352
+  s_b9690234122db7::t_b0f7d71f3d80e9 353-363
+  s_b9690234122db7::t_ebc26b94724ebe 364-374
+gitnexus/src/core/ingestion/parsing-processor.ts
+  s_b9690234122db7::t_6101ad244a46c0 101-151,192-208,213-232,234-236,242,262-273,275-292
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ef3a349cfdfd9160970902abaccfe8c26d03784a",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
