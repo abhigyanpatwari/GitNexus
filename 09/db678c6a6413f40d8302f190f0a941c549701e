@@ -1,0 +1,27 @@
+gitnexus/test/unit/scope-resolution/dart-enclosing-type-cost.test.ts
+  s_b9690234122db7::t_be41da06d61041 1-111
+  s_b9690234122db7::t_e1f5f711dbf991 112-119
+gitnexus/test/integration/resolvers/dart-deep-closure-nest.test.ts
+  s_b9690234122db7::t_9e483759a1f307 1-94
+  s_b9690234122db7::t_da220e8d1fedb3 95-108
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_b41c9150b2bd05 41-46,218-222,273,363,401,539,567,605-607,703-705,710,712-718,723-724,740,825-829
+gitnexus/src/core/ingestion/languages/dart/receiver-binding.ts
+  s_b9690234122db7::t_ce666445059ee7 16-20,27-28,36-67,70-80,83-84,120,131-158
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "09db678c6a6413f40d8302f190f0a941c549701e",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
