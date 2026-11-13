@@ -1,3 +1,4 @@
+import '../helpers/mock-analysis-host.js';
 /**
  * Tests for non-4K page-size buffer-manager error handling in `analyzeCommand`
  * (#1231).
