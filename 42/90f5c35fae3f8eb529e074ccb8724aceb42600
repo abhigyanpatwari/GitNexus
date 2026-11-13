@@ -1,0 +1,26 @@
+.github/workflows/ci-tests.yml
+  s_b9690234122db7::t_cfa67347db971b 1536-1545
+gitnexus/bench/dart-deferred-imports/measure.mjs
+  s_b9690234122db7::t_f45d44f4e47412 1-159,177,195,203,214,220,233,235,237,241,256,271,276,288,300,302,317,331,334,346,373,383,387
+  s_b9690234122db7::t_104b561fe4715b 160-161
+  s_b9690234122db7::t_35c8724d2772f7 168,178,206,257,277,286,314,335,347-352,367,374,386
+  s_b9690234122db7::t_71e3b3ece04382 162-167,169-176,179-194,196-202,204-205,207-213,215-219,221-232,234,236,238-240,242-255,258-270,272-275,278-285,287,289-299,301,303-313,315-316,318-330,332-333,336-345,353-366,368-372,375-382,384-385
+gitnexus/bench/dart-deferred-imports/baseline.json
+  s_b9690234122db7::t_8f7963ca8b065f 1-166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4290f5c35fae3f8eb529e074ccb8724aceb42600",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": null
+    }
+  }
+}
