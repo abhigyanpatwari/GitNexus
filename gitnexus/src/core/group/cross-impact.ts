@@ -814,7 +814,9 @@ export async function runGroupImpact(
       // Wall clock second, as a hang backstop only. It is load-dependent by
       // construction, so when it is what fired the response must say `timeout`,
       // not the generic `partial` it used to report.
-      if (!manifestOnly && deadline - Date.now() <= 0) {
+      // A fired budget timer is final even if Date.now() has not caught up
+      // (timer rounding or a wall-clock adjustment must not restart fan-out).
+      if (!manifestOnly && (fanoutTimedOut || deadline - Date.now() <= 0)) {
         fanoutTimedOut = true;
         truncatedRepos.push(n.neighborRepo);
         continue;
