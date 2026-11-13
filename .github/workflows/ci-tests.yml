@@ -1537,11 +1537,31 @@ jobs:
         run: node --import tsx bench/kotlin-import-target/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Ruby block-parameter stop correctness + scaling guards (#3905)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins every method's CALLS edges when blocks rebind a
+        # typed local, side by side or nested, and checks capture and resolution
+        # scaling as methods (4x), blocks per method (16x) or nesting depth (4x)
+        # grow. Budgets: see baseline.json.
+        run: node --import tsx bench/ruby-block-param-stop/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Ruby gem-boundary correctness + scaling guards (#3096)
         if: ${{ !cancelled() }}
         # Includes real manifest loading; checks scoped resolution and scaling
         # as sibling projects or declared gem counts grow independently.
         run: node --import tsx bench/ruby-gem-resolution/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Dart deferred-import correctness + scaling guards (#3882)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins the graph `deferred as p` produces, which must
+        # equal the `as p` control, and checks capture and resolution scaling as
+        # deferred prefixes or uses per prefix grow 4x. Budgets and the measured
+        # pre-existing resolution term: see baseline.json.
+        run: node --import tsx bench/dart-deferred-imports/measure.mjs --check
         working-directory: gitnexus
 
       - name: Receiver-resolution drop guards
@@ -1568,6 +1588,18 @@ jobs:
         # rebaseline path demands the movement be explained. No separate
         # drop-ratchet gate is needed on top of this.
         run: node --import tsx bench/receiver-resolution/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Dart closure-binder correctness + scaling guards (#3903)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins every function's CALLS edges when closures rebind a
+        # receiver name, side by side or nested, checks capture and resolution
+        # scaling against input and output growth as functions, closures per
+        # function or nesting depth grow 16x (budget 1.5 everywhere), and counts
+        # the enclosing-type search's ancestor steps per Function scope. Fails
+        # on main until the depth terms in baseline.json's _depth_note are fixed.
+        run: node --import tsx bench/dart-closure-binders/measure.mjs --check
         working-directory: gitnexus
 
       - name: Scope-emission guards (#2699)
