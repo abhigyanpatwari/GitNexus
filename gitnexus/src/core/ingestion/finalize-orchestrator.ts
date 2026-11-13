@@ -49,6 +49,7 @@ import {
   buildQualifiedNameIndex,
   buildScopeTree,
   createEagerImportVisibility,
+  createGroupedImportVisibility,
   finalize,
 } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from './model/scope-resolution-indexes.js';
@@ -159,7 +160,12 @@ export function finalizeScopeModel(
     qualifiedNames,
     moduleScopes,
     methodDispatch,
-    imports: createEagerImportVisibility(finalizeOut.imports),
+    // Finalize reports `importEntries` only when it stored an import as a
+    // group; every other run keeps one edge per imported file.
+    imports:
+      finalizeOut.importEntries === undefined
+        ? createEagerImportVisibility(finalizeOut.imports)
+        : createGroupedImportVisibility(finalizeOut.importEntries, finalizeOut.imports),
     bindings: finalizeOut.bindings,
     // Empty post-finalize augmentation channel. Populated (if at all)
     // by language hooks like `populateCsharpNamespaceSiblings` running
