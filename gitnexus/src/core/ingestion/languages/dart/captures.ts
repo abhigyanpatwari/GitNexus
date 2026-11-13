@@ -648,6 +648,12 @@ const DART_SIGNATURE_TYPES: ReadonlySet<string> = new Set([
  * `for` (its loop variable), a switch case (its pattern variables and body
  * locals), an if-case (its pattern variables). A catch clause's parameters are
  * scoped to the body block that follows it (`dartCatchBody`).
+ *
+ * The collection elements `for` and `if` (`[for (final x in xs) x]`,
+ * `[if (o case int x) x]`) scope their variables the same way. Filed under the
+ * enclosing scope instead, the element's variable stopped every read of that
+ * name in the whole body: `tick()` after the literal lost its edge, and a
+ * parameter of the same name lost its annotation (DART-10 recall boundary 1).
  */
 const DART_BLOCK_SCOPE_TYPES: ReadonlySet<string> = new Set([
   'block',
@@ -655,6 +661,8 @@ const DART_BLOCK_SCOPE_TYPES: ReadonlySet<string> = new Set([
   'switch_statement_case',
   'switch_expression_case',
   'if_statement',
+  'for_element',
+  'if_element',
 ]);
 
 /** A function's own body block is its Function scope, not a nested one. */
@@ -1543,7 +1551,9 @@ function emitVarTypeBinding(
   memo: DartClassMemo,
 ): void {
   const nameNode = initVarDef.childForFieldName('name');
-  if (nameNode === null) return;
+  // A local named `_` declares nothing (Dart 3.7 wildcard variables), so its
+  // initializer types no `_` read; this node is always a local declarator.
+  if (nameNode === null || nameNode.text === '_') return;
   const callee = findDirectCallValue(initVarDef)?.text ?? qualifiedCallValue(initVarDef);
   if (callee === null) return;
   // A name bound more than once or assigned anywhere in its outermost body is
