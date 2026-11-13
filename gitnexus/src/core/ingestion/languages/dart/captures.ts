@@ -154,6 +154,24 @@ const DART_CALLABLE_CAPTURE_OPTIONS = {
   },
 } as const;
 
+/** `parent` steps `dartLexicalFunctionOwner` has taken (operation-count test hook). */
+let functionOwnerParentSteps = 0;
+
+/** Operation counts for the Dart capture walk, for the linearity tests. */
+export function getDartFunctionOwnerStats(): { parentSteps: number } {
+  return { parentSteps: functionOwnerParentSteps };
+}
+
+export function resetDartFunctionOwnerStats(): void {
+  functionOwnerParentSteps = 0;
+}
+
+/**
+ * The function or closure that owns `input` for callable flow. A climb: each
+ * `parent` and sibling read re-descends from the root in node-tree-sitter, so
+ * it costs the node's depth. Pass B records the answer for every node it walks
+ * (`walkDartTree`), and this runs only for a node the walk did not see.
+ */
 function dartLexicalFunctionOwner(input: SyntaxNode): SyntaxNode | undefined {
   let node: SyntaxNode | null = input;
   while (node !== null) {
@@ -162,6 +180,7 @@ function dartLexicalFunctionOwner(input: SyntaxNode): SyntaxNode | undefined {
       const signature = node.previousNamedSibling;
       if (signature?.type === 'function_signature') return signature;
     }
+    functionOwnerParentSteps++;
     node = node.parent;
   }
   return undefined;
@@ -219,6 +238,10 @@ export function emitDartScopeCaptures(
   // climbed past, so a member nested in another (a named closure) stops where
   // the outer lookup did instead of climbing to the root again.
   const enclosingTypes: DartEnclosingTypeMemo = new Map();
+
+  // The callable-flow owner of every node Pass B walks (null: none), so the
+  // shared pass reads it instead of climbing per lookup.
+  const functionOwners = new Map<number, SyntaxNode | null>();
 
   // ── Pass A: query-driven scopes / declarations / imports ────────────────
   for (const match of getDartScopeQuery().matches(root)) {
@@ -360,7 +383,9 @@ export function emitDartScopeCaptures(
 
   // ── Pass B: tree-walked references, type inference, heritage ────────────
   const seenReadSpans = new Set<string>();
-  walkDartTree(root, null, null, null, (node, type, owner, opensBlock, enclosingType) => {
+  walkDartTree(root, null, null, null, null, null, (node, type, walk) => {
+    const { owner, opensBlock, enclosingType } = walk;
+    functionOwners.set(node.id, walk.functionOwner);
     // A statement that opens a Dart scope gets a Block scope if it binds a
     // name; a catch clause's parameters belong to the body block after it.
     if (opensBlock) registerDartBlockScope(lexicalScopes, node, owner);
@@ -373,10 +398,7 @@ export function emitDartScopeCaptures(
     if (owner !== null && DART_DECLARED_NAME_TYPES.has(type)) {
       recordDartLexicalName(node, type, owner, lexicalScopes);
     }
-    if (
-      type === 'selector' ||
-      (ASSIGNABLE_SELECTORS.has(type) && node.parent?.type !== 'selector')
-    ) {
+    if (type === 'selector' || (ASSIGNABLE_SELECTORS.has(type) && walk.parentType !== 'selector')) {
       emitSelectorReference(node, out, seenReadSpans);
       return;
     }
@@ -404,7 +426,16 @@ export function emitDartScopeCaptures(
   });
   attachDartLexicalNames(lexicalScopes, out);
 
-  out.push(...synthesizeCallableFlowCaptures(root, DART_CALLABLE_CAPTURE_OPTIONS));
+  const lexicalFunctionOwner = (node: SyntaxNode): SyntaxNode | undefined => {
+    const known = functionOwners.get(node.id);
+    return known !== undefined ? (known ?? undefined) : dartLexicalFunctionOwner(node);
+  };
+  out.push(
+    ...synthesizeCallableFlowCaptures(root, {
+      ...DART_CALLABLE_CAPTURE_OPTIONS,
+      lexicalFunctionOwner,
+    }),
+  );
 
   const prefixes = deferredPrefixes;
   if (prefixes === undefined) return out;
@@ -702,25 +733,30 @@ function dartCatchBody(catchClause: SyntaxNode): SyntaxNode | null {
  * way down makes the owner of a binder a field read, not a climb.
  *
  * It carries the nearest enclosing type declaration the same way (`null`: the
- * node has none), so a closure's receiver binding is a field read too.
+ * node has none), so a closure's receiver binding is a field read too, and the
+ * callable-flow owner (`dartLexicalFunctionOwner`'s answer) and the parent's
+ * type. node-tree-sitter's `parent` and sibling reads re-descend from the root,
+ * so a climb per node would cost the node's depth each time.
  */
 function walkDartTree(
   node: SyntaxNode,
   owner: SyntaxNode | null,
   enclosingType: SyntaxNode | null,
+  inheritedFunctionOwner: SyntaxNode | null,
+  previousNamed: SyntaxNode | null,
   parentType: string | null,
-  visit: (
-    node: SyntaxNode,
-    type: string,
-    owner: SyntaxNode | null,
-    opensBlock: boolean,
-    enclosingType: SyntaxNode | null,
-  ) => void,
+  visit: (node: SyntaxNode, type: string, walk: DartWalkState) => void,
 ): void {
   // Read once: `type` is a native call on every access.
   const type = node.type;
   const opensBlock = owner !== null && opensDartBlockScope(type, parentType);
-  visit(node, type, owner, opensBlock, enclosingType);
+  const functionOwner =
+    type === 'function_signature' || type === 'function_expression'
+      ? node
+      : type === 'function_body' && previousNamed?.type === 'function_signature'
+        ? previousNamed
+        : inheritedFunctionOwner;
+  visit(node, type, { owner, opensBlock, enclosingType, functionOwner, parentType });
   const childEnclosingType = DART_TYPE_DECLARATION_TYPES.has(type) ? node : enclosingType;
   let childOwner = owner;
   if (type === 'function_body' || type === 'function_expression_body') childOwner = node;
@@ -735,10 +771,26 @@ function walkDartTree(
     const body = nextDartNonCommentSibling(host);
     childOwner = body !== null && body.type === 'function_body' ? body : null;
   }
+  let previous: SyntaxNode | null = null;
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
-    if (child !== null) walkDartTree(child, childOwner, childEnclosingType, type, visit);
+    if (child !== null) {
+      walkDartTree(child, childOwner, childEnclosingType, functionOwner, previous, type, visit);
+    }
+    previous = child;
   }
+}
+
+/** What `walkDartTree` hands each node besides the node and its type. */
+interface DartWalkState {
+  /** The body or statement owning the scope the node sits in (null: none). */
+  readonly owner: SyntaxNode | null;
+  readonly opensBlock: boolean;
+  /** The nearest enclosing type declaration (null: none). */
+  readonly enclosingType: SyntaxNode | null;
+  /** `dartLexicalFunctionOwner`'s answer for the node (null: none). */
+  readonly functionOwner: SyntaxNode | null;
+  readonly parentType: string | null;
 }
 
 /** File the name `node` declares under the scope whose owner node is `owner`. */

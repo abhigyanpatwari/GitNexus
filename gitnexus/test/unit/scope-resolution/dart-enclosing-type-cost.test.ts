@@ -13,7 +13,11 @@
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { CaptureMatch } from 'gitnexus-shared';
-import { emitDartScopeCaptures } from '../../../src/core/ingestion/languages/dart/captures.js';
+import {
+  emitDartScopeCaptures,
+  getDartFunctionOwnerStats,
+  resetDartFunctionOwnerStats,
+} from '../../../src/core/ingestion/languages/dart/captures.js';
 import {
   getDartEnclosingTypeStats,
   resetDartEnclosingTypeStats,
@@ -115,5 +119,22 @@ describe.skipIf(!dartAvailable)('Dart enclosing-type search is linear in the fil
     // per closure makes each added level cost more than the one before.
     expect(d64.visits - d16.visits).toBeLessThanOrEqual(6 * (d16.visits - d8.visits));
     expect(d64.visits).toBeLessThanOrEqual(8 * d64.scopes);
+  });
+});
+
+describe.skipIf(!dartAvailable)('Dart callable-flow owner is read, not climbed', () => {
+  it('the owner hook takes no parent step for any node the capture walk visited', () => {
+    // The shared callable-flow pass asks for the owning function of every call
+    // and argument. A `parent` read costs the node's depth in node-tree-sitter,
+    // so a climb per lookup grows with depth; the walk records every answer.
+    for (const source of [
+      inlineNest(64, 'void f(List<int> items) {', '}\n'),
+      inlineNest(64, 'class Svc {\n  int operator +(List<int> items) {', '    return 0;\n  }\n}\n'),
+      namedNest(64),
+    ]) {
+      resetDartFunctionOwnerStats();
+      emitDartScopeCaptures(source, 'lib/nest.dart');
+      expect(getDartFunctionOwnerStats().parentSteps).toBe(0);
+    }
   });
 });
