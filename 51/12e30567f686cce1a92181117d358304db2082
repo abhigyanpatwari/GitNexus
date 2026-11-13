@@ -1,0 +1,23 @@
+.github/workflows/ci-tests.yml
+  s_b9690234122db7::t_8ec86effef6a25 1529-1538
+gitnexus/bench/ruby-block-param-stop/baseline.json
+  s_b9690234122db7::t_966810ab8cab6f 1-174
+gitnexus/bench/ruby-block-param-stop/measure.mjs
+  s_b9690234122db7::t_8f6f4f74a9a35b 1-471
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5112e30567f686cce1a92181117d358304db2082",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
