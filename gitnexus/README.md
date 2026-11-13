@@ -531,7 +531,7 @@ investigating a result.
 
 ```bash
 export GITNEXUS_DISABLE_IMPORT_GROUPS=1
-gitnexus analyze .
+gitnexus analyze . --force
 ```
 
 ## Multi-Repo Support

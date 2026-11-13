@@ -425,9 +425,9 @@ export interface ScopeResolver {
 
   /** Store a wildcard import that `resolveImportTarget` answers with a list
    * of files as ONE group over that list, instead of one import edge per
-   * file. Only for a language whose wildcard import binds no name in the
-   * importing file and executes nothing: the import then says nothing but
-   * "these files are reachable", and readers ask that through
+   * file. Only when finalize creates no per-name bindings for the wildcard
+   * (`expandsWildcardTo` returns no names). Later resolution can still find
+   * names in the reachable files; readers ask about that reachability through
    * `ImportVisibility` (`reaches`, `membership`, `forEachTarget`).
    *
    * Return the same array for every importer of the same package, so the

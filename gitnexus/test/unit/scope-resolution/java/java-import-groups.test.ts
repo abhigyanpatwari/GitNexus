@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ImportVisibility, ScopeId } from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../../../../src/core/graph/graph.js';
 import { createSemanticModel } from '../../../../src/core/ingestion/model/semantic-model.js';
+import { emitReferencesToGraph } from '../../../../src/core/ingestion/emit-references.js';
 import { runScopeResolution } from '../../../../src/core/ingestion/scope-resolution/pipeline/run.js';
 import { javaScopeResolver } from '../../../../src/core/ingestion/languages/java/scope-resolver.js';
 import { graphIdentity } from '../../../helpers/graph-identity.js';
@@ -24,7 +25,7 @@ const sources = {
 /** The package's files in the order the pass was given them: the order of the package's list. */
 const MODELS = ['src/models/User.java', 'src/models/Order.java', 'src/models/Audit.java'];
 
-function resolve() {
+function resolve(emitScopes = false) {
   const graph = createKnowledgeGraph();
   let imports: ImportVisibility | undefined;
   let moduleScopes: ReadonlyMap<string, ScopeId> = new Map();
@@ -38,6 +39,13 @@ function resolve() {
         moduleScopes = new Map(
           result.parsedFiles.map((parsed) => [parsed.filePath, parsed.moduleScope]),
         );
+        if (emitScopes) {
+          emitReferencesToGraph({
+            graph,
+            scopes: result.indexes,
+            referenceIndex: { bySourceScope: new Map(), byTargetDef: new Map() },
+          });
+        }
       },
     },
     javaScopeResolver,
@@ -102,5 +110,29 @@ describe('Java on-demand imports are stored as groups', () => {
     vi.stubEnv('GITNEXUS_DISABLE_IMPORT_GROUPS', '1');
     expect(graphIdentity(resolve().graph)).toEqual(grouped);
     expect(grouped.relationships.filter((rel) => rel.includes('"type":"IMPORTS"'))).toHaveLength(3);
+  });
+
+  it('preserves every scope import edge when scope emission is enabled', () => {
+    vi.stubEnv('INGESTION_EMIT_SCOPES', '1');
+    const grouped = resolve(true);
+    const scopeImports = [...grouped.graph.iterRelationshipsByType('IMPORTS')].filter((rel) =>
+      rel.id.startsWith('rel:imports:'),
+    );
+    expect(scopeImports.map((rel) => [rel.sourceId, rel.targetId, rel.reason])).toEqual([
+      [
+        grouped.scope('src/app/Main.java'),
+        grouped.scope('src/util/Text.java'),
+        'import named Text',
+      ],
+      ...['src/app/Main.java', 'src/app/Other.java'].flatMap((source) =>
+        MODELS.map((target) => [
+          grouped.scope(source),
+          grouped.scope(target),
+          'import wildcard-expanded ',
+        ]),
+      ),
+    ]);
+    vi.stubEnv('GITNEXUS_DISABLE_IMPORT_GROUPS', '1');
+    expect(graphIdentity(resolve(true).graph)).toEqual(graphIdentity(grouped.graph));
   });
 });

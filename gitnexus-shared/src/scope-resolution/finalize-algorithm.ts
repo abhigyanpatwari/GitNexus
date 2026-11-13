@@ -691,6 +691,7 @@ function groupedNeighbours(
             for (const targetFile of groups[nextGroup++]!.targetFiles)
               if (byFilePath.has(targetFile)) yield targetFile;
           }
+          if (placed === drafts.length) break;
           const targetFile = drafts[placed]?.targetFile;
           if (targetFile != null && byFilePath.has(targetFile)) yield targetFile;
         }
@@ -739,6 +740,7 @@ function withGroupDrafts(
           });
         }
       }
+      if (placed === drafts.length) break;
       const draft = drafts[placed];
       if (draft !== undefined && draft.fromScope === file.moduleScope) merged.push(draft);
     }

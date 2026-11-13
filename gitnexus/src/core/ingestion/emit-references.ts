@@ -28,8 +28,8 @@
  *   - `Scope` nodes for every `Scope` in the tree
  *   - `CONTAINS` edges from parent scope to child scope
  *   - `DEFINES` edges from scope to its `ownedDefs` members
- *   - `IMPORTS` edges from scope to `targetModuleScope` of each finalized
- *     `ImportEdge` that carries one
+ *   - `IMPORTS` edges from scope to each imported module, including targets
+ *     stored in shared wildcard groups
  *
  * Off by default — existing queries that don't know about `Scope` nodes
  * continue to work, and the storage cost is opt-in.
@@ -55,6 +55,7 @@ import type {
   ScopeId,
   SymbolDefinition,
 } from 'gitnexus-shared';
+import { isSelectableImport } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../graph/types.js';
 import type { ScopeResolutionIndexes } from './model/scope-resolution-indexes.js';
 import { toZeroBasedLine } from './utils/line-base.js';
@@ -175,18 +176,25 @@ export function emitScopeGraph(input: {
   }
 
   for (const scopeId of scopes.imports.scopes()) {
-    for (const edge of scopes.imports.edgesAt(scopeId) ?? []) {
-      if (edge.targetModuleScope === undefined) continue;
+    scopes.imports.forEachTarget(scopeId, (targetFile, edge) => {
+      // A group's metadata describes the statement; resolve each target's
+      // module through the shared index without retaining per-file edges.
+      const targetModuleScope =
+        edge.targetModuleScope ??
+        (!isSelectableImport(edge) && edge.linkStatus !== 'unresolved'
+          ? scopes.moduleScopes.get(targetFile)
+          : undefined);
+      if (targetModuleScope === undefined) return;
       graph.addRelationship({
-        id: `rel:imports:${scopeId}->${edge.targetModuleScope}:${edge.localName}`,
+        id: `rel:imports:${scopeId}->${targetModuleScope}:${edge.localName}`,
         sourceId: scopeId,
-        targetId: edge.targetModuleScope,
+        targetId: targetModuleScope,
         type: 'IMPORTS',
         confidence: edge.linkStatus === 'unresolved' ? 0.5 : 1,
         reason: `import ${edge.kind} ${edge.localName}`,
       });
       scopeEdgesEmitted++;
-    }
+    });
   }
 
   return { scopeNodesEmitted, scopeEdgesEmitted };
