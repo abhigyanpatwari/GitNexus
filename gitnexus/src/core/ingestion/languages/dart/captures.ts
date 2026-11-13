@@ -200,6 +200,11 @@ export function emitDartScopeCaptures(
     censusByBody: new Map(),
   };
 
+  // `p` of every `import '…' deferred as p;` in this file, for
+  // `namesDeferredLoadLibrary`. Stays undefined for a file with no deferred
+  // import, which then returns `out` untouched.
+  let deferredPrefixes: Set<string> | undefined;
+
   // Every Function scope this file emits, keyed by its body span. Pass B's
   // single tree walk files each binder under the body that owns it, and the
   // names ride the scope match as `@scope.lexical-names` once the walk ends.
@@ -330,6 +335,10 @@ export function emitDartScopeCaptures(
       continue;
     }
 
+    const deferredPrefix =
+      grouped['@import.deferred'] !== undefined ? grouped['@import.alias']?.text : undefined;
+    if (deferredPrefix !== undefined) (deferredPrefixes ??= new Set()).add(deferredPrefix);
+
     // Structural receiver chain for a call whose receiver is itself an
     // expression, so resolution can type it by folding over structure
     // instead of re-parsing the receiver's source text. Self-gating: a
@@ -387,7 +396,40 @@ export function emitDartScopeCaptures(
 
   out.push(...synthesizeCallableFlowCaptures(root, DART_CALLABLE_CAPTURE_OPTIONS));
 
-  return out;
+  const prefixes = deferredPrefixes;
+  if (prefixes === undefined) return out;
+  return out.filter((match) => !namesDeferredLoadLibrary(match, prefixes));
+}
+
+/** `p.loadLibrary` at the head of a receiver or call-result text. */
+const LOAD_LIBRARY_HEAD = /^([A-Za-z_$][\w$]*)\s*\.\s*loadLibrary(?![\w$])/;
+
+/**
+ * Whether `match` reads `loadLibrary` through a deferred prefix `p`
+ * (`import '…' deferred as p;`).
+ *
+ * The language gives a deferred prefix an implicit `Future<void> loadLibrary()`
+ * and performs the load with `hide loadLibrary`, so `p.loadLibrary` never
+ * names a declaration of the imported library, even one the library declares
+ * itself (legal when the import hides it). Resolved through the namespace like
+ * any other member, the call and the tear-off would bind to that declaration
+ * and its return annotation would type the result. So three shapes are
+ * dropped: the reference itself (`p.loadLibrary()`, `p.loadLibrary`), a member
+ * read off its result (`p.loadLibrary().timeout(d)`), and the call-result seed
+ * (`final f = p.loadLibrary();`). The result is the SDK's `Future<void>`, which
+ * no workspace class declares.
+ */
+function namesDeferredLoadLibrary(match: CaptureMatch, prefixes: ReadonlySet<string>): boolean {
+  const receiver = match['@reference.receiver']?.text;
+  if (receiver !== undefined) {
+    if (match['@reference.name']?.text === 'loadLibrary' && prefixes.has(receiver)) return true;
+    const head = LOAD_LIBRARY_HEAD.exec(receiver)?.[1];
+    if (head !== undefined && prefixes.has(head)) return true;
+  }
+  const bound = match['@type-binding.type']?.text;
+  if (bound === undefined) return false;
+  const head = LOAD_LIBRARY_HEAD.exec(bound)?.[1];
+  return head !== undefined && prefixes.has(head);
 }
 
 function dartCallableCallee(selector: SyntaxNode): SyntaxNode | null {

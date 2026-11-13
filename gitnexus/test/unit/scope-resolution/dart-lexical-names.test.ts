@@ -200,7 +200,7 @@ describe.skipIf(!dartAvailable)('Dart lexical names (DART-11)', () => {
     const emitted = emitDartScopeCaptures(source, 'w.dart');
     expect(scopes(emitted)).toEqual({
       'Function 1:0-6:1': ['a', 'cb', 'items'],
-      // the closure declares only `_`: no scope, no parameter binding
+      // the closure's only parameter is `_`, which binds nothing: no scope or parameter binding
       'Function 5:2-5:29': ['fn'],
     });
     expect(parameterBindings(emitted).filter((b) => b.startsWith('_:'))).toEqual([]);
