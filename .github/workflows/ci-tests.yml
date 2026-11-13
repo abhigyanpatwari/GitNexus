@@ -10,7 +10,9 @@ jobs:
   file-result-reuse-benchmark:
     name: parse cache / speed and memory (${{ matrix.corpus }})
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # A noisy runner extends the comparison from 7 to at most 21 pairs. The
+    # real corpus takes about five minutes per pair, plus one warmup pair.
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
@@ -43,9 +45,6 @@ jobs:
       - name: Build baseline runtime
         working-directory: baseline/gitnexus
         run: npm ci
-      - name: Check performance gate decisions
-        working-directory: gitnexus
-        run: npx vitest run test/unit/file-result-reuse-benchmark.test.ts
       - name: Require parse-cache speed and memory improvements
         working-directory: gitnexus
         shell: bash
@@ -56,9 +55,9 @@ jobs:
           if [[ "$CORPUS" == real ]]; then
             corpus_args+=(--corpus "$GITHUB_WORKSPACE/baseline/gitnexus/src")
           fi
-          node bench/file-result-reuse/measure.mjs --check \
+          node bench/file-result-reuse/benchmark.js --check \
             --baseline-dist "$GITHUB_WORKSPACE/baseline/gitnexus/dist" \
-            --pairs 7 --files 1024 --workers 2 \
+            --pairs 7 --max-pairs 21 --files 1024 --workers 2 \
             --output "$RUNNER_TEMP/file-result-reuse/measure.json" \
             "${corpus_args[@]}"
       - name: Publish speed and memory summary
@@ -1266,6 +1265,16 @@ jobs:
         # scaling + widening overhead (compose must stay linear in procedure
         # count, and must not degrade the inline scan).
         run: node --import tsx bench/trpc-route-extractor/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Ruby bare-read correctness + scaling guards (#3880)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins bare parameter reads in nested blocks and heredoc
+        # bodies (and the opener rule's kept call), and checks capture and
+        # resolution scaling as methods, block depth, heredocs per opener line or
+        # reads per heredoc body grow 4x. Budgets: see baseline.json.
+        run: node --import tsx bench/ruby-bare-reads/measure.mjs --check
         working-directory: gitnexus
 
       - name: Go route-fact correctness and linear scaling (#3750)

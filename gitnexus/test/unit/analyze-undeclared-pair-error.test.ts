@@ -1,3 +1,4 @@
+import '../helpers/mock-analysis-host.js';
 /**
  * Tests for the undeclared FROM→TO label-pair failure path in the
  * `analyzeCommand` CLI (#2789).

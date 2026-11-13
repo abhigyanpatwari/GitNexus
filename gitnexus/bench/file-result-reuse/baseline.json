@@ -1,5 +1,21 @@
 {
   "schemaVersion": 1,
+  "protocol": "fresh-process-per-phase-v1",
+  "defaults": {
+    "pairs": 7,
+    "maxPairs": 21,
+    "files": 1024,
+    "workers": 2,
+    "heapMiB": 4096
+  },
+  "budgets": {
+    "regression": 1.05,
+    "repeated": 0.95,
+    "peakRss": 1,
+    "phase": 1.15,
+    "cacheBytes": 0.5
+  },
+  "note": "Historical chunk-cache/per-file comparison, before controlled GC and phase isolation. Acceptance uses contemporaneous paired measurements, not these absolute times.",
   "date": "2026-11-09",
   "baselineSourceCommit": "18b28f1261ad7bc91282ce4fa7c5004296503bb5",
   "candidateBuildDigest": "331a89ddd96ea3683e973f291df413ad522805da8c89fd3d76b4d4817e0cc0e0",

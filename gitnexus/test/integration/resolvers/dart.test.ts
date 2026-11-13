@@ -170,17 +170,40 @@ describe.skipIf(!dartAvailable)('Dart prefixed-import factory result types (#349
       .filter((edge) => edge.source === source && edge.target === 'm')
       .map((edge) => edge.rel.targetId);
 
-  it.each(['finalCall', 'varCall', 'inlineCall'])('resolves %s to C.m', (source) => {
-    expect(methodCalls(source)).toEqual(['Method:lib/mod.dart:C.m#0']);
+  // `awaitedCall` (`final x = await rp.makeAsync()`, `Future<C> makeAsync()`):
+  // the binding carries `@type-binding.awaited`, the return binding carries
+  // `Future<C>` whole, and the post-finalize chain follow takes what the
+  // Dart await route says the Future yields — `C` (DART-04). The exact owner
+  // matters: `Other.m` is the same-named decoy.
+  it.each(['finalCall', 'varCall', 'inlineCall', 'awaitedCall'])(
+    'resolves %s to the exact C.m',
+    (source) => {
+      expect(methodCalls(source)).toEqual(['Method:lib/mod.dart:C.m#0']);
+    },
+  );
+
+  it('does not guess a receiver type for untypedCall', () => {
+    expect(methodCalls('untypedCall')).toEqual([]);
   });
 
-  // An awaited `Future<C>` is captured like a direct call, but no Dart path
-  // unwraps the Future of an awaited result yet, named imports included.
-  it.each(['untypedCall', 'awaitedCall'])('does not guess a receiver type for %s', (source) => {
-    expect(methodCalls(source)).toEqual([]);
+  // `import 'mod.dart' deferred as dp;` is a namespace import like `as rp`:
+  // the deferred branch of the grammar must be captured, or the file has no
+  // IMPORTS edge and `dp.make()` never binds its result to C.
+  it('captures a deferred prefixed import as an IMPORTS edge', () => {
+    const imports = getRelationships(result, 'IMPORTS')
+      .filter((edge) => edge.sourceFilePath === 'lib/deferred_callers.dart')
+      .map((edge) => edge.targetFilePath);
+    expect(imports).toEqual(['lib/mod.dart']);
   });
 
-  it('records the untyped and awaited factory results as dropped sites', () => {
+  it.each(['deferredFinalCall', 'deferredInlineCall'])(
+    'resolves %s to C.m through the deferred prefix',
+    (source) => {
+      expect(methodCalls(source)).toEqual(['Method:lib/mod.dart:C.m#0']);
+    },
+  );
+
+  it('records the untyped factory result as a dropped site (and the awaited one no longer)', () => {
     expect(
       getResolutionOutcomes(result)
         .filter((outcome) => outcome.kind === 'suppressed')
@@ -190,7 +213,74 @@ describe.skipIf(!dartAvailable)('Dart prefixed-import factory result types (#349
         )
         .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
         .sort(),
-    ).toEqual(['17:m', '22:m']);
+    ).toEqual(['17:m']);
+  });
+});
+
+// ── Deferred-prefix `loadLibrary` ───────────────────────────────────────
+
+describe.skipIf(!dartAvailable)('Dart deferred-prefix loadLibrary', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-deferred-load-library'), () => {});
+  }, 60000);
+
+  const DEFERRED = 'lib/deferred_callers.dart';
+  const IMMEDIATE = 'lib/immediate_callers.dart';
+  const LOAD = 'Function:lib/mod.dart:loadLibrary';
+  const TIMEOUT = 'Method:lib/mod.dart:Pending.timeout#1';
+
+  const targets = (type: string, file: string, source: string) => [
+    ...new Set(
+      getRelationships(result, type)
+        .filter((edge) => edge.sourceFilePath === file && edge.source === source)
+        .map((edge) => edge.rel.targetId)
+        .sort(),
+    ),
+  ];
+
+  // A deferred prefix gets an implicit `loadLibrary()` and the library loads
+  // with `hide loadLibrary`, so `dp.loadLibrary` never names mod.dart's own
+  // `loadLibrary`. In the `as ip` control it is an ordinary namespace member.
+  it('binds no dp.loadLibrary() call to the library declaration, unlike ip.loadLibrary()', () => {
+    expect(targets('CALLS', DEFERRED, 'deferredLoad')).toEqual([]);
+    expect(targets('CALLS', IMMEDIATE, 'immediateLoad')).toEqual([LOAD]);
+  });
+
+  it('binds no dp.loadLibrary tear-off to the library declaration, unlike ip.loadLibrary', () => {
+    expect(targets('ACCESSES', DEFERRED, 'deferredLoadTearOff')).toEqual([]);
+    expect(targets('ACCESSES', IMMEDIATE, 'immediateLoadTearOff')).toEqual([LOAD]);
+  });
+
+  // The library's `Pending loadLibrary()` annotation must not type the result:
+  // through the deferred prefix it is the SDK Future, whose `timeout` is not
+  // Pending.timeout. `dp.feature()` in the same body still resolves.
+  it('does not type a dp.loadLibrary() result from the library return annotation', () => {
+    expect(targets('CALLS', DEFERRED, 'deferredLoadResult')).toEqual([
+      'Function:lib/mod.dart:feature',
+    ]);
+    expect(targets('CALLS', IMMEDIATE, 'immediateLoadResult')).toEqual([LOAD, TIMEOUT]);
+  });
+
+  it('does not type a member called on dp.loadLibrary() inline', () => {
+    expect(targets('CALLS', DEFERRED, 'deferredLoadChain')).toEqual([]);
+    expect(targets('CALLS', IMMEDIATE, 'immediateLoadChain')).toEqual([LOAD, TIMEOUT]);
+  });
+
+  // Constructors and static members reach mod.dart through the deferred prefix
+  // as they do through `as ip`. decoy.dart declares a second `C`, so no
+  // unique-name match can supply these edges.
+  it('resolves constructors and static members through the deferred prefix like as ip', () => {
+    const members = (file: string, source: string) => ({
+      calls: targets('CALLS', file, source),
+      reads: targets('ACCESSES', file, source),
+    });
+    expect(members(DEFERRED, 'deferredMembers')).toEqual({
+      calls: ['Class:lib/mod.dart:C', 'Method:lib/mod.dart:C.sm#0'],
+      reads: ['Class:lib/mod.dart:C', 'Property:lib/mod.dart:C.sf'],
+    });
+    expect(members(IMMEDIATE, 'immediateMembers')).toEqual(members(DEFERRED, 'deferredMembers'));
   });
 });
 

@@ -38,6 +38,7 @@ import {
   dartScopeOwnsReceivers,
   interpretDartImport,
   interpretDartTypeBinding,
+  dartElementTypeOf,
   dartBindingScopeFor,
   dartImportOwningScope,
   dartReceiverBinding,
@@ -145,6 +146,10 @@ export const dartProvider = defineLanguage({
   cfgVisitor: createDartCfgVisitor(),
   interpretImport: interpretDartImport,
   interpretTypeBinding: interpretDartTypeBinding,
+  // The `await` route for an awaited call-result binding (`final x = await
+  // f()`), read by the extractor's chain follow; the resolver gets the same
+  // function (`dart/scope-resolver.ts`). See `dartElementTypeOf`.
+  elementTypeOf: dartElementTypeOf,
   bindingScopeFor: dartBindingScopeFor,
   importOwningScope: dartImportOwningScope,
   receiverBinding: dartReceiverBinding,

@@ -659,6 +659,16 @@ export interface TypeRef {
    * evidence" and decline, never as "not a container".
    */
   readonly declaredSpelling?: string;
+  /**
+   * The binding holds the AWAITED result of the callee `rawName` names
+   * (`final x = await fetch()`), not the callee's return value itself. Set by
+   * the scope extractor from a `@type-binding.awaited` capture; read by the
+   * chain follow, which asks the language what the followed return type
+   * yields under `await` (`ScopeResolver.elementTypeOf`, route `await`) and
+   * clears the flag once that first step has been taken. Absent (never
+   * `false`) for every other binding, so an older ParsedFile reads the same.
+   */
+  readonly awaited?: true;
   /** Anchor for resolving `rawName` — the scope where the annotation/inference was written. */
   readonly declaredAtScope: ScopeId;
   readonly source:

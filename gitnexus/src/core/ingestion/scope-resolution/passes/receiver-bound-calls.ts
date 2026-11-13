@@ -84,6 +84,7 @@ import {
   findExportedDefIncludingImportedNames,
   findOwnedMember,
   findReceiverTypeBinding,
+  findUntypedReceiverBinder,
   lookupNameClaim,
   hasExplicitNameClaim,
   findValueBindingInScope,
@@ -2971,6 +2972,30 @@ export function emitReceiverBoundCalls(
       // ── Case 4: simple typeBinding (`u: U`) ──────────────────────
       if (typeRef !== undefined && !typeRef.rawName.includes('.')) {
         sourceBindingGrounded = true;
+        // An awaitable WRAPPER spelling (`Future<User>`, kept whole by the
+        // language so the un-awaited value is not typed as its result) names
+        // no owner: the receiver is recorded as unresolved instead of being
+        // erased to whatever workspace class shares the wrapper's name. Same
+        // rule as `classOfDeclaredType` in `compound-receiver.ts`, which every
+        // fold route goes through; this is the one lookup outside it.
+        if (
+          provider.elementTypeOf?.(typeRef.declaredSpelling ?? typeRef.rawName, {
+            kind: 'await',
+          }) !== undefined
+        ) {
+          options.recordResolutionOutcome?.({
+            kind: 'suppressed',
+            reason: 'receiver-unresolved',
+            candidateIds: [],
+            phase: 'receiver-bound-calls',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+            siteKind: site.kind,
+          });
+          handledSites.add(siteKey);
+          continue;
+        }
         // A `rawName` the capture layer reduced from a type application is
         // resolved through the application it was written as, so the erasure
         // takes the GROUNDED route rather than binding whatever the workspace
@@ -3826,6 +3851,46 @@ export function emitReceiverBoundCalls(
                   receiverOriginEvidence,
                 ),
         });
+      }
+
+      // DART-11: a bare receiver whose nearest binder declares it WITHOUT a
+      // type. The type walk stopped at that binder (an enclosing scope's type
+      // for the same spelling is not this receiver's type), so every case above
+      // declined and this pass emitted nothing for the site. Record why, naming
+      // the binder. Diagnostic only, and it does not claim the site: the
+      // type-driven routes after this pass honour the same stop (`lookupCore`
+      // skips the lexical step for a named receiver and its type step stops at
+      // the binder; the PHP name fallback checks it itself), but a name-only
+      // route can still add an edge — a tear-off read (`final t = cs.save;`)
+      // keeps the member-name `ACCESSES` edge it had before this change.
+      // Bare names only: a compound receiver keeps the #2744 drop above, whose
+      // counts feed `unresolvedReceiverMembers`.
+      if (
+        options.recordResolutionOutcome !== undefined &&
+        !hiddenByEarlierSite &&
+        !compoundReceiverUnresolved &&
+        receiverNamespace === undefined &&
+        typeRef === undefined &&
+        site.receiverChain === undefined &&
+        BARE_TYPE_NAME_RE.test(receiverName)
+      ) {
+        const binder = findUntypedReceiverBinder(site.inScope, receiverName, scopes, {
+          position: site.atRange,
+        });
+        if (binder !== undefined) {
+          options.recordResolutionOutcome({
+            kind: 'suppressed',
+            reason: 'receiver-type-unresolved',
+            declineDetail: 'untyped-binder',
+            binderScopeId: binder.id,
+            candidateIds: [],
+            phase: 'receiver-bound-calls',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+            siteKind: site.kind,
+          });
+        }
       }
     }
   }

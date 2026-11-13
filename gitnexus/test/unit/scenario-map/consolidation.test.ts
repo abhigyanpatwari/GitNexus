@@ -282,7 +282,7 @@ it('runs the pinned external clone engine on renamed and partial fixture functio
   try {
     const all = { ...sources, [renamedKey]: renamed, [longerKey]: longer };
     const run = await runFixtureClones(all, root);
-    expect(run.version).toContain('5.4.2');
+    expect(run.version).toContain('5.4.3');
     const index = new FixtureCloneIndex(all, run);
     expect(
       index.compare(profile, { ...profile, sourceKeys: [renamedKey], contentKey: 'renamed' })

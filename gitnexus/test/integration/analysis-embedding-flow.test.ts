@@ -86,6 +86,7 @@ it('publishes before HTTP work and resumes without parsing or repeating durable 
   vi.stubEnv('GITNEXUS_EMBEDDING_DIMS', '4');
   vi.stubEnv('GITNEXUS_EMBEDDING_MAX_ATTEMPTS', '1');
   vi.stubEnv('GITNEXUS_EMBEDDING_SUB_BATCH_SIZE', '8');
+  vi.stubEnv('GITNEXUS_EMBEDDING_CONCURRENCY', '4');
   const resources = resolveAnalysisResourceBudget({
     effectiveMemoryBytes: 4 * 1024 ** 3,
     availableCpus: 2,
