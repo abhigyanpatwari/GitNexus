@@ -937,6 +937,8 @@ export function emitRubyScopeCaptures(
   // Per-scope binding index for the bare-identifier read check (RUBY-04),
   // built lazily and shared across every match of this file.
   const bareReadBindings = new Map<number, RubyScopeBindings>();
+  const lexicalNamesByScope = new Map<number, ReadonlySet<string>>();
+  const receiverlessCallSites = new Set<string>();
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
@@ -953,6 +955,12 @@ export function emitRubyScopeCaptures(
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+    const freeCall = nodeIfType(nodeMap['@reference.call.free'], 'call');
+    if (freeCall !== null && freeCall.childForFieldName('receiver') === null) {
+      receiverlessCallSites.add(
+        `${freeCall.startPosition.row + 1}:${freeCall.startPosition.column}`,
+      );
+    }
 
     // A tree-sitter pattern cannot say "and no singleton ancestor", so the
     // ownership test is a walk and the whole binding is dropped here when `self`
@@ -1001,6 +1009,7 @@ export function emitRubyScopeCaptures(
         const enclosingNode = findEnclosingClassOrModule(fnNode);
         const receiver = synthesizeRubyReceiverBinding(fnNode, enclosingNode);
         if (receiver !== null) out.push(receiver);
+        attachRubyLexicalNames(grouped, fnNode);
       }
       // Structural receiver chain for a call whose receiver is itself an
       // expression, so resolution can type it by folding over structure
@@ -1008,6 +1017,19 @@ export function emitRubyScopeCaptures(
       // non-call match, an absent receiver, or a chain with no nameable base
       // all leave `grouped` untouched.
       synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
+      out.push(grouped);
+      continue;
+    }
+
+    // A block scope (`do … end` / `{ … }`) lists the parameters it declares,
+    // so the receiver walk stops on them (RUBY-03). The match carries only
+    // `@scope.block`, so nothing below this branch applies to it.
+    if (grouped['@scope.block'] !== undefined) {
+      const block = nodeMap['@scope.block'];
+      attachRubyLexicalNames(grouped, block);
+      if (block?.parent?.type === 'lambda') {
+        emitRubyLambdaDefaultScopes(block.parent, out);
+      }
       out.push(grouped);
       continue;
     }
@@ -1182,6 +1204,21 @@ export function emitRubyScopeCaptures(
         const arity = computeRubyCallArity(callNode);
         grouped['@reference.arity'] = syntheticCapture('@reference.arity', callNode, String(arity));
       }
+    }
+
+    // Explicit calls always dispatch on self, even beside a same-named
+    // parameter. Surviving bare calls have already passed the local-read
+    // check above. Give both an explicit receiver when a lexical claim would
+    // otherwise stop free-call lookup; retain the arity from the call node.
+    const nameNode = nodeMap['@reference.name'];
+    if (
+      grouped['@reference.call.free'] !== undefined &&
+      nameNode !== undefined &&
+      rubyBareCallNeedsSelfReceiver(nameNode, lexicalNamesByScope)
+    ) {
+      grouped['@reference.call.member'] = grouped['@reference.call.free']!;
+      delete grouped['@reference.call.free'];
+      grouped['@reference.receiver'] = syntheticCapture('@reference.receiver', nameNode, 'self');
     }
 
     // Structural receiver chain for a call whose receiver is itself an
@@ -1396,7 +1433,22 @@ export function emitRubyScopeCaptures(
   // flow through `emitHeritageEdges` (the `__heritage__:` import path above),
   // an independent lane that stays intact when the legacy heritage leg is gated off.
   out.push(...synthesizeRubySuperclassReferences(tree.rootNode));
-  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, RUBY_CALLABLE_CAPTURE_OPTIONS));
+  for (const match of synthesizeCallableFlowCaptures(
+    tree.rootNode,
+    RUBY_CALLABLE_CAPTURE_OPTIONS,
+  )) {
+    // Ruby invokes a callable local through `.call` or `.()`, never `name()`.
+    // Drop only invocation facts for receiver-less AST calls; `.()` also
+    // uses the generic indirect kind but must retain its callable-cell fact.
+    const invoke = match['@callable-flow.invoke'];
+    if (
+      invoke !== undefined &&
+      match['@callable-flow.invocation-kind']?.text === 'indirect' &&
+      receiverlessCallSites.has(`${invoke.range.startLine}:${invoke.range.startCol}`)
+    )
+      continue;
+    out.push(match);
+  }
 
   return out;
 }
@@ -1618,9 +1670,6 @@ function scopeExtractionError(stage: string, filePath: string, err: unknown): Er
  *     (`user.name = x`, `user[0] = 1`, `user.a, user.b = …`, `user.count += 1`)
  *     and binds nothing.
  *   - `rescue` `variable` (`rescue => user`).
- *   - `block_parameters` / `lambda_parameters` / `method_parameters` of a
- *     nested callable: the DECLARED names (incl. block locals `|x; user|`),
- *     never a default value that reads the name (`|x, y = user|`).
  *   - `in_clause` / `match_pattern` / `test_pattern` `pattern`: identifiers in
  *     binding positions of a `case … in` / `=>` / `in` pattern — array/find/
  *     hash/alternative/parenthesized patterns, `=> name` (`as_pattern`),
@@ -1628,6 +1677,9 @@ function scopeExtractionError(stage: string, filePath: string, err: unknown): Er
  *     `{user:}` whose `keyword_pattern` has a key and no value. A pinned
  *     `^user` (`variable_reference_pattern`) or `^(expr)`
  *     (`expression_reference_pattern`) only READS and binds nothing.
+ *
+ * Parameter shadows belong to their own scopes, including lambda defaults
+ * (RUBY-03), so they do not rebind the outer tagged parameter.
  *
  * Known rebindings the AST cannot show (documented gaps, not guarded): a
  * regex named capture `/(?<user>…)/ =~ s`, `binding.local_variable_set`, `eval`.
@@ -1637,9 +1689,6 @@ const REBINDING_POSITIONS: ReadonlyMap<string, string | null> = new Map([
   ['operator_assignment', 'left'],
   ['for', 'pattern'],
   ['rescue', 'variable'],
-  ['block_parameters', null],
-  ['lambda_parameters', null],
-  ['method_parameters', null],
   ['in_clause', 'pattern'],
   ['match_pattern', 'pattern'],
   ['test_pattern', 'pattern'],
@@ -1671,6 +1720,109 @@ function rubyParameterNames(paramsNode: SyntaxNode | null): string[] {
   };
   visit(paramsNode);
   return names;
+}
+
+/**
+ * The parameters a scope node DECLARES, for `@scope.lexical-names` (RUBY-03).
+ *
+ * The shared receiver walk stops at the nearest scope that owns the receiver's
+ * name, and a scope owns a name it holds no type for only through its lexical
+ * names. Without them an untyped `|user|` was invisible, and the walk climbed
+ * past it to a same-named outer binding: `user = User.new; items.each { |user|
+ * user.save }` resolved the block's `user.save` to `User#save`.
+ *
+ * - `method` / `singleton_method` and `do_block` / `block` hold their own
+ *   `parameters` field (a block's includes block locals, `|x; user|`).
+ * - A stabby lambda's parameter list is a SIBLING of its body block
+ *   (`(lambda parameters: (lambda_parameters) body: (block))`), and the body is
+ *   the scope, so the lambda's names are listed on its body.
+ *
+ * Numbered (`_1`) and `it` parameters are not declared: the grammar parses them
+ * as plain identifiers, `_1` cannot name an outer local, and `it` reads an
+ * outer local of that name when one exists. Locals are not listed: in a block a
+ * name the enclosing scope already binds is the SAME variable, so listing it
+ * would cut a real capture; in a method a local does not exist before its first
+ * assignment (`user.save` there still calls a `user` reader), and lexical names
+ * carry no position.
+ */
+function rubyScopeLexicalNames(scopeNode: SyntaxNode): string[] {
+  const names = rubyParameterNames(scopeNode.childForFieldName('parameters'));
+  const parent = scopeNode.parent;
+  if (parent !== null && parent.type === 'lambda') {
+    const body = parent.childForFieldName('body');
+    if (body !== null && body.id === scopeNode.id) {
+      names.push(...rubyParameterNames(parent.childForFieldName('parameters')));
+    }
+  }
+  return names;
+}
+
+/** Does a method call cross a parameter claim with an available self binding? */
+function rubyBareCallNeedsSelfReceiver(
+  identifier: SyntaxNode,
+  namesByScope: Map<number, ReadonlySet<string>>,
+): boolean {
+  let hasMethod = false;
+  let hasClaim = false;
+  for (let scope = identifier.parent; scope !== null; scope = scope.parent) {
+    if (scope.type === 'program') return false;
+    if (scope.type === 'class' || scope.type === 'module') return hasMethod && hasClaim;
+    const method = scope.type === 'method' || scope.type === 'singleton_method';
+    if (!method && scope.type !== 'block' && scope.type !== 'do_block' && scope.type !== 'lambda')
+      continue;
+    hasMethod ||= method;
+    let names = namesByScope.get(scope.id);
+    if (names === undefined) {
+      names = new Set(rubyScopeLexicalNames(scope));
+      namesByScope.set(scope.id, names);
+    }
+    hasClaim ||= names.has(identifier.text);
+  }
+  return false;
+}
+
+/** Publish the parameters `scopeNode` declares on its scope match, when it declares any. */
+function attachRubyLexicalNames(
+  grouped: Record<string, Capture>,
+  scopeNode: SyntaxNode | undefined,
+): void {
+  if (scopeNode === undefined) return;
+  const names = rubyScopeLexicalNames(scopeNode);
+  if (names.length === 0) return;
+  grouped['@scope.lexical-names'] = syntheticCapture(
+    '@scope.lexical-names',
+    scopeNode,
+    JSON.stringify(names),
+  );
+}
+
+/** Lambda defaults live outside the body block and see only earlier binders. */
+function emitRubyLambdaDefaultScopes(lambda: SyntaxNode, out: CaptureMatch[]): void {
+  const params = lambda.childForFieldName('parameters');
+  if (params === null) return;
+  const boundAt = new Map<string, number>();
+  collectRubyParameterNames(params, (name, offset) => boundAt.set(name, offset));
+  for (const parameter of params.namedChildren) {
+    const value = parameter.childForFieldName('value');
+    if (value === null) continue;
+    const names = new Set<string>();
+    // Store only claims used by this expression, not every preceding name:
+    // N defaults reading one parameter must emit O(N), not O(N²), metadata.
+    walkNamedTree(value, (node) => {
+      if (node.type !== 'identifier') return;
+      const offset = boundAt.get(node.text);
+      if (offset !== undefined && offset < value.startIndex) names.add(node.text);
+    });
+    if (names.size === 0) continue;
+    out.push({
+      '@scope.block': nodeToCapture('@scope.block', value),
+      '@scope.lexical-names': syntheticCapture(
+        '@scope.lexical-names',
+        value,
+        JSON.stringify([...names]),
+      ),
+    });
+  }
 }
 
 /** Containers an assignment / `for` target passes through to the names it binds. */
@@ -1741,10 +1893,6 @@ function siteBinds(nodeType: string, site: SyntaxNode, name: string): boolean {
     case 'for':
     case 'rescue':
       return lhsBinds(site, name);
-    case 'block_parameters':
-    case 'lambda_parameters':
-    case 'method_parameters':
-      return rubyParameterNames(site).includes(name);
     case 'in_clause':
     case 'match_pattern':
     case 'test_pattern':
@@ -1756,15 +1904,13 @@ function siteBinds(nodeType: string, site: SyntaxNode, name: string): boolean {
 
 /**
  * True when `name` can be rebound anywhere in the method body — any of the
- * `REBINDING_POSITIONS`, at any depth (a block's `|name|` or a nested def's
- * parameter shadows too; an untyped same-named local inside them would
- * otherwise climb to the outer tag). The method's own parameter list is the
- * binding being typed and is skipped.
+ * `REBINDING_POSITIONS`, at any depth. A nested block, lambda body or `def`
+ * that declares the name is not a rebinding: it lists the name on its own
+ * scope, where the receiver walk stops (RUBY-03), so an untyped same-named
+ * local inside it no longer climbs to the outer tag.
  */
 function isReboundInMethod(methodNode: SyntaxNode, name: string): boolean {
-  const ownParams = methodNode.childForFieldName('parameters');
   for (const node of methodNode.descendantsOfType([...REBINDING_POSITIONS.keys()])) {
-    if (node.id === ownParams?.id) continue;
     const field = REBINDING_POSITIONS.get(node.type);
     const site = field === null || field === undefined ? node : node.childForFieldName(field);
     if (site !== null && siteBinds(node.type, site, name)) return true;
