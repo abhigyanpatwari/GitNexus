@@ -240,7 +240,8 @@ const vueScopeResolver: ScopeResolver = {
 
       // Build localName → resolved targetFile from finalized import edges.
       const importTargetByName = new Map<string, string>();
-      for (const [scopeId, edges] of indexes.imports) {
+      for (const scopeId of indexes.imports.scopes()) {
+        const edges = indexes.imports.edgesAt(scopeId) ?? [];
         const scope = indexes.scopeTree.getScope(scopeId);
         if (scope?.filePath !== parsedFile.filePath) continue;
         for (const edge of edges) {

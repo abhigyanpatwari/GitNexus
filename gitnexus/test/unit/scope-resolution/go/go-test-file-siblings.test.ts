@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import { populateGoPackageSiblings } from '../../../../src/core/ingestion/languages/go/index.js';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 
 /**
  * C1 — `_test.go` files get package-sibling bindings (they used to be dropped,
@@ -21,7 +22,7 @@ function setup(files: { path: string; scope: string; pkg: string; defs: SymbolDe
   const parsedFiles = files.map((f) => parsed(f.path, f.scope, ...f.defs));
   const indexes = {
     moduleScopes: { byFilePath: new Map(files.map((f) => [f.path, f.scope])) },
-    imports: new Map(),
+    imports: createEagerImportVisibility(new Map()),
     bindings: new Map(),
     bindingAugmentations: new Map(),
   } as unknown as ScopeResolutionIndexes;
@@ -193,19 +194,21 @@ describe('Go _test.go package siblings', () => {
           ['pkg/a/a_test.go', 'm:a-test'],
         ]),
       },
-      imports: new Map([
-        [
-          'm:a-test',
+      imports: createEagerImportVisibility(
+        new Map([
           [
-            {
-              localName: 'Exported',
-              targetFile: 'other/lib.go',
-              targetExportedName: 'Exported',
-              kind: 'wildcard-expanded',
-            },
+            'm:a-test',
+            [
+              {
+                localName: 'Exported',
+                targetFile: 'other/lib.go',
+                targetExportedName: 'Exported',
+                kind: 'wildcard-expanded',
+              },
+            ],
           ],
-        ],
-      ]),
+        ]),
+      ),
       bindings: new Map([
         ['m:lib', new Map([['Exported', [{ def: libExport, origin: 'local' }]]])],
       ]),

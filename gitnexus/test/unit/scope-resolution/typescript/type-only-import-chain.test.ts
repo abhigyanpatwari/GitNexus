@@ -28,6 +28,7 @@ import {
   TYPE_ONLY_IMPORT_REASON_SUFFIX,
   emitImportEdges,
 } from '../../../../src/core/ingestion/scope-resolution/graph-bridge/imports-to-edges.js';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 
 const SOURCE_FILE = 'src/a.ts';
 const TARGET_FILE = 'src/b.ts';
@@ -83,7 +84,7 @@ function reasonFor(src: string): string | undefined {
   };
   emitImportEdges(
     { addRelationship: (r: { reason: string }) => rels.push(r) } as never,
-    out.imports as never,
+    createEagerImportVisibility(out.imports),
     scopeTree as never,
     BASE_REASON,
   );

@@ -26,6 +26,7 @@ import {
 import { applyPreciseCallResultBindings } from '../../../src/core/ingestion/scope-resolution/pipeline/run.js';
 import type { ResolutionOutcome } from '../../../src/core/ingestion/scope-resolution/resolution-outcome.js';
 import { buildWorkspaceResolutionIndex } from '../../../src/core/ingestion/scope-resolution/workspace-index.js';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 
 function chainFixture(reverse: boolean) {
   const count = 24;
@@ -126,7 +127,7 @@ function chainFixture(reverse: boolean) {
       computeMro: () => [],
       implementsOf: () => [],
     }),
-    imports: new Map(),
+    imports: createEagerImportVisibility(new Map()),
     bindings: new Map(),
     bindingAugmentations: new Map(),
     workspaceFqnBindings: new Map(),
