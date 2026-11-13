@@ -1,0 +1,32 @@
+gitnexus/test/integration/resolvers/dart-lexical-binder-gaps.test.ts
+  s_b9690234122db7::t_470b29b9abc60b 1-460
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_b9690234122db7::t_f6b21bbb5805c3 1554-1556
+  s_b9690234122db7::t_6fd40f01dd3cee 651-656,664-665
+gitnexus/src/core/ingestion/languages/dart/signature-bindings.ts
+  s_b9690234122db7::t_c73582d4291ab9 90-93
+docs/languages/dart-ingestion-gaps.md
+  s_b9690234122db7::t_f4232910a48430 44,46-47,162-163,172-178
+gitnexus/bench/scope-capture/baselines.json
+  s_b9690234122db7::t_bb51b37444e6cb 184,189
+gitnexus/test/fixtures/lang-resolution/dart-scope-openers/nested_rebinding.dart
+  s_b9690234122db7::t_8df785690b819d 4-7
+gitnexus/test/integration/resolvers/dart-scope-openers.test.ts
+  s_b9690234122db7::t_994fae82163974 197,203,321-324,329
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9e954f3acc31b90bf5d580d7106e01d693ff3cd8",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
