@@ -1309,8 +1309,9 @@ jobs:
         if: ${{ !cancelled() }}
         # NOT build-free: parses through the dist parse worker (the setup action
         # above builds). Pins getter, setter and redeclared-parameter edges and
-        # checks capture and resolution scaling as classes, functions, accessors
-        # per class or parameters per function grow 4x. Budgets: baseline.json.
+        # checks capture and resolution scaling as classes (one per file),
+        # functions, accessors per class or parameters per function grow 4x.
+        # Budgets: baseline.json (all 1.5).
         run: node --import tsx bench/dart-accessor-scopes/measure.mjs --check
         working-directory: gitnexus
 

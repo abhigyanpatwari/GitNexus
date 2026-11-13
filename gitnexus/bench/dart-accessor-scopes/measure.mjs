@@ -11,11 +11,16 @@
  *
  * Workload: `lib/types.dart` declares `Address` and `Other`, each with
  * `save()` and `run()`, so a name-only guess cannot pick the owner. Two forms:
- *  - `accessors`: N classes, each with an untyped field `v`, K accessors that
- *    alternate `Address get g<j> { final v = Address(); v.save(); return v; }`
- *    and `set s<j>(Other value) { value.run(); }`, and `void reader() {
- *    v.save(); }`. Each getter's local and each setter's parameter type its own
- *    body only; `reader` reads the untyped field and gets no edge.
+ *  - `accessors`: N classes, one per file `lib/c<i>.dart`, each with an
+ *    untyped field `v`, K accessors that alternate `Address get g<j> { final
+ *    v = Address(); v.save(); return v; }` and `set s<j>(Other value) {
+ *    value.run(); }`, and `void reader() { v.save(); }`. Each getter's local
+ *    and each setter's parameter type its own body only; `reader` reads the
+ *    untyped field and gets no edge. One class per file: Dart resolution is
+ *    already super-linear in the number of classes in ONE file (pre-existing;
+ *    see baseline.json `_one_file_note`), which would mask this change.
+ *    `--shape crowded <units> <per-unit>` (sweeps only, not gated) is this
+ *    form with every class in `lib/main.dart`, to measure that term.
  *  - `params`: N functions with K typed parameters `Address a<j>`, each
  *    redeclared by a closure (`items.forEach((a<j>) { a<j>.save(); })`) and
  *    then used (`a<j>.run()`). The closure's own `a<j>` declines; the
@@ -85,16 +90,21 @@ const TYPES_SOURCE =
 
 function corpus(form, units, perUnit) {
   let main = "import 'types.dart';\n";
+  const classFiles = [];
   for (let i = 0; i < units; i++) {
-    if (form === 'accessors') {
-      main += `\nclass C${i} {\n  var v;\n`;
+    if (form !== 'params') {
+      let source = `\nclass C${i} {\n  var v;\n`;
       for (let j = 0; j < perUnit; j++) {
-        main +=
+        source +=
           j % 2 === 0
             ? `  Address get g${j} {\n    final v = Address();\n    v.save();\n    return v;\n  }\n`
             : `  set s${j}(Other value) {\n    value.run();\n  }\n`;
       }
-      main += '  void reader() {\n    v.save();\n  }\n}\n';
+      source += '  void reader() {\n    v.save();\n  }\n}\n';
+      // `accessors`: one class per file. `crowded` (sweeps only, not gated):
+      // every class in lib/main.dart, the pre-existing one-file term.
+      if (form === 'crowded') main += source;
+      else classFiles.push({ path: `lib/c${i}.dart`, content: `import 'types.dart';\n${source}` });
     } else {
       const params = Array.from({ length: perUnit }, (_, j) => `Address a${j}`).join(', ');
       main += `\nvoid f${i}(${params}, List<int> items) {\n`;
@@ -104,6 +114,7 @@ function corpus(form, units, perUnit) {
       main += '}\n';
     }
   }
+  if (form === 'accessors') return [{ path: TYPES, content: TYPES_SOURCE }, ...classFiles];
   return [
     { path: TYPES, content: TYPES_SOURCE },
     { path: MAIN, content: main },
@@ -122,9 +133,10 @@ function expectedTargets(form, perUnit) {
 
 /** The unit (class or function) a CALLS source belongs to, or null. */
 function unitOf(sourceId) {
-  const match = /^(?:Class|Method|Function|Property):lib\/main\.dart:([Cf]\d+)(?:[.#]|$)/.exec(
-    sourceId,
-  );
+  const match =
+    /^(?:Class|Method|Function|Property):lib\/(?:main|c\d+)\.dart:([Cf]\d+)(?:[.#]|$)/.exec(
+      sourceId,
+    );
   return match === null ? null : match[1];
 }
 
@@ -211,6 +223,7 @@ function correctness(form, units, perUnit, graph, stats, captureGroups) {
   return {
     units,
     per_unit: perUnit,
+    input_bytes: corpus(form, units, perUnit).reduce((n, f) => n + Buffer.byteLength(f.content), 0),
     capture_groups: captureGroups,
     relationships: graph.relationshipCount,
     method_calls: methodCalls,
@@ -360,7 +373,7 @@ const shapeArg = process.argv.indexOf('--shape');
 try {
   if (shapeArg >= 0) {
     const [form, units, perUnit] = process.argv.slice(shapeArg + 1, shapeArg + 4);
-    assert.ok(FORMS.includes(form), `unknown form ${form}`);
+    assert.ok([...FORMS, 'crowded'].includes(form), `unknown form ${form}`);
     const result = await measureShape(
       form,
       Number(units),
