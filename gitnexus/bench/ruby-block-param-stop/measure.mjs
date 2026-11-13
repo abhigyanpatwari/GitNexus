@@ -25,7 +25,11 @@
  * missing edge, no extra one.
  *
  * Shapes: small = 64 methods x 6 blocks; large = 256 x 6 (methods 4x);
- * dense = 64 x 24 (blocks per method 4x; for `nested`, depth 4x).
+ * dense = 64 x 96 side by side (blocks per method 16x) and 64 x 24 nested
+ * (depth 4x; baseline.json `_nested_depth_note` says why). Every line has a
+ * fixed-width indent, so the source grows linearly in each size parameter;
+ * `input_bytes` is pinned per shape beside the groups and edges it yields.
+ * A scaling ratio is (t_shape / t_small) / growth: about 1 is linear.
  * Two profiles. Default (CI, also with --check): one process prepares every
  * workload, runs every accuracy gate, and times every workload interleaved
  * (each round times each workload once, in rotating order), min of 5 after 1
@@ -73,7 +77,14 @@ const WARMUP = FULL ? 2 : 1;
 const REPS = FULL ? 15 : 5;
 const MARKER = 'RUBY_BLOCK_PARAM_RESULT ';
 const FORMS = ['sibling', 'nested'];
-const SHAPES = { small: [64, 6], large: [256, 6], dense: [64, 24] };
+/**
+ * Per form: small, large (methods 4x) and dense (blocks per method 16x side
+ * by side; nesting depth 4x — see `_nested_depth_note` in baseline.json).
+ */
+const SHAPES = {
+  sibling: { small: [64, 6], large: [256, 6], dense: [64, 96] },
+  nested: { small: [64, 6], large: [256, 6], dense: [64, 24] },
+};
 const MODELS = 'lib/models.rb';
 const roots = [];
 /** One parse worker for every workload in this process. */
@@ -100,12 +111,12 @@ function corpus(form, methods, blocks) {
         source += `    items.each do ${kind.params}\n      ${kind.body}\n    end\n`;
       }
     } else {
+      // Fixed-width indent: the source grows linearly in depth, not in depth^2.
       for (let j = 0; j < blocks; j++) {
         const kind = KINDS[j % KINDS.length];
-        const indent = '  '.repeat(j + 2);
-        source += `${indent}items.each do ${kind.params}\n${indent}  ${kind.body}\n`;
+        source += `    items.each do ${kind.params}\n      ${kind.body}\n`;
       }
-      for (let j = blocks - 1; j >= 0; j--) source += `${'  '.repeat(j + 2)}end\n`;
+      for (let j = 0; j < blocks; j++) source += '    end\n';
     }
     source += '    user.save\n  end\nend\n';
     if (form === 'crowded') crowded += `\n${source}`;
@@ -205,6 +216,10 @@ function correctness(form, methods, blocks, graph, stats, captureGroups) {
   return {
     methods,
     blocks_per_method: blocks,
+    input_bytes: corpus(form, methods, blocks).reduce(
+      (n, f) => n + Buffer.byteLength(f.content),
+      0,
+    ),
     capture_groups: captureGroups,
     relationships: graph.relationshipCount,
     calls,
@@ -315,7 +330,7 @@ async function measureShape(form, methods, blocks, reps, warmup) {
 async function measureTimings() {
   const inputs = {};
   for (const form of FORMS) {
-    for (const [name, [methods, blocks]] of Object.entries(SHAPES)) {
+    for (const [name, [methods, blocks]] of Object.entries(SHAPES[form])) {
       const { files, config, raw, parsed } = await prepare(form, methods, blocks);
       inputs[`${form}_${name}`] = {
         files,
@@ -377,7 +392,7 @@ async function report() {
   if (FULL) {
     timings = child(['--timings', '--full']);
     for (const form of FORMS) {
-      for (const [name, [methods, blocks]] of Object.entries(SHAPES)) {
+      for (const [name, [methods, blocks]] of Object.entries(SHAPES[form])) {
         const key = `${form}_${name}`;
         const result = child(['--shape', form, String(methods), String(blocks)]);
         shapes[key] = result.shape;
@@ -388,7 +403,7 @@ async function report() {
     const inputs = {};
     const prepared = {};
     for (const form of FORMS) {
-      for (const [name, [methods, blocks]] of Object.entries(SHAPES)) {
+      for (const [name, [methods, blocks]] of Object.entries(SHAPES[form])) {
         const key = `${form}_${name}`;
         const input = await prepare(form, methods, blocks);
         prepared[key] = input;
@@ -403,7 +418,7 @@ async function report() {
     // Capture-group counts come from the first timed pass, not an extra one.
     timings = timeInputs(inputs, WARMUP, REPS);
     for (const form of FORMS) {
-      for (const [name, [methods, blocks]] of Object.entries(SHAPES)) {
+      for (const [name, [methods, blocks]] of Object.entries(SHAPES[form])) {
         const key = `${form}_${name}`;
         const input = prepared[key];
         shapes[key] = correctness(
@@ -425,16 +440,17 @@ async function report() {
     );
     delete timing.relationships;
   }
-  const scale = SHAPES.large[0] / SHAPES.small[0];
-  assert.equal(SHAPES.dense[1] / SHAPES.small[1], scale, 'both growth axes use the same factor');
   const metrics = {};
   for (const form of FORMS) {
+    const scale = SHAPES[form].large[0] / SHAPES[form].small[0];
+    const blockScale = SHAPES[form].dense[1] / SHAPES[form].small[1];
     const at = (name) => timings[`${form}_${name}`];
     for (const phase of ['capture', 'resolve']) {
       const key = `${phase}_ms`;
       metrics[`${form}_${phase}_method_scaling_ratio`] =
         at('large')[key] / at('small')[key] / scale;
-      metrics[`${form}_${phase}_block_scaling_ratio`] = at('dense')[key] / at('small')[key] / scale;
+      metrics[`${form}_${phase}_block_scaling_ratio`] =
+        at('dense')[key] / at('small')[key] / blockScale;
     }
   }
   const out = {
