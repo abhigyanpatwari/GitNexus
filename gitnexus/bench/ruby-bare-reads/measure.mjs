@@ -193,14 +193,19 @@ function correctness(form, files, sizes, graph, stats, captureGroups) {
   let unexpected = 0;
   for (let i = 0; i < methods; i++) {
     for (const [prefix, expected] of Object.entries(expectedTargets(form, i))) {
-      const got = [...(callsBySource.get(`${prefix}${i}`) ?? [])].sort();
-      const want = [...expected];
-      for (const target of got) {
-        const at = want.indexOf(target);
-        if (at < 0) unexpected++;
-        else want.splice(at, 1);
+      const remaining = new Map();
+      for (const target of expected) {
+        remaining.set(target, (remaining.get(target) ?? 0) + 1);
       }
-      missing += want.length;
+      missing += expected.length;
+      for (const target of callsBySource.get(`${prefix}${i}`) ?? []) {
+        const count = remaining.get(target) ?? 0;
+        if (count === 0) unexpected++;
+        else {
+          remaining.set(target, count - 1);
+          missing--;
+        }
+      }
     }
   }
   const declines = {};
@@ -405,16 +410,12 @@ async function report() {
     }
   } else {
     const inputs = {};
-    const prepared = {};
     for (const form of FORMS) {
       for (const [name, sizes] of Object.entries(SHAPES[form])) {
         const key = `${form}_${name}`;
         const input = await prepare(form, sizes);
-        prepared[key] = input;
         inputs[key] = {
-          files: input.files,
-          config: input.config,
-          raw: input.raw,
+          ...input,
           relationships: input.parsed.graph.relationshipCount,
         };
       }
@@ -424,14 +425,14 @@ async function report() {
     for (const form of FORMS) {
       for (const [name, sizes] of Object.entries(SHAPES[form])) {
         const key = `${form}_${name}`;
-        const input = prepared[key];
+        const input = inputs[key];
         shapes[key] = correctness(
           form,
           input.files,
           sizes,
           input.parsed.graph,
           input.first.stats,
-          inputs[key].groups,
+          input.groups,
         );
       }
     }

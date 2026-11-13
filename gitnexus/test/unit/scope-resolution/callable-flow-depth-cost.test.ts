@@ -15,7 +15,7 @@
  * The test hook counts the subtree nodes the operand search enters. Each
  * added nesting level must add the same number, at any depth.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { CaptureMatch } from 'gitnexus-shared';
 import {
   getCallableFlowCaptureStats,
@@ -105,8 +105,6 @@ function expectLinear(nest: Nest): void {
 }
 
 describe('a call argument wrapping a function literal is not searched again per nested call', () => {
-  beforeEach(() => resetCallableFlowCaptureStats());
-
   it.skipIf(!dartAvailable)('Dart', () => expectLinear(NESTS.dart));
   it('Kotlin', () => expectLinear(NESTS.kotlin));
   it('C#', () => expectLinear(NESTS.csharp));

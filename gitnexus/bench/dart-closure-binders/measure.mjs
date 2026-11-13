@@ -189,17 +189,23 @@ function correctness(form, functions, closures, graph, stats, captureGroups, fil
     callsBySource.set(edge.sourceId, list);
   }
   const expected = expectedTargets(form, closures);
+  const expectedCounts = new Map();
+  for (const target of expected) {
+    expectedCounts.set(target, (expectedCounts.get(target) ?? 0) + 1);
+  }
   let missing = 0;
   let unexpected = 0;
   for (let i = 0; i < functions; i++) {
-    const got = [...(callsBySource.get(`Function:${MAIN}:f${i}`) ?? [])].sort();
-    const want = [...expected];
-    for (const target of got) {
-      const at = want.indexOf(target);
-      if (at < 0) unexpected++;
-      else want.splice(at, 1);
+    const remaining = new Map(expectedCounts);
+    missing += expected.length;
+    for (const target of callsBySource.get(`Function:${MAIN}:f${i}`) ?? []) {
+      const count = remaining.get(target) ?? 0;
+      if (count === 0) unexpected++;
+      else {
+        remaining.set(target, count - 1);
+        missing--;
+      }
     }
-    missing += want.length;
   }
   const declines = {};
   const outcomes = [];
@@ -409,33 +415,28 @@ async function report() {
     }
   } else {
     const inputs = {};
-    const prepared = {};
     for (const form of FORMS) {
       for (const [name, [functions, closures]] of Object.entries(SHAPES)) {
         const key = `${form}_${name}`;
         const input = await prepare(form, functions, closures);
-        prepared[key] = input;
         inputs[key] = {
-          files: input.files,
-          config: input.config,
-          raw: input.raw,
+          ...input,
           relationships: input.parsed.graph.relationshipCount,
         };
       }
     }
-    // Capture-group counts come from the first timed pass, not an extra one.
     timings = timeInputs(inputs, WARMUP, REPS);
     for (const form of FORMS) {
       for (const [name, [functions, closures]] of Object.entries(SHAPES)) {
         const key = `${form}_${name}`;
-        const input = prepared[key];
+        const input = inputs[key];
         shapes[key] = correctness(
           form,
           functions,
           closures,
           input.parsed.graph,
           input.first.stats,
-          inputs[key].groups,
+          input.groups,
           input.files,
         );
         timings[key].work = captureWork(input.files);
@@ -453,8 +454,6 @@ async function report() {
     delete timing.relationships;
   }
   const metrics = {};
-  // Preserve the input/output normalization from the 16x gate. Exact shape
-  // checks prevent extra emitted work from disguising a regression.
   const sizeGrowth = (big, small) =>
     Math.max(
       big.input_bytes / small.input_bytes,
