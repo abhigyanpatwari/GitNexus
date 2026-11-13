@@ -167,6 +167,27 @@ describe('Ruby bare read: classification cost is linear in nesting depth (RUBY-0
     ).toBeLessThanOrEqual(5);
   });
 
+  // One line opening H heredocs, each body holding two interpolated blocks
+  // that read the parameter: pairing a body with its opener searched the
+  // body's run and the opener line per body, O(H^2) per line.
+  it('the whole capture pass over a line that opens many heredocs', () => {
+    const read = '      #{[1].map do\n        target\n      end}\n';
+    const line = (h: number): string => {
+      const openers = Array.from({ length: h }, (_, j) => `<<~A${j}`).join(', ');
+      let source = `def h(target)\n  other(${openers})\n`;
+      for (let j = 0; j < h; j++) source += `${read}${read}    A${j}\n`;
+      return `${source}end\n`;
+    };
+    const shallow = capturePass(line(32));
+    const deep = capturePass(line(128));
+    expect(deep.groups).toBeGreaterThan(shallow.groups);
+    const growth = deep.steps / shallow.steps;
+    expect(
+      growth,
+      `capture-pass tree steps ${shallow.steps} at 32 heredocs -> ${deep.steps} at 128 (x${growth.toFixed(2)})`,
+    ).toBeLessThanOrEqual(5);
+  });
+
   // The whole Ruby capture pass over the same nest: no other per-node climb
   // or subtree search may reintroduce depth x depth work. (A block-taking
   // call with no argument list used to search its whole block for one.)

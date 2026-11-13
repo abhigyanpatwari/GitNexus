@@ -657,45 +657,75 @@ function rubyScopeBindings(
   return earliest;
 }
 
-/** A source span `[from, to)` of offsets. */
-type RubySourceSpan = readonly [number, number];
-
 /**
- * The rest of a heredoc body's opener line: from the end of the body's own
- * `heredoc_beginning` to the end of that line. Ruby lexes the body as soon
- * as it reaches that `<<~EOS` token, so a binding written in this span is
- * parsed AFTER every read inside the body, while one written before the
- * token, or in an earlier body of the same line, is parsed before it.
+ * Every heredoc body paired with its opener, in one pass over the file's
+ * bodies and openers. Ruby lexes a body as soon as it reaches that body's
+ * `<<~EOS` token, so the opener is where the body's reads and bindings sit
+ * in parse order.
  *
  * tree-sitter-ruby does not link a body to its opener. The bodies opened on
- * one line are contiguous siblings in token order, and the first starts at
- * that line's end, so the body's index in that run picks its opener among
- * the line's `heredoc_beginning` nodes. When the counts disagree, return
- * `null`: guessing an opener could assign the body's locals to another scope.
+ * one line are contiguous siblings in token order (a run), and the first
+ * starts at that line's end, so a body's index in its run picks its opener
+ * among the `heredoc_beginning` nodes of the run's line that end before the
+ * run. When the counts disagree, the run is left unpaired: guessing an
+ * opener could assign a body's locals to another scope.
+ *
+ * Each body is placed in its run through one sibling step, and each run
+ * finds its line's openers by binary search, so a line with H heredocs costs
+ * O(H log H), not the O(H^2) of searching the run and the line per body.
  */
-function rubyHeredocOpenerTail(body: SyntaxNode): RubySourceSpan | null {
-  let first = body;
-  let index = 0;
-  let prev = first.previousNamedSibling;
-  while (prev !== null && prev.type === 'heredoc_body' && prev.endIndex === first.startIndex) {
-    first = prev;
-    index++;
-    prev = first.previousNamedSibling;
+function rubyHeredocOpeners(
+  root: SyntaxNode,
+  physicalBodies: readonly SyntaxNode[],
+): Map<number, SyntaxNode> {
+  // Openers by start row, in document order (so by increasing endIndex).
+  const openersByRow = new Map<number, SyntaxNode[]>();
+  for (const opener of root.descendantsOfType('heredoc_beginning')) {
+    const row = opener.startPosition.row;
+    let list = openersByRow.get(row);
+    if (list === undefined) openersByRow.set(row, (list = []));
+    list.push(opener);
   }
-  let count = index + 1;
-  let last = body;
-  let next = last.nextNamedSibling;
-  while (next !== null && next.type === 'heredoc_body' && next.startIndex === last.endIndex) {
-    count++;
-    last = next;
-    next = last.nextNamedSibling;
+  // Runs of contiguous sibling bodies. Document order visits a run's members
+  // in order (a body nested in another's interpolation comes between them,
+  // but is never their sibling), so each body extends its previous sibling's run.
+  const runOf = new Map<number, SyntaxNode[]>();
+  const runs: SyntaxNode[][] = [];
+  for (const body of physicalBodies) {
+    const prev = body.previousNamedSibling;
+    const run =
+      prev !== null && prev.type === 'heredoc_body' && prev.endIndex === body.startIndex
+        ? runOf.get(prev.id)
+        : undefined;
+    if (run === undefined) {
+      const fresh = [body];
+      runs.push(fresh);
+      runOf.set(body.id, fresh);
+    } else {
+      run.push(body);
+      runOf.set(body.id, run);
+    }
   }
-  const row = first.startPosition.row;
-  const openers = body.tree.rootNode
-    .descendantsOfType('heredoc_beginning', { row, column: 0 }, first.startPosition)
-    .filter((n) => n.startPosition.row === row && n.endIndex <= first.startIndex);
-  const opener = openers.length === count ? openers[index] : undefined;
-  return opener === undefined ? null : [opener.endIndex, first.startIndex];
+  const bodies = new Map<number, SyntaxNode>();
+  for (const run of runs) {
+    const [first] = run;
+    const line = first === undefined ? undefined : openersByRow.get(first.startPosition.row);
+    if (first === undefined || line === undefined) continue;
+    // The line's openers that end before the run: a prefix of `line`.
+    let lo = 0;
+    let hi = line.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if ((line[mid]?.endIndex ?? Infinity) <= first.startIndex) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo !== run.length) continue;
+    run.forEach((body, i) => {
+      const opener = line[i];
+      if (opener !== undefined) bodies.set(opener.id, body);
+    });
+  }
+  return bodies;
 }
 
 interface RubyHeredocLayout {
@@ -724,13 +754,7 @@ function rubyHeredocLayout(
     rubyHeredocLayouts.set(cache, null);
     return null;
   }
-  const byEnd = new Map(root.descendantsOfType('heredoc_beginning').map((n) => [n.endIndex, n]));
-  const bodies = new Map<number, SyntaxNode>();
-  for (const body of physicalBodies) {
-    const tail = rubyHeredocOpenerTail(body);
-    const opener = tail === null ? undefined : byEnd.get(tail[0]);
-    if (opener !== undefined) bodies.set(opener.id, body);
-  }
+  const bodies = rubyHeredocOpeners(root, physicalBodies);
   const order = new Map<number, number>();
   const pending = [root];
   for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
