@@ -1,0 +1,93 @@
+{
+  "_what": "Synthetic ownership-reconciliation gate, following bench/dart-closure-binders: exact cells and fingerprints of what reconcileOwnership registers, a scaling ratio against input and output growth, and a count of the registry entries the pass reads. Real TypeScript scope extractor and populateOwners, real reconcileOwnership and SemanticModel; the rest of scope resolution, analyze and persistence are outside this benchmark.",
+  "_triage": "Shape and fingerprint failures are deterministic: inspect the corpus and the registry contents, never rebaseline just to make CI green. The runner also fails, before any baseline comparison, when a shared bucket does not hold exactly one def per file or the second pass registers anything. An operation-count failure is deterministic too: the pass read more registry entries per def as the shared buckets grew, so something scans a bucket per def again. For a timing failure, rerun on an idle machine and verify the report shows its profile (ci: 25 interleaved samples after 3 warmups; full: 75 after 5) before investigating a regression. Millisecond observations are context, not gates.",
+  "shapes": {
+    "small": {
+      "files": 250,
+      "input_bytes": 47500,
+      "defs": 1250,
+      "first_pass": {
+        "methodsRegistered": 0,
+        "fieldsRegistered": 1000,
+        "nestedTypesRegistered": 250,
+        "skippedAlreadyPresent": 0
+      },
+      "second_pass": {
+        "methodsRegistered": 0,
+        "fieldsRegistered": 0,
+        "nestedTypesRegistered": 0,
+        "skippedAlreadyPresent": 1250
+      },
+      "shared_buckets": {
+        "fields:config": 250,
+        "fields:logger": 250,
+        "fields:router": 250,
+        "types:Options": 250
+      },
+      "registry_entries": 1250,
+      "fingerprint": "dc92de47b7ea564bfcb644c141361cf8393b1a81ea627ec14e638695bdb544b7"
+    },
+    "large": {
+      "files": 1000,
+      "input_bytes": 190000,
+      "defs": 5000,
+      "first_pass": {
+        "methodsRegistered": 0,
+        "fieldsRegistered": 4000,
+        "nestedTypesRegistered": 1000,
+        "skippedAlreadyPresent": 0
+      },
+      "second_pass": {
+        "methodsRegistered": 0,
+        "fieldsRegistered": 0,
+        "nestedTypesRegistered": 0,
+        "skippedAlreadyPresent": 5000
+      },
+      "shared_buckets": {
+        "fields:config": 1000,
+        "fields:logger": 1000,
+        "fields:router": 1000,
+        "types:Options": 1000
+      },
+      "registry_entries": 5000,
+      "fingerprint": "6856994a4711b61ce3f2edb9d4c3abadcf1ff68e917ad5584e1f2373e453a004"
+    }
+  },
+  "_shape_note": "Exact counts are the workload FLOOR. small = 250 files, large = 1000 files (files 4x). Each file declares the module-level values logger, router and config and a top-level interface Options with one member, level; the index in each file is zero-padded to a fixed width, so input bytes grow exactly 4x. The three values and every Options are ownerless, so each of the four shared buckets ends up holding one def per file; Options.level is owned, one def per owner. first_pass registers into a fresh model, second_pass reconciles the same files again and must register nothing.",
+  "_fingerprint_note": "Recorded on main ef126ea20 with the per-key node-id sets, and identical with them reverted (the bucket scan): the change alters no registration. Hashes pin every (registry, owner, name) key the workload's defs map to and the node ids under it, in registry order.",
+  "budgets": {
+    "reconcile_files_scaling_ratio": 1.5
+  },
+  "operation_budgets": {
+    "registry_entries_read_files_scaling_ratio": 1.1
+  },
+  "_scaling_note": "The scaling ratio is (t_large / t_small) / growth, where growth is the larger of the input-byte, def and registry-entry growth between the two cells (4 here): about 1 is linear, about 4 is quadratic at these sizes. Budget 1.5, as in bench/scope-capture and bench/dart-closure-binders.",
+  "_operations_note": "Outside the timed passes, a wrapper around each registry's lookupAllByOwner counts the entries every read hands back, taken at the moment of the read (a registry returns its live bucket). A bucket scan reads the whole shared bucket for every def, so the count per def grows with the file count; reading each (owner, name) bucket once per pass keeps it at one entry per def. The ratio between the cells is gated at 1.1. It is a count, so it fails deterministically whatever the timings say.",
+  "_size_note": "The shapes are small on purpose. A pass costs well under a microsecond per def, mostly hash probes into tables that grow with the file count, so once the large shape's tables leave a cache level the small shape still sits in, per-def time rises with no change in the work done: a plain loop doing the same probes read 1.5-1.8 at 1000 vs 4000 files on a loaded host, and the linear pass read 1.3-1.6 there. At 250 vs 1000 both cells sit in the same regime and the bucket scan still reads about 4.",
+  "_negative_controls_note": "Reverting only the per-key node-id sets in reconcile-ownership.ts (the bucket scan) keeps every shape and fingerprint identical and fails both gates under --check: 'reconcile_files_scaling_ratio: 4.193624253622248 > 1.5' and 'registry_entries_read_files_scaling_ratio: 4.002001334222816 > 1.1'. The scan read 374750 registry entries for the small cell and 5999000 for the large one (299.8 and 1199.8 per def) against 1250 and 5000 (1 per def) with the sets.",
+  "_profiles_note": "Two profiles share the shapes and every accuracy gate. CI (the default, and what --check runs in the benchmarks job): one process, every workload timed interleaved in rotating order, min of 25 after 3 warmups. --full: min of 75 after 5 warmups. A sample takes milliseconds, so the sample count is higher than in the parse-worker gates at no real cost, which keeps the minimum stable on a busy host. Build-free: no parse worker, no dist/.",
+  "_measured_ci": {
+    "environment": "macOS arm64 / Node 24.16.0, 2026-11-14, main ef126ea20, shared host (load average 14-153 on 15 cores across these runs)",
+    "reps": 25,
+    "warmup": 3,
+    "with_sets_run_1": {
+      "reconcile_files_scaling_ratio": 1.131,
+      "registry_entries_read_files_scaling_ratio": 1,
+      "small_reconcile_ms": 0.471,
+      "large_reconcile_ms": 2.131
+    },
+    "with_sets_run_2": {
+      "reconcile_files_scaling_ratio": 1.072,
+      "registry_entries_read_files_scaling_ratio": 1,
+      "small_reconcile_ms": 0.454,
+      "large_reconcile_ms": 1.947
+    },
+    "bucket_scan": {
+      "reconcile_files_scaling_ratio": 4.194,
+      "registry_entries_read_files_scaling_ratio": 4.002,
+      "small_reconcile_ms": 4.366,
+      "large_reconcile_ms": 73.23
+    }
+  },
+  "_measured_note": "Two CI-profile --check runs with the sets (both PASS) and one with them reverted (FAIL on both gates). Exact shapes and fingerprints are identical in all three."
+}
