@@ -1,0 +1,23 @@
+.github/workflows/ci-tests.yml
+  s_b9690234122db7::t_5ea9b7388435bc 1544-1545
+gitnexus/bench/ruby-block-param-stop/baseline.json
+  s_b9690234122db7::t_d10bd0bc2ddb0d 8,23,37-41,44,48,53,63,68,78,83,93,96,108,111,113-114,117-144,147,150-183,185-187
+gitnexus/bench/ruby-block-param-stop/measure.mjs
+  s_b9690234122db7::t_5991342f2cfc66 28-32,80-87,114,117,119,219-222,333,395,406,421,445-446,452-453
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "35db3d7a6075d48651e85b538023ab164bbf8a84",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
