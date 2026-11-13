@@ -486,6 +486,7 @@ import { cobolScopeResolver } from '../../src/core/ingestion/languages/cobol/sco
 import { resolveSwiftImportTarget } from '../../src/core/ingestion/languages/swift/import-target.ts';
 import { resolveRustImportTarget } from '../../src/core/ingestion/languages/rust/import-target.ts';
 import { resolveZigImportInternal } from '../../src/core/ingestion/languages/zig/import-helpers.ts';
+import { resolvePlSqlScriptInclude } from '../../src/core/ingestion/plsql/script-include.ts';
 import { resolvePythonImportTarget } from '../../src/core/ingestion/languages/python/import-target.ts';
 import { makeJsResolveImportTarget } from '../../src/core/ingestion/languages/javascript/import-target.ts';
 import { makeVueResolveImportTarget } from '../../src/core/ingestion/languages/vue/import-target.ts';
@@ -788,6 +789,7 @@ const EXTENSION = {
   cpp: '.cpp',
   objc: '.m',
   zig: '.zig',
+  plsql: '.sql',
 };
 /** C and C++ resolve `#include` against HEADERS, which reach the resolver
  *  through `resolutionConfig` rather than through `allFilePaths` — see
@@ -920,6 +922,9 @@ function uniqueDir(lang, d, i) {
   // share the other unique arms take from a nested directory comes from the
   // target instead (see `uniqueTarget`).
   if (lang === 'zig') return `src/mod${d}`;
+  // SQL*Plus install trees: one folder per component under `db/`, so a
+  // script reaches a sibling through one `..` (see `uniqueTarget`).
+  if (lang === 'plsql') return `db/mod${d}`;
   throw unwiredLanguage('uniqueDir', lang);
 }
 
@@ -1015,6 +1020,10 @@ function collideDir(lang, d, i) {
   // axis that CAN grow — `collideTarget` spells its imports up through the
   // tree and back down, ~4x the components of the unique arm.
   if (lang === 'zig') return `src/l0/l1/l2/l3/l4/mod${d}`;
+  // zig's reasoning: the resolver probes `.has()` on at most four candidates
+  // (two bases × with/without `.sql`) and never searches, so path depth is
+  // the only axis its cost can grow along.
+  if (lang === 'plsql') return `db/l0/l1/l2/l3/l4/mod${d}`;
   throw unwiredLanguage('collideDir', lang);
 }
 
@@ -1467,6 +1476,25 @@ function uniqueTarget(lang, { local, r, d, j, dirs }) {
     if (miss === 1) return `ghost${(r >>> 4) % 97}`;
     return `../vendor${(r >>> 4) % 97}/missing.zig`;
   }
+  if (lang === 'plsql') {
+    // SQL*Plus `@file` / `START file`: tried against the repository root, then
+    // the calling script's directory. Every script sits in `db/mod{d}/`, so
+    // `../mod{n}/…` misses at the root (it climbs out of the repo) and hits
+    // from the caller — both bases are walked for every local include. The
+    // `d % 7` slice names an `inner/` that exists nowhere and misses; one
+    // spelling in three drops `.sql`, which is the appended-extension leg.
+    // Misses: ORACLE_HOME scripts (`?/rdbms/admin/…`, rejected before any
+    // probe), a bare vendor script that is in neither base, and a relative
+    // path to a vendored script outside the corpus.
+    if (local) {
+      if (d % 7 === 0) return `../mod${d}/inner/file${j}.sql`;
+      return (r >>> 3) % 3 === 0 ? `../mod${j % dirs}/file${j}` : `../mod${j % dirs}/file${j}.sql`;
+    }
+    const miss = (r >>> 3) % 3;
+    if (miss === 0) return ['?/rdbms/admin/utlrp.sql', '?/rdbms/admin/catproc.sql'][(r >>> 4) % 2];
+    if (miss === 1) return `vendor_patch${(r >>> 4) % 97}`;
+    return `../vendor${(r >>> 4) % 97}/missing.sql`;
+  }
   throw unwiredLanguage('uniqueTarget', lang);
 }
 
@@ -1700,6 +1728,21 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
     if (miss === 1) return `ghost${(r >>> 4) % 97}`;
     return `${up}/vendor${(r >>> 4) % 97}/missing.zig`;
   }
+  if (lang === 'plsql') {
+    // zig's collide design: the same families in the same proportions, spelled
+    // up to `db/` and back down through `l0/…/l4`.
+    const up = '../../../../../../l0/l1/l2/l3/l4';
+    if (local) {
+      if (d % 7 === 0) return `${up}/mod${d}/inner/file${j}.sql`;
+      return (r >>> 3) % 3 === 0
+        ? `${up}/mod${j % dirs}/file${j}`
+        : `${up}/mod${j % dirs}/file${j}.sql`;
+    }
+    const miss = (r >>> 3) % 3;
+    if (miss === 0) return ['?/rdbms/admin/utlrp.sql', '?/rdbms/admin/catproc.sql'][(r >>> 4) % 2];
+    if (miss === 1) return `vendor_patch${(r >>> 4) % 97}`;
+    return `${up}/vendor${(r >>> 4) % 97}/missing.sql`;
+  }
   throw unwiredLanguage('collideTarget', lang);
 }
 
@@ -1931,6 +1974,7 @@ function resolveOne(lang, from, target, pass) {
   // `null` build config: this arm pins the path walk alone
   // (see the header); the config legs are gated by their own unit tests.
   if (lang === 'zig') return resolveZigImportInternal(from, target, allFilePaths, null);
+  if (lang === 'plsql') return resolvePlSqlScriptInclude(target, from, allFilePaths);
   if (lang === 'python') {
     // `from <target> import X` — the spelling the orchestrator actually hands
     // the provider, and the ONLY one that reads `context.parsedFiles`: a
@@ -2243,6 +2287,10 @@ const HEAP_PROBE_TARGET = {
   // miss after the full component walk, which is the longest leg the resolver
   // has (a by-name miss returns before any walk).
   zig: '../vendor0/missing.zig',
+  // No extension and no `..`: the repository root and the caller's directory
+  // are each probed with `.sql` appended and as written — four misses, the
+  // longest leg the resolver has.
+  plsql: 'vendor0/missing',
   typescript: 'vendor0/lib/missing',
   vue: 'vendor0/lib/Missing.vue',
   cpp: 'vendor0/missing.hpp',
@@ -2662,6 +2710,7 @@ const LANG_REGISTRY = {
   cpp: SupportedLanguages.CPlusPlus,
   objc: SupportedLanguages.ObjectiveC,
   zig: SupportedLanguages.Zig,
+  plsql: SupportedLanguages.PlSql,
 };
 const LANGS = Object.keys(LANG_REGISTRY);
 /**

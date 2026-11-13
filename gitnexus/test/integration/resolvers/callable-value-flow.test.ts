@@ -41,6 +41,9 @@ const CALLABLE_FLOW_PROVIDER_COVERAGE = {
   // Objective-C message sends are resolved by its ScopeResolver. The provider
   // does not emit callable-value-flow captures in this MVP.
   [SupportedLanguages.ObjectiveC]: 'not-applicable',
+  // PL/SQL has no first-class callable values; calls are structural edges
+  // written by the PL/SQL processor.
+  [SupportedLanguages.PlSql]: 'not-applicable',
 } as const satisfies Record<SupportedLanguages, CallableFlowCoverage>;
 
 const PROVIDER_FLOW_CASES = [

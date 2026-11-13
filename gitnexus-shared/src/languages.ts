@@ -24,4 +24,6 @@ export enum SupportedLanguages {
   /** Standalone regex processor — no tree-sitter, no LanguageProvider. */
   Cobol = 'cobol',
   Zig = 'zig',
+  /** Oracle PL/SQL — standalone ANTLR4 provider (no tree-sitter). */
+  PlSql = 'plsql',
 }

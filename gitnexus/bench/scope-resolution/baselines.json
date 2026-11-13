@@ -175,6 +175,22 @@
     "moduleTypeBindings": 10010999,
     "typeBindings": 10032997
   },
+  "plsql/100/20": {
+    "fingerprint": "908f30ebfe4287bbb4d4553a869da52708dbf92b0e99548dd58d73f8664bdf3b",
+    "nodes": 2300,
+    "edges": 2398,
+    "crossFileCalls": 198,
+    "moduleTypeBindings": 0,
+    "typeBindings": 0
+  },
+  "plsql/1000/20": {
+    "fingerprint": "600a7dc54fdf793e40b66c47551215ad5cb4aa3af9d432c283750fd882224dd8",
+    "nodes": 23000,
+    "edges": 23998,
+    "crossFileCalls": 1998,
+    "moduleTypeBindings": 0,
+    "typeBindings": 0
+  },
   "python/100/20": {
     "fingerprint": "58adb2bc6b7ac24ab3dcd500ec3cd577d3e6853fd1a8e84f658f423677d6df50",
     "nodes": 2299,

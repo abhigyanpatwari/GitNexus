@@ -1,0 +1,5 @@
+{
+  "_comment": "Baseline for bench/plsql-parse/measure.mjs --check. fingerprint = order-independent sha256 over extractPlSqlFacts output for every lang-resolution/plsql-* fixture file plus a 20-subprogram synthetic package body (correctness gate; re-baseline intentionally on a legitimate facts change). scaling_budget = max allowed (t_large/t_small)/(lines ratio) for 60 vs 240 synthetic subprograms after a DFA warm-up; ~1.0 is linear (0.95 measured), ~4.0 quadratic.",
+  "fingerprint": "0ccc2c62f8747bb91a8fb34dc73b1335600a629ce92160ae539b851f4e1d4637",
+  "scaling_budget": 1.5
+}

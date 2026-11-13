@@ -55,6 +55,8 @@ export default [
       '**/.stryker-tmp/**',
       'gitnexus/reports/mutation/**',
       'gitnexus/vendor/**',
+      // ANTLR4-generated PL/SQL lexer/parser (regenerate, never hand-edit).
+      'gitnexus/src/core/ingestion/plsql/generated/**',
       'gitnexus-web/src/vendor/**',
       'gitnexus/test/fixtures/**',
       'gitnexus-web/test/fixtures/**',

@@ -1,0 +1,4 @@
+CREATE OR REPLACE PACKAGE core AS
+  PROCEDURE info;
+END core;
+/

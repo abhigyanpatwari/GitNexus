@@ -1,0 +1,16 @@
+{
+  "language": "plsql",
+  "description": "Rename a package: spec and body headers, both END labels and a cross-file package-qualified call change together; a same-spelled comment and string literal do not.",
+  "categories": ["package-scope", "cross-file"],
+  "target": {
+    "name": "APP",
+    "kind": "Module",
+    "file": "pkg_app.pks"
+  },
+  "newName": "core",
+  "expectedTargetName": "CORE",
+  "expect": {
+    "status": "success",
+    "edits": 5
+  }
+}
