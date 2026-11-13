@@ -2,7 +2,7 @@
 
 This benchmark checks the graph produced by Dart deferred imports and measures capture and scope resolution separately. Over the retained 16–256 sweep, capture and resolution with increasing uses are approximately linear. Resolution with increasing prefixes is superlinear for both deferred and ordinary prefixed imports.
 
-![Capture and resolution compared with linear growth](results/2026-11-13-linux/scaling.png)
+![Capture and resolution compared with linear growth](https://raw.githubusercontent.com/abhigyanpatwari/GitNexus/fcd3c005c26b907ab089b2019b9a572e23e4cbf3/gitnexus/bench/dart-deferred-imports/results/2026-11-13-linux/scaling.png)
 
 ## Measured scaling
 
@@ -55,6 +55,6 @@ The six-shape CI gate uses `(time_large / time_small) / 4`. Its prefix-resolutio
 
 ## Retained evidence
 
-[Raw samples and validated shapes](results/2026-11-13-linux/sweep.json) and [derived estimates](results/2026-11-13-linux/summary.json) record Linux x64, Node 22.23.3, an Intel i9-12900K, and source commit `4290f5c35fae3f8eb529e074ccb8724aceb42600`. Every cell and every paired fingerprint check passed.
+[Raw samples and validated shapes](https://github.com/abhigyanpatwari/GitNexus/blob/fcd3c005c26b907ab089b2019b9a572e23e4cbf3/gitnexus/bench/dart-deferred-imports/results/2026-11-13-linux/sweep.json) and [derived estimates](https://github.com/abhigyanpatwari/GitNexus/blob/fcd3c005c26b907ab089b2019b9a572e23e4cbf3/gitnexus/bench/dart-deferred-imports/results/2026-11-13-linux/summary.json) record Linux x64, Node 22.23.3, an Intel i9-12900K, and source commit `4290f5c35fae3f8eb529e074ccb8724aceb42600`. Every cell and every paired fingerprint check passed.
 
-The [compressed measured runner patch](results/2026-11-13-linux/measured-extension.patch.gz), decompressed and applied to that commit, reconstructs the exact harness bytes identified by the raw report's checksums. The shipped runner was subsequently formatted, its revision metadata made dynamic, and its baseline matching adapted to the smaller CI shapes; the sweep's timed functions and 16–256 workload are unchanged. The figure was generated from the retained raw samples, not from the PR description's earlier macOS measurements.
+The [compressed measured runner patch](https://github.com/abhigyanpatwari/GitNexus/blob/fcd3c005c26b907ab089b2019b9a572e23e4cbf3/gitnexus/bench/dart-deferred-imports/results/2026-11-13-linux/measured-extension.patch.gz), decompressed and applied to that commit, reconstructs the exact harness bytes identified by the raw report's checksums. The shipped runner was subsequently formatted, its revision metadata made dynamic, and its baseline matching adapted to the smaller CI shapes; the sweep's timed functions and 16–256 workload are unchanged. The figure was generated from the retained raw samples, not from the PR description's earlier macOS measurements.
