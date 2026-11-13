@@ -1,0 +1,18 @@
+{
+  "repositories": "Репозитории",
+  "active": "активен",
+  "reanalyzing": "Повторный анализ...",
+  "reanalyzeRepo": "Повторно анализировать {{repoName}}",
+  "deleteRepo": "Удалить {{repoName}}",
+  "reanalyzingRepo": "Переанализ {{repoName}}: {{message}}",
+  "analyzeNew": "Анализировать новый репозиторий...",
+  "searchRepositories": "Поиск репозиториев...",
+  "noRepositoriesFound": "Репозитории по запросу «{{query}}» не найдены",
+  "searchNodes": "Поиск узлов...",
+  "noNodesFound": "Узлы по запросу «{{query}}» не найдены",
+  "starIfCool": "Поставь звезду, если круто",
+  "aiSettings": "Настройки AI",
+  "help": "Помощь",
+  "language": "Язык",
+  "selectLanguage": "Выберите язык"
+}
