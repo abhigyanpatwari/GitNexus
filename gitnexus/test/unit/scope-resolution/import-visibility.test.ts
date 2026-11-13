@@ -56,11 +56,12 @@ describe('ImportVisibility contract: one edge per imported file', () => {
     expect(
       targetLists.some((targets) => targets.some((target) => /^Self/.test(target ?? ''))),
     ).toBe(true);
+    // The same target list written twice in one scope, compared by content.
     expect(
       generatedRelations.some((relation) =>
         relation.scopes.some(
           (scope) =>
-            new Set(scope.statements.map((statement) => statement.targets)).size <
+            new Set(scope.statements.map((statement) => JSON.stringify(statement.targets))).size <
             scope.statements.length,
         ),
       ),

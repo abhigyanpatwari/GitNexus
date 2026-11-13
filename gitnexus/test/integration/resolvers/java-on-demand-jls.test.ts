@@ -16,7 +16,9 @@ import { writeFixtureRepo } from './helpers.js';
  * statement that the behaviour is correct Java. Closing a gap is a deliberate
  * change to that row alone.
  *
- * Each importer uses `T` as a constructor, a parameter type and a field type.
+ * Unless a scenario says otherwise, the importer uses `T` as a constructor, a
+ * parameter type and a field type. S12 uses it as a parameter and field type
+ * only, since `T` is its type parameter there; S14 uses it as a superclass.
  */
 const USES = [
   '  void viaNew() { new T().run(); }',

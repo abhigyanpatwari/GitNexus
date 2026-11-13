@@ -4,8 +4,9 @@
  * A relation is written the way source writes it: per scope, an ordered list
  * of import statements, each with the files it resolves to. The reference
  * answers below are computed from that description alone, so they do not
- * depend on how any implementation stores it. Run the same cases against each
- * implementation by passing its builder to `importVisibilityCases`.
+ * depend on how any implementation stores it. To check an implementation, build
+ * it from each relation in `namedRelations` and `generatedRelations` and compare
+ * `observeVisibility` with `expectedVisibility`.
  */
 import type { ImportEdge, ImportVisibility, ScopeId } from 'gitnexus-shared';
 import { importTargetDirectory, isSelectableImport } from 'gitnexus-shared';
