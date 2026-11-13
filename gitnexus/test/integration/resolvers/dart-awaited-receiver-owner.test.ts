@@ -51,8 +51,11 @@
  *     parameter, catch variable or local-function parameter reusing the
  *     name, sibling argument closures each declaring it, an outer local
  *     redeclared in a closure, and `if`/`else` branches each declaring it all
- *     get NO inferred binding from either declaration — every call on the
- *     name is a missing edge, never the other binder's owner. An un-awaited
+ *     get NO inferred binding from either declaration — a call on the name is
+ *     a missing edge, never the other binder's owner. The one exception
+ *     (`OWN_TYPED_PARAM`, DART-11): a closure or local-function parameter
+ *     declared WITH a type types its own sites through its own scope, so
+ *     `(Address x) { x.save(); }` reaches `Address.save` there. An un-awaited
  *     `.then(…)`-suffixed call binds nothing (the call must be the whole
  *     initializer), a reassigned un-awaited local binds nothing, and a whole
  *     `Future<T>` spelling never names an owner even when the workspace
@@ -415,14 +418,18 @@ const WRITTEN = [
  *  inferred binding at all — from either declaration — and every call on it
  *  is a missing edge, never the other binder's owner. */
 const SHADOWED = [
-  'shadowClosureParamTyped',
   'shadowClosureParamUntyped',
   'shadowCatch',
-  'shadowLocalFunctionParam',
   'siblingClosures',
   'outerRedeclaredInClosure',
   'branchRedeclared',
 ] as const;
+/** The shadowing binder is a TYPED closure or local-function parameter
+ *  (`(Address x) { x.save(); }`). The outer awaited local still gets no
+ *  inferred binding, but since DART-11 the closure has a scope of its own and
+ *  its parameter's annotation types its own site: exactly `Address.save`
+ *  there, never the outer local's `User.save`. */
+const OWN_TYPED_PARAM = ['shadowClosureParamTyped', 'shadowLocalFunctionParam'] as const;
 /** Review round 2: an UN-awaited binding that reaches a whole `Future<T>`
  *  (`final f = makeUserAsync()`) with a workspace class named `Future` in
  *  the repo, a `.then(…)`-suffixed call bound to its first callee, and an
@@ -593,6 +600,16 @@ describe.skipIf(!dartAvailable)('Dart awaited receiver owner (DART-04)', () => {
     },
   );
 
+  it.each(OWN_TYPED_PARAM)(
+    '%s: the typed closure parameter types its own site — exactly Address.save, never the awaited User.save',
+    (fn) => {
+      const line = callLineOf(fn);
+      expect(
+        saveCallsFrom(fn).map((e) => [e.rel.targetId, e.rel.id.includes(`:${line}:`)]),
+      ).toEqual([[decoySaveId, true]]);
+    },
+  );
+
   it.each(UNAWAITED_WRAPPER)(
     '%s: an un-awaited binding never types a member through a whole Future, a `.then(…)` callee or a reassigned local — no edge',
     (fn) => {
@@ -664,7 +681,13 @@ describe.skipIf(!dartAvailable)('Dart awaited receiver owner (DART-04)', () => {
 
   it('never picks Address.save, qualified.dart:User.save, decoy.dart:User.save or stray.dart:Future.save from any caller', () => {
     const decoys = new Set([decoySaveId, qualifiedDecoySaveId, crossFileDecoySaveId, straySaveId]);
-    const toDecoy = getRelationships(result, 'CALLS').filter((c) => decoys.has(c.rel.targetId));
+    // Except Address.save from a site whose own parameter is declared
+    // `Address` (OWN_TYPED_PARAM): there it is the declared target, not a decoy.
+    const ownTyped = new Set<string>(OWN_TYPED_PARAM);
+    const toDecoy = getRelationships(result, 'CALLS').filter(
+      (c) =>
+        decoys.has(c.rel.targetId) && !(c.rel.targetId === decoySaveId && ownTyped.has(c.source)),
+    );
     expect(toDecoy).toEqual([]);
   });
 });
