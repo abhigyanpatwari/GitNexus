@@ -38,8 +38,15 @@ interface SharedList {
   readonly directories: ReadonlySet<string>;
 }
 
+/**
+ * @param entriesByScope every recorded scope with its edges and groups in
+ *   statement order.
+ * @param edgesByScope the same scopes with their edges only, when the caller
+ *   already holds those lists; otherwise they are derived on first request.
+ */
 export function createGroupedImportVisibility(
   entriesByScope: ReadonlyMap<ScopeId, readonly ImportEntry[]>,
+  edgesByScope?: ReadonlyMap<ScopeId, readonly ImportEdge[]>,
 ): ImportVisibility {
   // A group is left out of `edgesAt`, which is only sound for an import no
   // reader can select by name, definition or kind. Refuse anything else here,
@@ -76,7 +83,7 @@ export function createGroupedImportVisibility(
     edgesAt(scope) {
       const entries = entriesByScope.get(scope);
       if (entries === undefined) return undefined;
-      let own = edges.get(scope);
+      let own = edgesByScope?.get(scope) ?? edges.get(scope);
       if (own === undefined) {
         own = Object.freeze(entries.filter((entry): entry is ImportEdge => !isGroup(entry)));
         edges.set(scope, own);
