@@ -38,7 +38,7 @@ import {
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
 import { computeDartArityMetadata } from './arity-metadata.js';
-import { synthesizeDartReceiverBinding } from './receiver-binding.js';
+import { isDartReceiverType, synthesizeDartReceiverBinding } from './receiver-binding.js';
 import {
   synthesizeDartParameterBindings,
   synthesizeDartSignatureBindings,
@@ -125,10 +125,7 @@ const DART_CALLABLE_CAPTURE_OPTIONS = {
     if (named.length < 2) return undefined;
     return { destination: named[0]!, source: named[named.length - 1]! };
   },
-  lexicalFunctionOwner: (node: SyntaxNode) => dartLexicalFunctionOwner(node),
   isCallNode: (node: SyntaxNode) => node.namedChild(0)?.type === 'argument_part',
-  extractCallCallee: (node: SyntaxNode) => dartCallableCallee(node) ?? undefined,
-  callSiteNode: (node: SyntaxNode) => dartCallableCallee(node) ?? undefined,
   callableProtocolMethods: new Set(['call']),
   // tree-sitter-dart spells `a ?? b` as `if_null_expression(first:, second:)`
   // and `c ? a : b` as a `conditional_expression` with `consequence` /
@@ -149,17 +146,48 @@ const DART_CALLABLE_CAPTURE_OPTIONS = {
   },
 } as const;
 
-function dartLexicalFunctionOwner(input: SyntaxNode): SyntaxNode | undefined {
-  let node: SyntaxNode | null = input;
-  while (node !== null) {
-    if (node.type === 'function_signature' || node.type === 'function_expression') return node;
-    if (node.type === 'function_body') {
-      const signature = node.previousNamedSibling;
-      if (signature?.type === 'function_signature') return signature;
+interface DartTreeLink {
+  readonly parent: SyntaxNode | null;
+  readonly previous: SyntaxNode | null;
+  readonly next: SyntaxNode | null;
+  readonly functionOwner: SyntaxNode | undefined;
+}
+type DartTreeLinks = ReadonlyMap<number, DartTreeLink>;
+
+/** Native parent/sibling getters re-descend from the root. Record these links
+ *  once so a reference inside a deep closure still costs a constant lookup. */
+function indexDartTreeLinks(root: SyntaxNode): DartTreeLinks {
+  const links = new Map<number, DartTreeLink>();
+  links.set(root.id, { parent: null, previous: null, next: null, functionOwner: undefined });
+  const stack = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    const link = links.get(node.id)!;
+    const type = node.type;
+    const functionOwner =
+      type === 'function_signature' || type === 'function_expression'
+        ? node
+        : type === 'function_body' && link.previous?.type === 'function_signature'
+          ? link.previous
+          : link.functionOwner;
+    if (functionOwner !== link.functionOwner) links.set(node.id, { ...link, functionOwner });
+    const children = node.namedChildren;
+    for (let i = children.length - 1; i >= 0; i--) {
+      const child = children[i]!;
+      links.set(child.id, {
+        parent: node,
+        previous: children[i - 1] ?? null,
+        next: children[i + 1] ?? null,
+        functionOwner,
+      });
+      stack.push(child);
     }
-    node = node.parent;
   }
-  return undefined;
+  return links;
+}
+
+function dartLexicalFunctionOwner(input: SyntaxNode, links: DartTreeLinks): SyntaxNode | undefined {
+  return links.get(input.id)?.functionOwner;
 }
 
 export function emitDartScopeCaptures(
@@ -179,6 +207,7 @@ export function emitDartScopeCaptures(
   }
 
   const root = tree.rootNode;
+  const treeLinks = indexDartTreeLinks(root);
   const out: CaptureMatch[] = [];
 
   // A named constructor (`A.named()`) parses as ONE `constructor_signature`
@@ -350,7 +379,7 @@ export function emitDartScopeCaptures(
 
   // ── Pass B: tree-walked references, type inference, heritage ────────────
   const seenReadSpans = new Set<string>();
-  walkDartTree(root, null, null, (node, type, owner, opensBlock) => {
+  walkDartTree(root, null, null, (node, type, owner, opensBlock, enclosingType) => {
     // A statement that opens a Dart scope gets a Block scope if it binds a
     // name; a catch clause's parameters belong to the body block after it.
     if (opensBlock) registerDartBlockScope(lexicalScopes, node, owner);
@@ -361,13 +390,13 @@ export function emitDartScopeCaptures(
     // Not exclusive with the branches below: an initializer is both a binder
     // and a type-binding site.
     if (owner !== null && DART_DECLARED_NAME_TYPES.has(type)) {
-      recordDartLexicalName(node, type, owner, lexicalScopes);
+      recordDartLexicalName(node, type, owner, lexicalScopes, treeLinks);
     }
     if (
       type === 'selector' ||
-      (ASSIGNABLE_SELECTORS.has(type) && node.parent?.type !== 'selector')
+      (ASSIGNABLE_SELECTORS.has(type) && treeLinks.get(node.id)?.parent?.type !== 'selector')
     ) {
-      emitSelectorReference(node, out, seenReadSpans);
+      emitSelectorReference(node, out, seenReadSpans, treeLinks);
       return;
     }
     if (type === 'cascade_section') {
@@ -388,13 +417,20 @@ export function emitDartScopeCaptures(
       return;
     }
     if (type === 'function_expression' || type === 'local_function_declaration') {
-      emitDartNestedFunctionScope(node, seenFnDeclNodes, lexicalScopes, owner);
+      emitDartNestedFunctionScope(node, seenFnDeclNodes, lexicalScopes, owner, enclosingType);
       return;
     }
   });
   attachDartLexicalNames(lexicalScopes, out);
 
-  out.push(...synthesizeCallableFlowCaptures(root, DART_CALLABLE_CAPTURE_OPTIONS));
+  out.push(
+    ...synthesizeCallableFlowCaptures(root, {
+      ...DART_CALLABLE_CAPTURE_OPTIONS,
+      lexicalFunctionOwner: (node) => dartLexicalFunctionOwner(node, treeLinks),
+      extractCallCallee: (node) => dartCallableCallee(node, treeLinks) ?? undefined,
+      callSiteNode: (node) => dartCallableCallee(node, treeLinks) ?? undefined,
+    }),
+  );
 
   const prefixes = deferredPrefixes;
   if (prefixes === undefined) return out;
@@ -432,9 +468,9 @@ function namesDeferredLoadLibrary(match: CaptureMatch, prefixes: ReadonlySet<str
   return head !== undefined && prefixes.has(head);
 }
 
-function dartCallableCallee(selector: SyntaxNode): SyntaxNode | null {
+function dartCallableCallee(selector: SyntaxNode, links: DartTreeLinks): SyntaxNode | null {
   if (selector.namedChild(0)?.type !== 'argument_part') return null;
-  const previous = selector.previousNamedSibling;
+  const previous = links.get(selector.id)!.previous;
   if (previous?.type === 'identifier') return previous;
   if (previous?.type !== 'selector') return null;
   const inner = previous.namedChild(0);
@@ -526,6 +562,7 @@ function emitDartNestedFunctionScope(
   seenFnDeclNodes: ReadonlySet<string>,
   lexicalScopes: DartLexicalScopes,
   owner: SyntaxNode | null,
+  enclosingType: SyntaxNode | null,
 ): void {
   let scopeNode: SyntaxNode | null;
   let paramOwner: SyntaxNode | null;
@@ -553,7 +590,7 @@ function emitDartNestedFunctionScope(
   // enclosing scope already provides `this` (`attachDartLexicalNames`).
   registerDartLexicalScope(lexicalScopes, body, 'nested', {
     parent: owner,
-    nested: { node, scopeNode, paramOwner },
+    nested: { node, scopeNode, paramOwner, enclosingType },
   });
 }
 
@@ -591,6 +628,8 @@ interface DartLexicalScope {
     readonly node: SyntaxNode;
     readonly scopeNode: SyntaxNode;
     readonly paramOwner: SyntaxNode;
+    /** Includes known absence: top-level closures must not each climb to the root. */
+    readonly enclosingType: SyntaxNode | null;
   } | null;
   /** A member scope that binds `this` itself (an instance member). */
   readonly providesThis: boolean;
@@ -691,12 +730,20 @@ function walkDartTree(
   node: SyntaxNode,
   owner: SyntaxNode | null,
   parentType: string | null,
-  visit: (node: SyntaxNode, type: string, owner: SyntaxNode | null, opensBlock: boolean) => void,
+  visit: (
+    node: SyntaxNode,
+    type: string,
+    owner: SyntaxNode | null,
+    opensBlock: boolean,
+    enclosingType: SyntaxNode | null,
+  ) => void,
+  enclosingType: SyntaxNode | null = null,
 ): void {
   // Read once: `type` is a native call on every access.
   const type = node.type;
+  if (isDartReceiverType(type)) enclosingType = node;
   const opensBlock = owner !== null && opensDartBlockScope(type, parentType);
-  visit(node, type, owner, opensBlock);
+  visit(node, type, owner, opensBlock, enclosingType);
   let childOwner = owner;
   if (type === 'function_body' || type === 'function_expression_body') childOwner = node;
   else if (type === 'function_expression') childOwner = findFunctionBody(node);
@@ -712,7 +759,7 @@ function walkDartTree(
   }
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
-    if (child !== null) walkDartTree(child, childOwner, type, visit);
+    if (child !== null) walkDartTree(child, childOwner, type, visit, enclosingType);
   }
 }
 
@@ -722,10 +769,11 @@ function recordDartLexicalName(
   type: string,
   owner: SyntaxNode,
   scopes: DartLexicalScopes,
+  links: DartTreeLinks,
 ): void {
   const scope = scopes.get(nodeSpanKey(owner));
   if (scope === undefined) return; // a body with no Function scope (a class accessor)
-  visitDartDeclaredName(node, type, (name) => {
+  visitDartDeclaredName(node, type, links, (name) => {
     scope.names.add(name);
     scope.declared.set(name, (scope.declared.get(name) ?? 0) + 1);
   });
@@ -797,7 +845,7 @@ function attachDartLexicalNames(scopes: DartLexicalScopes, out: CaptureMatch[]):
     // getter, setter, operator or field initializer, which have no scope.
     let ownThis = false;
     if (!inherited) {
-      const receiver = synthesizeDartReceiverBinding(nested.node, anchor);
+      const receiver = synthesizeDartReceiverBinding(nested.node, anchor, nested.enclosingType);
       for (const cm of receiver) out.push(cm);
       ownThis = receiver.length > 0;
     }
@@ -860,6 +908,7 @@ const DART_DECLARED_NAME_TYPES: ReadonlySet<string> = new Set([
 function visitDartDeclaredName(
   node: SyntaxNode,
   type: string,
+  links: DartTreeLinks,
   visit: (name: string) => void,
 ): void {
   const declare = (name: string | null | undefined): void => {
@@ -881,10 +930,12 @@ function visitDartDeclaredName(
         if (child !== null && child.type === 'identifier') declare(child.text);
       }
       return;
-    case 'formal_parameter':
-      if (node.parent?.parent?.type === 'formal_parameter') return;
+    case 'formal_parameter': {
+      const parent = links.get(node.id)?.parent;
+      if (parent != null && links.get(parent.id)?.parent?.type === 'formal_parameter') return;
       declare(dartParameterName(node) ?? dartFunctionTypedParameterName(node));
       return;
+    }
     case 'variable_pattern': {
       for (let i = node.namedChildCount - 1; i >= 0; i--) {
         const child = node.namedChild(i);
@@ -1004,14 +1055,14 @@ function countArgs(argPart: SyntaxNode): number {
 
 /** Receiver text preceding a member-call/read selector (the postfix chain
  *  head plus any intermediate selectors): `user.address.save()` → `user.address`. */
-function computeReceiverText(nameSelector: SyntaxNode): string | null {
+function computeReceiverText(nameSelector: SyntaxNode, links: DartTreeLinks): string | null {
   const selectors: SyntaxNode[] = [];
-  let cur = nameSelector.previousNamedSibling;
+  let cur = links.get(nameSelector.id)!.previous;
   let head: SyntaxNode | null = null;
   while (cur !== null) {
     if (cur.type === 'selector' || ASSIGNABLE_SELECTORS.has(cur.type)) {
       selectors.push(cur);
-      cur = cur.previousNamedSibling;
+      cur = links.get(cur.id)!.previous;
       continue;
     }
     head = cur;
@@ -1141,12 +1192,13 @@ function parenthesizedRun(paren: SyntaxNode): PostfixRun | null {
  */
 function parenthesizedReceiver(
   nameSelector: SyntaxNode,
+  links: DartTreeLinks,
 ): { readonly text: string; readonly chain: string | undefined } | null {
   const outer: SyntaxNode[] = [];
-  let cur = nameSelector.previousNamedSibling;
+  let cur = links.get(nameSelector.id)!.previous;
   while (cur !== null && (cur.type === 'selector' || ASSIGNABLE_SELECTORS.has(cur.type))) {
     outer.push(cur);
-    cur = cur.previousNamedSibling;
+    cur = links.get(cur.id)!.previous;
   }
   if (cur === null || cur.type !== 'parenthesized_expression') return null;
   outer.reverse();
@@ -1172,6 +1224,7 @@ function emitSelectorReference(
   selector: SyntaxNode,
   out: CaptureMatch[],
   seenReadSpans: Set<string>,
+  links: DartTreeLinks,
 ): void {
   // `super.member` and the final member of an assignment target are bare
   // assignable selectors; other postfix members have a `selector` wrapper.
@@ -1181,7 +1234,7 @@ function emitSelectorReference(
   // A `selector(argument_part)` is the call marker; the callee is the
   // immediately-preceding sibling.
   if (inner.type === 'argument_part') {
-    const prev = selector.previousNamedSibling;
+    const prev = links.get(selector.id)!.previous;
     if (prev === null) return;
     const arity = countArgs(inner);
 
@@ -1207,10 +1260,10 @@ function emitSelectorReference(
         const nameId = selectorName(prevInner);
         if (nameId === null) return;
         if (DART_BUILT_INS.has(nameId.text)) return; // legacy suppresses built-in-named calls
-        const recv = computeReceiverText(prev);
+        const recv = computeReceiverText(prev, links);
         // A parenthesized head (`(await svc.getUserAsync()).save()`) names no
         // receiver text of its own; see `parenthesizedReceiver`.
-        const paren = recv === null ? parenthesizedReceiver(prev) : null;
+        const paren = recv === null ? parenthesizedReceiver(prev, links) : null;
         const receiverText = recv ?? paren?.text ?? null;
         const cm: CaptureMatch = {
           '@reference.call.member': nodeToCapture('@reference.call.member', nameId),
@@ -1240,25 +1293,25 @@ function emitSelectorReference(
   // A member not followed by a call is a read, except the final selector on
   // an assignment's left side. Intermediate receivers remain reads.
   if (ASSIGNABLE_SELECTORS.has(inner.type)) {
-    const next = selector.nextNamedSibling;
+    const next = links.get(selector.id)!.next;
     const isCall =
       next !== null && next.type === 'selector' && next.namedChild(0)?.type === 'argument_part';
     if (isCall) return;
 
     const nameId = selectorName(inner);
     if (nameId === null) return;
-    const recv = computeReceiverText(selector);
+    const recv = computeReceiverText(selector, links);
     if (recv === null) return;
 
     const spanKey = `${nameId.startIndex}-${nameId.endIndex}`;
     if (seenReadSpans.has(spanKey)) return;
     seenReadSpans.add(spanKey);
 
-    const target = selector.parent;
+    const target = links.get(selector.id)!.parent;
     const isWrite =
       target?.type === 'assignable_expression' &&
       target.lastNamedChild?.id === selector.id &&
-      target.parent?.childForFieldName('left')?.id === target.id;
+      links.get(target.id)?.parent?.childForFieldName('left')?.id === target.id;
     const tag = isWrite ? '@reference.write.member' : '@reference.read.member';
     out.push({
       [tag]: nodeToCapture(tag, nameId),

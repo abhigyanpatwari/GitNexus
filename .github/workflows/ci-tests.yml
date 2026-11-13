@@ -1604,11 +1604,11 @@ jobs:
         if: ${{ !cancelled() }}
         # NOT build-free: parses through the dist parse worker (the setup action
         # above builds). Pins every function's CALLS edges when closures rebind a
-        # receiver name, side by side or nested, checks capture and resolution
-        # scaling against input and output growth as functions, closures per
-        # function or nesting depth grow 16x (budget 1.5 everywhere), and counts
-        # the enclosing-type search's ancestor steps per Function scope. Fails
-        # on main until the depth terms in baseline.json's _depth_note are fixed.
+        # receiver name, side by side or nested, and checks capture and resolution
+        # scaling against input/output growth across geometric 16x function,
+        # closure and depth sweeps. Deterministic AST and Map visit guards
+        # also reject cheap quadratic scans.
+        # Work and timing budgets: see baseline.json.
         run: node --import tsx bench/dart-closure-binders/measure.mjs --check
         working-directory: gitnexus
 

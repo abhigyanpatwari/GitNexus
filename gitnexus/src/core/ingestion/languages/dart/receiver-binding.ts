@@ -27,6 +27,9 @@ const TYPE_DECL_TYPES = new Set([
   'enum_declaration',
 ]);
 
+/** Types that supply the implicit instance receiver to nested closures. */
+export const isDartReceiverType = (type: string): boolean => TYPE_DECL_TYPES.has(type);
+
 /** Walk up from a method declaration node to its enclosing type declaration. */
 function findEnclosingTypeDeclaration(node: SyntaxNode): SyntaxNode | null {
   let cur: SyntaxNode | null = node.parent;
@@ -78,11 +81,12 @@ function buildReceiverMatch(anchor: SyntaxNode, name: string, typeText: string):
 export function synthesizeDartReceiverBinding(
   declNode: SyntaxNode,
   bodyNode: SyntaxNode,
+  enclosingType?: SyntaxNode | null,
 ): CaptureMatch[] {
-  if (dartMethodConfig.isStatic(declNode)) return [];
-
-  const enclosingType = findEnclosingTypeDeclaration(declNode);
+  // An explicit null is a known absence, not a reason to repeat the search.
+  if (enclosingType === undefined) enclosingType = findEnclosingTypeDeclaration(declNode);
   if (enclosingType === null) return []; // top-level function — no receiver
+  if (dartMethodConfig.isStatic(declNode)) return [];
 
   const typeName = enclosingTypeName(enclosingType);
   if (typeName === null) return [];

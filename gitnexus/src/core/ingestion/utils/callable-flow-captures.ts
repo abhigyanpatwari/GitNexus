@@ -261,7 +261,7 @@ export function synthesizeCallableFlowCaptures(
 ): readonly CaptureMatch[] {
   const parentById = new Map<number, SyntaxNode>();
   const nodes = collectNodes(root, parentById);
-  const functions = collectFunctions(nodes, options);
+  const functions = collectFunctions(nodes, parentById, options);
   const knownCallableNames = new Set(functions.map((fn) => fn.name));
   const assignments = collectAssignments(nodes, options);
   const valueBindings = buildValueBindingIndex(nodes, parentById, assignments, functions, options);
@@ -313,12 +313,13 @@ function collectNodes(root: SyntaxNode, parentById: Map<number, SyntaxNode>): Sy
 
 function collectFunctions(
   nodes: readonly SyntaxNode[],
+  parentById: ReadonlyMap<number, SyntaxNode>,
   options: CallableFlowCaptureOptions,
 ): FunctionInfo[] {
   const out: FunctionInfo[] = [];
   for (const node of nodes) {
     if (!options.functionNodeTypes.has(node.type)) continue;
-    const name = options.functionName?.(node) ?? defaultFunctionName(node, options);
+    const name = options.functionName?.(node) ?? defaultFunctionName(node, parentById, options);
     if (name === undefined || name.length === 0) continue;
     out.push({ node, name, parameters: functionParameters(node, options) });
   }
@@ -327,6 +328,7 @@ function collectFunctions(
 
 function defaultFunctionName(
   node: SyntaxNode,
+  parentById: ReadonlyMap<number, SyntaxNode>,
   options: CallableFlowCaptureOptions,
 ): string | undefined {
   const direct = node.childForFieldName('name');
@@ -339,7 +341,7 @@ function defaultFunctionName(
     const id = bindingIdentifier(declarator, options);
     if (id !== undefined) return id.text;
   }
-  const parent = node.parent;
+  const parent = parentById.get(node.id) ?? node.parent;
   if (parent !== null && options.bindingNodeTypes.has(parent.type)) {
     const destination = assignmentParts(parent, options)[0]?.destination;
     if (destination !== undefined) return bindingIdentifier(destination, options)?.text;

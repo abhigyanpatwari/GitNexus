@@ -121,6 +121,7 @@ import {
   type HeritageTypeArguments,
 } from '../utils/generic-instantiation.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
+import { withCachedNameLookups } from '../scope/name-lookup-cache.js';
 import {
   narrowOverloadCandidates,
   isOverloadAmbiguousAfterNormalization,
@@ -659,6 +660,16 @@ export interface ReceiverBoundResult {
 }
 
 export function emitReceiverBoundCalls(
+  ...args: Parameters<typeof emitReceiverBoundCallsInPass>
+): ReceiverBoundResult {
+  // Selected-call callbacks can change inferred receiver bindings mid-pass.
+  // Otherwise cache empty-scope navigation for exactly this read-only pass.
+  return args[8]?.onSelectedCall === undefined
+    ? withCachedNameLookups(args[1], () => emitReceiverBoundCallsInPass(...args))
+    : emitReceiverBoundCallsInPass(...args);
+}
+
+function emitReceiverBoundCallsInPass(
   graph: KnowledgeGraph,
   scopes: ScopeResolutionIndexes,
   parsedFiles: readonly ParsedFile[],

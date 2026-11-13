@@ -1,13 +1,12 @@
 {
-  "_what": "Synthetic Dart closure-binder gate for #3903 (DART-11), following bench/ruby-gem-resolution and bench/dart-deferred-imports: exact accuracy cells and fingerprints, scaling ratios against input and output growth, and an operation count for the enclosing-type search (#3912 review). Real capture emitter, real parse worker (dist/), real Dart ScopeResolver and pubspec loader; analyze, persistence and full-pipeline memory are outside this benchmark.",
-  "_triage": "Shape and fingerprint failures are deterministic: inspect the corpus and the resolved edges, never rebaseline just to make CI green. The runner also fails, before any baseline comparison, when a function misses an expected CALLS edge or gains one the source never makes. An operation-count failure is deterministic too: a capture pass stepped onto more ancestors than the budget allows, so some lookup climbs the tree again. For a timing failure, rerun on an idle machine and verify the report shows its profile (ci: 5 interleaved samples after 1 warmup; full: 15 after 2) before investigating a regression. Millisecond observations are context, not gates.",
+  "_what": "Synthetic Dart closure-binder gate for #3903 (DART-11), following bench/ruby-gem-resolution and bench/dart-deferred-imports: exact accuracy cells and fingerprints, with ratios as the only timing gates. Real capture emitter, real parse worker (dist/), real Dart ScopeResolver and pubspec loader; analyze, persistence and full-pipeline memory are outside this benchmark.",
+  "_triage": "Shape and fingerprint failures are deterministic: inspect the corpus and the resolved edges, never rebaseline just to make CI green. The runner also fails, before any baseline comparison, when a function misses an expected CALLS edge or gains one the source never makes. For a timing failure, rerun on an idle machine and verify the report shows its profile (ci: 5 interleaved samples after 1 warmup; full: 15 after 2) before investigating a regression. Millisecond observations are context, not gates.",
   "shapes": {
     "sibling_small": {
       "functions": 32,
       "closures_per_function": 3,
       "input_bytes": 5264,
       "capture_groups": 531,
-      "function_scopes": 132,
       "relationships": 103,
       "calls": 64,
       "declines": {
@@ -15,14 +14,59 @@
       },
       "expected_missing": 0,
       "unexpected_edges": 0,
-      "fingerprint": "7164f858fbaa461460ec19c9362af4428721da0cd2c76dab46e6915d7e848946"
+      "fingerprint": "7164f858fbaa461460ec19c9362af4428721da0cd2c76dab46e6915d7e848946",
+      "function_scopes": 132
+    },
+    "sibling_function_64": {
+      "functions": 64,
+      "closures_per_function": 3,
+      "input_bytes": 10416,
+      "capture_groups": 1043,
+      "relationships": 199,
+      "calls": 128,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 256
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "c740b54bcd58e7361df1b80c60c4a5cc2dfffb0e43cfd85f4336d1e3bd6471dd",
+      "function_scopes": 260
+    },
+    "sibling_medium": {
+      "functions": 128,
+      "closures_per_function": 3,
+      "input_bytes": 20748,
+      "capture_groups": 2067,
+      "relationships": 391,
+      "calls": 256,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 512
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "fd74596d2c01226d4740f5c4f5764a264feb17bb1f55daf8b9fbda00696e08dd",
+      "function_scopes": 516
+    },
+    "sibling_function_256": {
+      "functions": 256,
+      "closures_per_function": 3,
+      "input_bytes": 41484,
+      "capture_groups": 4115,
+      "relationships": 775,
+      "calls": 512,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 1024
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "4f3a210640042b0e5f3c068c349e946b77cbdceb8fc231155ab6705a2f8553f2",
+      "function_scopes": 1028
     },
     "sibling_large": {
       "functions": 512,
       "closures_per_function": 3,
       "input_bytes": 82956,
       "capture_groups": 8211,
-      "function_scopes": 2052,
       "relationships": 1543,
       "calls": 1024,
       "declines": {
@@ -30,14 +74,59 @@
       },
       "expected_missing": 0,
       "unexpected_edges": 0,
-      "fingerprint": "9332ec13b546d9725421f7b7212f93bb93563e5962bce8c3d550a77578b5505d"
+      "fingerprint": "9332ec13b546d9725421f7b7212f93bb93563e5962bce8c3d550a77578b5505d",
+      "function_scopes": 2052
+    },
+    "sibling_closure_6": {
+      "functions": 32,
+      "closures_per_function": 6,
+      "input_bytes": 9040,
+      "capture_groups": 851,
+      "relationships": 167,
+      "calls": 128,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 256
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "21d49b6eccbe8f709ff32ac45babff2f96dbd44d98cb8b7ba743a9e7a56cf70b",
+      "function_scopes": 228
+    },
+    "sibling_closure_12": {
+      "functions": 32,
+      "closures_per_function": 12,
+      "input_bytes": 16592,
+      "capture_groups": 1491,
+      "relationships": 295,
+      "calls": 256,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 512
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "678f81e67e6ab00e76ab004979404862fdea9ef3ba3269495dc8817e823c880a",
+      "function_scopes": 420
+    },
+    "sibling_closure_24": {
+      "functions": 32,
+      "closures_per_function": 24,
+      "input_bytes": 31696,
+      "capture_groups": 2771,
+      "relationships": 551,
+      "calls": 512,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 1024
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "3eab3ed3214be4ce1a809e10765753a576e4fb1617ced56a2d2e985d1c1cb5fb",
+      "function_scopes": 804
     },
     "sibling_dense": {
       "functions": 32,
       "closures_per_function": 48,
       "input_bytes": 61904,
       "capture_groups": 5331,
-      "function_scopes": 1572,
       "relationships": 1063,
       "calls": 1024,
       "declines": {
@@ -45,14 +134,14 @@
       },
       "expected_missing": 0,
       "unexpected_edges": 0,
-      "fingerprint": "b6402eb2a8b632112dadc358ac9bbe1d7989ca6435491a62f7e5245953c21be3"
+      "fingerprint": "b6402eb2a8b632112dadc358ac9bbe1d7989ca6435491a62f7e5245953c21be3",
+      "function_scopes": 1572
     },
     "nested_small": {
       "functions": 32,
       "closures_per_function": 3,
       "input_bytes": 5456,
       "capture_groups": 531,
-      "function_scopes": 132,
       "relationships": 103,
       "calls": 64,
       "declines": {
@@ -60,14 +149,59 @@
       },
       "expected_missing": 0,
       "unexpected_edges": 0,
-      "fingerprint": "095276e43420348b8a31afc66e8bab386729adfebfe0dcbd54d51af912080430"
+      "fingerprint": "095276e43420348b8a31afc66e8bab386729adfebfe0dcbd54d51af912080430",
+      "function_scopes": 132
+    },
+    "nested_function_64": {
+      "functions": 64,
+      "closures_per_function": 3,
+      "input_bytes": 10800,
+      "capture_groups": 1043,
+      "relationships": 199,
+      "calls": 128,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 256
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "de995087054a2c93bd8dfd13a6638f26b178fce83dfe394b5f5d0ab39bdc223c",
+      "function_scopes": 260
+    },
+    "nested_medium": {
+      "functions": 128,
+      "closures_per_function": 3,
+      "input_bytes": 21516,
+      "capture_groups": 2067,
+      "relationships": 391,
+      "calls": 256,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 512
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "540fb75d7db19a3e667352d1f6683996942ad7a168c0f94cfc8d7a60b069b144",
+      "function_scopes": 516
+    },
+    "nested_function_256": {
+      "functions": 256,
+      "closures_per_function": 3,
+      "input_bytes": 43020,
+      "capture_groups": 4115,
+      "relationships": 775,
+      "calls": 512,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 1024
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "c277a179ea09dc7b8f03e72ff64f7e808d4c969ab6592fa9006cb38f94314307",
+      "function_scopes": 1028
     },
     "nested_large": {
       "functions": 512,
       "closures_per_function": 3,
       "input_bytes": 86028,
       "capture_groups": 8211,
-      "function_scopes": 2052,
       "relationships": 1543,
       "calls": 1024,
       "declines": {
@@ -75,14 +209,59 @@
       },
       "expected_missing": 0,
       "unexpected_edges": 0,
-      "fingerprint": "962f77c03461df95853e7267b83a96c43433294cb88b170db12c5148e65943ff"
+      "fingerprint": "962f77c03461df95853e7267b83a96c43433294cb88b170db12c5148e65943ff",
+      "function_scopes": 2052
+    },
+    "nested_closure_6": {
+      "functions": 32,
+      "closures_per_function": 6,
+      "input_bytes": 9424,
+      "capture_groups": 851,
+      "relationships": 167,
+      "calls": 128,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 256
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "d5e7af3e568e928052fc1c987aea8681a1ae911006d099056e661a18696c870b",
+      "function_scopes": 228
+    },
+    "nested_closure_12": {
+      "functions": 32,
+      "closures_per_function": 12,
+      "input_bytes": 17360,
+      "capture_groups": 1491,
+      "relationships": 295,
+      "calls": 256,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 512
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "a46c995de1ee1c9a313f23c10b9c9c746b9afa14b12c8891300122c8632671df",
+      "function_scopes": 420
+    },
+    "nested_closure_24": {
+      "functions": 32,
+      "closures_per_function": 24,
+      "input_bytes": 33232,
+      "capture_groups": 2771,
+      "relationships": 551,
+      "calls": 512,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 1024
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "301265f1763864c4478936e9545ef2bfd6a5b9f17332f09fc64b5dca4ce2c404",
+      "function_scopes": 804
     },
     "nested_dense": {
       "functions": 32,
       "closures_per_function": 48,
       "input_bytes": 64976,
       "capture_groups": 5331,
-      "function_scopes": 1572,
       "relationships": 1063,
       "calls": 1024,
       "declines": {
@@ -90,55 +269,247 @@
       },
       "expected_missing": 0,
       "unexpected_edges": 0,
-      "fingerprint": "803c8b88f19d812336427450343fbd9d1976e10f96989279d7d2eeca0407bb8e"
+      "fingerprint": "803c8b88f19d812336427450343fbd9d1976e10f96989279d7d2eeca0407bb8e",
+      "function_scopes": 1572
     }
   },
-  "_shape_note": "Exact counts are the workload FLOOR. small = 32 functions x 3 closures, large = 512 x 3 (functions 16x), dense = 32 x 48 (closures per function 16x; in `nested`, nesting depth 16x). Nested closures are indented by a fixed width, so input bytes grow linearly with depth (#3912 review: the old indentation grew quadratically). Each cell records its input bytes and its emitted output (capture groups, Function scopes, relationships, CALLS edges, declines). Expected edges per function are computed from the binder rule, not read back from the graph: an untyped rebinding `(cs)` declines (`receiver-type-unresolved/untyped-binder`), a typed `(Other cs)` reaches Other.save, and `(x) { cs.run(); }` reaches the nearest `cs` (the `Address` parameter side by side, the enclosing `Other cs` when nested).",
-  "_fingerprint_note": "Recorded on main e2b7cdbd0. Hashes pin every relationship (endpoints, type, confidence, reason) and every decline (reason/detail, file, name, position). #3917 (the enclosing-type fix) produces identical cells: it changes no output.",
+  "_fingerprint_note": "Hashes pin every relationship (endpoints, type, confidence, reason) and every decline (reason/detail, file, name, position). Production fixes passed the original baseline unchanged before the geometric sweep and fixed-width nested formatting were introduced. Formatting changes the nested position fingerprints; each function still must match the independently computed target multiset.",
   "budgets": {
     "sibling_capture_function_scaling_ratio": 1.5,
-    "sibling_capture_closure_scaling_ratio": 1.5,
     "sibling_resolve_function_scaling_ratio": 1.5,
+    "sibling_parent_reads_function_scaling_ratio": 1.1,
+    "sibling_child_reads_function_scaling_ratio": 1.1,
+    "sibling_map_visits_function_scaling_ratio": 1.1,
+    "sibling_capture_closure_scaling_ratio": 1.5,
     "sibling_resolve_closure_scaling_ratio": 1.5,
+    "sibling_parent_reads_closure_scaling_ratio": 1.1,
+    "sibling_child_reads_closure_scaling_ratio": 1.1,
+    "sibling_map_visits_closure_scaling_ratio": 1.1,
     "nested_capture_function_scaling_ratio": 1.5,
-    "nested_capture_closure_scaling_ratio": 1.5,
     "nested_resolve_function_scaling_ratio": 1.5,
-    "nested_resolve_closure_scaling_ratio": 1.5
+    "nested_parent_reads_function_scaling_ratio": 1.1,
+    "nested_child_reads_function_scaling_ratio": 1.1,
+    "nested_map_visits_function_scaling_ratio": 1.1,
+    "nested_capture_closure_scaling_ratio": 1.5,
+    "nested_resolve_closure_scaling_ratio": 1.5,
+    "nested_parent_reads_closure_scaling_ratio": 1.1,
+    "nested_child_reads_closure_scaling_ratio": 1.1,
+    "nested_map_visits_closure_scaling_ratio": 1.1
   },
-  "operation_budgets": {
-    "enclosing_type_ancestor_visits_per_function_scope": 1
-  },
-  "_scaling_note": "Scaling ratios are (t_big / t_small) / growth, where growth is the larger of the input-byte, capture-group and relationship growth between the two cells: about 1 is linear in input plus output, about 16 is quadratic at these sizes. Every ratio's budget is 1.5 (bench/scope-capture); there is no allowance for nesting depth.",
-  "_operations_note": "Under --check each workload's capture pass counts the ancestors the enclosing-type search steps onto (getDartEnclosingTypeStats, #3917): at most one per Function scope. #3917 reads the enclosing type from the capture walk for every closure and memoises a declared member's lookup, so the count stays below one per scope at any depth (0.02-0.29 here). A tree without the counter fails the check rather than passing it.",
-  "_depth_note": "On main the nested depth ratios fail: capture 11.2 and resolve 3.1 against budget 1.5 (_measured_ci). Capture has three terms: the enclosing-type climb per closure, fixed by #3917; and two per-call walks in the shared utils/callable-flow-captures.ts, the subtree search of every closure argument in emitCallFacts -> operandSyntax and the anchor-chain walk in isVisibleValueBinding, a follow-up. node-tree-sitter's `parent` and sibling accessors re-descend from the root, about 150 ns per AST level, so any helper that calls them once per node also grows with depth. Resolve's depth term is measured separately. This gate passes only once that repeated work is gone; it is not budgeted around.",
-  "_negative_controls_note": "Control A, a climb to the root per closure (the main shape, with the counter added), fails the operation budget deterministically: 'sibling_small: enclosing-type search stepped onto 3206 ancestors for 516 Function scopes'. Control B, scanning every registered scope per binder (O(binders x scopes)), moved the 16x function ratio to 1.57 against 1.39 for clean code in one run, but clean code read 1.64 on the closure axis in the same run: on a busy host the ratios at these sizes move by about +-0.25, so timing does not reliably catch control B. Operation counts are the reliable regression signal; the timing ratios catch only large super-linear terms.",
-  "_profiles_note": "Two profiles share the shapes and every accuracy gate. CI (the default, and what --check runs in the benchmarks job): one process, one parse worker, every workload timed, min of 5 after 1 warmup, interleaved. --full: one child times every workload, min of 15 after 2 warmups, and each shape runs in a fresh child for its peak RSS. Wall times are in _measured_ci.",
+  "_scaling_note": "Every timing metric is the maximum growth across all size pairs, divided by the maximum growth in input bytes, capture groups, graph relationships or CALLS edges. Budget 1.5 applies to every timing axis. Deterministic AST and Map operation counts use the varied function/closure count as the denominator (budget 1.1): affine structural work and byte lengths have different fixed overheads. Map counts exclude tree-sitter internal SyntaxNode wrapper caches, whose allocation depends on GC. These measurements guard these workloads, not every possible program.",
+  "_depth_note": "Geometric sweeps cover 32/64/128/256/512 functions at 3 closures and 3/6/12/24/48 closures at 32 functions. Nested indentation is fixed-width. Capture carries enclosing-type absence, indexes native tree links, reuses the callable-flow terminal-identifier memo, and drops non-designator arguments before the second-leaf search. Read-only receiver and reference passes path-compress empty lexical scopes; callback-bearing passes stay uncached. Registry ownership with no usable candidates skips distance calculation. Caller attribution skips empty scope chains and reuses child-definition lists.",
+  "_profiles_note": "Two profiles share the shapes and every accuracy gate. CI (the default, and what --check runs in the benchmarks job): one process, one parse worker, every workload timed, min of 5 after 1 warmup, interleaved. --full: one child times every workload, min of 15 after 2 warmups, and each shape runs in a fresh child for its peak RSS. Only the CI profile was remeasured for this baseline.",
+  "_negative_controls_note": "Temporary source mutations preserved exact captures while failing deterministic work guards: a root climb per binder produced normalized parent reads 3.1106, and an all-scopes scan produced Map visits 2.6309, both above 1.1. Unit tests compare uncached and cached scope reads across 24 to 96 nested scopes and sibling closures, including the real reference pass and position-sensitive caller selection.",
   "_measured_ci": {
-    "environment": "macOS arm64 / Node 24.16.0, 2026-11-13, main e2b7cdbd0, shared host (load average 21-44 on 15 cores)",
-    "wall_seconds": [48.7],
-    "reps": 5,
+    "environment": "Linux x64 / Node 22.23.3, 2026-11-13; integrated with PR #3920",
+    "profile": "ci",
     "warmup": 1,
-    "sibling_capture_function_scaling_ratio": 1.225,
-    "sibling_capture_closure_scaling_ratio": 1.379,
-    "sibling_resolve_function_scaling_ratio": 1.009,
-    "sibling_resolve_closure_scaling_ratio": 1.114,
-    "nested_capture_function_scaling_ratio": 1.141,
-    "nested_capture_closure_scaling_ratio": 11.225,
-    "nested_resolve_function_scaling_ratio": 0.989,
-    "nested_resolve_closure_scaling_ratio": 3.109,
-    "sibling_small_capture_ms": 20.4,
-    "sibling_large_capture_ms": 392.9,
-    "sibling_dense_capture_ms": 330.1,
-    "nested_small_capture_ms": 23.8,
-    "nested_large_capture_ms": 427.7,
-    "nested_dense_capture_ms": 3178.6,
-    "sibling_small_resolve_ms": 1.9,
-    "sibling_large_resolve_ms": 29.5,
-    "sibling_dense_resolve_ms": 24.3,
-    "nested_small_resolve_ms": 2.0,
-    "nested_large_resolve_ms": 31.4,
-    "nested_dense_resolve_ms": 74.4,
-    "operations": "unavailable on main (no counter); --check reports each cell as a failure"
-  },
-  "_measured_note": "One CI-profile run on main. Its ratios are the failures this gate exists to catch, recorded so the fixes have a before. Exact shapes and fingerprints are identical on #3917."
+    "samples": 5,
+    "statistic": "minimum",
+    "interleaved": true,
+    "metrics": {
+      "sibling_capture_function_scaling_ratio": 1.321,
+      "sibling_resolve_function_scaling_ratio": 1.4838,
+      "sibling_parent_reads_function_scaling_ratio": 0.9904,
+      "sibling_child_reads_function_scaling_ratio": 0.9991,
+      "sibling_map_visits_function_scaling_ratio": 0.9984,
+      "sibling_capture_closure_scaling_ratio": 1.1096,
+      "sibling_resolve_closure_scaling_ratio": 1.2583,
+      "sibling_parent_reads_closure_scaling_ratio": 0.5,
+      "sibling_child_reads_closure_scaling_ratio": 0.9891,
+      "sibling_map_visits_closure_scaling_ratio": 0.9593,
+      "nested_capture_function_scaling_ratio": 1.2616,
+      "nested_resolve_function_scaling_ratio": 1.3785,
+      "nested_parent_reads_function_scaling_ratio": 0.9904,
+      "nested_child_reads_function_scaling_ratio": 0.9991,
+      "nested_map_visits_function_scaling_ratio": 0.9984,
+      "nested_capture_closure_scaling_ratio": 1.1265,
+      "nested_resolve_closure_scaling_ratio": 1.3938,
+      "nested_parent_reads_closure_scaling_ratio": 0.5,
+      "nested_child_reads_closure_scaling_ratio": 0.9888,
+      "nested_map_visits_closure_scaling_ratio": 0.9593
+    },
+    "timings": {
+      "sibling_small": {
+        "capture_ms": 26.839,
+        "resolve_ms": 2.511,
+        "work": {
+          "parent_reads": 185,
+          "child_reads": 20392,
+          "map_visits": 164,
+          "function_scopes": 132
+        }
+      },
+      "sibling_function_64": {
+        "capture_ms": 55.664,
+        "resolve_ms": 7.452,
+        "work": {
+          "parent_reads": 345,
+          "child_reads": 40488,
+          "map_visits": 324,
+          "function_scopes": 260
+        }
+      },
+      "sibling_medium": {
+        "capture_ms": 130.696,
+        "resolve_ms": 10.618,
+        "work": {
+          "parent_reads": 665,
+          "child_reads": 80680,
+          "map_visits": 644,
+          "function_scopes": 516
+        }
+      },
+      "sibling_function_256": {
+        "capture_ms": 257.787,
+        "resolve_ms": 20.487,
+        "work": {
+          "parent_reads": 1305,
+          "child_reads": 161064,
+          "map_visits": 1284,
+          "function_scopes": 1028
+        }
+      },
+      "sibling_large": {
+        "capture_ms": 567.267,
+        "resolve_ms": 46.571,
+        "work": {
+          "parent_reads": 2585,
+          "child_reads": 321832,
+          "map_visits": 2564,
+          "function_scopes": 2052
+        }
+      },
+      "sibling_closure_6": {
+        "capture_ms": 53.058,
+        "resolve_ms": 4.635,
+        "work": {
+          "parent_reads": 185,
+          "child_reads": 37704,
+          "map_visits": 260,
+          "function_scopes": 228
+        }
+      },
+      "sibling_closure_12": {
+        "capture_ms": 105.789,
+        "resolve_ms": 7.942,
+        "work": {
+          "parent_reads": 185,
+          "child_reads": 72328,
+          "map_visits": 452,
+          "function_scopes": 420
+        }
+      },
+      "sibling_closure_24": {
+        "capture_ms": 207.627,
+        "resolve_ms": 18.231,
+        "work": {
+          "parent_reads": 185,
+          "child_reads": 141576,
+          "map_visits": 836,
+          "function_scopes": 804
+        }
+      },
+      "sibling_dense": {
+        "capture_ms": 460.747,
+        "resolve_ms": 39.974,
+        "work": {
+          "parent_reads": 185,
+          "child_reads": 280072,
+          "map_visits": 1604,
+          "function_scopes": 1572
+        }
+      },
+      "nested_small": {
+        "capture_ms": 28.477,
+        "resolve_ms": 2.512,
+        "work": {
+          "parent_reads": 185,
+          "child_reads": 20264,
+          "map_visits": 164,
+          "function_scopes": 132
+        }
+      },
+      "nested_function_64": {
+        "capture_ms": 53.706,
+        "resolve_ms": 4.444,
+        "work": {
+          "parent_reads": 345,
+          "child_reads": 40232,
+          "map_visits": 324,
+          "function_scopes": 260
+        }
+      },
+      "nested_medium": {
+        "capture_ms": 114.991,
+        "resolve_ms": 12.253,
+        "work": {
+          "parent_reads": 665,
+          "child_reads": 80168,
+          "map_visits": 644,
+          "function_scopes": 516
+        }
+      },
+      "nested_function_256": {
+        "capture_ms": 248.907,
+        "resolve_ms": 24.36,
+        "work": {
+          "parent_reads": 1305,
+          "child_reads": 160040,
+          "map_visits": 1284,
+          "function_scopes": 1028
+        }
+      },
+      "nested_large": {
+        "capture_ms": 542.056,
+        "resolve_ms": 47.508,
+        "work": {
+          "parent_reads": 2585,
+          "child_reads": 319784,
+          "map_visits": 2564,
+          "function_scopes": 2052
+        }
+      },
+      "nested_closure_6": {
+        "capture_ms": 52.396,
+        "resolve_ms": 5.677,
+        "work": {
+          "parent_reads": 185,
+          "child_reads": 37384,
+          "map_visits": 260,
+          "function_scopes": 228
+        }
+      },
+      "nested_closure_12": {
+        "capture_ms": 103.364,
+        "resolve_ms": 10.531,
+        "work": {
+          "parent_reads": 185,
+          "child_reads": 71624,
+          "map_visits": 452,
+          "function_scopes": 420
+        }
+      },
+      "nested_closure_24": {
+        "capture_ms": 228.838,
+        "resolve_ms": 18.613,
+        "work": {
+          "parent_reads": 185,
+          "child_reads": 140104,
+          "map_visits": 836,
+          "function_scopes": 804
+        }
+      },
+      "nested_dense": {
+        "capture_ms": 465.754,
+        "resolve_ms": 51.886,
+        "work": {
+          "parent_reads": 185,
+          "child_reads": 277064,
+          "map_visits": 1604,
+          "function_scopes": 1572
+        }
+      }
+    }
+  }
 }

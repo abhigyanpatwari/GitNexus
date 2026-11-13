@@ -259,6 +259,10 @@ function walkLexicalChain(
   const claim = lookupName(ctx, startScope, name, options);
   ctx.onLexicalClaim?.(name, claim);
   if (claim.status !== 'absent') {
+    // Ownership without a candidate still blocks global fallback. There is no
+    // ranking evidence to attach, so measuring its ancestor distance is wasted
+    // work (and quadratic for references in a chain of nested closures).
+    if (!claim.bindings.some((binding) => acceptedKinds.has(binding.def.type))) return true;
     let depth = 0;
     let owner = ctx.scopes.getScope(startScope);
     const visited = new Set<ScopeId>();

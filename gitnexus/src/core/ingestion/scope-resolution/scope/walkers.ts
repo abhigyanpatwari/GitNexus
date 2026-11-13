@@ -45,6 +45,7 @@ import {
   stripTemplateArguments,
 } from '../../utils/template-arguments.js';
 import { definitionIdPosition } from '../utils/definition-id.js';
+import { cachedNameLookupStart } from './name-lookup-cache.js';
 
 const EMPTY_BINDINGS: readonly BindingRef[] = Object.freeze([]);
 
@@ -76,7 +77,7 @@ export function lookupNameClaim(
   options: IndexedNameLookupOptions = {},
 ): NameClaimResult {
   return lookupLexicalName(
-    startScope,
+    options.skipEnclosingClasses ? startScope : cachedNameLookupStart(startScope, name, scopes),
     name,
     {
       scopes: scopes.scopeTree,
