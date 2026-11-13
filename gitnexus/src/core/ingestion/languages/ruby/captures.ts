@@ -48,6 +48,14 @@ const RUBY_CALLABLE_CAPTURE_OPTIONS = {
   ]),
   functionScopedValueBindings: true,
   callableProtocolMethods: new Set(['call']),
+  // A Ruby `call` holds its arguments in its own `arguments` field; one
+  // without it (`run_with do … end`, `items.each { … }`, `obj.run`) passes
+  // none. Left to the generic fallback, a call with no list searches its
+  // whole subtree, block included, and takes the first NESTED call's list as
+  // its own: `run_with do helper(cb) end` passed `cb` to `run_with`. That
+  // search also cost O(block size) per call, O(depth^2) over a nest of blocks.
+  extractCallArguments: (call: SyntaxNode) =>
+    call.childForFieldName('arguments') === null ? [] : undefined,
   // A bare receiver-less identifier in value position is a method CALL in
   // Ruby (`action = process` stores process's RETURN value) — only explicit
   // reference forms (method(:x), &:x, lambda/proc) reference the callable.

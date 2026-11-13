@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type Parser from 'tree-sitter';
 import { getRubyParser } from '../../../../src/core/ingestion/languages/ruby/query.js';
 import {
+  emitRubyScopeCaptures,
   rubyBareNameIsLocalRead,
   type RubyScopeBindings,
 } from '../../../../src/core/ingestion/languages/ruby/captures.js';
@@ -138,6 +139,16 @@ function classify(source: string): { steps: number; verdicts: boolean[] } {
   return { steps, verdicts };
 }
 
+/** Tree steps of the whole capture pass over `source` (parsed outside the count). */
+function capturePass(source: string): { steps: number; groups: number } {
+  const tree = getRubyParser().parse(source);
+  const counter = countTreeSteps(tree);
+  const groups = emitRubyScopeCaptures(source, 'nest.rb', tree).length;
+  const steps = counter.steps;
+  while (restores.length > 0) restores.pop()?.();
+  return { steps, groups };
+}
+
 describe('Ruby bare read: classification cost is linear in nesting depth (RUBY-04)', () => {
   it.each([
     ['every level reads the parameter', (_j: number) => 'target', true],
@@ -153,6 +164,20 @@ describe('Ruby bare read: classification cost is linear in nesting depth (RUBY-0
     expect(
       growth,
       `tree steps ${shallow.steps} at depth 16 -> ${deep.steps} at depth 64 (x${growth.toFixed(2)})`,
+    ).toBeLessThanOrEqual(5);
+  });
+
+  // The whole Ruby capture pass over the same nest: no other per-node climb
+  // or subtree search may reintroduce depth x depth work. (A block-taking
+  // call with no argument list used to search its whole block for one.)
+  it('the whole capture pass over a nest that reads at every level', () => {
+    const shallow = capturePass(nest(16, () => 'target'));
+    const deep = capturePass(nest(64, () => 'target'));
+    expect(deep.groups).toBeGreaterThan(shallow.groups);
+    const growth = deep.steps / shallow.steps;
+    expect(
+      growth,
+      `capture-pass tree steps ${shallow.steps} at depth 16 -> ${deep.steps} at depth 64 (x${growth.toFixed(2)})`,
     ).toBeLessThanOrEqual(5);
   });
 });
