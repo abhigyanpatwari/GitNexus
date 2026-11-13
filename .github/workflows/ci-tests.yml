@@ -1272,8 +1272,9 @@ jobs:
         # NOT build-free: parses through the dist parse worker (the setup action
         # above builds). Pins bare parameter reads in nested blocks and heredoc
         # bodies (and the opener rule's kept call), and checks capture and
-        # resolution scaling as methods, block depth, heredocs per opener line or
-        # reads per heredoc body grow 4x. Budgets: see baseline.json.
+        # resolution scaling as methods (4x), block depth (16x, 4 -> 64; capture
+        # only), heredocs per opener line or reads per heredoc body (4x) grow.
+        # Budgets: see baseline.json.
         run: node --import tsx bench/ruby-bare-reads/measure.mjs --check
         working-directory: gitnexus
 

@@ -2,13 +2,14 @@
  * Ruby bare-read correctness and scaling gate (#3880, RUBY-04).
  *
  * A bare identifier that names a parameter or a local in scope is a read, not
- * a call. The capture pass climbs from each bare identifier through the
- * enclosing block / lambda scopes to the method, asking each scope's cached
- * binding index whether the name is bound before the read; a heredoc body is
- * read at its opener, so a read inside one also looks at the opener line
- * (`rubyHeredocOpenerTail`). This gate pins what that produces and checks that
- * its cost grows linearly in methods, block depth, heredocs per opener line
- * and reads per heredoc body.
+ * a call. The capture pass classifies every bare identifier of a file in one
+ * walk that carries the open scope chain's bindings down the tree
+ * (`rubyBoundReadIds`); a heredoc body is read at its opener, and bodies are
+ * paired with openers in one pass (`rubyHeredocOpeners`). This gate pins what
+ * that produces and checks that capture grows linearly in methods, block
+ * depth, heredocs per opener line and reads per heredoc body, and resolution
+ * in each of those but block depth (reported, not gated: see baseline.json
+ * `_depth_note`).
  *
  * Workload: N files `lib/host<i>.rb`, each holding class `Host<i>` that
  * declares `target`, `helper` and `other(*args)` plus the method under test.
@@ -26,10 +27,20 @@
  *    body, so the body's bare `target` is still a call.
  * Each method's CALLS edges must equal the expected multiset exactly.
  *
- * Shapes, with the dimension each one grows 4x over `small`:
- *  - blocks: small 128 methods x depth 4; methods 512 x 4; depth 128 x 16.
+ * Every line has a fixed-width indent, so a cell's source grows linearly in
+ * each size parameter (`input_bytes` is pinned per shape, beside the capture
+ * groups and relationships it produces).
+ *
+ * Shapes, with the dimension each one grows over `small`:
+ *  - blocks: small 128 methods x depth 4; methods 512 x 4 (4x); depth
+ *    128 x 64 (16x: a per-read climb to the method costs O(depth), and a
+ *    short depth range hides that behind per-file overhead).
  *  - heredocs: small 64 methods x 2 heredocs x 2 reads; methods 256 x 2 x 2;
- *    per_line 64 x 8 x 2; size 64 x 2 x 8.
+ *    per_line 64 x 8 x 2; size 64 x 2 x 8 (4x each). Pairing bodies with
+ *    openers was O(H^2) per line; at CI sizes that term is invisible to a
+ *    timing ratio even over 16x, so the operation-count unit test
+ *    (ruby-bare-read-cost.test.ts) is its guard.
+ * A scaling ratio is (t_shape / t_small) / growth: about 1 is linear.
  * Two profiles. Default (CI, also with --check): one process prepares every
  * workload, runs every accuracy gate, and times every workload interleaved
  * (each round times each workload once, in rotating order), min of 5 after 1
@@ -77,12 +88,11 @@ const WARMUP = FULL ? 2 : 1;
 const REPS = FULL ? 15 : 5;
 const MARKER = 'RUBY_BARE_READ_RESULT ';
 const FORMS = ['blocks', 'heredocs'];
-/** Per form: shape name -> size parameters; every non-small shape grows one 4x. */
+/** Per form: shape name -> size parameters; every non-small shape grows one. */
 const SHAPES = {
-  blocks: { small: [128, 4], methods: [512, 4], depth: [128, 16] },
+  blocks: { small: [128, 4], methods: [512, 4], depth: [128, 64] },
   heredocs: { small: [64, 2, 2], methods: [256, 2, 2], per_line: [64, 8, 2], size: [64, 2, 8] },
 };
-const SCALE = 4;
 const roots = [];
 /** One parse worker for every workload in this process. */
 let pool;
@@ -96,12 +106,10 @@ function corpus(form, methods, k, r = 0) {
   for (let i = 0; i < methods; i++) {
     let source = `class Host${i}\n${helpers}`;
     if (form !== 'heredocs') {
+      // Fixed-width indent: the source grows linearly in k, not in k^2.
       source += '\n  def m(target)\n    helper\n';
-      for (let j = 0; j < k; j++) {
-        const indent = '  '.repeat(j + 2);
-        source += `${indent}[1].each do |x${j}|\n${indent}  target\n`;
-      }
-      for (let j = k - 1; j >= 0; j--) source += `${'  '.repeat(j + 2)}end\n`;
+      for (let j = 0; j < k; j++) source += `    [1].each do |x${j}|\n      target\n`;
+      for (let j = 0; j < k; j++) source += '    end\n';
       source += '  end\n';
     } else {
       const read = '      #{[1].map do\n        target\n      end}\n';
@@ -161,7 +169,11 @@ function replay(files, raw) {
   return { graph, model, data };
 }
 
-function correctness(form, methods, sizes, graph, stats, captureGroups) {
+/** Bytes of source in one workload: the input the size parameters grow. */
+const inputBytes = (files) => files.reduce((n, f) => n + Buffer.byteLength(f.content), 0);
+
+function correctness(form, files, sizes, graph, stats, captureGroups) {
+  const methods = sizes[0];
   const edges = [];
   const callsBySource = new Map();
   let calls = 0;
@@ -205,6 +217,7 @@ function correctness(form, methods, sizes, graph, stats, captureGroups) {
   return {
     methods,
     sizes,
+    input_bytes: inputBytes(files),
     capture_groups: captureGroups,
     relationships: graph.relationshipCount,
     calls,
@@ -297,7 +310,14 @@ async function measureShape(form, sizes, reps, warmup) {
   // Through one worker parse (thread included) and one resolution.
   const peakRssMiB = process.resourceUsage().maxRSS / 1024;
   const groups = captureGroups(input.files);
-  const shape = correctness(form, sizes[0], sizes, input.parsed.graph, input.first.stats, groups);
+  const shape = correctness(
+    form,
+    input.files,
+    sizes,
+    input.parsed.graph,
+    input.first.stats,
+    groups,
+  );
   const result = { shape, peak_rss_mib: peakRssMiB };
   if (reps > 0) {
     const timing = timeInputs(
@@ -407,7 +427,7 @@ async function report() {
         const input = prepared[key];
         shapes[key] = correctness(
           form,
-          sizes[0],
+          input.files,
           sizes,
           input.parsed.graph,
           input.first.stats,
@@ -429,15 +449,15 @@ async function report() {
     const small = SHAPES[form].small;
     for (const [name, sizes] of Object.entries(SHAPES[form])) {
       if (name === 'small') continue;
-      const grown = sizes.filter((n, i) => n !== small[i]);
+      const grown = sizes.map((n, i) => n / small[i]).filter((growth) => growth !== 1);
       assert.ok(
-        grown.length === 1 && sizes.some((n, i) => n === small[i] * SCALE),
-        `${form}_${name} must grow exactly one dimension ${SCALE}x`,
+        grown.length === 1 && Number.isInteger(grown[0]) && grown[0] >= 4,
+        `${form}_${name} must grow exactly one dimension, at least 4x`,
       );
       for (const phase of ['capture', 'resolve']) {
         const key = `${phase}_ms`;
         metrics[`${form}_${phase}_${name}_scaling_ratio`] =
-          timings[`${form}_${name}`][key] / timings[`${form}_small`][key] / SCALE;
+          timings[`${form}_${name}`][key] / timings[`${form}_small`][key] / grown[0];
       }
     }
   }
