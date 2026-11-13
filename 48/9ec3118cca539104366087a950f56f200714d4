@@ -1,0 +1,25 @@
+gitnexus/src/core/group/extractors/http-route-extractor.ts
+  s_b9690234122db7::t_db47b9391473f9 69-72,88-154,585-589,591,596-603,613-619,759,790-792,832,856-863,900
+gitnexus/test/integration/http-route-symbol-batch.test.ts
+  s_b9690234122db7::t_e58c289ef7af26 1-234
+gitnexus/test/unit/group/http-route-extractor.test.ts
+  s_b9690234122db7::t_f7dc688df42d75 49-58,86-89,131-134,177-180,240-242,291-293,312-314,344,374-376,405-407,437,484,517-519,7808-8079
+gitnexus/test/unit/group/http-route-graph-method.test.ts
+  s_b9690234122db7::t_449cfbfe7d4814 304-306,332-335
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "489ec3118cca539104366087a950f56f200714d4",
+  "prompts": {},
+  "sessions": {
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
