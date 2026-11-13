@@ -1805,16 +1805,6 @@ export function runScopeResolution(
   withdrawAnsweredReceiverDrops(resolutionOutcomes, answeredAfterReceiverPass);
   probeEmit('properties-end', `outcomes=${resolutionOutcomes.length}`);
 
-  // The resolved-reference index and the site skip-set have no reader past
-  // this point: the unique-name pass above was the last. As locals of this
-  // frame they would stay reachable through property dispatch, callable-value-
-  // flow and every pass after them. Both were built here and lent only to
-  // passes that have returned, so empty them now.
-  // `referenceSkipSites` and `uniqueNameSkipSites` are this same Set.
-  (referenceIndex.bySourceScope as Map<unknown, unknown>).clear();
-  (referenceIndex.byTargetDef as Map<unknown, unknown>).clear();
-  handledSites.clear();
-
   // value-ref registrations (#2437): USES edges at the registration sites
   // plus field-based dispatch — synthesized CALLS from member-call sites to
   // functions registered under the same property key. This runs after the
