@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { BindingRef, NameClaim, Scope, SymbolDefinition, TypeRef } from 'gitnexus-shared';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 import {
   findReceiverTypeBinding,
   findUntypedReceiverBinder,
@@ -50,7 +51,7 @@ function indexes(
     moduleScopes: { byFilePath: new Map([['app.dart', 'module']]) },
     bindings: new Map(),
     bindingAugmentations: new Map(),
-    imports: new Map(),
+    imports: createEagerImportVisibility(new Map()),
     workspaceTypeBindings,
   } as unknown as ScopeResolutionIndexes;
 }

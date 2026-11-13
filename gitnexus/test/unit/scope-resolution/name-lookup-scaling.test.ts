@@ -4,6 +4,9 @@ import {
   buildMethodDispatchIndex,
   buildModuleScopeIndex,
   buildQualifiedNameIndex,
+  createEagerImportVisibility,
+  type BindingRef,
+  type ImportEdge,
   type Scope,
   type ScopeId,
 } from 'gitnexus-shared';
@@ -27,6 +30,7 @@ function fixture(depth: number) {
     lexicalNames: new Set(i === 0 ? ['items'] : ['x']),
   }));
   const byId = new Map(scopes.map((scope) => [scope.id, scope]));
+  const imports = new Map<ScopeId, readonly ImportEdge[]>();
   let reads = 0;
   const indexes = {
     scopeTree: {
@@ -42,12 +46,105 @@ function fixture(depth: number) {
       },
     },
     bindings: new Map(),
-    imports: new Map(),
+    imports: createEagerImportVisibility(imports),
     bindingAugmentations: new Map(),
     workspaceFqnBindings: new Map(),
   } as unknown as ScopeResolutionIndexes;
-  return { scopes, indexes, reads: () => reads };
+  return { scopes, indexes, imports, reads: () => reads };
 }
+
+interface BarrierCase {
+  name: string;
+  setup: (f: ReturnType<typeof fixture>, mid: Scope, binding: BindingRef, edge: ImportEdge) => void;
+}
+
+const BARRIERS: BarrierCase[] = [
+  {
+    name: 'lexical name',
+    setup: (_f, mid) => Object.assign(mid, { lexicalNames: new Set(['items']) }),
+  },
+  {
+    name: 'type binding',
+    setup: (_f, mid) =>
+      Object.assign(mid, { typeBindings: new Map([['items', { rawName: 'List' }]]) }),
+  },
+  {
+    name: 'receiver ownership',
+    setup: (_f, mid) => Object.assign(mid, { ownsReceivers: new Set(['items']) }),
+  },
+  {
+    name: 'explicit claim',
+    setup: (_f, mid) =>
+      Object.assign(mid, { nameClaims: [{ name: 'items', kind: 'blocked', range: mid.range }] }),
+  },
+  {
+    name: 'local binding',
+    setup: (_f, mid, binding) => Object.assign(mid, { bindings: new Map([['items', [binding]]]) }),
+  },
+  {
+    name: 'scope import',
+    setup: (_f, mid, _binding, edge) => Object.assign(mid, { imports: [edge] }),
+  },
+  { name: 'finalized import', setup: (f, mid, _binding, edge) => f.imports.set(mid.id, [edge]) },
+  {
+    name: 'finalized binding',
+    setup: (f, mid, binding) =>
+      Object.assign(f.indexes, { bindings: new Map([[mid.id, new Map([['items', [binding]]])]]) }),
+  },
+  {
+    name: 'augmentation',
+    setup: (f, mid, binding) =>
+      Object.assign(f.indexes, {
+        bindingAugmentations: new Map([[mid.id, new Map([['items', [binding]]])]]),
+      }),
+  },
+  {
+    name: 'accessible namespace',
+    setup: (f, mid, binding) =>
+      Object.assign(f.indexes, {
+        accessibleNamespacesByScope: new Map([[mid.id, ['Visible']]]),
+        namespaceFqnBindings: new Map([['Visible', new Map([['items', [binding]]])]]),
+      }),
+  },
+  {
+    name: 'namespace tiers',
+    setup: (f, mid, binding) =>
+      Object.assign(f.indexes, {
+        namespaceLookupTiersByScope: new Map([[mid.id, [['Visible']]]]),
+        namespaceFqnBindings: new Map([['Visible', new Map([['items', [binding]]])]]),
+      }),
+  },
+  {
+    name: 'workspace binding',
+    setup: (f, _mid, binding) =>
+      Object.assign(f.indexes, { workspaceFqnBindings: new Map([['items', [binding]]]) }),
+  },
+  {
+    name: 'skip-from-children policy',
+    setup: (_f, mid, binding) =>
+      Object.assign(mid, {
+        bindings: new Map([['items', [binding]]]),
+        lookupPolicy: { skipFromChildren: true },
+      }),
+  },
+  {
+    name: 'deferred parent policy',
+    setup: (f, mid, binding) => {
+      Object.assign(f.scopes[0]!, { bindings: new Map([['items', [binding]]]) });
+      Object.assign(mid, { lookupPolicy: { deferParentActivation: true } });
+    },
+  },
+  {
+    name: 'object scope',
+    setup: (_f, mid, binding) =>
+      Object.assign(mid, { kind: 'Object', bindings: new Map([['items', [binding]]]) }),
+  },
+  {
+    name: 'enclosing class',
+    setup: (_f, mid, binding) =>
+      Object.assign(mid, { kind: 'Class', bindings: new Map([['items', [binding]]]) }),
+  },
+];
 
 describe('read-only name lookup navigation', () => {
   it('does not rescan every empty sibling closure for each call', () => {
@@ -160,46 +257,41 @@ describe('read-only name lookup navigation', () => {
     expect(measure(96, true)).toBeLessThanOrEqual(measure(24, true) * 4);
   });
 
-  it('preserves shadowing, claims, policies and position-sensitive bindings', () => {
-    for (const kind of [
-      'lexical',
-      'typed',
-      'claim',
-      'deferred',
-      'binding',
-      'augmentation',
-    ] as const) {
-      const f = fixture(8);
-      const mid = f.scopes[4]!;
-      const binding = {
-        def: { nodeId: 'value', filePath: mid.filePath, type: 'Function' as const },
-        origin: 'local' as const,
-        availableFrom: { startLine: 6, startCol: 0 },
-      };
-      if (kind === 'lexical') (mid.lexicalNames as Set<string>).add('items');
-      if (kind === 'typed')
-        (mid.typeBindings as Map<string, unknown>).set('items', { name: 'List' });
-      if (kind === 'claim')
-        Object.assign(mid, { nameClaims: [{ name: 'items', kind: 'blocked', range: mid.range }] });
-      if (kind === 'deferred')
-        Object.assign(mid, { lookupPolicy: { deferParentActivation: true } });
-      if (kind === 'binding') (mid.bindings as Map<string, unknown>).set('items', [binding]);
-      if (kind === 'augmentation')
-        (f.indexes.bindingAugmentations as Map<string, unknown>).set(
-          mid.id,
-          new Map([['items', [binding]]]),
-        );
-      for (const startLine of [2, 7]) {
-        for (const skipEnclosingClasses of [false, true]) {
-          const options = { position: { startLine, startCol: 0 }, skipEnclosingClasses };
-          expect(
-            withCachedNameLookups(f.indexes, () =>
-              lookupNameClaim('scope8', 'items', f.indexes, options),
-            ),
-          ).toEqual(lookupNameClaim('scope8', 'items', f.indexes, options));
-        }
-      }
-    }
+  it.each(BARRIERS)('preserves $name through cold and warm lookups', ({ setup }) => {
+    const f = fixture(8);
+    const mid = f.scopes[4]!;
+    const binding: BindingRef = {
+      def: { nodeId: 'value', filePath: mid.filePath, type: 'Function' as const },
+      origin: 'local' as const,
+      availableFrom: { startLine: 6, startCol: 0 },
+    };
+    setup(f, mid, binding, {
+      localName: 'items',
+      targetFile: 'other.dart',
+      targetExportedName: 'items',
+      kind: 'named',
+    });
+    const queries = [false, true].flatMap((skipEnclosingClasses) =>
+      [2, 7].map((startLine) => ({ position: { startLine, startCol: 0 }, skipEnclosingClasses })),
+    );
+    const read = () =>
+      queries.map((options) => lookupNameClaim('scope8', 'items', f.indexes, options));
+    const expected = read();
+    expect(withCachedNameLookups(f.indexes, () => [...read(), ...read()])).toEqual([
+      ...expected,
+      ...expected,
+    ]);
+  });
+
+  it('keeps the nearest caller definition even when it has no graph identity', () => {
+    const f = fixture(8);
+    Object.assign(f.scopes[4]!, {
+      ownedDefs: [{ nodeId: 'local', filePath: 'test.dart', type: 'Function' }],
+    });
+    expect(resolveCallerGraphId('scope8', f.indexes, new Map())).toBeUndefined();
+    expect(
+      withCachedNameLookups(f.indexes, () => resolveCallerGraphId('scope8', f.indexes, new Map())),
+    ).toBeUndefined();
   });
 
   it('does not retain shortcuts between passes or on the mutable original', () => {

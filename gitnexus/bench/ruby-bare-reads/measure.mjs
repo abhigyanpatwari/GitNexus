@@ -484,9 +484,19 @@ async function report() {
   if (CHECK) {
     const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
     assert.deepEqual(shapes, baseline.shapes, 'Ruby bare-read workload/fingerprint drift');
+    assert.deepEqual(
+      Object.keys(baseline.budgets).sort(),
+      Object.keys(metrics).sort(),
+      'every metric needs a budget; deleting a budget must not disable a guard',
+    );
     const failures = [];
     for (const [name, budget] of Object.entries(baseline.budgets)) {
-      if (!Number.isFinite(metrics[name]) || metrics[name] > budget) {
+      if (
+        !Number.isFinite(budget) ||
+        budget <= 0 ||
+        !Number.isFinite(metrics[name]) ||
+        metrics[name] > budget
+      ) {
         failures.push(`${name}: ${metrics[name]} > ${budget}`);
       }
     }

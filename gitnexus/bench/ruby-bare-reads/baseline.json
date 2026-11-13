@@ -93,6 +93,7 @@
     "blocks_capture_methods_scaling_ratio": 1.5,
     "blocks_capture_depth_scaling_ratio": 1.5,
     "blocks_resolve_methods_scaling_ratio": 1.5,
+    "blocks_resolve_depth_scaling_ratio": 1.5,
     "heredocs_capture_methods_scaling_ratio": 1.5,
     "heredocs_capture_per_line_scaling_ratio": 1.5,
     "heredocs_capture_size_scaling_ratio": 1.5,
@@ -100,9 +101,9 @@
     "heredocs_resolve_per_line_scaling_ratio": 1.5,
     "heredocs_resolve_size_scaling_ratio": 1.5
   },
-  "_scaling_note": "Scaling ratios are (t_shape / t_small) / growth, where growth is 4, or 16 for blocks depth: about 1 is linear, about the growth factor is quadratic. 1.5 (bench/scope-capture) on every gated ratio; blocks_resolve_depth_scaling_ratio is reported, not gated (_depth_note).",
-  "_depth_note": "Capture is gated over the full depth range 4 -> 64. On main two terms made it O(depth^2), and both are fixed with this gate: every bare read climbed through each enclosing block to its method (rubyBareNameIsLocalRead; now one walk per file, rubyBoundReadIds), and a block-taking call with no argument list had its whole subtree searched for one (the shared callable-flow fallback; Ruby now supplies extractCallArguments). Fresh-process doubling sweep, depth 4 -> 64 at 128 methods, this runner, three rounds, min of 3 after 1 warmup per cell: capture exponent 1.51 (1.36-1.65) on main, 0.73 (0.68-0.77) with the fix; 8908 vs 925 ms at depth 64 (medians); input bytes exponent 0.84. blocks_resolve_depth_scaling_ratio is reported, not gated. Resolution code is unchanged (the captures are identical), and the sweep fits 1.07 (0.95-1.18) on main and 0.93 (0.76-1.09) here, but the in-process CI ratio over 4 -> 64 measured 0.94-1.54 across seven runs: the depth-4 denominator is about 16 ms, and the shared lexical lookup (lookupLexicalName via lookupNameClaim, mostly from receiver-bound calls) still climbs from each reference to its binder, O(depth) per reference. A 1.5 gate there would flake; the earlier 4 -> 16 gate (0.78) measured mostly per-file overhead.",
-  "_one_file_note": "Not gated: on main, Ruby resolution is super-linear in the number of classes or methods in ONE file. With every class in one file (`--shape crowded`), 128 -> 1024 classes, resolution's fitted exponent is 1.39 (1.33-1.45) on main and 1.60 (1.49-1.72) with #3880; #3880 does not change resolution code, so the gated shapes use one class per file.",
+  "_scaling_note": "Scaling ratios are (t_shape / t_small) / growth, where growth is 4, or 16 for blocks depth: about 1 is linear, about the growth factor is quadratic. Budget 1.5 applies to every capture and resolution ratio, including blocks_resolve_depth_scaling_ratio. Metric and budget keys must match exactly.",
+  "_depth_note": "Capture and resolution are gated over the full depth range 4 -> 64. Capture indexes bound reads once per file and takes Ruby call arguments only from their own argument field. Read-only receiver and reference passes now path-compress empty lexical scopes, so the former depth-resolution gate exemption no longer applies. The bound-read shape does not cover preexisting ancestor walks for Ruby free calls with implicit receivers; those remain tracked in #3915.",
+  "_one_file_note": "The crowded one-file shape (--shape crowded) is available for separate investigation and is not gated. Historical measurements below predate the shared lookup cache in this PR and do not describe its current resolution scaling.",
   "_profiles_note": "Two profiles share the shapes and every accuracy gate. CI (the default, and what --check runs in the benchmarks job): one process, one parse worker, every workload timed, min of 5 after 1 warmup, interleaved. --full: one child times every workload, min of 15 after 2 warmups, and each shape runs in a fresh child for its peak RSS. Wall times are in _measured_ci.",
   "_negative_controls_note": "Each is a temporary edit, measured in the CI profile with unchanged fingerprints. Restoring the per-read method climb (main's rubyBareNameIsLocalRead) fails blocks_capture_depth_scaling_ratio 3.872 > 1.5. Restoring the callable-flow subtree search (dropping Ruby's extractCallArguments) fails it at 1.792 > 1.5. On main's own bench (depth 4 -> 16, two-spaces-per-level indent) the per-read climb is the shipped code and passed at 1.222. Restoring the per-body heredoc opener search (O(H^2) per opener line) passes every timing ratio, even with 32 heredocs per line (heredocs_capture_per_line 0.565): per-method work hides it at CI sizes, so the operation-count unit test (test/unit/scope-resolution/ruby/ruby-bare-read-cost.test.ts: 12126 -> 72702 tree steps for 32 -> 128 heredocs before, 10046 -> 39806 after) is its guard. These are deliberate regressions, not baseline observations.",
   "_measured_ci": {
@@ -191,5 +192,55 @@
     "heredocs_size_resolve_ms": 14.7,
     "heredocs_size_peak_rss_mib": 320.1
   },
-  "_measured_note": "Three CI-profile runs and one --full run of this runner at the PR head. Scalar ratios and millisecond values are per-metric maxima across the runs of that profile (rounded); wall times vary with the shared host's load (main's bench took 25 s in the same conditions). peak_rss_mib (--full only) is each --shape child's high-water mark after one worker parse and one resolution, worker thread included; context, not gated. Exact shapes and fingerprints were identical in all runs; fingerprints are unchanged from main for every shape whose sizes are unchanged. The doubling sweep in _depth_note was measured separately (one fresh process per cell) and is part of neither profile."
+  "_measured_review_ci": {
+    "environment": "Linux x64 / Node 22.23.3, 2026-11-13; PR #3920 final review fixes",
+    "profile": "ci",
+    "warmup": 1,
+    "samples": 5,
+    "statistic": "minimum",
+    "interleaved": true,
+    "metrics": {
+      "blocks_capture_methods_scaling_ratio": 1.079313416866499,
+      "blocks_resolve_methods_scaling_ratio": 1.1446998906864383,
+      "blocks_capture_depth_scaling_ratio": 0.6260751184994577,
+      "blocks_resolve_depth_scaling_ratio": 0.46442560344984546,
+      "heredocs_capture_methods_scaling_ratio": 1.1788227196609151,
+      "heredocs_resolve_methods_scaling_ratio": 1.4181011818663507,
+      "heredocs_capture_per_line_scaling_ratio": 0.5934385277605935,
+      "heredocs_resolve_per_line_scaling_ratio": 0.4877015198062113,
+      "heredocs_capture_size_scaling_ratio": 0.5582295659523427,
+      "heredocs_resolve_size_scaling_ratio": 0.5108269784046858
+    },
+    "timings": {
+      "blocks_small": {
+        "capture_ms": 121.39696700000059,
+        "resolve_ms": 16.22400500000367
+      },
+      "blocks_methods": {
+        "capture_ms": 524.101501000001,
+        "resolve_ms": 74.28646700000172
+      },
+      "blocks_depth": {
+        "capture_ms": 1216.057928000002,
+        "resolve_ms": 120.55749300000025
+      },
+      "heredocs_small": {
+        "capture_ms": 93.07219899999836,
+        "resolve_ms": 7.588336000000709
+      },
+      "heredocs_methods": {
+        "capture_ms": 438.86249099999986,
+        "resolve_ms": 43.044112999999925
+      },
+      "heredocs_per_line": {
+        "capture_ms": 220.930515,
+        "resolve_ms": 14.803372000002128
+      },
+      "heredocs_size": {
+        "capture_ms": 207.82261299999664,
+        "resolve_ms": 15.505306999999448
+      }
+    }
+  },
+  "_measured_note": "The macOS CI/full observations below were collected before the shared lookup cache. Current review-fix CI observations are recorded separately in _measured_review_ci. Exact shapes and fingerprints remain pinned; peak RSS is diagnostic, not gated."
 }

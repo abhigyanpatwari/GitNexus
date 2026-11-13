@@ -6,11 +6,13 @@ import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 
 /** Count real AST navigation, independent of scheduler and native-call latency. */
-function captureWork(depth: number) {
+function captureWork(depth: number, form: 'argument' | 'bound') {
   const source =
     'void f(Address cs, List<int> items) {\n' +
-    'items.forEach((x) { cs.run();\n'.repeat(depth) +
-    '});\n'.repeat(depth) +
+    Array.from({ length: depth }, (_, i) =>
+      form === 'bound' ? `var h${i} = (x) { cs.run();\n` : 'items.forEach((x) { cs.run();\n',
+    ).join('') +
+    (form === 'bound' ? '};\n' : '});\n').repeat(depth) +
     '}\n';
   const tree = getDartParser().parse(source);
   if (tree === null) throw new Error('Dart parse failed');
@@ -34,12 +36,20 @@ function captureWork(depth: number) {
 }
 
 describe.skipIf(!isLanguageAvailable(SupportedLanguages.Dart))('Dart nested capture work', () => {
-  it('keeps ancestor and subtree visits linear as nesting grows', () => {
-    const small = captureWork(6);
-    const large = captureWork(24);
-    // 4x more closures, with a little headroom for fixed grammar scaffolding.
-    expect(large.parents).toBeLessThanOrEqual(small.parents * 5);
-    expect(large.children).toBeLessThanOrEqual(small.children * 5);
-    expect(large.mapReads).toBeLessThanOrEqual(small.mapReads * 4.5);
-  });
+  it.each(['argument', 'bound'] as const)(
+    'keeps %s closure work linear as nesting grows',
+    (form) => {
+      const small = captureWork(6, form);
+      const large = captureWork(24, form);
+      expect(small.parents).toBeGreaterThan(0);
+      expect(small.children).toBeGreaterThan(0);
+      expect(small.mapReads).toBeGreaterThan(0);
+      // Native parent reads themselves cost depth. Their count must stay flat
+      // as closures deepen, rather than merely grow linearly.
+      expect(large.parents).toBe(small.parents);
+      // 4x more closures, with a little headroom for fixed grammar scaffolding.
+      expect(large.children).toBeLessThanOrEqual(small.children * 5);
+      expect(large.mapReads).toBeLessThanOrEqual(small.mapReads * 4.5);
+    },
+  );
 });

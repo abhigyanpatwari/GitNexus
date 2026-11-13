@@ -211,6 +211,7 @@ interface ValueBindingIndex {
    */
   readonly memberStoreRegionIdsByName: ReadonlyMap<string, ReadonlySet<number>>;
   readonly formalByOwner: ReadonlyMap<number | undefined, ReadonlySet<string>>;
+  readonly formalNames: ReadonlySet<string>;
   readonly signatureByNameAndRegion: ReadonlyMap<
     string,
     ReadonlyMap<number, CallableCaptureSignature>
@@ -399,6 +400,7 @@ function buildValueBindingIndex(
   const assignmentRegionIdsByName = new Map<string, Set<number>>();
   const memberStoreRegionIdsByName = new Map<string, Set<number>>();
   const formalByOwner = new Map<number | undefined, Set<string>>();
+  const formalNames = new Set<string>();
   const signatureByNameAndRegion = new Map<string, Map<number, CallableCaptureSignature>>();
   const add = (
     index: Map<number | undefined, Set<string>>,
@@ -428,7 +430,7 @@ function buildValueBindingIndex(
     // name or a declarator (`void (*fp)(int)`) resolves both to the same leaf.
     const memberStoreName =
       terminal !== undefined && terminal.id !== destination?.node.id ? terminal.text : undefined;
-    const region = nearestLexicalRegion(assignment.container, options);
+    const region = nearestLexicalRegion(assignment.container, parentById, options);
     const functionOwner =
       options.functionScopedValueBindings === true
         ? nearestFunctionOwner(assignment.container, options)
@@ -448,7 +450,10 @@ function buildValueBindingIndex(
   for (const fn of functions) {
     for (const parameter of fn.parameters) {
       const binding = bindingIdentifier(parameter, options);
-      if (binding !== undefined) add(formalByOwner, fn.node.id, binding.text);
+      if (binding !== undefined) {
+        add(formalByOwner, fn.node.id, binding.text);
+        formalNames.add(binding.text);
+      }
     }
   }
   for (const node of nodes) {
@@ -467,7 +472,7 @@ function buildValueBindingIndex(
     // bypassed the precise passes' two-phase/ambiguity suppression
     // (#2522 CI: eight cpp resolver tests gained a phantom edge).
     if (!bindingInterposesValueDeclarator(node, binding)) continue;
-    const region = nearestLexicalRegion(node, options);
+    const region = nearestLexicalRegion(node, parentById, options);
     let byRegion = signatureByNameAndRegion.get(binding.text);
     if (byRegion === undefined) {
       byRegion = new Map();
@@ -491,6 +496,7 @@ function buildValueBindingIndex(
     assignmentRegionIdsByName,
     memberStoreRegionIdsByName,
     formalByOwner,
+    formalNames,
     signatureByNameAndRegion,
     anchorIds,
     parentById,
@@ -557,15 +563,21 @@ function nearestFunctionOwner(
   return undefined;
 }
 
-function nearestLexicalRegion(input: SyntaxNode, options: CallableFlowCaptureOptions): SyntaxNode {
+function nearestLexicalRegion(
+  input: SyntaxNode,
+  parentById: ReadonlyMap<number, SyntaxNode>,
+  options: CallableFlowCaptureOptions,
+): SyntaxNode {
   const providerOwner = options.lexicalFunctionOwner?.(input);
-  let node: SyntaxNode | null = input.parent;
+  // Native parent getters can traverse from the root, even for a one-hop
+  // region lookup. Reuse the file walk's links as the visibility walk does.
+  let node: SyntaxNode | null = parentById.get(input.id) ?? input.parent;
   let outermost = input;
   while (node !== null) {
     outermost = node;
     if (providerOwner !== undefined && node.id === providerOwner.id) return node;
     if (options.functionNodeTypes.has(node.type) || isLexicalRegionNode(node)) return node;
-    node = node.parent;
+    node = parentById.get(node.id) ?? node.parent;
   }
   return providerOwner ?? outermost;
 }
@@ -583,6 +595,14 @@ function isVisibleValueBinding(
   options: CallableFlowCaptureOptions,
 ): boolean {
   const assignmentRegionIds = bindings.assignmentRegionIdsByName.get(name);
+  // A name absent from every value channel cannot become visible in an
+  // ancestor. Avoid walking all named closures for each ordinary call.
+  if (
+    assignmentRegionIds === undefined &&
+    !bindings.formalNames.has(name) &&
+    !bindings.signatureByNameAndRegion.has(name)
+  )
+    return false;
   const providerOwner = options.lexicalFunctionOwner?.(input);
   if (
     providerOwner !== undefined &&
@@ -1464,14 +1484,17 @@ function bindingIdentifier(
 
 /** Operation count for the depth-linearity test (test hook). */
 let operandNodeVisits = 0;
+let countOperandNodeVisits = false;
 
 /** Subtree nodes the operand search has entered since the last reset. */
 export function getCallableFlowCaptureStats(): { operandNodeVisits: number } {
   return { operandNodeVisits };
 }
 
-export function resetCallableFlowCaptureStats(): void {
+/** Clear counters; tests opt in with `true` and disable again in `finally`. */
+export function resetCallableFlowCaptureStats(enabled = false): void {
   operandNodeVisits = 0;
+  countOperandNodeVisits = enabled;
 }
 
 /**
@@ -1483,37 +1506,50 @@ function terminalIdentifier(
   options: CallableFlowCaptureOptions,
   memo?: Map<number, SyntaxNode | null>,
 ): SyntaxNode | undefined {
-  if (memo !== undefined) {
-    const known = memo.get(node.id);
-    if (known !== undefined) return known ?? undefined;
+  const stack: Array<{ node: SyntaxNode; children?: Generator<SyntaxNode> }> = [{ node }];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1]!;
+    if (frame.children === undefined) {
+      const known = memo?.get(frame.node.id);
+      if (known === null) {
+        stack.pop();
+        continue;
+      }
+      if (known === undefined && countOperandNodeVisits) operandNodeVisits++;
+      const found =
+        known ?? (options.identifierNodeTypes.has(frame.node.type) ? frame.node : undefined);
+      if (found !== undefined) {
+        // Every waiting ancestor accepts the first identifier its child finds.
+        for (const ancestor of stack) memo?.set(ancestor.node.id, found);
+        return found;
+      }
+      frame.children = terminalIdentifierCandidates(frame.node);
+    }
+    const next = frame.children.next();
+    if (!next.done) stack.push({ node: next.value });
+    else {
+      memo?.set(frame.node.id, null);
+      stack.pop();
+    }
   }
-  const found = searchTerminalIdentifier(node, options, memo);
-  memo?.set(node.id, found ?? null);
-  return found;
+  return undefined;
 }
 
-function searchTerminalIdentifier(
-  node: SyntaxNode,
-  options: CallableFlowCaptureOptions,
-  memo: Map<number, SyntaxNode | null> | undefined,
-): SyntaxNode | undefined {
-  operandNodeVisits++;
-  if (options.identifierNodeTypes.has(node.type)) return node;
+/** Preserve field precedence and reverse child order without recursive calls. */
+function* terminalIdentifierCandidates(node: SyntaxNode): Generator<SyntaxNode> {
   const base = subscriptBase(node);
-  if (base !== null) return terminalIdentifier(base, options, memo);
+  if (base !== null) {
+    yield base;
+    return;
+  }
   for (const fieldName of ['name', 'property', 'field', 'method', 'declarator']) {
     const field = node.childForFieldName(fieldName);
-    if (field === null || field.id === node.id) continue;
-    const found = terminalIdentifier(field, options, memo);
-    if (found !== undefined) return found;
+    if (field !== null && field.id !== node.id) yield field;
   }
   for (let i = node.namedChildCount - 1; i >= 0; i--) {
     const child = node.namedChild(i);
-    if (child === null) continue;
-    const found = terminalIdentifier(child, options, memo);
-    if (found !== undefined) return found;
+    if (child !== null) yield child;
   }
-  return undefined;
 }
 
 function hasMultipleIdentifierLeaves(
@@ -1524,7 +1560,7 @@ function hasMultipleIdentifierLeaves(
   const stack: SyntaxNode[] = [node];
   while (stack.length > 0) {
     const current = stack.pop()!;
-    operandNodeVisits++;
+    if (countOperandNodeVisits) operandNodeVisits++;
     if (options.identifierNodeTypes.has(current.type)) {
       if (++count > 1) return true;
       continue;

@@ -660,13 +660,76 @@ export interface ReceiverBoundResult {
 }
 
 export function emitReceiverBoundCalls(
-  ...args: Parameters<typeof emitReceiverBoundCallsInPass>
+  graph: KnowledgeGraph,
+  scopes: ScopeResolutionIndexes,
+  parsedFiles: readonly ParsedFile[],
+  nodeLookup: GraphNodeLookup,
+  handledSites: Set<string>,
+  provider: ReceiverBoundProviderSubset,
+  index: WorkspaceResolutionIndex,
+  model: SemanticModel,
+  options: ReceiverBoundOptions = {},
 ): ReceiverBoundResult {
-  // Selected-call callbacks can change inferred receiver bindings mid-pass.
-  // Otherwise cache empty-scope navigation for exactly this read-only pass.
-  return args[8]?.onSelectedCall === undefined
-    ? withCachedNameLookups(args[1], () => emitReceiverBoundCallsInPass(...args))
-    : emitReceiverBoundCallsInPass(...args);
+  const run = () =>
+    emitReceiverBoundCallsInPass(
+      graph,
+      scopes,
+      parsedFiles,
+      nodeLookup,
+      handledSites,
+      provider,
+      index,
+      model,
+      options,
+    );
+  // Either callback may change lookup indexes between receiver sites.
+  return options.onSelectedCall === undefined && options.recordSourceBinding === undefined
+    ? withCachedNameLookups(scopes, run)
+    : run();
+}
+
+interface ReceiverBoundOptions {
+  /** Stable pass identity for provider indexes shared with return propagation. */
+  readonly allFilePaths?: ReadonlySet<string>;
+  readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
+  readonly recordSourceBinding?: SourceBindingRecorder;
+  /** Compile-time primaries, separate from runtime fanout in calleeIdSink. */
+  readonly selectedCalls?: Map<string, SymbolDefinition | null>;
+  /** Apply only assignments fed by this newly selected compile-time primary. */
+  readonly onSelectedCall?: (key: string, definition: SymbolDefinition | null) => void;
+  /** Full source identity to the legacy handled-site key, finalized after replay. */
+  readonly pendingCallReceivers?: Map<string, string>;
+  readonly callResultProducers?: ReadonlyMap<string, CallResultAssignmentSite>;
+  /** Resolved-callee-id capture sink (#2227 U2). Threaded in under `--pdg`
+   *  OR for callable-flow's direct-target index (#2437, position-filtered);
+   *  `undefined` ⇒ zero overhead, byte-identity (R4). Per-file capture
+   *  contexts are built from this + `parsed.filePath` in the loop. */
+  readonly calleeIdSink?: CalleeIdSink;
+  /** `LanguageProvider.isBuiltInName`. Passed through the options bag rather
+   *  than widened into `ReceiverBoundProviderSubset`, mirroring how
+   *  `emitFreeCallFallback` receives the same hook — the subset exists to keep
+   *  test providers small, and this pass reads nothing else off the language
+   *  provider. Consumed ONLY by `classifyReceiverOrigin`, so leaving it unset
+   *  degrades a drop's label to `unknown` (the safe direction) and changes no
+   *  edge. */
+  readonly isBuiltInName?: (name: string) => boolean;
+  /** `LanguageProvider.externalReceiverNames`. Same channel and same contract
+   *  as `isBuiltInName`: read only by `classifyReceiverOrigin`, so unset means
+   *  fewer `external` labels and never a different edge. */
+  readonly externalReceiverNames?: ReadonlySet<string>;
+  /** `LanguageProvider.isExternalModuleSpecifier`. Same contract again. */
+  readonly isExternalModuleSpecifier?: (specifier: string) => boolean;
+  /** The generic arguments each heritage clause instantiated its base with,
+   *  from the passes that emitted those heritage edges — the inheritance
+   *  pre-pass, and the language resolvers that emit their own (Rust `impl T
+   *  for S`, Dart `implements` / `with`) (#2912). Read
+   *  ONLY by the interface-dispatch fan-out, to refuse an implementor of an
+   *  incompatible instantiation. Absent ⇒ every heritage instantiation reads
+   *  as unknown ⇒ the pre-#2912 fan-out, unchanged. */
+  readonly heritageTypeArguments?: HeritageTypeArguments;
+  /** Classes whose written inheritance includes a base the graph could not
+   * prove. A later inherited member cannot be selected across that gap. */
+  readonly unresolvedInheritanceByClass?: ReadonlySet<string>;
 }
 
 function emitReceiverBoundCallsInPass(
@@ -678,49 +741,7 @@ function emitReceiverBoundCallsInPass(
   provider: ReceiverBoundProviderSubset,
   index: WorkspaceResolutionIndex,
   model: SemanticModel,
-  options: {
-    /** Stable pass identity for provider indexes shared with return propagation. */
-    readonly allFilePaths?: ReadonlySet<string>;
-    readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
-    readonly recordSourceBinding?: SourceBindingRecorder;
-    /** Compile-time primaries, separate from runtime fanout in calleeIdSink. */
-    readonly selectedCalls?: Map<string, SymbolDefinition | null>;
-    /** Apply only assignments fed by this newly selected compile-time primary. */
-    readonly onSelectedCall?: (key: string, definition: SymbolDefinition | null) => void;
-    /** Full source identity to the legacy handled-site key, finalized after replay. */
-    readonly pendingCallReceivers?: Map<string, string>;
-    readonly callResultProducers?: ReadonlyMap<string, CallResultAssignmentSite>;
-    /** Resolved-callee-id capture sink (#2227 U2). Threaded in under `--pdg`
-     *  OR for callable-flow's direct-target index (#2437, position-filtered);
-     *  `undefined` ⇒ zero overhead, byte-identity (R4). Per-file capture
-     *  contexts are built from this + `parsed.filePath` in the loop. */
-    readonly calleeIdSink?: CalleeIdSink;
-    /** `LanguageProvider.isBuiltInName`. Passed through the options bag rather
-     *  than widened into `ReceiverBoundProviderSubset`, mirroring how
-     *  `emitFreeCallFallback` receives the same hook — the subset exists to keep
-     *  test providers small, and this pass reads nothing else off the language
-     *  provider. Consumed ONLY by `classifyReceiverOrigin`, so leaving it unset
-     *  degrades a drop's label to `unknown` (the safe direction) and changes no
-     *  edge. */
-    readonly isBuiltInName?: (name: string) => boolean;
-    /** `LanguageProvider.externalReceiverNames`. Same channel and same contract
-     *  as `isBuiltInName`: read only by `classifyReceiverOrigin`, so unset means
-     *  fewer `external` labels and never a different edge. */
-    readonly externalReceiverNames?: ReadonlySet<string>;
-    /** `LanguageProvider.isExternalModuleSpecifier`. Same contract again. */
-    readonly isExternalModuleSpecifier?: (specifier: string) => boolean;
-    /** The generic arguments each heritage clause instantiated its base with,
-     *  from the passes that emitted those heritage edges — the inheritance
-     *  pre-pass, and the language resolvers that emit their own (Rust `impl T
-     *  for S`, Dart `implements` / `with`) (#2912). Read
-     *  ONLY by the interface-dispatch fan-out, to refuse an implementor of an
-     *  incompatible instantiation. Absent ⇒ every heritage instantiation reads
-     *  as unknown ⇒ the pre-#2912 fan-out, unchanged. */
-    readonly heritageTypeArguments?: HeritageTypeArguments;
-    /** Classes whose written inheritance includes a base the graph could not
-     * prove. A later inherited member cannot be selected across that gap. */
-    readonly unresolvedInheritanceByClass?: ReadonlySet<string>;
-  } = {},
+  options: ReceiverBoundOptions,
 ): ReceiverBoundResult {
   let emitted = 0;
   let dispatchFanoutSkipped = 0;

@@ -12,7 +12,8 @@ const caches = new WeakMap<ScopeResolutionIndexes, LookupCache>();
 
 /** Cache navigation only for this synchronous read-only pass. Keep the index
  * identity: provider-specific lookup state can be keyed by the same object.
- * Never span binding/type inference mutations with this cache. */
+ * The callback, including provider and recorder hooks, must not write scope,
+ * binding, import or namespace indexes while the cache is installed. */
 export function withCachedNameLookups<T>(scopes: ScopeResolutionIndexes, read: () => T): T {
   const previous = caches.get(scopes);
   caches.set(scopes, {
@@ -117,7 +118,7 @@ export function cachedNameLookupStart(
       scope.ownsReceivers?.has(name) ||
       (scope.nameClaims?.length ?? 0) > 0 ||
       scope.imports.length > 0 ||
-      (scopes.imports.get(id)?.length ?? 0) > 0 ||
+      (scopes.imports.edgesAt(id)?.length ?? 0) > 0 ||
       scopes.bindings.get(id)?.has(name) ||
       scopes.bindingAugmentations.get(id)?.has(name) ||
       scopes.accessibleNamespacesByScope?.has(id) ||

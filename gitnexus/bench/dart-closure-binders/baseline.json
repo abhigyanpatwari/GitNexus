@@ -271,6 +271,141 @@
       "unexpected_edges": 0,
       "fingerprint": "803c8b88f19d812336427450343fbd9d1976e10f96989279d7d2eeca0407bb8e",
       "function_scopes": 1572
+    },
+    "bound_small": {
+      "functions": 32,
+      "closures_per_function": 3,
+      "input_bytes": 5138,
+      "capture_groups": 819,
+      "relationships": 199,
+      "calls": 64,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 32
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "49c0fcd32fffa1a62be5f2b917bd82c3f0c56760cef06a60aec37f01a2e6310d",
+      "function_scopes": 132
+    },
+    "bound_function_64": {
+      "functions": 64,
+      "closures_per_function": 3,
+      "input_bytes": 10194,
+      "capture_groups": 1619,
+      "relationships": 391,
+      "calls": 128,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 64
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "50892cb58d63935f1c6a3f288be45a5e66e4094c14fa9f849cc2e0664951fd67",
+      "function_scopes": 260
+    },
+    "bound_medium": {
+      "functions": 128,
+      "closures_per_function": 3,
+      "input_bytes": 20418,
+      "capture_groups": 3219,
+      "relationships": 775,
+      "calls": 256,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 128
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "1ba55fd155cd528b989d2e4f98dfcbf428d342467699dbc2ee2d3b30ef6ede48",
+      "function_scopes": 516
+    },
+    "bound_function_256": {
+      "functions": 256,
+      "closures_per_function": 3,
+      "input_bytes": 41154,
+      "capture_groups": 6419,
+      "relationships": 1543,
+      "calls": 512,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 256
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "06412918637799f607a55ccddfb772687efa92c22e7b442f2c6b6ed260cf57d1",
+      "function_scopes": 1028
+    },
+    "bound_large": {
+      "functions": 512,
+      "closures_per_function": 3,
+      "input_bytes": 82626,
+      "capture_groups": 12819,
+      "relationships": 3079,
+      "calls": 1024,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 512
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "6709859feb281974526087fbeedb75b11c9aa77d934eef580beedbe144e4a1a8",
+      "function_scopes": 2052
+    },
+    "bound_closure_6": {
+      "functions": 32,
+      "closures_per_function": 6,
+      "input_bytes": 8788,
+      "capture_groups": 1427,
+      "relationships": 359,
+      "calls": 128,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 64
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "b99c6507a8a1bb8a0df197a32e742c3015136dc15f0dc3b357e376c1b3986067",
+      "function_scopes": 228
+    },
+    "bound_closure_12": {
+      "functions": 32,
+      "closures_per_function": 12,
+      "input_bytes": 16152,
+      "capture_groups": 2643,
+      "relationships": 679,
+      "calls": 256,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 128
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "096f2df9f7d9ce8a398b14c8944a8b356eddf217a2f6cfba060fe8f91cc2018a",
+      "function_scopes": 420
+    },
+    "bound_closure_24": {
+      "functions": 32,
+      "closures_per_function": 24,
+      "input_bytes": 31136,
+      "capture_groups": 5075,
+      "relationships": 1319,
+      "calls": 512,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 256
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "6fffd5728a169f2a8ed3f8d28dd58c6a3185f3a0d534facc580541a60b00c69c",
+      "function_scopes": 804
+    },
+    "bound_dense": {
+      "functions": 32,
+      "closures_per_function": 48,
+      "input_bytes": 61104,
+      "capture_groups": 9939,
+      "relationships": 2599,
+      "calls": 1024,
+      "declines": {
+        "receiver-type-unresolved/untyped-binder": 512
+      },
+      "expected_missing": 0,
+      "unexpected_edges": 0,
+      "fingerprint": "cc35ad6c0c6c691424d644af449332d0f2bac2db768fde0c77162bc9bf070976",
+      "function_scopes": 1572
     }
   },
   "_fingerprint_note": "Hashes pin every relationship (endpoints, type, confidence, reason) and every decline (reason/detail, file, name, position). Production fixes passed the original baseline unchanged before the geometric sweep and fixed-width nested formatting were introduced. Formatting changes the nested position fingerprints; each function still must match the independently computed target multiset.",
@@ -294,12 +429,351 @@
     "nested_resolve_closure_scaling_ratio": 1.5,
     "nested_parent_reads_closure_scaling_ratio": 1.1,
     "nested_child_reads_closure_scaling_ratio": 1.1,
-    "nested_map_visits_closure_scaling_ratio": 1.1
+    "nested_map_visits_closure_scaling_ratio": 1.1,
+    "bound_capture_function_scaling_ratio": 1.5,
+    "bound_resolve_function_scaling_ratio": 1.5,
+    "bound_parent_reads_function_scaling_ratio": 1.1,
+    "bound_child_reads_function_scaling_ratio": 1.1,
+    "bound_map_visits_function_scaling_ratio": 1.1,
+    "bound_capture_closure_scaling_ratio": 1.5,
+    "bound_resolve_closure_scaling_ratio": 1.5,
+    "bound_parent_reads_closure_scaling_ratio": 1.1,
+    "bound_child_reads_closure_scaling_ratio": 1.1,
+    "bound_map_visits_closure_scaling_ratio": 1.1
   },
   "_scaling_note": "Every timing metric is the maximum growth across all size pairs, divided by the maximum growth in input bytes, capture groups, graph relationships or CALLS edges. Budget 1.5 applies to every timing axis. Deterministic AST and Map operation counts use the varied function/closure count as the denominator (budget 1.1): affine structural work and byte lengths have different fixed overheads. Map counts exclude tree-sitter internal SyntaxNode wrapper caches, whose allocation depends on GC. These measurements guard these workloads, not every possible program.",
-  "_depth_note": "Geometric sweeps cover 32/64/128/256/512 functions at 3 closures and 3/6/12/24/48 closures at 32 functions. Nested indentation is fixed-width. Capture carries enclosing-type absence, indexes native tree links, reuses the callable-flow terminal-identifier memo, and drops non-designator arguments before the second-leaf search. Read-only receiver and reference passes path-compress empty lexical scopes; callback-bearing passes stay uncached. Registry ownership with no usable candidates skips distance calculation. Caller attribution skips empty scope chains and reuses child-definition lists.",
+  "_depth_note": "Geometric sweeps cover 32/64/128/256/512 functions at 3 closures and 3/6/12/24/48 closures at 32 functions. Nested indentation is fixed-width. Capture carries enclosing-type absence, indexes native tree links, reuses the callable-flow terminal-identifier memo, and drops non-designator arguments before the second-leaf search. Read-only receiver and reference passes path-compress empty lexical scopes; callback-bearing passes stay uncached. Registry ownership with no usable candidates skips distance calculation. Caller attribution skips empty scope chains and reuses child-definition lists. The sweeps include sibling argument closures, nested argument closures, and nested variable-bound closures; each form has independent timing and work budgets. Shared lexical-region lookup also uses the existing file-local parent map; visibility lookup rejects names absent from all value channels before walking ancestors.",
   "_profiles_note": "Two profiles share the shapes and every accuracy gate. CI (the default, and what --check runs in the benchmarks job): one process, one parse worker, every workload timed, min of 5 after 1 warmup, interleaved. --full: one child times every workload, min of 15 after 2 warmups, and each shape runs in a fresh child for its peak RSS. Only the CI profile was remeasured for this baseline.",
+  "_normalization_change_note": "The report also emits original_normalization_metrics, which exclude CALLS from the denominator and are diagnostic, not gated. For the previously committed nested closure endpoints (2.512 -> 51.886 ms), the original denominator gave 1.73 (above 1.5); CALLS normalization gave 1.29 (below 1.5). This intentionally changes the timing gate: CALLS grow 16x while fixed file/function structure limits the original denominator to 11.91x. Deterministic operation-count gates still use the varied input dimension, independent of either timing normalization.",
+  "_bound_closure_note": "The same sweeps also cover nested variable-bound closures (var h = (...) { ... };), with exact caller/target multisets and pinned fingerprints. Native parent-read counts must stay positive and constant along all closure-depth sweeps; a merely linear count can hide depth-dependent native getter work. The bound-closure unit regression failed with 16 -> 52 native parent reads and superlinear Map lookups at depths 6 -> 24 before these fixes; it now requires flat parent counts and linear lookup counts.",
   "_negative_controls_note": "Temporary source mutations preserved exact captures while failing deterministic work guards: a root climb per binder produced normalized parent reads 3.1106, and an all-scopes scan produced Map visits 2.6309, both above 1.1. Unit tests compare uncached and cached scope reads across 24 to 96 nested scopes and sibling closures, including the real reference pass and position-sensitive caller selection.",
+  "_measured_review_ci": {
+    "environment": "Linux x64 / Node 22.23.3, 2026-11-13; PR #3920 review fixes",
+    "profile": "ci",
+    "warmup": 1,
+    "samples": 5,
+    "statistic": "minimum",
+    "interleaved": true,
+    "metrics": {
+      "sibling_capture_function_scaling_ratio": 1.2218055692319194,
+      "sibling_resolve_function_scaling_ratio": 1.4613202381514145,
+      "sibling_parent_reads_function_scaling_ratio": 0.9897959183673469,
+      "sibling_child_reads_function_scaling_ratio": 0.9990811106144142,
+      "sibling_map_visits_function_scaling_ratio": 0.9984423676012462,
+      "sibling_capture_closure_scaling_ratio": 1.1113146843105532,
+      "sibling_resolve_closure_scaling_ratio": 1.0917349597718482,
+      "sibling_parent_reads_closure_scaling_ratio": 0.5,
+      "sibling_child_reads_closure_scaling_ratio": 0.9891224501327909,
+      "sibling_map_visits_closure_scaling_ratio": 0.9593301435406698,
+      "nested_capture_function_scaling_ratio": 1.2882505228897847,
+      "nested_resolve_function_scaling_ratio": 1.3618556934896384,
+      "nested_parent_reads_function_scaling_ratio": 0.9897959183673469,
+      "nested_child_reads_function_scaling_ratio": 0.999075231192202,
+      "nested_map_visits_function_scaling_ratio": 0.9984423676012462,
+      "nested_capture_closure_scaling_ratio": 1.0660939793026356,
+      "nested_resolve_closure_scaling_ratio": 1.1986308657183427,
+      "nested_parent_reads_closure_scaling_ratio": 0.5,
+      "nested_child_reads_closure_scaling_ratio": 0.9887797636041797,
+      "nested_map_visits_closure_scaling_ratio": 0.9593301435406698,
+      "bound_capture_function_scaling_ratio": 1.1487483393453366,
+      "bound_resolve_function_scaling_ratio": 1.3962472064024127,
+      "bound_parent_reads_function_scaling_ratio": 0.9897959183673469,
+      "bound_child_reads_function_scaling_ratio": 0.9988555521187751,
+      "bound_map_visits_function_scaling_ratio": 0.999290780141844,
+      "bound_capture_closure_scaling_ratio": 1.125431424931843,
+      "bound_resolve_closure_scaling_ratio": 1.4270349383721763,
+      "bound_parent_reads_closure_scaling_ratio": 0.5,
+      "bound_child_reads_closure_scaling_ratio": 0.9859785854759997,
+      "bound_map_visits_closure_scaling_ratio": 0.9856661045531198
+    },
+    "original_normalization_metrics": {
+      "sibling_capture_function_scaling_ratio": 1.2404811256930082,
+      "sibling_resolve_function_scaling_ratio": 1.467236514419234,
+      "sibling_capture_closure_scaling_ratio": 1.3670354504841202,
+      "sibling_resolve_closure_scaling_ratio": 1.3621957812394467,
+      "nested_capture_function_scaling_ratio": 1.307238546126687,
+      "nested_resolve_function_scaling_ratio": 1.3624255870703985,
+      "nested_capture_closure_scaling_ratio": 1.3714580392500813,
+      "nested_resolve_closure_scaling_ratio": 1.4950193749770415,
+      "bound_capture_function_scaling_ratio": 1.1487483393453366,
+      "bound_resolve_function_scaling_ratio": 1.3962472064024127,
+      "bound_capture_closure_scaling_ratio": 1.1760953251692516,
+      "bound_resolve_closure_scaling_ratio": 1.533927829424567
+    },
+    "timings": {
+      "sibling_small": {
+        "capture_ms": 26.667842000002565,
+        "resolve_ms": 2.347485999998753,
+        "work": {
+          "parent_reads": 112,
+          "child_reads": 20392,
+          "map_visits": 164,
+          "function_scopes": 132
+        }
+      },
+      "sibling_function_64": {
+        "capture_ms": 55.83509599999525,
+        "resolve_ms": 4.131088000009186,
+        "work": {
+          "parent_reads": 208,
+          "child_reads": 40488,
+          "map_visits": 324,
+          "function_scopes": 260
+        }
+      },
+      "sibling_medium": {
+        "capture_ms": 109.4082070000004,
+        "resolve_ms": 12.073684999995749,
+        "work": {
+          "parent_reads": 400,
+          "child_reads": 80680,
+          "map_visits": 644,
+          "function_scopes": 516
+        }
+      },
+      "sibling_function_256": {
+        "capture_ms": 258.85852399999567,
+        "resolve_ms": 19.78015900000173,
+        "work": {
+          "parent_reads": 784,
+          "child_reads": 161064,
+          "map_visits": 1284,
+          "function_scopes": 1028
+        }
+      },
+      "sibling_large": {
+        "capture_ms": 521.3266860000003,
+        "resolve_ms": 41.90657599999395,
+        "work": {
+          "parent_reads": 1552,
+          "child_reads": 321832,
+          "map_visits": 2564,
+          "function_scopes": 2052
+        }
+      },
+      "sibling_closure_6": {
+        "capture_ms": 51.19324500000221,
+        "resolve_ms": 4.470979999998235,
+        "work": {
+          "parent_reads": 112,
+          "child_reads": 37704,
+          "map_visits": 260,
+          "function_scopes": 228
+        }
+      },
+      "sibling_closure_12": {
+        "capture_ms": 100.7930650000053,
+        "resolve_ms": 9.418721000001824,
+        "work": {
+          "parent_reads": 112,
+          "child_reads": 72328,
+          "map_visits": 452,
+          "function_scopes": 420
+        }
+      },
+      "sibling_closure_24": {
+        "capture_ms": 192.88721099999384,
+        "resolve_ms": 17.222578000000794,
+        "work": {
+          "parent_reads": 112,
+          "child_reads": 141576,
+          "map_visits": 836,
+          "function_scopes": 804
+        }
+      },
+      "sibling_dense": {
+        "capture_ms": 428.7167800000025,
+        "resolve_ms": 37.60498099999677,
+        "work": {
+          "parent_reads": 112,
+          "child_reads": 280072,
+          "map_visits": 1604,
+          "function_scopes": 1572
+        }
+      },
+      "nested_small": {
+        "capture_ms": 25.48624800000107,
+        "resolve_ms": 2.3500760000024457,
+        "work": {
+          "parent_reads": 112,
+          "child_reads": 20264,
+          "map_visits": 164,
+          "function_scopes": 132
+        }
+      },
+      "nested_function_64": {
+        "capture_ms": 51.78012999999919,
+        "resolve_ms": 4.416267000007792,
+        "work": {
+          "parent_reads": 208,
+          "child_reads": 40232,
+          "map_visits": 324,
+          "function_scopes": 260
+        }
+      },
+      "nested_medium": {
+        "capture_ms": 115.8245339999994,
+        "resolve_ms": 8.39736200000334,
+        "work": {
+          "parent_reads": 400,
+          "child_reads": 80168,
+          "map_visits": 644,
+          "function_scopes": 516
+        }
+      },
+      "nested_function_256": {
+        "capture_ms": 247.28332699999737,
+        "resolve_ms": 22.43265399998927,
+        "work": {
+          "parent_reads": 784,
+          "child_reads": 160040,
+          "map_visits": 1284,
+          "function_scopes": 1028
+        }
+      },
+      "nested_large": {
+        "capture_ms": 525.3227570000017,
+        "resolve_ms": 45.743980999992345,
+        "work": {
+          "parent_reads": 1552,
+          "child_reads": 319784,
+          "map_visits": 2564,
+          "function_scopes": 2052
+        }
+      },
+      "nested_closure_6": {
+        "capture_ms": 52.72582199999306,
+        "resolve_ms": 4.3634689999962575,
+        "work": {
+          "parent_reads": 112,
+          "child_reads": 37384,
+          "map_visits": 260,
+          "function_scopes": 228
+        }
+      },
+      "nested_closure_12": {
+        "capture_ms": 97.61387600000307,
+        "resolve_ms": 10.316877999997814,
+        "work": {
+          "parent_reads": 112,
+          "child_reads": 71624,
+          "map_visits": 452,
+          "function_scopes": 420
+        }
+      },
+      "nested_closure_24": {
+        "capture_ms": 200.12636500000372,
+        "resolve_ms": 20.413407000000007,
+        "work": {
+          "parent_reads": 112,
+          "child_reads": 140104,
+          "map_visits": 836,
+          "function_scopes": 804
+        }
+      },
+      "nested_dense": {
+        "capture_ms": 416.2622619999893,
+        "resolve_ms": 41.84150900000532,
+        "work": {
+          "parent_reads": 112,
+          "child_reads": 277064,
+          "map_visits": 1604,
+          "function_scopes": 1572
+        }
+      },
+      "bound_small": {
+        "capture_ms": 22.661724999998114,
+        "resolve_ms": 2.364027999996324,
+        "work": {
+          "parent_reads": 112,
+          "child_reads": 16424,
+          "map_visits": 356,
+          "function_scopes": 132
+        }
+      },
+      "bound_function_64": {
+        "capture_ms": 45.68037000000186,
+        "resolve_ms": 4.570858999999473,
+        "work": {
+          "parent_reads": 208,
+          "child_reads": 32552,
+          "map_visits": 708,
+          "function_scopes": 260
+        }
+      },
+      "bound_medium": {
+        "capture_ms": 101.49119699999574,
+        "resolve_ms": 12.78287999999884,
+        "work": {
+          "parent_reads": 400,
+          "child_reads": 64808,
+          "map_visits": 1412,
+          "function_scopes": 516
+        }
+      },
+      "bound_function_256": {
+        "capture_ms": 203.8195790000027,
+        "resolve_ms": 22.1858360000042,
+        "work": {
+          "parent_reads": 784,
+          "child_reads": 129320,
+          "map_visits": 2820,
+          "function_scopes": 1028
+        }
+      },
+      "bound_large": {
+        "capture_ms": 418.63977700000396,
+        "resolve_ms": 47.24061100000108,
+        "work": {
+          "parent_reads": 1552,
+          "child_reads": 258344,
+          "map_visits": 5636,
+          "function_scopes": 2052
+        }
+      },
+      "bound_closure_6": {
+        "capture_ms": 40.74984499999846,
+        "resolve_ms": 4.335204999995767,
+        "work": {
+          "parent_reads": 112,
+          "child_reads": 29768,
+          "map_visits": 644,
+          "function_scopes": 228
+        }
+      },
+      "bound_closure_12": {
+        "capture_ms": 76.35656300000846,
+        "resolve_ms": 12.37297799999942,
+        "work": {
+          "parent_reads": 112,
+          "child_reads": 56456,
+          "map_visits": 1220,
+          "function_scopes": 420
+        }
+      },
+      "bound_closure_24": {
+        "capture_ms": 170.66389199999685,
+        "resolve_ms": 22.860685999999987,
+        "work": {
+          "parent_reads": 112,
+          "child_reads": 109832,
+          "map_visits": 2372,
+          "function_scopes": 804
+        }
+      },
+      "bound_dense": {
+        "capture_ms": 343.73630199999025,
+        "resolve_ms": 47.02694999999949,
+        "work": {
+          "parent_reads": 112,
+          "child_reads": 216584,
+          "map_visits": 4676,
+          "function_scopes": 1572
+        }
+      }
+    },
+    "earlier_attempts": "Before the final lexical-region parent-map and absent-value-name fixes, three runs exceeded timing budgets on varying axes. The bound native-parent and Map-lookup unit controls reproduced repeated work; both fail without the corresponding fix. This observation records the passing run after those fixes, using unchanged budgets and sampling."
+  },
   "_measured_ci": {
     "environment": "Linux x64 / Node 22.23.3, 2026-11-13; integrated with PR #3920",
     "profile": "ci",

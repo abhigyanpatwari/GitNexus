@@ -18,7 +18,9 @@
  *   `(x) { cs.run(); }`          binds another name: the nearest `cs`
  * `sibling` puts the K closures side by side (the `x` closure reaches the
  * `Address` parameter); `nested` nests them K deep (it reaches the `Other cs`
- * one level up). Each function's CALLS edges must equal the expected
+ * one level up). `bound` nests `var h = (...) { ... };` closures, checking
+ * enclosing-type memoization for named closures as well as argument closures.
+ * Each function's CALLS edges must equal the expected
  * multiset exactly: no missing edge, no extra one.
  *
  * Geometric sweeps: 32/64/128/256/512 functions at 3 closures, and 3/6/12/24/48
@@ -73,7 +75,7 @@ const FULL = process.argv.includes('--full');
 const WARMUP = FULL ? 2 : 1;
 const REPS = FULL ? 15 : 5;
 const MARKER = 'DART_CLOSURE_RESULT ';
-const FORMS = ['sibling', 'nested'];
+const FORMS = ['sibling', 'nested', 'bound'];
 const SHAPES = {
   small: [32, 3],
   function_64: [64, 3],
@@ -113,9 +115,12 @@ function corpus(form, functions, closures) {
       for (let j = 0; j < closures; j++) {
         const kind = KINDS[j % KINDS.length];
         // Fixed-width formatting: source bytes must grow linearly with depth.
-        main += `  items.forEach(${kind.params} { ${kind.body}\n`;
+        main +=
+          form === 'bound'
+            ? `  var h${i}_${j} = ${kind.params} { ${kind.body}\n`
+            : `  items.forEach(${kind.params} { ${kind.body}\n`;
       }
-      for (let j = closures - 1; j >= 0; j--) main += '  });\n';
+      for (let j = closures - 1; j >= 0; j--) main += form === 'bound' ? '  };\n' : '  });\n';
     }
     main += '}\n';
   }
@@ -131,12 +136,14 @@ function expectedTargets(form, closures) {
   let nearest = 'Address'; // the parameter
   for (let j = 0; j < closures; j++) {
     const kind = KINDS[j % KINDS.length];
-    const binder = kind.binds ?? (form === 'nested' ? nearest : 'Address');
-    if (form === 'nested' && kind.binds !== null) nearest = kind.binds;
-    if (binder === 'untyped') continue; // declines: the closure's own `cs` has no type
-    targets.push(`Method:${TYPES}:${binder}.${kind.body.slice(3, -3)}#0`);
+    const binder = kind.binds ?? (form !== 'sibling' ? nearest : 'Address');
+    if (form !== 'sibling' && kind.binds !== null) nearest = kind.binds;
+    // Keep the closure position so bound closures can check caller attribution.
+    targets.push(
+      binder === 'untyped' ? null : `Method:${TYPES}:${binder}.${kind.body.slice(3, -3)}#0`,
+    );
   }
-  return targets.sort();
+  return targets;
 }
 
 function addFileNodes(graph, files) {
@@ -189,16 +196,27 @@ function correctness(form, functions, closures, graph, stats, captureGroups, fil
     callsBySource.set(edge.sourceId, list);
   }
   const expected = expectedTargets(form, closures);
-  const expectedCounts = new Map();
-  for (const target of expected) {
-    expectedCounts.set(target, (expectedCounts.get(target) ?? 0) + 1);
+  const expectedBySource = new Map();
+  for (let i = 0; i < functions; i++) {
+    let enclosing = `f${i}`;
+    for (let j = 0; j < expected.length; j++) {
+      const name = `h${i}_${j}`;
+      const line = 3 + i * (2 * closures + 3) + j;
+      const source = `Function:${MAIN}:${form === 'bound' ? `${enclosing}.${name}@${line}:2` : `f${i}`}`;
+      const targets = expectedBySource.get(source) ?? [];
+      if (expected[j] !== null) targets.push(expected[j]);
+      expectedBySource.set(source, targets);
+      // The anonymous function scope owns each nested variable declaration.
+      enclosing += `.fn@${line}:${9 + name.length}`;
+    }
   }
   let missing = 0;
   let unexpected = 0;
-  for (let i = 0; i < functions; i++) {
-    const remaining = new Map(expectedCounts);
-    missing += expected.length;
-    for (const target of callsBySource.get(`Function:${MAIN}:f${i}`) ?? []) {
+  for (const [source, targets] of expectedBySource) {
+    const remaining = new Map();
+    for (const target of targets) remaining.set(target, (remaining.get(target) ?? 0) + 1);
+    missing += targets.length;
+    for (const target of callsBySource.get(source) ?? []) {
       const count = remaining.get(target) ?? 0;
       if (count === 0) unexpected++;
       else {
@@ -206,7 +224,9 @@ function correctness(form, functions, closures, graph, stats, captureGroups, fil
         missing--;
       }
     }
+    callsBySource.delete(source);
   }
+  for (const targets of callsBySource.values()) unexpected += targets.length;
   const declines = {};
   const outcomes = [];
   for (const outcome of stats.resolutionOutcomes) {
@@ -454,7 +474,8 @@ async function report() {
     delete timing.relationships;
   }
   const metrics = {};
-  const sizeGrowth = (big, small) =>
+  const originalNormalizationMetrics = {};
+  const sizeGrowth = (big, small, includeCalls = true) =>
     Math.max(
       big.input_bytes / small.input_bytes,
       big.capture_groups / small.capture_groups,
@@ -462,7 +483,7 @@ async function report() {
       // Calls are the growing output in the closure sweep. Total relationships
       // include fixed file/function structure, whose cost is not proportional
       // to repeated call capture and resolution.
-      big.calls / small.calls,
+      includeCalls ? big.calls / small.calls : 0,
     );
   for (const form of FORMS) {
     const at = (name) => timings[`${form}_${name}`];
@@ -473,7 +494,7 @@ async function report() {
     ]) {
       // Check every pair: both consecutive doublings and the wider sweep must
       // stay linear. A small quadratic term can hide in the first doubling.
-      const growth = (value, workCounter = false) => {
+      const growth = (value, workCounter = false, includeCalls = true) => {
         const ratios = [];
         for (let i = 0; i < names.length; i++) {
           for (let j = i + 1; j < names.length; j++) {
@@ -483,7 +504,7 @@ async function report() {
                 (workCounter
                   ? SHAPES[names[j]][axis === 'function' ? 0 : 1] /
                     SHAPES[names[i]][axis === 'function' ? 0 : 1]
-                  : sizeGrowth(shape(names[j]), shape(names[i]))),
+                  : sizeGrowth(shape(names[j]), shape(names[i]), includeCalls)),
             );
           }
         }
@@ -491,11 +512,29 @@ async function report() {
       };
       for (const phase of ['capture', 'resolve']) {
         metrics[`${form}_${phase}_${axis}_scaling_ratio`] = growth((t) => t[`${phase}_ms`]);
+        originalNormalizationMetrics[`${form}_${phase}_${axis}_scaling_ratio`] = growth(
+          (t) => t[`${phase}_ms`],
+          false,
+          false,
+        );
       }
       for (const counter of ['parent_reads', 'child_reads', 'map_visits']) {
+        for (const name of names)
+          assert.ok(at(name).work[counter] > 0, `${form}_${name}: ${counter} must be measured`);
         // Structural operation counts are affine in the varied dimension;
         // byte lengths weight fixed scaffolding differently from AST work.
         metrics[`${form}_${counter}_${axis}_scaling_ratio`] = growth((t) => t.work[counter], true);
+      }
+      if (axis === 'closure') {
+        // Native parent getters may themselves walk to the root. A linear
+        // getter count would still permit quadratic native work with depth.
+        for (const name of names) {
+          assert.equal(
+            at(name).work.parent_reads,
+            at('small').work.parent_reads,
+            `${form}_${name}: parent reads must stay flat as closures deepen`,
+          );
+        }
       }
     }
   }
@@ -503,6 +542,7 @@ async function report() {
     shapes,
     timings,
     metrics,
+    original_normalization_metrics: originalNormalizationMetrics,
     estimator: {
       profile: FULL ? 'full' : 'ci',
       warmup: WARMUP,

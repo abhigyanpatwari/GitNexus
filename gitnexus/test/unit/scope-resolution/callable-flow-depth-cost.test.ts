@@ -89,9 +89,13 @@ function operandNodeVisits(nest: Nest, depth: number): number {
   let body = '';
   for (let j = 0; j < depth; j++) body += nest.open(j);
   for (let j = 0; j < depth; j++) body += nest.close;
-  resetCallableFlowCaptureStats();
-  nest.emit(nest.wrap(body), nest.file);
-  return getCallableFlowCaptureStats().operandNodeVisits;
+  resetCallableFlowCaptureStats(true);
+  try {
+    nest.emit(nest.wrap(body), nest.file);
+    return getCallableFlowCaptureStats().operandNodeVisits;
+  } finally {
+    resetCallableFlowCaptureStats();
+  }
 }
 
 /**
@@ -101,6 +105,9 @@ function operandNodeVisits(nest: Nest, depth: number): number {
  */
 function expectLinear(nest: Nest): void {
   const [d8, d16, d64] = [8, 16, 64].map((depth) => operandNodeVisits(nest, depth));
+  expect(d8).toBeGreaterThan(0);
+  expect(d16).toBeGreaterThan(d8);
+  expect(d64).toBeGreaterThan(d16);
   expect(d64 - d16).toBeLessThanOrEqual(6 * (d16 - d8));
 }
 

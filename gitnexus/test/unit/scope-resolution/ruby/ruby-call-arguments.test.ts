@@ -42,4 +42,33 @@ describe('Ruby callable flow: a call passes only its own arguments', () => {
       'run_with(0)=cb',
     ]);
   });
+
+  it.each([
+    ['cb.call { helper(x) }', '0'],
+    ['cb.call(x) { helper(x) }', '1'],
+  ])('counts only the callable invocation arguments in %s', (call, arity) => {
+    const invokes = emitRubyScopeCaptures(`def m(cb, x)\n${call}\nend`, 'host.rb').filter(
+      (match) => match['@callable-flow.invoke'] !== undefined,
+    );
+    expect(
+      invokes.map((match) => [
+        match['@callable-flow.callee']?.text,
+        match['@callable-flow.arity']?.text,
+      ]),
+    ).toEqual([['cb', arity]]);
+  });
+
+  it.each(['', '(cb)'])('preserves a block-taking receiver chain with arguments %s', (args) => {
+    const source = `def m(factory, cb)\nfactory.build${args} { helper(cb) }.run\nend`;
+    const chains = emitRubyScopeCaptures(source, 'host.rb').filter(
+      (match) => match['@reference.receiver-chain'] !== undefined,
+    );
+    expect(
+      chains.map((match) => [
+        match['@reference.name']?.text,
+        match['@reference.receiver-chain']?.text,
+      ]),
+    ).toEqual([['run', '2|factory|cbuild']]);
+    expect(argumentFacts(source)).toEqual(args ? ['?(0)=cb', 'helper(0)=cb'] : ['helper(0)=cb']);
+  });
 });

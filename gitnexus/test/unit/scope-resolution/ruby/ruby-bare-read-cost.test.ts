@@ -60,6 +60,12 @@ const NAVIGATION_METHODS = [
 ] as const;
 
 const restores: Array<() => void> = [];
+const DESCENDANT_LOOKUPS = new Set([
+  'namedDescendantForIndex',
+  'descendantForIndex',
+  'namedDescendantForPosition',
+  'descendantForPosition',
+]);
 afterEach(() => {
   while (restores.length > 0) restores.pop()?.();
 });
@@ -67,6 +73,15 @@ afterEach(() => {
 /** Counts tree steps on every node of `tree` until the test ends. */
 function countTreeSteps(tree: Parser.Tree): { steps: number } {
   const counter = { steps: 0 };
+  // Build depths before instrumentation: native descendant searches traverse
+  // the path internally even though they return just one node.
+  const depths = new Map<number, number>();
+  const pending: Array<[SyntaxNode, number]> = [[tree.rootNode, 0]];
+  while (pending.length > 0) {
+    const [node, depth] = pending.pop()!;
+    depths.set(node.id, depth);
+    for (const child of node.children) pending.push([child, depth + 1]);
+  }
   // Nodes are per-type subclasses (`ProgramNode`, …) of the binding's
   // SyntaxNode; the navigation members live on SyntaxNode.prototype.
   let proto = Object.getPrototypeOf(tree.rootNode) as Record<string, unknown> | null;
@@ -97,9 +112,12 @@ function countTreeSteps(tree: Parser.Tree): { steps: number } {
     const method = descriptor.value as (...args: unknown[]) => unknown;
     Object.defineProperty(proto, name, {
       ...descriptor,
-      value(this: unknown, ...args: unknown[]) {
+      value(this: SyntaxNode, ...args: unknown[]) {
         const result = method.apply(this, args);
         tally(result);
+        if (DESCENDANT_LOOKUPS.has(name) && result !== null) {
+          counter.steps += depths.get((result as SyntaxNode).id)! - depths.get(this.id)!;
+        }
         return result;
       },
     });
@@ -150,6 +168,26 @@ function capturePass(source: string): { steps: number; groups: number } {
 }
 
 describe('Ruby bare read: classification cost is linear in nesting depth (RUBY-04)', () => {
+  it.each([...DESCENDANT_LOOKUPS])('detects repeated native %s searches', (method) => {
+    const measure = (depth: number) => {
+      const tree = getRubyParser().parse(nest(depth, () => 'target'));
+      const reads = bareStatements(tree.rootNode);
+      const counter = countTreeSteps(tree);
+      for (const read of reads) {
+        const root = tree.rootNode;
+        if (method === 'namedDescendantForIndex') root.namedDescendantForIndex(read.startIndex);
+        else if (method === 'descendantForIndex') root.descendantForIndex(read.startIndex);
+        else if (method === 'namedDescendantForPosition')
+          root.namedDescendantForPosition(read.startPosition);
+        else root.descendantForPosition(read.startPosition);
+      }
+      const steps = counter.steps;
+      while (restores.length > 0) restores.pop()?.();
+      return steps;
+    };
+    // This deliberate quadratic search must fail the production bound of 5x.
+    expect(measure(64) / measure(16)).toBeGreaterThan(10);
+  });
   it.each([
     ['every level reads the parameter', (_j: number) => 'target', true],
     ['every level calls a different unbound name', (j: number) => `helper${j}`, false],
@@ -188,9 +226,8 @@ describe('Ruby bare read: classification cost is linear in nesting depth (RUBY-0
     ).toBeLessThanOrEqual(5);
   });
 
-  // The whole Ruby capture pass over the same nest: no other per-node climb
-  // or subtree search may reintroduce depth x depth work. (A block-taking
-  // call with no argument list used to search its whole block for one.)
+  // The whole pass for bound parameter reads. This guards the old argument-list
+  // subtree search; free-call receiver climbs are a separate #3915 follow-up.
   it('the whole capture pass over a nest that reads at every level', () => {
     const shallow = capturePass(nest(16, () => 'target'));
     const deep = capturePass(nest(64, () => 'target'));
