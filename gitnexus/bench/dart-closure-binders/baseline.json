@@ -1,24 +1,28 @@
 {
-  "_what": "Synthetic Dart closure-binder gate for #3903 (DART-11), following bench/ruby-gem-resolution and bench/dart-deferred-imports: exact accuracy cells and fingerprints, with ratios as the only timing gates. Real capture emitter, real parse worker (dist/), real Dart ScopeResolver and pubspec loader; analyze, persistence and full-pipeline memory are outside this benchmark.",
-  "_triage": "Shape and fingerprint failures are deterministic: inspect the corpus and the resolved edges, never rebaseline just to make CI green. The runner also fails, before any baseline comparison, when a function misses an expected CALLS edge or gains one the source never makes. For a timing failure, rerun on an idle machine and verify the report shows its profile (ci: 5 interleaved samples after 1 warmup; full: 15 after 2) before investigating a regression. Millisecond observations are context, not gates.",
+  "_what": "Synthetic Dart closure-binder gate for #3903 (DART-11), following bench/ruby-gem-resolution and bench/dart-deferred-imports: exact accuracy cells and fingerprints, scaling ratios against input and output growth, and an operation count for the enclosing-type search (#3912 review). Real capture emitter, real parse worker (dist/), real Dart ScopeResolver and pubspec loader; analyze, persistence and full-pipeline memory are outside this benchmark.",
+  "_triage": "Shape and fingerprint failures are deterministic: inspect the corpus and the resolved edges, never rebaseline just to make CI green. The runner also fails, before any baseline comparison, when a function misses an expected CALLS edge or gains one the source never makes. An operation-count failure is deterministic too: a capture pass stepped onto more ancestors than the budget allows, so some lookup climbs the tree again. For a timing failure, rerun on an idle machine and verify the report shows its profile (ci: 5 interleaved samples after 1 warmup; full: 15 after 2) before investigating a regression. Millisecond observations are context, not gates.",
   "shapes": {
     "sibling_small": {
-      "functions": 128,
+      "functions": 32,
       "closures_per_function": 3,
-      "capture_groups": 2067,
-      "relationships": 391,
-      "calls": 256,
+      "input_bytes": 5264,
+      "capture_groups": 531,
+      "function_scopes": 132,
+      "relationships": 103,
+      "calls": 64,
       "declines": {
-        "receiver-type-unresolved/untyped-binder": 512
+        "receiver-type-unresolved/untyped-binder": 128
       },
       "expected_missing": 0,
       "unexpected_edges": 0,
-      "fingerprint": "fd74596d2c01226d4740f5c4f5764a264feb17bb1f55daf8b9fbda00696e08dd"
+      "fingerprint": "7164f858fbaa461460ec19c9362af4428721da0cd2c76dab46e6915d7e848946"
     },
     "sibling_large": {
       "functions": 512,
       "closures_per_function": 3,
+      "input_bytes": 82956,
       "capture_groups": 8211,
+      "function_scopes": 2052,
       "relationships": 1543,
       "calls": 1024,
       "declines": {
@@ -29,35 +33,41 @@
       "fingerprint": "9332ec13b546d9725421f7b7212f93bb93563e5962bce8c3d550a77578b5505d"
     },
     "sibling_dense": {
-      "functions": 128,
-      "closures_per_function": 12,
-      "capture_groups": 5907,
-      "relationships": 1159,
+      "functions": 32,
+      "closures_per_function": 48,
+      "input_bytes": 61904,
+      "capture_groups": 5331,
+      "function_scopes": 1572,
+      "relationships": 1063,
       "calls": 1024,
       "declines": {
         "receiver-type-unresolved/untyped-binder": 2048
       },
       "expected_missing": 0,
       "unexpected_edges": 0,
-      "fingerprint": "ef5dd927aabe97907260df415a9d0ffbc1d787030800183ea222ea352f821570"
+      "fingerprint": "b6402eb2a8b632112dadc358ac9bbe1d7989ca6435491a62f7e5245953c21be3"
     },
     "nested_small": {
-      "functions": 128,
+      "functions": 32,
       "closures_per_function": 3,
-      "capture_groups": 2067,
-      "relationships": 391,
-      "calls": 256,
+      "input_bytes": 5456,
+      "capture_groups": 531,
+      "function_scopes": 132,
+      "relationships": 103,
+      "calls": 64,
       "declines": {
-        "receiver-type-unresolved/untyped-binder": 512
+        "receiver-type-unresolved/untyped-binder": 128
       },
       "expected_missing": 0,
       "unexpected_edges": 0,
-      "fingerprint": "bfcc52a87325173aeefa21b9edfc937ed63ddcf1117862d970692b696b6f9f7d"
+      "fingerprint": "095276e43420348b8a31afc66e8bab386729adfebfe0dcbd54d51af912080430"
     },
     "nested_large": {
       "functions": 512,
       "closures_per_function": 3,
+      "input_bytes": 86028,
       "capture_groups": 8211,
+      "function_scopes": 2052,
       "relationships": 1543,
       "calls": 1024,
       "declines": {
@@ -65,110 +75,70 @@
       },
       "expected_missing": 0,
       "unexpected_edges": 0,
-      "fingerprint": "27e09e84520dd615f10012907f5ac9e7369dcf912f6a826502b879fe88d6563d"
+      "fingerprint": "962f77c03461df95853e7267b83a96c43433294cb88b170db12c5148e65943ff"
     },
     "nested_dense": {
-      "functions": 128,
-      "closures_per_function": 12,
-      "capture_groups": 5907,
-      "relationships": 1159,
+      "functions": 32,
+      "closures_per_function": 48,
+      "input_bytes": 64976,
+      "capture_groups": 5331,
+      "function_scopes": 1572,
+      "relationships": 1063,
       "calls": 1024,
       "declines": {
         "receiver-type-unresolved/untyped-binder": 2048
       },
       "expected_missing": 0,
       "unexpected_edges": 0,
-      "fingerprint": "f0661165447d8d28fdf87926b4c36bf4727907c16c040b0e53daf245d8ce4baa"
+      "fingerprint": "803c8b88f19d812336427450343fbd9d1976e10f96989279d7d2eeca0407bb8e"
     }
   },
-  "_shape_note": "Exact counts are the workload FLOOR. small = 128 functions x 3 closures, large = 512 x 3 (functions 4x), dense = 128 x 12 (closures per function 4x; in `nested`, nesting depth 4x). Expected edges per function are computed from the binder rule, not read back from the graph: an untyped rebinding `(cs)` declines (`receiver-type-unresolved/untyped-binder`), a typed `(Other cs)` reaches Other.save, and `(x) { cs.run(); }` reaches the nearest `cs` (the `Address` parameter side by side, the enclosing `Other cs` when nested). The merge-base on main (09665c5a9 and 5d6e5c4f4 alike) misses or mis-targets those edges (for example 64 missing and 128 wrong at 64 x 3 side by side), so this gate fails without #3903.",
-  "_fingerprint_note": "Hashes pin every relationship (endpoints, type, confidence, reason) and every decline (reason/detail, file, name, position). Identical at the #3903 heads ecd25da87 and 82c585d89 (the replay onto main after #3882), so #3882's deferred-import change does not touch these workloads.",
+  "_shape_note": "Exact counts are the workload FLOOR. small = 32 functions x 3 closures, large = 512 x 3 (functions 16x), dense = 32 x 48 (closures per function 16x; in `nested`, nesting depth 16x). Nested closures are indented by a fixed width, so input bytes grow linearly with depth (#3912 review: the old indentation grew quadratically). Each cell records its input bytes and its emitted output (capture groups, Function scopes, relationships, CALLS edges, declines). Expected edges per function are computed from the binder rule, not read back from the graph: an untyped rebinding `(cs)` declines (`receiver-type-unresolved/untyped-binder`), a typed `(Other cs)` reaches Other.save, and `(x) { cs.run(); }` reaches the nearest `cs` (the `Address` parameter side by side, the enclosing `Other cs` when nested).",
+  "_fingerprint_note": "Recorded on main e2b7cdbd0. Hashes pin every relationship (endpoints, type, confidence, reason) and every decline (reason/detail, file, name, position). #3917 (the enclosing-type fix) produces identical cells: it changes no output.",
   "budgets": {
     "sibling_capture_function_scaling_ratio": 1.5,
     "sibling_capture_closure_scaling_ratio": 1.5,
     "sibling_resolve_function_scaling_ratio": 1.5,
     "sibling_resolve_closure_scaling_ratio": 1.5,
     "nested_capture_function_scaling_ratio": 1.5,
-    "nested_capture_closure_scaling_ratio": 2.2,
+    "nested_capture_closure_scaling_ratio": 1.5,
     "nested_resolve_function_scaling_ratio": 1.5,
-    "nested_resolve_closure_scaling_ratio": 2.2
+    "nested_resolve_closure_scaling_ratio": 1.5
   },
-  "_scaling_note": "Scaling ratios are (t_4n/t_n)/4: about 1 is linear, about 4 is quadratic. 1.5 (bench/scope-capture) wherever main is linear; 2.2 (bench/ruby-gem-resolution) only on the two nesting-depth ratios, where main is already super-linear: from depth 3 to 24, main's capture time has a fitted exponent of 1.46 (1.32-1.61), 2.6 -> 3.1 per depth doubling.",
-  "_depth_note": "nested_capture_closure_scaling_ratio is the one ratio near its budget, and part of it is new in #3903: from depth 3 to 24 the capture exponent is 1.63 (1.49-1.76) with #3903 against 1.46 on main, 6609 ms against 4506 ms at depth 24 x 256 functions. attachDartLexicalNames calls synthesizeDartReceiverBinding for every closure scope that no enclosing scope binds `this` for, which is every closure under a top-level function, and that walks .parent up to the root (findEnclosingTypeDeclaration): O(depth) per closure, O(depth^2) per nest. At depth 48 it was 9.1 s of 16.6 s capture time in a profile. Carrying the enclosing type (or its absence) down the scope chain removes the climb. At depth 48 (256 functions) neither main nor #3903 produces Function nodes for the file, so sweeps stop at 24.",
+  "operation_budgets": {
+    "enclosing_type_ancestor_visits_per_function_scope": 1
+  },
+  "_scaling_note": "Scaling ratios are (t_big / t_small) / growth, where growth is the larger of the input-byte, capture-group and relationship growth between the two cells: about 1 is linear in input plus output, about 16 is quadratic at these sizes. Every ratio's budget is 1.5 (bench/scope-capture); there is no allowance for nesting depth.",
+  "_operations_note": "Under --check each workload's capture pass counts the ancestors the enclosing-type search steps onto (getDartEnclosingTypeStats, #3917): at most one per Function scope. #3917 reads the enclosing type from the capture walk for every closure and memoises a declared member's lookup, so the count stays below one per scope at any depth (0.02-0.29 here). A tree without the counter fails the check rather than passing it.",
+  "_depth_note": "On main the nested depth ratios fail: capture 11.2 and resolve 3.1 against budget 1.5 (_measured_ci). Capture has three terms: the enclosing-type climb per closure, fixed by #3917; and two per-call walks in the shared utils/callable-flow-captures.ts, the subtree search of every closure argument in emitCallFacts -> operandSyntax and the anchor-chain walk in isVisibleValueBinding, a follow-up. node-tree-sitter's `parent` and sibling accessors re-descend from the root, about 150 ns per AST level, so any helper that calls them once per node also grows with depth. Resolve's depth term is measured separately. This gate passes only once that repeated work is gone; it is not budgeted around.",
+  "_negative_controls_note": "Control A, a climb to the root per closure (the main shape, with the counter added), fails the operation budget deterministically: 'sibling_small: enclosing-type search stepped onto 3206 ancestors for 516 Function scopes'. Control B, scanning every registered scope per binder (O(binders x scopes)), moved the 16x function ratio to 1.57 against 1.39 for clean code in one run, but clean code read 1.64 on the closure axis in the same run: on a busy host the ratios at these sizes move by about +-0.25, so timing does not reliably catch control B. Operation counts are the reliable regression signal; the timing ratios catch only large super-linear terms.",
   "_profiles_note": "Two profiles share the shapes and every accuracy gate. CI (the default, and what --check runs in the benchmarks job): one process, one parse worker, every workload timed, min of 5 after 1 warmup, interleaved. --full: one child times every workload, min of 15 after 2 warmups, and each shape runs in a fresh child for its peak RSS. Wall times are in _measured_ci.",
-  "_negative_controls_note": "A root climb per binder in recordDartLexicalName (a temporary edit of languages/dart/captures.ts; the #1848 shape) fails nested_capture_closure_scaling_ratio 2.324 > 2.2 in the CI profile, with unchanged fingerprints (2.729 at 82c585d89 and 2.66 at ecd25da87 under the full protocol at the earlier 256/1024 shapes). Replacing the per-binder scope map lookup with a scan of every registered scope (O(binders x scopes)) added about 300 ms at 1024 x 3 but moved no ratio past its budget (sibling function 1.307): that is below what the gate resolves at these sizes. These are deliberate regressions, not baseline observations.",
   "_measured_ci": {
-    "environment": "macOS arm64 / Node 24.16.0, 2026-11-13, shared host (load average 7-40 on 15 cores)",
-    "wall_seconds": [24.91, 24.97, 25.04],
+    "environment": "macOS arm64 / Node 24.16.0, 2026-11-13, main e2b7cdbd0, shared host (load average 21-44 on 15 cores)",
+    "wall_seconds": [48.7],
     "reps": 5,
     "warmup": 1,
-    "sibling_capture_function_scaling_ratio": 1.179,
-    "sibling_capture_function_scaling_ratio_samples": [1.127, 1.179, 1.074],
-    "sibling_capture_closure_scaling_ratio": 1.13,
-    "sibling_capture_closure_scaling_ratio_samples": [1.091, 1.13, 0.928],
-    "sibling_resolve_function_scaling_ratio": 1.19,
-    "sibling_resolve_function_scaling_ratio_samples": [1.103, 1.19, 1.049],
-    "sibling_resolve_closure_scaling_ratio": 1.004,
-    "sibling_resolve_closure_scaling_ratio_samples": [0.897, 1.004, 0.906],
-    "nested_capture_function_scaling_ratio": 1.164,
-    "nested_capture_function_scaling_ratio_samples": [1.164, 1.093, 1.164],
-    "nested_capture_closure_scaling_ratio": 1.94,
-    "nested_capture_closure_scaling_ratio_samples": [1.583, 1.94, 1.785],
-    "nested_resolve_function_scaling_ratio": 1.152,
-    "nested_resolve_function_scaling_ratio_samples": [1.114, 1.152, 1.044],
-    "nested_resolve_closure_scaling_ratio": 1.292,
-    "nested_resolve_closure_scaling_ratio_samples": [1.22, 1.292, 1.139],
-    "sibling_small_capture_ms": 96.2,
-    "sibling_small_resolve_ms": 7.3,
-    "sibling_large_capture_ms": 418.7,
-    "sibling_large_resolve_ms": 33.8,
-    "sibling_dense_capture_ms": 405.4,
-    "sibling_dense_resolve_ms": 28.5,
-    "nested_small_capture_ms": 115.3,
-    "nested_small_resolve_ms": 9.1,
-    "nested_large_capture_ms": 536.7,
-    "nested_large_resolve_ms": 38.0,
-    "nested_dense_capture_ms": 874.0,
-    "nested_dense_resolve_ms": 41.5
+    "sibling_capture_function_scaling_ratio": 1.225,
+    "sibling_capture_closure_scaling_ratio": 1.379,
+    "sibling_resolve_function_scaling_ratio": 1.009,
+    "sibling_resolve_closure_scaling_ratio": 1.114,
+    "nested_capture_function_scaling_ratio": 1.141,
+    "nested_capture_closure_scaling_ratio": 11.225,
+    "nested_resolve_function_scaling_ratio": 0.989,
+    "nested_resolve_closure_scaling_ratio": 3.109,
+    "sibling_small_capture_ms": 20.4,
+    "sibling_large_capture_ms": 392.9,
+    "sibling_dense_capture_ms": 330.1,
+    "nested_small_capture_ms": 23.8,
+    "nested_large_capture_ms": 427.7,
+    "nested_dense_capture_ms": 3178.6,
+    "sibling_small_resolve_ms": 1.9,
+    "sibling_large_resolve_ms": 29.5,
+    "sibling_dense_resolve_ms": 24.3,
+    "nested_small_resolve_ms": 2.0,
+    "nested_large_resolve_ms": 31.4,
+    "nested_dense_resolve_ms": 74.4,
+    "operations": "unavailable on main (no counter); --check reports each cell as a failure"
   },
-  "_measured_full": {
-    "environment": "macOS arm64 / Node 24.16.0, 2026-11-13, shared host (load average 7-40 on 15 cores)",
-    "reps": 15,
-    "warmup": 2,
-    "sibling_capture_function_scaling_ratio": 1.074,
-    "sibling_capture_function_scaling_ratio_samples": [1.074],
-    "sibling_capture_closure_scaling_ratio": 0.947,
-    "sibling_capture_closure_scaling_ratio_samples": [0.947],
-    "sibling_resolve_function_scaling_ratio": 1.093,
-    "sibling_resolve_function_scaling_ratio_samples": [1.093],
-    "sibling_resolve_closure_scaling_ratio": 0.976,
-    "sibling_resolve_closure_scaling_ratio_samples": [0.976],
-    "nested_capture_function_scaling_ratio": 1.065,
-    "nested_capture_function_scaling_ratio_samples": [1.065],
-    "nested_capture_closure_scaling_ratio": 1.872,
-    "nested_capture_closure_scaling_ratio_samples": [1.872],
-    "nested_resolve_function_scaling_ratio": 1.108,
-    "nested_resolve_function_scaling_ratio_samples": [1.108],
-    "nested_resolve_closure_scaling_ratio": 1.312,
-    "nested_resolve_closure_scaling_ratio_samples": [1.312],
-    "sibling_small_capture_ms": 80.4,
-    "sibling_small_resolve_ms": 6.1,
-    "sibling_small_peak_rss_mib": 293.3,
-    "sibling_large_capture_ms": 345.2,
-    "sibling_large_resolve_ms": 26.8,
-    "sibling_large_peak_rss_mib": 458.8,
-    "sibling_dense_capture_ms": 304.6,
-    "sibling_dense_resolve_ms": 23.9,
-    "sibling_dense_peak_rss_mib": 414.5,
-    "nested_small_capture_ms": 95.8,
-    "nested_small_resolve_ms": 6.7,
-    "nested_small_peak_rss_mib": 303.7,
-    "nested_large_capture_ms": 408.3,
-    "nested_large_resolve_ms": 29.8,
-    "nested_large_peak_rss_mib": 462.5,
-    "nested_dense_capture_ms": 717.5,
-    "nested_dense_resolve_ms": 35.2,
-    "nested_dense_peak_rss_mib": 451.2
-  },
-  "_measured_note": "Three CI-profile runs and one --full run at 82c585d89. Scalar ratios and millisecond values are per-metric maxima across the runs of that profile (rounded). peak_rss_mib (--full only) is each --shape child's high-water mark after one worker parse and one resolution, worker thread included; context, not gated. Exact shapes and fingerprints were identical in all runs. The doubling sweep in the PR comment (functions 256 -> 4096, closures 3 -> 48, depth 3 -> 24, three rounds, main 5d6e5c4f4 and #3903 82c585d89) was measured separately with --shape --reps 3 --warmup 1 and is part of neither profile."
+  "_measured_note": "One CI-profile run on main. Its ratios are the failures this gate exists to catch, recorded so the fixes have a before. Exact shapes and fingerprints are identical on #3917."
 }
