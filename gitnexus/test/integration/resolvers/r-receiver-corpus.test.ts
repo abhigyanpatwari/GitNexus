@@ -3,7 +3,8 @@
  * provider gives today, written from a measurement of the built code (not from intent).
  *
  * Every row has a caller, the expected CALLS target (an exact node id, or `null` for no edge) and
- * the resolution outcome recorded at the call (`none` when nothing is recorded). The first row of
+ * the counted drop recorded at the call (`none` when there is none; the shared receiver pass may
+ * still record an informational note, which adds no edge and is not counted). The first row of
  * a group that resolves is the positive control of the negatives beside it: absence is only
  * evidence when the same shape resolves nearby. A `null` row asserts that the caller has no edge
  * at all, so it also covers every decoy; the repository-wide checks add that nothing reaches a
@@ -15,7 +16,7 @@
  *   - `deferred`: no edge because the feature is not built (roxygen types, receiver propagation,
  *     chains without a variable base, `super$` / `private$`). A row is `deferred` when the shape
  *     could resolve one day; its absence is pinned so a change shows up here. Where the result is
- *     INVISIBLE (no edge and no recorded outcome), the row says so.
+ *     INVISIBLE (no edge and no counted drop), the row says so.
  *
  * Fixtures (docs/languages/r-ingestion-gaps.md links this file):
  *   - `r-receiver-corpus/`: no DESCRIPTION, so the unique-name fallback is live. `R/models.R`
@@ -38,6 +39,7 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+import { isCountedDrop, isInformational } from '../../helpers/r-receiver-outcomes.js';
 
 beforeAll(() => vi.stubEnv('GITNEXUS_WORKER_READY_TIMEOUT_MS', '60000'));
 afterAll(() => vi.unstubAllEnvs());
@@ -217,7 +219,7 @@ const RECEIVER_CELLS: readonly Cell[] = [
     outcome: 'none',
     kind: 'deferred',
     control: 'typed_local',
-    note: 'INVISIBLE: no edge and no recorded outcome (the receiver is not a typed variable)',
+    note: 'INVISIBLE: no edge and no counted drop (the receiver is not a typed variable)',
   },
   {
     shape: 'untyped parameter: function(repo) repo$save()',
@@ -393,7 +395,7 @@ const RECEIVER_CELLS: readonly Cell[] = [
     outcome: 'none',
     kind: 'deferred',
     control: 'typed_local',
-    note: 'INVISIBLE: no edge and no outcome',
+    note: 'INVISIBLE: no edge and no counted drop',
   },
   {
     shape: 'pkg::User$new()$save()',
@@ -404,7 +406,7 @@ const RECEIVER_CELLS: readonly Cell[] = [
     outcome: 'none',
     kind: 'deferred',
     control: 'typed_local',
-    note: 'INVISIBLE: no edge and no outcome',
+    note: 'INVISIBLE: no edge and no counted drop',
   },
   {
     shape: 'x[[1]]$f$save()',
@@ -415,7 +417,7 @@ const RECEIVER_CELLS: readonly Cell[] = [
     outcome: 'none',
     kind: 'deferred',
     control: 'typed_local',
-    note: 'INVISIBLE: no edge and no outcome',
+    note: 'INVISIBLE: no edge and no counted drop',
   },
   // A constructor types the receiver only when every binding of the name in its frame agrees.
   {
@@ -563,13 +565,11 @@ const siteLine = (repo: string, file: string, caller: string, site: string): num
   throw new Error(`${site} not found after ${caller} in ${file}`);
 };
 
-/** Every reason recorded for a dropped site that starts on this line (any site kind). */
-const reasonsAt = (result: PipelineResult, file: string, line: number): string[] =>
+/** Every reason recorded for a counted drop that starts on this line (any site kind). */
+const dropReasonsAt = (result: PipelineResult, file: string, line: number): string[] =>
   getResolutionOutcomes(result)
     .flatMap((o) =>
-      o.kind === 'suppressed' && o.filePath === file && o.range.startLine === line
-        ? [o.reason]
-        : [],
+      isCountedDrop(o) && o.filePath === file && o.range.startLine === line ? [o.reason] : [],
     )
     .sort();
 
@@ -604,7 +604,7 @@ describe('R receiver corpus (r-receiver-corpus)', () => {
         cell.target === null ? [] : [cell.target],
       );
       const line = siteLine(REPO, cell.file, cell.caller, cell.site);
-      expect(reasonsAt(result, cell.file, line)).toEqual(
+      expect(dropReasonsAt(result, cell.file, line)).toEqual(
         cell.outcome === 'none' ? [] : [cell.outcome],
       );
     },
@@ -628,13 +628,27 @@ describe('R receiver corpus (r-receiver-corpus)', () => {
       expect(edge.rel.confidence, edge.source).toBe(0.85);
     }
     const dropped = getResolutionOutcomes(result)
-      .filter((o) => o.kind === 'suppressed')
+      .filter(isCountedDrop)
       .map((o) => `${o.filePath}:${o.range.startLine}:${o.reason}`)
       .sort();
     const listed = RECEIVER_CELLS.filter((c) => c.outcome !== 'none')
       .map((c) => `${c.file}:${siteLine(REPO, c.file, c.caller, c.site)}:${c.outcome}`)
       .sort();
     expect(dropped).toEqual(listed);
+    expect(getRelationships(result, 'ACCESSES').map((e) => `${e.source}->${e.target}`)).toEqual([]);
+  });
+
+  it('no informational note sits on the line of a resolving row', () => {
+    const resolvingLines = new Set(
+      RECEIVER_CELLS.filter((c) => c.kind === 'resolves').map(
+        (c) => `${c.file}:${siteLine(REPO, c.file, c.caller, c.site)}`,
+      ),
+    );
+    const notesOnResolving = getResolutionOutcomes(result)
+      .filter(isInformational)
+      .map((o) => `${o.filePath}:${o.range.startLine}`)
+      .filter((at) => resolvingLines.has(at));
+    expect(notesOnResolving).toEqual([]);
   });
 });
 

@@ -9,8 +9,8 @@
  * bind in the enclosing frames, never in their own: `x <<- User$new(); x$save()` in a function
  * leaves `x` free there, so the call is not typed.
  *
- * Every lost edge becomes no edge, never a different one: the untyped receiver records no outcome
- * (INVISIBLE). Rows marked (limit) pin a result that is lost although R would make the call
+ * Every lost edge becomes no edge, never a different one: the untyped receiver adds no counted
+ * drop (INVISIBLE; the shared pass may record an informational note). Rows marked (limit) pin a result that is lost although R would make the call
  * (a2, n1), or a wrong edge the rule does not see (b6 and m8, erroring code or `with()`; q1, a
  * rebinding in another file: frames are per file).
  *
@@ -26,6 +26,7 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+import { isCountedDrop } from '../../helpers/r-receiver-outcomes.js';
 
 beforeAll(() => vi.stubEnv('GITNEXUS_WORKER_READY_TIMEOUT_MS', '60000'));
 afterAll(() => vi.unstubAllEnvs());
@@ -114,8 +115,9 @@ describe('R receiver typing: every binding of the name in its frame must agree',
     expect(wrong.map((e) => `${e.rel.sourceId} -> ${e.rel.targetId}`)).toEqual([]);
   });
 
-  it('an untyped receiver records no outcome (INVISIBLE): no site is suppressed', () => {
-    const suppressed = getResolutionOutcomes(result).filter((o) => o.kind === 'suppressed');
-    expect(suppressed.map((o) => `${o.filePath}:${o.range.startLine}:${o.name}`)).toEqual([]);
+  it('an untyped receiver adds no counted drop: every suppressed outcome is informational', () => {
+    const dropped = getResolutionOutcomes(result).filter(isCountedDrop);
+    expect(dropped.map((o) => `${o.filePath}:${o.range.startLine}:${o.name}`)).toEqual([]);
+    expect(getRelationships(result, 'ACCESSES').map((e) => `${e.source}->${e.target}`)).toEqual([]);
   });
 });
