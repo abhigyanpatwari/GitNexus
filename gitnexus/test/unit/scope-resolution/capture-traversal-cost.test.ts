@@ -7,6 +7,7 @@ import {
   loadParser,
 } from '../../../src/core/tree-sitter/parser-loader.js';
 import { getJavaParser } from '../../../src/core/ingestion/languages/java/query.js';
+import { emitJavaScopeCaptures } from '../../../src/core/ingestion/languages/java/captures.js';
 import { getKotlinParser } from '../../../src/core/ingestion/languages/kotlin/query.js';
 import { emitKotlinScopeCaptures } from '../../../src/core/ingestion/languages/kotlin/captures.js';
 import { synthesizeLombokAccessorCaptures } from '../../../src/core/ingestion/languages/java/lombok-synthesizer.js';
@@ -53,6 +54,25 @@ describe('capture traversal work', () => {
       expect(materialized).toBe(36);
     } finally {
       children.mockRestore();
+    }
+  });
+
+  // Each operand of a left-deep chain is one level deeper, and a native
+  // `parent` read costs that depth: one read per member read is quadratic.
+  it.each([8, 64])('reads no native parent per Java member read (%i operands)', (operands) => {
+    const chain = Array.from({ length: operands }, (_, i) => ` + Label.F${i}`).join('');
+    const source = `import models.*; class Chain { int total; int sum(Chain c) { c.total = 1; return 0${chain}; } }`;
+    const tree = getJavaParser().parse(source);
+    expect(tree.rootNode.hasError).toBe(false);
+    const parent = vi.spyOn(nodePrototype(tree.rootNode), 'parent', 'get');
+    try {
+      const captures = emitJavaScopeCaptures(source, 'Chain.java', tree);
+      // The write target `c.total` is not a read; every `Label.F<i>` is.
+      expect(captures.filter((match) => match['@reference.read.member']).length).toBe(operands);
+      expect(captures.filter((match) => match['@reference.write.member']).length).toBe(1);
+      expect(parent.mock.calls.length).toBe(32);
+    } finally {
+      parent.mockRestore();
     }
   });
 
