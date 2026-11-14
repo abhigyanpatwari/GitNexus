@@ -66,6 +66,7 @@ export interface WorkerExtractedData {
 }
 
 type ParsedGraphNode = ParseWorkerResult['nodes'][number];
+type ParsedGraphRelationship = ParseWorkerResult['relationships'][number];
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -138,6 +139,27 @@ function filePathStart(items: readonly { readonly filePath: string }[], filePath
   return low;
 }
 
+/**
+ * A result's relationships, each with the path of the file whose parse emitted
+ * it. A worker relationship carries no path, but its target is a node that same
+ * file emitted, so the path is read from the result's own nodes.
+ */
+function relationshipsByFile(
+  result: ParseWorkerResult,
+): { relationship: ParsedGraphRelationship; filePath: string }[] {
+  const fileOfNode = new Map<string, string>();
+  // ponytail: when two files of one result define the same node id, a
+  // relationship to it sorts with the first of them. Exact attribution needs
+  // the worker to stamp each relationship with its file.
+  for (const node of result.nodes) {
+    if (!fileOfNode.has(node.id)) fileOfNode.set(node.id, nodeFilePath(node));
+  }
+  return result.relationships.map((relationship) => ({
+    relationship,
+    filePath: fileOfNode.get(relationship.targetId) ?? fileOfNode.get(relationship.sourceId) ?? '',
+  }));
+}
+
 /** Every result's items as one list; a single result's own array is not copied. */
 function chunkItems<T>(
   results: readonly ParseWorkerResult[],
@@ -189,16 +211,19 @@ export const mergeChunkResults = (
   const allParsedFiles: ParsedFile[] = [];
   const scopeExtractionFailures: string[] = [];
 
-  // A chunk arrives either as a few batched worker results (files grouped by
-  // language inside each) or as one result per file (the per-file reuse
-  // store), and how files are batched depends on the worker count. Graph
-  // nodes, the symbol table and the route registry are all first-wins, so the
-  // chunk is merged in one canonical order however it arrived: nodes in source
-  // order (path, line, id) across the whole chunk, and symbols and every
-  // per-file list stably by file path. A batched result can hold many files
-  // out of path order, so no result count skips the check; input already in
-  // order costs one linear pass and no copy.
+  // A chunk arrives either as a few batched worker results or as one result
+  // per file (the per-file reuse store), and how files are batched depends on
+  // the worker count. A batched result is not in path order: the worker
+  // parses a job's files one grammar at a time, so files that share a
+  // filename language but not a grammar come out grouped by grammar. Graph
+  // nodes, graph relationships, the symbol table and the route registry are
+  // all first-wins, so the chunk is merged in one canonical order however it
+  // arrived: nodes in source order (path, line, id) across the whole chunk,
+  // and relationships, symbols and every per-file list stably by file path.
+  // No result count skips the check; input already in order costs one linear
+  // pass and no copy.
   const chunkNodes = chunkItems(chunkResults, (result) => result.nodes);
+  const chunkNodesByFile = inPathOrder(chunkNodes, nodeFilePath);
   for (const node of nodesInSourceOrder(chunkNodes)) {
     graph.addNode({
       id: node.id,
@@ -206,9 +231,16 @@ export const mergeChunkResults = (
       properties: node.properties,
     });
   }
-  for (const result of chunkResults) {
-    for (const rel of result.relationships) {
-      graph.addRelationship(rel);
+  if (chunkNodesByFile === chunkNodes) {
+    // Files arrived in path order, and a result emits its relationships file
+    // by file in the order it emits their nodes: nothing to reorder.
+    for (const result of chunkResults) {
+      for (const rel of result.relationships) graph.addRelationship(rel);
+    }
+  } else {
+    const chunkRelationships = chunkResults.flatMap(relationshipsByFile);
+    for (const { relationship } of byFilePath(chunkRelationships)) {
+      graph.addRelationship(relationship);
     }
   }
   for (const sym of byFilePath(chunkItems(chunkResults, (result) => result.symbols))) {
@@ -228,7 +260,7 @@ export const mergeChunkResults = (
   if (exportedTypeMap) {
     // Each file's nodes in the order its parse produced them (a later export
     // of the same name wins within a file); files in path order.
-    for (const node of inPathOrder(chunkNodes, nodeFilePath)) {
+    for (const node of chunkNodesByFile) {
       accumulateExportedTypesFromParsedNode(exportedTypeMap, node, symbolTable);
     }
   }
@@ -265,6 +297,7 @@ export const mergeChunkResults = (
   // decorator routes moves those starts, so each position is recomputed against
   // the final order: the start of the file's routes, or where they would start
   // when the file has none. That depends only on the paths, never on arrival.
+  // The arriving position is relative to its own result and is not read here.
   const decoratorRoutes = byFilePath(allDecoratorRoutes);
   const routeFacts = byFilePath(allRouteFacts).map((item) => ({
     ...item,
