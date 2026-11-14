@@ -26,8 +26,10 @@
  * language pass reconciles into). The scaling ratio divides the time growth
  * by the larger of the input-byte, def and registry-entry growth, so about 1
  * is linear. Under --check each cell also counts the registry entries the pass
- * read through `lookupAllByOwner` (a counting wrapper, outside the timed
- * passes): the count must grow no faster than the defs do.
+ * was handed through `lookupAllByOwner` (a counting wrapper, outside the timed
+ * passes): the count must grow no faster than the defs do. It sees only reads
+ * through the registry, so the timing ratio stays as the guard against a
+ * per-def scan of anything else.
  *
  * The shapes are small on purpose. A pass costs well under a microsecond per
  * def, mostly hash probes into tables that grow with the file count, so once
@@ -42,7 +44,8 @@
  * order), min of 25 after 3 warmups. `--full`: min of 75 after 5 warmups. A
  * sample takes milliseconds rather than the seconds of the parse-worker gates,
  * so more of them cost nothing and keep the minimum stable on a busy host.
- * Build-free: no parse worker, no dist/.
+ * Under --check a timing ratio over its budget is sampled for up to
+ * TIMING_ROUNDS rounds before it fails. Build-free: no parse worker, no dist/.
  *
  * `--shape <files> --reps R --warmup W` measures one workload, for size sweeps.
  *
@@ -62,6 +65,10 @@ const CHECK = process.argv.includes('--check');
 const FULL = process.argv.includes('--full');
 const WARMUP = FULL ? 5 : 3;
 const REPS = FULL ? 75 : 25;
+// Under --check a timing ratio over its budget is sampled again before it
+// fails, up to this many rounds of REPS samples: the budget stays, the
+// minimum gets more chances to find a quiet moment on a busy host.
+const TIMING_ROUNDS = 3;
 const MARKER = 'OWNERSHIP_RECONCILE_RESULT ';
 const SHAPES = { small: 250, large: 1000 };
 const VALUES = ['logger', 'router', 'config'];
@@ -196,10 +203,13 @@ function prepare(files) {
   return { parsedFiles, shape, work };
 }
 
-/** Times each input's workload, interleaved; min of `reps`. */
+/**
+ * Times each input's workload, interleaved, adding `reps` samples per input to
+ * the ones it already has; reports the min of all of them.
+ */
 function timeInputs(inputs, warmup, reps) {
   const names = Object.keys(inputs);
-  for (const input of Object.values(inputs)) input.samples = [];
+  for (const input of Object.values(inputs)) input.samples ??= [];
   for (let run = 0; run < warmup + reps; run++) {
     for (let k = 0; k < names.length; k++) {
       const input = inputs[names[(k + run) % names.length]];
@@ -244,7 +254,6 @@ function report() {
     shapes[name] = inputs[name].shape;
     operations[name] = inputs[name].work;
   }
-  const timings = timeInputs(inputs, WARMUP, REPS);
   const big = shapes.large;
   const small = shapes.small;
   // What the work may grow by: the larger of the input and output growth.
@@ -253,9 +262,21 @@ function report() {
     big.defs / small.defs,
     big.registry_entries / small.registry_entries,
   );
-  const metrics = {
+  const baseline = CHECK ? JSON.parse(fs.readFileSync(baselinePath, 'utf8')) : undefined;
+  const metricsOf = (timings) => ({
     reconcile_files_scaling_ratio: timings.large.reconcile_ms / timings.small.reconcile_ms / growth,
-  };
+  });
+  const overBudget = (metrics) =>
+    Object.entries(baseline?.budgets ?? {}).filter(
+      ([name, budget]) => !Number.isFinite(metrics[name]) || metrics[name] > budget,
+    );
+  let timings = timeInputs(inputs, WARMUP, REPS);
+  let rounds = 1;
+  while (rounds < TIMING_ROUNDS && overBudget(metricsOf(timings)).length > 0) {
+    timings = timeInputs(inputs, 0, REPS);
+    rounds++;
+  }
+  const metrics = metricsOf(timings);
   const operationMetrics = {
     registry_entries_read_files_scaling_ratio:
       operations.large.registry_entries_read / operations.small.registry_entries_read / growth,
@@ -270,7 +291,8 @@ function report() {
     estimator: {
       profile: FULL ? 'full' : 'ci',
       warmup: WARMUP,
-      samples: REPS,
+      samples: REPS * rounds,
+      rounds,
       statistic: 'minimum',
       interleaved: true,
     },
@@ -291,14 +313,10 @@ function report() {
     );
   }
   if (CHECK) {
-    const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
     assert.deepEqual(shapes, baseline.shapes, 'ownership-reconcile workload/fingerprint drift');
-    const failures = [];
-    for (const [name, budget] of Object.entries(baseline.budgets)) {
-      if (!Number.isFinite(metrics[name]) || metrics[name] > budget) {
-        failures.push(`${name}: ${metrics[name]} > ${budget}`);
-      }
-    }
+    const failures = overBudget(metrics).map(
+      ([name, budget]) => `${name}: ${metrics[name]} > ${budget} (min of ${REPS * rounds} samples)`,
+    );
     // The registry entries the pass reads must grow with the defs, not with
     // defs x bucket size. Deterministic, so it fails whatever the timings say.
     for (const [name, budget] of Object.entries(baseline.operation_budgets)) {

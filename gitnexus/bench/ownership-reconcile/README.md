@@ -9,8 +9,9 @@ Defs with no owner (module-level values, locals of free functions, top-level
 types) share one registry bucket per name across the whole repository. The pass
 skips a def whose node id is already registered under its `(owner, name)`, and
 answering that by scanning the bucket for every def is quadratic in the number
-of same-named ownerless declarations. This gate fails if it becomes quadratic
-again.
+of same-named ownerless declarations. The pass scans a bucket while it is short
+(most keys hold one def) and answers from a node-id set once it is long. This
+gate fails if the check becomes quadratic again.
 
 ```sh
 node --import tsx bench/ownership-reconcile/measure.mjs --check   # CI profile
@@ -31,23 +32,32 @@ language pass sees in the shared model) and must register nothing.
 
 ## Gates (`baseline.json`)
 
-| Gate | Budget | What it catches |
-| --- | --- | --- |
-| `shapes` (exact, with fingerprints) | equal | any change in what the pass registers, or in registry order |
-| `reconcile_files_scaling_ratio` | 1.5 | per-def time growing with the file count |
-| `registry_entries_read_files_scaling_ratio` | 1.1 | registry entries read per def growing with the file count (deterministic) |
+| Gate                                        | Budget | What it catches                                                                         |
+| ------------------------------------------- | ------ | --------------------------------------------------------------------------------------- |
+| `shapes` (exact, with fingerprints)         | equal  | a change in what the pass registers for this workload, or in registry order             |
+| `reconcile_files_scaling_ratio`             | 1.5    | per-def time growing with the file count                                                |
+| `registry_entries_read_files_scaling_ratio` | 1.1    | registry entries handed to the pass per def growing with the file count (deterministic) |
+
+The workload never repeats a def within one pass, so the fingerprints do not
+show whether a node-id set is kept current as the pass registers; the unit
+tests in `test/unit/scope-resolution/reconcile-ownership.test.ts` cover that.
 
 The work count comes from a wrapper around each registry's `lookupAllByOwner`,
-installed outside the timed passes, that adds up the length of every bucket the
-pass reads.
+installed outside the timed passes, that adds up the length of every bucket a
+read hands back. It sees only reads through the registry: a per-def scan of
+some other copy of a bucket leaves it at 1 and is caught by the timing ratio
+alone, which is why both gates stay.
+
+Under `--check` a timing ratio over its budget is sampled again, up to 3 rounds
+of the profile's samples, before it fails. The budget does not move.
 
 ## Negative control
 
-With the per-key node-id sets reverted (the bucket scan), shapes and
-fingerprints are unchanged and `--check` fails on both gates:
+With every bucket scanned (no node-id sets), shapes and fingerprints are
+unchanged and `--check` fails on both gates:
 
 ```
-reconcile_files_scaling_ratio: 4.193624253622248 > 1.5
+reconcile_files_scaling_ratio: 4.636740799642482 > 1.5 (min of 75 samples)
 registry_entries_read_files_scaling_ratio: 4.002001334222816 > 1.1
 ```
 

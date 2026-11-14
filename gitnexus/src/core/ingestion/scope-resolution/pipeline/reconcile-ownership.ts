@@ -138,22 +138,20 @@ export function reconcileOwnership(
         def.type === 'Const' ||
         def.type === 'Static'
       ) {
-        const registered = fieldNodeIds(ownerId, simple);
-        if (registered.has(def.nodeId)) {
+        if (fieldNodeIds.has(ownerId, simple, def.nodeId)) {
           skippedAlreadyPresent++;
           continue;
         }
         model.fields.register(ownerId, simple, def);
-        registered.add(def.nodeId);
+        fieldNodeIds.add(ownerId, simple, def.nodeId);
         fieldsRegistered++;
       } else if (NESTED_TYPE_KINDS.has(def.type)) {
-        const registered = nestedTypeNodeIds(ownerId, simple);
-        if (registered.has(def.nodeId)) {
+        if (nestedTypeNodeIds.has(ownerId, simple, def.nodeId)) {
           skippedAlreadyPresent++;
           continue;
         }
         model.types.registerByOwner(ownerId, simple, def);
-        registered.add(def.nodeId);
+        nestedTypeNodeIds.add(ownerId, simple, def.nodeId);
         nestedTypesRegistered++;
       }
     }
@@ -163,35 +161,56 @@ export function reconcileOwnership(
 }
 
 /**
- * The node ids registered under each `(owner, name)` of one owner-keyed
- * registry. A key's set is read from the registry the first time the key is
- * asked for, then kept current by the caller as it registers; nothing else
- * writes these registries while the pass runs. Keyed by owner, then name, like
- * the registries themselves, so an ownerless key is a bucket of its own.
+ * A bucket up to this long is scanned for the duplicate check; a longer one
+ * gets a node-id set. Most `(owner, name)` keys hold one def (a class's
+ * fields), and a set per key cost more time and memory there than the scan
+ * it replaced.
+ */
+const SCAN_LIMIT = 8;
+
+/**
+ * Answers "is this node id already registered under `(owner, name)`?" for one
+ * owner-keyed registry, without rescanning a long bucket for every def.
  *
  * Defs without an owner (module-level values, top-level types and, where the
  * extractor assigns none, locals of free functions) share ONE bucket per name
  * across the repository: every `logger`, every `result`. Scanning that bucket
  * for every def made the duplicate check quadratic in the number of same-named
- * ownerless declarations; a set answers it in constant time.
+ * ownerless declarations.
+ *
+ * A short bucket is scanned in the registry, as before. Once a key's bucket is
+ * longer than `SCAN_LIMIT` its node ids are read into a set, and the caller
+ * keeps that set current through `add` after each registration; nothing else
+ * writes these registries while the pass runs. Sets are keyed by owner, then
+ * name, like the registries themselves, so an ownerless key is a bucket of its
+ * own.
  */
 function registeredNodeIds(
   lookupAll: (owner: string | undefined, name: string) => readonly { readonly nodeId: string }[],
-): (owner: string | undefined, name: string) => Set<string> {
+): {
+  has(owner: string | undefined, name: string, nodeId: string): boolean;
+  add(owner: string | undefined, name: string, nodeId: string): void;
+} {
   const byOwner = new Map<string | undefined, Map<string, Set<string>>>();
-  return (owner, name) => {
-    let byName = byOwner.get(owner);
-    if (byName === undefined) {
-      byName = new Map();
-      byOwner.set(owner, byName);
-    }
-    let ids = byName.get(name);
-    if (ids === undefined) {
-      ids = new Set();
-      for (const def of lookupAll(owner, name)) ids.add(def.nodeId);
-      byName.set(name, ids);
-    }
-    return ids;
+  return {
+    has(owner, name, nodeId) {
+      const ids = byOwner.get(owner)?.get(name);
+      if (ids !== undefined) return ids.has(nodeId);
+      const bucket = lookupAll(owner, name);
+      if (bucket.length <= SCAN_LIMIT) return bucket.some((def) => def.nodeId === nodeId);
+      const promoted = new Set<string>();
+      for (const def of bucket) promoted.add(def.nodeId);
+      let byName = byOwner.get(owner);
+      if (byName === undefined) {
+        byName = new Map();
+        byOwner.set(owner, byName);
+      }
+      byName.set(name, promoted);
+      return promoted.has(nodeId);
+    },
+    add(owner, name, nodeId) {
+      byOwner.get(owner)?.get(name)?.add(nodeId);
+    },
   };
 }
 
