@@ -18,7 +18,11 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('../../src/cli/analyze.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/cli/analyze.js')>();
-  return { ensureHeap: mocks.heap, usesManualAnalysisHeap: actual.usesManualAnalysisHeap };
+  return {
+    ensureHeap: mocks.heap,
+    manualHeapAdmission: actual.manualHeapAdmission,
+    usesManualAnalysisHeap: actual.usesManualAnalysisHeap,
+  };
 });
 vi.mock('../../src/storage/storage-resolver.js', () => ({
   ANALYZE_STORAGE_REQUIREMENTS: {},
@@ -108,9 +112,11 @@ it('honors GITNEXUS_MEMORY=off in the actual watch admission path', async () => 
   vi.stubEnv('GITNEXUS_MEMORY', 'off');
   await watchCommandWithRunnerIdentity({} as AnalyzerRunnerIdentity, directory);
   expect(mocks.heap).not.toHaveBeenCalled();
+  // Nothing pinned the heap, so the runtime's limit is a ceiling, not a reservation.
   expect(mocks.resources).toHaveBeenCalledWith(
     expect.objectContaining({
-      mainHeapMb: Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
+      mainHeapMb: undefined,
+      mainHeapLimitMb: Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
     }),
   );
 });

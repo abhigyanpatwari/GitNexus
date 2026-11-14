@@ -55,6 +55,9 @@ const javaScopeResolver: ScopeResolver = {
   languageProvider: javaProvider,
   importEdgeReason: 'java-scope: import',
   onDemandImportTargets: javaOnDemandImportTargets,
+  // `import pkg.*;` binds no name here and `resolveJavaModule` answers every
+  // importer of a package with the same list, so the package is stored once.
+  groupsWildcardImportTargets: true,
 
   loadResolutionConfig: () => {
     // Worker capture facts are process-local and outlive a single analysis in

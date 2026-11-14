@@ -23,7 +23,7 @@ import {
   type ScopeId,
   type SymbolDefinition,
 } from 'gitnexus-shared';
-import { createEagerImportVisibility } from 'gitnexus-shared';
+import { createEagerImportVisibility, createGroupedImportVisibility } from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import {
   emitReferencesToGraph,
@@ -387,6 +387,52 @@ describe('missing target', () => {
 // ─── Scope-graph emission (INGESTION_EMIT_SCOPES) ─────────────────────────
 
 describe('scope-graph emission', () => {
+  it('does not infer module links for external, unresolved or side-effect imports', () => {
+    const mod = scope('scope:m', null, 'Module', [], range(), 'main.java');
+    const target = scope('scope:target', null, 'Module', [], range(), 'Target.java');
+    const wildcard = {
+      kind: 'wildcard-expanded' as const,
+      localName: '',
+      targetExportedName: '',
+      targetFile: null,
+    };
+    const indexes: ScopeResolutionIndexes = {
+      ...makeIndexes([mod, target], []),
+      imports: createGroupedImportVisibility(
+        new Map([
+          [
+            mod.id,
+            [
+              { via: wildcard, targetFiles: ['Target.java', 'external.java'] },
+              { ...wildcard, targetFile: 'Target.java', linkStatus: 'unresolved' },
+              { ...wildcard, kind: 'side-effect', targetFile: 'Target.java' },
+              {
+                ...wildcard,
+                kind: 'named',
+                localName: 'Missing',
+                targetFile: 'Target.java',
+                linkStatus: 'unresolved',
+              },
+            ],
+          ],
+        ]),
+      ),
+    };
+    const graph = createKnowledgeGraph();
+    const stats = emitScopeGraph({ graph, scopes: indexes });
+    expect(stats.scopeEdgesEmitted).toBe(1);
+    expect([...graph.iterRelationshipsByType('IMPORTS')]).toEqual([
+      {
+        id: 'rel:imports:scope:m->scope:target:',
+        sourceId: mod.id,
+        targetId: target.id,
+        type: 'IMPORTS',
+        confidence: 1,
+        reason: 'import wildcard-expanded ',
+      },
+    ]);
+  });
+
   it('stays off by default — no scope nodes emitted', () => {
     const callerFn = def('def:caller', 'Function');
     const targetFn = def('def:target', 'Method');

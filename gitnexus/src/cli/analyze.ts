@@ -618,6 +618,20 @@ export function usesManualAnalysisHeap(memoryBudget?: string): boolean {
 }
 
 /**
+ * How an analyze that will not re-exec itself states its main heap for
+ * admission. A pinned `--max-old-space-size` is the operator's reservation and
+ * must fit. V8's own default limit (the autopilot declined, nothing pinned) is
+ * only a ceiling: reserving it in full refuses every host below about 15.8 GiB.
+ */
+export function manualHeapAdmission(): { mainHeapMb?: number; mainHeapLimitMb?: number } {
+  const limitMb = Math.ceil(v8.getHeapStatistics().heap_size_limit / 1024 ** 2);
+  const pinned =
+    parseMaxOldSpaceMb(process.execArgv.join(' ')) !== null ||
+    parseMaxOldSpaceMb(process.env.NODE_OPTIONS ?? '') !== null;
+  return pinned ? { mainHeapMb: limitMb } : { mainHeapLimitMb: limitMb };
+}
+
+/**
  * Last `--max-old-space-size` value (MB) in a NODE_OPTIONS string, or `null`
  * when absent/unparseable. Last occurrence wins, matching V8's own
  * later-flag-wins semantics when NODE_OPTIONS repeats a flag.
@@ -1411,6 +1425,12 @@ const analyzeCommandImpl = async (
         ? analysisSupervisorReservation()
         : Number(process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES);
     manualHeap = usesManualAnalysisHeap(options.memoryBudget);
+    const supervisedHeapMb =
+      process.env.GITNEXUS_ANALYSIS_SUPERVISED === '1' &&
+      process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB !== undefined
+        ? Number(process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB)
+        : undefined;
+    const manual = manualHeap && supervisedHeapMb === undefined ? manualHeapAdmission() : {};
     resources = resolveHostAnalysisResources({
       totalMb:
         options.resourceBudget === undefined
@@ -1419,12 +1439,8 @@ const analyzeCommandImpl = async (
       mainHeapMb:
         options.memoryBudget !== undefined
           ? parseMemoryBudgetMb(options.memoryBudget)
-          : process.env.GITNEXUS_ANALYSIS_SUPERVISED === '1' &&
-              process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB !== undefined
-            ? Number(process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB)
-            : manualHeap
-              ? Math.ceil(v8.getHeapStatistics().heap_size_limit / 1024 ** 2)
-              : undefined,
+          : (supervisedHeapMb ?? manual.mainHeapMb),
+      mainHeapLimitMb: manual.mainHeapLimitMb,
       workers: workerPoolSize,
       includeEmbeddings: await analysisMayEmbed(repoPath, {
         embeddings: embeddingsEnabled,
