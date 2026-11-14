@@ -583,6 +583,32 @@ describe('#2915 detect_changes hunk scaling', () => {
     expect(result.summary.risk_level).toBe('unknown');
   });
 
+  it.each([
+    { kind: 'an empty', id: '' },
+    { kind: 'a whitespace-only', id: '  ' },
+    { kind: 'a NUL-containing', id: 'Function:code.py:\0' },
+  ])(
+    'withholds a ranked verdict when $kind id sits beside a valid symbol (#3931)',
+    async ({ id }) => {
+      mockSymbolRows([
+        { name: 'ok', startLine: 0, endLine: 1 },
+        { id, name: 'corrupt', startLine: 0, endLine: 1 },
+      ]);
+      const repoDir = makeRepo(['code.py'], 2);
+      writeFileSync(path.join(repoDir, 'code.py'), 'line 1 changed\nline 2\n');
+      registerRepo(repoDir);
+
+      const result = await runDetectChanges();
+
+      // The valid row maps the file, so `partial` here can only come from the
+      // identity check — not from the unmapped-file rule the case above trips.
+      expect(result.changed_symbols.map((symbol) => symbol.name)).toEqual(['ok']);
+      expect(result.unmapped_files).toBeUndefined();
+      expect(result.partial).toBe(true);
+      expect(result.summary.risk_level).toBe('unknown');
+    },
+  );
+
   it('emits the same order however the engine happens to order its rows', async () => {
     // The query has no ORDER BY, so row order was the engine's — measured at 5
     // distinct orders across 8 runs — and both the 1000-symbol cut and the
