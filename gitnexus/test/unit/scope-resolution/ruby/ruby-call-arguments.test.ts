@@ -64,7 +64,10 @@ describe('Ruby callable flow: a call passes only its own arguments', () => {
     ).toBe(true);
   });
 
-  it.each(['', '(cb)'])('preserves a block-taking receiver chain with arguments %s', (args) => {
+  it.each([
+    ['', ['helper(0)=cb']],
+    ['(cb)', ['?(0)=cb', 'helper(0)=cb']],
+  ])('preserves a block-taking receiver chain with arguments %s', (args, facts) => {
     const source = `def m(factory, cb)\nfactory.build${args} { helper(cb) }.run\nend`;
     const chains = emitRubyScopeCaptures(source, 'host.rb').filter(
       (match) => match['@reference.receiver-chain'] !== undefined,
@@ -78,11 +81,6 @@ describe('Ruby callable flow: a call passes only its own arguments', () => {
         [['run', '2|factory|cbuild']],
       ),
     ).toBe(true);
-    expect(
-      isDeepStrictEqual(
-        argumentFacts(source),
-        args ? ['?(0)=cb', 'helper(0)=cb'] : ['helper(0)=cb'],
-      ),
-    ).toBe(true);
+    expect(isDeepStrictEqual(argumentFacts(source), facts)).toBe(true);
   });
 });

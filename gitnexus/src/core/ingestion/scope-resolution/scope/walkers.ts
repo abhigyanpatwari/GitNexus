@@ -77,7 +77,7 @@ export function lookupNameClaim(
   options: IndexedNameLookupOptions = {},
 ): NameClaimResult {
   return lookupLexicalName(
-    options.skipEnclosingClasses ? startScope : cachedNameLookupStart(startScope, name, scopes),
+    cachedNameLookupStart(startScope, name, scopes, options.skipEnclosingClasses),
     name,
     {
       scopes: scopes.scopeTree,

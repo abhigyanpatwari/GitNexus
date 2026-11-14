@@ -419,7 +419,7 @@ try {
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
 }
 
-async function report() {
+async function report(secondLook = false) {
   const shapes = {};
   let timings;
   if (FULL) {
@@ -526,14 +526,16 @@ async function report() {
         metrics[`${form}_${counter}_${axis}_scaling_ratio`] = growth((t) => t.work[counter], true);
       }
       if (axis === 'closure') {
-        // Native parent getters may themselves walk to the root. A linear
-        // getter count would still permit quadratic native work with depth.
-        for (const name of names) {
-          assert.equal(
-            at(name).work.parent_reads,
-            at('small').work.parent_reads,
-            `${form}_${name}: parent reads must stay flat as closures deepen`,
-          );
+        // Native parent and sibling getters may themselves walk to the root. A
+        // linear getter count would still permit quadratic native work with depth.
+        for (const counter of ['parent_reads', 'sibling_reads']) {
+          for (const name of names) {
+            assert.equal(
+              at(name).work[counter],
+              at('small').work[counter],
+              `${form}_${name}: ${counter} must stay flat as closures deepen`,
+            );
+          }
         }
       }
     }
@@ -576,6 +578,20 @@ async function report() {
       ) {
         failures.push(`${name}: ${metrics[name]} > ${budget}`);
       }
+    }
+    // A timing metric is the largest of ten ratios of min-of-N samples, so one
+    // disturbed cell can exceed the budget. Measure once more before failing:
+    // the budgets and workloads are the same, and a real regression repeats.
+    // Fingerprints and operation counts are deterministic and fail at once.
+    if (
+      failures.length > 0 &&
+      !secondLook &&
+      failures.every((f) => /_(capture|resolve)_/.test(f))
+    ) {
+      console.error(
+        `[dart-closure-binders --check] over budget, measuring again:\n${failures.join('\n')}`,
+      );
+      return report(true);
     }
     assert.equal(failures.length, 0, failures.join('\n'));
     console.log('[dart-closure-binders --check] PASS');

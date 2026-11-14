@@ -4,7 +4,13 @@ import { emitDartScopeCaptures } from '../../src/core/ingestion/languages/dart/i
 /** Deterministic work guards, separate from timing. In particular, a cheap
  * per-binder scan of all scopes must fail even below the timer's noise floor. */
 export function captureWork(files) {
-  const work = { parent_reads: 0, child_reads: 0, map_visits: 0, function_scopes: 0 };
+  const work = {
+    parent_reads: 0,
+    sibling_reads: 0,
+    child_reads: 0,
+    map_visits: 0,
+    function_scopes: 0,
+  };
   const restores = [];
   const replace = (prototype, name, descriptor) => {
     const original = Object.getOwnPropertyDescriptor(prototype, name);
@@ -20,6 +26,21 @@ export function captureWork(files) {
         return parent.call(this);
       },
     });
+    // Sibling getters re-descend from the root exactly like `parent`.
+    for (const name of [
+      'previousSibling',
+      'nextSibling',
+      'previousNamedSibling',
+      'nextNamedSibling',
+    ]) {
+      const sibling = Object.getOwnPropertyDescriptor(prototype, name).get;
+      replace(prototype, name, {
+        get() {
+          work.sibling_reads++;
+          return sibling.call(this);
+        },
+      });
+    }
     const child = prototype.namedChild;
     replace(prototype, 'namedChild', {
       value(index) {

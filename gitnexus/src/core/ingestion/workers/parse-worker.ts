@@ -1128,9 +1128,8 @@ const findEnclosingFunctionId = (
 ): string | null => {
   // The answer at an ancestor does not depend on where the climb started, so
   // every ancestor this climb examines keeps it, and the next climb through it
-  // stops there (`climbAncestors`). Parents come from the tree's parent index:
-  // a native `parent` read re-descends from the root and costs the node's
-  // depth, which made every call in a deep nest pay depth^2.
+  // stops there (`climbAncestors`). A native `parent` read re-descends from the
+  // root and costs the node's depth, so deep climbs switch to a parent index.
   return climbAncestors(
     node,
     functionIdAtAncestor,
@@ -2131,8 +2130,7 @@ const processFileGroupFiles = (
       // declarations here, but do not compute unused legacy call records.
       if (captureMap['call']) {
         const callNameNode = captureMap['call.name'];
-        const callExtractor = provider.callExtractor;
-        if (!callExtractor || !callNameNode) continue;
+        if (!callNameNode) continue;
 
         const routed = callRouter?.(callNameNode.text, captureMap['call']);
         if (routed?.kind !== 'properties') continue;

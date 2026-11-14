@@ -7,8 +7,10 @@
  * O(depth) steps of O(depth) each, and a file of deeply nested closures pays
  * that for every call in it. Two things make such a climb linear in the file:
  *
- *   - short climbs use native parents; 32 ancestors in one climb or 256 native
- *     reads across a tree trigger one parent index for subsequent reads;
+ *   - short climbs use native parents; one climb past 32 ancestors, or every
+ *     256th native read of a tree landing on a node at least that deep, builds
+ *     one parent index for subsequent reads. A flat file of shallow climbs
+ *     never pays for an index of nodes it does not climb through;
  *   - `climbAncestors` records its answer for every ancestor it passed, so the
  *     next climb that reaches one of them stops there. The answer at an
  *     ancestor depends only on the ancestor and the ones above it, never on
@@ -22,6 +24,7 @@ const nativeReadsByTree = new WeakMap<object, number>();
 const NATIVE_CLIMB_LIMIT = 32;
 const NATIVE_PARENT_LIMIT = 256;
 
+let counting = false;
 let climbSteps = 0;
 let nativeParentReads = 0;
 let indexedNodes = 0;
@@ -35,7 +38,9 @@ export function getAncestorClimbStats(): {
   return { climbSteps, nativeParentReads, indexedNodes };
 }
 
-export function resetAncestorClimbStats(): void {
+/** Clear counters; tests opt in with `true` and disable again afterwards. */
+export function resetAncestorClimbStats(enabled = false): void {
+  counting = enabled;
   climbSteps = 0;
   nativeParentReads = 0;
   indexedNodes = 0;
@@ -48,29 +53,38 @@ function parentIndex(node: SyntaxNode): Map<number, SyntaxNode | null> {
     index = new Map();
     const root = tree.rootNode;
     index.set(root.id, null);
-    indexedNodes++;
     const stack: SyntaxNode[] = [root];
     for (let current = stack.pop(); current !== undefined; current = stack.pop()) {
       for (const child of current.namedChildren) {
         index.set(child.id, current);
-        indexedNodes++;
         stack.push(child);
       }
     }
+    if (counting) indexedNodes += index.size;
     parentIndexes.set(tree, index);
   }
   return index;
 }
 
+/** Whether `node` has at least NATIVE_CLIMB_LIMIT ancestors: a native read there is costly. */
+function isDeep(node: SyntaxNode): boolean {
+  let ancestor = node.parent;
+  for (let i = 1; ancestor !== null && i < NATIVE_CLIMB_LIMIT; i++) ancestor = ancestor.parent;
+  return ancestor !== null;
+}
+
 /** Read an existing parent index, falling back to native parents for short climbs. */
-export function indexedParent(node: SyntaxNode): SyntaxNode | null {
+function indexedParent(node: SyntaxNode): SyntaxNode | null {
   const tree = node.tree;
   const reads = nativeReadsByTree.get(tree) ?? 0;
   const index =
-    parentIndexes.get(tree) ?? (reads === NATIVE_PARENT_LIMIT ? parentIndex(node) : undefined);
+    parentIndexes.get(tree) ??
+    (reads > 0 && reads % NATIVE_PARENT_LIMIT === 0 && isDeep(node)
+      ? parentIndex(node)
+      : undefined);
   const parent = index?.get(node.id);
   if (parent !== undefined) return parent;
-  nativeParentReads++;
+  if (counting) nativeParentReads++;
   nativeReadsByTree.set(tree, reads + 1);
   return node.parent;
 }
@@ -92,7 +106,7 @@ export function climbAncestors<T extends NonNullable<unknown> | null>(
   const passed: number[] = [];
   let found = absent;
   for (let current = indexedParent(start); current !== null; current = indexedParent(current)) {
-    climbSteps++;
+    if (counting) climbSteps++;
     const known = memo.get(current.id);
     if (known !== undefined) {
       found = known;

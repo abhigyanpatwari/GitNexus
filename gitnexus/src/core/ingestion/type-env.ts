@@ -5,7 +5,6 @@ import {
   genericFuncName,
 } from './utils/ast-helpers.js';
 import { CALL_EXPRESSION_TYPES } from './utils/call-analysis.js';
-import { climbAncestors } from './utils/ancestor-climb.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { TYPED_PARAMETER_TYPES } from './type-extractors/shared.js';
 import { getProvider } from './languages/index.js';
@@ -150,7 +149,6 @@ const lookupInEnv = (
   env: TypeEnv,
   varName: string,
   callNode: SyntaxNode,
-  scopeKeyAt: Map<number, string | null>,
   patternOverrides?: PatternOverrides,
   enclosingFunctionFinder?: (n: SyntaxNode) => { funcName: string; label: NodeLabel } | null,
   extractFunctionNameHook?: (
@@ -174,7 +172,6 @@ const lookupInEnv = (
   // Determine the enclosing function scope for the call
   const scopeKey = findEnclosingScopeKey(
     callNode,
-    scopeKeyAt,
     enclosingFunctionFinder,
     extractFunctionNameHook,
     filePath,
@@ -404,7 +401,6 @@ const extractParentClassFromNode = (classNode: SyntaxNode): string | undefined =
  *  signature instead of a child. */
 const findEnclosingScopeKey = (
   node: SyntaxNode,
-  scopeKeyAt: Map<number, string | null>,
   enclosingFunctionFinder?: (n: SyntaxNode) => { funcName: string; label: NodeLabel } | null,
   extractFunctionNameHook?: (
     n: SyntaxNode,
@@ -412,31 +408,25 @@ const findEnclosingScopeKey = (
   ) => { funcName: string | null; label: NodeLabel } | null,
   filePath?: string,
 ): string | undefined => {
-  // Each file keeps answers for every examined ancestor. Deep climbs also
-  // build a parent index instead of repeatedly re-descending from the root.
-  const key = climbAncestors(
-    node,
-    scopeKeyAt,
-    (current): string | undefined => {
-      if (FUNCTION_NODE_TYPES.has(current.type)) {
-        const funcName =
-          extractFunctionNameHook?.(current, filePath)?.funcName ?? genericFuncName(current);
-        if (funcName) return `${funcName}@${current.startIndex}`;
+  let current = node.parent;
+  while (current) {
+    if (FUNCTION_NODE_TYPES.has(current.type)) {
+      const funcName =
+        extractFunctionNameHook?.(current, filePath)?.funcName ?? genericFuncName(current);
+      if (funcName) return `${funcName}@${current.startIndex}`;
+    }
+    // Language-specific hook (e.g., Dart function_body → sibling function_signature)
+    if (enclosingFunctionFinder) {
+      const result = enclosingFunctionFinder(current);
+      if (result) {
+        const sigNode = current.previousSibling;
+        const startIdx = sigNode?.startIndex ?? current.startIndex;
+        return `${result.funcName}@${startIdx}`;
       }
-      // Language-specific hook (e.g., Dart function_body → sibling function_signature)
-      if (enclosingFunctionFinder) {
-        const result = enclosingFunctionFinder(current);
-        if (result) {
-          const sigNode = current.previousSibling;
-          const startIdx = sigNode?.startIndex ?? current.startIndex;
-          return `${result.funcName}@${startIdx}`;
-        }
-      }
-      return undefined;
-    },
-    null,
-  );
-  return key ?? undefined;
+    }
+    current = current.parent;
+  }
+  return undefined;
 };
 
 /**
@@ -1310,15 +1300,12 @@ export const buildTypeEnv = (
     }
   }
 
-  // Every lookup of this file climbs to the same enclosing scopes.
-  const scopeKeyAt = new Map<number, string | null>();
   return {
     lookup: (varName, callNode) =>
       lookupInEnv(
         env,
         varName,
         callNode,
-        scopeKeyAt,
         patternOverrides,
         options?.enclosingFunctionFinder,
         extractFuncNameHook,

@@ -1211,8 +1211,8 @@ jobs:
   benchmarks:
     name: benchmarks (GITNEXUS_BENCH)
     runs-on: ubuntu-latest
-    # PR #3920 spent 27 minutes in serial guards before the pipeline suites
-    # started on a slower runner. Leave time to finish and upload their receipt;
+    # The serial guards alone can take 27 minutes on a slower runner. Leave
+    # time for the pipeline suites to finish and upload their receipt;
     # individual benchmark performance budgets remain enforced by --check.
     timeout-minutes: 45
     steps:
@@ -1274,8 +1274,8 @@ jobs:
         # NOT build-free: parses through the dist parse worker (the setup action
         # above builds). Pins bare parameter reads in nested blocks and heredoc
         # bodies (and the opener rule's kept call), and checks capture and
-        # resolution scaling as methods (4x), block depth (16x, 4 -> 64; capture
-        # only), heredocs per opener line or reads per heredoc body (4x) grow.
+        # resolution scaling as methods (4x), block depth (16x, 4 -> 64),
+        # heredocs per opener line or reads per heredoc body (4x) grow.
         # Budgets: see baseline.json.
         run: node --import tsx bench/ruby-bare-reads/measure.mjs --check
         working-directory: gitnexus

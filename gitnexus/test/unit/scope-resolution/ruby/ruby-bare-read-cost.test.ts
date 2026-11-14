@@ -168,26 +168,30 @@ function capturePass(source: string): { steps: number; groups: number } {
 }
 
 describe('Ruby bare read: classification cost is linear in nesting depth (RUBY-04)', () => {
-  it.each([...DESCENDANT_LOOKUPS])('detects repeated native %s searches', (method) => {
-    const measure = (depth: number) => {
-      const tree = getRubyParser().parse(nest(depth, () => 'target'));
-      const reads = bareStatements(tree.rootNode);
-      const counter = countTreeSteps(tree);
-      for (const read of reads) {
-        const root = tree.rootNode;
-        if (method === 'namedDescendantForIndex') root.namedDescendantForIndex(read.startIndex);
-        else if (method === 'descendantForIndex') root.descendantForIndex(read.startIndex);
-        else if (method === 'namedDescendantForPosition')
-          root.namedDescendantForPosition(read.startPosition);
-        else root.descendantForPosition(read.startPosition);
-      }
-      const steps = counter.steps;
-      while (restores.length > 0) restores.pop()?.();
-      return steps;
-    };
-    expect(measure(16)).toBe(472);
-    expect(measure(64)).toBe(6496);
-  });
+  it.each([
+    ['namedDescendantForIndex', (root, read) => root.namedDescendantForIndex(read.startIndex)],
+    ['descendantForIndex', (root, read) => root.descendantForIndex(read.startIndex)],
+    [
+      'namedDescendantForPosition',
+      (root, read) => root.namedDescendantForPosition(read.startPosition),
+    ],
+    ['descendantForPosition', (root, read) => root.descendantForPosition(read.startPosition)],
+  ] satisfies [string, (root: SyntaxNode, read: SyntaxNode) => unknown][])(
+    'detects repeated native %s searches',
+    (_method, search) => {
+      const measure = (depth: number) => {
+        const tree = getRubyParser().parse(nest(depth, () => 'target'));
+        const reads = bareStatements(tree.rootNode);
+        const counter = countTreeSteps(tree);
+        for (const read of reads) search(tree.rootNode, read);
+        const steps = counter.steps;
+        while (restores.length > 0) restores.pop()?.();
+        return steps;
+      };
+      expect(measure(16)).toBe(472);
+      expect(measure(64)).toBe(6496);
+    },
+  );
   it.each([
     ['every level reads the parameter', (_j: number) => 'target', true],
     ['every level calls a different unbound name', (j: number) => `helper${j}`, false],

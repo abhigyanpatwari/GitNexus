@@ -129,7 +129,7 @@ export function createReferenceLookup(
     lexicalLookup: (scope, name, options) =>
       currentSite?.kind === 'call'
         ? lookupLexicalName(
-            options?.skipEnclosingClasses ? scope : cachedNameLookupStart(scope, name, scopes),
+            cachedNameLookupStart(scope, name, scopes, options?.skipEnclosingClasses),
             name,
             { scopes: scopes.scopeTree },
             options,

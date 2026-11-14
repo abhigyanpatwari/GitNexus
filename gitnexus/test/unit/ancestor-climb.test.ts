@@ -5,13 +5,11 @@
  *
  * parse-worker.ts cannot be imported here (it posts to `parentPort` on load),
  * so its climb is covered through `climbAncestors` with the same stop rule
- * shape; type-env's climb is covered through `buildTypeEnv(...).lookup`.
+ * shape.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
-import { SupportedLanguages } from 'gitnexus-shared';
-import { buildTypeEnv } from '../../src/core/ingestion/type-env.js';
 import {
   climbAncestors,
   getAncestorClimbStats,
@@ -49,36 +47,12 @@ const NAMED_FUNCTION = (node: SyntaxNode): string | undefined =>
     ? (node.childForFieldName('name')?.text ?? undefined)
     : undefined;
 
-type Stats = { climbSteps: number; nativeParentReads: number };
-
-function typeEnvCost(depth: number): Stats & { types: string[] } {
-  const tree = parse(nest(depth));
-  const env = buildTypeEnv(tree, SupportedLanguages.TypeScript);
-  const calls = callsOf(tree.rootNode);
-  resetAncestorClimbStats();
-  const types = calls.map((call) => env.lookup('cs', call) ?? '-');
-  return { ...getAncestorClimbStats(), types };
-}
-
-function climbCost(depth: number): Stats {
-  const tree = parse(nest(depth));
-  const calls = callsOf(tree.rootNode);
+function climbCost(source: string): ReturnType<typeof getAncestorClimbStats> {
+  const tree = parse(source);
   const memo = new Map<number, string | null>();
-  resetAncestorClimbStats();
-  for (const call of calls) climbAncestors(call, memo, NAMED_FUNCTION, null);
+  resetAncestorClimbStats(true);
+  for (const call of callsOf(tree.rootNode)) climbAncestors(call, memo, NAMED_FUNCTION, null);
   return getAncestorClimbStats();
-}
-
-/**
- * This fixture visits eight ancestors per nesting level plus the outer body.
- * Exact counts reject both repeated walks and a caller that bypasses the helper.
- */
-function expectLinear(cost: (depth: number) => Stats): void {
-  for (const depth of [8, 16, 64]) {
-    const stats = cost(depth);
-    expect(stats.climbSteps).toBe(8 * depth + 1);
-    expect(stats.nativeParentReads).toBe(Math.min(8 * depth + 1, 256));
-  }
 }
 
 /** Independent oracle: no parent index or memo from the implementation. */
@@ -91,16 +65,23 @@ function nativeEnclosingName(node: SyntaxNode): string | null {
 }
 
 describe('enclosing-function climbs are linear in nesting depth', () => {
-  beforeEach(() => resetAncestorClimbStats());
+  beforeEach(() => resetAncestorClimbStats(true));
+  afterEach(() => resetAncestorClimbStats());
 
-  it('type-env: every receiver lookup reuses the scope an enclosing lookup found', () => {
-    expectLinear(typeEnvCost);
-    // Each `cs.save(...)` and `items.forEach(...)` call reads `cs` in f's scope.
-    expect([...new Set(typeEnvCost(16).types)].join(',')).toBe('Address');
+  // Eight ancestors per nesting level plus the outer body. Exact counts reject
+  // both repeated walks and native reads that keep growing with depth.
+  it.each([8, 16, 64])('climbs %i nested closures once per ancestor', (depth) => {
+    const stats = climbCost(nest(depth));
+    expect(stats.climbSteps).toBe(8 * depth + 1);
+    expect(stats.nativeParentReads).toBe(Math.min(8 * depth + 1, 256));
   });
 
-  it('parse-worker shape: a call climbs only as far as the first ancestor already answered', () => {
-    expectLinear(climbCost);
+  it('does not index a flat file for many shallow climbs', () => {
+    // 300 calls, three ancestors each: more than 256 native reads, none deep.
+    const stats = climbCost('function f() { g(); }\n'.repeat(300));
+    expect(stats.climbSteps).toBe(900);
+    expect(stats.nativeParentReads).toBe(900);
+    expect(stats.indexedNodes).toBe(0);
   });
 
   it('matches native parents across defaults, bodies, different functions and file scope', () => {

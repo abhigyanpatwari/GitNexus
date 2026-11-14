@@ -84,14 +84,18 @@ export function cachedCallerLookupStart(start: ScopeId, scopes: ScopeResolutionI
 /** Path-compress scopes with no possible fact for this spelling. This caches
  * navigation only; ownership, source-position filtering and targets still go
  * through lookupLexicalName. Policies and imports are conservative barriers.
- * The entry cap bounds memory by scope count even with many distinct names. */
+ * A lookup that skips enclosing classes depends on every scope on its way, so
+ * it keeps its own start. The entry cap bounds memory by scope count even with
+ * many distinct names. */
 export function cachedNameLookupStart(
   start: ScopeId,
   name: string,
   scopes: ScopeResolutionIndexes,
+  skipEnclosingClasses = false,
 ): ScopeId {
   const cache = caches.get(scopes);
-  if (cache === undefined || scopes.workspaceFqnBindings?.has(name)) return start;
+  if (cache === undefined || skipEnclosingClasses || scopes.workspaceFqnBindings?.has(name))
+    return start;
   let byScope = cache.byName.get(name);
   const known = byScope?.get(start);
   if (known !== undefined) return known;

@@ -147,9 +147,13 @@ const BARRIERS: BarrierCase[] = [
   },
 ];
 
+/** Runs a read with or without the lookup cache, so a test body needs no branch. */
+type Run = (scopes: Parameters<typeof withCachedNameLookups>[0], read: () => void) => void;
+const withoutCache: Run = (_scopes, read) => read();
+
 describe('read-only name lookup navigation', () => {
   it('does not rescan every empty sibling closure for each call', () => {
-    const measure = (count: number, cached: boolean) => {
+    const measure = (count: number, run: Run) => {
       const f = fixture(count);
       Object.assign(f.scopes[0]!, {
         kind: 'Function',
@@ -168,13 +172,12 @@ describe('read-only name lookup navigation', () => {
           ).toBe(undefined);
         }
       };
-      if (cached) withCachedNameLookups(f.indexes, read);
-      else read();
+      run(f.indexes, read);
       return f.reads();
     };
     for (const count of [24, 96]) {
-      expect(measure(count, false)).toBe(count * (count + 1));
-      expect(measure(count, true)).toBe(3 * count);
+      expect(measure(count, withoutCache)).toBe(count * (count + 1));
+      expect(measure(count, withCachedNameLookups)).toBe(3 * count);
     }
   });
 
@@ -198,7 +201,10 @@ describe('read-only name lookup navigation', () => {
         { nodeId: 'def:test.dart#5:0:Function:child', filePath: 'test.dart', type: 'Function' },
       ],
     });
-    for (const startLine of [4, 5]) {
+    for (const [startLine, caller] of [
+      [4, 'File:test.dart'],
+      [5, undefined],
+    ] as const) {
       const at = { startLine, startCol: 0 };
       const uncached = resolveCallerGraphId('scope4', f.indexes, new Map(), at);
       expect(
@@ -206,7 +212,7 @@ describe('read-only name lookup navigation', () => {
           resolveCallerGraphId('scope4', f.indexes, new Map(), at),
         ),
       ).toBe(uncached);
-      expect(uncached).toBe(startLine === 4 ? 'File:test.dart' : undefined);
+      expect(uncached).toBe(caller);
     }
   });
 
@@ -247,21 +253,38 @@ describe('read-only name lookup navigation', () => {
   });
 
   it('scales linearly when every nested closure reads an outer binder', () => {
-    const measure = (depth: number, cache: boolean) => {
+    const measure = (depth: number, run: Run) => {
       const f = fixture(depth);
       const read = () => {
         for (let i = depth; i > 0; i--) {
           expect(lookupNameClaim(`scope${i}`, 'items', f.indexes).scope?.id).toBe('scope0');
         }
       };
-      if (cache) withCachedNameLookups(f.indexes, read);
-      else read();
+      run(f.indexes, read);
       return f.reads();
     };
     for (const depth of [24, 96]) {
-      expect(measure(depth, false)).toBe((depth * (depth + 3)) / 2);
-      expect(measure(depth, true)).toBe(2 * depth + 1);
+      expect(measure(depth, withoutCache)).toBe((depth * (depth + 3)) / 2);
+      expect(measure(depth, withCachedNameLookups)).toBe(2 * depth + 1);
     }
+  });
+
+  it('stops adding shortcuts at the entry cap and walks the remaining names', () => {
+    const depth = 16;
+    const f = fixture(depth);
+    const names = Array.from({ length: 12 }, (_, i) => `absent${i}`);
+    const lookups = () => {
+      for (const name of names) lookupNameClaim(`scope${depth}`, name, f.indexes);
+    };
+    withCachedNameLookups(f.indexes, () => {
+      // Each name caches `depth` scopes and the cap is 8 entries per scope, so
+      // nine names fit. They restart at the root (one read each); the other
+      // three walk every scope without a second, wasted compression walk.
+      lookups();
+      const filled = f.reads();
+      lookups();
+      expect(f.reads() - filled).toBe(9 + 3 * (depth + 1));
+    });
   });
 
   it.each(BARRIERS)('preserves $name through cold and warm lookups', ({ setup }) => {
