@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ImportVisibility, ScopeId } from 'gitnexus-shared';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SupportedLanguages, type ImportVisibility, type ScopeId } from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../../../../src/core/graph/graph.js';
 import { createSemanticModel } from '../../../../src/core/ingestion/model/semantic-model.js';
 import { emitReferencesToGraph } from '../../../../src/core/ingestion/emit-references.js';
 import { runScopeResolution } from '../../../../src/core/ingestion/scope-resolution/pipeline/run.js';
 import { javaScopeResolver } from '../../../../src/core/ingestion/languages/java/scope-resolver.js';
+import { SCOPE_RESOLVERS } from '../../../../src/core/ingestion/scope-resolution/pipeline/registry.js';
 import { graphIdentity } from '../../../helpers/graph-identity.js';
 
 /**
@@ -64,9 +65,22 @@ function resolve(emitScopes = false) {
   return { graph, imports: imports!, scope, visited, wildcardEdges };
 }
 
+// Whatever the shell exports, each test starts with groups enabled.
+beforeEach(() => vi.stubEnv('GITNEXUS_DISABLE_IMPORT_GROUPS', ''));
 afterEach(() => vi.unstubAllEnvs());
 
 describe('Java on-demand imports are stored as groups', () => {
+  it('is the only provider that groups, so the only one these both-forms tests must cover', () => {
+    // A provider that opts in needs its own grouped-versus-one-edge-per-file
+    // tests first: finalize cannot see a provider hook that reads wildcard
+    // targets from `edgesAt`.
+    expect(
+      [...SCOPE_RESOLVERS]
+        .filter(([, resolver]) => resolver.groupsWildcardImportTargets === true)
+        .map(([language]) => language),
+    ).toEqual([SupportedLanguages.Java]);
+  });
+
   it('keeps no edge per package file, and still reaches every package file', () => {
     const { imports, scope, wildcardEdges } = resolve();
     expect(wildcardEdges('src/app/Main.java')).toBe(0);
