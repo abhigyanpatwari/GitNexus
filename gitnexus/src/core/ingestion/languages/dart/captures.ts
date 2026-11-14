@@ -393,7 +393,7 @@ export function emitDartScopeCaptures(
 
   // ── Pass B: tree-walked references, type inference, heritage ────────────
   const seenReadSpans = new Set<string>();
-  walkDartTree(root, null, null, (node, type, owner, opensBlock, enclosingType) => {
+  walkDartTree(root, null, null, (node, type, owner, opensBlock) => {
     // A statement that opens a Dart scope gets a Block scope if it binds a
     // name; a catch clause's parameters belong to the body block after it.
     if (opensBlock) registerDartBlockScope(lexicalScopes, node, owner);
@@ -431,7 +431,7 @@ export function emitDartScopeCaptures(
       return;
     }
     if (type === 'function_expression' || type === 'local_function_declaration') {
-      emitDartNestedFunctionScope(node, seenFnDeclNodes, lexicalScopes, owner, enclosingType);
+      emitDartNestedFunctionScope(node, seenFnDeclNodes, lexicalScopes, owner);
       return;
     }
   });
@@ -576,7 +576,6 @@ function emitDartNestedFunctionScope(
   seenFnDeclNodes: ReadonlySet<string>,
   lexicalScopes: DartLexicalScopes,
   owner: SyntaxNode | null,
-  enclosingType: SyntaxNode | null,
 ): void {
   let scopeNode: SyntaxNode | null;
   let paramOwner: SyntaxNode | null;
@@ -604,7 +603,7 @@ function emitDartNestedFunctionScope(
   // enclosing scope already provides `this` (`attachDartLexicalNames`).
   registerDartLexicalScope(lexicalScopes, body, 'nested', {
     parent: owner,
-    nested: { node, scopeNode, paramOwner, enclosingType },
+    nested: { node, scopeNode, paramOwner },
   });
 }
 
@@ -642,8 +641,6 @@ interface DartLexicalScope {
     readonly node: SyntaxNode;
     readonly scopeNode: SyntaxNode;
     readonly paramOwner: SyntaxNode;
-    /** Includes known absence: top-level closures must not each climb to the root. */
-    readonly enclosingType: SyntaxNode | null;
   } | null;
   /** A member scope that binds `this` itself (an instance member). */
   readonly providesThis: boolean;
@@ -744,20 +741,12 @@ function walkDartTree(
   node: SyntaxNode,
   owner: SyntaxNode | null,
   parentType: string | null,
-  visit: (
-    node: SyntaxNode,
-    type: string,
-    owner: SyntaxNode | null,
-    opensBlock: boolean,
-    enclosingType: SyntaxNode | null,
-  ) => void,
-  enclosingType: SyntaxNode | null = null,
+  visit: (node: SyntaxNode, type: string, owner: SyntaxNode | null, opensBlock: boolean) => void,
 ): void {
   // Read once: `type` is a native call on every access.
   const type = node.type;
-  if (isDartReceiverType(type)) enclosingType = node;
   const opensBlock = owner !== null && opensDartBlockScope(type, parentType);
-  visit(node, type, owner, opensBlock, enclosingType);
+  visit(node, type, owner, opensBlock);
   let childOwner = owner;
   if (type === 'function_body' || type === 'function_expression_body') childOwner = node;
   else if (type === 'function_expression') childOwner = findFunctionBody(node);
@@ -773,7 +762,7 @@ function walkDartTree(
   }
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
-    if (child !== null) walkDartTree(child, childOwner, type, visit, enclosingType);
+    if (child !== null) walkDartTree(child, childOwner, type, visit);
   }
 }
 
@@ -864,8 +853,9 @@ function attachDartLexicalNames(
     // getter, setter, operator or field initializer, which have no scope.
     let ownThis = false;
     if (!inherited) {
-      const receiver = synthesizeDartReceiverBinding(nested.node, anchor, nested.enclosingType, {
-        parent: treeLinks.get(nested.node.id)!.parent,
+      const link = treeLinks.get(nested.node.id)!;
+      const receiver = synthesizeDartReceiverBinding(nested.node, anchor, link.enclosingType, {
+        parent: link.parent,
         staticBefore,
       });
       for (const cm of receiver) out.push(cm);

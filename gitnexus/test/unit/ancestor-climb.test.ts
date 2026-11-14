@@ -3,14 +3,6 @@
  * however deep the nesting (#3912 review: a 1.6 MB file of closures nested 48
  * deep is quarantined by the worker pool's timeout).
  *
- * Two climbs ran from every call or reference to its enclosing named function
- * and passed every anonymous closure on the way: `findEnclosingScopeKey`
- * (type-env, once per receiver lookup) and `findEnclosingFunctionId`
- * (parse-worker, once per call). Each step read `parent`, which re-descends
- * from the root in node-tree-sitter, so a lookup k levels deep cost k steps of
- * depth each. Both now go through `climbAncestors`: parents from a per-tree
- * index, and the answer kept at every ancestor a climb examined.
- *
  * parse-worker.ts cannot be imported here (it posts to `parentPort` on load),
  * so its climb is covered through `climbAncestors` with the same stop rule
  * shape; type-env's climb is covered through `buildTypeEnv(...).lookup`.

@@ -2132,153 +2132,129 @@ const processFileGroupFiles = (
       if (captureMap['call']) {
         const callNameNode = captureMap['call.name'];
         const callExtractor = provider.callExtractor;
+        if (!callExtractor || !callNameNode) continue;
 
-        if (callExtractor) {
-          if (callNameNode) {
-            const calledName = callNameNode.text;
+        const routed = callRouter?.(callNameNode.text, captureMap['call']);
+        if (routed?.kind !== 'properties') continue;
 
-            // Dispatch: route language-specific calls (properties, imports).
-            // Call-based heritage (Ruby include/extend/prepend) is no longer
-            // routed here — those calls return 'skip' from the router and the
-            // mixin edges are emitted by scope-resolution (emitHeritageEdges).
-            const routed = callRouter?.(calledName, captureMap['call']);
-            if (routed) {
-              if (routed.kind === 'skip') continue;
-
-              if (routed.kind === 'import') {
-                // Call-routed imports (e.g. Ruby `require`) are emitted as
-                // IMPORTS edges by the scope-resolution phase; the legacy
-                // per-file extraction that consumed these was removed in
-                // RING4-2 (#943). Skip.
-                continue;
-              }
-
-              if (routed.kind === 'properties') {
-                // #1978: thread the qualifier so a routed property's owner edge
-                // points at the *qualified* nested-class node (Outer.Inner) rather
-                // than a now-nonexistent simple `Class:file:Inner` id. Gated on the
-                // flag → byte-identical when off. Mirrors the main owner path.
-                const propGetQualifiedOwnerName =
-                  provider.classExtractor?.qualifiedNodeId === true
-                    ? (node: SyntaxNode, simpleName: string): string | null =>
-                        provider.classExtractor!.extractQualifiedName(node, simpleName)
-                    : undefined;
-                const propEnclosingInfo = cachedFindEnclosingClassInfo(
-                  captureMap['call'],
-                  file.path,
-                  provider,
-                  propGetQualifiedOwnerName,
-                );
-                const propEnclosingClassId =
-                  propEnclosingInfo?.qualifiedClassId ?? propEnclosingInfo?.classId ?? null;
-                // Enrich routed properties with FieldExtractor metadata
-                let routedFieldMap: Map<string, FieldInfo[]> | undefined;
-                if (provider.fieldExtractor && typeEnv) {
-                  const classNode = findEnclosingClassNode(captureMap['call']);
-                  if (classNode) {
-                    routedFieldMap = getFieldInfo(classNode, provider, {
-                      typeEnv,
-                      symbolTable: NOOP_SYMBOL_TABLE,
-                      filePath: file.path,
-                      language,
-                    });
-                  }
-                }
-                for (const item of routed.items) {
-                  const routedFieldInfo = selectFieldInfo(
-                    routedFieldMap?.get(item.propName),
-                    captureMap['call'].startPosition.row + 1,
-                    captureMap['call'].startPosition.column,
-                  );
-                  const propQualifiedName = propEnclosingInfo
-                    ? `${propEnclosingInfo.className}.${item.propName}`
-                    : item.propName;
-                  const nodeId = generateId('Property', `${file.path}:${propQualifiedName}`);
-                  result.nodes.push({
-                    id: nodeId,
-                    label: 'Property',
-                    properties: {
-                      name: item.propName,
-                      filePath: file.path,
-                      startLine: item.startLine,
-                      endLine: item.endLine,
-                      language,
-                      isExported: true,
-                      description: item.accessorType,
-                      ...(item.declaredType
-                        ? { declaredType: item.declaredType }
-                        : routedFieldInfo?.type
-                          ? { declaredType: routedFieldInfo.type }
-                          : {}),
-                      ...(routedFieldInfo?.rawDeclaredType !== undefined
-                        ? { rawDeclaredType: routedFieldInfo.rawDeclaredType }
-                        : {}),
-                      ...(routedFieldInfo?.annotations !== undefined &&
-                      routedFieldInfo.annotations.length > 0
-                        ? { annotations: routedFieldInfo.annotations }
-                        : {}),
-                      ...(routedFieldInfo?.visibility !== undefined
-                        ? { visibility: routedFieldInfo.visibility }
-                        : {}),
-                      ...(routedFieldInfo?.isStatic !== undefined
-                        ? { isStatic: routedFieldInfo.isStatic }
-                        : {}),
-                      ...(routedFieldInfo?.isReadonly !== undefined
-                        ? { isReadonly: routedFieldInfo.isReadonly }
-                        : {}),
-                    },
-                  });
-                  result.symbols.push({
-                    filePath: file.path,
-                    name: item.propName,
-                    nodeId,
-                    type: 'Property',
-                    ...(propEnclosingClassId ? { ownerId: propEnclosingClassId } : {}),
-                    ...(item.declaredType
-                      ? { declaredType: item.declaredType }
-                      : routedFieldInfo?.type
-                        ? { declaredType: routedFieldInfo.type }
-                        : {}),
-                    ...(routedFieldInfo?.visibility !== undefined
-                      ? { visibility: routedFieldInfo.visibility }
-                      : {}),
-                    ...(routedFieldInfo?.isStatic !== undefined
-                      ? { isStatic: routedFieldInfo.isStatic }
-                      : {}),
-                    ...(routedFieldInfo?.isReadonly !== undefined
-                      ? { isReadonly: routedFieldInfo.isReadonly }
-                      : {}),
-                  });
-                  // Only emit File -> Property DEFINES for top-level properties
-                  // (issue #1944); class members are reached via HAS_PROPERTY.
-                  if (!propEnclosingClassId) {
-                    const fileId = generateId('File', file.path);
-                    const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-                    result.relationships.push({
-                      id: relId,
-                      sourceId: fileId,
-                      targetId: nodeId,
-                      type: 'DEFINES',
-                      confidence: 1.0,
-                      reason: '',
-                    });
-                  }
-                  if (propEnclosingClassId) {
-                    result.relationships.push({
-                      id: generateId('HAS_PROPERTY', `${propEnclosingClassId}->${nodeId}`),
-                      sourceId: propEnclosingClassId,
-                      targetId: nodeId,
-                      type: 'HAS_PROPERTY',
-                      confidence: 1.0,
-                      reason: '',
-                    });
-                  }
-                }
-                continue;
-              }
-
-              // kind === 'call' is handled by scope resolution.
-            }
+        // #1978: thread the qualifier so a routed property's owner edge
+        // points at the *qualified* nested-class node (Outer.Inner) rather
+        // than a now-nonexistent simple `Class:file:Inner` id. Gated on the
+        // flag → byte-identical when off. Mirrors the main owner path.
+        const propGetQualifiedOwnerName =
+          provider.classExtractor?.qualifiedNodeId === true
+            ? (node: SyntaxNode, simpleName: string): string | null =>
+                provider.classExtractor!.extractQualifiedName(node, simpleName)
+            : undefined;
+        const propEnclosingInfo = cachedFindEnclosingClassInfo(
+          captureMap['call'],
+          file.path,
+          provider,
+          propGetQualifiedOwnerName,
+        );
+        const propEnclosingClassId =
+          propEnclosingInfo?.qualifiedClassId ?? propEnclosingInfo?.classId ?? null;
+        // Enrich routed properties with FieldExtractor metadata
+        let routedFieldMap: Map<string, FieldInfo[]> | undefined;
+        if (provider.fieldExtractor && typeEnv) {
+          const classNode = findEnclosingClassNode(captureMap['call']);
+          if (classNode) {
+            routedFieldMap = getFieldInfo(classNode, provider, {
+              typeEnv,
+              symbolTable: NOOP_SYMBOL_TABLE,
+              filePath: file.path,
+              language,
+            });
+          }
+        }
+        for (const item of routed.items) {
+          const routedFieldInfo = selectFieldInfo(
+            routedFieldMap?.get(item.propName),
+            captureMap['call'].startPosition.row + 1,
+            captureMap['call'].startPosition.column,
+          );
+          const propQualifiedName = propEnclosingInfo
+            ? `${propEnclosingInfo.className}.${item.propName}`
+            : item.propName;
+          const nodeId = generateId('Property', `${file.path}:${propQualifiedName}`);
+          result.nodes.push({
+            id: nodeId,
+            label: 'Property',
+            properties: {
+              name: item.propName,
+              filePath: file.path,
+              startLine: item.startLine,
+              endLine: item.endLine,
+              language,
+              isExported: true,
+              description: item.accessorType,
+              ...(item.declaredType
+                ? { declaredType: item.declaredType }
+                : routedFieldInfo?.type
+                  ? { declaredType: routedFieldInfo.type }
+                  : {}),
+              ...(routedFieldInfo?.rawDeclaredType !== undefined
+                ? { rawDeclaredType: routedFieldInfo.rawDeclaredType }
+                : {}),
+              ...(routedFieldInfo?.annotations !== undefined &&
+              routedFieldInfo.annotations.length > 0
+                ? { annotations: routedFieldInfo.annotations }
+                : {}),
+              ...(routedFieldInfo?.visibility !== undefined
+                ? { visibility: routedFieldInfo.visibility }
+                : {}),
+              ...(routedFieldInfo?.isStatic !== undefined
+                ? { isStatic: routedFieldInfo.isStatic }
+                : {}),
+              ...(routedFieldInfo?.isReadonly !== undefined
+                ? { isReadonly: routedFieldInfo.isReadonly }
+                : {}),
+            },
+          });
+          result.symbols.push({
+            filePath: file.path,
+            name: item.propName,
+            nodeId,
+            type: 'Property',
+            ...(propEnclosingClassId ? { ownerId: propEnclosingClassId } : {}),
+            ...(item.declaredType
+              ? { declaredType: item.declaredType }
+              : routedFieldInfo?.type
+                ? { declaredType: routedFieldInfo.type }
+                : {}),
+            ...(routedFieldInfo?.visibility !== undefined
+              ? { visibility: routedFieldInfo.visibility }
+              : {}),
+            ...(routedFieldInfo?.isStatic !== undefined
+              ? { isStatic: routedFieldInfo.isStatic }
+              : {}),
+            ...(routedFieldInfo?.isReadonly !== undefined
+              ? { isReadonly: routedFieldInfo.isReadonly }
+              : {}),
+          });
+          // Only emit File -> Property DEFINES for top-level properties
+          // (issue #1944); class members are reached via HAS_PROPERTY.
+          if (!propEnclosingClassId) {
+            const fileId = generateId('File', file.path);
+            const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
+            result.relationships.push({
+              id: relId,
+              sourceId: fileId,
+              targetId: nodeId,
+              type: 'DEFINES',
+              confidence: 1.0,
+              reason: '',
+            });
+          }
+          if (propEnclosingClassId) {
+            result.relationships.push({
+              id: generateId('HAS_PROPERTY', `${propEnclosingClassId}->${nodeId}`),
+              sourceId: propEnclosingClassId,
+              targetId: nodeId,
+              type: 'HAS_PROPERTY',
+              confidence: 1.0,
+              reason: '',
+            });
           }
         }
         continue;

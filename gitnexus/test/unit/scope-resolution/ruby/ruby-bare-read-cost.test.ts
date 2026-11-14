@@ -7,15 +7,15 @@
  * again, so a nest where each of D levels reads costs O(D^2) tree steps. This
  * test counts the tree steps (every SyntaxNode navigation call, plus every
  * node an array-returning call materialises) while all reads of one file are
- * classified, at depth 16 and at depth 64. Linear work grows 4x between them;
- * the per-read climb grows about 16x. A ratio is used rather than a constant
- * so the count does not pin an implementation, only its growth.
+ * classified, at depth 16 and at depth 64. Exact counts distinguish the
+ * linear classifier from the quadratic descendant-search controls.
  *
  * Two nests, each with fixed-width indentation so the source itself grows
  * linearly: every level reads the method's parameter `target` (one name, so a
  * per-name memo would also pass), and every level calls a different
  * unbound name `helper<j>` (D names, so only a per-file index stays linear).
  */
+import { isDeepStrictEqual } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import type Parser from 'tree-sitter';
 import { getRubyParser } from '../../../../src/core/ingestion/languages/ruby/query.js';
@@ -185,8 +185,8 @@ describe('Ruby bare read: classification cost is linear in nesting depth (RUBY-0
       while (restores.length > 0) restores.pop()?.();
       return steps;
     };
-    // This deliberate quadratic search must fail the production bound of 5x.
-    expect(measure(64) / measure(16)).toBeGreaterThan(10);
+    expect(measure(16)).toBe(472);
+    expect(measure(64)).toBe(6496);
   });
   it.each([
     ['every level reads the parameter', (_j: number) => 'target', true],
@@ -195,14 +195,10 @@ describe('Ruby bare read: classification cost is linear in nesting depth (RUBY-0
     const shallow = classify(nest(16, read));
     const deep = classify(nest(64, read));
     // The verdicts are the work being counted: every read must be classified.
-    expect(shallow.verdicts).toEqual(Array(16).fill(bound));
-    expect(deep.verdicts).toEqual(Array(64).fill(bound));
-    // 4x the depth (and 4x the source): linear work grows 4x. Allow 25%.
-    const growth = deep.steps / shallow.steps;
-    expect(
-      growth,
-      `tree steps ${shallow.steps} at depth 16 -> ${deep.steps} at depth 64 (x${growth.toFixed(2)})`,
-    ).toBeLessThanOrEqual(5);
+    expect(isDeepStrictEqual(shallow.verdicts, Array(16).fill(bound))).toBe(true);
+    expect(isDeepStrictEqual(deep.verdicts, Array(64).fill(bound))).toBe(true);
+    expect(shallow.steps).toBe(29 * 16 + 20);
+    expect(deep.steps).toBe(29 * 64 + 20);
   });
 
   // One line opening H heredocs, each body holding two interpolated blocks
@@ -218,12 +214,10 @@ describe('Ruby bare read: classification cost is linear in nesting depth (RUBY-0
     };
     const shallow = capturePass(line(32));
     const deep = capturePass(line(128));
-    expect(deep.groups).toBeGreaterThan(shallow.groups);
-    const growth = deep.steps / shallow.steps;
-    expect(
-      growth,
-      `capture-pass tree steps ${shallow.steps} at 32 heredocs -> ${deep.steps} at 128 (x${growth.toFixed(2)})`,
-    ).toBeLessThanOrEqual(5);
+    expect(shallow.groups).toBe(4 * 32 + 5);
+    expect(deep.groups).toBe(4 * 128 + 5);
+    expect(shallow.steps).toBe(316 * 32 + 136);
+    expect(deep.steps).toBe(316 * 128 + 136);
   });
 
   // The whole pass for bound parameter reads. This guards the old argument-list
@@ -231,11 +225,9 @@ describe('Ruby bare read: classification cost is linear in nesting depth (RUBY-0
   it('the whole capture pass over a nest that reads at every level', () => {
     const shallow = capturePass(nest(16, () => 'target'));
     const deep = capturePass(nest(64, () => 'target'));
-    expect(deep.groups).toBeGreaterThan(shallow.groups);
-    const growth = deep.steps / shallow.steps;
-    expect(
-      growth,
-      `capture-pass tree steps ${shallow.steps} at depth 16 -> ${deep.steps} at depth 64 (x${growth.toFixed(2)})`,
-    ).toBeLessThanOrEqual(5);
+    expect(shallow.groups).toBe(2 * 16 + 4);
+    expect(deep.groups).toBe(2 * 64 + 4);
+    expect(shallow.steps).toBe(117 * 16 + 65);
+    expect(deep.steps).toBe(117 * 64 + 65);
   });
 });

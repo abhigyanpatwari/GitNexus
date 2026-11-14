@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import {
   buildDefIndex,
@@ -360,10 +361,13 @@ describe('provider call outcomes', () => {
             }
           : { onSelectedCall: changeBinding },
       );
-      expect(recorded).toBeGreaterThan(0);
-      expect([...graph.iterRelationshipsByType('CALLS')].map((edge) => edge.targetId)).toEqual([
-        'Method:owner.ts:Owner.choose#1',
-      ]);
+      expect(recorded).toBe(1);
+      expect(
+        isDeepStrictEqual(
+          [...graph.iterRelationshipsByType('CALLS')].map((edge) => edge.targetId),
+          ['Method:owner.ts:Owner.choose#1'],
+        ),
+      ).toBe(true);
     },
   );
 

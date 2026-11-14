@@ -14,6 +14,7 @@ function captureWork(depth: number, form: 'argument' | 'bound') {
     ).join('') +
     (form === 'bound' ? '};\n' : '});\n').repeat(depth) +
     '}\n';
+  emitDartScopeCaptures('void warmup() {}', 'warmup.dart');
   const tree = getDartParser().parse(source);
   if (tree === null) throw new Error('Dart parse failed');
   let prototype = Object.getPrototypeOf(tree.rootNode) as Parser.SyntaxNode;
@@ -21,15 +22,25 @@ function captureWork(depth: number, form: 'argument' | 'bound') {
   const parent = vi.spyOn(prototype, 'parent', 'get');
   const child = vi.spyOn(prototype, 'namedChild');
   const children = vi.spyOn(prototype, 'namedChildren', 'get');
-  const mapGet = vi.spyOn(Map.prototype, 'get');
+  const get = Map.prototype.get;
+  let mapReads = 0;
+  vi.spyOn(Map.prototype, 'get').mockImplementation(function (
+    this: Map<unknown, unknown>,
+    key: unknown,
+  ) {
+    // tree-sitter's temporary wrapper cache uses bigint IDs; its reads depend on GC.
+    if (typeof key !== 'bigint') mapReads++;
+    return get.call(this, key);
+  });
   try {
     const matches = emitDartScopeCaptures(source, 'nested.dart', tree);
-    expect(matches.filter((match) => match['@scope.function'])).toHaveLength(depth + 1);
-    return {
+    const work = {
       parents: parent.mock.calls.length,
       children: child.mock.calls.length + children.mock.calls.length,
-      mapReads: mapGet.mock.calls.length,
+      mapReads,
     };
+    expect(matches.filter((match) => match['@scope.function']).length).toBe(depth + 1);
+    return work;
   } finally {
     vi.restoreAllMocks();
   }
@@ -39,17 +50,13 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Dart))('Dart nested capt
   it.each(['argument', 'bound'] as const)(
     'keeps %s closure work linear as nesting grows',
     (form) => {
-      const small = captureWork(6, form);
-      const large = captureWork(24, form);
-      expect(small.parents).toBeGreaterThan(0);
-      expect(small.children).toBeGreaterThan(0);
-      expect(small.mapReads).toBeGreaterThan(0);
-      // Native parent reads themselves cost depth. Their count must stay flat
-      // as closures deepen, rather than merely grow linearly.
-      expect(large.parents).toBe(small.parents);
-      // 4x more closures, with a little headroom for fixed grammar scaffolding.
-      expect(large.children).toBeLessThanOrEqual(small.children * 5);
-      expect(large.mapReads).toBeLessThanOrEqual(small.mapReads * 4.5);
+      for (const depth of [6, 24]) {
+        const work = captureWork(depth, form);
+        // Native parent reads themselves cost depth, so their count must stay flat.
+        expect(work.parents).toBe(3);
+        expect(work.children).toBe(form === 'argument' ? 120 * depth + 58 : 93 * depth + 56);
+        expect(work.mapReads).toBe(form === 'argument' ? 53 * depth + 31 : 41 * depth + 29);
+      }
     },
   );
 });

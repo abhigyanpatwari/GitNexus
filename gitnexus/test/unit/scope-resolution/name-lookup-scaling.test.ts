@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import {
   buildDefIndex,
@@ -164,15 +165,17 @@ describe('read-only name lookup navigation', () => {
         for (let i = 1; i <= count; i++) {
           expect(
             resolveCallerGraphId('scope0', f.indexes, new Map(), { startLine: i, startCol: 0 }),
-          ).toBeUndefined();
+          ).toBe(undefined);
         }
       };
       if (cached) withCachedNameLookups(f.indexes, read);
       else read();
       return f.reads();
     };
-    expect(measure(96, false)).toBeGreaterThan(measure(24, false) * 10);
-    expect(measure(96, true)).toBeLessThanOrEqual(measure(24, true) * 4);
+    for (const count of [24, 96]) {
+      expect(measure(count, false)).toBe(count * (count + 1));
+      expect(measure(count, true)).toBe(3 * count);
+    }
   });
 
   it('keeps caller attribution linear through empty closure scopes', () => {
@@ -185,7 +188,7 @@ describe('read-only name lookup navigation', () => {
       });
       return f.reads();
     };
-    expect(measure(96)).toBeLessThanOrEqual(measure(24) * 4);
+    for (const depth of [24, 96]) expect(measure(depth)).toBe(3 * depth);
   });
 
   it('preserves position-dependent child callers and missing graph identities', () => {
@@ -231,14 +234,16 @@ describe('read-only name lookup navigation', () => {
       });
       const result = resolveReferenceSites({ scopes: f.indexes, ownedMembersByOwner: () => [] });
       // The outer untyped binder owns the name but cannot supply a target.
-      expect(result.stats).toEqual({
-        sitesProcessed: depth * 2,
-        referencesEmitted: 0,
-        unresolved: depth * 2,
-      });
+      expect(
+        isDeepStrictEqual(result.stats, {
+          sitesProcessed: depth * 2,
+          referencesEmitted: 0,
+          unresolved: depth * 2,
+        }),
+      ).toBe(true);
       return f.reads();
     };
-    expect(measure(96)).toBeLessThanOrEqual(measure(24) * 4);
+    for (const depth of [24, 96]) expect(measure(depth)).toBe(5 * depth + 1);
   });
 
   it('scales linearly when every nested closure reads an outer binder', () => {
@@ -253,8 +258,10 @@ describe('read-only name lookup navigation', () => {
       else read();
       return f.reads();
     };
-    expect(measure(96, false)).toBeGreaterThan(measure(24, false) * 10);
-    expect(measure(96, true)).toBeLessThanOrEqual(measure(24, true) * 4);
+    for (const depth of [24, 96]) {
+      expect(measure(depth, false)).toBe((depth * (depth + 3)) / 2);
+      expect(measure(depth, true)).toBe(2 * depth + 1);
+    }
   });
 
   it.each(BARRIERS)('preserves $name through cold and warm lookups', ({ setup }) => {
@@ -277,10 +284,12 @@ describe('read-only name lookup navigation', () => {
     const read = () =>
       queries.map((options) => lookupNameClaim('scope8', 'items', f.indexes, options));
     const expected = read();
-    expect(withCachedNameLookups(f.indexes, () => [...read(), ...read()])).toEqual([
-      ...expected,
-      ...expected,
-    ]);
+    expect(
+      isDeepStrictEqual(
+        withCachedNameLookups(f.indexes, () => [...read(), ...read()]),
+        [...expected, ...expected],
+      ),
+    ).toBe(true);
   });
 
   it('keeps the nearest caller definition even when it has no graph identity', () => {
@@ -288,10 +297,10 @@ describe('read-only name lookup navigation', () => {
     Object.assign(f.scopes[4]!, {
       ownedDefs: [{ nodeId: 'local', filePath: 'test.dart', type: 'Function' }],
     });
-    expect(resolveCallerGraphId('scope8', f.indexes, new Map())).toBeUndefined();
+    expect(resolveCallerGraphId('scope8', f.indexes, new Map())).toBe(undefined);
     expect(
       withCachedNameLookups(f.indexes, () => resolveCallerGraphId('scope8', f.indexes, new Map())),
-    ).toBeUndefined();
+    ).toBe(undefined);
   });
 
   it('does not retain shortcuts between passes or on the mutable original', () => {
@@ -310,12 +319,17 @@ describe('read-only name lookup navigation', () => {
 
   it('discards shortcuts when a pass throws', () => {
     const f = fixture(8);
-    expect(() =>
+    let thrown: unknown;
+    try {
       withCachedNameLookups(f.indexes, () => {
         expect(lookupNameClaim('scope8', 'items', f.indexes).scope?.id).toBe('scope0');
         throw new Error('pass failed');
-      }),
-    ).toThrow('pass failed');
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown instanceof Error).toBe(true);
+    expect((thrown as Error).message).toBe('pass failed');
     (f.scopes[4]!.lexicalNames as Set<string>).add('items');
     expect(lookupNameClaim('scope8', 'items', f.indexes).scope?.id).toBe('scope4');
   });

@@ -14,7 +14,7 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Dart))(
         '});\n'.repeat(depth) +
         '}\n';
       const matches = emitDartScopeCaptures(source, 'nest.dart');
-      expect(matches.filter((match) => match['@scope.function'])).toHaveLength(depth + 1);
+      expect(matches.filter((match) => match['@scope.function']).length).toBe(depth + 1);
     });
   },
 );

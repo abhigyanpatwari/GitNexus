@@ -108,22 +108,15 @@ function operandNodeVisits(nest: Nest, depth: number): number {
   }
 }
 
-/**
- * Linear growth: the work added by 48 more levels (16 -> 64) is at most 6x
- * the work added by 8 more (8 -> 16). Per-call work that grows with depth
- * makes each added level cost more than the one before, and fails this.
- */
-function expectLinear(nest: Nest): void {
-  const [d8, d16, d64] = [8, 16, 64].map((depth) => operandNodeVisits(nest, depth));
-  expect(d8).toBeGreaterThan(0);
-  expect(d16).toBeGreaterThan(d8);
-  expect(d64).toBeGreaterThan(d16);
-  expect(d64 - d16).toBeLessThanOrEqual(6 * (d16 - d8));
+function expectLinear(nest: Nest, perLevel: number, fixed: number): void {
+  for (const depth of [8, 16, 64]) {
+    expect(operandNodeVisits(nest, depth)).toBe(perLevel * depth + fixed);
+  }
 }
 
 describe('a call argument wrapping a function literal is not searched again per nested call', () => {
-  it.skipIf(!dartAvailable)('Dart', () => expectLinear(NESTS.dart));
-  it.skipIf(!kotlinAvailable)('Kotlin', () => expectLinear(NESTS.kotlin));
-  it('C#', () => expectLinear(NESTS.csharp));
-  it('PHP', () => expectLinear(NESTS.php));
+  it.skipIf(!dartAvailable)('Dart', () => expectLinear(NESTS.dart, 14, 1));
+  it.skipIf(!kotlinAvailable)('Kotlin', () => expectLinear(NESTS.kotlin, 12, 0));
+  it('C#', () => expectLinear(NESTS.csharp, 12, 1));
+  it('PHP', () => expectLinear(NESTS.php, 14, 1));
 });

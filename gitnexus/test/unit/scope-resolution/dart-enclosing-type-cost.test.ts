@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
 import type Parser from 'tree-sitter';
 import type { CaptureMatch } from 'gitnexus-shared';
@@ -53,19 +54,17 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Dart))('Dart enclosing-t
   it('keeps parent reads flat for inline closures without an enclosing type', () => {
     const shallow = cost(inlineNest(8, 'void f(List<int> items) {', '}\n'));
     const deep = cost(inlineNest(64, 'void f(List<int> items) {', '}\n'));
-    expect([shallow.scopes, deep.scopes]).toEqual([9, 65]);
-    expect(thisTypes(deep.matches)).toEqual([]);
+    expect(isDeepStrictEqual([shallow.scopes, deep.scopes], [9, 65])).toBe(true);
+    expect(isDeepStrictEqual(thisTypes(deep.matches), [])).toBe(true);
     expect(deep.parents).toBe(shallow.parents);
     expect(deep.siblings).toBe(0);
   });
 
   it('keeps parent reads linear for closures bound to nested locals', () => {
     const [d8, d16, d64] = [8, 16, 64].map((depth) => cost(namedNest(depth)));
-    expect([d8.scopes, d16.scopes, d64.scopes]).toEqual([9, 17, 65]);
-    expect(thisTypes(d64.matches)).toEqual([]);
-    // Adding six times as many levels must cost at most six times the work.
-    expect(d64.parents - d16.parents).toBeLessThanOrEqual(6 * (d16.parents - d8.parents));
-    expect(d64.parents).toBeLessThanOrEqual(8 * d64.scopes);
+    expect(isDeepStrictEqual([d8.scopes, d16.scopes, d64.scopes], [9, 17, 65])).toBe(true);
+    expect(isDeepStrictEqual(thisTypes(d64.matches), [])).toBe(true);
+    for (const cost of [d8, d16, d64]) expect(cost.parents).toBe(3);
     expect(d64.siblings).toBe(0);
   });
 
@@ -74,8 +73,8 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Dart))('Dart enclosing-t
       cost(inlineNest(depth, 'class Svc { int operator +(List<int> items) {', 'return 0; } }\n'));
     const shallow = nested(8);
     const deep = nested(64);
-    expect([shallow.scopes, deep.scopes]).toEqual([8, 64]);
-    expect(thisTypes(deep.matches)).toEqual(['Svc']);
+    expect(isDeepStrictEqual([shallow.scopes, deep.scopes], [8, 64])).toBe(true);
+    expect(isDeepStrictEqual(thisTypes(deep.matches), ['Svc'])).toBe(true);
     expect(deep.parents).toBe(shallow.parents);
     expect(deep.siblings).toBe(0);
   });
@@ -102,8 +101,11 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Dart))('Dart enclosing-t
       for (const node of parent.children) {
         const legacy = synthesizeDartReceiverBinding(node, node, enclosingType);
         expect(
-          synthesizeDartReceiverBinding(node, node, enclosingType, { parent, staticBefore }),
-        ).toEqual(legacy);
+          isDeepStrictEqual(
+            synthesizeDartReceiverBinding(node, node, enclosingType, { parent, staticBefore }),
+            legacy,
+          ),
+        ).toBe(true);
         if (node.isNamed) stack.push(node);
       }
     }

@@ -8,6 +8,7 @@
  * and took the first nested call's list: `run_with do helper(cb) end` recorded
  * `cb` as `run_with`'s argument 0. The nested call keeps its own fact.
  */
+import { isDeepStrictEqual } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { emitRubyScopeCaptures } from '../../../../src/core/ingestion/languages/ruby/captures.js';
 
@@ -33,14 +34,16 @@ describe('Ruby callable flow: a call passes only its own arguments', () => {
     ['brace block', '    run_with { helper(cb) }\n'],
     ['block on a member call', '    [1].each do |i|\n      helper(cb)\n    end\n'],
   ])('%s: the nested call keeps its argument, the outer call gets none', (_label, body) => {
-    expect(argumentFacts(HOST(body))).toEqual(['helper(0)=cb']);
+    expect(isDeepStrictEqual(argumentFacts(HOST(body)), ['helper(0)=cb'])).toBe(true);
   });
 
   it('a call with its own list and a block still passes that list', () => {
-    expect(argumentFacts(HOST('    run_with(cb) do\n      helper(cb)\n    end\n'))).toEqual([
-      'helper(0)=cb',
-      'run_with(0)=cb',
-    ]);
+    expect(
+      isDeepStrictEqual(argumentFacts(HOST('    run_with(cb) do\n      helper(cb)\n    end\n')), [
+        'helper(0)=cb',
+        'run_with(0)=cb',
+      ]),
+    ).toBe(true);
   });
 
   it.each([
@@ -51,11 +54,14 @@ describe('Ruby callable flow: a call passes only its own arguments', () => {
       (match) => match['@callable-flow.invoke'] !== undefined,
     );
     expect(
-      invokes.map((match) => [
-        match['@callable-flow.callee']?.text,
-        match['@callable-flow.arity']?.text,
-      ]),
-    ).toEqual([['cb', arity]]);
+      isDeepStrictEqual(
+        invokes.map((match) => [
+          match['@callable-flow.callee']?.text,
+          match['@callable-flow.arity']?.text,
+        ]),
+        [['cb', arity]],
+      ),
+    ).toBe(true);
   });
 
   it.each(['', '(cb)'])('preserves a block-taking receiver chain with arguments %s', (args) => {
@@ -64,11 +70,19 @@ describe('Ruby callable flow: a call passes only its own arguments', () => {
       (match) => match['@reference.receiver-chain'] !== undefined,
     );
     expect(
-      chains.map((match) => [
-        match['@reference.name']?.text,
-        match['@reference.receiver-chain']?.text,
-      ]),
-    ).toEqual([['run', '2|factory|cbuild']]);
-    expect(argumentFacts(source)).toEqual(args ? ['?(0)=cb', 'helper(0)=cb'] : ['helper(0)=cb']);
+      isDeepStrictEqual(
+        chains.map((match) => [
+          match['@reference.name']?.text,
+          match['@reference.receiver-chain']?.text,
+        ]),
+        [['run', '2|factory|cbuild']],
+      ),
+    ).toBe(true);
+    expect(
+      isDeepStrictEqual(
+        argumentFacts(source),
+        args ? ['?(0)=cb', 'helper(0)=cb'] : ['helper(0)=cb'],
+      ),
+    ).toBe(true);
   });
 });

@@ -11,6 +11,7 @@
  * the depth itself: the Function node exists and its CALLS edges are exactly
  * the binder rule's, with fixed-width indentation as in the bench.
  */
+import { isDeepStrictEqual } from 'node:util';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -78,12 +79,15 @@ describe.skipIf(!dartAvailable)('Dart closures nested 48 deep', () => {
     // Each `(cs)` rebinds the name untyped and declines; each `(Other cs)`
     // reaches Other.save; each `(x)` reaches the `Other cs` one level up.
     const rounds = DEPTH / KINDS.length;
-    expect(calls).toEqual(
-      [
-        ...Array<string>(rounds).fill('Method:lib/types.dart:Other.run#0'),
-        ...Array<string>(rounds).fill('Method:lib/types.dart:Other.save#0'),
-      ].sort(),
-    );
+    expect(
+      isDeepStrictEqual(
+        calls,
+        [
+          ...Array<string>(rounds).fill('Method:lib/types.dart:Other.run#0'),
+          ...Array<string>(rounds).fill('Method:lib/types.dart:Other.save#0'),
+        ].sort(),
+      ),
+    ).toBe(true);
     // Each untyped `(cs)` stops the walk at its own binder: one decline per
     // `cs.save()` it holds, on lines 4, 7, 10, ... of the nest.
     const untypedSaves = getResolutionOutcomes(run())
@@ -98,11 +102,14 @@ describe.skipIf(!dartAvailable)('Dart closures nested 48 deep', () => {
           : [],
       )
       .sort();
-    expect(untypedSaves).toEqual(
-      Array.from(
-        { length: rounds },
-        (_, k) => `receiver-type-unresolved/untyped-binder ${4 + 3 * k}:26`,
-      ).sort(),
-    );
+    expect(
+      isDeepStrictEqual(
+        untypedSaves,
+        Array.from(
+          { length: rounds },
+          (_, k) => `receiver-type-unresolved/untyped-binder ${4 + 3 * k}:26`,
+        ).sort(),
+      ),
+    ).toBe(true);
   });
 });
