@@ -406,54 +406,51 @@ function findTypeBody(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
 function findLombokClasses(root: Parser.SyntaxNode, imports: LombokImportIndex): LombokClass[] {
   const classes: LombokClass[] = [];
 
-  function walk(node: Parser.SyntaxNode): void {
-    if (node.type === 'class_declaration' || node.type === 'enum_declaration') {
-      const modifiers = node.children.find((c) => c.type === 'modifiers') ?? null;
-      const classAnn = parseModifierAnnotations(modifiers, imports);
-      const nameNode = node.childForFieldName('name');
-      const className = nameNode?.text ?? '';
-      if (className) {
-        const body = findTypeBody(node);
-        const fields: LombokField[] = [];
-        if (body) {
-          const collectFields = (container: Parser.SyntaxNode): void => {
-            for (const child of container.children) {
-              if (child.type === 'field_declaration') {
-                for (const f of parseFieldDeclaration(child, imports)) {
-                  if (f.isStatic) continue;
-                  fields.push(f);
-                }
-              } else if (child.type === 'enum_body_declarations') {
-                collectFields(child);
+  // The native search retains source order and includes local/nested types,
+  // without allocating wrappers for every expression and token in their bodies.
+  for (const node of root.descendantsOfType(['class_declaration', 'enum_declaration'])) {
+    const modifiers = node.children.find((c) => c.type === 'modifiers') ?? null;
+    const classAnn = parseModifierAnnotations(modifiers, imports);
+    const nameNode = node.childForFieldName('name');
+    const className = nameNode?.text ?? '';
+    if (className) {
+      const body = findTypeBody(node);
+      const fields: LombokField[] = [];
+      if (body) {
+        const collectFields = (container: Parser.SyntaxNode): void => {
+          for (const child of container.children) {
+            if (child.type === 'field_declaration') {
+              for (const f of parseFieldDeclaration(child, imports)) {
+                if (f.isStatic) continue;
+                fields.push(f);
               }
+            } else if (child.type === 'enum_body_declarations') {
+              collectFields(child);
             }
-          };
-          collectFields(body);
-        }
+          }
+        };
+        collectFields(body);
+      }
 
-        const anyFieldEnable = fields.some(
-          (f) => f.fieldGetter?.enabled === true || f.fieldSetter?.enabled === true,
-        );
-        const classEnable = classAnn.getter?.enabled === true || classAnn.setter?.enabled === true;
+      const anyFieldEnable = fields.some(
+        (f) => f.fieldGetter?.enabled === true || f.fieldSetter?.enabled === true,
+      );
+      const classEnable = classAnn.getter?.enabled === true || classAnn.setter?.enabled === true;
 
-        // Class-level NONE alone is not enable — getter/setter configs may be disabled
-        if (classEnable || anyFieldEnable) {
-          classes.push({
-            node,
-            name: className,
-            classGetter: classAnn.getter,
-            classSetter: classAnn.setter,
-            classAccessors: classAnn.accessors,
-            fields,
-            existingMethods: collectExistingMethods(body, imports),
-          });
-        }
+      // Class-level NONE alone is not enable — getter/setter configs may be disabled
+      if (classEnable || anyFieldEnable) {
+        classes.push({
+          node,
+          name: className,
+          classGetter: classAnn.getter,
+          classSetter: classAnn.setter,
+          classAccessors: classAnn.accessors,
+          fields,
+          existingMethods: collectExistingMethods(body, imports),
+        });
       }
     }
-    for (const child of node.children) walk(child);
   }
-
-  walk(root);
   return classes;
 }
 
