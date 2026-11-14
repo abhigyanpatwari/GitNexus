@@ -7191,6 +7191,7 @@ export class LocalBackend {
         MATCH (n) WHERE (n.filePath IN $paths OR ANY(s IN $suffixes WHERE n.filePath ENDS WITH s))
           AND (n.filePath = b.path OR n.filePath ENDS WITH b.suffix)
           AND NOT n.id STARTS WITH 'BasicBlock:'
+          AND n.id IS NOT NULL AND n.id <> ''
           AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
           AND n.startLine <= b.hi AND n.endLine >= b.lo
         RETURN b.path AS diffPath, n.id AS id, n.name AS name, labels(n) AS type,
@@ -7257,10 +7258,20 @@ export class LocalBackend {
     const exactlyMatchedPaths = new Set<string>();
     const mappedPaths = new Set<string>();
     for (const row of symbolRows) {
+      // A node without an id cannot be named safely in any downstream graph
+      // lookup. In particular, passing '' to the process query joins it to
+      // every corrupt STEP_IN_PROCESS endpoint whose id is also empty, turning
+      // one edit into a repo-wide critical-risk fan-out (#3931). Treat the row
+      // like a failed graph read instead: omit it and withhold a ranked verdict.
+      if (!row.id) {
+        queryDegraded = true;
+        continue;
+      }
       if (row.filePath === row.diffPath) exactlyMatchedPaths.add(row.diffPath);
     }
 
     for (const sym of symbolRows) {
+      if (!sym.id) continue;
       const diffPath = sym.diffPath;
       if (sym.filePath !== sym.diffPath && exactlyMatchedPaths.has(diffPath)) continue;
       const hunks = hunksByPath.get(diffPath) ?? [];
