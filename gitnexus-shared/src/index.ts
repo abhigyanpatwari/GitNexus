@@ -136,6 +136,12 @@ export {
   indexExportsByName,
   indexTopLevelExportsByName,
 } from './scope-resolution/finalize-algorithm.js';
+export type { ImportMembership, ImportVisibility } from './scope-resolution/import-visibility.js';
+export {
+  createEagerImportVisibility,
+  importTargetDirectory,
+  isSelectableImport,
+} from './scope-resolution/import-visibility.js';
 export type {
   FinalizeInput,
   FinalizeFile,

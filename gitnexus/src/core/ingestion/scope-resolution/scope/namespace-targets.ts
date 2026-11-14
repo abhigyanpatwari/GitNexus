@@ -134,7 +134,7 @@ export function collectNamespaceTargets(
   };
   const claimedNames = new Map<string, string | undefined>();
   for (const id of scopeIds) {
-    const edges = (scopes.imports.get(id) ?? []).filter(edgeVisible);
+    const edges = (scopes.imports.edgesAt(id) ?? []).filter(edgeVisible);
     const namesHere = new Map<string, string | undefined>();
     const conflictingNames = new Set<string>();
     const candidates = edges.map((edge) => {

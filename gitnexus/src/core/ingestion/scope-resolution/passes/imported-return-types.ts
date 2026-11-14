@@ -183,8 +183,8 @@ function namespaceLocalNames(scopes: ScopeResolutionIndexes): ReadonlySet<string
   let names = namespaceLocalNamesByIndexes.get(scopes);
   if (names === undefined) {
     const collected = new Set<string>();
-    for (const edges of scopes.imports.values()) {
-      for (const edge of edges) {
+    for (const scope of scopes.imports.scopes()) {
+      for (const edge of scopes.imports.edgesAt(scope) ?? []) {
         if (bindsTargetModule(edge)) collected.add(edge.localName);
       }
     }

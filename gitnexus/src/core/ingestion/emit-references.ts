@@ -174,8 +174,8 @@ export function emitScopeGraph(input: {
     }
   }
 
-  for (const [scopeId, edges] of scopes.imports) {
-    for (const edge of edges) {
+  for (const scopeId of scopes.imports.scopes()) {
+    for (const edge of scopes.imports.edgesAt(scopeId) ?? []) {
       if (edge.targetModuleScope === undefined) continue;
       graph.addRelationship({
         id: `rel:imports:${scopeId}->${edge.targetModuleScope}:${edge.localName}`,

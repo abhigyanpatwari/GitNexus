@@ -435,7 +435,8 @@ export async function planGraphRename(
       occurrenceIndex(source).byDefinitionId.get(def.nodeId) ?? occurrenceAt(source, def.nameRange);
     add(source, occurrence, selected, [def.nodeId]);
   }
-  for (const [scopeId, imports] of indexes.imports) {
+  for (const scopeId of indexes.imports.scopes()) {
+    const imports = indexes.imports.edgesAt(scopeId) ?? [];
     const scope = indexes.scopeTree.getScope(scopeId);
     const source = scope && files.get(scope.filePath);
     if (!source) continue;

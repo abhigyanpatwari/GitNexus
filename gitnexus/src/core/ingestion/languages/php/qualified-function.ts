@@ -322,7 +322,7 @@ export function bindPhpUseFunctionImports(
       const name = parsedImport.localName;
       // Finalize attaches PHP imports, and binds them, at the module scope.
       const scopeId = parsed.moduleScope;
-      const via = indexes.imports.get(scopeId)?.find((edge) => edge.localName === name);
+      const via = indexes.imports.edgesAt(scopeId)?.find((edge) => edge.localName === name);
       if (via === undefined) continue;
       const bound =
         (indexes.scopeTree.getScope(scopeId)?.bindings.get(name)?.length ?? 0) +

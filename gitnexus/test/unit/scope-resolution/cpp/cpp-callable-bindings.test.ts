@@ -3,6 +3,7 @@ import type { BindingRef, Scope, SymbolDefinition } from 'gitnexus-shared';
 import { cppScopeResolver } from '../../../../src/core/ingestion/languages/cpp/scope-resolver.js';
 import { lookupNameClaim } from '../../../../src/core/ingestion/scope-resolution/scope/walkers.js';
 import type { ScopeResolutionIndexes } from '../../../../src/core/ingestion/model/scope-resolution-indexes.js';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 
 const at = (line: number) => ({ startLine: line, startCol: 0, endLine: line, endCol: 20 });
 const definition = (filePath: string, parameter: string): SymbolDefinition => ({
@@ -47,7 +48,7 @@ function indexes(
     scopeTree: { byId, getScope: (id: string) => byId.get(id) },
     bindings: new Map([['module', new Map([['choose', finalized]])]]),
     bindingAugmentations: new Map(),
-    imports: new Map(),
+    imports: createEagerImportVisibility(new Map()),
   } as unknown as ScopeResolutionIndexes;
 }
 

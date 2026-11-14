@@ -558,7 +558,7 @@ function findReexportedMember(
   let count = 0;
 
   for (const moduleScope of moduleScopesFor(targetModule, workspaceIndex, index, scopes)) {
-    for (const edge of scopes.imports.get(moduleScope.id) ?? []) {
+    for (const edge of scopes.imports.edgesAt(moduleScope.id) ?? []) {
       if (edge.localName !== name) continue;
       // Only a `pub use` re-exports. A private `use` (`named`) makes the name
       // visible INSIDE the module and does not put it on the module's public

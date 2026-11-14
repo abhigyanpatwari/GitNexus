@@ -63,7 +63,7 @@
  * rather than through `tryEmitEdge`, whose target side takes a def.
  */
 
-import type { ImportEdge, ParsedFile, ReferenceSite, ScopeId } from 'gitnexus-shared';
+import type { ImportVisibility, ParsedFile, ReferenceSite, ScopeId } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
@@ -124,7 +124,12 @@ interface PropertyCandidate {
  * structural type so the pass does not depend on the full finalize result.
  */
 interface FinalizedImportView {
-  readonly imports: ReadonlyMap<ScopeId, readonly ImportEdge[]>;
+  readonly imports: ImportVisibility;
+}
+
+/** The files one file imports. Only membership is ever asked. */
+interface ImportedFiles {
+  has(filePath: string): boolean;
 }
 
 /** Most distinct names reported back; enough to act on, bounded for logs. */
@@ -257,17 +262,22 @@ function candidatesForLanguage(
 }
 
 /**
- * Files each file directly imports, from the FINALIZED import graph.
+ * Which files each file directly imports, from the FINALIZED import graph.
  *
- * Built from `finalized.imports` rather than the raw per-scope edges because
+ * Asked through `finalized.imports` rather than the raw per-scope edges because
  * only the finalized form has `targetFile` linked — pre-finalize the field is
  * still null for anything the resolver had to look up, which would silently
  * narrow every read to nothing.
+ *
+ * Returns a lookup: the imports of `readingFile`, or `undefined` when the file
+ * imports no file but itself. A file's imports are those of every scope it
+ * owns, so the answer joins the memberships of those scopes. Nothing is copied:
+ * each scope's membership is the finalized model's own view.
  */
-function buildDirectImportMap(
+function directImportsByFile(
   indexes: ScopeResolutionIndexes,
   finalized: FinalizedImportView,
-): ReadonlyMap<string, ReadonlySet<string>> {
+): (readingFile: string) => ImportedFiles | undefined {
   // Resolve each importing scope to its file by POINT LOOKUP on the scope tree,
   // not by walking `parsed.scopes`.
   //
@@ -284,21 +294,31 @@ function buildDirectImportMap(
   // This is the SECOND consumer of `parsed.scopes` on this branch to hit the
   // seal. The first was hoisted above it; this one is converted to the point
   // lookup instead, which is stronger — there is no ordering left to get wrong.
-  const byFile = new Map<string, Set<string>>();
-  for (const [scopeId, edges] of finalized.imports) {
+  const scopesByFile = new Map<string, ScopeId[]>();
+  for (const scopeId of finalized.imports.scopes()) {
     const fromFile = indexes.scopeTree.getScope(scopeId)?.filePath;
     if (fromFile === undefined) continue;
-    for (const edge of edges) {
-      if (edge.targetFile === null || edge.targetFile === fromFile) continue;
-      let set = byFile.get(fromFile);
-      if (set === undefined) {
-        set = new Set<string>();
-        byFile.set(fromFile, set);
-      }
-      set.add(edge.targetFile);
-    }
+    const scopes = scopesByFile.get(fromFile);
+    if (scopes === undefined) scopesByFile.set(fromFile, [scopeId]);
+    else scopes.push(scopeId);
   }
-  return byFile;
+  const byFile = new Map<string, ImportedFiles | undefined>();
+  return (readingFile) => {
+    if (byFile.has(readingFile)) return byFile.get(readingFile);
+    const memberships = (scopesByFile.get(readingFile) ?? []).map((scopeId) =>
+      finalized.imports.membership(scopeId),
+    );
+    const imported: ImportedFiles | undefined = memberships.some((membership) =>
+      membership.hasOtherThan(readingFile),
+    )
+      ? {
+          has: (filePath) =>
+            filePath !== readingFile && memberships.some((membership) => membership.has(filePath)),
+        }
+      : undefined;
+    byFile.set(readingFile, imported);
+    return imported;
+  };
 }
 
 /**
@@ -313,7 +333,7 @@ function buildDirectImportMap(
 function narrowToSingleCandidate(
   candidatesIn: readonly PropertyCandidate[],
   readingFile: string,
-  importedFiles: ReadonlySet<string> | undefined,
+  importedFiles: ImportedFiles | undefined,
   site: ReferenceSite,
 ): { readonly id: string; readonly tier: string } | null {
   // DECLARED ANCHORS FIRST. A return shape is a real definition but a weaker
@@ -427,9 +447,7 @@ export function emitUniqueNamePropertyAccesses(
     };
   }
   const directImports =
-    finalized === undefined
-      ? new Map<string, ReadonlySet<string>>()
-      : buildDirectImportMap(indexes, finalized);
+    finalized === undefined ? () => undefined : directImportsByFile(indexes, finalized);
 
   let emitted = 0;
   let ambiguous = 0;
@@ -486,7 +504,7 @@ export function emitUniqueNamePropertyAccesses(
       const choice = narrowToSingleCandidate(
         candidates,
         parsed.filePath,
-        directImports.get(parsed.filePath),
+        directImports(parsed.filePath),
         site,
       );
       if (choice === null) {
