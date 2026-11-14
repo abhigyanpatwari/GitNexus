@@ -25,6 +25,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { cleanupTempDirSync } from '../../helpers/test-db.js';
 import {
   getRelationships,
   runPipelineFromRepo,
@@ -178,7 +179,7 @@ for (const fixture of FIXTURES) {
     }, 120000);
 
     afterAll(() => {
-      fs.rmSync(root, { recursive: true, force: true });
+      cleanupTempDirSync(root);
     });
 
     it('reaches the declaration and every implementor, with the expected edge count', () => {
