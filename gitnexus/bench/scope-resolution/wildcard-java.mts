@@ -6,6 +6,15 @@
  * `importers` files each write `import big.*;` over a package of `packageFiles`
  * files and use one of its types. The relation has importers x packageFiles
  * pairs; the pass must not hold anything per pair.
+ *
+ * `--closure` adds one static import that makes finalize build re-export
+ * closures. Retained heap cannot show what that build holds while it runs, so
+ * its check is the heap the process is given:
+ *
+ *   node --expose-gc --max-old-space-size=180 --import tsx bench/scope-resolution/wildcard-java.mts 700 700 --closure --check
+ *
+ * The pass completes in 160 MB and not in 150 MB. With one draft written out
+ * per pair for the build it did not complete in 200 MB.
  */
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
@@ -16,7 +25,10 @@ import { SCOPE_RESOLVERS } from '../../src/core/ingestion/scope-resolution/pipel
 import { runScopeResolution } from '../../src/core/ingestion/scope-resolution/pipeline/run.js';
 
 const { values, positionals } = parseArgs({
-  options: { check: { type: 'boolean', default: false } },
+  options: {
+    check: { type: 'boolean', default: false },
+    closure: { type: 'boolean', default: false },
+  },
   allowPositionals: true,
 });
 assert.ok(positionals.length <= 2, 'Expected importer and package file counts');
@@ -44,6 +56,21 @@ const files = [
     content: `package app;\nimport big.*;\npublic class U${j} { void go(T${j % packageFiles} t) { t.run(); } }\n`,
   })),
 ];
+if (values.closure) {
+  // One static import of a name its target file does not declare itself, where
+  // that file has an on-demand import: finalize then builds re-export closures.
+  files.push(
+    {
+      path: 'src/lim/Color.java',
+      content: 'package lim;\nimport big.*;\npublic enum Color { RED, GREEN; T0 t; }\n',
+    },
+    {
+      path: 'src/lim/Trig.java',
+      content:
+        'package lim;\nimport static lim.Color.RED;\npublic class Trig { Color m() { return RED; } }\n',
+    },
+  );
+}
 const parsed = await parseFilesWithWorkers(files, { poolSize: 1 });
 assert.equal(parsed.data.parsedFiles.length, files.length, 'Scope extraction omitted files');
 
@@ -98,16 +125,28 @@ const result = {
 console.log('WILDCARD_RESULT', JSON.stringify(result));
 
 // Every importer still reaches every package file, however that is stored.
-assert.equal(wildcardTargets, importers * packageFiles, 'A wildcard lost package files');
-assert.equal(result.importEdges, importers, 'Each importer uses one package type');
+// The closure shape adds one importer of the package and its two IMPORTS edges.
+const extraImporters = values.closure ? 1 : 0;
+assert.equal(
+  wildcardTargets,
+  (importers + extraImporters) * packageFiles,
+  'A wildcard lost package files',
+);
+assert.equal(
+  result.importEdges,
+  importers + 2 * extraImporters,
+  'Each importer uses one package type',
+);
 assert.equal(result.calls, importers, 'Each importer calls one method');
 if (values.check) {
   assert.equal(wildcardEdges, 0, 'A wildcard import was stored as one edge per package file');
   // Reviewed with one edge per package file and with groups: the same graph,
-  // 2,800 nodes and 4,200 relationships.
+  // 2,800 nodes and 4,200 relationships (closure shape: 2,804 and 4,206).
   assert.equal(
     result.fingerprint,
-    'aa89cadc417ee27912cf64f1c18110e327ffd545d81aa3f1857aa1f23ac2e3b0',
+    values.closure
+      ? 'b3d6983bdd1f19b6834cb699fe89b3154b7f91c95b0e9bab1aae4dfc08b0d6a4'
+      : 'aa89cadc417ee27912cf64f1c18110e327ffd545d81aa3f1857aa1f23ac2e3b0',
     'Wildcard Java graph differs from the reviewed baseline',
   );
   // Measured 4.3 MiB with groups and 54.5 MiB with one edge per package file
