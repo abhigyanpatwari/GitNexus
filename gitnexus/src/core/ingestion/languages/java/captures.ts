@@ -116,19 +116,17 @@ function javaLocalTypeVisibilityScope(node: SyntaxNode): CaptureMatch | undefine
   };
 }
 
-/** Suppress read.member emissions when the field_access is already
- *  covered by a method_invocation (object of a call) or an
- *  assignment_expression (write target). */
-function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
-  const parent = memberNode.parent;
-  if (parent === null) return true;
-
-  switch (parent.type) {
-    case 'assignment_expression':
-      return parent.childForFieldName('left')?.id !== memberNode.id;
-    default:
-      return true;
+/** Ids of the nodes an assignment writes (its `left`), from one native search.
+ *  A read.member on such a field_access is already covered by the write. Asking
+ *  each member for its native `parent` instead costs that member's depth, which
+ *  is quadratic over a left-deep chain of member reads. */
+function assignmentTargetIds(root: SyntaxNode): ReadonlySet<number> {
+  const ids = new Set<number>();
+  for (const assignment of root.descendantsOfType('assignment_expression')) {
+    const left = assignment.childForFieldName('left');
+    if (left !== null) ids.add(left.id);
   }
+  return ids;
 }
 
 export function emitJavaScopeCaptures(
@@ -162,6 +160,7 @@ export function emitJavaScopeCaptures(
   const springDynamicLookupFacts: SpringDynamicLookupFact[] = [];
   const springMessageProducerFacts: SpringMessageProducerFact[] = [];
   const springMemberCallNodeIds = new Set<number>();
+  let writeTargets: ReadonlySet<number> | undefined;
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
@@ -303,13 +302,13 @@ export function emitJavaScopeCaptures(
       }
     }
 
-    // Filter read.member when it's a child of method_invocation or assignment.
+    // Filter read.member when the field_access is an assignment's write target.
     // `@reference.read.member` is captured directly on the `field_access` node.
     if (grouped['@reference.read.member'] !== undefined) {
       const memberNode = nodeIfType(nodeMap['@reference.read.member'], 'field_access');
-      if (memberNode === null || !shouldEmitReadMember(memberNode)) {
-        continue;
-      }
+      if (memberNode === null) continue;
+      writeTargets ??= assignmentTargetIds(tree.rootNode);
+      if (writeTargets.has(memberNode.id)) continue;
     }
 
     // Synthesize `this` / `super` receiver type-bindings on every
