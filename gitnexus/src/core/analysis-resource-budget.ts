@@ -13,6 +13,9 @@ export interface AnalysisResourceRequest {
   /** Explicit total reservation ceiling; independent of the heap-only flag. */
   totalMb?: number;
   mainHeapMb?: number;
+  /** The runtime's own heap limit when nothing pinned one: the automatic main
+   * heap never exceeds it, and may be admitted below it. */
+  mainHeapLimitMb?: number;
   workers?: number;
   workerHeapMb?: number;
   embeddingThreads?: number;
@@ -148,7 +151,14 @@ export function resolveAnalysisResourceBudget(
   );
   const mainHeapMb =
     request.mainHeapMb === undefined
-      ? Math.min(16_384, maximumMainMb, Math.max(MIN_MAIN_HEAP_MB, Math.floor(totalMb * 0.35)))
+      ? Math.min(
+          16_384,
+          maximumMainMb,
+          Math.max(MIN_MAIN_HEAP_MB, Math.floor(totalMb * 0.35)),
+          request.mainHeapLimitMb === undefined
+            ? Infinity
+            : Math.max(MIN_MAIN_HEAP_MB, integer(request.mainHeapLimitMb, 'main heap limit')),
+        )
       : integer(request.mainHeapMb, 'main heap reservation');
   const totalBytes = bytes(totalMb, 'resource budget');
   // --memory-budget has an established 200 MiB minimum. Preserve that explicit

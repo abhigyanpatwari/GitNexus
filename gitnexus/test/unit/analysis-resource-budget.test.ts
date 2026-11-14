@@ -275,6 +275,23 @@ describe('analysis resource admission', () => {
     );
   });
 
+  it.each([
+    // The limit does not fit beside one worker: admit the largest heap that does.
+    [15_700, 4121],
+    // The limit fits: reserve what the process can actually use.
+    [32_768, 4144],
+  ])('treats an unpinned heap limit on a %i MiB host as a ceiling', (ramMb, mainHeapMb) => {
+    const budget = resolveAnalysisResourceBudget({
+      effectiveMemoryBytes: ramMb * MIB,
+      availableCpus: 4,
+      modelMemoryMb: 0,
+      supervisorBytes: 225 * MIB,
+      mainHeapLimitMb: 4144,
+    });
+    expect(budget.mainHeapMb).toBe(mainHeapMb);
+    expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
+  });
+
   it('reports the inherited heap requirement when explicit worker caps cannot constrain it', () => {
     expect(() =>
       resolveAnalysisResourceBudget({
