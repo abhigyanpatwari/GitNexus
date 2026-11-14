@@ -118,16 +118,16 @@ export function javaOnDemandImportTargets(
       visiblePackages.push(types);
       for (const file of types.uncertain) targets.add(file);
     } else {
-      for (const edge of indexes.imports.get(parsed.moduleScope) ?? []) {
+      const statement = imported.atRange;
+      indexes.imports.forEachTarget(parsed.moduleScope, (targetFile, via) => {
         if (
-          edge.kind === 'wildcard-expanded' &&
-          edge.targetFile !== null &&
-          (imported.atRange === undefined ||
-            (edge.atRange?.startLine === imported.atRange.startLine &&
-              edge.atRange?.startCol === imported.atRange.startCol))
+          via.kind === 'wildcard-expanded' &&
+          (statement === undefined ||
+            (via.atRange?.startLine === statement.startLine &&
+              via.atRange?.startCol === statement.startCol))
         )
-          targets.add(edge.targetFile);
-      }
+          targets.add(targetFile);
+      });
     }
   }
   if (visiblePackages.length === 0) return targets;

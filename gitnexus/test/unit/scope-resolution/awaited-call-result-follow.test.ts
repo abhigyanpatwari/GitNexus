@@ -38,6 +38,7 @@ import {
 } from '../../../src/core/ingestion/utils/type-ref-chain.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import type { ElementAccessRoute } from '../../../src/core/ingestion/scope-resolution/contract/scope-resolver.js';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 
 /** A stub language whose only container is `Future<T>`, awaitable to `T`. */
 const awaitRoute = (containerType: string, via: ElementAccessRoute): string | undefined => {
@@ -127,7 +128,7 @@ function indexes(moduleTypeBindings: Map<string, TypeRef>): ScopeResolutionIndex
       getScope: (id: ScopeId) => (id === MODULE ? moduleScope : undefined),
     } as unknown as ScopeTree,
     bindings: new Map(),
-    imports: new Map(),
+    imports: createEagerImportVisibility(new Map()),
     bindingAugmentations: new Map(),
     workspaceFqnBindings: new Map(),
     workspaceTypeBindings: new Map(),

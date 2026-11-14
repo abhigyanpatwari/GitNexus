@@ -17,10 +17,9 @@
  *
  * The TypeScript and Python shapes are already correct on this tree (their
  * name claims stop the walk); they are pinned so the shared change cannot
- * regress them. Ruby and PHP emit no lexical binder names, so the shared rule
- * cannot see their closure binders: those pins CHARACTERIZE today's edges,
- * including the known wrong ones, and must change only in a change that opts
- * those languages in.
+ * regress them. Ruby now publishes parameter names (RUBY-03), so its block
+ * parameter stops the walk too. PHP emits no lexical binder names: its pins
+ * characterize today's edges, including known wrong ones, until it opts in.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -567,8 +566,8 @@ def g_py(cs):
   });
 });
 
-// ── Ruby and PHP: no lexical binder names, so the rule cannot see them ─────
-describe('Ruby — characterization: a block parameter is invisible to the walk', () => {
+// ── Ruby opts into lexical binder names; PHP remains a characterization ───
+describe('Ruby — a block parameter stops the receiver walk (RUBY-03)', () => {
   const run = useFixture('dart11-rb', {
     'models.rb': `class Address
   def save_rb; end
@@ -590,12 +589,13 @@ end
 `,
   });
 
-  it('KNOWN WRONG EDGE at the block site (6:4) until Ruby publishes block binders; no decline recorded', () => {
+  it('records the untyped block binder and preserves the typed outer use', () => {
     expect(memberCalls(run(), 'save_rb')).toEqual([
-      'Method:app.rb:f_rb#1 -> Method:models.rb:Address.save_rb#0 @6:4',
       'Method:app.rb:f_rb#1 -> Method:models.rb:Address.save_rb#0 @8:2',
     ]);
-    expect(declinesAt(run(), 'app.rb', 6, 4, 'save_rb')).toEqual([]);
+    expect(declinesAt(run(), 'app.rb', 6, 4, 'save_rb')).toEqual([
+      `${UNTYPED} scope:app.rb#5:13-7:5:Block`,
+    ]);
   });
 });
 

@@ -338,6 +338,14 @@ authoritative declaration registries.
    for downstream resolution passes. `finalizeScopeModel` returns the scope/index
    bundle that the orchestrator consumes directly.
 
+The bundle's `imports` field is an `ImportVisibility` (`gitnexus-shared`,
+`scope-resolution/import-visibility.ts`), the only way to ask what a scope
+imports. A reader that needs every file a scope reaches asks `reaches`,
+`membership` or `forEachTarget`; a reader that picks an import by name,
+definition or kind uses `edgesAt`. How finalize stores imports is not visible to
+either, so no reader can hold a collection that omits part of what a scope
+reaches.
+
 This read-only model handle restricts registry writes. It does not freeze every
 scope map: imported-return propagation and precise call-result binding deliberately
 refine `Scope.typeBindings` in ordered passes. Graph-query MCP and HTTP endpoints read the
@@ -545,6 +553,7 @@ Single interface a language implements to plug into the pipeline. Contract fully
 | `resolveQualifiedTypeSpellings?`                        | A receiver's declared or return type written QUALIFIED (`rp::C x`, `f(a::Config c)`) that binds nothing through the scope chain resolves through `resolveQualifiedInheritanceBase` — qualifier matched against the candidate's namespace, refuse on a tie — instead of by its tail, which binds the nearer same-named class. Runs after every existing lookup and after the template-argument match; default off, C++ opts in |
 | `splitQualifiedCallee?`                                 | `(callee, callerScope?, scopes?, position?) → { receiver, member } \| undefined` — map a qualified callee spelling (`rp::make`) onto a receiver/member pair that retains the full written namespace qualifier, so a factory result (`auto x = rp::make(); x.m()`, `rp::make().m()`) is typed from the definition `resolveQualifiedReceiverMember` returns and that definition's own declared return type. Caller scope, indexes and source position let a provider reject shadowed or aliased namespace qualifiers only when visible at the factory expression. Shared code never splits on a separator; default off, C++ implements it |
 | `onDemandImportTargets?(parsed, indexes)`               | Files supplying what a source file takes through on-demand (wildcard) imports; narrows persisted File→File `IMPORTS` edges only — `undefined` keeps every edge. Default: no narrowing                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `groupsWildcardImportTargets?`                          | Store a wildcard import that resolves to a list of files as one group over that list instead of one import edge per file. Applies when finalize creates no per-name wildcard bindings; later name resolution uses `ImportVisibility`. Default: one edge per file |
 
 ### Per-language registration
 

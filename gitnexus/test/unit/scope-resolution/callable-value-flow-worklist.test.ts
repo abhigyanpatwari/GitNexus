@@ -13,6 +13,7 @@ import {
   type ScopeId,
   type SymbolDefinition,
 } from 'gitnexus-shared';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import { buildGraphNodeLookup } from '../../../src/core/ingestion/scope-resolution/graph-bridge/node-lookup.js';
@@ -81,7 +82,7 @@ function indexes(scopes: readonly Scope[]): ScopeResolutionIndexes {
       computeMro: () => [],
       implementsOf: () => [],
     }),
-    imports: new Map(),
+    imports: createEagerImportVisibility(new Map()),
     bindings: new Map(),
     bindingAugmentations: new Map(),
     workspaceFqnBindings: new Map(),

@@ -39,16 +39,20 @@
  * tag's `parameter-annotation` fact outranks a local's `constructor-inferred`
  * one, so a tag may only type a name that is a formal parameter, is never
  * REBOUND in the body (binding-target semantics: the name itself, or the name
- * reached through a destructuring list, `for`, `rescue =>`, a block/lambda/
- * nested-def parameter, or a `case … in` / rightward pattern — including the
- * hash shorthand `{user:}`), and is not `self`. A write INTO the parameter
- * (`user.name = x`, `user[0] = 1`, `user.count += 1`, `user.a, user.b = …`),
- * a read as a block-parameter default, a pinned `^user` or `^(user)`, and a
- * read inside a nested block or lambda all keep the tag. Every rebinding
- * case asserts `[]` with the guard and flips to a wrong User#save without
- * it; of the kept cases, ten were lost on fdb945742 (mention-based guard)
- * and `expression_pin_read` on f4d0f8a64 — the rest are controls that also
- * held before.
+ * reached through a destructuring list, `for`, `rescue =>`, or a `case … in` /
+ * rightward pattern — including the hash shorthand `{user:}`), and is not
+ * `self`. A write INTO the parameter (`user.name = x`, `user[0] = 1`,
+ * `user.count += 1`, `user.a, user.b = …`), a read as a block-parameter
+ * default, a pinned `^user` or `^(user)`, and a read inside a nested block or
+ * lambda all keep the tag. Every rebinding case asserts `[]` with the guard
+ * and flips to a wrong User#save without it; of the kept cases, ten were lost
+ * on fdb945742 (mention-based guard) and `expression_pin_read` on f4d0f8a64 —
+ * the rest are controls that also held before. A block, lambda or nested-def
+ * PARAMETER of the same name (`block_param`, `block_local`, `lambda_shadow`,
+ * `nested_def_inner`) no longer declines the tag: since RUBY-03 it is listed
+ * on its own scope, where the receiver walk stops, so those sites still
+ * assert `[]` and the tagged use beside them resolves (`nested_def`; see
+ * ruby-block-param-lexical-stop.test.ts for the block and lambda forms).
  *
  * The fifth suite pins the review's reassign-then-use table (coercion,
  * decorator, association and use-before-rebind idioms): a declined tag makes
@@ -1053,11 +1057,6 @@ end
     'for_multi',
     'rescue_var',
     'implicit_rescue',
-    'block_param',
-    'block_local',
-    'lambda_shadow',
-    'nested_def',
-    'nested_def_inner',
     'hash_pattern_shorthand',
     'rightward_hash_shorthand',
     'test_pattern_hash',
@@ -1067,6 +1066,17 @@ end
     'hash_splat_pattern',
   ] as const)('rebinding: %s declines the tag — no edge (User#save would be wrong)', (fn) => {
     expect(saveCallsFrom(fn)).toEqual([]);
+  });
+
+  it.each(['block_param', 'block_local', 'lambda_shadow', 'nested_def_inner'] as const)(
+    'shadowing: %s declares the name on its own scope — the receiver walk stops there, no edge',
+    (fn) => {
+      expect(saveCallsFrom(fn)).toEqual([]);
+    },
+  );
+
+  it('nested_def: the tagged parameter beside a nested `def inner(user)` keeps the tag (exact User#save)', () => {
+    expect(saveTargets('nested_def')).toEqual([userSaveId]);
   });
 
   it.each([

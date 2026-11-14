@@ -129,7 +129,7 @@
  * pair-key delimiter: partitioning those keys could change collision behavior.
  */
 
-import type { ImportEdge, ScopeId } from 'gitnexus-shared';
+import type { ImportEdge, ImportVisibility, ScopeId } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { generateId } from '../../../../lib/utils.js';
@@ -199,7 +199,7 @@ export type OnDemandImportTargetsOf = (sourceFile: string) => ReadonlySet<string
 
 export function emitImportEdges(
   graph: KnowledgeGraph,
-  imports: ReadonlyMap<ScopeId, readonly ImportEdge[]>,
+  imports: ImportVisibility,
   scopeTree: ScopeResolutionIndexes['scopeTree'],
   reason = 'scope-resolution: import',
   onDemandTargetsOf?: OnDemandImportTargetsOf,
@@ -234,7 +234,7 @@ export function emitImportEdges(
     unused++;
     return true;
   };
-  probe('start', `scopes=${imports.size}`);
+  probe('start', debug ? `scopes=${[...imports.scopes()].length}` : '');
 
   // Read each scope once, retaining only its path. This also avoids decoding
   // disk-backed scope shards again during emission. Check grouping BEFORE any
@@ -244,7 +244,7 @@ export function emitImportEdges(
   let previousFile: string | undefined;
   let grouped = true;
   let scopesScanned = 0;
-  for (const scopeId of imports.keys()) {
+  for (const scopeId of imports.scopes()) {
     const scope = scopeTree.getScope(scopeId);
     if (scope !== undefined) {
       const sourceFile = scope.filePath;
@@ -282,21 +282,21 @@ export function emitImportEdges(
       for (const [targetFile, presence] of pairs) emitPair(sourceFile, targetFile, presence);
       pairs.clear();
     };
-    for (const [scopeId, edges] of imports) {
+    for (const scopeId of imports.scopes()) {
       const nextFile = sourceByScope.get(scopeId);
       if (nextFile === undefined) continue;
       if (nextFile !== sourceFile) {
         flush();
         sourceFile = nextFile;
       }
-      for (const edge of edges) {
+      imports.forEachTarget(scopeId, (targetFile, edge) => {
         if (debug && ++scanned % 65536 === 0) probe('collect-progress', `pairs=${pairs.size}`);
-        if (edge.targetFile === null || edge.targetFile === sourceFile) continue;
-        if (isUnusedWildcard(nextFile, edge.targetFile, edge)) continue;
+        if (targetFile === nextFile) return;
+        if (isUnusedWildcard(nextFile, targetFile, edge)) return;
         const presence = importPresence(edge);
-        const existing = pairs.get(edge.targetFile);
-        if (existing === undefined || presence < existing) pairs.set(edge.targetFile, presence);
-      }
+        const existing = pairs.get(targetFile);
+        if (existing === undefined || presence < existing) pairs.set(targetFile, presence);
+      });
     }
     flush();
     probe('complete');
@@ -310,25 +310,24 @@ export function emitImportEdges(
     { readonly sourceFile: string; readonly targetFile: string; presence: ImportPresence }
   >();
 
-  for (const [scopeId, edges] of imports) {
+  for (const scopeId of imports.scopes()) {
     const sourceFile = sourceByScope.get(scopeId);
     if (sourceFile === undefined) continue;
 
-    for (const edge of edges) {
+    imports.forEachTarget(scopeId, (targetFile, edge) => {
       if (debug && ++scanned % 65536 === 0) probe('collect-progress', `pairs=${pairs.size}`);
-      if (edge.targetFile === null) continue;
-      if (edge.targetFile === sourceFile) continue;
-      if (isUnusedWildcard(sourceFile, edge.targetFile, edge)) continue;
+      if (targetFile === sourceFile) return;
+      if (isUnusedWildcard(sourceFile, targetFile, edge)) return;
 
       const presence = importPresence(edge);
-      const dedupKey = `${sourceFile}->${edge.targetFile}`;
+      const dedupKey = `${sourceFile}->${targetFile}`;
       const existing = pairs.get(dedupKey);
       if (existing === undefined) {
-        pairs.set(dedupKey, { sourceFile, targetFile: edge.targetFile, presence });
+        pairs.set(dedupKey, { sourceFile, targetFile, presence });
       } else if (presence < existing.presence) {
         existing.presence = presence;
       }
-    }
+    });
   }
 
   probe('collected', `pairs=${pairs.size}`);
