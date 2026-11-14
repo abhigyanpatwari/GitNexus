@@ -86,8 +86,8 @@ RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
        sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels`;
 
 // CONTAINING_QUERY for many files in one query. `filePath` has no index, so
-// each CONTAINING_QUERY scans the three node tables to find one file's rows;
-// this pays for that scan once per CONTAINING_FILES_PER_QUERY files.
+// each CONTAINING_QUERY scans the three node tables to find one file's rows.
+// Keep the membership list bounded; larger workloads use one complete scan.
 //
 // No ORDER BY, the same as CONTAINING_QUERY. prefetchFileSymbols groups the
 // rows by file in arrival order, so each file's rows keep the order its own
@@ -112,25 +112,48 @@ WHERE sym.filePath IN $filePaths AND sym.startLine IS NOT NULL AND sym.endLine I
 RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
        sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels`;
 
+// No file membership predicate: LIST_CONTAINS itself scans its list per row.
+// Keep the same UNION and table-scan shape as the per-file queries: the
+// resolvers use first-wins row order. Do not sort the rows during grouping.
+export const CONTAINING_ALL_QUERY = `
+MATCH (sym:Function)
+WHERE sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
+RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
+       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels
+UNION ALL
+MATCH (sym:Method)
+WHERE sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
+RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
+       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels
+UNION ALL
+MATCH (sym:CodeElement)
+WHERE sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
+RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
+       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels`;
+
 /** Files per CONTAINING_FILES_QUERY, which keeps its `IN` list bounded. */
 const CONTAINING_FILES_PER_QUERY = 500;
 
 /**
  * Load the CONTAINING_QUERY rows of every file in `filePaths` into `cache`
- * with CONTAINING_FILES_QUERY. A file with no rows gets `[]`, which is what its
- * own query returns. A batch whose query fails caches nothing for its files, so
- * each of them falls back to its own CONTAINING_QUERY when it is asked for.
+ * with a bounded membership query, or one complete scan for larger workloads.
+ * Return true only after a complete scan. Failed queries cache nothing, so the
+ * caller can fall back to CONTAINING_QUERY. Missing requested files cache [].
  */
 async function prefetchFileSymbols(
   db: CypherExecutor,
   filePaths: readonly string[],
   cache: Map<string, Record<string, unknown>[]>,
-): Promise<void> {
-  for (let i = 0; i < filePaths.length; i += CONTAINING_FILES_PER_QUERY) {
-    const batch = filePaths.slice(i, i + CONTAINING_FILES_PER_QUERY);
+  allFiles: boolean,
+): Promise<boolean> {
+  const batchSize = allFiles ? filePaths.length : CONTAINING_FILES_PER_QUERY;
+  for (let i = 0; i < filePaths.length; i += batchSize) {
+    const batch = filePaths.slice(i, i + batchSize);
     let rows: Record<string, unknown>[];
     try {
-      rows = await db(CONTAINING_FILES_QUERY, { filePaths: batch });
+      rows = allFiles
+        ? await db(CONTAINING_ALL_QUERY)
+        : await db(CONTAINING_FILES_QUERY, { filePaths: batch });
     } catch {
       continue;
     }
@@ -141,15 +164,25 @@ async function prefetchFileSymbols(
       if (list) list.push(row);
       else byFile.set(filePath, [row]);
     }
-    for (const filePath of batch) cache.set(filePath, byFile.get(filePath) ?? []);
+    if (allFiles) {
+      // Keep earlier per-file results and their first-wins order intact.
+      for (const [filePath, symbols] of byFile) {
+        if (!cache.has(filePath)) cache.set(filePath, symbols);
+      }
+    }
+    for (const filePath of batch) {
+      if (!cache.has(filePath)) cache.set(filePath, byFile.get(filePath) ?? []);
+    }
+    if (allFiles) return true;
   }
+  return false;
 }
 
 /** The CONTAINING_QUERY rows of each file, cached for one extract(). */
 interface FileSymbols {
-  load(filePath: string): Promise<Record<string, unknown>[]>;
   /** Files about to be loaded: the next cache miss fetches them all in one query. */
   expect(filePaths: Iterable<string>): void;
+  findById(filePath: string, uid: string): Promise<Record<string, unknown> | undefined>;
 }
 
 // Repo-wide lookup of a symbol by exact name. Used to resolve a provider's
@@ -584,20 +617,32 @@ export class HttpRouteExtractor implements ContractExtractor {
     // back to file-level boundary matching.
     //
     // Files named through `expect` wait in `pendingSymbolFiles`; the first miss
-    // loads all of them, plus the file asked for, with CONTAINING_FILES_QUERY
-    // instead of one CONTAINING_QUERY each. A file nobody expected, or whose
-    // batch failed, still gets its own CONTAINING_QUERY.
+    // uses a bounded CONTAINING_FILES_QUERY. Beyond 500 distinct files (also
+    // counting unanticipated per-file misses), load all symbols once. Thus
+    // growing file counts cannot multiply whole-table scans indefinitely.
+    // Sparse lookups keep their selective results; a failed complete scan
+    // retains the old per-file fallback, outside the healthy-path cost bound.
     const fileSymbolCache = new Map<string, Record<string, unknown>[]>();
+    const fileSymbolIds = new Map<string, Map<string, Record<string, unknown>>>();
     const pendingSymbolFiles = new Set<string>();
+    let allSymbolsAttempted = false;
+    let allSymbolsLoaded = false;
     const loadFileSymbols = async (filePath: string): Promise<Record<string, unknown>[]> => {
       if (!dbExecutor) return [];
       const cached = fileSymbolCache.get(filePath);
       if (cached) return cached;
-      if (pendingSymbolFiles.size > 0) {
+      if (allSymbolsLoaded) return [];
+      if (
+        pendingSymbolFiles.size > 0 ||
+        (!allSymbolsAttempted && fileSymbolCache.size >= CONTAINING_FILES_PER_QUERY)
+      ) {
         pendingSymbolFiles.add(filePath);
         const batch = [...pendingSymbolFiles].filter((f) => !fileSymbolCache.has(f));
         pendingSymbolFiles.clear();
-        await prefetchFileSymbols(dbExecutor, batch, fileSymbolCache);
+        const allFiles =
+          !allSymbolsAttempted && fileSymbolCache.size + batch.length > CONTAINING_FILES_PER_QUERY;
+        if (allFiles) allSymbolsAttempted = true;
+        allSymbolsLoaded = await prefetchFileSymbols(dbExecutor, batch, fileSymbolCache, allFiles);
         const prefetched = fileSymbolCache.get(filePath);
         if (prefetched) return prefetched;
       }
@@ -611,10 +656,21 @@ export class HttpRouteExtractor implements ContractExtractor {
       return rows;
     };
     const fileSymbols: FileSymbols = {
-      load: loadFileSymbols,
       expect: (filePaths) => {
-        if (!dbExecutor) return;
+        if (!dbExecutor || allSymbolsLoaded) return;
         for (const f of filePaths) if (f && !fileSymbolCache.has(f)) pendingSymbolFiles.add(f);
+      },
+      findById: async (filePath, uid) => {
+        let ids = fileSymbolIds.get(filePath);
+        if (!ids) {
+          ids = new Map();
+          for (const row of await loadFileSymbols(filePath)) {
+            const id = String(row.uid ?? row[0]);
+            if (!ids.has(id)) ids.set(id, row);
+          }
+          fileSymbolIds.set(filePath, ids);
+        }
+        return ids.get(uid);
       },
     };
     // Repo-wide UNAMBIGUOUS resolution for a provider handler defined in a file
@@ -897,8 +953,7 @@ export class HttpRouteExtractor implements ContractExtractor {
         if (!method) method = 'GET';
         symbolUid = handlerSymbolId;
         if (filePath) {
-          const syms = await fileSymbols.load(filePath);
-          const hit = syms.find((s) => String(s.uid ?? s[0]) === handlerSymbolId);
+          const hit = await fileSymbols.findById(filePath, handlerSymbolId);
           if (hit) {
             symbolName = String(hit.name ?? hit[1]) || symbolName;
             symPath = String(hit.filePath ?? hit[2]) || filePath;

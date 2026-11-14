@@ -19,6 +19,7 @@ import path from 'path';
 import os from 'os';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import {
+  CONTAINING_ALL_QUERY,
   CONTAINING_FILES_QUERY,
   CONTAINING_QUERY,
   HttpRouteExtractor,
@@ -163,6 +164,21 @@ const realExecutor = async (): Promise<CypherExecutor> => {
 };
 
 describe('CONTAINING_FILES_QUERY against a real LadybugDB', () => {
+  it("keeps each file's symbol order when loading a complete snapshot", async () => {
+    const db = await realExecutor();
+    const byFile = new Map<string, Record<string, unknown>[]>();
+    for (const row of await db(CONTAINING_ALL_QUERY)) {
+      const filePath = String(row.filePath);
+      const rows = byFile.get(filePath) ?? [];
+      rows.push(row);
+      byFile.set(filePath, rows);
+    }
+    expect(byFile.size).toBeGreaterThan(1);
+    for (const [filePath, rows] of byFile) {
+      expect(rows, filePath).toEqual(await db(CONTAINING_QUERY, { filePath }));
+    }
+  });
+
   it('returns each file exactly the rows of its own CONTAINING_QUERY, in the same order', async () => {
     const db = await realExecutor();
     const fileRows = (await db(

@@ -1,0 +1,1323 @@
+{
+  "protocol": "http-route-symbols-v2-fresh-process-per-size",
+  "source": {
+    "revision": "5340562f5c0b1475f796ddfaf4abe4d780118ed2",
+    "dirty": "M .github/workflows/ci-tests.yml\n M gitnexus/src/core/group/extractors/http-route-extractor.ts\n M gitnexus/test/integration/http-route-symbol-batch.test.ts\n?? gitnexus/bench/http-route-symbols/\n?? gitnexus/test/unit/group/http-route-symbol-scaling.test.ts",
+    "extractorSha256": "210fb03a7059baf2411761df6a24f642ba246e551bf3476a28ebf7c90a5689c6",
+    "lockfileSha256": "ae8bd550b281514ac93cc5ff5e13e0d805b1c89f7ec5c6598de7da96e82378d8",
+    "scalingGuardSha256": "051ad84cce900f808706c4cc4fce5ae86273a3983d1773d4a149bc5668cd1a15",
+    "harnessSha256": "1501559a95231c27fa36e4f466bbaa8d561fba6dbb646a579eb9fd9d6ec1feae"
+  },
+  "environment": {
+    "node": "v22.23.3",
+    "platform": "linux",
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K",
+    "databaseThreads": 1,
+    "bufferPoolBytes": 134217728,
+    "loadAverage": [1.44, 2.28, 2.37]
+  },
+  "sizes": [256, 1024, 4096],
+  "samples": 7,
+  "warmups": 2,
+  "results": [
+    {
+      "arm": "spread",
+      "size": 256,
+      "verified": {
+        "wallMs": 101.48181,
+        "cpuMs": 105.349,
+        "heapBytes": 52298704,
+        "peakRssBytes": 214822912,
+        "rssBytes": 214822912,
+        "contracts": 256,
+        "fingerprint": "7f115765bb76e8f830cf5139114e8022d31b76109bdf4d1393a5322dd941b369",
+        "queries": 1,
+        "rowsReturned": 1536,
+        "scannedRows": 1536,
+        "symbolIdReads": 1536,
+        "plans": [
+          "┌────────────────────────────────┐\n│┌──────────────────────────────┐│\n││        Physical Plan         ││\n│└──────────────────────────────┘│\n└────────────────────────────────┘\n┌────────────────────────────────┐                                                                      \n│          PROFILE[20]           │                                                                      \n│   --------------------------   │                                                                      \n│   --------------------------   │                                                                      \n│       NumOutputTuples: 0       │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.000000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.000000       │                                                                      \n│   --------------------------   │                                                                      \n│    WallClockTime: 2.273000     │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│      RESULT_COLLECTOR[19]      │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │                                                                      \n│   --------------------------   │                                                                      \n│     NumOutputTuples: 1536      │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.111000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.150000       │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│       UNION_ALL_SCAN[18]       │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │─────────────────┬──────────────────────────────────┐                 \n│   --------------------------   │                 │                                  │                 \n│       NumOutputTuples: 3       │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│    ExecutionTime: 0.039000     │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│      TotalTime: 0.039000       │                 │                                  │                 \n└───────────────┬────────────────┘                 │                                  │                 \n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│      RESULT_COLLECTOR[5]       │ │      RESULT_COLLECTOR[11]      │ │      RESULT_COLLECTOR[17]      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.087000     │ │    ExecutionTime: 0.093000     │ │    ExecutionTime: 0.097000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.372000       │ │      TotalTime: 0.405000       │ │      TotalTime: 0.406000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│         PROJECTION[4]          │ │         PROJECTION[10]         │ │         PROJECTION[16]         │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.000000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.285000       │ │      TotalTime: 0.312000       │ │      TotalTime: 0.309000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[3]            │ │           FILTER[9]            │ │           FILTER[15]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.001000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.284000       │ │      TotalTime: 0.311000       │ │      TotalTime: 0.309000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[2]            │ │           FILTER[8]            │ │           FILTER[14]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.002000     │ │    ExecutionTime: 0.001000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.284000       │ │      TotalTime: 0.311000       │ │      TotalTime: 0.308000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[1]            │ │           FILTER[7]            │ │           FILTER[13]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   LIST_CONTAINS($filePaths)    │ │   LIST_CONTAINS($filePaths)    │ │   LIST_CONTAINS($filePaths)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.256000     │ │    ExecutionTime: 0.283000     │ │    ExecutionTime: 0.264000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.283000       │ │      TotalTime: 0.309000       │ │      TotalTime: 0.307000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│       SCAN_NODE_TABLE[0]       │ │       SCAN_NODE_TABLE[6]       │ │      SCAN_NODE_TABLE[12]       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Tables: Function        │ │         Tables: Method         │ │      Tables: CodeElement       │\n│           Alias: sym           │ │           Alias: sym           │ │           Alias: sym           │\n│        Properties: name        │ │        Properties: name        │ │        Properties: name        │\n│              uid               │ │              uid               │ │          sym.endLine           │\n│          sym.endLine           │ │          sym.endLine           │ │         sym.startLine          │\n│         sym.startLine          │ │         sym.startLine          │ │              uid               │\n│          sym.filePath          │ │          sym.filePath          │ │          sym.filePath          │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.027000     │ │    ExecutionTime: 0.026000     │ │    ExecutionTime: 0.043000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.027000       │ │      TotalTime: 0.026000       │ │      TotalTime: 0.043000       │\n└────────────────────────────────┘ └────────────────────────────────┘ └────────────────────────────────┘\n"
+        ]
+      },
+      "samples": [
+        {
+          "wallMs": 70.26799199999982,
+          "cpuMs": 70.244,
+          "heapBytes": 48204528,
+          "peakRssBytes": 223473664,
+          "rssBytes": 223473664,
+          "contracts": 256,
+          "fingerprint": "7f115765bb76e8f830cf5139114e8022d31b76109bdf4d1393a5322dd941b369",
+          "queries": 1,
+          "rowsReturned": 1536,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 69.84348399999999,
+          "cpuMs": 74.734,
+          "heapBytes": 48262488,
+          "peakRssBytes": 223473664,
+          "rssBytes": 223473664,
+          "contracts": 256,
+          "fingerprint": "7f115765bb76e8f830cf5139114e8022d31b76109bdf4d1393a5322dd941b369",
+          "queries": 1,
+          "rowsReturned": 1536,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 73.3917469999999,
+          "cpuMs": 77.772,
+          "heapBytes": 48704240,
+          "peakRssBytes": 223473664,
+          "rssBytes": 223473664,
+          "contracts": 256,
+          "fingerprint": "7f115765bb76e8f830cf5139114e8022d31b76109bdf4d1393a5322dd941b369",
+          "queries": 1,
+          "rowsReturned": 1536,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 79.26529699999992,
+          "cpuMs": 81.992,
+          "heapBytes": 48293360,
+          "peakRssBytes": 223670272,
+          "rssBytes": 223670272,
+          "contracts": 256,
+          "fingerprint": "7f115765bb76e8f830cf5139114e8022d31b76109bdf4d1393a5322dd941b369",
+          "queries": 1,
+          "rowsReturned": 1536,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 72.65827999999988,
+          "cpuMs": 77.09,
+          "heapBytes": 48722944,
+          "peakRssBytes": 223866880,
+          "rssBytes": 223866880,
+          "contracts": 256,
+          "fingerprint": "7f115765bb76e8f830cf5139114e8022d31b76109bdf4d1393a5322dd941b369",
+          "queries": 1,
+          "rowsReturned": 1536,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 72.23946499999988,
+          "cpuMs": 73.59,
+          "heapBytes": 48501216,
+          "peakRssBytes": 223866880,
+          "rssBytes": 223866880,
+          "contracts": 256,
+          "fingerprint": "7f115765bb76e8f830cf5139114e8022d31b76109bdf4d1393a5322dd941b369",
+          "queries": 1,
+          "rowsReturned": 1536,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 89.58131400000002,
+          "cpuMs": 88.912,
+          "heapBytes": 48523408,
+          "peakRssBytes": 223866880,
+          "rssBytes": 223866880,
+          "contracts": 256,
+          "fingerprint": "7f115765bb76e8f830cf5139114e8022d31b76109bdf4d1393a5322dd941b369",
+          "queries": 1,
+          "rowsReturned": 1536,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        }
+      ],
+      "median": {
+        "wallMs": 72.65827999999988,
+        "cpuMs": 77.09,
+        "heapBytes": 48501216,
+        "rssBytes": 223670272,
+        "peakRssBytes": 223670272
+      }
+    },
+    {
+      "arm": "spread",
+      "size": 1024,
+      "verified": {
+        "wallMs": 302.24965099999986,
+        "cpuMs": 288.793,
+        "heapBytes": 62099784,
+        "peakRssBytes": 220872704,
+        "rssBytes": 220872704,
+        "contracts": 1024,
+        "fingerprint": "ce338ca046477a2c5ccd477ff1d4861df40f963126738e92b1581ac4c5a1353c",
+        "queries": 1,
+        "rowsReturned": 6144,
+        "scannedRows": 6144,
+        "symbolIdReads": 6144,
+        "plans": [
+          "┌────────────────────────────────┐\n│┌──────────────────────────────┐│\n││        Physical Plan         ││\n│└──────────────────────────────┘│\n└────────────────────────────────┘\n┌────────────────────────────────┐                                                                      \n│          PROFILE[17]           │                                                                      \n│   --------------------------   │                                                                      \n│   --------------------------   │                                                                      \n│       NumOutputTuples: 0       │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.000000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.000000       │                                                                      \n│   --------------------------   │                                                                      \n│    WallClockTime: 1.551000     │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│      RESULT_COLLECTOR[16]      │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │                                                                      \n│   --------------------------   │                                                                      \n│     NumOutputTuples: 6144      │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.320000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.444000       │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│       UNION_ALL_SCAN[15]       │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │─────────────────┬──────────────────────────────────┐                 \n│   --------------------------   │                 │                                  │                 \n│       NumOutputTuples: 3       │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│    ExecutionTime: 0.124000     │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│      TotalTime: 0.124000       │                 │                                  │                 \n└───────────────┬────────────────┘                 │                                  │                 \n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│      RESULT_COLLECTOR[4]       │ │      RESULT_COLLECTOR[9]       │ │      RESULT_COLLECTOR[14]      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.131000     │ │    ExecutionTime: 0.119000     │ │    ExecutionTime: 0.170000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.202000       │ │      TotalTime: 0.183000       │ │      TotalTime: 0.287000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│         PROJECTION[3]          │ │         PROJECTION[8]          │ │         PROJECTION[13]         │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.000000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.071000       │ │      TotalTime: 0.064000       │ │      TotalTime: 0.117000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[2]            │ │           FILTER[7]            │ │           FILTER[12]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.003000     │ │    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.002000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.071000       │ │      TotalTime: 0.064000       │ │      TotalTime: 0.117000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[1]            │ │           FILTER[6]            │ │           FILTER[11]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.002000     │ │    ExecutionTime: 0.002000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.068000       │ │      TotalTime: 0.063000       │ │      TotalTime: 0.115000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│       SCAN_NODE_TABLE[0]       │ │       SCAN_NODE_TABLE[5]       │ │      SCAN_NODE_TABLE[10]       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Tables: Function        │ │         Tables: Method         │ │      Tables: CodeElement       │\n│           Alias: sym           │ │           Alias: sym           │ │           Alias: sym           │\n│      Properties: filePath      │ │      Properties: filePath      │ │        Properties: name        │\n│              name              │ │              name              │ │            filePath            │\n│              uid               │ │              uid               │ │              uid               │\n│          sym.endLine           │ │          sym.endLine           │ │          sym.endLine           │\n│         sym.startLine          │ │         sym.startLine          │ │         sym.startLine          │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.067000     │ │    ExecutionTime: 0.061000     │ │    ExecutionTime: 0.113000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.067000       │ │      TotalTime: 0.061000       │ │      TotalTime: 0.113000       │\n└────────────────────────────────┘ └────────────────────────────────┘ └────────────────────────────────┘\n"
+        ]
+      },
+      "samples": [
+        {
+          "wallMs": 263.77443200000016,
+          "cpuMs": 251.524,
+          "heapBytes": 56884120,
+          "peakRssBytes": 225394688,
+          "rssBytes": 225394688,
+          "contracts": 1024,
+          "fingerprint": "ce338ca046477a2c5ccd477ff1d4861df40f963126738e92b1581ac4c5a1353c",
+          "queries": 1,
+          "rowsReturned": 6144,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 293.88142100000005,
+          "cpuMs": 277.513,
+          "heapBytes": 58629768,
+          "peakRssBytes": 225394688,
+          "rssBytes": 225394688,
+          "contracts": 1024,
+          "fingerprint": "ce338ca046477a2c5ccd477ff1d4861df40f963126738e92b1581ac4c5a1353c",
+          "queries": 1,
+          "rowsReturned": 6144,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 261.17342800000006,
+          "cpuMs": 252.677,
+          "heapBytes": 56946488,
+          "peakRssBytes": 228540416,
+          "rssBytes": 228540416,
+          "contracts": 1024,
+          "fingerprint": "ce338ca046477a2c5ccd477ff1d4861df40f963126738e92b1581ac4c5a1353c",
+          "queries": 1,
+          "rowsReturned": 6144,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 253.90923199999997,
+          "cpuMs": 240.723,
+          "heapBytes": 56965824,
+          "peakRssBytes": 228540416,
+          "rssBytes": 228540416,
+          "contracts": 1024,
+          "fingerprint": "ce338ca046477a2c5ccd477ff1d4861df40f963126738e92b1581ac4c5a1353c",
+          "queries": 1,
+          "rowsReturned": 6144,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 245.31132100000013,
+          "cpuMs": 229.047,
+          "heapBytes": 58633816,
+          "peakRssBytes": 228540416,
+          "rssBytes": 228540416,
+          "contracts": 1024,
+          "fingerprint": "ce338ca046477a2c5ccd477ff1d4861df40f963126738e92b1581ac4c5a1353c",
+          "queries": 1,
+          "rowsReturned": 6144,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 258.40223700000024,
+          "cpuMs": 239.037,
+          "heapBytes": 57162352,
+          "peakRssBytes": 228540416,
+          "rssBytes": 228540416,
+          "contracts": 1024,
+          "fingerprint": "ce338ca046477a2c5ccd477ff1d4861df40f963126738e92b1581ac4c5a1353c",
+          "queries": 1,
+          "rowsReturned": 6144,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 249.35407899999973,
+          "cpuMs": 234.504,
+          "heapBytes": 58914400,
+          "peakRssBytes": 228540416,
+          "rssBytes": 228540416,
+          "contracts": 1024,
+          "fingerprint": "ce338ca046477a2c5ccd477ff1d4861df40f963126738e92b1581ac4c5a1353c",
+          "queries": 1,
+          "rowsReturned": 6144,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        }
+      ],
+      "median": {
+        "wallMs": 258.40223700000024,
+        "cpuMs": 240.723,
+        "heapBytes": 57162352,
+        "rssBytes": 228540416,
+        "peakRssBytes": 228540416
+      }
+    },
+    {
+      "arm": "spread",
+      "size": 4096,
+      "verified": {
+        "wallMs": 1126.195174,
+        "cpuMs": 1057.916,
+        "heapBytes": 68371096,
+        "peakRssBytes": 241770496,
+        "rssBytes": 235479040,
+        "contracts": 4096,
+        "fingerprint": "078078d4ed80822ec28690fec68f9e372abc42df6063027ab38f22c53ebd4255",
+        "queries": 1,
+        "rowsReturned": 24576,
+        "scannedRows": 24576,
+        "symbolIdReads": 24576,
+        "plans": [
+          "┌────────────────────────────────┐\n│┌──────────────────────────────┐│\n││        Physical Plan         ││\n│└──────────────────────────────┘│\n└────────────────────────────────┘\n┌────────────────────────────────┐                                                                      \n│          PROFILE[17]           │                                                                      \n│   --------------------------   │                                                                      \n│   --------------------------   │                                                                      \n│       NumOutputTuples: 0       │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.000000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.000000       │                                                                      \n│   --------------------------   │                                                                      \n│    WallClockTime: 4.479000     │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│      RESULT_COLLECTOR[16]      │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │                                                                      \n│   --------------------------   │                                                                      \n│     NumOutputTuples: 24576     │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 1.183000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 1.655000       │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│       UNION_ALL_SCAN[15]       │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │─────────────────┬──────────────────────────────────┐                 \n│   --------------------------   │                 │                                  │                 \n│      NumOutputTuples: 12       │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│    ExecutionTime: 0.472000     │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│      TotalTime: 0.472000       │                 │                                  │                 \n└───────────────┬────────────────┘                 │                                  │                 \n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│      RESULT_COLLECTOR[4]       │ │      RESULT_COLLECTOR[9]       │ │      RESULT_COLLECTOR[14]      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.511000     │ │    ExecutionTime: 0.427000     │ │    ExecutionTime: 0.534000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.815000       │ │      TotalTime: 0.660000       │ │      TotalTime: 0.920000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│         PROJECTION[3]          │ │         PROJECTION[8]          │ │         PROJECTION[13]         │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.002000     │ │    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.002000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.304000       │ │      TotalTime: 0.233000       │ │      TotalTime: 0.386000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[2]            │ │           FILTER[7]            │ │           FILTER[12]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.005000     │ │    ExecutionTime: 0.004000     │ │    ExecutionTime: 0.007000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.302000       │ │      TotalTime: 0.233000       │ │      TotalTime: 0.384000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[1]            │ │           FILTER[6]            │ │           FILTER[11]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.005000     │ │    ExecutionTime: 0.007000     │ │    ExecutionTime: 0.008000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.297000       │ │      TotalTime: 0.229000       │ │      TotalTime: 0.377000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│       SCAN_NODE_TABLE[0]       │ │       SCAN_NODE_TABLE[5]       │ │      SCAN_NODE_TABLE[10]       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Tables: Function        │ │         Tables: Method         │ │      Tables: CodeElement       │\n│           Alias: sym           │ │           Alias: sym           │ │           Alias: sym           │\n│      Properties: filePath      │ │      Properties: filePath      │ │        Properties: name        │\n│              name              │ │              name              │ │            filePath            │\n│              uid               │ │              uid               │ │              uid               │\n│          sym.endLine           │ │          sym.endLine           │ │          sym.endLine           │\n│         sym.startLine          │ │         sym.startLine          │ │         sym.startLine          │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.292000     │ │    ExecutionTime: 0.222000     │ │    ExecutionTime: 0.369000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.292000       │ │      TotalTime: 0.222000       │ │      TotalTime: 0.369000       │\n└────────────────────────────────┘ └────────────────────────────────┘ └────────────────────────────────┘\n"
+        ]
+      },
+      "samples": [
+        {
+          "wallMs": 1017.428492,
+          "cpuMs": 940.461,
+          "heapBytes": 62669608,
+          "peakRssBytes": 265904128,
+          "rssBytes": 265904128,
+          "contracts": 4096,
+          "fingerprint": "078078d4ed80822ec28690fec68f9e372abc42df6063027ab38f22c53ebd4255",
+          "queries": 1,
+          "rowsReturned": 24576,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 985.4791329999998,
+          "cpuMs": 900.378,
+          "heapBytes": 62823808,
+          "peakRssBytes": 266498048,
+          "rssBytes": 266498048,
+          "contracts": 4096,
+          "fingerprint": "078078d4ed80822ec28690fec68f9e372abc42df6063027ab38f22c53ebd4255",
+          "queries": 1,
+          "rowsReturned": 24576,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 1053.3110120000001,
+          "cpuMs": 973.589,
+          "heapBytes": 62494760,
+          "peakRssBytes": 266522624,
+          "rssBytes": 266522624,
+          "contracts": 4096,
+          "fingerprint": "078078d4ed80822ec28690fec68f9e372abc42df6063027ab38f22c53ebd4255",
+          "queries": 1,
+          "rowsReturned": 24576,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 1035.944313,
+          "cpuMs": 951.928,
+          "heapBytes": 61982544,
+          "peakRssBytes": 266522624,
+          "rssBytes": 266366976,
+          "contracts": 4096,
+          "fingerprint": "078078d4ed80822ec28690fec68f9e372abc42df6063027ab38f22c53ebd4255",
+          "queries": 1,
+          "rowsReturned": 24576,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 1031.340694999999,
+          "cpuMs": 949.546,
+          "heapBytes": 62034688,
+          "peakRssBytes": 266797056,
+          "rssBytes": 266797056,
+          "contracts": 4096,
+          "fingerprint": "078078d4ed80822ec28690fec68f9e372abc42df6063027ab38f22c53ebd4255",
+          "queries": 1,
+          "rowsReturned": 24576,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 1022.6517739999999,
+          "cpuMs": 935.439,
+          "heapBytes": 62992552,
+          "peakRssBytes": 266989568,
+          "rssBytes": 266989568,
+          "contracts": 4096,
+          "fingerprint": "078078d4ed80822ec28690fec68f9e372abc42df6063027ab38f22c53ebd4255",
+          "queries": 1,
+          "rowsReturned": 24576,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 1011.4680250000001,
+          "cpuMs": 931.771,
+          "heapBytes": 62221008,
+          "peakRssBytes": 266989568,
+          "rssBytes": 266768384,
+          "contracts": 4096,
+          "fingerprint": "078078d4ed80822ec28690fec68f9e372abc42df6063027ab38f22c53ebd4255",
+          "queries": 1,
+          "rowsReturned": 24576,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        }
+      ],
+      "median": {
+        "wallMs": 1022.6517739999999,
+        "cpuMs": 940.461,
+        "heapBytes": 62494760,
+        "rssBytes": 266522624,
+        "peakRssBytes": 266522624
+      }
+    },
+    {
+      "arm": "dense",
+      "size": 256,
+      "verified": {
+        "wallMs": 113.29237699999999,
+        "cpuMs": 116.567,
+        "heapBytes": 52241480,
+        "peakRssBytes": 219009024,
+        "rssBytes": 219009024,
+        "contracts": 256,
+        "fingerprint": "4dee7672b23f0b37561176e4b31ce7210bc1f2431de77c8cc9115757e2bccc9e",
+        "queries": 1,
+        "rowsReturned": 1536,
+        "scannedRows": 1536,
+        "symbolIdReads": 1536,
+        "plans": [
+          "┌────────────────────────────────┐\n│┌──────────────────────────────┐│\n││        Physical Plan         ││\n│└──────────────────────────────┘│\n└────────────────────────────────┘\n┌────────────────────────────────┐                                                                      \n│          PROFILE[20]           │                                                                      \n│   --------------------------   │                                                                      \n│   --------------------------   │                                                                      \n│       NumOutputTuples: 0       │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.000000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.000000       │                                                                      \n│   --------------------------   │                                                                      \n│    WallClockTime: 1.158000     │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│      RESULT_COLLECTOR[19]      │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │                                                                      \n│   --------------------------   │                                                                      \n│     NumOutputTuples: 1536      │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.116000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.151000       │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│       UNION_ALL_SCAN[18]       │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │─────────────────┬──────────────────────────────────┐                 \n│   --------------------------   │                 │                                  │                 \n│       NumOutputTuples: 3       │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│    ExecutionTime: 0.035000     │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│      TotalTime: 0.035000       │                 │                                  │                 \n└───────────────┬────────────────┘                 │                                  │                 \n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│      RESULT_COLLECTOR[5]       │ │      RESULT_COLLECTOR[11]      │ │      RESULT_COLLECTOR[17]      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.085000     │ │    ExecutionTime: 0.096000     │ │    ExecutionTime: 0.093000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.116000       │ │      TotalTime: 0.124000       │ │      TotalTime: 0.148000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│         PROJECTION[4]          │ │         PROJECTION[10]         │ │         PROJECTION[16]         │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.000000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.031000       │ │      TotalTime: 0.028000       │ │      TotalTime: 0.055000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[3]            │ │           FILTER[9]            │ │           FILTER[15]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.000000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.031000       │ │      TotalTime: 0.028000       │ │      TotalTime: 0.055000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[2]            │ │           FILTER[8]            │ │           FILTER[14]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.001000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.031000       │ │      TotalTime: 0.028000       │ │      TotalTime: 0.055000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[1]            │ │           FILTER[7]            │ │           FILTER[13]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   LIST_CONTAINS($filePaths)    │ │   LIST_CONTAINS($filePaths)    │ │   LIST_CONTAINS($filePaths)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.006000     │ │    ExecutionTime: 0.006000     │ │    ExecutionTime: 0.010000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.030000       │ │      TotalTime: 0.027000       │ │      TotalTime: 0.054000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│       SCAN_NODE_TABLE[0]       │ │       SCAN_NODE_TABLE[6]       │ │      SCAN_NODE_TABLE[12]       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Tables: Function        │ │         Tables: Method         │ │      Tables: CodeElement       │\n│           Alias: sym           │ │           Alias: sym           │ │           Alias: sym           │\n│        Properties: name        │ │        Properties: name        │ │        Properties: name        │\n│              uid               │ │              uid               │ │          sym.endLine           │\n│          sym.endLine           │ │          sym.endLine           │ │         sym.startLine          │\n│         sym.startLine          │ │         sym.startLine          │ │              uid               │\n│          sym.filePath          │ │          sym.filePath          │ │          sym.filePath          │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.024000     │ │    ExecutionTime: 0.021000     │ │    ExecutionTime: 0.044000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.024000       │ │      TotalTime: 0.021000       │ │      TotalTime: 0.044000       │\n└────────────────────────────────┘ └────────────────────────────────┘ └────────────────────────────────┘\n"
+        ]
+      },
+      "samples": [
+        {
+          "wallMs": 67.255044,
+          "cpuMs": 67.048,
+          "heapBytes": 47869032,
+          "peakRssBytes": 227266560,
+          "rssBytes": 227266560,
+          "contracts": 256,
+          "fingerprint": "4dee7672b23f0b37561176e4b31ce7210bc1f2431de77c8cc9115757e2bccc9e",
+          "queries": 1,
+          "rowsReturned": 1536,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 66.28721700000006,
+          "cpuMs": 70.87,
+          "heapBytes": 47926488,
+          "peakRssBytes": 227659776,
+          "rssBytes": 227659776,
+          "contracts": 256,
+          "fingerprint": "4dee7672b23f0b37561176e4b31ce7210bc1f2431de77c8cc9115757e2bccc9e",
+          "queries": 1,
+          "rowsReturned": 1536,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 75.33964199999991,
+          "cpuMs": 77.159,
+          "heapBytes": 48287928,
+          "peakRssBytes": 227856384,
+          "rssBytes": 227856384,
+          "contracts": 256,
+          "fingerprint": "4dee7672b23f0b37561176e4b31ce7210bc1f2431de77c8cc9115757e2bccc9e",
+          "queries": 1,
+          "rowsReturned": 1536,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 63.953792999999905,
+          "cpuMs": 66.278,
+          "heapBytes": 47957808,
+          "peakRssBytes": 227856384,
+          "rssBytes": 227856384,
+          "contracts": 256,
+          "fingerprint": "4dee7672b23f0b37561176e4b31ce7210bc1f2431de77c8cc9115757e2bccc9e",
+          "queries": 1,
+          "rowsReturned": 1536,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 68.44850599999995,
+          "cpuMs": 70.244,
+          "heapBytes": 48307104,
+          "peakRssBytes": 228249600,
+          "rssBytes": 228249600,
+          "contracts": 256,
+          "fingerprint": "4dee7672b23f0b37561176e4b31ce7210bc1f2431de77c8cc9115757e2bccc9e",
+          "queries": 1,
+          "rowsReturned": 1536,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 66.351764,
+          "cpuMs": 69.331,
+          "heapBytes": 48167640,
+          "peakRssBytes": 228249600,
+          "rssBytes": 228249600,
+          "contracts": 256,
+          "fingerprint": "4dee7672b23f0b37561176e4b31ce7210bc1f2431de77c8cc9115757e2bccc9e",
+          "queries": 1,
+          "rowsReturned": 1536,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 61.67877500000009,
+          "cpuMs": 62.259,
+          "heapBytes": 48186008,
+          "peakRssBytes": 228446208,
+          "rssBytes": 228446208,
+          "contracts": 256,
+          "fingerprint": "4dee7672b23f0b37561176e4b31ce7210bc1f2431de77c8cc9115757e2bccc9e",
+          "queries": 1,
+          "rowsReturned": 1536,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        }
+      ],
+      "median": {
+        "wallMs": 66.351764,
+        "cpuMs": 69.331,
+        "heapBytes": 48167640,
+        "rssBytes": 227856384,
+        "peakRssBytes": 227856384
+      }
+    },
+    {
+      "arm": "dense",
+      "size": 1024,
+      "verified": {
+        "wallMs": 309.27894000000015,
+        "cpuMs": 291.276,
+        "heapBytes": 56356080,
+        "peakRssBytes": 225325056,
+        "rssBytes": 225128448,
+        "contracts": 1024,
+        "fingerprint": "5af45a135f0a914e945516f20753698fbc91ffaf6745e30e3aed818ae28f96b2",
+        "queries": 1,
+        "rowsReturned": 6144,
+        "scannedRows": 6144,
+        "symbolIdReads": 6144,
+        "plans": [
+          "┌────────────────────────────────┐\n│┌──────────────────────────────┐│\n││        Physical Plan         ││\n│└──────────────────────────────┘│\n└────────────────────────────────┘\n┌────────────────────────────────┐                                                                      \n│          PROFILE[20]           │                                                                      \n│   --------------------------   │                                                                      \n│   --------------------------   │                                                                      \n│       NumOutputTuples: 0       │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.000000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.000000       │                                                                      \n│   --------------------------   │                                                                      \n│    WallClockTime: 1.667000     │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│      RESULT_COLLECTOR[19]      │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │                                                                      \n│   --------------------------   │                                                                      \n│     NumOutputTuples: 6144      │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.299000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.422000       │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│       UNION_ALL_SCAN[18]       │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │─────────────────┬──────────────────────────────────┐                 \n│   --------------------------   │                 │                                  │                 \n│       NumOutputTuples: 3       │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│    ExecutionTime: 0.123000     │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│      TotalTime: 0.123000       │                 │                                  │                 \n└───────────────┬────────────────┘                 │                                  │                 \n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│      RESULT_COLLECTOR[5]       │ │      RESULT_COLLECTOR[11]      │ │      RESULT_COLLECTOR[17]      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.123000     │ │    ExecutionTime: 0.120000     │ │    ExecutionTime: 0.143000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.213000       │ │      TotalTime: 0.199000       │ │      TotalTime: 0.268000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│         PROJECTION[4]          │ │         PROJECTION[10]         │ │         PROJECTION[16]         │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.001000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.090000       │ │      TotalTime: 0.079000       │ │      TotalTime: 0.125000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[3]            │ │           FILTER[9]            │ │           FILTER[15]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.002000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.090000       │ │      TotalTime: 0.078000       │ │      TotalTime: 0.124000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[2]            │ │           FILTER[8]            │ │           FILTER[14]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.002000     │ │    ExecutionTime: 0.002000     │ │    ExecutionTime: 0.001000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.089000       │ │      TotalTime: 0.077000       │ │      TotalTime: 0.122000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[1]            │ │           FILTER[7]            │ │           FILTER[13]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   LIST_CONTAINS($filePaths)    │ │   LIST_CONTAINS($filePaths)    │ │   LIST_CONTAINS($filePaths)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.020000     │ │    ExecutionTime: 0.020000     │ │    ExecutionTime: 0.024000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.087000       │ │      TotalTime: 0.075000       │ │      TotalTime: 0.121000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│       SCAN_NODE_TABLE[0]       │ │       SCAN_NODE_TABLE[6]       │ │      SCAN_NODE_TABLE[12]       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Tables: Function        │ │         Tables: Method         │ │      Tables: CodeElement       │\n│           Alias: sym           │ │           Alias: sym           │ │           Alias: sym           │\n│        Properties: name        │ │        Properties: name        │ │        Properties: name        │\n│              uid               │ │              uid               │ │          sym.endLine           │\n│          sym.endLine           │ │          sym.endLine           │ │         sym.startLine          │\n│         sym.startLine          │ │         sym.startLine          │ │              uid               │\n│          sym.filePath          │ │          sym.filePath          │ │          sym.filePath          │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.067000     │ │    ExecutionTime: 0.055000     │ │    ExecutionTime: 0.097000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.067000       │ │      TotalTime: 0.055000       │ │      TotalTime: 0.097000       │\n└────────────────────────────────┘ └────────────────────────────────┘ └────────────────────────────────┘\n"
+        ]
+      },
+      "samples": [
+        {
+          "wallMs": 244.49188499999968,
+          "cpuMs": 227.924,
+          "heapBytes": 55511944,
+          "peakRssBytes": 227094528,
+          "rssBytes": 226930688,
+          "contracts": 1024,
+          "fingerprint": "5af45a135f0a914e945516f20753698fbc91ffaf6745e30e3aed818ae28f96b2",
+          "queries": 1,
+          "rowsReturned": 6144,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 252.9995160000003,
+          "cpuMs": 243.78,
+          "heapBytes": 55316408,
+          "peakRssBytes": 227094528,
+          "rssBytes": 226930688,
+          "contracts": 1024,
+          "fingerprint": "5af45a135f0a914e945516f20753698fbc91ffaf6745e30e3aed818ae28f96b2",
+          "queries": 1,
+          "rowsReturned": 6144,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 261.80248200000005,
+          "cpuMs": 246.026,
+          "heapBytes": 55326264,
+          "peakRssBytes": 227094528,
+          "rssBytes": 226930688,
+          "contracts": 1024,
+          "fingerprint": "5af45a135f0a914e945516f20753698fbc91ffaf6745e30e3aed818ae28f96b2",
+          "queries": 1,
+          "rowsReturned": 6144,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 254.28553599999987,
+          "cpuMs": 248.017,
+          "heapBytes": 56846200,
+          "peakRssBytes": 229486592,
+          "rssBytes": 229486592,
+          "contracts": 1024,
+          "fingerprint": "5af45a135f0a914e945516f20753698fbc91ffaf6745e30e3aed818ae28f96b2",
+          "queries": 1,
+          "rowsReturned": 6144,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 266.73030700000027,
+          "cpuMs": 247.961,
+          "heapBytes": 55365424,
+          "peakRssBytes": 229486592,
+          "rssBytes": 229281792,
+          "contracts": 1024,
+          "fingerprint": "5af45a135f0a914e945516f20753698fbc91ffaf6745e30e3aed818ae28f96b2",
+          "queries": 1,
+          "rowsReturned": 6144,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 269.35994100000016,
+          "cpuMs": 253.317,
+          "heapBytes": 55574304,
+          "peakRssBytes": 229486592,
+          "rssBytes": 229478400,
+          "contracts": 1024,
+          "fingerprint": "5af45a135f0a914e945516f20753698fbc91ffaf6745e30e3aed818ae28f96b2",
+          "queries": 1,
+          "rowsReturned": 6144,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 263.85103200000003,
+          "cpuMs": 245.841,
+          "heapBytes": 55611416,
+          "peakRssBytes": 229486592,
+          "rssBytes": 229449728,
+          "contracts": 1024,
+          "fingerprint": "5af45a135f0a914e945516f20753698fbc91ffaf6745e30e3aed818ae28f96b2",
+          "queries": 1,
+          "rowsReturned": 6144,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        }
+      ],
+      "median": {
+        "wallMs": 261.80248200000005,
+        "cpuMs": 246.026,
+        "heapBytes": 55511944,
+        "rssBytes": 229281792,
+        "peakRssBytes": 229486592
+      }
+    },
+    {
+      "arm": "dense",
+      "size": 4096,
+      "verified": {
+        "wallMs": 1111.8780920000002,
+        "cpuMs": 1051.416,
+        "heapBytes": 62001760,
+        "peakRssBytes": 244219904,
+        "rssBytes": 244219904,
+        "contracts": 4096,
+        "fingerprint": "22146426927f4203282c0e1cb523cdeb30373fa33835676fa737d047e437b27c",
+        "queries": 1,
+        "rowsReturned": 24576,
+        "scannedRows": 24576,
+        "symbolIdReads": 24576,
+        "plans": [
+          "┌────────────────────────────────┐\n│┌──────────────────────────────┐│\n││        Physical Plan         ││\n│└──────────────────────────────┘│\n└────────────────────────────────┘\n┌────────────────────────────────┐                                                                      \n│          PROFILE[20]           │                                                                      \n│   --------------------------   │                                                                      \n│   --------------------------   │                                                                      \n│       NumOutputTuples: 0       │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.000000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.000000       │                                                                      \n│   --------------------------   │                                                                      \n│    WallClockTime: 4.717000     │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│      RESULT_COLLECTOR[19]      │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │                                                                      \n│   --------------------------   │                                                                      \n│     NumOutputTuples: 24576     │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 1.189000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 1.676000       │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│       UNION_ALL_SCAN[18]       │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │─────────────────┬──────────────────────────────────┐                 \n│   --------------------------   │                 │                                  │                 \n│      NumOutputTuples: 12       │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│    ExecutionTime: 0.487000     │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│      TotalTime: 0.487000       │                 │                                  │                 \n└───────────────┬────────────────┘                 │                                  │                 \n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│      RESULT_COLLECTOR[5]       │ │      RESULT_COLLECTOR[11]      │ │      RESULT_COLLECTOR[17]      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.458000     │ │    ExecutionTime: 0.416000     │ │    ExecutionTime: 0.482000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.825000       │ │      TotalTime: 0.718000       │ │      TotalTime: 0.902000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│         PROJECTION[4]          │ │         PROJECTION[10]         │ │         PROJECTION[16]         │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.000000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.367000       │ │      TotalTime: 0.302000       │ │      TotalTime: 0.420000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[3]            │ │           FILTER[9]            │ │           FILTER[15]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.004000     │ │    ExecutionTime: 0.004000     │ │    ExecutionTime: 0.006000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.366000       │ │      TotalTime: 0.301000       │ │      TotalTime: 0.420000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[2]            │ │           FILTER[8]            │ │           FILTER[14]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.006000     │ │    ExecutionTime: 0.006000     │ │    ExecutionTime: 0.005000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.362000       │ │      TotalTime: 0.297000       │ │      TotalTime: 0.414000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[1]            │ │           FILTER[7]            │ │           FILTER[13]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   LIST_CONTAINS($filePaths)    │ │   LIST_CONTAINS($filePaths)    │ │   LIST_CONTAINS($filePaths)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.083000     │ │    ExecutionTime: 0.088000     │ │    ExecutionTime: 0.094000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.356000       │ │      TotalTime: 0.291000       │ │      TotalTime: 0.409000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│       SCAN_NODE_TABLE[0]       │ │       SCAN_NODE_TABLE[6]       │ │      SCAN_NODE_TABLE[12]       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Tables: Function        │ │         Tables: Method         │ │      Tables: CodeElement       │\n│           Alias: sym           │ │           Alias: sym           │ │           Alias: sym           │\n│        Properties: name        │ │        Properties: name        │ │        Properties: name        │\n│              uid               │ │              uid               │ │          sym.endLine           │\n│          sym.endLine           │ │          sym.endLine           │ │         sym.startLine          │\n│         sym.startLine          │ │         sym.startLine          │ │              uid               │\n│          sym.filePath          │ │          sym.filePath          │ │          sym.filePath          │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.273000     │ │    ExecutionTime: 0.203000     │ │    ExecutionTime: 0.315000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.273000       │ │      TotalTime: 0.203000       │ │      TotalTime: 0.315000       │\n└────────────────────────────────┘ └────────────────────────────────┘ └────────────────────────────────┘\n"
+        ]
+      },
+      "samples": [
+        {
+          "wallMs": 1005.9119039999996,
+          "cpuMs": 916.43,
+          "heapBytes": 66781064,
+          "peakRssBytes": 265834496,
+          "rssBytes": 261562368,
+          "contracts": 4096,
+          "fingerprint": "22146426927f4203282c0e1cb523cdeb30373fa33835676fa737d047e437b27c",
+          "queries": 1,
+          "rowsReturned": 24576,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 1014.1243800000002,
+          "cpuMs": 919.133,
+          "heapBytes": 66633664,
+          "peakRssBytes": 265834496,
+          "rssBytes": 263135232,
+          "contracts": 4096,
+          "fingerprint": "22146426927f4203282c0e1cb523cdeb30373fa33835676fa737d047e437b27c",
+          "queries": 1,
+          "rowsReturned": 24576,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 1034.0981550000006,
+          "cpuMs": 944.284,
+          "heapBytes": 66652936,
+          "peakRssBytes": 265834496,
+          "rssBytes": 263380992,
+          "contracts": 4096,
+          "fingerprint": "22146426927f4203282c0e1cb523cdeb30373fa33835676fa737d047e437b27c",
+          "queries": 1,
+          "rowsReturned": 24576,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 990.857261000001,
+          "cpuMs": 898.68,
+          "heapBytes": 66660528,
+          "peakRssBytes": 265834496,
+          "rssBytes": 263368704,
+          "contracts": 4096,
+          "fingerprint": "22146426927f4203282c0e1cb523cdeb30373fa33835676fa737d047e437b27c",
+          "queries": 1,
+          "rowsReturned": 24576,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 1007.6350519999996,
+          "cpuMs": 920.31,
+          "heapBytes": 65883792,
+          "peakRssBytes": 265834496,
+          "rssBytes": 263385088,
+          "contracts": 4096,
+          "fingerprint": "22146426927f4203282c0e1cb523cdeb30373fa33835676fa737d047e437b27c",
+          "queries": 1,
+          "rowsReturned": 24576,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 1003.5901209999993,
+          "cpuMs": 914.621,
+          "heapBytes": 66872792,
+          "peakRssBytes": 265834496,
+          "rssBytes": 263393280,
+          "contracts": 4096,
+          "fingerprint": "22146426927f4203282c0e1cb523cdeb30373fa33835676fa737d047e437b27c",
+          "queries": 1,
+          "rowsReturned": 24576,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 1019.9051620000009,
+          "cpuMs": 927.019,
+          "heapBytes": 66906344,
+          "peakRssBytes": 265834496,
+          "rssBytes": 263565312,
+          "contracts": 4096,
+          "fingerprint": "22146426927f4203282c0e1cb523cdeb30373fa33835676fa737d047e437b27c",
+          "queries": 1,
+          "rowsReturned": 24576,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        }
+      ],
+      "median": {
+        "wallMs": 1007.6350519999996,
+        "cpuMs": 919.133,
+        "heapBytes": 66660528,
+        "rssBytes": 263380992,
+        "peakRssBytes": 265834496
+      }
+    },
+    {
+      "arm": "sparse",
+      "size": 256,
+      "verified": {
+        "wallMs": 27.218343000000004,
+        "cpuMs": 22.699,
+        "heapBytes": 50565848,
+        "peakRssBytes": 215986176,
+        "rssBytes": 215986176,
+        "contracts": 1,
+        "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+        "queries": 1,
+        "rowsReturned": 6,
+        "scannedRows": 1536,
+        "symbolIdReads": 6,
+        "plans": [
+          "┌────────────────────────────────┐\n│┌──────────────────────────────┐│\n││        Physical Plan         ││\n│└──────────────────────────────┘│\n└────────────────────────────────┘\n┌────────────────────────────────┐                                                                      \n│          PROFILE[20]           │                                                                      \n│   --------------------------   │                                                                      \n│   --------------------------   │                                                                      \n│       NumOutputTuples: 0       │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.000000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.000000       │                                                                      \n│   --------------------------   │                                                                      \n│    WallClockTime: 0.996000     │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│      RESULT_COLLECTOR[19]      │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │                                                                      \n│   --------------------------   │                                                                      \n│       NumOutputTuples: 6       │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.077000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.081000       │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│       UNION_ALL_SCAN[18]       │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │─────────────────┬──────────────────────────────────┐                 \n│   --------------------------   │                 │                                  │                 \n│       NumOutputTuples: 3       │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│    ExecutionTime: 0.004000     │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│      TotalTime: 0.004000       │                 │                                  │                 \n└───────────────┬────────────────┘                 │                                  │                 \n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│      RESULT_COLLECTOR[5]       │ │      RESULT_COLLECTOR[11]      │ │      RESULT_COLLECTOR[17]      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.070000     │ │    ExecutionTime: 0.075000     │ │    ExecutionTime: 0.075000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.094000       │ │      TotalTime: 0.110000       │ │      TotalTime: 0.125000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│         PROJECTION[4]          │ │         PROJECTION[10]         │ │         PROJECTION[16]         │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.000000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.024000       │ │      TotalTime: 0.035000       │ │      TotalTime: 0.050000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[3]            │ │           FILTER[9]            │ │           FILTER[15]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.001000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.024000       │ │      TotalTime: 0.034000       │ │      TotalTime: 0.050000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[2]            │ │           FILTER[8]            │ │           FILTER[14]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.000000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.024000       │ │      TotalTime: 0.034000       │ │      TotalTime: 0.049000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[1]            │ │           FILTER[7]            │ │           FILTER[13]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   LIST_CONTAINS($filePaths)    │ │   LIST_CONTAINS($filePaths)    │ │   LIST_CONTAINS($filePaths)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.004000     │ │    ExecutionTime: 0.005000     │ │    ExecutionTime: 0.007000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.024000       │ │      TotalTime: 0.033000       │ │      TotalTime: 0.049000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│       SCAN_NODE_TABLE[0]       │ │       SCAN_NODE_TABLE[6]       │ │      SCAN_NODE_TABLE[12]       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Tables: Function        │ │         Tables: Method         │ │      Tables: CodeElement       │\n│           Alias: sym           │ │           Alias: sym           │ │           Alias: sym           │\n│        Properties: name        │ │        Properties: name        │ │        Properties: name        │\n│              uid               │ │              uid               │ │          sym.endLine           │\n│          sym.endLine           │ │          sym.endLine           │ │         sym.startLine          │\n│         sym.startLine          │ │         sym.startLine          │ │              uid               │\n│          sym.filePath          │ │          sym.filePath          │ │          sym.filePath          │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │ │      NumOutputTuples: 512      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.020000     │ │    ExecutionTime: 0.028000     │ │    ExecutionTime: 0.042000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.020000       │ │      TotalTime: 0.028000       │ │      TotalTime: 0.042000       │\n└────────────────────────────────┘ └────────────────────────────────┘ └────────────────────────────────┘\n"
+        ]
+      },
+      "samples": [
+        {
+          "wallMs": 4.823658000000023,
+          "cpuMs": 9.472,
+          "heapBytes": 45227952,
+          "peakRssBytes": 219131904,
+          "rssBytes": 219131904,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 4.953890999999885,
+          "cpuMs": 11.084,
+          "heapBytes": 45279056,
+          "peakRssBytes": 219328512,
+          "rssBytes": 219328512,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 4.421344999999974,
+          "cpuMs": 8.845,
+          "heapBytes": 45288520,
+          "peakRssBytes": 219328512,
+          "rssBytes": 219328512,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 4.260090999999875,
+          "cpuMs": 8.731,
+          "heapBytes": 45307632,
+          "peakRssBytes": 219525120,
+          "rssBytes": 219525120,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 4.9315540000000055,
+          "cpuMs": 12.044,
+          "heapBytes": 45310008,
+          "peakRssBytes": 219525120,
+          "rssBytes": 219525120,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 6.260747999999921,
+          "cpuMs": 12.306,
+          "heapBytes": 45529800,
+          "peakRssBytes": 219918336,
+          "rssBytes": 219918336,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 5.511170999999877,
+          "cpuMs": 11.808,
+          "heapBytes": 45562912,
+          "peakRssBytes": 219918336,
+          "rssBytes": 219918336,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        }
+      ],
+      "median": {
+        "wallMs": 4.9315540000000055,
+        "cpuMs": 11.084,
+        "heapBytes": 45307632,
+        "rssBytes": 219525120,
+        "peakRssBytes": 219525120
+      }
+    },
+    {
+      "arm": "sparse",
+      "size": 1024,
+      "verified": {
+        "wallMs": 28.74532700000009,
+        "cpuMs": 23.504,
+        "heapBytes": 50272288,
+        "peakRssBytes": 216903680,
+        "rssBytes": 216903680,
+        "contracts": 1,
+        "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+        "queries": 1,
+        "rowsReturned": 6,
+        "scannedRows": 6144,
+        "symbolIdReads": 6,
+        "plans": [
+          "┌────────────────────────────────┐\n│┌──────────────────────────────┐│\n││        Physical Plan         ││\n│└──────────────────────────────┘│\n└────────────────────────────────┘\n┌────────────────────────────────┐                                                                      \n│          PROFILE[20]           │                                                                      \n│   --------------------------   │                                                                      \n│   --------------------------   │                                                                      \n│       NumOutputTuples: 0       │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.000000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.000000       │                                                                      \n│   --------------------------   │                                                                      \n│    WallClockTime: 1.310000     │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│      RESULT_COLLECTOR[19]      │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │                                                                      \n│   --------------------------   │                                                                      \n│       NumOutputTuples: 6       │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.075000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.079000       │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│       UNION_ALL_SCAN[18]       │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │─────────────────┬──────────────────────────────────┐                 \n│   --------------------------   │                 │                                  │                 \n│       NumOutputTuples: 3       │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│    ExecutionTime: 0.004000     │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│      TotalTime: 0.004000       │                 │                                  │                 \n└───────────────┬────────────────┘                 │                                  │                 \n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│      RESULT_COLLECTOR[5]       │ │      RESULT_COLLECTOR[11]      │ │      RESULT_COLLECTOR[17]      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.071000     │ │    ExecutionTime: 0.089000     │ │    ExecutionTime: 0.081000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.158000       │ │      TotalTime: 0.203000       │ │      TotalTime: 0.226000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│         PROJECTION[4]          │ │         PROJECTION[10]         │ │         PROJECTION[16]         │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.001000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.087000       │ │      TotalTime: 0.114000       │ │      TotalTime: 0.145000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[3]            │ │           FILTER[9]            │ │           FILTER[15]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.000000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.087000       │ │      TotalTime: 0.113000       │ │      TotalTime: 0.144000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[2]            │ │           FILTER[8]            │ │           FILTER[14]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.000000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.087000       │ │      TotalTime: 0.112000       │ │      TotalTime: 0.144000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[1]            │ │           FILTER[7]            │ │           FILTER[13]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   LIST_CONTAINS($filePaths)    │ │   LIST_CONTAINS($filePaths)    │ │   LIST_CONTAINS($filePaths)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.014000     │ │    ExecutionTime: 0.049000     │ │    ExecutionTime: 0.020000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.087000       │ │      TotalTime: 0.111000       │ │      TotalTime: 0.144000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│       SCAN_NODE_TABLE[0]       │ │       SCAN_NODE_TABLE[6]       │ │      SCAN_NODE_TABLE[12]       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Tables: Function        │ │         Tables: Method         │ │      Tables: CodeElement       │\n│           Alias: sym           │ │           Alias: sym           │ │           Alias: sym           │\n│        Properties: name        │ │        Properties: name        │ │        Properties: name        │\n│              uid               │ │              uid               │ │          sym.endLine           │\n│          sym.endLine           │ │          sym.endLine           │ │         sym.startLine          │\n│         sym.startLine          │ │         sym.startLine          │ │              uid               │\n│          sym.filePath          │ │          sym.filePath          │ │          sym.filePath          │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │ │     NumOutputTuples: 2048      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.073000     │ │    ExecutionTime: 0.062000     │ │    ExecutionTime: 0.124000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.073000       │ │      TotalTime: 0.062000       │ │      TotalTime: 0.124000       │\n└────────────────────────────────┘ └────────────────────────────────┘ └────────────────────────────────┘\n"
+        ]
+      },
+      "samples": [
+        {
+          "wallMs": 5.305767999999944,
+          "cpuMs": 10.084,
+          "heapBytes": 45245352,
+          "peakRssBytes": 219852800,
+          "rssBytes": 219852800,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 5.276700000000119,
+          "cpuMs": 10.99,
+          "heapBytes": 45296504,
+          "peakRssBytes": 219852800,
+          "rssBytes": 219852800,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 4.510132999999996,
+          "cpuMs": 9.096,
+          "heapBytes": 45305968,
+          "peakRssBytes": 220246016,
+          "rssBytes": 220246016,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 4.455424999999877,
+          "cpuMs": 8.93,
+          "heapBytes": 45325080,
+          "peakRssBytes": 220246016,
+          "rssBytes": 220246016,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 4.294599999999946,
+          "cpuMs": 8.4,
+          "heapBytes": 45327456,
+          "peakRssBytes": 220246016,
+          "rssBytes": 220246016,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 5.36257999999998,
+          "cpuMs": 10.766,
+          "heapBytes": 45547248,
+          "peakRssBytes": 220442624,
+          "rssBytes": 220442624,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 4.688562999999931,
+          "cpuMs": 9.36,
+          "heapBytes": 45580360,
+          "peakRssBytes": 220442624,
+          "rssBytes": 220442624,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        }
+      ],
+      "median": {
+        "wallMs": 4.688562999999931,
+        "cpuMs": 9.36,
+        "heapBytes": 45325080,
+        "rssBytes": 220246016,
+        "peakRssBytes": 220246016
+      }
+    },
+    {
+      "arm": "sparse",
+      "size": 4096,
+      "verified": {
+        "wallMs": 29.578456000000187,
+        "cpuMs": 24.628,
+        "heapBytes": 53297896,
+        "peakRssBytes": 223039488,
+        "rssBytes": 223039488,
+        "contracts": 1,
+        "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+        "queries": 1,
+        "rowsReturned": 6,
+        "scannedRows": 24576,
+        "symbolIdReads": 6,
+        "plans": [
+          "┌────────────────────────────────┐\n│┌──────────────────────────────┐│\n││        Physical Plan         ││\n│└──────────────────────────────┘│\n└────────────────────────────────┘\n┌────────────────────────────────┐                                                                      \n│          PROFILE[20]           │                                                                      \n│   --------------------------   │                                                                      \n│   --------------------------   │                                                                      \n│       NumOutputTuples: 0       │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.000000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.000000       │                                                                      \n│   --------------------------   │                                                                      \n│    WallClockTime: 1.909000     │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│      RESULT_COLLECTOR[19]      │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │                                                                      \n│   --------------------------   │                                                                      \n│       NumOutputTuples: 6       │                                                                      \n│   --------------------------   │                                                                      \n│    ExecutionTime: 0.074000     │                                                                      \n│   --------------------------   │                                                                      \n│      TotalTime: 0.079000       │                                                                      \n└───────────────┬────────────────┘                                                                      \n┌───────────────┴────────────────┐                                                                      \n│       UNION_ALL_SCAN[18]       │                                                                      \n│   --------------------------   │                                                                      \n│        Expressions: uid        │                                                                      \n│              name              │                                                                      \n│            filePath            │                                                                      \n│           startLine            │                                                                      \n│            endLine             │                                                                      \n│             labels             │─────────────────┬──────────────────────────────────┐                 \n│   --------------------------   │                 │                                  │                 \n│       NumOutputTuples: 3       │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│    ExecutionTime: 0.005000     │                 │                                  │                 \n│   --------------------------   │                 │                                  │                 \n│      TotalTime: 0.005000       │                 │                                  │                 \n└───────────────┬────────────────┘                 │                                  │                 \n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│      RESULT_COLLECTOR[5]       │ │      RESULT_COLLECTOR[11]      │ │      RESULT_COLLECTOR[17]      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.082000     │ │    ExecutionTime: 0.075000     │ │    ExecutionTime: 0.084000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.425000       │ │      TotalTime: 0.347000       │ │      TotalTime: 0.501000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│         PROJECTION[4]          │ │         PROJECTION[10]         │ │         PROJECTION[16]         │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Expressions: uid        │ │        Expressions: uid        │ │        Expressions: uid        │\n│              name              │ │              name              │ │              name              │\n│            filePath            │ │            filePath            │ │            filePath            │\n│           startLine            │ │           startLine            │ │           startLine            │\n│            endLine             │ │            endLine             │ │            endLine             │\n│             labels             │ │             labels             │ │             labels             │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.001000     │ │    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.000000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.343000       │ │      TotalTime: 0.272000       │ │      TotalTime: 0.417000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[3]            │ │           FILTER[9]            │ │           FILTER[15]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │ │    IS_NOT_NULL(sym.endLine)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.001000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.342000       │ │      TotalTime: 0.272000       │ │      TotalTime: 0.417000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[2]            │ │           FILTER[8]            │ │           FILTER[14]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │ │   IS_NOT_NULL(sym.startLine)   │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.000000     │ │    ExecutionTime: 0.001000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.342000       │ │      TotalTime: 0.272000       │ │      TotalTime: 0.416000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│           FILTER[1]            │ │           FILTER[7]            │ │           FILTER[13]           │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│   LIST_CONTAINS($filePaths)    │ │   LIST_CONTAINS($filePaths)    │ │   LIST_CONTAINS($filePaths)    │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │ │       NumOutputTuples: 2       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.056000     │ │    ExecutionTime: 0.056000     │ │    ExecutionTime: 0.062000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.342000       │ │      TotalTime: 0.272000       │ │      TotalTime: 0.415000       │\n└───────────────┬────────────────┘ └───────────────┬────────────────┘ └───────────────┬────────────────┘\n┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐ ┌───────────────┴────────────────┐\n│       SCAN_NODE_TABLE[0]       │ │       SCAN_NODE_TABLE[6]       │ │      SCAN_NODE_TABLE[12]       │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│        Tables: Function        │ │         Tables: Method         │ │      Tables: CodeElement       │\n│           Alias: sym           │ │           Alias: sym           │ │           Alias: sym           │\n│        Properties: name        │ │        Properties: name        │ │        Properties: name        │\n│              uid               │ │              uid               │ │          sym.endLine           │\n│          sym.endLine           │ │          sym.endLine           │ │         sym.startLine          │\n│         sym.startLine          │ │         sym.startLine          │ │              uid               │\n│          sym.filePath          │ │          sym.filePath          │ │          sym.filePath          │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │ │     NumOutputTuples: 8192      │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│    ExecutionTime: 0.286000     │ │    ExecutionTime: 0.216000     │ │    ExecutionTime: 0.353000     │\n│   --------------------------   │ │   --------------------------   │ │   --------------------------   │\n│      TotalTime: 0.286000       │ │      TotalTime: 0.216000       │ │      TotalTime: 0.353000       │\n└────────────────────────────────┘ └────────────────────────────────┘ └────────────────────────────────┘\n"
+        ]
+      },
+      "samples": [
+        {
+          "wallMs": 5.513452999999799,
+          "cpuMs": 9.396,
+          "heapBytes": 45202544,
+          "peakRssBytes": 226971648,
+          "rssBytes": 226766848,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 6.008660999999847,
+          "cpuMs": 10.962,
+          "heapBytes": 45257248,
+          "peakRssBytes": 226971648,
+          "rssBytes": 226766848,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 5.182296999999835,
+          "cpuMs": 10.091,
+          "heapBytes": 45266712,
+          "peakRssBytes": 226971648,
+          "rssBytes": 226766848,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 5.32263399999988,
+          "cpuMs": 10.302,
+          "heapBytes": 45283840,
+          "peakRssBytes": 226971648,
+          "rssBytes": 226963456,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 5.415083999999979,
+          "cpuMs": 10.084,
+          "heapBytes": 45290200,
+          "peakRssBytes": 226971648,
+          "rssBytes": 226963456,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 6.248123999999962,
+          "cpuMs": 11.763,
+          "heapBytes": 45507992,
+          "peakRssBytes": 227160064,
+          "rssBytes": 227160064,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        },
+        {
+          "wallMs": 5.677895999999919,
+          "cpuMs": 11.341,
+          "heapBytes": 45541104,
+          "peakRssBytes": 227160064,
+          "rssBytes": 227160064,
+          "contracts": 1,
+          "fingerprint": "c275cd2575794fe8a79482d43a3df9d09fbc6f60e9680757dbec90f07145d2a5",
+          "queries": 1,
+          "rowsReturned": 6,
+          "scannedRows": 0,
+          "symbolIdReads": 0,
+          "plans": []
+        }
+      ],
+      "median": {
+        "wallMs": 5.513452999999799,
+        "cpuMs": 10.302,
+        "heapBytes": 45283840,
+        "rssBytes": 226963456,
+        "peakRssBytes": 226971648
+      }
+    }
+  ],
+  "scaling": {
+    "spread": {
+      "budget": 1.5,
+      "comparisons": [
+        {
+          "from": 256,
+          "to": 1024,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.8891011354796752,
+            "cpuMs": 0.7806557270722532,
+            "heapBytes": 0.29464391160831926,
+            "rssBytes": 0.25544344131704727,
+            "peakRssBytes": 0.25544344131704727,
+            "scannedRows": 1,
+            "symbolIdReads": 1
+          },
+          "passed": true
+        },
+        {
+          "from": 1024,
+          "to": 4096,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.9893991107360256,
+            "cpuMs": 0.9767045525354868,
+            "heapBytes": 0.27332132869550224,
+            "rssBytes": 0.2915486773245394,
+            "peakRssBytes": 0.2915486773245394,
+            "scannedRows": 1,
+            "symbolIdReads": 1
+          },
+          "passed": true
+        },
+        {
+          "from": 256,
+          "to": 4096,
+          "inputRatio": 16,
+          "ratios": {
+            "wallMs": 0.8796758727979812,
+            "cpuMs": 0.7624700025943701,
+            "heapBytes": 0.08053246541282594,
+            "rssBytes": 0.07447419744721373,
+            "peakRssBytes": 0.07447419744721373,
+            "scannedRows": 1,
+            "symbolIdReads": 1
+          },
+          "passed": true
+        }
+      ],
+      "passed": true
+    },
+    "dense": {
+      "budget": 1.5,
+      "comparisons": [
+        {
+          "from": 256,
+          "to": 1024,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.986418695665725,
+            "cpuMs": 0.887142836537768,
+            "heapBytes": 0.2881184546305362,
+            "rssBytes": 0.2515639324812598,
+            "peakRssBytes": 0.2517886354239695,
+            "scannedRows": 1,
+            "symbolIdReads": 1
+          },
+          "passed": true
+        },
+        {
+          "from": 1024,
+          "to": 4096,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.9622092238224077,
+            "cpuMs": 0.9339795387479372,
+            "heapBytes": 0.3002080417144101,
+            "rssBytes": 0.2871804491130286,
+            "peakRssBytes": 0.28959698002748674,
+            "scannedRows": 1,
+            "symbolIdReads": 1
+          },
+          "passed": true
+        },
+        {
+          "from": 256,
+          "to": 4096,
+          "inputRatio": 16,
+          "ratios": {
+            "wallMs": 0.9491411675204291,
+            "cpuMs": 0.8285732572730813,
+            "heapBytes": 0.0864954770464154,
+            "rssBytes": 0.07224424311060777,
+            "peakRssBytes": 0.07291722842402344,
+            "scannedRows": 1,
+            "symbolIdReads": 1
+          },
+          "passed": true
+        }
+      ],
+      "passed": true
+    },
+    "sparse": {
+      "budget": 1.5,
+      "comparisons": [
+        {
+          "from": 256,
+          "to": 1024,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.2376818240254454,
+            "cpuMs": 0.21111512089498374,
+            "heapBytes": 0.2500962751705938,
+            "rssBytes": 0.2508209721056069,
+            "peakRssBytes": 0.2508209721056069,
+            "scannedRows": 1,
+            "symbolIdReads": 0.25
+          },
+          "passed": true
+        },
+        {
+          "from": 1024,
+          "to": 4096,
+          "inputRatio": 4,
+          "ratios": {
+            "wallMs": 0.2939841588989996,
+            "cpuMs": 0.27516025641025643,
+            "heapBytes": 0.24977253211687658,
+            "rssBytes": 0.2576249279351323,
+            "peakRssBytes": 0.25763422662773616,
+            "scannedRows": 1,
+            "symbolIdReads": 0.25
+          },
+          "passed": true
+        },
+        {
+          "from": 256,
+          "to": 4096,
+          "inputRatio": 16,
+          "ratios": {
+            "wallMs": 0.0698746911217006,
+            "cpuMs": 0.05809049079754601,
+            "heapBytes": 0.06246717992235833,
+            "rssBytes": 0.06461773486332681,
+            "peakRssBytes": 0.06462006717044501,
+            "scannedRows": 1,
+            "symbolIdReads": 0.0625
+          },
+          "passed": true
+        }
+      ],
+      "passed": true
+    }
+  },
+  "passed": true
+}
