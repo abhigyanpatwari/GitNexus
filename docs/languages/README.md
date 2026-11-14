@@ -52,7 +52,7 @@ The receiver harness has separate states:
 - **RESOLVES:** the terminal call reaches its full expected declaration ID, with no same-named edge to a different owner. This proves only the supplied fixture.
 - **WRONG-TARGET:** at least one same-named call reaches another declaration, including any guessed edge from an untyped control.
 - **VISIBLE-GAP:** no matching edge, with a recorded receiver-unresolved drop. Some cells intentionally represent untyped negative controls.
-- **INVISIBLE-GAP:** neither the edge nor the receiver drop is recorded; drop counts cannot reveal this loss.
+- **INVISIBLE-GAP:** neither the edge nor a counted receiver drop is recorded; drop counts cannot reveal this loss. An informational note from the shared receiver pass is not a counted drop.
 - **N/A:** the harness declares this spelling inapplicable to its measurement. Read its reason before interpreting language support.
 - **GRAMMAR-UNAVAILABLE:** the parser did not load. No behavior was measured; this is not a product-gap verdict.
 
