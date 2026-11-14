@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import { writeFixtureRepo } from './helpers.js';
@@ -252,18 +252,36 @@ function importerEdges(result: PipelineResult): string[] {
     .sort();
 }
 
-describe('Java on-demand imports: JLS scenarios pinned to current behaviour (#3695)', () => {
-  it.each(scenarios)('$name', async ({ files, edges }) => {
-    const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-on-demand-jls-'));
-    try {
-      writeFixtureRepo(root, { ...files });
-      const result = await runPipelineFromRepo(root, () => {});
-      expect(importerEdges(result)).toEqual(edges);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+/**
+ * Both ways of storing an on-demand import must give these edges. This goes
+ * through the whole pipeline, so reference resolution runs with its lookup
+ * cache installed, which the unit tests of the storage forms do not.
+ */
+const STORAGE_FORMS = [
+  { form: 'grouped', disableGroups: '' },
+  { form: 'one edge per file', disableGroups: '1' },
+] as const;
 
+afterEach(() => vi.unstubAllEnvs());
+
+describe.each(STORAGE_FORMS)(
+  'Java on-demand imports: JLS scenarios pinned to current behaviour (#3695), $form',
+  ({ form, disableGroups }) => {
+    it.each(scenarios)(`$name [${form}]`, async ({ files, edges }) => {
+      vi.stubEnv('GITNEXUS_DISABLE_IMPORT_GROUPS', disableGroups);
+      const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-on-demand-jls-'));
+      try {
+        writeFixtureRepo(root, { ...files });
+        const result = await runPipelineFromRepo(root, () => {});
+        expect(importerEdges(result)).toEqual(edges);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  },
+);
+
+describe('Java on-demand imports: JLS scenario labels', () => {
   it('labels every scenario as matching the JLS or as a known gap', () => {
     const unlabelled = scenarios.filter(
       (scenario) => !/^(matches JLS|known semantic gap|imports match JLS)/.test(scenario.status),

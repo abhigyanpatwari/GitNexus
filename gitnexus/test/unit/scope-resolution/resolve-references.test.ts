@@ -473,6 +473,38 @@ describe('resolveReferenceSites', () => {
     expect(guesses).toBe(1);
   });
 
+  it('sees a nearer binding written by the recorder between two sites', () => {
+    const outer = mkDef({ nodeId: 'Outer.Target', qualifiedName: 'Outer.Target' });
+    const nearer = mkDef({ nodeId: 'Nearer.Target', qualifiedName: 'Nearer.Target' });
+    const module = mkScope({
+      id: 'module',
+      parent: null,
+      bindings: { Target: [{ def: outer, origin: 'local' }] },
+    });
+    const innerBindings = new Map<string, readonly BindingRef[]>();
+    const inner: Scope = {
+      ...mkScope({ id: 'inner', parent: module.id, kind: 'Function' }),
+      bindings: innerBindings,
+    };
+    const sites: ReferenceSite[] = [3, 4].map((line) => ({
+      name: 'Target',
+      kind: 'type-reference',
+      inScope: inner.id,
+      atRange: range(line, 0, line, 6),
+    }));
+    const targets = new Map<ReferenceSite, string>();
+    resolveReferenceSites({
+      scopes: makeIndexes([module, inner], [outer, nearer], sites),
+      ownedMembersByOwner: () => [],
+      // A cached start for `inner` would keep the second site on the outer binding.
+      recordSourceBinding: (site, binding) => {
+        targets.set(site, binding.targetDefIds.join());
+        innerBindings.set('Target', [{ def: nearer, origin: 'local' }]);
+      },
+    });
+    expect(sites.map((site) => targets.get(site)).join(' ')).toBe('Outer.Target Nearer.Target');
+  });
+
   it('observes blocked lexical names and explicit same-spelling import aliases', () => {
     const definition = mkDef({ nodeId: 'def:Payload', type: 'Class', qualifiedName: 'Payload' });
     const module = mkScope({

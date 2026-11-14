@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import {
   buildDefIndex,
@@ -284,6 +285,92 @@ function receiverFixture() {
 }
 
 describe('provider call outcomes', () => {
+  it.each(['recordSourceBinding', 'onSelectedCall'] as const)(
+    'observes receiver binding changes made by %s between sites',
+    (callback) => {
+      const f = fixture([], 'Class', 'caller.ts');
+      Object.assign(f.scope, {
+        bindings: new Map([['Owner', [{ def: f.owner, origin: 'local' }]]]),
+        typeBindings: new Map([
+          [
+            'service',
+            {
+              rawName: 'Owner',
+              declaredAtScope: f.scope.id,
+              source: 'parameter-annotation',
+            },
+          ],
+        ]),
+      });
+      const typeBindings = new Map<string, TypeRef>();
+      const inner: Scope = {
+        ...f.scope,
+        id: 'inner',
+        parent: f.scope.id,
+        range: { startLine: 2, startCol: 0, endLine: 10, endCol: 0 },
+        ownedDefs: [],
+        bindings: new Map(),
+        typeBindings,
+      };
+      const sites: ReferenceSite[] = [3, 4].map((line) => ({
+        ...f.site,
+        inScope: inner.id,
+        callForm: 'member',
+        explicitReceiver: { name: 'service' },
+        atRange: { startLine: line, startCol: 2, endLine: line, endCol: 20 },
+      }));
+      const parsed = {
+        ...f.parsed,
+        scopes: [f.moduleScope, f.scope, inner],
+        referenceSites: sites,
+      };
+      const scopes = {
+        ...f.context.scopes,
+        scopeTree: buildScopeTree(parsed.scopes),
+        referenceSites: sites,
+      };
+      const { graph, nodeLookup, model } = f.context;
+      model.methods.register(f.owner.nodeId, 'choose', f.member);
+      let recorded = 0;
+      const changeBinding = () => {
+        recorded++;
+        typeBindings.set('service', {
+          rawName: 'Missing',
+          declaredAtScope: inner.id,
+          source: 'parameter-annotation',
+        });
+      };
+      emitReceiverBoundCalls(
+        graph,
+        scopes,
+        [parsed],
+        nodeLookup,
+        new Set(),
+        {
+          isSuperReceiver: () => false,
+          arityCompatibility: () => 'compatible',
+          resolveReceiverMember: () => ({ kind: 'resolved', definition: f.member }),
+        },
+        buildWorkspaceResolutionIndex([parsed]),
+        model,
+        callback === 'recordSourceBinding'
+          ? {
+              recordSourceBinding: (_site, binding) => {
+                if (binding.status === 'resolved') changeBinding();
+              },
+            }
+          : { onSelectedCall: changeBinding },
+      );
+      expect(recorded).toBe(1);
+      expect(
+        isDeepStrictEqual(
+          [...graph.iterRelationshipsByType('CALLS')].map((edge) => edge.targetId),
+          ['Method:owner.ts:Owner.choose#1'],
+        ),
+      ).toBe(true);
+    },
+  );
+
   it('distinguishes nested calls that share their starting position', () => {
     const f = fixture();
     expect(selectedCallKey('caller.ts', f.site.atRange)).not.toBe(
