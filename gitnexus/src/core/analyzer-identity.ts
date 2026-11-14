@@ -557,7 +557,7 @@ function hashStableFile(candidate: string): {
     try {
       descriptor = openSync(candidate, fsConstants.O_RDONLY);
       const openedBefore = statState(fstatSync(descriptor, { bigint: true }));
-      if (!isDeepStrictEqual(openedBefore, before.target)) continue;
+      if (!isDeepStrictEqual({ ...openedBefore, dev: before.target.dev }, before.target)) continue;
 
       const hash = createHash('sha256');
       const buffer = Buffer.allocUnsafe(HASH_BUFFER_BYTES);
