@@ -437,11 +437,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
 
   for (const scc of sccs) {
     const sccFiles = new Set(scc.files);
-    const capacity = countEdgesWithin(edgeIndex, sccFiles, groupIndex);
-    // A grouped wildcard is settled from the start. Its per-file drafts would
-    // each have finalized in the first pass and counted as progress, so the
-    // fixpoint runs the same number of passes either way.
-    let groupsSettle = groupIndex.size > 0 && scc.files.some((f) => groupIndex.has(f));
+    const capacity = countEdgesWithin(edgeIndex, sccFiles);
 
     // Run the fixpoint up to `capacity` iterations. Each iteration tries to
     // resolve every still-unlinked edge in the SCC; stops early if a pass
@@ -449,8 +445,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
     let progressed = true;
     let iterations = 0;
     while (progressed && iterations < capacity) {
-      progressed = groupsSettle;
-      groupsSettle = false;
+      progressed = false;
       iterations++;
       for (const filePath of scc.files) {
         const drafts = edgeIndex.get(filePath);
@@ -1883,16 +1878,9 @@ function isCallableOrTypeLike(type: string): boolean {
   return CALLABLE_OR_TYPE_LIKE.has(type);
 }
 
-function countEdgesWithin(
-  edgeIndex: Map<string, ImportEdgeDraft[]>,
-  files: Set<string>,
-  groupIndex?: ReadonlyMap<string, readonly ImportGroupDraft[]>,
-): number {
+function countEdgesWithin(edgeIndex: Map<string, ImportEdgeDraft[]>, files: Set<string>): number {
   let n = 0;
   for (const filePath of files) {
-    // A group counts once per listed file, as its drafts would have.
-    for (const group of groupIndex?.get(filePath) ?? [])
-      for (const targetFile of group.targetFiles) if (files.has(targetFile)) n++;
     const drafts = edgeIndex.get(filePath);
     if (drafts === undefined) continue;
     for (const d of drafts) {
