@@ -401,10 +401,10 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
         input.files,
         byFilePath,
         // The closure builder reads per-file drafts. Hand it the drafts each
-        // group stands for, for the duration of the build only.
+        // group stands for, one file at a time.
         groupIndex.size === 0
           ? moduleEdgeIndex
-          : withGroupDrafts(input.files, edgeIndex, groupIndex),
+          : withGroupDrafts(moduleEdgeIndex, edgeIndex, groupIndex, byFilePath),
         ambiguousByFile,
         topLevelOnly,
         hooks.filterWildcardNames,
@@ -709,44 +709,53 @@ interface GroupedNeighbours {
   reachesSelf(node: string): boolean;
 }
 
+/** Per-file drafts, as the re-export closure builder reads them. */
+interface DraftsByFile {
+  get(filePath: string): readonly ImportEdgeDraft[] | undefined;
+}
+
 /**
- * The module-scope drafts of every file, with each module-scope group written
- * out as the drafts it stands for, in statement order. Built only when
- * re-export closures are actually needed, and dropped when they are built.
+ * The module-scope drafts of a file, with each of its module-scope groups
+ * written out as the drafts it stands for, in statement order. Written out per
+ * lookup and not kept: the closure builder reads one file at a time, so it
+ * holds one file's drafts, never one per (importer, listed file) pair.
  */
 function withGroupDrafts(
-  files: readonly FinalizeFile[],
+  moduleEdgeIndex: ReadonlyMap<string, ImportEdgeDraft[]>,
   edgeIndex: ReadonlyMap<string, ImportEdgeDraft[]>,
   groupIndex: ReadonlyMap<string, readonly ImportGroupDraft[]>,
-): Map<string, ImportEdgeDraft[]> {
-  const out = new Map<string, ImportEdgeDraft[]>();
-  for (const file of files) {
-    const drafts = edgeIndex.get(file.filePath) ?? [];
-    const groups = groupIndex.get(file.filePath) ?? [];
-    const merged: ImportEdgeDraft[] = [];
-    let nextGroup = 0;
-    for (let placed = 0; placed <= drafts.length; placed++) {
-      while (groups[nextGroup]?.position === placed) {
-        const group = groups[nextGroup++]!;
-        if (group.fromScope !== file.moduleScope) continue;
-        for (const targetFile of group.targetFiles) {
-          merged.push({
-            source: group.source,
-            fromFile: file.filePath,
-            fromScope: group.fromScope,
-            targetFile,
-            base: { ...group.via, targetFile },
-            finalized: null,
-          });
+  byFilePath: ReadonlyMap<string, FinalizeFile>,
+): DraftsByFile {
+  return {
+    get(filePath) {
+      const groups = groupIndex.get(filePath);
+      const moduleScope = byFilePath.get(filePath)?.moduleScope;
+      if (groups === undefined || moduleScope === undefined) return moduleEdgeIndex.get(filePath);
+      const drafts = edgeIndex.get(filePath) ?? [];
+      const merged: ImportEdgeDraft[] = [];
+      let nextGroup = 0;
+      for (let placed = 0; placed <= drafts.length; placed++) {
+        while (groups[nextGroup]?.position === placed) {
+          const group = groups[nextGroup++]!;
+          if (group.fromScope !== moduleScope) continue;
+          for (const targetFile of group.targetFiles) {
+            merged.push({
+              source: group.source,
+              fromFile: filePath,
+              fromScope: group.fromScope,
+              targetFile,
+              base: { ...group.via, targetFile },
+              finalized: null,
+            });
+          }
         }
+        if (placed === drafts.length) break;
+        const draft = drafts[placed];
+        if (draft !== undefined && draft.fromScope === moduleScope) merged.push(draft);
       }
-      if (placed === drafts.length) break;
-      const draft = drafts[placed];
-      if (draft !== undefined && draft.fromScope === file.moduleScope) merged.push(draft);
-    }
-    out.set(file.filePath, merged);
-  }
-  return out;
+      return merged;
+    },
+  };
 }
 
 function makeEdgeDrafts(
@@ -1150,7 +1159,7 @@ const EMPTY_REEXPORT_CLOSURES: ReadonlyMap<string, FileReexportClosure> = new Ma
 function buildReexportClosures(
   files: readonly FinalizeFile[],
   byFilePath: ReadonlyMap<string, FinalizeFile>,
-  edgeIndex: ReadonlyMap<string, ImportEdgeDraft[]>,
+  edgeIndex: DraftsByFile,
   ambiguous: ReadonlyMap<string, ReadonlySet<string>>,
   topLevelOnly: boolean,
   filterWildcardNames: FinalizeHooks['filterWildcardNames'],
@@ -1554,7 +1563,7 @@ function collectAmbiguousReexports(
 function populateFileClosure(
   filePath: string,
   byFilePath: ReadonlyMap<string, FinalizeFile>,
-  edgeIndex: ReadonlyMap<string, ImportEdgeDraft[]>,
+  edgeIndex: DraftsByFile,
   closures: Map<string, Map<string, ReexportClosureEntry>>,
   ambiguousByFile: ReadonlyMap<string, ReadonlySet<string>>,
   topLevelOnly: boolean,
