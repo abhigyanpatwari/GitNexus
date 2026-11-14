@@ -240,6 +240,23 @@ export const namedRelations: readonly ImportRelation[] = [
     probeFiles: ['src/a/Missing.java', 'Root.java'],
   },
   {
+    name: 'more wildcards in one scope than are probed one by one',
+    scopes: [
+      {
+        id: scopeId('m'),
+        statements: [
+          { edge: named('One', 1), targets: ['src/a/One.java'] },
+          ...Array.from({ length: 20 }, (_, i) => ({
+            edge: wildcard(i + 2),
+            targets: [`src/p${i}/T.java`],
+          })),
+        ],
+      },
+    ],
+    probeScopes: [],
+    probeFiles: ['src/p20/T.java'],
+  },
+  {
     name: 'the same wildcard written twice',
     scopes: [
       {
