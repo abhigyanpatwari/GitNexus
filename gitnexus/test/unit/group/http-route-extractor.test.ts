@@ -49,7 +49,7 @@ describe('HttpRouteExtractor', () => {
   /**
    * The files a symbol query asks for: one `$filePath` (CONTAINING_QUERY) or a
    * `$filePaths` list (CONTAINING_FILES_QUERY, which the extractor issues for the
-   * files it expects to look up, such as those with Express route detections).
+   * files it expects to look up: route files and scanned files with detections).
    */
   const askedSymbolFiles = (params?: Record<string, unknown>): string[] =>
     Array.isArray(params?.filePaths)
@@ -723,7 +723,10 @@ func main() {
         query: string,
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
-        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+        if (
+          query.includes('UNION ALL') &&
+          askedSymbolFiles(params).some((f) => f.includes('server.go'))
+        ) {
           return [
             {
               uid: 'fn-main',
@@ -766,7 +769,10 @@ func registerRoutes(r *gin.Engine) {
         query: string,
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
-        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+        if (
+          query.includes('UNION ALL') &&
+          askedSymbolFiles(params).some((f) => f.includes('server.go'))
+        ) {
           return [
             {
               uid: 'fn-registerRoutes',
@@ -812,7 +818,10 @@ func main() {
         query: string,
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
-        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+        if (
+          query.includes('UNION ALL') &&
+          askedSymbolFiles(params).some((f) => f.includes('server.go'))
+        ) {
           return [
             {
               uid: 'fn-healthHandler',
@@ -868,7 +877,10 @@ func registerRoutes(r *gin.Engine) {
         query: string,
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
-        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+        if (
+          query.includes('UNION ALL') &&
+          askedSymbolFiles(params).some((f) => f.includes('server.go'))
+        ) {
           return [
             {
               uid: 'fn-listOrders',
@@ -928,7 +940,10 @@ func registerRoutes(r *gin.Engine) {
         query: string,
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
-        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+        if (
+          query.includes('UNION ALL') &&
+          askedSymbolFiles(params).some((f) => f.includes('server.go'))
+        ) {
           return [
             {
               uid: 'fn-authMiddleware',
@@ -984,7 +999,10 @@ func registerRoutes(r *gin.Engine) {
         query: string,
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
-        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+        if (
+          query.includes('UNION ALL') &&
+          askedSymbolFiles(params).some((f) => f.includes('server.go'))
+        ) {
           return [
             {
               uid: 'fn-authMiddleware',
@@ -1048,7 +1066,7 @@ class RouteServiceProvider {
       ): Promise<Record<string, unknown>[]> => {
         if (
           query.includes('UNION ALL') &&
-          String(params?.filePath ?? '').includes('RouteServiceProvider.php')
+          askedSymbolFiles(params).some((f) => f.includes('RouteServiceProvider.php'))
         ) {
           return [
             {
@@ -1093,7 +1111,7 @@ class RouteServiceProvider {
       ): Promise<Record<string, unknown>[]> => {
         if (
           query.includes('UNION ALL') &&
-          String(params?.filePath ?? '').includes('RouteServiceProvider.php')
+          askedSymbolFiles(params).some((f) => f.includes('RouteServiceProvider.php'))
         ) {
           return [
             {
@@ -1157,7 +1175,10 @@ def list_items():
         query: string,
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
-        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('main.py')) {
+        if (
+          query.includes('UNION ALL') &&
+          askedSymbolFiles(params).some((f) => f.includes('main.py'))
+        ) {
           return [
             {
               uid: 'fn-list_items',
@@ -1232,7 +1253,10 @@ def list_items():
         query: string,
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
-        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('main.py')) {
+        if (
+          query.includes('UNION ALL') &&
+          askedSymbolFiles(params).some((f) => f.includes('main.py'))
+        ) {
           return [
             {
               uid: 'fn-list_items',
@@ -1280,7 +1304,10 @@ def list_items():
         query: string,
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
-        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('main.py')) {
+        if (
+          query.includes('UNION ALL') &&
+          askedSymbolFiles(params).some((f) => f.includes('main.py'))
+        ) {
           return [
             {
               uid: 'fn-list_items',
@@ -1326,7 +1353,10 @@ def create_item():
         query: string,
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
-        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('main.py')) {
+        if (
+          query.includes('UNION ALL') &&
+          askedSymbolFiles(params).some((f) => f.includes('main.py'))
+        ) {
           return [
             {
               uid: 'fn-create_item',
@@ -7624,13 +7654,13 @@ export async function fetchHealth() {
           ];
         }
         if (query.includes('UNION ALL')) {
-          const fp = String(params?.filePath ?? '');
-          const row = fp.includes('graph.ts')
-            ? { uid: 'uid-fn-fetch', name: 'fetchUsers', filePath: 'src/api/graph.ts' }
-            : fp.includes('health.ts')
-              ? { uid: 'uid-fn-health', name: 'fetchHealth', filePath: 'src/api/health.ts' }
-              : null;
-          return row ? [{ ...row, startLine: 1, endLine: 4, labels: ['Function'] }] : [];
+          const rows = [
+            { uid: 'uid-fn-fetch', name: 'fetchUsers', filePath: 'src/api/graph.ts' },
+            { uid: 'uid-fn-health', name: 'fetchHealth', filePath: 'src/api/health.ts' },
+          ];
+          return rows
+            .filter((row) => askedSymbolFiles(params).includes(row.filePath))
+            .map((row) => ({ ...row, startLine: 1, endLine: 4, labels: ['Function'] }));
         }
         return [];
       };
@@ -7817,27 +7847,33 @@ export default r;
     const isFileQuery = (q: string): boolean =>
       q.includes('UNION ALL') && q.includes('sym.filePath = $filePath');
     const isFilesQuery = (q: string): boolean =>
-      q.includes('UNION ALL') && q.includes('sym.filePath IN $filePaths');
+      q.includes('UNION ALL') && q.includes('UNWIND $filePaths');
 
     /**
      * A graph that answers the extractor's queries from `symbols` (kept in
-     * storage order) and records every query. Like the engine's UNION ALL, a
-     * symbol query returns the Function rows, then Method, then CodeElement,
-     * each in storage order, so in a batch the rows of different files
-     * interleave. `failBatch` makes every CONTAINING_FILES_QUERY throw.
+     * storage order) and records every query. Each row carries `ord`, its
+     * position in `symbols`, as the engine's rows carry their scan offset.
+     * By default a symbol query returns the Function rows, then Method, then
+     * CodeElement, each in storage order (what one execution thread gives);
+     * `reversed` returns them back to front, standing in for the order several
+     * threads can deliver. `failBatch` makes every CONTAINING_FILES_QUERY throw.
      */
     const recordingGraph = (opts: {
       routes?: Record<string, unknown>[];
       symbols: SymbolRow[];
       failBatch?: boolean;
+      reversed?: boolean;
     }) => {
       const calls: Array<{ query: string; params: Record<string, unknown> }> = [];
-      const rowsOf = (files: ReadonlySet<string>): Record<string, unknown>[] =>
-        ['Function', 'Method', 'CodeElement'].flatMap((label) =>
-          opts.symbols
+      const stored = opts.symbols.map((sym, ord) => ({ ...sym, ord }));
+      const rowsOf = (files: ReadonlySet<string>): Record<string, unknown>[] => {
+        const rows = ['Function', 'Method', 'CodeElement'].flatMap((label) =>
+          stored
             .filter((sym) => sym.labels[0] === label && files.has(sym.filePath))
             .map((sym) => ({ ...sym })),
         );
+        return opts.reversed ? rows.reverse() : rows;
+      };
       const db = async (
         query: string,
         params: Record<string, unknown> = {},
@@ -7912,10 +7948,10 @@ export default r;
       ]);
     });
 
-    it('gives a file nobody expected its own query', async () => {
-      const dir = fs.mkdtempSync(path.join(tmpDir, 'batch-unexpected-'));
-      // A FastAPI provider: found by the per-file source scan, so nothing names
-      // main.py before its symbols are asked for.
+    it('names a source-scan file before resolving its detections', async () => {
+      const dir = fs.mkdtempSync(path.join(tmpDir, 'batch-source-scan-'));
+      // A FastAPI provider found by the per-file source scan: main.py is not a
+      // route file, so it loads with the scanned files that have detections.
       fs.writeFileSync(
         path.join(dir, 'main.py'),
         `from fastapi import FastAPI
@@ -7943,8 +7979,8 @@ def health():
 
       const contracts = await extractor.extract(graph.db, dir, makeRepo(dir));
 
-      expect(graph.batches()).toEqual([[ORDERS, USERS, ITEMS]]);
-      expect(graph.singles()).toEqual(['main.py']);
+      expect(graph.batches()).toEqual([[ORDERS, USERS, ITEMS], ['main.py']]);
+      expect(graph.singles()).toEqual([]);
       expect(contracts.find((c) => c.contractId === 'http::GET::/api/health')).toMatchObject({
         symbolUid: 'Function:main.py:health',
         symbolName: 'health',
@@ -8024,9 +8060,10 @@ export default admin;
 `,
       );
       const symbols: SymbolRow[] = [
-        // Two symbols with the same span around the inline /api/ping handler
-        // (0-based rows 2-4). Containment keeps the first of equal spans, so
-        // the row order a file's symbols arrive in decides which one wins.
+        // Three symbols with the same span around the inline /api/ping handler
+        // (0-based rows 2-4). Containment keeps the first of equal spans, in
+        // the extractor's fixed order: Function before CodeElement, and the
+        // earlier-stored of two Functions, whatever order the rows arrive in.
         {
           uid: 'z-ping-function',
           name: 'pingFunction',
@@ -8036,6 +8073,14 @@ export default admin;
           labels: ['Function'],
         },
         handlerSymbols[0],
+        {
+          uid: 'a-ping-twin',
+          name: 'pingTwin',
+          filePath: 'src/routes.ts',
+          startLine: 2,
+          endLine: 4,
+          labels: ['Function'],
+        },
         {
           uid: 'a-ping-element',
           name: 'pingElement',
@@ -8056,17 +8101,34 @@ export default admin;
       ];
       const batched = recordingGraph({ routes: handlerRoutes, symbols });
       const perFile = recordingGraph({ routes: handlerRoutes, symbols, failBatch: true });
+      const reversed = recordingGraph({ routes: handlerRoutes, symbols, reversed: true });
+      const reversedPerFile = recordingGraph({
+        routes: handlerRoutes,
+        symbols,
+        reversed: true,
+        failBatch: true,
+      });
 
       const fromBatches = await extractor.extract(batched.db, dir, makeRepo(dir));
       const fromSingles = await new HttpRouteExtractor().extract(perFile.db, dir, makeRepo(dir));
+      const fromReversed = await new HttpRouteExtractor().extract(reversed.db, dir, makeRepo(dir));
+      const fromReversedSingles = await new HttpRouteExtractor().extract(
+        reversedPerFile.db,
+        dir,
+        makeRepo(dir),
+      );
 
       // The handler files in one query, then the files with Express detections in one more.
       expect(batched.batches()).toHaveLength(2);
       expect(batched.batches()[0]).toEqual([ORDERS, USERS, ITEMS]);
       expect([...batched.batches()[1]].sort()).toEqual(['src/admin.ts', 'src/routes.ts']);
       expect(batched.singles()).toEqual([]);
-      expect(perFile.singles().length).toBeGreaterThan(0);
+      expect([...perFile.singles()].sort()).toEqual(
+        [ORDERS, USERS, ITEMS, 'src/admin.ts', 'src/routes.ts'].sort(),
+      );
       expect(fromBatches).toEqual(fromSingles);
+      expect(fromReversed).toEqual(fromBatches);
+      expect(fromReversedSingles).toEqual(fromBatches);
       expect(fromBatches.find((c) => c.contractId === 'http::GET::/api/ping')).toMatchObject({
         symbolUid: 'z-ping-function',
         symbolName: 'pingFunction',

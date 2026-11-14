@@ -46,7 +46,11 @@ const lbug = require('@ladybugdb/core');
 const sourcePath = path.join(root, 'src/core/group/extractors/http-route-extractor.ts');
 const { HttpRouteExtractor, HANDLES_ROUTE_QUERY } = await import(pathToFileURL(sourcePath));
 const hash = (value) => createHash('sha256').update(value).digest('hex');
-const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+const median = (xs) => {
+  const sorted = [...xs].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+};
 const canonical = (value) =>
   Array.isArray(value)
     ? value.map(canonical)
@@ -113,8 +117,16 @@ async function fixture(arm, size) {
       CREATE (:${label} { id: '${label}:' + CAST(n AS STRING), name: 'handler' + CAST(n AS STRING),
         filePath: 'routes/r' + CAST(${arm === 'dense' ? '0' : 'CAST(floor(n / 2.0) AS INT64)'} AS STRING) + '.opaque',
         startLine: n * 3, endLine: n * 3 + 2 })`);
+    // As many symbols again in files no route names. A loader that fetches
+    // more than the requested files' rows returns these and fails the run.
+    await query(`UNWIND range(0, ${size * 2 - 1}) AS n
+      CREATE (:${label} { id: '${label}:other:' + CAST(n AS STRING), name: 'other' + CAST(n AS STRING),
+        filePath: 'lib/o' + CAST(CAST(floor(n / 2.0) AS INT64) AS STRING) + '.opaque',
+        startLine: n * 3, endLine: n * 3 + 2 })`);
   }
   const count = arm === 'sparse' ? 1 : size;
+  // Rows of the requested files: one six-symbol file (sparse), or all route files.
+  const requestedRows = arm === 'sparse' ? 6 : size * 6;
   const routes = Array.from({ length: count }, (_, i) => ({
     fileId: `File:${i}`,
     filePath: `routes/r${arm === 'dense' ? 0 : i}.opaque`,
@@ -177,6 +189,11 @@ async function fixture(arm, size) {
     const used = process.cpuUsage(cpu);
     const memory = process.memoryUsage();
     assert.deepEqual(contracts, expected, `${arm}/${size}: exact contract drift`);
+    assert.equal(
+      stats.rowsReturned,
+      requestedRows,
+      `${arm}/${size}: symbol queries must return the requested files' rows and no others`,
+    );
     return {
       wallMs,
       cpuMs: (used.user + used.system) / 1000,
@@ -199,7 +216,7 @@ async function fixture(arm, size) {
 }
 
 const report = {
-  protocol: 'http-route-symbols-v2-fresh-process-per-size',
+  protocol: 'http-route-symbols-v3-unrequested-symbols',
   source: {
     revision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),
     dirty: execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim(),
@@ -269,6 +286,7 @@ try {
             size: r.size,
             ...r.median,
             scannedRows: r.verified.scannedRows,
+            rowsReturned: r.verified.rowsReturned,
             symbolIdReads: r.verified.symbolIdReads,
           })),
           [
@@ -278,6 +296,7 @@ try {
             'rssBytes',
             'peakRssBytes',
             'scannedRows',
+            'rowsReturned',
             'symbolIdReads',
           ],
         );

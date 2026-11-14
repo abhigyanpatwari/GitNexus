@@ -1,17 +1,17 @@
 /**
  * `HttpRouteExtractor` loads the symbols of the files it expects to look up
- * with one CONTAINING_FILES_QUERY instead of one CONTAINING_QUERY per file. The
- * batch carries no ORDER BY (nor does CONTAINING_QUERY): the extractor groups
- * its rows by file in arrival order, and relies on each file's rows arriving in
- * the order that file's own CONTAINING_QUERY returns them, because the
- * resolvers take the first name match and the first of two equal spans.
+ * with one CONTAINING_FILES_QUERY instead of one CONTAINING_QUERY per file.
+ * Neither query has an ORDER BY, and on a connection with several execution
+ * threads the engine returns a file's rows in an order that changes between
+ * calls. The extractor therefore sorts each file's rows on the scan offset the
+ * queries return (`ord`) before the first-match resolvers read them.
  *
  * The unit suite proves the extractor's side with a fake executor. This runs
  * the real pipeline over a small multi-language repository, loads the graph
  * into a real LadybugDB, and checks the engine's side: for every file the
- * batch returns exactly its own query's rows in the same order, and the
- * extractor produces the same contracts with the batch as without it. (The
- * graph is small enough that a file's own query has one row order to match.)
+ * batch returns exactly its own query's rows, and the extractor produces the
+ * same contracts with the batch as without it, including a contract whose
+ * symbol only row order decides.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs/promises';
@@ -19,7 +19,6 @@ import path from 'path';
 import os from 'os';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import {
-  CONTAINING_ALL_QUERY,
   CONTAINING_FILES_QUERY,
   CONTAINING_QUERY,
   HttpRouteExtractor,
@@ -111,6 +110,10 @@ public class ItemController {
     }
 }
 `,
+  // One line, so the Function `boot` and the Method `Api.load` have the same
+  // span around the fetch, and the file has rows in two node tables.
+  'web/min.ts': `export function boot() { class Api { load() { return fetch('/api/min'); } } return new Api(); }
+`,
   'service/main.py': `from fastapi import FastAPI
 
 app = FastAPI()
@@ -163,23 +166,11 @@ const realExecutor = async (): Promise<CypherExecutor> => {
   return (query, params = {}) => adapter.executePrepared(query, params);
 };
 
-describe('CONTAINING_FILES_QUERY against a real LadybugDB', () => {
-  it("keeps each file's symbol order when loading a complete snapshot", async () => {
-    const db = await realExecutor();
-    const byFile = new Map<string, Record<string, unknown>[]>();
-    for (const row of await db(CONTAINING_ALL_QUERY)) {
-      const filePath = String(row.filePath);
-      const rows = byFile.get(filePath) ?? [];
-      rows.push(row);
-      byFile.set(filePath, rows);
-    }
-    expect(byFile.size).toBeGreaterThan(1);
-    for (const [filePath, rows] of byFile) {
-      expect(rows, filePath).toEqual(await db(CONTAINING_QUERY, { filePath }));
-    }
-  });
+const sortedByUid = (rows: Record<string, unknown>[]): Record<string, unknown>[] =>
+  [...rows].sort((a, b) => String(a.uid).localeCompare(String(b.uid)));
 
-  it('returns each file exactly the rows of its own CONTAINING_QUERY, in the same order', async () => {
+describe('CONTAINING_FILES_QUERY against a real LadybugDB', () => {
+  it('returns each file exactly the rows of its own CONTAINING_QUERY', async () => {
     const db = await realExecutor();
     const fileRows = (await db(
       `MATCH (f:File) RETURN f.filePath AS filePath ORDER BY filePath`,
@@ -193,14 +184,18 @@ describe('CONTAINING_FILES_QUERY against a real LadybugDB', () => {
       batched.set(filePath, [...(batched.get(filePath) ?? []), row]);
     }
 
-    let symbolRows = 0;
+    const labelsPerFile: number[] = [];
     for (const filePath of files) {
       const own = await db(CONTAINING_QUERY, { filePath });
-      symbolRows += own.length;
-      expect(batched.get(filePath) ?? [], filePath).toEqual(own);
+      labelsPerFile.push(new Set(own.map((row) => JSON.stringify(row.labels))).size);
+      // Row order is the engine's and differs between calls: compare the sets.
+      expect(sortedByUid(batched.get(filePath) ?? []), filePath).toEqual(sortedByUid(own));
     }
-    // The comparison is not vacuous: the source files define symbols.
-    expect(symbolRows).toBeGreaterThan(10);
+    // The comparison is not vacuous: no file is skipped, the source files
+    // define symbols, and one of them has rows in two node tables.
+    expect(labelsPerFile).toHaveLength(files.length);
+    expect(labelsPerFile.filter((n) => n > 0).length).toBeGreaterThanOrEqual(6);
+    expect(Math.max(...labelsPerFile)).toBe(2);
   });
 
   it('gives the extractor the same contracts as one query per file, in fewer queries', async () => {
@@ -244,7 +239,26 @@ describe('CONTAINING_FILES_QUERY against a real LadybugDB', () => {
     expect(byId.get('provider http::GET::/api/health')?.symbolName).toBe('health');
     expect(byId.get('provider http::GET::/api/status')?.symbolName).toBe('status');
 
-    expect(batched.counts.batch).toBeGreaterThan(0);
-    expect(batched.counts.batch + batched.counts.single).toBeLessThan(perFile.counts.single);
+    // One batch for the route files and one for the scanned files with
+    // detections; the failing run reads every source file with its own query.
+    expect(batched.counts).toEqual({ batch: 2, single: 0 });
+    expect(perFile.counts).toEqual({ batch: 2, single: Object.keys(FILES).length });
+  });
+
+  it('resolves an equal-span tie the same way on every run', async () => {
+    const db = await realExecutor();
+    const repo: RepoHandle = { id: 'test-repo', path: 'repo', repoPath: repoDir, storagePath };
+    // `boot` (Function) and `Api.load` (Method) both span the fetch in
+    // web/min.ts. The engine returns the two rows in either order; the
+    // extractor's fixed order puts the Function first.
+    const winners = new Set<string>();
+    for (let run = 0; run < 20; run++) {
+      const contracts = await new HttpRouteExtractor().extract(db, repoDir, repo);
+      const tie = contracts.find(
+        (c) => c.role === 'consumer' && c.contractId === 'http::GET::/api/min',
+      );
+      winners.add(`${tie?.symbolName} ${tie?.symbolUid}`);
+    }
+    expect([...winners]).toEqual(['boot Function:web/min.ts:boot']);
   });
 });

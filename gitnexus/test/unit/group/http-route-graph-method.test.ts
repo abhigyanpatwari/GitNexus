@@ -59,15 +59,15 @@ function detection(
   return { role, framework: 'test', method, path: p, name, confidence: 0.8 };
 }
 
-const containsFor = (names: string[]) =>
+const containsFor = (names: string[], filePath = 'OrderController.java') =>
   names.map((name) => ({
     uid: `uid-${name}`,
     name,
-    filePath: 'OrderController.java',
+    filePath,
     labels: ['Method'],
     0: `uid-${name}`,
     1: name,
-    2: 'OrderController.java',
+    2: filePath,
     3: ['Method'],
   }));
 
@@ -188,7 +188,7 @@ describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () =
           },
         ];
       }
-      if (query.includes('UNION ALL')) return containsFor(['listOrders']);
+      if (query.includes('UNION ALL')) return containsFor(['listOrders'], 'routes.ts');
       return [];
     });
 
@@ -330,7 +330,7 @@ describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () =
     } as never);
 
     const symbolQueries = db.mock.calls.filter(([query]) => query.includes('UNION ALL'));
-    expect(symbolQueries.filter(([query]) => query.includes('IN $filePaths'))).toHaveLength(1);
+    expect(symbolQueries.filter(([query]) => query.includes('UNWIND $filePaths'))).toHaveLength(1);
     expect(symbolQueries.filter(([query]) => query.includes('= $filePath'))).toHaveLength(1);
     expect(symbolQueries).toHaveLength(2);
     expect(out.map((c) => c.symbolUid).sort()).toEqual(ids.map(([, uid]) => uid).sort());

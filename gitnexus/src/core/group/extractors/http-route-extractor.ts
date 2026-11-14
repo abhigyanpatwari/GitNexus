@@ -69,113 +69,106 @@ RETURN callerFile.id AS fileId, callerFile.filePath AS filePath,
 // defines the class and the class defines the method. (Exported, with
 // CONTAINING_FILES_QUERY, so integration tests can compare the two against a
 // real LadybugDB.)
+//
+// No ORDER BY: on a connection with more than one execution thread the engine
+// returns the UNION ALL branches, and the rows inside one branch, in an order
+// that changes from call to call. `ord` is the row's scan offset in its node
+// table; orderFileSymbols sorts on it, so the resolvers never see that order.
 export const CONTAINING_QUERY = `
 MATCH (sym:Function)
 WHERE sym.filePath = $filePath AND sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
 RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
-       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels
+       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels,
+       offset(id(sym)) AS ord
 UNION ALL
 MATCH (sym:Method)
 WHERE sym.filePath = $filePath AND sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
 RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
-       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels
+       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels,
+       offset(id(sym)) AS ord
 UNION ALL
 MATCH (sym:CodeElement)
 WHERE sym.filePath = $filePath AND sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
 RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
-       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels`;
+       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels,
+       offset(id(sym)) AS ord`;
 
 // CONTAINING_QUERY for many files in one query. `filePath` has no index, so
 // each CONTAINING_QUERY scans the three node tables to find one file's rows.
-// Keep the membership list bounded; larger workloads use one complete scan.
-//
-// No ORDER BY, the same as CONTAINING_QUERY. prefetchFileSymbols groups the
-// rows by file in arrival order, so each file's rows keep the order its own
-// CONTAINING_QUERY gives them: the Function rows, then Method, then
-// CodeElement, each label in the engine's scan order. The resolvers read that
-// order (resolveSymbolByName takes the first name match and
-// resolveContainingSymbol keeps the first of two equal spans), and batching
-// leaves it as it was.
+// Joining the tables to the unwound path list is a hash join in the engine:
+// one scan per table whatever the length of the list, and only the listed
+// files' rows come back. (`sym.filePath IN $filePaths` is a LIST_CONTAINS
+// filter instead, which walks the whole list for every scanned row.) The paths
+// must be distinct, or a file's rows repeat.
 export const CONTAINING_FILES_QUERY = `
-MATCH (sym:Function)
-WHERE sym.filePath IN $filePaths AND sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
+UNWIND $filePaths AS fp MATCH (sym:Function)
+WHERE sym.filePath = fp AND sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
 RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
-       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels
+       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels,
+       offset(id(sym)) AS ord
 UNION ALL
-MATCH (sym:Method)
-WHERE sym.filePath IN $filePaths AND sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
+UNWIND $filePaths AS fp MATCH (sym:Method)
+WHERE sym.filePath = fp AND sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
 RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
-       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels
+       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels,
+       offset(id(sym)) AS ord
 UNION ALL
-MATCH (sym:CodeElement)
-WHERE sym.filePath IN $filePaths AND sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
+UNWIND $filePaths AS fp MATCH (sym:CodeElement)
+WHERE sym.filePath = fp AND sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
 RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
-       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels`;
+       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels,
+       offset(id(sym)) AS ord`;
 
-// No file membership predicate: LIST_CONTAINS itself scans its list per row.
-// Keep the same UNION and table-scan shape as the per-file queries: the
-// resolvers use first-wins row order. Do not sort the rows during grouping.
-export const CONTAINING_ALL_QUERY = `
-MATCH (sym:Function)
-WHERE sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
-RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
-       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels
-UNION ALL
-MATCH (sym:Method)
-WHERE sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
-RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
-       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels
-UNION ALL
-MATCH (sym:CodeElement)
-WHERE sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
-RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
-       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels`;
-
-/** Files per CONTAINING_FILES_QUERY, which keeps its `IN` list bounded. */
-const CONTAINING_FILES_PER_QUERY = 500;
+const SYMBOL_LABEL_ORDER = ['Function', 'Method', 'CodeElement'];
 
 /**
- * Load the CONTAINING_QUERY rows of every file in `filePaths` into `cache`
- * with a bounded membership query, or one complete scan for larger workloads.
- * Return true only after a complete scan. Failed queries cache nothing, so the
- * caller can fall back to CONTAINING_QUERY. Missing requested files cache [].
+ * One file's symbol rows in a fixed order: Function rows, then Method, then
+ * CodeElement, each by scan offset. That is the order a single-thread
+ * CONTAINING_QUERY returns. resolveSymbolByName takes the first name match and
+ * resolveContainingSymbol the first of two equal spans, so without this the
+ * winner of such a tie would depend on the engine's row order and on which
+ * query loaded the file. Rows without `ord` keep their arrival order per label.
+ */
+function orderFileSymbols(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  const labelRank = (row: Record<string, unknown>): number => {
+    const labels = JSON.stringify(row.labels ?? row[5] ?? '');
+    return SYMBOL_LABEL_ORDER.findIndex((label) => labels.includes(label));
+  };
+  const scanOffset = (row: Record<string, unknown>): number => Number(row.ord ?? row[6] ?? 0) || 0;
+  return [...rows].sort((a, b) => labelRank(a) - labelRank(b) || scanOffset(a) - scanOffset(b));
+}
+
+/**
+ * Load the CONTAINING_QUERY rows of every file in `filePaths` into `cache` with
+ * one CONTAINING_FILES_QUERY. A requested file without rows caches []. A failed
+ * query caches nothing, so the caller falls back to CONTAINING_QUERY.
  */
 async function prefetchFileSymbols(
   db: CypherExecutor,
   filePaths: readonly string[],
   cache: Map<string, Record<string, unknown>[]>,
-  allFiles: boolean,
-): Promise<boolean> {
-  const batchSize = allFiles ? filePaths.length : CONTAINING_FILES_PER_QUERY;
-  for (let i = 0; i < filePaths.length; i += batchSize) {
-    const batch = filePaths.slice(i, i + batchSize);
-    let rows: Record<string, unknown>[];
-    try {
-      rows = allFiles
-        ? await db(CONTAINING_ALL_QUERY)
-        : await db(CONTAINING_FILES_QUERY, { filePaths: batch });
-    } catch {
-      continue;
-    }
-    const byFile = new Map<string, Record<string, unknown>[]>();
-    for (const row of rows) {
-      const filePath = String(row.filePath ?? row[2] ?? '');
-      const list = byFile.get(filePath);
-      if (list) list.push(row);
-      else byFile.set(filePath, [row]);
-    }
-    if (allFiles) {
-      // Keep earlier per-file results and their first-wins order intact.
-      for (const [filePath, symbols] of byFile) {
-        if (!cache.has(filePath)) cache.set(filePath, symbols);
-      }
-    }
-    for (const filePath of batch) {
-      if (!cache.has(filePath)) cache.set(filePath, byFile.get(filePath) ?? []);
-    }
-    if (allFiles) return true;
+): Promise<void> {
+  let rows: Record<string, unknown>[];
+  try {
+    rows = await db(CONTAINING_FILES_QUERY, { filePaths });
+  } catch (err) {
+    logger.debug(
+      `[http-route-extractor] symbol batch for ${filePaths.length} files failed; using one query per file: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return;
   }
-  return false;
+  const byFile = new Map<string, Record<string, unknown>[]>();
+  for (const row of rows) {
+    const filePath = String(row.filePath ?? row[2] ?? '');
+    const list = byFile.get(filePath);
+    if (list) list.push(row);
+    else byFile.set(filePath, [row]);
+  }
+  for (const filePath of filePaths) {
+    if (!cache.has(filePath)) cache.set(filePath, orderFileSymbols(byFile.get(filePath) ?? []));
+  }
 }
 
 /** The CONTAINING_QUERY rows of each file, cached for one extract(). */
@@ -617,32 +610,23 @@ export class HttpRouteExtractor implements ContractExtractor {
     // back to file-level boundary matching.
     //
     // Files named through `expect` wait in `pendingSymbolFiles`; the first miss
-    // uses a bounded CONTAINING_FILES_QUERY. Beyond 500 distinct files (also
-    // counting unanticipated per-file misses), load all symbols once. Thus
-    // growing file counts cannot multiply whole-table scans indefinitely.
-    // Sparse lookups keep their selective results; a failed complete scan
-    // retains the old per-file fallback, outside the healthy-path cost bound.
+    // loads them all, and the file asked for, with one CONTAINING_FILES_QUERY.
+    // Every pass names its files before it resolves them, so a healthy
+    // extract() issues a handful of symbol queries however many files it reads.
+    // A file nobody named, or one whose batch failed, gets its own
+    // CONTAINING_QUERY.
     const fileSymbolCache = new Map<string, Record<string, unknown>[]>();
     const fileSymbolIds = new Map<string, Map<string, Record<string, unknown>>>();
     const pendingSymbolFiles = new Set<string>();
-    let allSymbolsAttempted = false;
-    let allSymbolsLoaded = false;
     const loadFileSymbols = async (filePath: string): Promise<Record<string, unknown>[]> => {
       if (!dbExecutor) return [];
       const cached = fileSymbolCache.get(filePath);
       if (cached) return cached;
-      if (allSymbolsLoaded) return [];
-      if (
-        pendingSymbolFiles.size > 0 ||
-        (!allSymbolsAttempted && fileSymbolCache.size >= CONTAINING_FILES_PER_QUERY)
-      ) {
+      if (pendingSymbolFiles.size > 0) {
         pendingSymbolFiles.add(filePath);
         const batch = [...pendingSymbolFiles].filter((f) => !fileSymbolCache.has(f));
         pendingSymbolFiles.clear();
-        const allFiles =
-          !allSymbolsAttempted && fileSymbolCache.size + batch.length > CONTAINING_FILES_PER_QUERY;
-        if (allFiles) allSymbolsAttempted = true;
-        allSymbolsLoaded = await prefetchFileSymbols(dbExecutor, batch, fileSymbolCache, allFiles);
+        await prefetchFileSymbols(dbExecutor, batch, fileSymbolCache);
         const prefetched = fileSymbolCache.get(filePath);
         if (prefetched) return prefetched;
       }
@@ -652,12 +636,13 @@ export class HttpRouteExtractor implements ContractExtractor {
       } catch {
         rows = [];
       }
+      rows = orderFileSymbols(rows);
       fileSymbolCache.set(filePath, rows);
       return rows;
     };
     const fileSymbols: FileSymbols = {
       expect: (filePaths) => {
-        if (!dbExecutor || allSymbolsLoaded) return;
+        if (!dbExecutor) return;
         for (const f of filePaths) if (f && !fileSymbolCache.has(f)) pendingSymbolFiles.add(f);
       },
       findById: async (filePath, uid) => {
@@ -843,9 +828,16 @@ export class HttpRouteExtractor implements ContractExtractor {
     const scanFiles = files.filter((f) => !coveredFiles.has(f));
 
     await collectProjectDetections(scanFiles);
-    // The source-scan passes resolve a symbol for each detection, so the files
-    // with project-scan detections are about to be loaded.
-    fileSymbols.expect(projectDetections.keys());
+    // The source-scan passes and the graph consumer pass resolve a symbol for
+    // each detection, so every scanned file with a detection is about to be
+    // loaded. (getDetections is cached; those passes read the same results.)
+    if (dbExecutor) {
+      const detectionFiles: string[] = [];
+      for (const rel of scanFiles) {
+        if ((await getDetections(rel)).length > 0) detectionFiles.push(normalizeRepoRelPath(rel));
+      }
+      fileSymbols.expect(detectionFiles);
+    }
 
     const providers = this.mergeGraphAndSourceContracts(
       graphProviders,
@@ -909,14 +901,10 @@ export class HttpRouteExtractor implements ContractExtractor {
       );
       return [];
     }
-    // The loop below loads the symbols of every file with a resolved handler,
-    // so name those files up front and they load in one query.
-    fileSymbols.expect(
-      rows.flatMap((row) => {
-        const filePath = String(row.filePath ?? '');
-        return filePath && String(row.handlerSymbolId ?? '').trim() ? [filePath] : [];
-      }),
-    );
+    // The loop below reads the symbols of the route files (by handler id, or
+    // through a detection when the row has none), so name them up front and
+    // they load in one query.
+    fileSymbols.expect(rows.map((row) => String(row.filePath ?? '')));
 
     for (const row of rows) {
       const filePath = String(row.filePath ?? '');

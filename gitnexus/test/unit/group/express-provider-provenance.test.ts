@@ -162,7 +162,9 @@ describe('Express group provider provenance', () => {
           routeMethod: 'GET',
           handlerSymbolId: '',
         }));
-      if (query.includes('UNION ALL') && params?.filePath === 'router.ts')
+      // One `$filePath`, or the `$filePaths` list the extractor names route files with.
+      const askedFiles = Array.isArray(params?.filePaths) ? params.filePaths : [params?.filePath];
+      if (query.includes('UNION ALL') && askedFiles.includes('router.ts'))
         return [
           {
             uid: 'local-uid',

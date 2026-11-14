@@ -36,6 +36,12 @@ choosing the first row. Every invocation compares the full contract array,
 including identity, name, file, method and metadata, to an independently
 generated expectation. Merely preserving the number of contracts is insufficient.
 
+Every fixture also holds as many symbols again in files that no route names
+(`lib/o<n>.opaque`). Every invocation checks that the symbol queries returned
+exactly the rows of the requested files: 6N for `spread` and `dense`, 6 for
+`sparse`. A loader that reads more of the repository than it was asked for
+fails the run, whatever its timings.
+
 Each arm/size runs in a fresh child process with one database execution thread
 and a 128 MiB buffer pool. Two warmups precede seven samples. GC runs before
 each measured invocation, outside its timing. Reports retain every sample and
@@ -55,7 +61,7 @@ An untimed instrumented invocation also records:
 The shared callable-declaration scaling guard enforces a **1.5** ceiling on
 `(large cost / small cost) / (large N / small N)` for every adjacent pair and
 the whole 16× span. It gates wall time, CPU, heap, RSS, maximum RSS, scanned
-tuples and ID reads. Invalid measurements fail. `--check` requires all arms,
+tuples, returned rows and ID reads. Invalid measurements fail. `--check` requires all arms,
 the reviewed sizes and at least seven samples. Overrides without `--check`
 are diagnostics. These bounded checks detect regressions; they are not a proof
 of linear complexity for every source-scan, name-resolution or database-failure
@@ -63,16 +69,32 @@ path in the extractor.
 
 ## Implementation bound
 
-At most 500 distinct files use selective lookups. A larger expected set, or
-enough files discovered later, triggers one complete symbol scan whose rows
-are grouped by file and reused for the rest of that extraction. The membership
-list remains bounded: removing the batch cap alone would leave the database's
-linear `LIST_CONTAINS` work per row. ID maps are built once per requested file,
-preserving the first row for a duplicate ID. Name and containment resolution
-continue to use the existing ordered arrays.
+Each pass of the extractor names the files it is about to read: the route files
+before the graph provider pass, then the scanned files with detections. The
+first lookup after that loads every named file with one query, which joins the
+three symbol tables to the list of paths. The engine plans that as a hash join:
+one scan per table whatever the length of the list, and only the named files'
+rows are returned and kept. A healthy extraction therefore issues two symbol
+queries, and its work grows with the size of the tables plus the rows it needs.
 
-Sparse lookups still fetch only their requested symbols. A complete scan retains
-all symbol rows, so its memory is proportional to the repository's symbol count.
-If that query fails, the existing per-file fallback remains available and the
-healthy-path scaling bound no longer applies. The focused regression tests cover
-that fallback, later-discovered files, missing files and first-row behavior.
+Two alternatives were measured and rejected:
+
+- `filePath IN $filePaths` is a `LIST_CONTAINS` filter, which walks the list for
+  every scanned row. Capping the list at 500 files bounds that work per query
+  and repeats the table scans once per 500 files.
+- One scan of every symbol row has no list, and returns the rows of every other
+  file in the repository as well. Row transfer costs far more per row than the
+  scan does, so that was slower than one query per file as soon as the
+  requested files were a minority of the symbols.
+
+A file's rows are sorted on their node table and scan offset before the
+first-match resolvers read them, so the result does not depend on which query
+loaded the file or on the order the engine delivered the rows. ID maps are built
+once per requested file, keeping the first row for a duplicate ID.
+
+If the batch query fails, each of its files falls back to its own per-file
+query and the healthy-path bound no longer applies. One query returns all the
+named files' rows, so its duration grows with them; the per-file fallback also
+covers a batch that exceeds the pool's query timeout. The focused regression
+tests cover the fallback, files named by each pass, missing files, row order
+and first-row behavior.

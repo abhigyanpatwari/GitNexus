@@ -261,6 +261,8 @@ const LBUG_NATIVE = [
   // Windows is skipped in-file (describeReopen) due to the bridge reopen lock.
   'test/integration/group/cross-trace-e2e.test.ts',
   'test/integration/group/graphql-resolve-symbol.test.ts',
+  // Runs the route extractor's two symbol queries against a real engine.
+  'test/integration/http-route-symbol-batch.test.ts',
   'test/integration/local-backend.test.ts',
   'test/integration/bm25-symbol-hydration.test.ts',
   'test/integration/local-backend-calltool.test.ts',
