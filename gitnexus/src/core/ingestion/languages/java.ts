@@ -185,6 +185,13 @@ export const javaProvider = defineLanguage({
   rename: javaRenameProvider,
   id: SupportedLanguages.Java,
   extensions: ['.java'],
+  // Wildcard IMPORTS edges cover spelled names only. Chained/inherited lookups
+  // can depend on unmentioned types, including packages split across paths.
+  // Until package membership is persisted, examine Java as one resolution
+  // group; a path-only package key cannot safely identify deleted members.
+  // Membership makes a file a rewrite candidate only: the incremental writer
+  // rewrites a member when its graph rows changed (incremental/file-row-digests.ts).
+  incrementalResolutionGroup: () => 'workspace',
   entryPointPatterns: [/^do[A-Z]/, /^create[A-Z]/, /^build[A-Z]/, /Service$/],
   astFrameworkPatterns: [
     {

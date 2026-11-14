@@ -19,7 +19,7 @@ export function expandGoDotImports(
   const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
 
   for (const parsed of parsedFiles) {
-    const moduleEdges = indexes.imports.get(parsed.moduleScope);
+    const moduleEdges = indexes.imports.edgesAt(parsed.moduleScope);
     if (moduleEdges === undefined) continue;
 
     const wildcardTargets: string[] = [];

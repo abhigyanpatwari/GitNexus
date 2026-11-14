@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { GraphRelationship, ImportEdge, Scope, ScopeId, ScopeTree } from 'gitnexus-shared';
-import { buildScopeTree } from 'gitnexus-shared';
+import { buildScopeTree, createEagerImportVisibility } from 'gitnexus-shared';
 import { emitImportEdges } from '../../../src/core/ingestion/scope-resolution/graph-bridge/imports-to-edges.js';
 import { TransitionalScopeTree } from '../../../src/storage/scope-index-store.js';
 import type { KnowledgeGraph } from '../../../src/core/graph/types.js';
@@ -53,7 +53,7 @@ function collect(input: Map<ScopeId, readonly ImportEdge[]>, tree: ScopeTree) {
   const edges: GraphRelationship[] = [];
   const count = emitImportEdges(
     { addRelationship: (rel: GraphRelationship) => edges.push(rel) } as unknown as KnowledgeGraph,
-    input,
+    createEagerImportVisibility(input),
     tree,
     'custom import',
   );
@@ -91,10 +91,12 @@ describe('import emission memory boundaries', () => {
     const tree = buildScopeTree([scope('a', 'a'), scope('b', 'b')]);
     emitImportEdges(
       { addRelationship: () => events.push('emit') } as unknown as KnowledgeGraph,
-      imports([
-        ['a', [edge('first')]],
-        ['b', [next]],
-      ]),
+      createEagerImportVisibility(
+        imports([
+          ['a', [edge('first')]],
+          ['b', [next]],
+        ]),
+      ),
       tree,
     );
     expect(events[0]).toBe('emit');
@@ -178,10 +180,12 @@ describe('import emission memory boundaries', () => {
     expect(() =>
       emitImportEdges(
         { addRelationship } as unknown as KnowledgeGraph,
-        imports([
-          ['a', [edge('x')]],
-          ['b', [edge('y')]],
-        ]),
+        createEagerImportVisibility(
+          imports([
+            ['a', [edge('x')]],
+            ['b', [edge('y')]],
+          ]),
+        ),
         tree,
       ),
     ).toThrow('scope shard unreadable');
@@ -198,7 +202,7 @@ describe('import emission memory boundaries', () => {
     const input = imports(scopes.map((s) => [s.id, targets]));
     const count = emitImportEdges(
       { addRelationship() {} } as unknown as KnowledgeGraph,
-      input,
+      createEagerImportVisibility(input),
       buildScopeTree(scopes),
     );
     expect(count).toBe(65536);
@@ -227,7 +231,7 @@ describe('import emission memory boundaries', () => {
             throw new Error('disk full');
           },
         } as unknown as KnowledgeGraph,
-        imports([['a', [edge('x')]]]),
+        createEagerImportVisibility(imports([['a', [edge('x')]]])),
         buildScopeTree([scope('a', 'a')]),
       ),
     ).toThrow('disk full');

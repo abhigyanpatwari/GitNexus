@@ -6,6 +6,7 @@ import { buildScopeTree, type BindingRef, type ImportEdge, type Scope } from 'gi
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import { createNamespaceTargetCache } from '../../../src/core/ingestion/scope-resolution/scope/namespace-target-cache.js';
 import { DiskBackedScopeTree, persistScopeShards } from '../../../src/storage/scope-index-store.js';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'namespace-target-cache-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -37,7 +38,9 @@ const scope = (id: string, parent: string | null, extra: Partial<Scope> = {}): S
 const indexes = (fileScopes: Scope[]): ScopeResolutionIndexes =>
   ({
     scopeTree: buildScopeTree(fileScopes),
-    imports: new Map(fileScopes.map((owner) => [owner.id, owner.imports])),
+    imports: createEagerImportVisibility(
+      new Map(fileScopes.map((owner) => [owner.id, owner.imports])),
+    ),
     bindings: new Map(),
     bindingAugmentations: new Map(),
   }) as unknown as ScopeResolutionIndexes;
