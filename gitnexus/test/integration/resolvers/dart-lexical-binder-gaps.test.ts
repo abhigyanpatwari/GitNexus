@@ -16,8 +16,10 @@
  *     comment between a closure's parameters and its body (3). A block-local
  *     redeclaration inside `if`, `while`, `try` and a switch case (4). A free
  *     call after a top-level `for (final helper in xs)`, after a braceless
- *     loop, and after a catch in a plain function (5). A typed `_` on an arrow
- *     closure, a for-in variable and a catch parameter (6).
+ *     loop, and after a catch in a plain function (5). `_` on an arrow
+ *     closure, a for-in variable and a catch parameter is no lexical name and
+ *     no receiver type: beside a field `_` its site is the field's masked
+ *     read, not an untyped-binder stop (6).
  *
  *   - FAIL-FIRST PINS (wrong or lost on main, fixed here):
  *     5. A collection `for` or `if` element bound its variable into the
@@ -27,23 +29,26 @@
  *        parameter's annotation when an element rebinds its name, so the
  *        correct outer site lost its edge (DART-10 recall boundary 1). Each
  *        element now opens a Block scope when it declares a name, like the
- *        `for` and `if` statements.
+ *        `for` and `if` statements, in every position: an element or a
+ *        switch-expression case in a field or top-level initializer scopes its
+ *        variable too, where it used to borrow a same-named field's type.
  *     6. A typed `_` parameter of a method, function or constructor and a
  *        local `final Other _ = Other()` still bound `_` to their type; only
  *        closure and local-function parameters skipped it. From Dart 3.7 such a
- *        `_` declares nothing, so `_.save()` reads an enclosing `_` (here the
- *        class field), and the `Other` edge was wrong. Every `_` parameter and
- *        local now binds no type. As for closures, this is not version-gated:
- *        before Dart 3.7 the `Other` edge was right, so pre-3.7 sources lose it.
+ *        `_` declares nothing, so the `Other` edge was wrong. Every `_`
+ *        parameter and local now binds no type. The read reaches no field
+ *        either: the body-wide field-shadow mask still counts the `_`, so
+ *        beside a field `_` the site is a recorded drop. A function or method
+ *        named `_` publishes no return binding, so it never answers such a read
+ *        (it did: `Address _() => …` turned the `Other` edge into `Address`).
+ *        As for closures, this is not version-gated: before Dart 3.7 the
+ *        `Other` edge was right, so pre-3.7 sources lose it, with no recorded
+ *        outcome outside a class that declares a field `_`.
  *
  * Every site asserts its exact CALLS edges, and every site whose outcome
  * matters asserts the exact suppression (by call site, kind included).
  */
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
+import { describe, expect, it } from 'vitest';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import {
   isLanguageAvailable,
@@ -51,7 +56,7 @@ import {
   loadParser,
 } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
-import { getRelationships, getResolutionOutcomes, writeFixtureRepo } from './helpers.js';
+import { getRelationships, getResolutionOutcomes, useFixture } from './helpers.js';
 
 // The Dart grammar is optional; its suites skip where it cannot load.
 let dartAvailable = isLanguageAvailable(SupportedLanguages.Dart);
@@ -62,24 +67,6 @@ if (dartAvailable) {
   } catch {
     dartAvailable = false;
   }
-}
-
-/** Materialize `files`, run the pipeline once, and clean up after the block. */
-function useFixture(prefix: string, files: Record<string, string>): () => PipelineResult {
-  let root = '';
-  let result: PipelineResult | undefined;
-  beforeAll(async () => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), `gitnexus-${prefix}-`));
-    writeFixtureRepo(root, files);
-    result = await runPipelineFromRepo(root, () => {});
-  }, 60000);
-  afterAll(() => {
-    if (root !== '') fs.rmSync(root, { recursive: true, force: true });
-  });
-  return () => {
-    if (result === undefined) throw new Error('pipeline did not run');
-    return result;
-  };
 }
 
 /**
@@ -259,7 +246,8 @@ class Tk {
   }
 }
 `,
-      // (6) A typed `_` closure, for-in or catch variable declares nothing.
+      // (6) `_` on a closure, for-in or catch variable is no lexical name: beside
+      // the field `_` each site is the field's masked read, not a binder stop.
       'wildcard_closures.dart': `import 'models.dart';
 
 class Holder {
@@ -330,7 +318,7 @@ class Holder {
       ]);
     });
 
-    it('(6) a typed `_` arrow-closure, for-in or catch variable is not a receiver type', () => {
+    it('(6) `_` on an arrow closure, a for-in or a catch variable is no lexical name and no receiver type', () => {
       expect(edgesFrom(run(), 'CALLS', 'wildcard_closures.dart')).toEqual([]);
       expect(
         outcomesIn(run(), 'wildcard_closures.dart').filter((o) => !o.includes(' forEach ')),
@@ -381,6 +369,41 @@ void inside(Address cs, List<dynamic> xs) {
   final l = [for (final cs in xs) cs.save()];
 }
 `,
+      'elements_more.dart': `import 'models.dart';
+
+void setFor(Address cs, List<Other> xs) {
+  final s = {for (final cs in xs) cs.save()};
+  cs.run();
+}
+
+void nested(Address cs, List<List<Other>> xss) {
+  final l = [for (final row in xss) for (final cs in row) cs.save()];
+  cs.run();
+}
+
+void ifCase(Address cs, Object o) {
+  final l = [if (o case final cs) cs.save()];
+  cs.run();
+}
+`,
+      'initializers.dart': `import 'models.dart';
+
+List<Other> others = [];
+final topList = [for (final fs in others) fs.save()];
+
+class Fld {
+  Address fs = Address();
+  List<Other> others = [];
+  late final inner = [for (final fs in others) fs.save()];
+  late final outer = [for (final gs in others) fs.run()];
+  late final cased = switch (others.first) { final fs => fs.save() };
+}
+
+class Init {
+  final List l;
+  Init.bodiless(Address fs, List<Other> others) : l = [for (final fs in others) fs.save()];
+}
+`,
     });
 
     it('after the literal, an implicit-`this` or free call reaches the name the element no longer hides', () => {
@@ -407,6 +430,33 @@ void inside(Address cs, List<dynamic> xs) {
       expect(outcomesIn(run(), 'elements.dart').filter((o) => o.includes(' save '))).toEqual([
         `25:52 call save ${UNTYPED} scope:elements.dart#25:18-25:58:Block`,
         `30:37 call save ${UNTYPED} scope:elements.dart#30:13-30:43:Block`,
+      ]);
+    });
+
+    it('a set literal, a nested element and an if-case element each scope their own variable', () => {
+      expect(edgesFrom(run(), 'CALLS', 'elements_more.dart')).toEqual([
+        'Function:elements_more.dart:ifCase -> Method:models.dart:Address.run#0 @15:5',
+        'Function:elements_more.dart:nested -> Method:models.dart:Address.run#0 @10:5',
+        'Function:elements_more.dart:setFor -> Method:models.dart:Address.run#0 @5:5',
+      ]);
+      expect(outcomesIn(run(), 'elements_more.dart')).toEqual([
+        `14:37 call save ${UNTYPED} scope:elements_more.dart#14:13-14:43:Block`,
+        `4:37 call save ${UNTYPED} scope:elements_more.dart#4:13-4:43:Block`,
+        `9:61 call save ${UNTYPED} scope:elements_more.dart#9:36-9:67:Block`,
+      ]);
+    });
+
+    it('an element or a switch-expression case in a field or top-level initializer never borrows a same-named field', () => {
+      // `fs` is an `Other` inside each element; only `outer`, whose element
+      // binds `gs`, reads the field `Address fs`.
+      expect(edgesFrom(run(), 'CALLS', 'initializers.dart')).toEqual([
+        'Class:initializers.dart:Fld -> Method:models.dart:Address.run#0 @10:50',
+      ]);
+      expect(outcomesIn(run(), 'initializers.dart')).toEqual([
+        `11:60 call save ${UNTYPED} scope:initializers.dart#11:45-11:66:Block`,
+        `16:83 call save ${UNTYPED} scope:initializers.dart#16:55-16:89:Block`,
+        `4:45 call save ${UNTYPED} scope:initializers.dart#4:17-4:51:Block`,
+        `9:50 call save ${UNTYPED} scope:initializers.dart#9:22-9:56:Block`,
       ]);
     });
   },
@@ -438,12 +488,71 @@ class Holder {
 void topParam(Other _) {
   _.save();
 }
+
+class Plain {
+  final Address _ = Address();
+  void field() {
+    _.run();
+  }
+}
+`,
+      'wildcard_function.dart': `import 'models.dart';
+
+Address _() => Address();
+
+void param(Other _) {
+  _.save();
+}
+
+void typedLocal() {
+  final Other _ = Other();
+  _.save();
+}
+
+void inferredLocal() {
+  final _ = Other();
+  _.save();
+}
+
+void closure(List<Other> items) {
+  items.forEach((Other _) => _.save());
+}
+
+void control(Other o) {
+  o.save();
+}
+
+void chain() {
+  _().run();
+}
+`,
+      'wildcard_method.dart': `import 'models.dart';
+
+class Decoy {
+  Address _() => Address();
+}
+
+class Host {
+  void param(Other _) {
+    _.save();
+  }
+  void control(Other o) {
+    o.save();
+  }
+}
+
+void topParam(Other _) {
+  _.save();
+}
 `,
     });
 
-    it('`_` in a method, constructor or local is the field, never an `Other`', () => {
-      expect(edgesFrom(run(), 'CALLS', 'wildcard.dart')).toEqual([]);
-      expect(outcomesIn(run(), 'wildcard.dart').filter((o) => /^(6|9|11|14):/.test(o))).toEqual([
+    it('`_` in a method, constructor or local reaches no `Other`, and the field read stays masked', () => {
+      // Only `Plain.field`, whose body declares no `_`, reads the field.
+      expect(edgesFrom(run(), 'CALLS', 'wildcard.dart')).toEqual([
+        'Method:wildcard.dart:Plain.field#0 -> Method:models.dart:Address.run#0 @25:6',
+      ]);
+      expect(outcomesIn(run(), 'wildcard.dart')).toEqual([
         '11:32 call run receiver-owned-but-unbound',
         '14:6 call save receiver-owned-but-unbound',
         '6:6 call run receiver-owned-but-unbound',
@@ -451,10 +560,29 @@ void topParam(Other _) {
       ]);
     });
 
-    it('a top-level function with a typed `_` parameter binds no `Other` (pre-3.7 recall cost)', () => {
+    it('outside a class with a field `_`, the lost `Other` edge has no recorded outcome (pre-3.7 recall cost)', () => {
+      // `topParam`'s site is line 19: no edge above, and no outcome on that line.
+      expect(outcomesIn(run(), 'wildcard.dart').filter((o) => o.startsWith('19:'))).toEqual([]);
+    });
+
+    it('a same-file function named `_` never answers a `_` parameter, local or closure parameter', () => {
+      // `Address _()` published `_ -> Address` on the Module scope, which typed
+      // every untyped `_` receiver in the file as `Address`.
+      expect(edgesFrom(run(), 'CALLS', 'wildcard_function.dart')).toEqual([
+        'Function:wildcard_function.dart:chain -> Function:wildcard_function.dart:_ @-',
+        'Function:wildcard_function.dart:control -> Method:models.dart:Other.save#0 @24:4',
+      ]);
+      // The cost: a member called on the result of `_()` is a recorded drop.
       expect(
-        edgesFrom(run(), 'CALLS', 'wildcard.dart').filter((e) => e.includes('topParam')),
-      ).toEqual([]);
+        outcomesIn(run(), 'wildcard_function.dart').filter((o) => !o.includes(' forEach ')),
+      ).toEqual(['28:6 call run receiver-unresolved']);
+    });
+
+    it('a method named `_` on an unrelated class never answers a `_` parameter', () => {
+      expect(edgesFrom(run(), 'CALLS', 'wildcard_method.dart')).toEqual([
+        'Method:wildcard_method.dart:Host.control#1 -> Method:models.dart:Other.save#0 @12:6',
+      ]);
+      expect(outcomesIn(run(), 'wildcard_method.dart')).toEqual([]);
     });
   },
 );

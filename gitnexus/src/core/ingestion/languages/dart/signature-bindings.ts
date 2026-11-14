@@ -88,8 +88,10 @@ export function synthesizeDartSignatureBindings(
     const params = dartMethodConfig.extractParameters?.(declNode) ?? [];
     for (const p of params) {
       // `_` declares nothing (Dart 3.7 wildcard variables), the same rule as
-      // `synthesizeDartParameterBindings` below: `_` in the body is whatever an
-      // enclosing scope calls `_`, never this parameter.
+      // `synthesizeDartParameterBindings` below, so this parameter types no
+      // `_` read. A field named `_` stays masked for the body
+      // (`collectDartBodyShadows` still counts the parameter), so such a read
+      // is a recorded drop, not an edge to the field's class.
       if (p.type === null || p.name === '' || p.name === '_') continue;
       out.push(buildBindingMatch(bodyNode, '@type-binding.parameter', p.name, p.type));
     }
@@ -100,6 +102,11 @@ export function synthesizeDartSignatureBindings(
   if (
     funcName !== undefined &&
     funcName !== '' &&
+    // A callable named `_` publishes no return binding. Hoisted to the Module
+    // scope under `_`, it would answer every `_` receiver in the file whose
+    // own parameter or local binds no type (above, and in `captures.ts`):
+    // `Address _() => …; void f(Other _) { _.save(); }` reached `Address.save`.
+    funcName !== '_' &&
     returnType !== undefined &&
     returnType !== '' &&
     returnType !== 'void' &&

@@ -394,8 +394,9 @@ export function emitDartScopeCaptures(
   // ── Pass B: tree-walked references, type inference, heritage ────────────
   const seenReadSpans = new Set<string>();
   walkDartTree(root, null, null, (node, type, owner, opensBlock) => {
-    // A statement that opens a Dart scope gets a Block scope if it binds a
-    // name; a catch clause's parameters belong to the body block after it.
+    // A statement or collection element that opens a Dart scope gets a Block
+    // scope if it binds a name; a catch clause's parameters belong to the
+    // body block after it.
     if (opensBlock) registerDartBlockScope(lexicalScopes, node, owner);
     else if (type === 'catch_clause') {
       const catchBody = dartCatchBody(node);
@@ -694,16 +695,19 @@ const DART_SIGNATURE_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Statements that open a Dart scope for the names they bind: a nested block, a
- * `for` (its loop variable), a switch case (its pattern variables and body
- * locals), an if-case (its pattern variables). A catch clause's parameters are
- * scoped to the body block that follows it (`dartCatchBody`).
+ * Statements and collection elements that open a Dart scope for the names
+ * they bind: a nested block, a `for` (its loop variable), a switch case (its
+ * pattern variables and body locals), an if-case (its pattern variables), and
+ * the collection elements `for` and `if` (`[for (final x in xs) x]`,
+ * `[if (o case int x) x]`). A catch clause's parameters are scoped to the body
+ * block that follows it (`dartCatchBody`).
  *
- * The collection elements `for` and `if` (`[for (final x in xs) x]`,
- * `[if (o case int x) x]`) scope their variables the same way. Filed under the
- * enclosing scope instead, the element's variable stopped every read of that
- * name in the whole body: `tick()` after the literal lost its edge, and a
- * parameter of the same name lost its annotation (DART-10 recall boundary 1).
+ * An element's variable filed under the enclosing scope stops every read of
+ * that name in the whole body: `tick()` after the literal loses its edge, and
+ * a parameter of the same name loses its annotation (DART-10 recall
+ * boundary 1). An expression form (an element, a switch-expression case) also
+ * occurs outside every function, in a field or top-level initializer, where
+ * its Block sits directly under the Class or Module scope.
  */
 const DART_BLOCK_SCOPE_TYPES: ReadonlySet<string> = new Set([
   'block',
@@ -740,10 +744,11 @@ function dartCatchBody(catchClause: SyntaxNode): SyntaxNode | null {
 /**
  * `walkNamedTree` that also hands each node the node owning the scope it sits
  * in: the nearest enclosing function or closure body, or the nearest statement
- * that opens a scope — or, inside a parameter list, the body of the closure or
- * signature that declares it (a comment between the two is skipped). `null`
- * outside every function (a field, a top-level variable). Tracking it on the
- * way down makes the owner of a binder a field read, not a climb.
+ * or collection element that opens a scope — or, inside a parameter list, the
+ * body of the closure or signature that declares it (a comment between the two
+ * is skipped). `null` outside every function and every scope-opening
+ * expression (a field, a top-level variable). Tracking it on the way down
+ * makes the owner of a binder a field read, not a climb.
  */
 function walkDartTree(
   node: SyntaxNode,
@@ -753,7 +758,7 @@ function walkDartTree(
 ): void {
   // Read once: `type` is a native call on every access.
   const type = node.type;
-  const opensBlock = owner !== null && opensDartBlockScope(type, parentType);
+  const opensBlock = opensDartBlockScope(type, parentType);
   visit(node, type, owner, opensBlock);
   let childOwner = owner;
   if (type === 'function_body' || type === 'function_expression_body') childOwner = node;
@@ -801,10 +806,11 @@ function recordDartLexicalName(
  * reads a scope's own type before it honours the stop.
  *
  * A name belongs to the NEAREST scope that declares it: a closure or local
- * function, a nested block, a `for`, a switch case, an if-case, or the body a
- * catch clause guards. So a loop variable, a catch parameter or a block-local
- * does not stop reads of an outer binding after its statement, and a closure's
- * binders do not stop reads in the enclosing function.
+ * function, a nested block, a `for`, a switch case, an if-case, a collection
+ * `for` / `if` element, or the body a catch clause guards. So a loop variable,
+ * a catch parameter, a block-local or an element variable does not stop reads
+ * of an outer binding after its statement, and a closure's binders do not stop
+ * reads in the enclosing function.
  *
  * Collected during Pass B's one tree walk rather than by a walk per scope.
  * Sorted, so the capture text and every fingerprint over it is order-stable; a
@@ -884,8 +890,8 @@ function attachDartLexicalNames(
  * Counted per scope with `visitDartDeclaredName`, so only real declarations
  * count (a pattern field label, a function-typed parameter's own parameter, a
  * pattern assignment or `_` do not), and a binder in a closure, local
- * function, nested block, loop, case or catch body belongs to that scope and
- * leaves the outer annotation alone. Plain assignment is not a declaration:
+ * function, nested block, loop, case, catch body or collection element belongs
+ * to that scope and leaves the outer annotation alone. Plain assignment is not a declaration:
  * Dart requires the value to be assignable to the declared type.
  */
 function dartParameterRedeclared(cm: CaptureMatch, scope: DartLexicalScope): boolean {
@@ -1617,7 +1623,9 @@ function emitVarTypeBinding(
 ): void {
   const nameNode = initVarDef.childForFieldName('name');
   // A local named `_` declares nothing (Dart 3.7 wildcard variables), so its
-  // initializer types no `_` read; this node is always a local declarator.
+  // initializer types no `_` read. Only a local reaches here: the grammar
+  // wraps a field or a top-level variable in `initialized_identifier` or
+  // `static_final_declaration`, never `initialized_variable_definition`.
   if (nameNode === null || nameNode.text === '_') return;
   const callee = findDirectCallValue(initVarDef)?.text ?? qualifiedCallValue(initVarDef);
   if (callee === null) return;
