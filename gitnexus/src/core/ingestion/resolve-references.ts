@@ -64,6 +64,10 @@ import {
 } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from './model/scope-resolution-indexes.js';
 import {
+  cachedNameLookupStart,
+  withCachedNameLookups,
+} from './scope-resolution/scope/name-lookup-cache.js';
+import {
   bindsTypeParameter,
   findClassBindingInScope,
   findEnclosingClassDef,
@@ -124,7 +128,12 @@ export function createReferenceLookup(
     // the primary call registry lexical; value/type reads still need imports.
     lexicalLookup: (scope, name, options) =>
       currentSite?.kind === 'call'
-        ? lookupLexicalName(scope, name, { scopes: scopes.scopeTree }, options)
+        ? lookupLexicalName(
+            cachedNameLookupStart(scope, name, scopes, options?.skipEnclosingClasses),
+            name,
+            { scopes: scopes.scopeTree },
+            options,
+          )
         : lookupNameClaim(scope, name, scopes, options),
     onLexicalClaim:
       input.recordSourceBinding === undefined
@@ -292,6 +301,13 @@ function qualifierOwnsDefinition(
  * + target def.
  */
 export function resolveReferenceSites(input: ResolveReferencesInput): ResolveReferencesOutput {
+  // Do not carry shortcuts across callbacks that could change the indexes.
+  return input.recordSourceBinding === undefined
+    ? withCachedNameLookups(input.scopes, () => resolveReferenceSitesInPass(input))
+    : resolveReferenceSitesInPass(input);
+}
+
+function resolveReferenceSitesInPass(input: ResolveReferencesInput): ResolveReferencesOutput {
   const { scopes } = input;
   const lookup = createReferenceLookup(input);
 

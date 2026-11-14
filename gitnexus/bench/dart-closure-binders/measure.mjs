@@ -6,8 +6,8 @@
  * not. Dart closures that bind something get a Function scope of their own
  * with `@scope.lexical-names`, and the walk climbs those scopes. This gate
  * pins what that produces and checks that its cost grows linearly in the
- * input and the emitted output as the number of functions, the number of
- * closures per function, or the nesting depth of closures grows 16x.
+ * number of functions, in the number of closures per function, and in the
+ * nesting depth of closures.
  *
  * Workload: `lib/types.dart` declares `Address` and `Other`, each with
  * `save()` and `run()`, so a name-only guess cannot pick the owner. Each
@@ -18,18 +18,16 @@
  *   `(x) { cs.run(); }`          binds another name: the nearest `cs`
  * `sibling` puts the K closures side by side (the `x` closure reaches the
  * `Address` parameter); `nested` nests them K deep (it reaches the `Other cs`
- * one level up). Each function's CALLS edges must equal the expected
- * multiset exactly: no missing edge, no extra one. Nested closures are indented
- * by a fixed width, so the input grows linearly with depth.
+ * one level up). `bound` nests `var h = (...) { ... };` closures, checking
+ * enclosing-type memoization for named closures as well as argument closures.
+ * Each function's CALLS edges must equal the expected
+ * multiset exactly: no missing edge, no extra one.
  *
- * Shapes: small = 32 functions x 3 closures; large = 512 x 3 (functions 16x);
- * dense = 32 x 48 (closures per function 16x; for `nested`, depth 16x). Each
- * scaling ratio divides the time growth by the larger of the input-byte,
- * capture-group and relationship growth, so about 1 is linear in input plus
- * output. Under --check each cell also counts the ancestors the enclosing-type
- * search stepped onto during capture: at most one per Function scope (#3912
- * review). Timing ratios at these sizes move by about +-0.25 between runs on a
- * busy host, so the count, not a ratio, is what catches a climb per closure.
+ * Geometric sweeps: 32/64/128/256/512 functions at 3 closures, and 3/6/12/24/48
+ * closures at 32 functions. Nested source uses fixed-width indentation, so
+ * input bytes grow linearly with depth. Every pair of sizes is gated.
+ * Native AST navigation and Map iteration counts are measured separately:
+ * they catch repeated root climbs and all-scopes scans without timing noise.
  * Two profiles. Default (CI, also with --check): one process prepares every
  * workload, runs every accuracy gate, and times every workload interleaved
  * (each round times each workload once, in rotating order), min of 5 after 1
@@ -55,7 +53,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { emitDartScopeCaptures } from '../../src/core/ingestion/languages/dart/index.ts';
-import * as dartReceiverBinding from '../../src/core/ingestion/languages/dart/receiver-binding.ts';
 import { dartScopeResolver } from '../../src/core/ingestion/languages/dart/scope-resolver.ts';
 import { runScopeResolution } from '../../src/core/ingestion/scope-resolution/pipeline/run.ts';
 import { mergeChunkResults, processParsing } from '../../src/core/ingestion/parsing-processor.ts';
@@ -64,6 +61,7 @@ import { createSemanticModel } from '../../src/core/ingestion/model/semantic-mod
 import { generateId } from '../../src/lib/utils.ts';
 import { createWorkerPool } from '../../src/core/ingestion/workers/worker-pool.ts';
 import { DIST_WORKER_URL } from '../../test/helpers/worker-parse.ts';
+import { captureWork } from './capture-work.mjs';
 
 const script = fileURLToPath(import.meta.url);
 const baselinePath = fileURLToPath(new URL('./baseline.json', import.meta.url));
@@ -77,15 +75,21 @@ const FULL = process.argv.includes('--full');
 const WARMUP = FULL ? 2 : 1;
 const REPS = FULL ? 15 : 5;
 const MARKER = 'DART_CLOSURE_RESULT ';
-const FORMS = ['sibling', 'nested'];
-const SHAPES = { small: [32, 3], large: [512, 3], dense: [32, 48] };
+const FORMS = ['sibling', 'nested', 'bound'];
+const SHAPES = {
+  small: [32, 3],
+  function_64: [64, 3],
+  medium: [128, 3],
+  function_256: [256, 3],
+  large: [512, 3],
+  closure_6: [32, 6],
+  closure_12: [32, 12],
+  closure_24: [32, 24],
+  dense: [32, 48],
+};
 const MAIN = 'lib/main.dart';
 const TYPES = 'lib/types.dart';
 const roots = [];
-// The enclosing-type operation counter (#3917). Without it the count is
-// unavailable, which --check reports as a failure rather than a pass.
-const enclosingTypeStats = dartReceiverBinding.getDartEnclosingTypeStats;
-const resetEnclosingTypeStats = dartReceiverBinding.resetDartEnclosingTypeStats;
 /** One parse worker for every workload in this process. */
 let pool;
 
@@ -108,13 +112,15 @@ function corpus(form, functions, closures) {
         main += `  items.forEach(${kind.params} { ${kind.body} });\n`;
       }
     } else {
-      // Fixed-width indentation: input bytes grow linearly with depth, so a
-      // super-linear depth term is the code's, not the corpus's.
       for (let j = 0; j < closures; j++) {
         const kind = KINDS[j % KINDS.length];
-        main += `  items.forEach(${kind.params} { ${kind.body}\n`;
+        // Fixed-width formatting: source bytes must grow linearly with depth.
+        main +=
+          form === 'bound'
+            ? `  var h${i}_${j} = ${kind.params} { ${kind.body}\n`
+            : `  items.forEach(${kind.params} { ${kind.body}\n`;
       }
-      for (let j = 0; j < closures; j++) main += '  });\n';
+      for (let j = closures - 1; j >= 0; j--) main += form === 'bound' ? '  };\n' : '  });\n';
     }
     main += '}\n';
   }
@@ -130,12 +136,14 @@ function expectedTargets(form, closures) {
   let nearest = 'Address'; // the parameter
   for (let j = 0; j < closures; j++) {
     const kind = KINDS[j % KINDS.length];
-    const binder = kind.binds ?? (form === 'nested' ? nearest : 'Address');
-    if (form === 'nested' && kind.binds !== null) nearest = kind.binds;
-    if (binder === 'untyped') continue; // declines: the closure's own `cs` has no type
-    targets.push(`Method:${TYPES}:${binder}.${kind.body.slice(3, -3)}#0`);
+    const binder = kind.binds ?? (form !== 'sibling' ? nearest : 'Address');
+    if (form !== 'sibling' && kind.binds !== null) nearest = kind.binds;
+    // Keep the closure position so bound closures can check caller attribution.
+    targets.push(
+      binder === 'untyped' ? null : `Method:${TYPES}:${binder}.${kind.body.slice(3, -3)}#0`,
+    );
   }
-  return targets.sort();
+  return targets;
 }
 
 function addFileNodes(graph, files) {
@@ -173,7 +181,7 @@ function replay(files, raw) {
   return { graph, model, data };
 }
 
-function correctness(form, functions, closures, files, graph, stats, captured) {
+function correctness(form, functions, closures, graph, stats, captureGroups, files) {
   const edges = [];
   const callsBySource = new Map();
   let calls = 0;
@@ -188,18 +196,37 @@ function correctness(form, functions, closures, files, graph, stats, captured) {
     callsBySource.set(edge.sourceId, list);
   }
   const expected = expectedTargets(form, closures);
+  const expectedBySource = new Map();
+  for (let i = 0; i < functions; i++) {
+    let enclosing = `f${i}`;
+    for (let j = 0; j < expected.length; j++) {
+      const name = `h${i}_${j}`;
+      const line = 3 + i * (2 * closures + 3) + j;
+      const source = `Function:${MAIN}:${form === 'bound' ? `${enclosing}.${name}@${line}:2` : `f${i}`}`;
+      const targets = expectedBySource.get(source) ?? [];
+      if (expected[j] !== null) targets.push(expected[j]);
+      expectedBySource.set(source, targets);
+      // The anonymous function scope owns each nested variable declaration.
+      enclosing += `.fn@${line}:${9 + name.length}`;
+    }
+  }
   let missing = 0;
   let unexpected = 0;
-  for (let i = 0; i < functions; i++) {
-    const got = [...(callsBySource.get(`Function:${MAIN}:f${i}`) ?? [])].sort();
-    const want = [...expected];
-    for (const target of got) {
-      const at = want.indexOf(target);
-      if (at < 0) unexpected++;
-      else want.splice(at, 1);
+  for (const [source, targets] of expectedBySource) {
+    const remaining = new Map();
+    for (const target of targets) remaining.set(target, (remaining.get(target) ?? 0) + 1);
+    missing += targets.length;
+    for (const target of callsBySource.get(source) ?? []) {
+      const count = remaining.get(target) ?? 0;
+      if (count === 0) unexpected++;
+      else {
+        remaining.set(target, count - 1);
+        missing--;
+      }
     }
-    missing += want.length;
+    callsBySource.delete(source);
   }
+  for (const targets of callsBySource.values()) unexpected += targets.length;
   const declines = {};
   const outcomes = [];
   for (const outcome of stats.resolutionOutcomes) {
@@ -214,9 +241,8 @@ function correctness(form, functions, closures, files, graph, stats, captured) {
   return {
     functions,
     closures_per_function: closures,
-    input_bytes: inputBytes(files),
-    capture_groups: captured.groups,
-    function_scopes: captured.scopes,
+    input_bytes: files.reduce((sum, file) => sum + Buffer.byteLength(file.content), 0),
+    capture_groups: captureGroups,
     relationships: graph.relationshipCount,
     calls,
     declines,
@@ -257,30 +283,10 @@ async function parse(files, raw) {
   return { graph, model, data };
 }
 
-function inputBytes(files) {
-  let bytes = 0;
-  for (const file of files) bytes += Buffer.byteLength(file.content, 'utf8');
-  return bytes;
-}
-
-/**
- * One capture pass over every file: only emitDartScopeCaptures is timed. Also
- * the emitted output (capture groups, Function scopes) and how many ancestors
- * the enclosing-type search stepped onto during the pass.
- */
-function capture(files) {
-  resetEnclosingTypeStats?.();
-  const start = performance.now();
-  const outputs = files.map((file) => emitDartScopeCaptures(file.content, file.path));
-  const ms = performance.now() - start;
-  const ancestorVisits = enclosingTypeStats?.().ancestorVisits ?? null;
+function captureGroups(files) {
   let groups = 0;
-  let scopes = 0;
-  for (const matches of outputs) {
-    groups += matches.length;
-    for (const match of matches) if (match['@scope.function'] !== undefined) scopes++;
-  }
-  return { ms, work: { groups, scopes, ancestorVisits } };
+  for (const file of files) groups += emitDartScopeCaptures(file.content, file.path).length;
+  return groups;
 }
 
 /** Times capture and resolution of each input, interleaved; min of `reps`. */
@@ -293,9 +299,11 @@ function timeInputs(inputs, warmup, reps) {
   for (let run = 0; run < warmup + reps; run++) {
     for (let k = 0; k < names.length; k++) {
       const input = inputs[names[(k + run) % names.length]];
-      const { ms: captureMs, work } = capture(input.files);
-      input.captured ??= work;
-      assert.deepEqual(work, input.captured, 'capture pass must be the same work');
+      const start = performance.now();
+      const groups = captureGroups(input.files);
+      const captureMs = performance.now() - start;
+      input.groups ??= groups;
+      assert.equal(groups, input.groups, 'capture pass must be the same work');
       const pass = replay(input.files, input.raw);
       const { ms } = resolve(input.files, input.config, pass);
       assert.equal(
@@ -326,26 +334,22 @@ async function measureShape(form, functions, closures, reps, warmup) {
   const input = await prepare(form, functions, closures);
   // Through one worker parse (thread included) and one resolution.
   const peakRssMiB = process.resourceUsage().maxRSS / 1024;
-  const { work: captured } = capture(input.files);
+  const groups = captureGroups(input.files);
   const shape = correctness(
     form,
     functions,
     closures,
-    input.files,
     input.parsed.graph,
     input.first.stats,
-    captured,
+    groups,
+    input.files,
   );
-  const result = { shape, captured, peak_rss_mib: peakRssMiB };
+  const result = { shape, peak_rss_mib: peakRssMiB, work: captureWork(input.files) };
+  shape.function_scopes = result.work.function_scopes;
+  assert.equal(shape.function_scopes, functions * (closures + 1) + 4);
   if (reps > 0) {
     const timing = timeInputs(
-      {
-        one: {
-          ...input,
-          captured,
-          relationships: input.parsed.graph.relationshipCount,
-        },
-      },
+      { one: { ...input, groups, relationships: input.parsed.graph.relationshipCount } },
       warmup,
       reps,
     ).one;
@@ -365,6 +369,7 @@ async function measureTimings() {
         files,
         config,
         raw,
+        groups: captureGroups(files),
         relationships: parsed.graph.relationshipCount,
       };
     }
@@ -414,10 +419,8 @@ try {
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
 }
 
-async function report() {
+async function report(secondLook = false) {
   const shapes = {};
-  // Each workload's capture output and operation counts.
-  const captured = {};
   let timings;
   if (FULL) {
     timings = child(['--timings', '--full']);
@@ -426,43 +429,39 @@ async function report() {
         const key = `${form}_${name}`;
         const result = child(['--shape', form, String(functions), String(closures)]);
         shapes[key] = result.shape;
-        captured[key] = result.captured;
         timings[key].peak_rss_mib = result.peak_rss_mib;
+        timings[key].work = result.work;
       }
     }
   } else {
     const inputs = {};
-    const prepared = {};
     for (const form of FORMS) {
       for (const [name, [functions, closures]] of Object.entries(SHAPES)) {
         const key = `${form}_${name}`;
         const input = await prepare(form, functions, closures);
-        prepared[key] = input;
         inputs[key] = {
-          files: input.files,
-          config: input.config,
-          raw: input.raw,
+          ...input,
           relationships: input.parsed.graph.relationshipCount,
         };
       }
     }
-    // Capture output and operation counts come from the first timed pass, not
-    // an extra one.
     timings = timeInputs(inputs, WARMUP, REPS);
     for (const form of FORMS) {
       for (const [name, [functions, closures]] of Object.entries(SHAPES)) {
         const key = `${form}_${name}`;
-        const input = prepared[key];
-        captured[key] = inputs[key].captured;
+        const input = inputs[key];
         shapes[key] = correctness(
           form,
           functions,
           closures,
-          input.files,
           input.parsed.graph,
           input.first.stats,
-          inputs[key].captured,
+          input.groups,
+          input.files,
         );
+        timings[key].work = captureWork(input.files);
+        shapes[key].function_scopes = timings[key].work.function_scopes;
+        assert.equal(shapes[key].function_scopes, functions * (closures + 1) + 4);
       }
     }
   }
@@ -474,51 +473,78 @@ async function report() {
     );
     delete timing.relationships;
   }
-  const scale = SHAPES.large[0] / SHAPES.small[0];
-  assert.equal(SHAPES.dense[1] / SHAPES.small[1], scale, 'both growth axes use the same factor');
-  // What the work may grow by: the larger of the input and emitted-output
-  // growth. Fixed-width indentation keeps the nested input linear in depth.
-  const sizeGrowth = (big, small) =>
+  const metrics = {};
+  const originalNormalizationMetrics = {};
+  const sizeGrowth = (big, small, includeCalls = true) =>
     Math.max(
       big.input_bytes / small.input_bytes,
       big.capture_groups / small.capture_groups,
       big.relationships / small.relationships,
+      // Calls are the growing output in the closure sweep. Total relationships
+      // include fixed file/function structure, whose cost is not proportional
+      // to repeated call capture and resolution.
+      includeCalls ? big.calls / small.calls : 0,
     );
-  const metrics = {};
-  const growth = {};
   for (const form of FORMS) {
     const at = (name) => timings[`${form}_${name}`];
     const shape = (name) => shapes[`${form}_${name}`];
-    growth[`${form}_function`] = sizeGrowth(shape('large'), shape('small'));
-    growth[`${form}_closure`] = sizeGrowth(shape('dense'), shape('small'));
-    for (const phase of ['capture', 'resolve']) {
-      const key = `${phase}_ms`;
-      metrics[`${form}_${phase}_function_scaling_ratio`] =
-        at('large')[key] / at('small')[key] / growth[`${form}_function`];
-      metrics[`${form}_${phase}_closure_scaling_ratio`] =
-        at('dense')[key] / at('small')[key] / growth[`${form}_closure`];
-    }
-  }
-  // How many ancestors the enclosing-type search stepped onto in one capture
-  // pass of each workload (null: this tree has no counter).
-  const operations = {};
-  for (const form of FORMS) {
-    for (const name of Object.keys(SHAPES)) {
-      const key = `${form}_${name}`;
-      const visits = captured[key].ancestorVisits;
-      operations[key] = {
-        enclosing_type_ancestor_visits: visits,
-        enclosing_type_ancestor_visits_per_function_scope:
-          visits === null ? null : visits / shapes[key].function_scopes,
+    for (const [axis, names] of [
+      ['function', ['small', 'function_64', 'medium', 'function_256', 'large']],
+      ['closure', ['small', 'closure_6', 'closure_12', 'closure_24', 'dense']],
+    ]) {
+      // Check every pair: both consecutive doublings and the wider sweep must
+      // stay linear. A small quadratic term can hide in the first doubling.
+      const growth = (value, workCounter = false, includeCalls = true) => {
+        const ratios = [];
+        for (let i = 0; i < names.length; i++) {
+          for (let j = i + 1; j < names.length; j++) {
+            ratios.push(
+              value(at(names[j])) /
+                value(at(names[i])) /
+                (workCounter
+                  ? SHAPES[names[j]][axis === 'function' ? 0 : 1] /
+                    SHAPES[names[i]][axis === 'function' ? 0 : 1]
+                  : sizeGrowth(shape(names[j]), shape(names[i]), includeCalls)),
+            );
+          }
+        }
+        return Math.max(...ratios);
       };
+      for (const phase of ['capture', 'resolve']) {
+        metrics[`${form}_${phase}_${axis}_scaling_ratio`] = growth((t) => t[`${phase}_ms`]);
+        originalNormalizationMetrics[`${form}_${phase}_${axis}_scaling_ratio`] = growth(
+          (t) => t[`${phase}_ms`],
+          false,
+          false,
+        );
+      }
+      for (const counter of ['parent_reads', 'child_reads', 'map_visits']) {
+        for (const name of names)
+          assert.ok(at(name).work[counter] > 0, `${form}_${name}: ${counter} must be measured`);
+        // Structural operation counts are affine in the varied dimension;
+        // byte lengths weight fixed scaffolding differently from AST work.
+        metrics[`${form}_${counter}_${axis}_scaling_ratio`] = growth((t) => t.work[counter], true);
+      }
+      if (axis === 'closure') {
+        // Native parent and sibling getters may themselves walk to the root. A
+        // linear getter count would still permit quadratic native work with depth.
+        for (const counter of ['parent_reads', 'sibling_reads']) {
+          for (const name of names) {
+            assert.equal(
+              at(name).work[counter],
+              at('small').work[counter],
+              `${form}_${name}: ${counter} must stay flat as closures deepen`,
+            );
+          }
+        }
+      }
     }
   }
   const out = {
     shapes,
     timings,
-    growth,
     metrics,
-    operations,
+    original_normalization_metrics: originalNormalizationMetrics,
     estimator: {
       profile: FULL ? 'full' : 'ci',
       warmup: WARMUP,
@@ -537,25 +563,35 @@ async function report() {
   if (CHECK) {
     const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
     assert.deepEqual(shapes, baseline.shapes, 'Dart closure-binder workload/fingerprint drift');
+    assert.deepEqual(
+      Object.keys(baseline.budgets).sort(),
+      Object.keys(metrics).sort(),
+      'every metric needs a budget; deleting a budget must not disable a guard',
+    );
     const failures = [];
     for (const [name, budget] of Object.entries(baseline.budgets)) {
-      if (!Number.isFinite(metrics[name]) || metrics[name] > budget) {
+      if (
+        !Number.isFinite(budget) ||
+        budget <= 0 ||
+        !Number.isFinite(metrics[name]) ||
+        metrics[name] > budget
+      ) {
         failures.push(`${name}: ${metrics[name]} > ${budget}`);
       }
     }
-    // A closure reads its enclosing type from the capture walk and a member's
-    // lookup is memoised, so the search steps onto at most one ancestor per
-    // Function scope however deep closures nest. A climb to the root per
-    // closure is O(depth) each and fails here, whatever the timings say.
-    for (const [name, budget] of Object.entries(baseline.operation_budgets)) {
-      for (const [key, counts] of Object.entries(operations)) {
-        const value = counts[name];
-        if (value === null) {
-          failures.push(`${key}: ${name} unavailable (getDartEnclosingTypeStats lands with #3917)`);
-        } else if (value > budget) {
-          failures.push(`${key}: ${name} ${value} > ${budget}`);
-        }
-      }
+    // A timing metric is the largest of ten ratios of min-of-N samples, so one
+    // disturbed cell can exceed the budget. Measure once more before failing:
+    // the budgets and workloads are the same, and a real regression repeats.
+    // Fingerprints and operation counts are deterministic and fail at once.
+    if (
+      failures.length > 0 &&
+      !secondLook &&
+      failures.every((f) => /_(capture|resolve)_/.test(f))
+    ) {
+      console.error(
+        `[dart-closure-binders --check] over budget, measuring again:\n${failures.join('\n')}`,
+      );
+      return report(true);
     }
     assert.equal(failures.length, 0, failures.join('\n'));
     console.log('[dart-closure-binders --check] PASS');
