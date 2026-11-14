@@ -1211,8 +1211,10 @@ jobs:
   benchmarks:
     name: benchmarks (GITNEXUS_BENCH)
     runs-on: ubuntu-latest
-    # The callable size matrix runs 63 full analyses and 18 heap probes.
-    timeout-minutes: 30
+    # The serial guards alone can take 27 minutes on a slower runner. Leave
+    # time for the pipeline suites to finish and upload their receipt;
+    # individual benchmark performance budgets remain enforced by --check.
+    timeout-minutes: 45
     steps:
       # persist-credentials: false — this job only runs npm + vitest benchmarks
       # and never pushes; the default-persisted token in .git/config would be at
@@ -1272,8 +1274,9 @@ jobs:
         # NOT build-free: parses through the dist parse worker (the setup action
         # above builds). Pins bare parameter reads in nested blocks and heredoc
         # bodies (and the opener rule's kept call), and checks capture and
-        # resolution scaling as methods, block depth, heredocs per opener line or
-        # reads per heredoc body grow 4x. Budgets: see baseline.json.
+        # resolution scaling as methods (4x), block depth (16x, 4 -> 64),
+        # heredocs per opener line or reads per heredoc body (4x) grow.
+        # Budgets: see baseline.json.
         run: node --import tsx bench/ruby-bare-reads/measure.mjs --check
         working-directory: gitnexus
 
@@ -1603,11 +1606,11 @@ jobs:
         if: ${{ !cancelled() }}
         # NOT build-free: parses through the dist parse worker (the setup action
         # above builds). Pins every function's CALLS edges when closures rebind a
-        # receiver name, side by side or nested, checks capture and resolution
-        # scaling against input and output growth as functions, closures per
-        # function or nesting depth grow 16x (budget 1.5 everywhere), and counts
-        # the enclosing-type search's ancestor steps per Function scope. Fails
-        # on main until the depth terms in baseline.json's _depth_note are fixed.
+        # receiver name, side by side or nested, and checks capture and resolution
+        # scaling against input/output growth across geometric 16x function,
+        # closure and depth sweeps. Deterministic AST and Map visit guards
+        # also reject cheap quadratic scans.
+        # Work and timing budgets: see baseline.json.
         run: node --import tsx bench/dart-closure-binders/measure.mjs --check
         working-directory: gitnexus
 
