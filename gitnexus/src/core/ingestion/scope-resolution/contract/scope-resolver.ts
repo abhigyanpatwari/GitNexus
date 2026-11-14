@@ -423,6 +423,22 @@ export interface ScopeResolver {
     indexes: ScopeResolutionIndexes,
   ) => ReadonlySet<string> | undefined;
 
+  /** Store a wildcard import that `resolveImportTarget` answers with a list
+   * of files as ONE group over that list, instead of one import edge per
+   * file. Only when finalize creates no per-name bindings for the wildcard
+   * (`expandsWildcardTo` returns no names). Later resolution can still find
+   * names in the reachable files; readers ask about that reachability through
+   * `ImportVisibility` (`reaches`, `membership`, `forEachTarget`).
+   *
+   * Return the same array for every importer of the same package, so the
+   * package is stored once. Finalize falls back to one edge per file for any
+   * statement where its own results could differ; see
+   * `FinalizeHooks.groupsWildcardTargets`. It cannot see the provider's other
+   * hooks: none of them may read wildcard targets from `edgesAt`, which no
+   * longer lists a grouped import. Compare both forms through the pipeline
+   * before opting in. Default: one edge per file. */
+  readonly groupsWildcardImportTargets?: boolean;
+
   // ─── Pipeline hooks ────────────────────────────────────────────────────────
 
   /**
