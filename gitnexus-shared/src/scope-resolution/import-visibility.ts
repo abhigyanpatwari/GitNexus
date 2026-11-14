@@ -75,7 +75,9 @@ export interface ImportVisibility {
 
   /** Visit every imported file of `scope` in statement order, with the edge
    *  that describes how it is imported. A file imported twice is visited
-   *  twice. Imports with no resolved file are not visited. */
+   *  twice. Imports with no resolved file are not visited. Use the callback's
+   *  `targetFile`: shared groups describe the statement in `via`, without a
+   *  per-file `targetFile` or `targetModuleScope`. */
   forEachTarget(scope: ScopeId, visit: (targetFile: string, via: ImportEdge) => void): void;
 }
 

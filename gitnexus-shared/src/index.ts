@@ -137,6 +137,8 @@ export {
   indexTopLevelExportsByName,
 } from './scope-resolution/finalize-algorithm.js';
 export type { ImportMembership, ImportVisibility } from './scope-resolution/import-visibility.js';
+export type { ImportEntry, ImportGroup } from './scope-resolution/import-groups.js';
+export { createGroupedImportVisibility } from './scope-resolution/import-groups.js';
 export {
   createEagerImportVisibility,
   importTargetDirectory,

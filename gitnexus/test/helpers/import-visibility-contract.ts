@@ -64,11 +64,14 @@ export function edgeMapOf(relation: ImportRelation): Map<ScopeId, readonly Impor
   );
 }
 
-function questions(relation: ImportRelation): {
+/** The scopes, files and directories to ask an implementation about. */
+export interface VisibilityQuestions {
   readonly scopes: readonly ScopeId[];
   readonly files: readonly string[];
   readonly directories: readonly string[];
-} {
+}
+
+function questions(relation: ImportRelation): VisibilityQuestions {
   const files = new Set<string>(relation.probeFiles);
   for (const scope of relation.scopes)
     for (const statement of scope.statements)
@@ -138,7 +141,14 @@ export function observeVisibility(
   relation: ImportRelation,
   visibility: ImportVisibility,
 ): ObservedVisibility {
-  const asked = questions(relation);
+  return observeAsked(questions(relation), visibility);
+}
+
+/** The answers an implementation gives to an explicit set of questions. */
+export function observeAsked(
+  asked: VisibilityQuestions,
+  visibility: ImportVisibility,
+): ObservedVisibility {
   const visit = (id: ScopeId): ObservedTarget[] => {
     const seen: ObservedTarget[] = [];
     visibility.forEachTarget(id, (targetFile, via) =>
@@ -228,6 +238,23 @@ export const namedRelations: readonly ImportRelation[] = [
     ],
     probeScopes: [],
     probeFiles: ['src/a/Missing.java', 'Root.java'],
+  },
+  {
+    name: 'more wildcards in one scope than are probed one by one',
+    scopes: [
+      {
+        id: scopeId('m'),
+        statements: [
+          { edge: named('One', 1), targets: ['src/a/One.java'] },
+          ...Array.from({ length: 20 }, (_, i) => ({
+            edge: wildcard(i + 2),
+            targets: [`src/p${i}/T.java`],
+          })),
+        ],
+      },
+    ],
+    probeScopes: [],
+    probeFiles: ['src/p20/T.java'],
   },
   {
     name: 'the same wildcard written twice',
@@ -351,7 +378,7 @@ export const namedRelations: readonly ImportRelation[] = [
 ];
 
 /** Deterministic generator (mulberry32): the same seed always gives the same relation. */
-function prng(seed: number): () => number {
+export function prng(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
     state = (state + 0x6d2b79f5) >>> 0;

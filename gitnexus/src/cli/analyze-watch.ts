@@ -24,7 +24,7 @@ import {
 } from './analyze-config.js';
 import { logger } from '../core/logger.js';
 import type { AnalyzeOptions } from './analyze-options.js';
-import { ensureHeap, usesManualAnalysisHeap } from './analyze.js';
+import { ensureHeap, manualHeapAdmission, usesManualAnalysisHeap } from './analyze.js';
 import { cliError, cliInfo, cliWarn } from './cli-message.js';
 import { parseIntegerOption } from './int-option.js';
 import {
@@ -504,12 +504,14 @@ export async function watchCommandWithRunnerIdentity(
     const repoPath = await fs.realpath(requestedRepoPath);
     try {
       const manualHeap = usesManualAnalysisHeap(cliOptions.memoryBudget);
+      const manual = manualHeap ? manualHeapAdmission() : {};
       const admission = resolveHostAnalysisResources({
         totalMb: positiveInteger(cliOptions.resourceBudget, '--resource-budget'),
         mainHeapMb: manualHeap
-          ? Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2)
+          ? manual.mainHeapMb
           : (positiveInteger(cliOptions.memoryBudget, '--memory-budget') ??
             positiveInteger(process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB, 'admitted main heap')),
+        mainHeapLimitMb: manual.mainHeapLimitMb,
         workers: positiveInteger(cliOptions.workers, '--workers'),
         includeEmbeddings: await analysisMayEmbed(repoPath, { branch: cliOptions.branch }),
         supervisorBytes:
