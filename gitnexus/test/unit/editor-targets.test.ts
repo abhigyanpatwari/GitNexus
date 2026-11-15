@@ -59,3 +59,15 @@ describe('getEditorTargets — Claude Code under CLAUDE_CONFIG_DIR', () => {
     expect(relocatedTargets.codex).toEqual(defaultTargets.codex);
   });
 });
+
+describe('getEditorTargets — Codex under CODEX_HOME', () => {
+  it('takes CODEX_HOME from the injected environment, like CLAUDE_CONFIG_DIR', () => {
+    const codexHome = path.resolve('/cfg/codex');
+    expect(getEditorTargets(HOME, { CODEX_HOME: codexHome }).codex.configFile).toBe(
+      path.join(codexHome, 'config.toml'),
+    );
+    expect(getEditorTargets(HOME, {}).codex.configFile).toBe(
+      path.join(HOME, '.codex', 'config.toml'),
+    );
+  });
+});
