@@ -325,14 +325,26 @@ export function emitDartScopeCaptures(
       seenFnDeclNodes.add(declKey);
       const bodyNode = findFunctionBody(declNode);
       // An accessor opens its scope for its BODY; it publishes no return
-      // binding. `dartBindingScopeFor` hoists every return binding to the
-      // Module scope, and the receiver walk climbs past an untyped nearest
-      // binding (a `dynamic` parameter, a local of unknown type) to a
-      // same-named module binding, so `Addr get cs` — a member of any class, or
-      // a top-level getter — would type `void g(dynamic cs) { cs.save(); }` as
-      // `Addr.save`: a wrong owner, where before this scope existed the getter
-      // published nothing. Withheld until that walk stops at an untyped binder.
-      const accessor = declTag === '@dart.accessor' || declTag === '@dart.callable-body';
+      // binding. `dartBindingScopeFor` hoists a member's or top-level
+      // callable's return binding to the Module scope, and the receiver walk
+      // climbs past an untyped nearest binding (a `dynamic` parameter, a local
+      // of unknown type) to a same-named module binding, so `Addr get cs` — a
+      // member of any class, or a top-level getter — would type
+      // `void g(dynamic cs) { cs.save(); }` as `Addr.save`: a wrong owner,
+      // where before this scope existed the getter published nothing. Withheld
+      // until that walk stops at an untyped binder.
+      //
+      // An operator or a factory constructor (`@dart.callable-body`) opens its
+      // scope for the same reason and publishes nothing either. A factory
+      // declares no return type. An operator's binding would be named
+      // `operator *` — what the signature reader calls it — which no receiver
+      // or callee can spell, so no lookup reads it; hoisted to the Module scope
+      // it would only be one file-wide entry per operator symbol, the last
+      // class declaring that operator winning. Neither had a declaration
+      // capture before this tag, so no binding is lost
+      // (`dart-capture-feedback.test.ts`, "an operator and a factory …").
+      const withholdsReturnBinding =
+        declTag === '@dart.accessor' || declTag === '@dart.callable-body';
 
       attachArityMetadata(grouped, declNode);
       // A callable's result type is distinct from a same-spelled value. Keep
@@ -394,7 +406,7 @@ export function emitDartScopeCaptures(
       for (const cm of signatureBindings) {
         // Emitted with the scope, above; a bodiless declaration has none.
         if (cm['@type-binding.parameter'] !== undefined) continue;
-        if (accessor && cm['@type-binding.return'] !== undefined) continue;
+        if (withholdsReturnBinding && cm['@type-binding.return'] !== undefined) continue;
         out.push(cm);
       }
       continue;

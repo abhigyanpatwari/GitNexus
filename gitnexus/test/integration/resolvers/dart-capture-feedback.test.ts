@@ -8,6 +8,8 @@
  *     retyped the result of every other callable of that name: the top-level or
  *     imported function called from another function, a method of the same
  *     name, and (through the exporting file) call sites in importing files.
+ *   - An operator and a factory constructor open a scope for their body and
+ *     publish no return binding.
  *   - A comment before a cascade section, or inside one, is not the receiver.
  */
 import { describe, expect, it } from 'vitest';
@@ -182,6 +184,48 @@ void outside(Box b) {
           // Page.render: the method `Widget build()`
           'members.dart:7 -> Method:members.dart:Widget.save#0',
         ]);
+      });
+    });
+
+    describe('operators and factory constructors', () => {
+      it('an operator and a factory constructor open a scope and publish no return binding', () => {
+        const captures = emitDartScopeCaptures(
+          `class Mat { void save() {} }
+class Vec {
+  Vec();
+  factory Vec.zero() { final t = Vec(); return t; }
+  Mat operator *(Vec o) { final m = Mat(); return m; }
+  Mat operator [](int i) => Mat();
+  Mat scale() => Mat();
+}
+Mat zero() => Mat();
+`,
+          'operators.dart',
+        ) as CaptureMatch[];
+        // Only the method and the top-level function publish one.
+        expect(
+          captures
+            .filter((match) => match['@type-binding.return'] !== undefined)
+            .map(
+              (match) =>
+                `${match['@type-binding.name']?.text}:${match['@type-binding.type']?.text}`,
+            )
+            .sort(),
+        ).toEqual(['scale:Mat', 'zero:Mat']);
+        // The factory (line 4) and both operators (5, 6) own their body names.
+        expect(
+          captures
+            .filter(
+              (match) =>
+                match['@scope.function'] !== undefined &&
+                [4, 5, 6].includes(match['@scope.function'].range.startLine),
+            )
+            .map(
+              (match) =>
+                `${match['@scope.function']?.range.startLine} ${match['@scope.lexical-names']?.text}`,
+            )
+            .sort(),
+        ).toEqual(['4 ["t"]', '5 ["m","o"]', '6 ["i"]']);
       });
     });
 
