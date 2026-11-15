@@ -284,14 +284,19 @@ function bindsAtTopLevel(parsed: ParsedFile | undefined, node: Parser.SyntaxNode
   return scopeId === parsed.moduleScope;
 }
 
-/** Whether the file binds `name` at top level (a function or any other value). */
-function definesAtTopLevel(source: RenameSource, name: string): boolean {
-  if (!source.tree) return false;
+/** How many times the file binds `name` at top level (a function or any other value). */
+function topLevelBindingCount(source: RenameSource, name: string): number {
+  if (!source.tree) return 0;
+  let count = 0;
   for (const node of walkNamedNodes(source.tree.rootNode)) {
-    if (rBoundName(node) === name && bindsAtTopLevel(source.parsed, node)) return true;
+    if (rBoundName(node) === name && bindsAtTopLevel(source.parsed, node)) count++;
   }
-  return false;
+  return count;
 }
+
+/** Whether the file binds `name` at top level (a function or any other value). */
+const definesAtTopLevel = (source: RenameSource, name: string): boolean =>
+  topLevelBindingCount(source, name) > 0;
 
 /** The value side of a local `<-`, `=` or `->` assignment of `name`, or null. */
 function locallyAssignedValue(node: Parser.SyntaxNode, name: string): Parser.SyntaxNode | null {
@@ -818,6 +823,13 @@ export const rRenameProvider: RenameProvider = {
     // target's (the same package's R/ files, or files outside every package) means load order
     // decides which one callers reach. A definition inside a function or a block scope
     // (`test_that()`, `local()`, ...) binds only there.
+    // The same holds inside the target's own file: the later top-level definition wins when the
+    // file runs, the rename engine binds callers to one of them, and the other is left behind.
+    const targetFile = files.get(target.filePath);
+    if (targetFile !== undefined && topLevelBindingCount(targetFile, name) > 1)
+      return ambiguous(
+        'This name is defined more than once in this file at top level; the later definition replaces the earlier, and a rename would change only one of them.',
+      );
     const recorded = recordedRPackageConfig(files.get(target.filePath)?.parsed);
     // Several directories declaring one `Package:` name make `pk::fn` / `pk:::fn` ambiguous: the
     // callers of the other copy are bound to one directory or the other, and a rename would

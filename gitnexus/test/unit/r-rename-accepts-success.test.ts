@@ -171,3 +171,21 @@ describe('T11: the string-call, unindexed-file and hook-name guards also test th
     expect(check({ [file]: base }, file, 'helper', '.onLoadx')).toBeUndefined();
   });
 });
+
+describe('T15: a function defined twice at the top level of its own file', () => {
+  const file = 'a.R';
+  it('refuses, naming the second definition', () => {
+    const source =
+      'helper <- function(x) 1\nhelper <- function(x) 2\nrun <- function() helper(1)\n';
+    expect(check({ [file]: source }, file, 'helper', 'assist')).toMatchObject({
+      code: 'ambiguous_reference',
+      message: expect.stringContaining('defined more than once in this file'),
+    });
+  });
+
+  it('accepts one top-level definition beside definitions in other scopes', () => {
+    const source =
+      'helper <- function(x) 1\nrun <- function() {\n  other <- 1\n  helper(other)\n}\nlocal({ helper2 <- 3 })\n';
+    expect(check({ [file]: source }, file, 'helper', 'assist')).toBeUndefined();
+  });
+});
