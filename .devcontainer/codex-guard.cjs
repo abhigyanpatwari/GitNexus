@@ -19,6 +19,8 @@
 // run. CODEX_GUARD=off in the environment Codex was started with turns it off.
 'use strict';
 
+const path = require('node:path');
+
 // Deleting any of these recursively is never what a task needs.
 const PROTECTED = [
   /^\/\*?$/, // / and /*
@@ -28,7 +30,8 @@ const PROTECTED = [
   /^\/workspace\/?\*?$/,
   /^\/(etc|usr|var|bin|lib|opt|root)(\/.*)?$/,
   /^\.\.?(\/\*?)?$/, // . .. ./ ../ ../*
-  /^\.?\*$/, // a bare * deletes whatever the current folder happens to be; .* also matches ..
+  /^\*$/, // a bare * deletes whatever the current folder happens to be
+  /(^|\/)\.\*$/, // a hidden-file glob reaches .git and the tool folders, wherever it stands
   /(^|\/)\.git\/?$/,
   /(^|\/)\.(claude|codex|claude-mem)(\/\*?)?$/,
 ];
@@ -124,8 +127,10 @@ function withoutRedirections(words) {
 
 /** Why `name args...` is refused, when `name` is a command this guard watches. */
 function judge(name, args, before, depth) {
-  if ((SHELLS.has(name) || name === 'eval') && depth < 3) {
+  if (SHELLS.has(name) || name === 'eval') {
     // `sh -c '<script>'` and `eval <words>` run their argument as a command line.
+    // Past a few levels the script is refused unread: any fixed depth can be out-nested.
+    if (depth >= 3) return 'a shell nested too deep to check';
     const flag = args.findIndex((arg) => /^-[a-z]*c$/.test(arg));
     const script = name === 'eval' ? args.join(' ') : flag === -1 ? '' : (args[flag + 1] ?? '');
     return refusal(script, depth + 1);
@@ -133,11 +138,13 @@ function judge(name, args, before, depth) {
 
   if (name === 'rm' && !HAVE_RM_SUBCOMMAND.has(before)) {
     const flags = args.filter((arg) => arg.startsWith('-')).join(' ');
-    const targets = args.filter((arg) => !arg.startsWith('-'));
+    // An empty word is what is left of a quoted substitution: a computed target, not `.`.
+    const targets = args.filter((arg) => arg !== '' && !arg.startsWith('-'));
     const isRecursive = /(^|\s)-[a-zA-Z]*[rR]|--recursive/.test(flags);
     // `./*` is `*`, and `././.git` is `.git`: a leading `./` names the same thing.
-    const plain = (target) => target.replace(/^(?:\.\/+)+(?=.)/, '');
-    const hit = targets.find((target) => PROTECTED.some((path) => path.test(plain(target))));
+    // and `/workspace/../*` is `/*`: `.` and `..` segments are resolved first.
+    const plain = (target) => path.posix.normalize(target);
+    const hit = targets.find((target) => PROTECTED.some((root) => root.test(plain(target))));
     if (isRecursive && hit !== undefined) return `rm -r on ${hit}`;
     const memory = targets.find((target) => /\.claude-mem(\/|$)|claude-mem\.db/.test(target));
     if (memory !== undefined) return `rm on the claude-mem store (${memory})`;
@@ -151,7 +158,9 @@ function judge(name, args, before, depth) {
     const verb = args[at];
     const rest = args.slice(at + 1);
     if (verb === 'push') {
-      if (rest.some((arg) => arg === '-f' || arg === '--force' || /^\+/.test(arg))) {
+      // `-f` may be clustered with other short options: `git push -fu origin x`.
+      const isForce = (arg) => arg === '--force' || /^-[a-zA-Z]*f[a-zA-Z]*$/.test(arg);
+      if (rest.some((arg) => isForce(arg) || /^\+/.test(arg))) {
         return 'git push --force (use --force-with-lease on your own branch)';
       }
       const refs = rest.filter((arg) => !arg.startsWith('-')).slice(1);

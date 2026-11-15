@@ -57,6 +57,14 @@ const DENIED = [
   'rm -rf .*',
   'rm -rf ././',
   'rm -rf ./.git',
+  'rm -rf /workspace/../*',
+  'rm -rf /tmp/../workspace',
+  'rm -rf /workspace/.*',
+  'rm -rf build/.*',
+  'git push -fu origin feature',
+  'git push -uf origin feature',
+  // Four shells deep: refused unread.
+  `sh -c "sh -c 'sh -c \\"sh -c \\\\\\"rm -rf /\\\\\\"\\"'"`,
   // An unquoted mention is refused too: the guard fails closed.
   'echo rm -rf / > notes.txt',
 ];
@@ -82,6 +90,9 @@ const ALLOWED = [
   'ls /nope 2>/dev/null',
   'git rm -r --cached .',
   'rm -rf ./build',
+  'rm -rf /workspace/gitnexus/../dist',
+  'git push -u origin feature',
+  'sh -c "sh -c \'ls\'"',
   'rm -rf ./node_modules/.cache',
   // The stated limit: a computed target is not seen.
   'rm -rf "$TMP"',
@@ -106,7 +117,8 @@ for (const command of ALLOWED) {
 
 const run = (payload, env = {}) =>
   spawnSync(process.execPath, [GUARD], {
-    input: JSON.stringify(payload),
+    // A string is sent as it is, so a test can hand over a payload that is not JSON.
+    input: typeof payload === 'string' ? payload : JSON.stringify(payload),
     encoding: 'utf8',
     env: { ...process.env, CODEX_GUARD: '', ...env },
   });
@@ -137,6 +149,6 @@ test('CODEX_GUARD=off lets a refused command through', () => {
 });
 
 test('an unreadable payload does not block', () => {
-  const ran = spawnSync(process.execPath, [GUARD], { input: 'not json', encoding: 'utf8' });
+  const ran = run('not json');
   assert.equal(ran.status, 0);
 });

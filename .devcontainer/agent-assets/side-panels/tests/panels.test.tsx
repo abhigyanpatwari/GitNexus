@@ -369,3 +369,17 @@ test('a worktree that cannot be read, or has no upstream, is not called clean', 
   );
   await ui.unmount();
 });
+
+test('a message that was not delivered does not reach the bus', async ($, on) => {
+  on('store.get', () => ({ value: undefined }));
+  on('env.get', () => ({ value: undefined }));
+  on('ui.panes', () => ({ value: [] }));
+  on('agent.list', () => ({ value: [WORKER] }));
+  on('session.send', () => ({ isDelivered: false, reason: 'no such agent' }));
+
+  await $.session.send({ to: 'gone', text: 'are you there', origin: { kind: 'model' } });
+
+  const ui = await $.ui.mount({ ...paneOf('agents', 'Agents'), surface: 'terminal' });
+  expect((await ui.find({ type: 'Text', text: /^Bus \(/ }))?.text).toBe('Bus (0)');
+  await ui.unmount();
+});

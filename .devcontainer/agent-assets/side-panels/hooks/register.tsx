@@ -198,6 +198,8 @@ export const register: Register = (on) => {
   // Every message one agent sends another (the SendMessage tool) is logged as it goes.
   on('session.send', async ($, e, next) => {
     const sent = await next(e);
+    // What did not arrive is no message on the bus, and is not relayed.
+    if (!sent.isDelivered) return sent;
     const host = hostOf($);
     const known = await host.agents();
     // The pane's own send arrives here too, as this plugin's: that one is the person's.

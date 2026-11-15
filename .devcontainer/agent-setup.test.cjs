@@ -137,6 +137,43 @@ test('sandbox defaults are added only where the sandbox cannot start and none is
   assert.equal(withSandboxDefaults(chosen, false), chosen);
 });
 
+test('an approval policy the config already sets is kept, not written twice', () => {
+  const config = 'approval_policy = "never"\n\n[tui]\nx = 1\n';
+  const added = withSandboxDefaults(config, false);
+
+  assert.equal(added.match(/^approval_policy\s*=/gm).length, 1);
+  assert.match(added, /^approval_policy = "never"$/m);
+  assert.match(added, /^sandbox_mode = "danger-full-access"$/m);
+  assert.equal(withSandboxDefaults(added, false), added);
+});
+
+test('a missing config still gets the sandbox default', () => {
+  const added = withSandboxDefaults(cleanCodexConfig('').text, false);
+
+  assert.match(added, /^sandbox_mode = "danger-full-access"$/m);
+  assert.match(added, /^approval_policy = "on-request"$/m);
+  assert.equal(withSandboxDefaults('', true), '');
+});
+
+test('a quoted table name with dots in it is one entry', () => {
+  const text = [
+    '[mcp_servers."win.tool"]',
+    "command = 'C:\\tools\\win.exe'",
+    '',
+    '[mcp_servers."win.tool".env]',
+    'A = "1"',
+    '',
+    '[mcp_servers."linux.tool"]',
+    'command = "npx"',
+    '',
+  ].join('\n');
+
+  assert.deepEqual(cleanCodexConfig(text), {
+    text: ['[mcp_servers."linux.tool"]', 'command = "npx"', ''].join('\n'),
+    removed: ['mcp_servers.win.tool'],
+  });
+});
+
 test('sandbox defaults land before the first table even in a config with no top-level keys', () => {
   const added = withSandboxDefaults('[tui]\nx = 1\n', false);
   assert.ok(added.indexOf('sandbox_mode') < added.indexOf('[tui]'));

@@ -43,6 +43,12 @@ function tomlString(raw) {
   return undefined;
 }
 
+/** The keys of a dotted TOML table name; a quoted key may hold dots of its own. */
+const tomlKeys = (name) =>
+  [...name.matchAll(/"((?:[^"\\]|\\.)*)"|'([^']*)'|([^.\s]+)/g)].map(
+    (key) => key[1] ?? key[2] ?? key[3],
+  );
+
 // A table header, alone on its line or followed by a comment.
 const TABLE_HEADER = /^\[+([^\]]+)\]+\s*(?:#.*)?$/;
 
@@ -97,42 +103,54 @@ function cleanCodexConfig(text) {
     }
   }
 
-  const dead = new Set();
+  // A table belongs to an entry when its name starts with the entry's two keys:
+  // `[mcp_servers.x]` and `[mcp_servers.x.env]`, `[mcp_servers."win.tool"]` too.
+  const dead = [];
   for (const table of parts.tables) {
-    const server = /^mcp_servers\.([^.]+)$/.exec(table.name)?.[1];
-    if (server !== undefined && isWindowsValue(valueOf(table, 'command') ?? '')) {
-      dead.add(`mcp_servers.${server}`);
-    }
-    const marketplace = /^marketplaces\.([^.]+)$/.exec(table.name)?.[1];
-    if (marketplace !== undefined && isWindowsValue(valueOf(table, 'source') ?? '')) {
-      dead.add(`marketplaces.${marketplace}`);
-    }
+    const keys = tomlKeys(table.name);
+    if (keys.length !== 2) continue;
+    const isDeadServer =
+      keys[0] === 'mcp_servers' && isWindowsValue(valueOf(table, 'command') ?? '');
+    const isDeadMarketplace =
+      keys[0] === 'marketplaces' && isWindowsValue(valueOf(table, 'source') ?? '');
+    if (isDeadServer || isDeadMarketplace) dead.push(keys);
   }
-  removed.push(...dead);
-  const tables = parts.tables.filter(
-    (table) => ![...dead].some((name) => table.name === name || table.name.startsWith(`${name}.`)),
-  );
+  removed.push(...dead.map((keys) => keys.join('.')));
+  const tables = parts.tables.filter((table) => {
+    const keys = tomlKeys(table.name);
+    return !dead.some((entry) => entry[0] === keys[0] && entry[1] === keys[1]);
+  });
 
   return { text: tomlJoin({ preamble, tables }), removed };
 }
 
-const SANDBOX_DEFAULTS = [
+const SANDBOX_NOTE = [
   '# Set by .devcontainer/agent-setup.cjs: this container cannot create user',
   "# namespaces, so Codex's bubblewrap sandbox cannot start. The container is the",
-  '# boundary. Remove these two lines to return to the Codex defaults.',
-  'sandbox_mode = "danger-full-access"',
-  'approval_policy = "on-request"',
+  '# boundary. Remove these lines to return to the Codex defaults.',
 ];
 
-/** Adds the container defaults unless the config already chooses a sandbox mode. */
+/**
+ * Adds the container defaults unless the config already chooses a sandbox mode.
+ * An approval policy the config already sets is kept: TOML refuses a key twice.
+ */
 function withSandboxDefaults(text, canSandbox) {
   const parts = tomlParts(text);
-  if (canSandbox || parts.preamble.some((line) => /^sandbox_mode\s*=/.test(line))) return text;
+  const has = (key) => parts.preamble.some((line) => new RegExp(`^${key}\\s*=`).test(line));
+  if (canSandbox || has('sandbox_mode')) return text;
   const preamble = [...parts.preamble];
   while (preamble.length > 0 && preamble.at(-1).trim() === '') preamble.pop();
   const gap = preamble.length > 0 ? [''] : [];
+  const policy = has('approval_policy') ? [] : ['approval_policy = "on-request"'];
   return tomlJoin({
-    preamble: [...preamble, ...gap, ...SANDBOX_DEFAULTS, ''],
+    preamble: [
+      ...preamble,
+      ...gap,
+      ...SANDBOX_NOTE,
+      'sandbox_mode = "danger-full-access"',
+      ...policy,
+      '',
+    ],
     tables: parts.tables,
   });
 }
@@ -241,8 +259,9 @@ function run(command, args, timeoutMs = 180_000) {
 
 function setUpCodexConfig(home) {
   const file = path.join(codexHome(home), 'config.toml');
-  if (!fs.existsSync(file)) return log('codex config: none yet, nothing to clean');
-  const cleaned = cleanCodexConfig(fs.readFileSync(file, 'utf8'));
+  // No config yet (a host that never ran Codex): the sandbox default is still needed,
+  // so the file is created with it.
+  const cleaned = cleanCodexConfig(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
   const canSandbox = run('unshare', ['-U', 'true'], 10_000).ok;
   const changed = writeIfChanged(file, withSandboxDefaults(cleaned.text, canSandbox));
   log(
