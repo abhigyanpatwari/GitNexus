@@ -408,7 +408,6 @@ function findRegisteredRepo(cwd) {
     if (entry.path.includes('\0') || !path.isAbsolute(entry.path)) continue;
     const registeredPath = canonicalize(entry.path);
     if (!registeredPath) continue;
-    // Nearest ancestor wins; the main checkout is only a linked-worktree fallback.
     const rank = repoPaths.findIndex((repoPath) => samePath(repoPath, registeredPath));
     if (rank === -1) continue;
     const storagePath = resolveEntryStoragePath(entry);
