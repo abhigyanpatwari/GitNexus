@@ -1439,6 +1439,15 @@ jobs:
         run: node --import tsx bench/cpp-qualified-ns/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Group manifest-link matching guards (#1188)
+        if: ${{ !cancelled() }}
+        # Build-free: a group.yaml link's consumer may only match providers in
+        # the repo the link names. Fingerprints every cross-link and unmatched
+        # contract of the matching stage and guards that its cost stays linear
+        # in the number of links. See bench/group-link-matching/measure.mjs.
+        run: node --import tsx bench/group-link-matching/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Import-target resolution guards (every registered language, #2877–#2909, PR #2911)
         if: ${{ !cancelled() }}
         # Build-free: runs EVERY import-target resolver registered in
