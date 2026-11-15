@@ -58,10 +58,10 @@ export function interpretDartImport(captures: CaptureMatch): ParsedImport | null
       ...metadata,
     };
   }
-  // Dart `import '...'` brings every PUBLIC top-level symbol of the target
-  // library directly into scope (no prefix) — wildcard semantics. The
-  // `expandsWildcardTo` hook enumerates those names so cross-file return
-  // types propagate (`var u = importedFn(); u.m()`).
+  // Dart `import '...'` brings every name of the target library's public
+  // export namespace directly into scope (no prefix) — wildcard semantics. The
+  // statement stays ONE import; `populateDartImportNamespaces` publishes each
+  // library's names once and applies this directive's `show` / `hide` there.
   return { kind: 'wildcard', targetRaw: raw, reexportsName: false, ...metadata };
 }
 

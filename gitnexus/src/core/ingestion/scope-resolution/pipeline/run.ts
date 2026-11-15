@@ -1094,6 +1094,9 @@ export function runScopeResolution(
       namedImportsBindTopLevelOnly: provider.namedImportsBindTopLevelOnly === true,
     },
   });
+  // Import-visible namespaces are bindings: publish them before the first pass
+  // that reads one (inheritance resolution below).
+  provider.populateImportNamespaces?.(parsedFiles, finalized);
   if (referenceBindings !== undefined) {
     for (const site of finalized.referenceSites)
       referenceBindings.set(site, {

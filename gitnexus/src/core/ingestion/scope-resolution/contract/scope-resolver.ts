@@ -18,6 +18,8 @@
  *        - elementTypeOf — container element type, by subscript or accessor
  *        - collapseMemberCallsByCallerTarget — one edge per caller/target
  *        - populateNamespaceSiblings — cross-file implicit visibility
+ *        - populateImportNamespaces — a whole-namespace import published once
+ *          per namespace instead of once per importer and name
  *        - hoistTypeBindingsToModule — enable ONLY when method return
  *          types are stored on the enclosing Module scope; most
  *          languages attach them to the class scope and leave this off
@@ -1858,6 +1860,25 @@ export interface ScopeResolver {
     candidate: SymbolDefinition,
     context: { readonly callerFilePath: string },
   ) => ArityVerdict;
+
+  /**
+   * Optional hook for a language whose import statement makes a whole
+   * namespace visible. Instead of one binding per importer and name, the
+   * provider publishes each namespace ONCE in `namespaceFqnBindings` and lists
+   * the namespaces an importing scope sees in `accessibleNamespacesByScope`
+   * (with `namespaceLookupTiersByScope` for precedence), so the stored size
+   * does not grow with importers times names.
+   *
+   * Runs immediately after finalize, before the first pass that reads a
+   * binding (inheritance resolution), so every later lookup sees the imported
+   * names. `populateNamespaceSiblings` runs too late for that: heritage edges
+   * and the MRO already exist when it is called. Finalized `indexes.bindings`
+   * stays immutable.
+   */
+  readonly populateImportNamespaces?: (
+    parsedFiles: readonly ParsedFile[],
+    indexes: ScopeResolutionIndexes,
+  ) => void;
 
   /**
    * Optional post-finalize hook to complete provider-owned namespace and type
