@@ -33,7 +33,6 @@ vi.mock(
       ...real,
       reconcileOwnership: (...args: Parameters<typeof real.reconcileOwnership>) => {
         const [files, model] = args;
-        const stats = real.reconcileOwnership(...args);
         let ids = seen.get(model);
         if (ids === undefined) {
           ids = new Set();
@@ -46,6 +45,9 @@ vi.mock(
             };
           }
         }
+        // The probe is installed first: reconciliation's own duplicate checks
+        // are registry readers too, and must be counted.
+        const stats = real.reconcileOwnership(...args);
         if (probe.legacy)
           for (const file of files)
             for (const def of file.localDefs) {
