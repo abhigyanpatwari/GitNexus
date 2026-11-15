@@ -1,0 +1,19 @@
+docs/plans/2026-11-13-gitnexus-plan-java-ingestion-priorities.md
+  s_178fe5f2bc5b0d::t_7216b2a3565f53 1-1472
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1c2d1d26233a31418bc591a47a966dd66f19f7b6",
+  "prompts": {},
+  "sessions": {
+    "s_178fe5f2bc5b0d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15bafdb9-7c6c-4d9c-8e9f-53fbc01c0876",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
