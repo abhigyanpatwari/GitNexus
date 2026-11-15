@@ -129,6 +129,8 @@ function symbolQueryCalls(): { query: string; params: SymbolQueryParams }[] {
 interface DetectChangesResult {
   summary: { changed_count: number; changed_files: number; risk_level: string };
   changed_symbols: { name?: string; type?: string }[];
+  affected_processes?: unknown[];
+  unmapped_files?: string[];
   truncated?: boolean;
   partial?: boolean;
 }
@@ -163,6 +165,8 @@ function projectTypeColumn(query: string): string {
 
 /** A 0-based symbol row the mocked engine returns for the hunk→symbol query. */
 interface SymbolRow {
+  /** Defaults to the normal Function identity; an empty value models #3931. */
+  id?: string;
   name: string;
   startLine: number;
   endLine: number;
@@ -178,7 +182,7 @@ function mockSymbolRows(rows: SymbolRow[]): void {
           const filePath = row.filePath ?? 'code.py';
           return {
             diffPath: filePath,
-            id: `Function:${filePath}:${row.name}`,
+            id: row.id ?? `Function:${filePath}:${row.name}`,
             name: row.name,
             type: projectTypeColumn(String(query)),
             filePath,
@@ -529,6 +533,81 @@ describe('#2915 detect_changes hunk scaling', () => {
       },
     ]);
   });
+
+  it('does not fan an empty-id symbol out through empty-id process steps (#3931)', async () => {
+    const processQueries: string[][] = [];
+    lbugMocks.executeParameterized.mockImplementation(
+      async (_db: string, query: string, params: SymbolQueryParams | { ids?: string[] }) => {
+        if (String(query).includes('diffPath')) {
+          return [
+            {
+              diffPath: 'code.py',
+              id: '',
+              name: '',
+              type: '',
+              filePath: 'code.py',
+              startLine: 0,
+              endLine: 1,
+            },
+          ];
+        }
+        if (String(query).includes('STEP_IN_PROCESS')) {
+          const ids = 'ids' in params ? (params.ids ?? []) : [];
+          processQueries.push(ids);
+          return [
+            {
+              nodeId: '',
+              pid: 'Process:unrelated',
+              label: 'unrelated flow',
+              processType: 'cross_community',
+              stepCount: 3,
+              step: 2,
+            },
+          ];
+        }
+        return [];
+      },
+    );
+
+    const repoDir = makeRepo(['code.py'], 2);
+    writeFileSync(path.join(repoDir, 'code.py'), 'line 1 changed\nline 2\n');
+    registerRepo(repoDir);
+
+    const result = await runDetectChanges();
+
+    expect(processQueries).toEqual([]);
+    expect(result.changed_symbols).toEqual([]);
+    expect(result.affected_processes).toEqual([]);
+    expect(result.unmapped_files).toEqual(['code.py']);
+    expect(result.partial).toBe(true);
+    expect(result.summary.risk_level).toBe('unknown');
+  });
+
+  it.each([
+    { kind: 'an empty', id: '' },
+    { kind: 'a whitespace-only', id: '  ' },
+    { kind: 'a NUL-containing', id: 'Function:code.py:\0' },
+  ])(
+    'withholds a ranked verdict when $kind id sits beside a valid symbol (#3931)',
+    async ({ id }) => {
+      mockSymbolRows([
+        { name: 'ok', startLine: 0, endLine: 1 },
+        { id, name: 'corrupt', startLine: 0, endLine: 1 },
+      ]);
+      const repoDir = makeRepo(['code.py'], 2);
+      writeFileSync(path.join(repoDir, 'code.py'), 'line 1 changed\nline 2\n');
+      registerRepo(repoDir);
+
+      const result = await runDetectChanges();
+
+      // The valid row maps the file, so `partial` here can only come from the
+      // identity check — not from the unmapped-file rule the case above trips.
+      expect(result.changed_symbols.map((symbol) => symbol.name)).toEqual(['ok']);
+      expect(result.unmapped_files).toBeUndefined();
+      expect(result.partial).toBe(true);
+      expect(result.summary.risk_level).toBe('unknown');
+    },
+  );
 
   it('emits the same order however the engine happens to order its rows', async () => {
     // The query has no ORDER BY, so row order was the engine's — measured at 5
