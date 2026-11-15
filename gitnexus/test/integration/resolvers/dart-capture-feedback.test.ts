@@ -8,6 +8,9 @@
  *     retyped the result of every other callable of that name: the top-level or
  *     imported function called from another function, a method of the same
  *     name, and (through the exporting file) call sites in importing files.
+ *   - A local callable (a local function, a closure bound to a local) is not a
+ *     candidate for the global name guess at a site outside its declaring
+ *     scope, in the same file or another.
  *   - An operator and a factory constructor open a scope for their body and
  *     publish no return binding.
  *   - A comment before a cascade section, or inside one, is not the receiver.
@@ -17,7 +20,12 @@ import type { CaptureMatch } from 'gitnexus-shared';
 import { emitDartScopeCaptures } from '../../../src/core/ingestion/languages/dart/captures.js';
 import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
-import { getRelationships, useFixture, type PipelineResult } from './helpers.js';
+import {
+  getRelationships,
+  getResolutionOutcomes,
+  useFixture,
+  type PipelineResult,
+} from './helpers.js';
 
 /** `file:line -> target` of every CALLS edge to a member named `member`. */
 function memberCallsBySite(result: PipelineResult, member: string): string[] {
@@ -30,6 +38,14 @@ function memberCallsBySite(result: PipelineResult, member: string): string[] {
       const line = /^:(\d+):\d+/.exec(site)?.[1] ?? '-';
       return `${edge.sourceFilePath}:${line} -> ${edge.rel.targetId}`;
     })
+    .sort();
+}
+
+/** `source -> target` of every CALLS edge to a callable named `callee`. */
+function callersOf(result: PipelineResult, callee: string): string[] {
+  return getRelationships(result, 'CALLS')
+    .filter((edge) => edge.target === callee)
+    .map((edge) => `${edge.sourceFilePath}:${edge.source} -> ${edge.rel.targetId}`)
     .sort();
 }
 
@@ -184,6 +200,40 @@ void outside(Box b) {
           // Page.render: the method `Widget build()`
           'members.dart:7 -> Method:members.dart:Widget.save#0',
         ]);
+      });
+    });
+
+    describe('a local callable is no name guess outside its declaring scope', () => {
+      const run = useFixture('dart-local-callable-fallback', {
+        'near.dart': `class Other {}
+void declares() {
+  Other onlyHere() => Other();
+  onlyHere();
+  final bound = () => Other();
+  bound();
+}
+void elsewhere() {
+  onlyHere();
+  bound();
+}
+`,
+        'far.dart': `void farAway() {
+  onlyHere();
+}
+`,
+      });
+
+      it('keeps the calls inside the declaring scope and refuses the ones outside it', () => {
+        expect([...callersOf(run(), 'onlyHere'), ...callersOf(run(), 'bound')]).toEqual([
+          'near.dart:declares -> Function:near.dart:declares.onlyHere@2:2',
+          'near.dart:declares -> Function:near.dart:declares.bound@4:2',
+        ]);
+        expect(
+          getResolutionOutcomes(run())
+            .filter((outcome) => outcome.kind === 'fallback-refused')
+            .map((outcome) => `${outcome.filePath}:${outcome.range.startLine} ${outcome.name}`)
+            .sort(),
+        ).toEqual(['far.dart:2 onlyHere', 'near.dart:10 bound', 'near.dart:9 onlyHere']);
       });
     });
 
