@@ -1614,6 +1614,30 @@ jobs:
         run: node --import tsx bench/dart-closure-binders/measure.mjs --check
         working-directory: gitnexus
 
+      - name: HTTP route symbol time / memory / work scaling (#3929)
+        if: ${{ !cancelled() }}
+        run: node --expose-gc --import tsx bench/http-route-symbols/measure.mjs --check --output http-route-symbols.json
+        working-directory: gitnexus
+
+      - name: Upload HTTP route symbol measurements
+        if: always()
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: http-route-symbols-benchmark
+          path: gitnexus/http-route-symbols.json
+          retention-days: 5
+
+      - name: Ownership-reconciliation correctness + scaling guards
+        if: ${{ !cancelled() }}
+        # Build-free: extracts the corpus with the TypeScript scope extractor on
+        # the main thread. Pins what reconcileOwnership registers (exact cells and
+        # fingerprints) when many files declare the same ownerless names, checks
+        # its time scaling as the file count grows 4x (budget 1.5), and counts the
+        # registry entries the pass reads: they must grow with the defs, not with
+        # defs x shared-bucket size (budget 1.1).
+        run: node --import tsx bench/ownership-reconcile/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Scope-emission guards (#2699)
         if: ${{ !cancelled() }}
         # Build-free: asserts the JS/TS scope set is unchanged. Block scopes are

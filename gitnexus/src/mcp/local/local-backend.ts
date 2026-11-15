@@ -730,6 +730,19 @@ function compareImpactFrontierEdges(a: ImpactFrontierEdge, b: ImpactFrontierEdge
  * `detect_changes` safety gate) MUST set that result-level signal — `warn`
  * alone is not a substitute for an honest result.
  */
+/**
+ * `assertSymbolIdentity` as a predicate, for scans that degrade on a corrupt
+ * identity instead of failing the whole call. Same rule, one definition.
+ */
+function hasSymbolIdentity(id: unknown): id is string {
+  try {
+    assertSymbolIdentity(id);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
   if (isBenignMissingTableError(err)) {
@@ -7256,11 +7269,35 @@ export class LocalBackend {
     // rows 71.3ms → 26.6ms).
     const exactlyMatchedPaths = new Set<string>();
     const mappedPaths = new Set<string>();
+    // A row whose id is not a usable identity cannot be named in any downstream
+    // graph lookup: passing '' to the process query joins it to every corrupt
+    // STEP_IN_PROCESS endpoint whose id is also empty, turning one edit into a
+    // repo-wide critical-risk fan-out (#3931). Treat it like a failed graph
+    // read: omit the row and withhold a ranked verdict.
+    //
+    // Decided HERE and not in the query, on purpose. A predicate in Cypher
+    // drops the row before anything can count it, so a file with one valid
+    // symbol beside a corrupt one came back ranked `low` with no `partial` —
+    // the gate silently lost the edited symbol.
+    //
+    // The row still records its exact-path match first: a corrupt row for
+    // `code.py` is proof the index knows that file, so it must keep the suffix
+    // fallback closed (below) and not let `pkg/code.py` answer for it. It does
+    // not reach `mappedPaths`, so a file with no usable row stays unmapped.
+    const unusableRows = new Set<ChangedSymbolRow>();
     for (const row of symbolRows) {
       if (row.filePath === row.diffPath) exactlyMatchedPaths.add(row.diffPath);
+      if (!hasSymbolIdentity(row.id)) unusableRows.add(row);
+    }
+    if (unusableRows.size > 0) {
+      queryDegraded = true;
+      // Logged once per run, with the rebuild hint the other tools raise for
+      // the same condition; this scan degrades instead of failing.
+      logQueryError('detect-changes:symbol-identity', new SymbolIdentityError());
     }
 
     for (const sym of symbolRows) {
+      if (unusableRows.has(sym)) continue;
       const diffPath = sym.diffPath;
       if (sym.filePath !== sym.diffPath && exactlyMatchedPaths.has(diffPath)) continue;
       const hunks = hunksByPath.get(diffPath) ?? [];
