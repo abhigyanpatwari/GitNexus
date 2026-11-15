@@ -175,7 +175,10 @@ export class ManifestExtractor {
         symbolRef: consumerRef,
         symbolName: link.contract,
         confidence: 1.0,
-        meta: { source: 'manifest' },
+        // Read by runExactMatch / runWildcardMatch so this consumer only
+        // matches providers in the repo the link names (#1188); sync drops it
+        // before writing the registry.
+        meta: { source: 'manifest', providerRepo },
         repo: consumerRepo,
       });
 

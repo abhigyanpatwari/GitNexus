@@ -533,6 +533,34 @@ describe('syncGroup with an unreadable index', () => {
     expect(onDisk.unreadableRepos).toEqual([]);
   });
 
+  it('hands the bridge write manifest contracts without the declared provider repo (#1188)', async () => {
+    // The bridge stores each contract's `meta` verbatim, so the matching-only
+    // `providerRepo` has to be gone before the write, as it is for contracts.json.
+    const { writeBridgeUnlocked } = await import('../../../src/core/group/bridge-db.js');
+
+    await syncGroup(
+      {
+        ...makeConfig({ 'app/backend': 'backend-repo', 'app/web': 'web-repo' }),
+        links: [
+          {
+            from: 'app/web',
+            to: 'app/backend',
+            type: 'http',
+            contract: 'GET::/api/orders',
+            role: 'consumer',
+          },
+        ],
+      },
+      { groupDir, resolveRepoHandle: handleTable(['backend-repo', 'web-repo']) },
+    );
+
+    const written = vi.mocked(writeBridgeUnlocked).mock.lastCall?.[1].contracts ?? [];
+    expect(written.map((c) => [c.role, c.repo, c.meta])).toEqual([
+      ['provider', 'app/backend', { source: 'manifest' }],
+      ['consumer', 'app/web', { source: 'manifest' }],
+    ]);
+  });
+
   it('still writes when every repo is merely MISSING and none failed to load', async () => {
     // A group whose repos were all deregistered legitimately syncs to empty.
     // The guard must stay off here: it is gated on a load ERROR, not on an
