@@ -715,6 +715,18 @@ export interface NameClaim {
   readonly hoisted?: boolean;
   readonly purpose?: LookupPurpose | 'both';
   readonly availableFrom?: SourcePosition;
+  /** Where the declaration is visible when evaluation order differs from
+   * source order: alternating start (inclusive) and end (exclusive) positions
+   * in source order; a last start without an end stays open. Takes the place
+   * of `availableFrom` for lookups that carry a position. */
+  readonly availableSpans?: readonly SourcePosition[];
+  /** Evaluation rank among this scope's claims of the name. Two claims that
+   * both carry a rank are ordered by it; every other pair by `range`. */
+  readonly order?: number;
+  /** The declaration can never be what a call expression of this name
+   * invokes: the language resolves callees in a namespace it is not part of.
+   * A lookup made for a callee (`NameLookupOptions.callee`) does not see it. */
+  readonly neverCallee?: boolean;
   readonly inactive?: 'blocked' | 'outer' | 'module';
   readonly redirect?: 'module' | 'enclosing-function';
 }
@@ -740,6 +752,8 @@ export interface NameLookupOptions {
   /** Keep source order across deferred scopes when locating the binding before a write. */
   readonly preservePosition?: boolean;
   readonly purpose?: LookupPurpose;
+  /** The name is the callee of a call expression written without a receiver. */
+  readonly callee?: boolean;
 }
 
 /**

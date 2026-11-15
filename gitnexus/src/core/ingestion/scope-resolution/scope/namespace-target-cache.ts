@@ -78,6 +78,7 @@ export function createNamespaceTargetCache(
       if (!importNames.has(claim.name)) continue;
       relevant = true;
       if (claim.availableFrom !== undefined) boundaries.push(claim.availableFrom);
+      if (claim.availableSpans !== undefined) boundaries.push(...claim.availableSpans);
     }
     for (const name of scope.lexicalNames ?? []) if (importNames.has(name)) relevant = true;
     relevant = collectBindings(scope.bindings) || relevant;
