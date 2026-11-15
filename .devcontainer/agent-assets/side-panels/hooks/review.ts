@@ -8,6 +8,16 @@ const ROOT = '/tmp/pr-tri-review';
 const RUN = /^\d{8}-\d{6}-[0-9a-f]+$/;
 const LANE = /^(claude-.+|codex-.+|digest-draft|critic)\.md$/;
 const MINUTE = 60_000;
+// A PR folder is looked into while a run was started in it this recently.
+const PR_FOLDER_WINDOW = 24 * 60 * MINUTE;
+// A run is shown while one of its lanes was written this recently.
+const ACTIVE_WINDOW = 6 * 60 * MINUTE;
+// A Codex log written this recently has its last status line read.
+const STATUS_LINE_WINDOW = 5 * MINUTE;
+// A leg with no exit marker counts as running for this long after its last write,
+// or after its empty file was created.
+const RUNNING_WINDOW = 2 * MINUTE;
+const EMPTY_RUNNING_WINDOW = 60 * MINUTE;
 
 const lastStatus = (text: string) =>
   (
@@ -19,12 +29,12 @@ const lastStatus = (text: string) =>
   ).slice(0, 120);
 
 /**
- * The newest review run under the artifact root with a lane written in the
- * last six hours, each lane with its size, age and exit marker; null with none.
+ * The newest review run under the artifact root with a lane written inside
+ * ACTIVE_WINDOW, each lane with its size, age and exit marker; null with none.
  */
 export const readRun = async (host: Host, now: number): Promise<ReviewRun | null> => {
   const prs = (await host.ls(ROOT)).filter(
-    (one) => one.kind === 'dir' && now - one.mtimeMs < 24 * 60 * MINUTE,
+    (one) => one.kind === 'dir' && now - one.mtimeMs < PR_FOLDER_WINDOW,
   );
   const runs = (
     await Promise.all(
@@ -46,7 +56,7 @@ export const readRun = async (host: Host, now: number): Promise<ReviewRun | null
   // ponytail: looks at the five newest runs. An active run older than five later ones is not shown.
   for (const run of runs.slice(0, 5)) {
     const lanes = await lanesOf(host, run.dir, now);
-    if (lanes.some((lane) => lane.ageMs <= 6 * 60 * MINUTE)) {
+    if (lanes.some((lane) => lane.ageMs <= ACTIVE_WINDOW)) {
       return { dir: run.dir.slice(ROOT.length + 1), lanes };
     }
   }
@@ -68,7 +78,8 @@ async function lanesOf(host: Host, dir: string, now: number): Promise<Lane[]> {
         const exit = files.some((one) => one.name === `${name}.exit`)
           ? Number.parseInt(await host.cat(`${dir}/${name}.exit`), 10)
           : Number.NaN;
-        const isLive = name.startsWith('codex-') && Number.isNaN(exit) && ageMs < 5 * MINUTE;
+        const isLive =
+          name.startsWith('codex-') && Number.isNaN(exit) && ageMs < STATUS_LINE_WINDOW;
 
         return {
           name,
@@ -92,10 +103,11 @@ export const statusOf = (lane: Lane) => {
     return lane.bytes < 400 ? 'done, but nearly empty' : 'done';
   }
   // A leg whose output is a redirect is an empty file until its command ends.
-  if (lane.bytes === 0) return lane.ageMs < 60 * MINUTE ? 'running, no output yet' : 'empty';
+  if (lane.bytes === 0)
+    return lane.ageMs < EMPTY_RUNNING_WINDOW ? 'running, no output yet' : 'empty';
   if (!lane.name.startsWith('codex-')) return 'written';
 
-  return lane.ageMs < 2 * MINUTE ? 'running' : `quiet ${Math.round(lane.ageMs / MINUTE)}m`;
+  return lane.ageMs < RUNNING_WINDOW ? 'running' : `quiet ${Math.round(lane.ageMs / MINUTE)}m`;
 };
 
 /** The lanes this read saw finish: no exit code at the last read of the same run, one now. */

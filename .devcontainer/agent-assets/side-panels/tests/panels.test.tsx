@@ -352,7 +352,8 @@ test('a worktree that cannot be read, or has no upstream, is not called clean', 
         ].join('\n\n'),
       );
     }
-    if (args === 'status --porcelain') return e.init?.cwd === '/w/broken' ? ran(128) : ran(0);
+    if (args === '--no-optional-locks status --porcelain')
+      return e.init?.cwd === '/w/broken' ? ran(128) : ran(0);
     // Only main has an upstream to count against.
     return e.init?.cwd === '/w/main' ? ran(0, '0\n') : ran(128);
   });

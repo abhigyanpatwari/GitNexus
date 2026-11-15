@@ -125,6 +125,9 @@ function withoutRedirections(words) {
   return kept;
 }
 
+/** A command word without its folder: `/usr/bin/rm` is `rm`. A missing word is ''. */
+const nameOf = (word) => (word ?? '').split('/').pop();
+
 /** Why `name args...` is refused, when `name` is a command this guard watches. */
 function judge(name, args, before, depth) {
   if (SHELLS.has(name) || name === 'eval') {
@@ -141,10 +144,12 @@ function judge(name, args, before, depth) {
     // An empty word is what is left of a quoted substitution: a computed target, not `.`.
     const targets = args.filter((arg) => arg !== '' && !arg.startsWith('-'));
     const isRecursive = /(^|\s)-[a-zA-Z]*[rR]|--recursive/.test(flags);
-    // `./*` is `*`, and `././.git` is `.git`: a leading `./` names the same thing.
-    // and `/workspace/../*` is `/*`: `.` and `..` segments are resolved first.
-    const plain = (target) => path.posix.normalize(target);
-    const hit = targets.find((target) => PROTECTED.some((root) => root.test(plain(target))));
+    // `.` and `..` segments are resolved before matching: `./*` is `*`, `././.git`
+    // is `.git`, and `/workspace/../*` is `/*`.
+    const hit = targets.find((target) => {
+      const plain = path.posix.normalize(target);
+      return PROTECTED.some((root) => root.test(plain));
+    });
     if (isRecursive && hit !== undefined) return `rm -r on ${hit}`;
     const memory = targets.find((target) => /\.claude-mem(\/|$)|claude-mem\.db/.test(target));
     if (memory !== undefined) return `rm on the claude-mem store (${memory})`;
@@ -202,7 +207,6 @@ function refusal(line, depth = 0) {
   for (const all of simpleCommands(line)) {
     const words = withoutRedirections(all);
     for (let at = 0; at < words.length; at += 1) {
-      const nameOf = (word) => (word ?? '').split('/').pop();
       const why = judge(nameOf(words[at]), words.slice(at + 1), nameOf(words[at - 1]), depth);
       if (why !== undefined) return why;
     }

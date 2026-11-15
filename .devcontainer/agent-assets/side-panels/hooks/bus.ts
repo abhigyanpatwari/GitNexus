@@ -5,7 +5,7 @@ import type { Host } from './host';
 // finding shared between review lanes comes back as fake corroboration.
 const INDEPENDENT = /review|critic|verif|audit|lane/i;
 /** A line a skill puts in a lane's prompt to keep the board from it, whatever the lane is called. */
-export const MARKER = '[independent-lane]';
+const MARKER = '[independent-lane]';
 
 export const isIndependent = (spawn: {
   subagentType: string;
@@ -19,6 +19,9 @@ export const clip = (text: string, max: number) => {
 
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 };
+
+/** An agent that can still take a message: at work, or waiting for one. */
+export const isLive = (agent: AgentRow) => agent.status === 'running' || agent.status === 'idle';
 
 /** How the bus names a loop: `main`, or the agent's type and task. */
 export const nameOf = (agents: readonly AgentRow[], id: string | undefined) => {

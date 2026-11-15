@@ -235,10 +235,15 @@ const readJson = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(fil
 /** Writes only when the content differs, keeping one copy of the first original. */
 function writeIfChanged(file, text) {
   const before = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : undefined;
-  if (before === text) return false;
-  if (before !== undefined && !fs.existsSync(`${file}.before-agent-setup`)) {
+  if (before !== undefined && before !== text && !fs.existsSync(`${file}.before-agent-setup`)) {
     fs.writeFileSync(`${file}.before-agent-setup`, before);
   }
+  return writeText(file, text);
+}
+
+/** Writes the file when its content differs, creating its folder; says whether it wrote. */
+function writeText(file, text) {
+  if (fs.existsSync(file) && fs.readFileSync(file, 'utf8') === text) return false;
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, text);
   return true;
@@ -305,11 +310,8 @@ function setUpSidePanels(home) {
     if (!entry.isFile()) continue;
     const from = path.join(entry.parentPath, entry.name);
     const to = path.join(target, path.relative(source, from));
-    const text = fs.readFileSync(from, 'utf8');
-    if (fs.existsSync(to) && fs.readFileSync(to, 'utf8') === text) continue;
-    fs.mkdirSync(path.dirname(to), { recursive: true });
-    fs.writeFileSync(to, text);
-    copied += 1;
+    // A repository asset: no backup copy is kept beside what it replaces.
+    if (writeText(to, fs.readFileSync(from, 'utf8'))) copied += 1;
   }
   const file = path.join(home, '.claude', 'settings.json');
   const before = readJson(file);
@@ -390,11 +392,7 @@ function setUpCodexSkillEntry() {
     path.join(__dirname, 'agent-assets', 'codex-pr-tri-review.SKILL.md'),
     'utf8',
   );
-  const written = !fs.existsSync(entry) || fs.readFileSync(entry, 'utf8') !== text;
-  if (written) {
-    fs.mkdirSync(path.dirname(entry), { recursive: true });
-    fs.writeFileSync(entry, text);
-  }
+  const written = writeText(entry, text);
   log(`codex skill entry: pr-tri-review ${written ? 'written' : 'already there'}`);
 }
 

@@ -44,6 +44,8 @@ export const parseWork = (text: string): WorkList[] => {
   return lists;
 };
 
+const linesOf = (text: string) => text.split('\n').filter(Boolean);
+
 /** How much a worktree wants a look: gone folder, then dirty or unreadable, then unpushed. */
 export const rank = (one: Worktree) =>
   (one.isPrunable ? 4 : 0) + (one.dirty !== 0 ? 2 : 0) + ((one.ahead ?? 0) > 0 ? 1 : 0);
@@ -52,14 +54,15 @@ const inspect = async (host: Host, block: string): Promise<Worktree> => {
   const path = /^worktree (.*)$/m.exec(block)?.[1] ?? '';
   const branch = /^branch refs\/heads\/(.*)$/m.exec(block)?.[1] ?? 'detached';
   if (/^prunable/m.test(block)) return { path, branch, dirty: 0, ahead: null, isPrunable: true };
-  const status = await host.git(['status', '--porcelain'], path);
+  // Reading must not take the index lock from a git command the person is running.
+  const status = await host.git(['--no-optional-locks', 'status', '--porcelain'], path);
   // No count comes back for a branch with no upstream: its push state is unknown, not clean.
   const ahead = (await host.git(['rev-list', '--count', '@{upstream}..HEAD'], path))?.trim();
 
   return {
     path,
     branch,
-    dirty: status === undefined ? null : status.split('\n').filter(Boolean).length,
+    dirty: status === undefined ? null : linesOf(status).length,
     ahead: ahead === undefined || ahead === '' ? null : Number(ahead),
     isPrunable: false,
   };
@@ -89,6 +92,7 @@ const READ: Record<PaneId, (host: Host) => Promise<unknown>> = {
     const before = await host.run();
     const after = await readRun(host, Date.now());
     await host.put.run(after);
+    const dir = after?.dir ?? '';
     // A Codex leg is no subagent: its finish reaches the bus from its exit marker.
     for (const lane of finishedSince(before, after)) {
       await post(host, {
@@ -96,15 +100,15 @@ const READ: Record<PaneId, (host: Host) => Promise<unknown>> = {
         kind: 'result',
         from: `${lane.name} (review run)`,
         to: 'main',
-        text: `${statusOf(lane)}, ${sizeOf(lane.bytes)}, in ${after?.dir ?? ''}`,
-        key: `lane:${after?.dir ?? ''}/${lane.name}`,
+        text: `${statusOf(lane)}, ${sizeOf(lane.bytes)}, in ${dir}`,
+        key: `lane:${dir}/${lane.name}`,
       });
     }
   },
   activity: async (host) => {
-    const status = await host.git(['status', '--short']);
+    const status = await host.git(['--no-optional-locks', 'status', '--short']);
     if (status === undefined) throw new Error('git status failed');
-    await host.put.changed(status.split('\n').filter(Boolean));
+    await host.put.changed(linesOf(status));
   },
 };
 

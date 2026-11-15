@@ -2,8 +2,8 @@ import { atom, read, update } from 'claude-code';
 import type { EngineInterface, McpToolResult, Register } from 'claude-code';
 
 import type { Call } from '../types';
-import { briefOf, clip, isIndependent, nameOf, post } from './bus';
-import type { Host } from './host';
+import { briefOf, clip, isIndependent, isLive, nameOf, post } from './bus';
+import type { Host, PaneId } from './host';
 import { refresh } from './read';
 import { activityView, agentsView, workView, worktreesView } from './views';
 
@@ -31,6 +31,9 @@ const relayed = atom({ plugin: 'side-panels', key: 'relayed' } as const, false, 
 });
 const target = atom({ plugin: 'side-panels', key: 'target' } as const, '', { shape: 'target-1' });
 const notes = atom({ plugin: 'side-panels', key: 'notes' } as const, {}, { shape: 'notes-1' });
+
+/** A pane's note: when it was last read, or why that failed. */
+const noteOf = (all: Record<string, string>, pane: PaneId) => all[pane] ?? 'not read yet';
 
 const textOf = (answer: McpToolResult) => {
   const text = answer.content.map((block) => block.text ?? '').join('\n');
@@ -230,32 +233,37 @@ export const register: Register = (on) => {
 
   on('ui.render', { component: 'Pane', requestId: 'worktrees' }, async ($, e) => {
     const host = hostOf($);
-    const note = (await read($, notes))['worktrees'] ?? 'not read yet';
+    const [list, all] = await Promise.all([read($, worktrees), read($, notes)]);
 
     return worktreesView(
       $.ui.resolve(e),
-      { list: await read($, worktrees), note },
+      { list, note: noteOf(all, 'worktrees') },
       { refresh: () => refresh(host, ['worktrees']) },
     );
   });
 
   on('ui.render', { component: 'Pane', requestId: 'work' }, async ($, e) => {
     const host = hostOf($);
-    const note = (await read($, notes))['work'] ?? 'not read yet';
+    const [lists, all] = await Promise.all([read($, work), read($, notes)]);
 
     return workView(
       $.ui.resolve(e),
-      { lists: await read($, work), note },
+      { lists, note: noteOf(all, 'work') },
       { refresh: () => refresh(host, ['work']) },
     );
   });
 
   on('ui.render', { component: 'Pane', requestId: 'agents' }, async ($, e) => {
     const host = hostOf($);
-    const list = await read($, agents);
-    const isBoardOn = await host.isBoardOn();
-    const running = list.filter((one) => one.status === 'running' || one.status === 'idle');
-    const picked = await read($, target);
+    const [list, isBoardOn, picked, entries, shownRun, all] = await Promise.all([
+      read($, agents),
+      host.isBoardOn(),
+      read($, target),
+      read($, bus),
+      read($, run),
+      read($, notes),
+    ]);
+    const running = list.filter(isLive);
     // The agent a message goes to: the one picked while it still runs, else the first running.
     const chosen = running.some((one) => one.id === picked) ? picked : (running[0]?.id ?? '');
 
@@ -263,11 +271,11 @@ export const register: Register = (on) => {
       $.ui.resolve(e),
       {
         agents: list,
-        entries: await read($, bus),
+        entries,
         target: chosen,
-        run: await read($, run),
+        run: shownRun,
         isBoardOn,
-        note: (await read($, notes))['agents'] ?? 'not read yet',
+        note: noteOf(all, 'agents'),
       },
       {
         refresh: () => refresh(host, ['agents']),
@@ -289,14 +297,15 @@ export const register: Register = (on) => {
 
   on('ui.render', { component: 'Pane', requestId: 'activity' }, async ($, e) => {
     const host = hostOf($);
+    const [recent, files, all] = await Promise.all([
+      read($, calls),
+      read($, changed),
+      read($, notes),
+    ]);
 
     return activityView(
       $.ui.resolve(e),
-      {
-        calls: await read($, calls),
-        changed: await read($, changed),
-        note: (await read($, notes))['activity'] ?? 'not read yet',
-      },
+      { calls: recent, changed: files, note: noteOf(all, 'activity') },
       { refresh: () => refresh(host, ['activity']) },
     );
   });

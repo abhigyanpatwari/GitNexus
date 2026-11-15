@@ -1,7 +1,7 @@
 import type { Elements } from 'claude-code';
 
 import type { AgentRow, BusEntry, Call, ReviewRun, WorkList, Worktree } from '../types';
-import { clip } from './bus';
+import { clip, isLive } from './bus';
 import { rank } from './read';
 import { sizeOf, statusOf } from './review';
 
@@ -34,6 +34,18 @@ export function worktreesView(
   const clean = quiet.filter((one) => one.ahead !== null);
   // No upstream to compare with: nothing dirty, but whether it is pushed is not known.
   const untracked = quiet.filter((one) => one.ahead === null);
+  // One dim line naming the first thirty worktrees of a group, and how many more there are.
+  const named = (label: string, group: readonly Worktree[]) =>
+    group.length > 0 && (
+      <Text dimColor wrap="wrap">
+        {label}:{' '}
+        {group
+          .slice(0, 30)
+          .map((one) => short(one.path))
+          .join(', ')}
+        {group.length > 30 ? `, and ${group.length - 30} more` : ''}
+      </Text>
+    );
 
   return (
     <Box flexDirection="column">
@@ -61,26 +73,8 @@ export function worktreesView(
           </Text>
         </Box>
       ))}
-      {clean.length > 0 && (
-        <Text dimColor wrap="wrap">
-          clean:{' '}
-          {clean
-            .slice(0, 30)
-            .map((one) => short(one.path))
-            .join(', ')}
-          {clean.length > 30 ? `, and ${clean.length - 30} more` : ''}
-        </Text>
-      )}
-      {untracked.length > 0 && (
-        <Text dimColor wrap="wrap">
-          no upstream, push state unknown:{' '}
-          {untracked
-            .slice(0, 30)
-            .map((one) => short(one.path))
-            .join(', ')}
-          {untracked.length > 30 ? `, and ${untracked.length - 30} more` : ''}
-        </Text>
-      )}
+      {named('clean', clean)}
+      {named('no upstream, push state unknown', untracked)}
     </Box>
   );
 }
@@ -143,7 +137,7 @@ export function agentsView(
   actions: AgentsActions,
 ) {
   const { Box, Button, Input, Select, Text } = kit;
-  const running = data.agents.filter((one) => one.status === 'running' || one.status === 'idle');
+  const running = data.agents.filter(isLive);
 
   return (
     <Box flexDirection="column">
@@ -171,7 +165,7 @@ export function agentsView(
         <Button
           key={`view-${one.id}`}
           plain
-          dimColor={one.status !== 'running' && one.status !== 'idle'}
+          dimColor={!isLive(one)}
           onPress={() => void actions.view(one.id)}
         >
           {clip(`${one.status} ${one.type}: ${one.description}`, 90)}
@@ -204,7 +198,7 @@ export function agentsView(
           </Text>
           {data.run.lanes.map((lane) => (
             <Box flexDirection="column">
-              <Text dimColor={lane.exit === 0 && lane.bytes >= 400} wrap="truncate-end">
+              <Text dimColor={statusOf(lane) === 'done'} wrap="truncate-end">
                 {lane.name}: {statusOf(lane)}, {sizeOf(lane.bytes)}
               </Text>
               {lane.last !== '' && (
