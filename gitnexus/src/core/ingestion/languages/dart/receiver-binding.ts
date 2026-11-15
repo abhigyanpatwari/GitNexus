@@ -27,6 +27,9 @@ const TYPE_DECL_TYPES = new Set([
   'enum_declaration',
 ]);
 
+/** Types that supply the implicit instance receiver to nested closures. */
+export const isDartReceiverType = (type: string): boolean => TYPE_DECL_TYPES.has(type);
+
 /** Walk up from a method declaration node to its enclosing type declaration. */
 function findEnclosingTypeDeclaration(node: SyntaxNode): SyntaxNode | null {
   let cur: SyntaxNode | null = node.parent;
@@ -70,6 +73,41 @@ function buildReceiverMatch(anchor: SyntaxNode, name: string, typeText: string):
   };
 }
 
+interface DartStaticContext {
+  readonly parent: SyntaxNode | null;
+  readonly staticBefore: Map<number, boolean>;
+}
+
+/** Cache the preceding-token check once per parent: native sibling getters
+ *  re-descend from the root, so repeated reads become expensive in deep closures. */
+function isDartStaticWithin(
+  node: SyntaxNode,
+  { parent, staticBefore }: DartStaticContext,
+): boolean {
+  if (parent === null) return dartMethodConfig.isStatic(node);
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child && !child.isNamed && child.text.trim() === 'static') return true;
+    if (child?.isNamed) break;
+  }
+  let known = staticBefore.get(node.id);
+  if (known === undefined) {
+    // Match the backward walk: annotations do not interrupt a static modifier,
+    // but every other named sibling does.
+    let pending = false;
+    for (const child of parent.children) {
+      staticBefore.set(child.id, pending);
+      if (child.isNamed) {
+        if (child.type !== 'annotation') pending = false;
+      } else if (child.text.trim() === 'static') {
+        pending = true;
+      }
+    }
+    known = staticBefore.get(node.id);
+  }
+  return known ?? dartMethodConfig.isStatic(node);
+}
+
 /**
  * `declNode` is the method declaration wrapper (`method_signature` /
  * `declaration` / top-level `function_signature`). `bodyNode` is the
@@ -78,11 +116,18 @@ function buildReceiverMatch(anchor: SyntaxNode, name: string, typeText: string):
 export function synthesizeDartReceiverBinding(
   declNode: SyntaxNode,
   bodyNode: SyntaxNode,
+  enclosingType?: SyntaxNode | null,
+  staticContext?: DartStaticContext,
 ): CaptureMatch[] {
-  if (dartMethodConfig.isStatic(declNode)) return [];
-
-  const enclosingType = findEnclosingTypeDeclaration(declNode);
+  // An explicit null is a known absence, not a reason to repeat the search.
+  if (enclosingType === undefined) enclosingType = findEnclosingTypeDeclaration(declNode);
   if (enclosingType === null) return []; // top-level function — no receiver
+  if (
+    staticContext === undefined
+      ? dartMethodConfig.isStatic(declNode)
+      : isDartStaticWithin(declNode, staticContext)
+  )
+    return [];
 
   const typeName = enclosingTypeName(enclosingType);
   if (typeName === null) return [];

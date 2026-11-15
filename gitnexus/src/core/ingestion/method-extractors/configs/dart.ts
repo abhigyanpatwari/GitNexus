@@ -266,7 +266,7 @@ function extractSingleParam(param: SyntaxNode, isOptionalBlock: boolean): Parame
   }
   // 2. In tree-sitter-dart, `required` may be an anonymous sibling token
   //    immediately preceding the formal_parameter inside optional_formal_parameters.
-  if (!hasRequired) {
+  if (isOptionalBlock && !hasRequired) {
     let prev = param.previousSibling;
     // Skip comma separators
     while (prev && !prev.isNamed && prev.text.trim() === ',') {

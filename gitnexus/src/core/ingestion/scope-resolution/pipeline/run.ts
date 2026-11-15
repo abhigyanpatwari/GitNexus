@@ -1068,6 +1068,11 @@ export function runScopeResolution(
     hooks: {
       ownedMembersBindAtModuleScope: provider.ownedMembersBindAtModuleScope,
       importsBindAtLexicalScope: provider.importsBindAtLexicalScope === true,
+      // `GITNEXUS_DISABLE_IMPORT_GROUPS=1` restores one edge per imported file,
+      // for comparing the two storage forms on the same build.
+      groupsWildcardTargets:
+        provider.groupsWildcardImportTargets === true &&
+        !parseTruthyEnv(process.env.GITNEXUS_DISABLE_IMPORT_GROUPS),
       resolveImportTarget: (targetRaw, fromFile, _workspaceIndex, parsedImport) =>
         provider.resolveImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig, {
           parsedFiles,

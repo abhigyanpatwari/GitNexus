@@ -85,6 +85,8 @@ const PLATFORM_LOGIC = [
   // tests compare identity fields against raw temp-dir paths and fail on macOS,
   // where /var/... realpaths to /private/var/....
   'test/unit/analyzer-identity-path-normalization.test.ts',
+  // Windows stat/fstat device IDs differ; also exercise real host filesystem hashing.
+  'test/unit/analyzer-identity-hash-stable-file.test.ts',
   // `isInside` containment guard vs Windows cross-drive paths: path.relative
   // returns the absolute target across drives, so the guard needs isAbsolute.
   // Fixture-free and pathApi-injectable, so it is portable to every runner.
@@ -261,6 +263,8 @@ const LBUG_NATIVE = [
   // Windows is skipped in-file (describeReopen) due to the bridge reopen lock.
   'test/integration/group/cross-trace-e2e.test.ts',
   'test/integration/group/graphql-resolve-symbol.test.ts',
+  // Runs the route extractor's two symbol queries against a real engine.
+  'test/integration/http-route-symbol-batch.test.ts',
   'test/integration/local-backend.test.ts',
   'test/integration/bm25-symbol-hydration.test.ts',
   'test/integration/local-backend-calltool.test.ts',
