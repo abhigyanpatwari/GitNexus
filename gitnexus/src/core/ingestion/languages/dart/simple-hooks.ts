@@ -3,7 +3,8 @@
  *
  *   - `dartBindingScopeFor` — (1) hoists `@type-binding.return` bindings to
  *     the Module scope so chain-follow + `propagateImportedReturnTypes` see
- *     them; (2) hoists function/method/constructor declaration NAMES to the
+ *     them, except a local function's, which stays where its name binds;
+ *     (2) hoists function/method/constructor declaration NAMES to the
  *     enclosing parent scope, and getter / setter names too (DART-10). The
  *     second case is Dart-specific: because
  *     `function_signature`/`function_body` are siblings, the synthesized
@@ -31,8 +32,23 @@ export function dartBindingScopeFor(
   innermost: Scope,
   tree: ScopeTree,
 ): ScopeId | null {
-  // (1) Return-type bindings hoist to the Module scope.
+  // (1) Return-type bindings hoist to the Module scope — except a LOCAL
+  // function's, which stays in the scope that binds the function's name.
   if (decl['@type-binding.return'] !== undefined) {
+    // The binding is anchored on the signature, where the callable's own
+    // Function scope starts, so `innermost` is that scope and its parent is
+    // where case (2) below binds the name. A parent that is itself a body or a
+    // statement scope means a local function: its name is visible only there,
+    // and so is what it returns. Hoisted to the Module, `Other fetch()` inside
+    // one function retyped the result of every other `fetch()` in the file —
+    // the top-level or imported `User fetch()` called from another function.
+    const declaring =
+      innermost.kind === 'Function' && innermost.parent !== null
+        ? tree.getScope(innermost.parent)
+        : undefined;
+    if (declaring !== undefined && (declaring.kind === 'Function' || declaring.kind === 'Block')) {
+      return declaring.id;
+    }
     let cur: Scope | undefined = innermost;
     while (cur !== undefined && cur.kind !== 'Module') {
       const parentId = cur.parent;

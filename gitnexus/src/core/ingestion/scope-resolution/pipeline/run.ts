@@ -1089,10 +1089,14 @@ export function runScopeResolution(
               filterWildcardNames(targetModuleScope, names, parsedFiles),
       mergeBindings: (existing, incoming, scopeId) =>
         provider.mergeBindings(existing, incoming, scopeId),
+      mergeBindingsAreAssociative: provider.mergeBindingsAreAssociative,
       wildcardCollisionIsAmbiguous: provider.exclusiveWildcardReexports === true,
       namedImportsBindTopLevelOnly: provider.namedImportsBindTopLevelOnly === true,
     },
   });
+  // Import-visible namespaces are bindings: publish them before the first pass
+  // that reads one (inheritance resolution below).
+  provider.populateImportNamespaces?.(parsedFiles, finalized);
   if (referenceBindings !== undefined) {
     for (const site of finalized.referenceSites)
       referenceBindings.set(site, {
@@ -1192,17 +1196,6 @@ export function runScopeResolution(
     postHeritageNodeLookup,
   );
 
-  // Replace the empty MethodDispatchIndex that finalizeScopeModel
-  // builds by design with the populated one derived from the
-  // language's MRO. Spread produces a fresh `ScopeResolutionIndexes`
-  // instead of mutating the finalized result through an `as` cast —
-  // downstream passes get an object whose readonly guarantees match
-  // the type system.
-  const indexes = {
-    ...finalized,
-    methodDispatch: buildPopulatedMethodDispatch(mroByClassDefId, extendsOnlyMroByClassDefId),
-  };
-
   // Build the workspace resolution index ONCE — scope-valued lookups
   // (`classScopeByDefId`, `moduleScopeByFile`) that `SemanticModel`
   // cannot carry. Must run AFTER `populateOwners` (so owned defs are
@@ -1212,10 +1205,29 @@ export function runScopeResolution(
   // views that delegate to it (out-of-core scope index) — the index pins no Scope objects, so the
   // disk seal can reclaim them. Byte-identical: the view returns the same Scope
   // the resident tree holds (or a value-identical revived one in disk mode).
-  const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles, indexes.scopeTree, {
+  const methodDispatch = buildPopulatedMethodDispatch(mroByClassDefId, extendsOnlyMroByClassDefId);
+  const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles, finalized.scopeTree, {
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
+    namespaceExports: provider.namespaceExportsFromModuleExports
+      ? provider.moduleExports
+      : undefined,
   });
   logHeapProbe('sr-post-workspaceIndex', `lang=${provider.language}`);
+
+  // Replace the empty MethodDispatchIndex that finalizeScopeModel
+  // builds by design with the populated one derived from the
+  // language's MRO, and install the provider's namespace exports. Spread
+  // produces a fresh `ScopeResolutionIndexes` instead of mutating the
+  // finalized result through an `as` cast — every member is written here,
+  // once, and downstream passes get an object whose readonly guarantees
+  // match the type system.
+  const indexes: ScopeResolutionIndexes = {
+    ...finalized,
+    methodDispatch,
+    ...(workspaceIndex.namespaceExportsByFile === undefined
+      ? {}
+      : { namespaceExportsByFile: workspaceIndex.namespaceExportsByFile }),
+  };
 
   // Complete implicit namespace visibility and refine provider-owned type facts
   // before return propagation. New bindings use bindingAugmentations; existing
@@ -1250,6 +1262,9 @@ export function runScopeResolution(
       provider.resolveQualifiedCallee,
       allFilePaths,
       provider.elementTypeOf,
+      provider.followsInstanceCallResultTypes === true
+        ? (owner, name) => input.model.methods.lookupAllByOwner(owner, name)
+        : undefined,
     );
   }
 

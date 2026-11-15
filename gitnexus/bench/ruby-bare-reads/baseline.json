@@ -48,7 +48,7 @@
       "declines": {},
       "expected_missing": 0,
       "unexpected_edges": 0,
-      "fingerprint": "7fd85d08195fd20a8db8d98301768c3ad0506f9497eae61f3212559e77a2fd6d"
+      "fingerprint": "f71427bf13fd313e9f2c12761bb746238d929a3bd03f64dcd861cd724730ad46"
     },
     "heredocs_methods": {
       "methods": 256,
@@ -60,7 +60,7 @@
       "declines": {},
       "expected_missing": 0,
       "unexpected_edges": 0,
-      "fingerprint": "eaee09c6c9103783211d7cf39d4037119c315da64b62a41ddc8603c90e98d9eb"
+      "fingerprint": "85487455dfcda1ca9771d48d244fdd95266fb25f865ab94c4af124ab62b0c403"
     },
     "heredocs_per_line": {
       "methods": 64,
@@ -72,7 +72,7 @@
       "declines": {},
       "expected_missing": 0,
       "unexpected_edges": 0,
-      "fingerprint": "7fd85d08195fd20a8db8d98301768c3ad0506f9497eae61f3212559e77a2fd6d"
+      "fingerprint": "f71427bf13fd313e9f2c12761bb746238d929a3bd03f64dcd861cd724730ad46"
     },
     "heredocs_size": {
       "methods": 64,
@@ -84,7 +84,7 @@
       "declines": {},
       "expected_missing": 0,
       "unexpected_edges": 0,
-      "fingerprint": "7fd85d08195fd20a8db8d98301768c3ad0506f9497eae61f3212559e77a2fd6d"
+      "fingerprint": "f71427bf13fd313e9f2c12761bb746238d929a3bd03f64dcd861cd724730ad46"
     }
   },
   "_shape_note": "Exact counts are the workload FLOOR. blocks: small 128 methods x depth 4, methods 512 x 4 (4x), depth 128 x 64 (16x). heredocs: small 64 methods x 2 heredocs per opener line x 2 reads per body, methods 256 x 2 x 2, per_line 64 x 8 x 2, size 64 x 2 x 8 (4x each). Every line has a fixed-width indent, so input_bytes (pinned per shape, beside capture_groups and relationships) grows linearly: blocks depth 35730 -> 365202 bytes (10.2x for 16x depth; the earlier two-spaces-per-level indent grew the input 47x over 4 -> 64). One class per file. Expected edges are computed from the source: every bare `target` that reads the parameter (in a block at any depth, or in a heredoc body) gets no edge; `helper` and `other(...)` stay calls; `other(<<~EOS, target = 1)` keeps the body's `target` as a call (the opener rule). main turns the parameter reads into wrong `Host<i>#target` edges (16 wrong at 16 x 4 blocks, 8 at 8 heredoc methods), so this gate fails without #3880.",
@@ -242,5 +242,6 @@
       }
     }
   },
-  "_measured_note": "The macOS CI/full observations below were collected before the shared lookup cache. Current review-fix CI observations are recorded separately in _measured_review_ci. Exact shapes and fingerprints remain pinned; peak RSS is diagnostic, not gated."
+  "_measured_note": "The macOS CI/full observations below were collected before the shared lookup cache. Current review-fix CI observations are recorded separately in _measured_review_ci. Exact shapes and fingerprints remain pinned; peak RSS is diagnostic, not gated.",
+  "_rebaselined_ordered_local_claims": "Compared base 8973bd0 and candidate graph records for the same block/heredoc workloads. Block records are identical. Heredoc e(x) still calls target before its later local assignment, with the identical source, target, type and confidence; ordered name claims move its resolution reason from local-call to global and now record a resolved outcome. Every workload retains exact call multisets, graph counts and decline counts. Only the four heredoc fingerprints change; all timing budgets are unchanged."
 }

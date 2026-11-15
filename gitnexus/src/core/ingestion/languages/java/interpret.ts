@@ -38,6 +38,7 @@ export function interpretJavaImport(captures: CaptureMatch): ParsedImport | null
       return {
         kind: 'wildcard',
         targetRaw: sourceCap.text + '.*',
+        reexportsName: false,
       };
     }
     case 'static': {
@@ -62,6 +63,7 @@ export function interpretJavaImport(captures: CaptureMatch): ParsedImport | null
       return {
         kind: 'wildcard',
         targetRaw: sourceCap.text,
+        reexportsName: false,
       };
     }
     default:

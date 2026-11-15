@@ -46,6 +46,8 @@ import {
   dartArityCompatibility,
 } from './dart/index.js';
 import { DART_BUILT_INS } from './dart/built-ins.js';
+import { collectDartCaptureSideChannel } from './dart/language-version.js';
+import { assertCloneable } from '../workers/clone-safety.js';
 
 /**
  * Resolve the enclosing function from a `function_body` node by looking at its
@@ -138,6 +140,10 @@ export const dartProvider = defineLanguage({
   // emit-side `ScopeResolver` lives in `dart/scope-resolver.ts`; the same
   // function references flow through both interfaces.
   emitScopeCaptures: emitDartScopeCaptures,
+  // Carries one capture-time fact past the worker boundary and the durable
+  // stores: whether a `_` parameter/local makes this file's capture depend on
+  // its package's language version (`dart/package-language-version.ts`).
+  collectCaptureSideChannel: (filePath) => assertCloneable(collectDartCaptureSideChannel(filePath)),
   // Dart's `ownsReceivers` masks FIELD NAMES a member body rebinds, not `this`
   // (which Dart binds lexically in every closure form, so there is nothing to
   // own). See `dartShadowedFieldsCapture` in `dart/captures.ts` for why the

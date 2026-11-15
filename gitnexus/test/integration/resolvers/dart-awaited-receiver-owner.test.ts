@@ -406,7 +406,6 @@ const WRITTEN = [
   'awaitedNullAssign',
   'awaitedClosureWrite',
   'awaitedLateReinit',
-  'awaitedIfCaseShadow',
 ] as const;
 
 /** Review round 2: a same-named binder the written-elsewhere guard never
@@ -417,13 +416,8 @@ const WRITTEN = [
  *  name, so a name bound more than once in its outermost body gets no
  *  inferred binding at all — from either declaration — and every call on it
  *  is a missing edge, never the other binder's owner. */
-const SHADOWED = [
-  'shadowClosureParamUntyped',
-  'shadowCatch',
-  'siblingClosures',
-  'outerRedeclaredInClosure',
-  'branchRedeclared',
-] as const;
+const SHADOWED = ['shadowClosureParamUntyped', 'shadowCatch'] as const;
+const SCOPED_LOCALS = ['siblingClosures', 'outerRedeclaredInClosure', 'branchRedeclared'] as const;
 /** The shadowing binder is a TYPED closure or local-function parameter
  *  (`(Address x) { x.save(); }`). The outer awaited local still gets no
  *  inferred binding, but since DART-11 the closure has a scope of its own and
@@ -450,15 +444,10 @@ const RESOLVING = [
 /** Members of the un-awaited Future (`nonAwait`, and `parenNonAwait` whose
  *  parenthesized head goes through the structural fold — with a workspace
  *  `class Future<T>` present, only the fold's owner guard keeps it off the
- *  stray `Future.save`), of an unknown awaited result (`unknownAwait`), and
- *  an awaited prefixed factory with a qualified yield
- *  (`prefixedQualifiedFactory`, recall boundary 5): no edge, a recorded drop. */
-const UNRESOLVED = [
-  'nonAwait',
-  'parenNonAwait',
-  'unknownAwait',
-  'prefixedQualifiedFactory',
-] as const;
+ *  stray `Future.save`) and of an unknown awaited result (`unknownAwait`): no
+ *  edge, a recorded drop. An awaited prefixed factory with a qualified yield
+ *  (`prefixedQualifiedFactory`) is resolved and has its own test below. */
+const UNRESOLVED = ['nonAwait', 'parenNonAwait', 'unknownAwait'] as const;
 /** Parenthesized heads the chain refuses to type (see `dartSelectorSteps` /
  *  `parenthesizedRun`): each keeps its receiver text so the site is resolved
  *  THROUGH the receiver and dropped, instead of falling to the receiver-less
@@ -482,7 +471,9 @@ describe.skipIf(!dartAvailable)('Dart awaited receiver owner (DART-04)', () => {
   let straySaveId: string;
 
   const saveCallsFrom = (source: string): RelEdge[] =>
-    getRelationships(result, 'CALLS').filter((c) => c.source === source && c.target === 'save');
+    getRelationships(result, 'CALLS').filter(
+      (c) => (c.source === source || c.rel.sourceId.includes(`:${source}.`)) && c.target === 'save',
+    );
 
   beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dart-awaited-receiver-owner-'));
@@ -575,6 +566,23 @@ describe.skipIf(!dartAvailable)('Dart awaited receiver owner (DART-04)', () => {
 
   it('awaitedBinding types the awaited call result and reaches the exact User.save', () => {
     expect(saveCallsFrom('awaitedBinding').map((e) => e.rel.targetId)).toEqual([userSaveId]);
+  });
+  it('follows a prefixed factory through its qualified awaited return in the producer scope', () => {
+    expect(saveCallsFrom('prefixedQualifiedFactory').map((edge) => edge.rel.targetId)).toEqual([
+      userSaveId,
+    ]);
+  });
+  it.each(SCOPED_LOCALS)('%s infers each lexical scope independently', (fn) => {
+    expect(
+      saveCallsFrom(fn)
+        .map((edge) => edge.rel.targetId)
+        .sort(),
+    ).toEqual([userSaveId, decoySaveId].sort());
+  });
+  it('an if-case shadow leaves the outer inferred receiver intact', () => {
+    expect(saveCallsFrom('awaitedIfCaseShadow').map((edge) => edge.rel.targetId)).toEqual([
+      userSaveId,
+    ]);
   });
 
   it('awaitedUnknownBinding (awaited Future<dynamic> result) emits no save edge', () => {
@@ -683,7 +691,7 @@ describe.skipIf(!dartAvailable)('Dart awaited receiver owner (DART-04)', () => {
     const decoys = new Set([decoySaveId, qualifiedDecoySaveId, crossFileDecoySaveId, straySaveId]);
     // Except Address.save from a site whose own parameter is declared
     // `Address` (OWN_TYPED_PARAM): there it is the declared target, not a decoy.
-    const ownTyped = new Set<string>(OWN_TYPED_PARAM);
+    const ownTyped = new Set<string>([...OWN_TYPED_PARAM, ...SCOPED_LOCALS, 'inner']);
     const toDecoy = getRelationships(result, 'CALLS').filter(
       (c) =>
         decoys.has(c.rel.targetId) && !(c.rel.targetId === decoySaveId && ownTyped.has(c.source)),

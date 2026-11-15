@@ -138,6 +138,9 @@ export function reconcileOwnership(
         def.type === 'Const' ||
         def.type === 'Static'
       ) {
+        // File-scoped values remain in the symbol/scope indexes. Owner-keyed
+        // registries serve member lookup only; `undefined` is not an owner.
+        if (ownerId === undefined) continue;
         if (fieldNodeIds.has(ownerId, simple, def.nodeId)) {
           skippedAlreadyPresent++;
           continue;
@@ -146,6 +149,7 @@ export function reconcileOwnership(
         fieldNodeIds.add(ownerId, simple, def.nodeId);
         fieldsRegistered++;
       } else if (NESTED_TYPE_KINDS.has(def.type)) {
+        if (ownerId === undefined) continue;
         if (nestedTypeNodeIds.has(ownerId, simple, def.nodeId)) {
           skippedAlreadyPresent++;
           continue;
@@ -172,18 +176,16 @@ const SCAN_LIMIT = 8;
  * Answers "is this node id already registered under `(owner, name)`?" for one
  * owner-keyed registry, without rescanning a long bucket for every def.
  *
- * Defs without an owner (module-level values, top-level types and, where the
- * extractor assigns none, locals of free functions) share ONE bucket per name
- * across the repository: every `logger`, every `result`. Scanning that bucket
- * for every def made the duplicate check quadratic in the number of same-named
- * ownerless declarations.
+ * Owned members with the same name share a bucket. Large generated classes
+ * can still have many declarations under one key, so duplicate detection
+ * must not scan that bucket for every def. Ownerless fields/types are skipped
+ * before this helper; file-scoped lookup uses the symbol/scope indexes.
  *
  * A short bucket is scanned in the registry, as before. Once a key's bucket is
  * longer than `SCAN_LIMIT` its node ids are read into a set, and the caller
  * keeps that set current through `add` after each registration; nothing else
  * writes these registries while the pass runs. Sets are keyed by owner, then
- * name, like the registries themselves, so an ownerless key is a bucket of its
- * own.
+ * name, like the registries themselves.
  */
 function registeredNodeIds(
   lookupAll: (owner: string | undefined, name: string) => readonly { readonly nodeId: string }[],

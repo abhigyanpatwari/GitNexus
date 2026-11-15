@@ -153,6 +153,15 @@ async function fixture(arm, size) {
       routeSource: 'benchmark',
     },
   }));
+  // Pin canonical file order, then the fixture's stable identity order. Here
+  // File:<index> and /r<index> have the same lexical order. Keep comparing the
+  // complete returned array; sorting actual output would conceal order drift.
+  expected.sort((a, b) => {
+    const left = a.symbolRef.filePath;
+    const right = b.symbolRef.filePath;
+    if (left !== right) return left < right ? -1 : 1;
+    return a.meta.path < b.meta.path ? -1 : a.meta.path > b.meta.path ? 1 : 0;
+  });
   const expectedHash = hash(JSON.stringify(canonical(expected)));
   const repo = { id: 'benchmark', path: 'repo', repoPath, storagePath: dir };
   async function run(profile = false) {

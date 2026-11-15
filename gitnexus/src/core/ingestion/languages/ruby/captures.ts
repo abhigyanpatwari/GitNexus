@@ -1,4 +1,5 @@
-import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import type { Capture, CaptureMatch, NameClaim } from 'gitnexus-shared';
+import { makeScopeId } from 'gitnexus-shared';
 import { recordRubyMemberDispatch } from './member-dispatch.js';
 import {
   findChild,
@@ -409,7 +410,21 @@ const RUBY_LHS_CONTAINERS: ReadonlySet<string> = new Set([
 
 /** Name → earliest parse position at which one scope binds it. */
 export type RubyScopeBindings = ReadonlyMap<string, number>;
-type RubyBindingVisitor = (name: string, start: number) => void;
+/**
+ * `site` is the `assignment` / `operator_assignment` node when the name is its
+ * whole target (`target = …`, `target ||= …`), the one shape whose assigned
+ * value says what the local holds.
+ */
+type RubyBindingVisitor = (name: string, start: number, site?: SyntaxNode) => void;
+
+/** One written binding of a local: where the name is written, and by which plain assignment. */
+interface RubyLocalDeclaration {
+  readonly name: string;
+  readonly start: number;
+  readonly site: SyntaxNode | null;
+  /** Written in a nested block to a local or parameter of the scope that lists it. */
+  readonly captured?: boolean;
+}
 
 /**
  * Names a `method_parameters` / `block_parameters` / `lambda_parameters` node
@@ -568,6 +583,9 @@ function collectRubyBindingSiteNames(node: SyntaxNode, visit: RubyBindingVisitor
   switch (node.type) {
     case 'assignment':
     case 'operator_assignment':
+      if (site.type === 'identifier') visit(site.text, site.startIndex, node);
+      else collectRubyLhsNames(site, visit);
+      return;
     case 'for':
     case 'rescue':
       collectRubyLhsNames(site, visit);
@@ -645,9 +663,11 @@ function rubyScopeBindings(
   const cached = cache.get(scope.id);
   if (cached !== undefined) return cached;
   const earliest = new Map<string, number>();
+  const declarations: RubyLocalDeclaration[] = [];
   forEachRubyScopeBinding(
     scope,
-    (name, start) => {
+    (name, start, site) => {
+      declarations.push({ name, start, site: site ?? null });
       const position = heredocs === null ? start : heredocs.order.get(start);
       if (position === undefined) return;
       const prev = earliest.get(name);
@@ -656,6 +676,9 @@ function rubyScopeBindings(
     heredocs,
   );
   cache.set(scope.id, earliest);
+  let byScope = rubyDeclarationPositions.get(cache);
+  if (byScope === undefined) rubyDeclarationPositions.set(cache, (byScope = new Map()));
+  byScope.set(scope.id, declarations);
   return earliest;
 }
 
@@ -679,7 +702,7 @@ function rubyScopeBindings(
 function rubyHeredocOpeners(
   root: SyntaxNode,
   physicalBodies: readonly SyntaxNode[],
-): Map<number, SyntaxNode> {
+): { bodies: Map<number, SyntaxNode>; openers: SyntaxNode[] } {
   // Openers by start row, in document order (so by increasing endIndex).
   const openersByRow = new Map<number, SyntaxNode[]>();
   for (const opener of root.descendantsOfType('heredoc_beginning')) {
@@ -709,6 +732,7 @@ function rubyHeredocOpeners(
     }
   }
   const bodies = new Map<number, SyntaxNode>();
+  const openers: SyntaxNode[] = [];
   for (const run of runs) {
     const [first] = run;
     const line = first === undefined ? undefined : openersByRow.get(first.startPosition.row);
@@ -724,15 +748,19 @@ function rubyHeredocOpeners(
     if (lo !== run.length) continue;
     run.forEach((body, i) => {
       const opener = line[i];
-      if (opener !== undefined) bodies.set(opener.id, body);
+      if (opener === undefined) return;
+      bodies.set(opener.id, body);
+      openers.push(opener);
     });
   }
-  return bodies;
+  return { bodies, openers };
 }
 
 interface RubyHeredocLayout {
   /** Opener id → physical body. */
   bodies: ReadonlyMap<number, SyntaxNode>;
+  /** Every opener that has a body, grouped by line in source order. */
+  openers: readonly SyntaxNode[];
   /** Source offset → parse position, visiting a body at its opener. */
   order: ReadonlyMap<number, number>;
 }
@@ -756,7 +784,7 @@ function rubyHeredocLayout(
     rubyHeredocLayouts.set(cache, null);
     return null;
   }
-  const bodies = rubyHeredocOpeners(root, physicalBodies);
+  const { bodies, openers } = rubyHeredocOpeners(root, physicalBodies);
   const order = new Map<number, number>();
   const pending = [root];
   for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
@@ -765,7 +793,7 @@ function rubyHeredocLayout(
     const children = (bodies.get(node.id) ?? node).namedChildren;
     for (const child of children.reverse()) pending.push(child);
   }
-  const layout = { bodies, order };
+  const layout = { bodies, openers, order };
   rubyHeredocLayouts.set(cache, layout);
   return layout;
 }
@@ -776,6 +804,14 @@ interface RubyVisibleBinding {
   readonly chain: number;
   /** Earliest position the chain, from its closed scope down to here, binds the name at. */
   readonly earliest: number;
+  /** Id of the scope node whose local the name is: a block that assigns a captured local keeps the outer owner. */
+  readonly owner: number;
+}
+
+interface RubySelfContext {
+  readonly inClass: boolean;
+  methods: number;
+  readonly parameters: Map<string, number>;
 }
 
 /** A scope frame of the bare-read walk: opened after its headers, closed after its body. */
@@ -785,6 +821,9 @@ interface RubyBareReadFrame {
   /** Set when the frame opens: the names it pushed and the chain it replaced. */
   names: RubyScopeBindings;
   outerChain: number;
+  parameters: string[];
+  outerSelf: RubySelfContext;
+  outerCaller: SyntaxNode | null;
 }
 
 const NO_RUBY_BINDINGS: RubyScopeBindings = new Map();
@@ -792,10 +831,26 @@ const NO_RUBY_BINDINGS: RubyScopeBindings = new Map();
 type RubyBareReadStep =
   | { readonly kind: 'visit'; readonly node: SyntaxNode }
   | { readonly kind: 'open'; readonly frame: RubyBareReadFrame }
-  | { readonly kind: 'close'; readonly frame: RubyBareReadFrame };
+  | { readonly kind: 'close'; readonly frame: RubyBareReadFrame }
+  | { readonly kind: 'self-open'; readonly frame: RubyBareReadFrame }
+  | { readonly kind: 'self-close'; readonly frame: RubyBareReadFrame };
 
 // Keyed by the capture pass's cache, so no tree survives that pass's lifetime.
 const rubyBoundReads = new WeakMap<Map<number, RubyScopeBindings>, ReadonlySet<number>>();
+const rubySelfReceivers = new WeakMap<Map<number, RubyScopeBindings>, ReadonlySet<number>>();
+const rubyHeredocCallers = new WeakMap<
+  Map<number, RubyScopeBindings>,
+  ReadonlyMap<number, SyntaxNode>
+>();
+const rubyDeclarationPositions = new WeakMap<
+  Map<number, RubyScopeBindings>,
+  Map<number, RubyLocalDeclaration[]>
+>();
+// Keyed by scope node id: two wrappers of one node are not always identical.
+const rubyLocalDeclarations = new WeakMap<
+  Map<number, RubyScopeBindings>,
+  Map<number, RubyLocalDeclaration[]>
+>();
 
 /**
  * The ids of every identifier in the file that names a parameter or local
@@ -827,27 +882,99 @@ function rubyBoundReadIds(
   if (cached !== undefined) return cached;
   const heredocs = rubyHeredocLayout(root, cache);
   const bound = new Set<number>();
+  const selfReceivers = new Set<number>();
+  const heredocCallers = new Map<number, SyntaxNode>();
+  const localDeclarations = new Map<number, RubyLocalDeclaration[]>();
+  let caller: SyntaxNode | null = null;
+  let self: RubySelfContext = { inClass: false, methods: 0, parameters: new Map() };
   const visible = new Map<string, RubyVisibleBinding[]>();
   // No chain is open above the root; `program` opens the first.
   let chain = -1;
   const steps: RubyBareReadStep[] = [{ kind: 'visit', node: root }];
   for (let step = steps.pop(); step !== undefined; step = steps.pop()) {
+    if (step.kind === 'self-open') {
+      const frame = step.frame;
+      frame.outerSelf = self;
+      const type = frame.scope.type;
+      if (type === 'class' || type === 'module' || type === 'program') {
+        self = { inClass: type !== 'program', methods: 0, parameters: new Map() };
+      }
+      const method = type === 'method' || type === 'singleton_method';
+      if (method) self.methods++;
+      frame.parameters =
+        self.inClass && (method || RUBY_OPEN_LOCAL_SCOPES.has(type))
+          ? rubyScopeLexicalNames(frame.scope)
+          : [];
+      for (const name of frame.parameters)
+        self.parameters.set(name, (self.parameters.get(name) ?? 0) + 1);
+      continue;
+    }
+    if (step.kind === 'self-close') {
+      for (const name of step.frame.parameters) {
+        const count = self.parameters.get(name)! - 1;
+        if (count === 0) self.parameters.delete(name);
+        else self.parameters.set(name, count);
+      }
+      if (step.frame.scope.type === 'method' || step.frame.scope.type === 'singleton_method')
+        self.methods--;
+      self = step.frame.outerSelf;
+      continue;
+    }
     if (step.kind === 'open') {
       const frame = step.frame;
+      frame.outerCaller = caller;
+      if (frame.scope.type === 'method' || frame.scope.type === 'singleton_method')
+        caller = frame.scope;
+      else if (frame.closed) caller = null;
       frame.outerChain = chain;
       if (frame.closed) chain = frame.scope.id;
       frame.names = rubyScopeBindings(frame.scope, cache, heredocs);
+      const declarations = rubyDeclarationPositions.get(cache)?.get(frame.scope.id) ?? [];
+      const parameters = new Set(
+        declarations.length === 0 ? [] : rubyScopeLexicalNames(frame.scope),
+      );
+      const locals = declarations.filter((declaration) => {
+        const { name, start } = declaration;
+        if (parameters.has(name)) return false;
+        const entries = visible.get(name);
+        const outer = entries?.[entries.length - 1];
+        const position = heredocs === null ? start : heredocs.order.get(start);
+        // Assignment to an already visible outer local is a capture, not a
+        // new block-local declaration. Method bodies start a fresh chain.
+        const local =
+          frame.closed ||
+          outer === undefined ||
+          outer.chain !== chain ||
+          position === undefined ||
+          outer.earliest >= position;
+        if (!local) {
+          // A write through a captured cell invalidates its enclosing type fact
+          // too. The new claim activates at the write, preserving earlier reads.
+          const writes = localDeclarations.get(outer.owner) ?? [];
+          writes.push({ ...declaration, captured: true });
+          localDeclarations.set(outer.owner, writes);
+        }
+        return local;
+      });
+      if (locals.length > 0) localDeclarations.set(frame.scope.id, locals);
       for (const [name, position] of frame.names) {
         let entries = visible.get(name);
         if (entries === undefined) visible.set(name, (entries = []));
         const top = entries[entries.length - 1];
         const earliest =
           top !== undefined && top.chain === chain ? Math.min(top.earliest, position) : position;
-        entries.push({ chain, earliest });
+        const capturesOuter =
+          !frame.closed &&
+          !parameters.has(name) &&
+          top !== undefined &&
+          top.chain === chain &&
+          top.earliest < position;
+        entries.push({ chain, earliest, owner: capturesOuter ? top.owner : frame.scope.id });
       }
       continue;
     }
     if (step.kind === 'close') {
+      caller = step.frame.outerCaller;
       for (const name of step.frame.names.keys()) visible.get(name)?.pop();
       chain = step.frame.outerChain;
       continue;
@@ -855,7 +982,22 @@ function rubyBoundReadIds(
     const node = step.node;
     // Visited through its opener, never where it physically sits.
     if (node.type === 'heredoc_body') continue;
+    if (
+      heredocs !== null &&
+      caller !== null &&
+      (node.startIndex < caller.startIndex || node.endIndex > caller.endIndex)
+    ) {
+      heredocCallers.set(node.id, caller);
+    }
     if (node.type === 'identifier') {
+      const localEntries = visible.get(node.text);
+      const local = localEntries?.[localEntries.length - 1];
+      if (
+        self.inClass &&
+        self.methods > 0 &&
+        (self.parameters.has(node.text) || local?.chain === chain)
+      )
+        selfReceivers.add(node.id);
       const readStart = heredocs === null ? node.startIndex : heredocs.order.get(node.startIndex);
       if (readStart !== undefined) {
         const entries = visible.get(node.text);
@@ -880,15 +1022,25 @@ function rubyBoundReadIds(
       closed,
       names: NO_RUBY_BINDINGS,
       outerChain: chain,
+      parameters: [],
+      outerSelf: self,
+      outerCaller: caller,
     };
+    // Receiver ownership follows the syntax scope through its headers too;
+    // local-read activation still opens only after those headers are visited.
+    steps.push({ kind: 'self-close', frame });
     steps.push({ kind: 'close', frame });
     for (const child of children.reverse()) {
       if (!headerIds.has(child.id)) steps.push({ kind: 'visit', node: child });
     }
     steps.push({ kind: 'open', frame });
     for (const header of headers.reverse()) steps.push({ kind: 'visit', node: header });
+    steps.push({ kind: 'self-open', frame });
   }
   rubyBoundReads.set(cache, bound);
+  rubySelfReceivers.set(cache, selfReceivers);
+  rubyHeredocCallers.set(cache, heredocCallers);
+  rubyLocalDeclarations.set(cache, localDeclarations);
   return bound;
 }
 
@@ -939,8 +1091,10 @@ export function emitRubyScopeCaptures(
   // Per-scope binding index for the bare-identifier read check (RUBY-04),
   // built lazily and shared across every match of this file.
   const bareReadBindings = new Map<number, RubyScopeBindings>();
-  const lexicalNamesByScope = new Map<number, ReadonlySet<string>>();
   const receiverlessCallSites = new Set<string>();
+  // The node behind each scope match that can hold local claims. A position
+  // cannot stand for it: `program` and a first-token `def` both start at 1:0.
+  const localScopeNodes = new Map<CaptureMatch, SyntaxNode>();
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
@@ -957,6 +1111,8 @@ export function emitRubyScopeCaptures(
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+    const localScope = rubyLocalScopeOf(nodeMap);
+    if (localScope !== undefined) localScopeNodes.set(grouped, localScope);
     const freeCall = nodeIfType(nodeMap['@reference.call.free'], 'call');
     if (freeCall !== null && freeCall.childForFieldName('receiver') === null) {
       receiverlessCallSites.add(
@@ -1213,10 +1369,25 @@ export function emitRubyScopeCaptures(
     // check above. Give both an explicit receiver when a lexical claim would
     // otherwise stop free-call lookup; retain the arity from the call node.
     const nameNode = nodeMap['@reference.name'];
+    if (nameNode !== undefined && callTag !== undefined) {
+      rubyBoundReadIds(tree.rootNode, bareReadBindings);
+      const caller = rubyHeredocCallers.get(bareReadBindings)?.get(nameNode.id);
+      if (caller !== undefined) {
+        grouped['@reference.caller-scope'] = syntheticCapture(
+          '@reference.caller-scope',
+          nameNode,
+          makeScopeId({
+            filePath: _filePath,
+            kind: 'Function',
+            range: nodeToCapture('', caller).range,
+          }),
+        );
+      }
+    }
     if (
       grouped['@reference.call.free'] !== undefined &&
       nameNode !== undefined &&
-      rubyBareCallNeedsSelfReceiver(nameNode, lexicalNamesByScope)
+      rubyBareCallNeedsSelfReceiver(nameNode, bareReadBindings)
     ) {
       grouped['@reference.call.member'] = grouped['@reference.call.free']!;
       delete grouped['@reference.call.free'];
@@ -1452,7 +1623,273 @@ export function emitRubyScopeCaptures(
     out.push(match);
   }
 
+  attachRubyLocalClaims(out, localScopeNodes, tree.rootNode, bareReadBindings, sourceText);
   return out;
+}
+
+/** The class `site` constructs: `target = K.new(…)`, the shape the constructor type binding is captured from. */
+function rubyConstructedClass(site: SyntaxNode): string | null {
+  const value = site.childForFieldName('right');
+  if (value === null || value.type !== 'call') return null;
+  if (value.childForFieldName('method')?.text !== 'new') return null;
+  const receiver = value.childForFieldName('receiver');
+  if (receiver === null) return null;
+  return receiver.type === 'constant' || receiver.type === 'scope_resolution'
+    ? receiver.text
+    : null;
+}
+
+/**
+ * The declarations of one scope that need no claim of their own: a write that
+ * leaves the local holding an instance of the class it already holds changes
+ * nothing a read can observe. A scope keeps ONE type fact per name, and the
+ * shared lookup drops that fact for a read whose claim is not the claim in
+ * force where the fact was written; so two claims for `repo = Repo.new` in
+ * the two arms of an `if` left every read under the first one untyped. One
+ * claim per run of consecutive such writes keeps the fact for all of them,
+ * and a write of anything else still starts a new claim.
+ *
+ * `target = K.new` continues a run of `K`. `target ||= …` continues any run:
+ * an instance is truthy, so the local keeps it. A first `target ||= K.new`
+ * starts a run only for a local this scope declares, which is nil until then;
+ * a captured write may meet a parameter's value instead.
+ */
+function rubyRedundantDeclarations(
+  locals: readonly RubyLocalDeclaration[],
+  orderOf: (start: number) => number,
+): ReadonlySet<RubyLocalDeclaration> {
+  const redundant = new Set<RubyLocalDeclaration>();
+  const byName = new Map<string, RubyLocalDeclaration[]>();
+  for (const declaration of locals) {
+    const sameName = byName.get(declaration.name);
+    if (sameName === undefined) byName.set(declaration.name, [declaration]);
+    else sameName.push(declaration);
+  }
+  for (const sameName of byName.values()) {
+    if (sameName.length < 2) continue;
+    sameName.sort((a, b) => orderOf(a.start) - orderOf(b.start));
+    let held: string | null = null;
+    sameName.forEach((declaration, i) => {
+      const site = declaration.site;
+      if (site === null) {
+        held = null;
+      } else if (site.type === 'assignment') {
+        const constructed = rubyConstructedClass(site);
+        if (constructed !== null && constructed === held) redundant.add(declaration);
+        else held = constructed;
+      } else if (site.childForFieldName('operator')?.text !== '||=') {
+        held = null;
+      } else if (held !== null) {
+        redundant.add(declaration);
+      } else if (i === 0 && declaration.captured !== true) {
+        held = rubyConstructedClass(site);
+      }
+    });
+  }
+  return redundant;
+}
+
+/** Heredoc openers and bodies of one file, indexed for its local claims. */
+interface RubyHeredocSpans {
+  /** Opener id → physical body. */
+  readonly bodies: ReadonlyMap<number, SyntaxNode>;
+  /** Openers that have a body, per 0-based row, in source order. */
+  readonly byRow: ReadonlyMap<number, readonly SyntaxNode[]>;
+  /** Bodies by start offset; `parent` indexes the body that contains this one, or is -1. */
+  readonly nested: ReadonlyArray<{
+    readonly opener: SyntaxNode;
+    readonly body: SyntaxNode;
+    readonly parent: number;
+  }>;
+}
+
+function rubyHeredocSpans(layout: RubyHeredocLayout): RubyHeredocSpans {
+  const byRow = new Map<number, SyntaxNode[]>();
+  const nested: Array<{ opener: SyntaxNode; body: SyntaxNode; parent: number }> = [];
+  for (const opener of layout.openers) {
+    const body = layout.bodies.get(opener.id);
+    if (body === undefined) continue;
+    const row = opener.startPosition.row;
+    const line = byRow.get(row);
+    if (line === undefined) byRow.set(row, [opener]);
+    else line.push(opener);
+    nested.push({ opener, body, parent: -1 });
+  }
+  nested.sort((a, b) => a.body.startIndex - b.body.startIndex);
+  const open: number[] = [];
+  nested.forEach((entry, i) => {
+    for (let top = open[open.length - 1]; top !== undefined; top = open[open.length - 1]) {
+      const outer = nested[top];
+      if (outer !== undefined && outer.body.endIndex > entry.body.startIndex) break;
+      open.pop();
+    }
+    entry.parent = open[open.length - 1] ?? -1;
+    open.push(i);
+  });
+  return { bodies: layout.bodies, byRow, nested };
+}
+
+/** The count of leading elements of `sorted` for which `before` holds (a prefix). */
+function rubyPrefixLength<T>(sorted: readonly T[], before: (element: T) => boolean): number {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    const element = sorted[mid];
+    if (element !== undefined && before(element)) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * Where a declaration at `start` is visible, as alternating start and end
+ * offsets, when a heredoc makes that differ from "from `start` on"; null when
+ * it does not. Ruby reads a heredoc body where it meets the opener, before
+ * the rest of the opener's line. So a declaration inside a body is also
+ * visible on the rest of each enclosing opener's line (which sits before the
+ * body in the file), and a declaration written after an opener on its line is
+ * not visible in the bodies opened before it (which sit after it in the file).
+ * Only openers inside `scope` count: outside it the claim is never consulted.
+ */
+function rubyDeclarationSpans(
+  start: number,
+  row: number,
+  scope: SyntaxNode,
+  heredocs: RubyHeredocSpans,
+  lineStarts: readonly number[],
+  sourceLength: number,
+): number[] | null {
+  const { nested } = heredocs;
+  const spans: number[] = [];
+  // The innermost body holding `start` is the last body that begins at or
+  // before it, or one of that body's ancestors.
+  let enclosing = rubyPrefixLength(nested, (entry) => entry.body.startIndex <= start) - 1;
+  for (let entry = nested[enclosing]; entry !== undefined; entry = nested[enclosing]) {
+    if (entry.body.endIndex > start) {
+      const opener = entry.opener;
+      if (opener.startIndex < scope.startIndex || opener.endIndex > scope.endIndex) break;
+      // Innermost first, each pair end before start; reversed into source order below.
+      spans.push(lineStarts[opener.startPosition.row + 1] ?? sourceLength, opener.endIndex);
+    }
+    enclosing = entry.parent;
+  }
+  spans.reverse();
+  spans.push(start);
+  const line = heredocs.byRow.get(row);
+  if (line !== undefined) {
+    // The line's openers that end before the declaration are a prefix of
+    // `line`; of those, the ones inside the scope are a suffix of that prefix.
+    const before = rubyPrefixLength(line, (opener) => opener.endIndex <= start);
+    const outside = rubyPrefixLength(line, (opener) => opener.startIndex < scope.startIndex);
+    const firstBody = outside < before ? heredocs.bodies.get(line[outside]?.id ?? -1) : undefined;
+    const lastBody = outside < before ? heredocs.bodies.get(line[before - 1]?.id ?? -1) : undefined;
+    if (firstBody !== undefined && lastBody !== undefined)
+      spans.push(firstBody.startIndex, lastBody.endIndex);
+  }
+  return spans.length === 1 ? null : spans;
+}
+
+/** The scope a capture match opens, under whichever scope tag captured it.
+ *  One reader for the node map and for the match, so the two cannot drift. */
+function rubyLocalScopeOf<T>(byTag: Readonly<Record<string, T | undefined>>): T | undefined {
+  return byTag['@scope.function'] ?? byTag['@scope.block'] ?? byTag['@scope.module'];
+}
+
+/**
+ * Ordered local declarations stop the type walk without hiding earlier
+ * accessor reads. A claim belongs to the scope NODE that declares the local:
+ * `scopeNodes` names the node behind each function, block and program match.
+ * A local never names what `name(...)` calls, so every claim is `neverCallee`.
+ */
+function attachRubyLocalClaims(
+  matches: CaptureMatch[],
+  scopeNodes: ReadonlyMap<CaptureMatch, SyntaxNode>,
+  root: SyntaxNode,
+  bindings: Map<number, RubyScopeBindings>,
+  sourceText: string,
+): void {
+  rubyBoundReadIds(root, bindings);
+  const declarations = rubyLocalDeclarations.get(bindings);
+  if (declarations === undefined || declarations.size === 0) return;
+  const layout = rubyHeredocLayout(root, bindings);
+  const heredocs = layout === null ? null : rubyHeredocSpans(layout);
+  // Parse order: a heredoc body counts where its opener is.
+  const orderOf = (start: number): number =>
+    layout === null ? start : (layout.order.get(start) ?? Number.MAX_SAFE_INTEGER);
+  const lineStarts = [0];
+  for (let i = 0; i < sourceText.length; i++) if (sourceText[i] === '\n') lineStarts.push(i + 1);
+  const rowOf = (offset: number): number =>
+    rubyPrefixLength(lineStarts, (lineStart) => lineStart <= offset) - 1;
+  const positionAt = (offset: number): { startLine: number; startCol: number } => {
+    const row = rowOf(offset);
+    return { startLine: row + 1, startCol: offset - (lineStarts[row] ?? 0) };
+  };
+  // A closure binding has a declaration spanning its initializer, rather
+  // than only the identifier. The claim must contain that declaration so
+  // the shared name-claim filter can retain the callable binding.
+  const callableRanges = new Map<string, Capture['range']>();
+  for (const match of matches) {
+    const name = match['@declaration.name'];
+    const declaration = match['@declaration.function'];
+    if (name !== undefined && declaration !== undefined) {
+      callableRanges.set(
+        `${name.text}:${name.range.startLine}:${name.range.startCol}`,
+        declaration.range,
+      );
+    }
+  }
+  for (const [i, match] of matches.entries()) {
+    const scope = scopeNodes.get(match);
+    const anchor = rubyLocalScopeOf(match);
+    if (scope === undefined || anchor === undefined) continue;
+    const locals = declarations.get(scope.id);
+    if (locals === undefined) continue;
+    const redundant = rubyRedundantDeclarations(locals, orderOf);
+    const claims: NameClaim[] = [];
+    for (const declaration of locals) {
+      if (redundant.has(declaration)) continue;
+      const { name, start } = declaration;
+      const position = positionAt(start);
+      const callableRange = callableRanges.get(
+        `${name}:${position.startLine}:${position.startCol}`,
+      );
+      const spans =
+        heredocs === null
+          ? null
+          : rubyDeclarationSpans(
+              start,
+              position.startLine - 1,
+              scope,
+              heredocs,
+              lineStarts,
+              sourceText.length,
+            );
+      const order = spans === null ? undefined : layout?.order.get(start);
+      claims.push({
+        name,
+        kind: 'binding',
+        inactive: 'outer',
+        availableFrom: position,
+        range: callableRange ?? {
+          ...position,
+          endLine: position.startLine,
+          endCol: position.startCol + name.length,
+        },
+        neverCallee: true,
+        // Heredoc bodies are read at their opener: say where the local is
+        // visible, and where it ranks among the scope's other declarations.
+        ...(spans === null || order === undefined
+          ? {}
+          : { availableSpans: spans.map(positionAt), order }),
+      });
+    }
+    if (claims.length === 0) continue;
+    matches[i] = {
+      ...match,
+      '@scope.name-claims': { ...anchor, name: '@scope.name-claims', text: JSON.stringify(claims) },
+    };
+  }
 }
 
 /**
@@ -1762,25 +2199,10 @@ function rubyScopeLexicalNames(scopeNode: SyntaxNode): string[] {
 /** Does a method call cross a parameter claim with an available self binding? */
 function rubyBareCallNeedsSelfReceiver(
   identifier: SyntaxNode,
-  namesByScope: Map<number, ReadonlySet<string>>,
+  bindings: Map<number, RubyScopeBindings>,
 ): boolean {
-  let hasMethod = false;
-  let hasClaim = false;
-  for (let scope = identifier.parent; scope !== null; scope = scope.parent) {
-    if (scope.type === 'program') return false;
-    if (scope.type === 'class' || scope.type === 'module') return hasMethod && hasClaim;
-    const method = scope.type === 'method' || scope.type === 'singleton_method';
-    if (!method && scope.type !== 'block' && scope.type !== 'do_block' && scope.type !== 'lambda')
-      continue;
-    hasMethod ||= method;
-    let names = namesByScope.get(scope.id);
-    if (names === undefined) {
-      names = new Set(rubyScopeLexicalNames(scope));
-      namesByScope.set(scope.id, names);
-    }
-    hasClaim ||= names.has(identifier.text);
-  }
-  return false;
+  rubyBoundReadIds(identifier.tree.rootNode, bindings);
+  return rubySelfReceivers.get(bindings)!.has(identifier.id);
 }
 
 /** Publish the parameters `scopeNode` declares on its scope match, when it declares any. */
@@ -1975,6 +2397,8 @@ function findFollowingAttrCall(commentNode: SyntaxNode): SyntaxNode | null {
   while (sibling !== null && sibling.type === 'comment') {
     sibling = sibling.nextNamedSibling;
   }
+  if (sibling === null) return null;
+  if (sibling.type === 'body_statement') sibling = sibling.firstNamedChild;
   if (sibling === null) return null;
   if (sibling.type === 'call') {
     const methodNode = sibling.childForFieldName('method');

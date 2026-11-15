@@ -1,4 +1,4 @@
-import type { BindingRef, ParsedFile, ScopeId, SourcePosition } from 'gitnexus-shared';
+import type { BindingRef, ParsedFile, Scope, ScopeId, SourcePosition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { collectNamespaceTargets, type NamespaceTargetOptions } from './namespace-targets.js';
 
@@ -17,6 +17,8 @@ export function createNamespaceTargetCache(
 ) {
   const boundaries: SourcePosition[] = [];
   const scopeIds = new Set<ScopeId>();
+  const fileScopes = new Map<ScopeId, Scope>();
+  const scopesWithImports = new Set<ScopeId>();
   const importNames = new Set<string>();
   const accessibleNamespaces = new Set<string>();
   let hasNamespaceImports = false;
@@ -24,11 +26,15 @@ export function createNamespaceTargetCache(
   let complete = typeof tree?.getChildren === 'function';
   let requiresLexicalLookup = importsBindAtLexicalScope;
   const collectBindings = (bindings: ReadonlyMap<string, readonly BindingRef[]> | undefined) => {
-    if (bindings === undefined) return;
-    for (const refs of bindings.values()) {
+    if (bindings === undefined) return false;
+    let relevant = false;
+    for (const [name, refs] of bindings) {
+      if (!importNames.has(name) || refs.length === 0) continue;
+      relevant = true;
       for (const ref of refs)
         if (ref.availableFrom !== undefined) boundaries.push(ref.availableFrom);
     }
+    return relevant;
   };
 
   // Sealed disk-backed ParsedFiles have no scopes left in their arrays. Walk
@@ -43,14 +49,10 @@ export function createNamespaceTargetCache(
       complete = false;
       continue;
     }
+    fileScopes.set(id, scope);
     if (scope.nameClaims !== undefined) requiresLexicalLookup = true;
-    for (const claim of scope.nameClaims ?? []) {
-      if (claim.availableFrom !== undefined) boundaries.push(claim.availableFrom);
-    }
-    collectBindings(scope.bindings);
-    collectBindings(scopes.bindings?.get(id));
-    collectBindings(scopes.bindingAugmentations?.get(id));
     for (const edge of scopes.imports?.edgesAt(id) ?? scope.imports) {
+      scopesWithImports.add(id);
       importNames.add(edge.localName);
       if (edge.kind === 'namespace' && edge.targetFile !== null && edge.linkStatus !== 'unresolved')
         hasNamespaceImports = true;
@@ -62,6 +64,53 @@ export function createNamespaceTargetCache(
     if (scope.parent !== null) pending.push(scope.parent);
     if (scope.lookupPolicy?.parentScope !== undefined) pending.push(scope.lookupPolicy.parentScope);
   }
+  // A scope that has no facts about an imported name has exactly its parent's
+  // namespace snapshot. Share that snapshot; do not rescan every file import
+  // for every unrelated function/local. Policies and injected bindings keep
+  // their original lookup start because they can change parent visibility.
+  const transparentParents = new Map<ScopeId, ScopeId>();
+  const workspaceShadows = [...importNames].some(
+    (name) => (scopes.workspaceFqnBindings?.get(name)?.length ?? 0) > 0,
+  );
+  for (const [id, scope] of fileScopes) {
+    let relevant = scopesWithImports.has(id);
+    for (const claim of scope.nameClaims ?? []) {
+      if (!importNames.has(claim.name)) continue;
+      relevant = true;
+      if (claim.availableFrom !== undefined) boundaries.push(claim.availableFrom);
+      if (claim.availableSpans !== undefined) boundaries.push(...claim.availableSpans);
+    }
+    for (const name of scope.lexicalNames ?? []) if (importNames.has(name)) relevant = true;
+    relevant = collectBindings(scope.bindings) || relevant;
+    relevant = collectBindings(scopes.bindings?.get(id)) || relevant;
+    relevant = collectBindings(scopes.bindingAugmentations?.get(id)) || relevant;
+    const parent = scope.parent === null ? undefined : fileScopes.get(scope.parent);
+    if (
+      complete &&
+      !workspaceShadows &&
+      !options.skipEnclosingClasses &&
+      !relevant &&
+      id !== parsed.moduleScope &&
+      parent !== undefined &&
+      scope.lookupPolicy === undefined &&
+      parent.lookupPolicy?.skipFromChildren !== true &&
+      (scope.bindings !== undefined) === (parent.bindings !== undefined) &&
+      (scopes.accessibleNamespacesByScope?.get(id)?.length ?? 0) === 0
+    ) {
+      transparentParents.set(id, parent.id);
+    }
+  }
+  const snapshotScope = (id: ScopeId): ScopeId => {
+    const visited = new Set<ScopeId>();
+    let current = id;
+    while (transparentParents.has(current)) {
+      if (visited.has(current)) return id; // Malformed cyclic ancestry: do not share.
+      visited.add(current);
+      current = transparentParents.get(current)!;
+    }
+    for (const scopeId of visited) transparentParents.set(scopeId, current);
+    return current;
+  };
   // These shared binding channels can also shadow an import. Inspect only the
   // imported names, rather than scanning the workspace for every source file.
   for (const name of importNames) {
@@ -85,6 +134,7 @@ export function createNamespaceTargetCache(
     // A complete walk can prove every lexical snapshot is empty. Keep the
     // position-sensitive receiver lookup policy, but avoid rebuilding maps.
     if (complete && !hasNamespaceImports && scopeIds.has(inScope)) return emptyTargets;
+    inScope = snapshotScope(inScope);
     let bucket: number | string = -1; // An unspecified position sees every activation.
     if (position !== undefined) {
       if (!complete || !scopeIds.has(inScope)) {
