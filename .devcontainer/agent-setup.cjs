@@ -1,0 +1,411 @@
+#!/usr/bin/env node
+// Makes the Claude Code and Codex setup of this dev container reproducible.
+//
+// post-create.sh runs it once the host snapshot is seeded; it is also safe to run
+// by hand at any time (`node .devcontainer/agent-setup.cjs`): every step checks
+// what is already there and changes nothing that is already right. A step that
+// fails is reported and the rest still run, so a missing network or CLI never
+// fails container creation. GITNEXUS_AGENT_SETUP=off skips all of it.
+//
+// What it does, and why:
+//   1. Drops host-only entries from the seeded Codex and Claude config. A config
+//      copied from a Windows host names MCP servers, a notify program and plugin
+//      marketplaces by C:\ paths, which fail on every start in this Linux
+//      container.
+//   2. Gives Codex a working default when the container cannot create user
+//      namespaces (the usual case under Docker): its bubblewrap sandbox cannot
+//      start, so every sandboxed command fails. The container is the boundary.
+//   3. Installs the destructive-command guard as a Codex hook (codex-guard.cjs).
+//   4. Installs the side-panels mod for Claude Code and points Claude at it.
+//   5. Fetches the plugin marketplaces the seeded Codex config names, and gives
+//      Codex the plugins the person already uses in Claude Code where the same
+//      plugin ships a Codex build (compound-engineering, claude-mem).
+//   6. Gives Codex an entry skill for pr-tri-review that points at the shared one.
+'use strict';
+
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const WINDOWS_PATH = /^(?:\\\\\?\\)?[A-Za-z]:[\\/]|^\\\\/;
+
+/** The text of a TOML basic or literal string value, or undefined for anything else. */
+function tomlString(raw) {
+  const value = raw.trim();
+  if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1);
+  if (value.startsWith('"') && value.endsWith('"')) {
+    return value.slice(1, -1).replace(/\\\\/g, '\\').replace(/\\"/g, '"');
+  }
+  return undefined;
+}
+
+const isWindowsValue = (raw) => WINDOWS_PATH.test(tomlString(raw) ?? '');
+
+/** Splits TOML into the lines before the first table and the tables after it. */
+function tomlParts(text) {
+  const lines = text.split('\n');
+  const first = lines.findIndex((line) => /^\[/.test(line));
+  const preamble = first === -1 ? lines : lines.slice(0, first);
+  const tables = [];
+  for (const line of first === -1 ? [] : lines.slice(first)) {
+    const header = /^\[+([^\]]+)\]+\s*$/.exec(line);
+    if (header) tables.push({ name: header[1].trim(), lines: [line] });
+    else tables.at(-1).lines.push(line);
+  }
+  return { preamble, tables };
+}
+
+const tomlJoin = ({ preamble, tables }) =>
+  [...preamble, ...tables.flatMap((table) => table.lines)].join('\n');
+
+const valueOf = (table, key) =>
+  table.lines
+    .map((line) => new RegExp(`^${key}\\s*=\\s*(.*)$`).exec(line)?.[1])
+    .find((value) => value !== undefined);
+
+/**
+ * Removes what only works on the host the config was copied from: MCP servers
+ * started by a Windows executable, plugin marketplaces at a Windows path, and a
+ * Windows `notify` program. Everything else is kept byte for byte.
+ */
+function cleanCodexConfig(text) {
+  const parts = tomlParts(text);
+  const removed = [];
+
+  const preamble = [];
+  for (let at = 0; at < parts.preamble.length; at += 1) {
+    const line = parts.preamble[at];
+    if (!/^notify\s*=/.test(line)) {
+      preamble.push(line);
+      continue;
+    }
+    // An array value may run over several lines: take it up to its closing bracket.
+    let end = at;
+    while (!parts.preamble[end].includes(']') && end + 1 < parts.preamble.length) end += 1;
+    const value = parts.preamble.slice(at, end + 1).join('\n');
+    const program = /=\s*\[\s*("(?:[^"\\]|\\.)*"|'[^']*')/.exec(value)?.[1] ?? '';
+    if (isWindowsValue(program)) {
+      removed.push('notify');
+      at = end;
+    } else {
+      preamble.push(line);
+    }
+  }
+
+  const dead = new Set();
+  for (const table of parts.tables) {
+    const server = /^mcp_servers\.([^.]+)$/.exec(table.name)?.[1];
+    if (server !== undefined && isWindowsValue(valueOf(table, 'command') ?? '')) {
+      dead.add(`mcp_servers.${server}`);
+    }
+    const marketplace = /^marketplaces\.([^.]+)$/.exec(table.name)?.[1];
+    if (marketplace !== undefined && isWindowsValue(valueOf(table, 'source') ?? '')) {
+      dead.add(`marketplaces.${marketplace}`);
+    }
+  }
+  removed.push(...dead);
+  const tables = parts.tables.filter(
+    (table) => ![...dead].some((name) => table.name === name || table.name.startsWith(`${name}.`)),
+  );
+
+  return { text: tomlJoin({ preamble, tables }), removed };
+}
+
+const SANDBOX_DEFAULTS = [
+  '# Set by .devcontainer/agent-setup.cjs: this container cannot create user',
+  "# namespaces, so Codex's bubblewrap sandbox cannot start. The container is the",
+  '# boundary. Remove these two lines to return to the Codex defaults.',
+  'sandbox_mode = "danger-full-access"',
+  'approval_policy = "on-request"',
+];
+
+/** Adds the container defaults unless the config already chooses a sandbox mode. */
+function withSandboxDefaults(text, canSandbox) {
+  const parts = tomlParts(text);
+  if (canSandbox || parts.preamble.some((line) => /^sandbox_mode\s*=/.test(line))) return text;
+  const preamble = [...parts.preamble];
+  while (preamble.length > 0 && preamble.at(-1).trim() === '') preamble.pop();
+  const gap = preamble.length > 0 ? [''] : [];
+  return tomlJoin({
+    preamble: [...preamble, ...gap, ...SANDBOX_DEFAULTS, ''],
+    tables: parts.tables,
+  });
+}
+
+/** Registers the guard as a PreToolUse hook on Bash, after any hook already there. */
+function withGuardHook(hooks, guardPath) {
+  const command = `node '${guardPath}'`;
+  const entries = hooks?.hooks?.PreToolUse ?? [];
+  const isRegistered = entries.some((entry) =>
+    (entry.hooks ?? []).some((hook) => hook.command === command),
+  );
+  if (isRegistered) return hooks;
+  return {
+    ...hooks,
+    hooks: {
+      ...hooks?.hooks,
+      PreToolUse: [
+        ...entries,
+        {
+          matcher: 'Bash',
+          hooks: [
+            {
+              type: 'command',
+              command,
+              timeout: 10,
+              statusMessage: 'Checking for destructive commands...',
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+/** Removes MCP servers started by a Windows executable, user-level and per project. */
+function cleanClaudeMcpServers(config) {
+  const removed = [];
+  const clean = (servers) =>
+    Object.fromEntries(
+      Object.entries(servers ?? {}).filter(([name, server]) => {
+        const isDead = WINDOWS_PATH.test(String(server?.command ?? ''));
+        if (isDead) removed.push(name);
+        return !isDead;
+      }),
+    );
+  const next = { ...config };
+  if (config.mcpServers) next.mcpServers = clean(config.mcpServers);
+  if (config.projects) {
+    next.projects = Object.fromEntries(
+      Object.entries(config.projects).map(([name, project]) => [
+        name,
+        project?.mcpServers ? { ...project, mcpServers: clean(project.mcpServers) } : project,
+      ]),
+    );
+  }
+  return { config: removed.length > 0 ? next : config, removed };
+}
+
+/** Adds a mod folder to the folders Claude Code loads plugins from, once. */
+function withPluginDir(settings, dir, home = os.homedir()) {
+  const current = String(settings?.env?.CLAUDE_CODE_PLUGIN_DIRS ?? '')
+    .split(path.delimiter)
+    .filter(Boolean);
+  // Claude Code accepts `~/...` here, so a folder written that way is the same folder.
+  const absolute = (entry) => (entry.startsWith('~/') ? path.join(home, entry.slice(2)) : entry);
+  if (current.map(absolute).includes(dir)) return settings;
+  return {
+    ...settings,
+    env: { ...settings?.env, CLAUDE_CODE_PLUGIN_DIRS: [...current, dir].join(path.delimiter) },
+  };
+}
+
+// --- everything below touches the machine ---------------------------------
+
+const log = (message) => console.log(`[agent-setup] ${message}`);
+
+/** Codex's own folder: CODEX_HOME when the container sets it, else ~/.codex. */
+const codexHome = (home) => process.env.CODEX_HOME || path.join(home, '.codex');
+
+const readJson = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {});
+
+/** Writes only when the content differs, keeping one copy of the first original. */
+function writeIfChanged(file, text) {
+  const before = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : undefined;
+  if (before === text) return false;
+  if (before !== undefined && !fs.existsSync(`${file}.before-agent-setup`)) {
+    fs.writeFileSync(`${file}.before-agent-setup`, before);
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text);
+  return true;
+}
+
+const writeJsonIfChanged = (file, before, after) =>
+  after !== before && writeIfChanged(file, `${JSON.stringify(after, null, 2)}\n`);
+
+function run(command, args, timeoutMs = 180_000) {
+  // stdin is closed on purpose: `codex` waits forever on an open one.
+  const ran = spawnSync(command, args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: timeoutMs,
+  });
+  return { ok: ran.status === 0, output: `${ran.stdout ?? ''}${ran.stderr ?? ''}` };
+}
+
+function setUpCodexConfig(home) {
+  const file = path.join(codexHome(home), 'config.toml');
+  if (!fs.existsSync(file)) return log('codex config: none yet, nothing to clean');
+  const cleaned = cleanCodexConfig(fs.readFileSync(file, 'utf8'));
+  const canSandbox = run('unshare', ['-U', 'true'], 10_000).ok;
+  const changed = writeIfChanged(file, withSandboxDefaults(cleaned.text, canSandbox));
+  log(
+    `codex config: ${changed ? 'updated' : 'already right'}` +
+      (cleaned.removed.length > 0 ? `, removed host-only ${cleaned.removed.join(', ')}` : '') +
+      (canSandbox ? '' : ', sandbox unavailable here so full access with ask-on-request'),
+  );
+}
+
+function setUpCodexGuard(home) {
+  const guard = path.join(codexHome(home), 'hooks', 'guard', 'deny-destructive.cjs');
+  const source = fs.readFileSync(path.join(__dirname, 'codex-guard.cjs'), 'utf8');
+  const copied = writeIfChanged(guard, source);
+  const file = path.join(codexHome(home), 'hooks.json');
+  const before = readJson(file);
+  const registered = writeJsonIfChanged(file, before, withGuardHook(before, guard));
+  log(
+    `codex guard: ${copied || registered ? 'installed' : 'already installed'}` +
+      ' (Codex runs a new hook only after you trust it: run /hooks in codex once)',
+  );
+}
+
+function setUpClaudeMcp(home) {
+  const file = path.join(home, '.claude.json');
+  if (!fs.existsSync(file)) return log('claude mcp: no ~/.claude.json yet');
+  const before = readJson(file);
+  const cleaned = cleanClaudeMcpServers(before);
+  writeJsonIfChanged(file, before, cleaned.config);
+  log(
+    cleaned.removed.length > 0
+      ? `claude mcp: removed host-only ${cleaned.removed.join(', ')}`
+      : 'claude mcp: already right',
+  );
+}
+
+function setUpSidePanels(home) {
+  const target = path.join(home, '.claude', 'mods', 'side-panels');
+  const source = path.join(__dirname, 'agent-assets', 'side-panels');
+  let copied = 0;
+  for (const entry of fs.readdirSync(source, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const from = path.join(entry.parentPath, entry.name);
+    const to = path.join(target, path.relative(source, from));
+    const text = fs.readFileSync(from, 'utf8');
+    if (fs.existsSync(to) && fs.readFileSync(to, 'utf8') === text) continue;
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.writeFileSync(to, text);
+    copied += 1;
+  }
+  const file = path.join(home, '.claude', 'settings.json');
+  const before = readJson(file);
+  const pointed = writeJsonIfChanged(file, before, withPluginDir(before, target));
+  log(
+    `side-panels mod: ${copied > 0 ? `${copied} file(s) installed` : 'already installed'}` +
+      `${pointed ? ', added to CLAUDE_CODE_PLUGIN_DIRS' : ''} (open it with /panels)`,
+  );
+}
+
+function setUpCodexPlugins(home) {
+  if (!run('codex', ['--version'], 20_000).ok) return log('codex plugins: codex is not installed');
+  // The seeded config names Git marketplaces whose snapshots were not copied with
+  // it. Until they are fetched again `codex plugin list` fails and no plugin loads.
+  let listed = run('codex', ['plugin', 'list']);
+  if (!listed.ok && /failed to load configured marketplace snapshot/.test(listed.output)) {
+    run('codex', ['plugin', 'marketplace', 'upgrade']);
+    listed = run('codex', ['plugin', 'list']);
+    log(`codex plugins: marketplace snapshots ${listed.ok ? 'fetched again' : 'still missing'}`);
+  }
+  const enabled = Object.entries(
+    readJson(path.join(home, '.claude', 'settings.json')).enabledPlugins ?? {},
+  )
+    .filter(([, isOn]) => isOn === true)
+    .map(([id]) => id);
+  const claudeMem = path.join(home, '.claude', 'plugins', 'marketplaces', 'thedotmack');
+  const wanted = [
+    {
+      inClaude: 'compound-engineering@',
+      source: 'EveryInc/compound-engineering-plugin',
+      marketplace: 'compound-engineering-plugin',
+      plugin: 'compound-engineering@compound-engineering-plugin',
+    },
+    {
+      inClaude: 'claude-mem@',
+      // The checkout Claude Code already runs, so both tools share one version,
+      // one worker and one database. `npx claude-mem install` would also re-copy
+      // Claude's plugin and restart that worker.
+      source: claudeMem,
+      marketplace: 'claude-mem-local',
+      plugin: 'claude-mem@claude-mem-local',
+      needs: path.join(claudeMem, '.agents', 'plugins', 'marketplace.json'),
+    },
+  ].filter(
+    (one) =>
+      enabled.some((id) => id.startsWith(one.inClaude)) &&
+      (one.needs === undefined || fs.existsSync(one.needs)),
+  );
+  if (wanted.length === 0)
+    return log('codex plugins: none of your Claude plugins has a Codex build');
+
+  for (const one of wanted) {
+    if (new RegExp(`^${one.plugin}\\s+installed`, 'm').test(listed.output)) {
+      log(`codex plugins: ${one.plugin} already installed`);
+      continue;
+    }
+    let added = run('codex', ['plugin', 'marketplace', 'add', one.source]);
+    if (!added.ok && /already added from a different source/.test(added.output)) {
+      // A stale snapshot of the marketplace is in the way: replace it.
+      run('codex', ['plugin', 'marketplace', 'remove', one.marketplace]);
+      added = run('codex', ['plugin', 'marketplace', 'add', one.source]);
+    }
+    const installed = run('codex', ['plugin', 'add', one.plugin]);
+    log(
+      installed.ok
+        ? `codex plugins: installed ${one.plugin}`
+        : `codex plugins: could not install ${one.plugin}: ${(installed.output || added.output).trim().split('\n').at(-1)}`,
+    );
+  }
+}
+
+function setUpCodexSkillEntry() {
+  const workspace = path.resolve(__dirname, '..');
+  if (!fs.existsSync(path.join(workspace, '.claude', 'skills', 'pr-tri-review', 'SKILL.md')))
+    return;
+  const entry = path.join(workspace, '.agents', 'skills', 'pr-tri-review', 'SKILL.md');
+  const text = fs.readFileSync(
+    path.join(__dirname, 'agent-assets', 'codex-pr-tri-review.SKILL.md'),
+    'utf8',
+  );
+  const written = !fs.existsSync(entry) || fs.readFileSync(entry, 'utf8') !== text;
+  if (written) {
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    fs.writeFileSync(entry, text);
+  }
+  log(`codex skill entry: pr-tri-review ${written ? 'written' : 'already there'}`);
+}
+
+function main() {
+  if (process.env.GITNEXUS_AGENT_SETUP === 'off') return log('skipped (GITNEXUS_AGENT_SETUP=off)');
+  const home = os.homedir();
+  const steps = [
+    setUpCodexConfig,
+    setUpCodexGuard,
+    setUpClaudeMcp,
+    setUpSidePanels,
+    setUpCodexPlugins,
+    setUpCodexSkillEntry,
+  ];
+  let failed = 0;
+  for (const step of steps) {
+    try {
+      step(home);
+    } catch (error) {
+      failed += 1;
+      log(
+        `WARNING: ${step.name} failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  log(failed === 0 ? 'done' : `done, ${failed} step(s) failed (see above); re-run when fixed`);
+}
+
+module.exports = {
+  cleanClaudeMcpServers,
+  cleanCodexConfig,
+  withGuardHook,
+  withPluginDir,
+  withSandboxDefaults,
+};
+
+if (require.main === module) main();
