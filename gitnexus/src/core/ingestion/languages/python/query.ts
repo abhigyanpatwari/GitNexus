@@ -8,7 +8,7 @@
 import Parser from 'tree-sitter';
 import Python from 'tree-sitter-python';
 
-const PYTHON_SCOPE_QUERY = `
+export const PYTHON_SCOPE_QUERY = `
 ;; Scopes
 (module) @scope.module
 (class_definition) @scope.class
@@ -306,6 +306,46 @@ const PYTHON_SCOPE_QUERY = `
 (attribute
   object: (_) @reference.receiver
   attribute: (identifier) @reference.name) @reference.read.member
+
+(binary_operator
+  (identifier) @reference.name @reference.read.identifier)
+
+(comparison_operator
+  (identifier) @reference.name @reference.read.identifier)
+
+(boolean_operator
+  (identifier) @reference.name @reference.read.identifier)
+
+(return_statement
+  (identifier) @reference.name @reference.read.identifier)
+
+(assignment
+  right: (identifier) @reference.name @reference.read.identifier)
+
+(default_parameter
+  value: (identifier) @reference.name @reference.read.identifier)
+
+(typed_default_parameter
+  value: (identifier) @reference.name @reference.read.identifier)
+
+;; Anchor arguments under a call: class base lists use argument_list too.
+(call
+  arguments: (argument_list
+    (identifier) @reference.name @reference.read.identifier))
+
+(call
+  arguments: (argument_list
+    (keyword_argument
+      value: (identifier) @reference.name @reference.read.identifier)))
+
+(call
+  arguments: (argument_list
+    (identifier) @reference.name @reference.value-ref))
+
+(call
+  arguments: (argument_list
+    (keyword_argument
+      value: (identifier) @reference.name @reference.value-ref)))
 `;
 
 let _parser: Parser | null = null;
