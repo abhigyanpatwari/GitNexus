@@ -5,9 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 
-/** Counts captures made in this process. */
+/** Counts captures made in this process and lets one path fail on demand. */
 const captureProbe = vi.hoisted(() => ({
   calls: [] as { filePath: string; languageVersion: string | undefined }[],
+  failFor: new Set<string>(),
 }));
 vi.mock('../../../src/core/ingestion/languages/dart/captures.js', async (importOriginal) => {
   const real =
@@ -16,11 +17,13 @@ vi.mock('../../../src/core/ingestion/languages/dart/captures.js', async (importO
     ...real,
     emitDartScopeCaptures: (...args: Parameters<typeof real.emitDartScopeCaptures>) => {
       captureProbe.calls.push({ filePath: args[1], languageVersion: args[4] });
+      if (captureProbe.failFor.has(args[1])) throw new Error('capture probe failure');
       return real.emitDartScopeCaptures(...args);
     },
   };
 });
 
+import { _captureLogger } from '../../../src/core/logger.js';
 import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
 import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
 import { dartProvider } from '../../../src/core/ingestion/languages/dart.js';
@@ -149,6 +152,7 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Dart))(
   () => {
     beforeEach(() => {
       captureProbe.calls.length = 0;
+      captureProbe.failFor.clear();
     });
 
     const SENSITIVE = { kind: 'dart', packageLanguageVersionSensitive: true } as const;
@@ -296,6 +300,123 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Dart))(
         applyDartPackageLanguageVersions(files, { fileContents: new Map(Object.entries(sources)) });
         expect(captureProbe.calls).toEqual([]);
         expect(files).toEqual(before);
+      });
+
+      it.each([
+        [
+          'is missing from the pass',
+          (contents: Map<string, string>) => contents.delete('lib/param.dart'),
+        ],
+        ['is empty', (contents: Map<string, string>) => contents.set('lib/param.dart', '')],
+        [
+          'is whitespace only',
+          (contents: Map<string, string>) => contents.set('lib/param.dart', ' \n\t\n'),
+        ],
+      ] as const)('keeps the reused record of a file whose source %s', (_title, damage) => {
+        const preExtracted = reused();
+        const files = paths.map((filePath) => preExtracted.get(filePath) as ParsedFile);
+        const before = [...files];
+        const contents = new Map(Object.entries(sources));
+        damage(contents);
+        captureProbe.calls.length = 0;
+        const log = _captureLogger();
+        try {
+          expect(() =>
+            applyDartPackageLanguageVersions(files, {
+              fileContents: contents,
+              resolutionConfig: legacy,
+            }),
+          ).not.toThrow();
+          expect(log.records()).toEqual([
+            expect.objectContaining({
+              level: 40,
+              reason: 'source-unavailable',
+              count: 1,
+              relativePaths: ['lib/param.dart'],
+            }),
+          ]);
+        } finally {
+          log.restore();
+        }
+        // The readable sensitive file is still captured again.
+        expect(captureProbe.calls).toEqual([
+          { filePath: 'lib/local.dart', languageVersion: '3.0' },
+        ]);
+        expect(files.map((file, index) => file === before[index])).toEqual([
+          true,
+          true,
+          false,
+          true,
+          true,
+          true,
+          true,
+        ]);
+      });
+
+      it('logs one warning for all files whose source is unavailable', () => {
+        const preExtracted = reused();
+        const files = paths.map((filePath) => preExtracted.get(filePath) as ParsedFile);
+        const before = [...files];
+        const contents = new Map(Object.entries(sources));
+        contents.delete('lib/param.dart');
+        contents.set('lib/local.dart', '');
+        captureProbe.calls.length = 0;
+        const log = _captureLogger();
+        try {
+          expect(() =>
+            applyDartPackageLanguageVersions(files, {
+              fileContents: contents,
+              resolutionConfig: legacy,
+            }),
+          ).not.toThrow();
+          expect(log.records()).toEqual([
+            expect.objectContaining({
+              level: 40,
+              reason: 'source-unavailable',
+              count: 2,
+              relativePaths: ['lib/param.dart', 'lib/local.dart'],
+            }),
+          ]);
+        } finally {
+          log.restore();
+        }
+        expect(captureProbe.calls).toEqual([]);
+        expect(files.map((file, index) => file === before[index])).toEqual(paths.map(() => true));
+      });
+
+      it('keeps the reused record when extraction yields nothing', () => {
+        const preExtracted = reused();
+        const files = paths.map((filePath) => preExtracted.get(filePath) as ParsedFile);
+        const before = [...files];
+        captureProbe.failFor.add('lib/param.dart');
+        const log = _captureLogger();
+        try {
+          expect(() =>
+            applyDartPackageLanguageVersions(files, {
+              fileContents: new Map(Object.entries(sources)),
+              resolutionConfig: legacy,
+            }),
+          ).not.toThrow();
+          expect(log.records()).toContainEqual(
+            expect.objectContaining({
+              level: 40,
+              reason: 'extraction-failed',
+              count: 1,
+              relativePaths: ['lib/param.dart'],
+            }),
+          );
+        } finally {
+          log.restore();
+        }
+        expect(files.map((file, index) => file === before[index])).toEqual([
+          true,
+          true,
+          false,
+          true,
+          true,
+          true,
+          true,
+        ]);
       });
     });
   },
