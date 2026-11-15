@@ -40,7 +40,10 @@ import { dartArityCompatibility, dartMergeBindings, resolveDartImportTarget } fr
 import { decodeMarker } from '../../utils/heritage-marker.js';
 import { typeApplicationArguments } from '../../utils/template-arguments.js';
 import type { HeritageTypeArgumentSink } from '../../scope-resolution/utils/generic-instantiation.js';
-import { dartIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
+import {
+  dartIsGlobalNameFallbackPlausible,
+  recordDartLocalCallables,
+} from './name-fallback-visibility.js';
 import { captureDartPackageConfig, loadDartPackageConfig } from './package-config.js';
 import { dartElementTypeOf } from './interpret.js';
 import { emitDartPackageDependencies } from './package-dependencies.js';
@@ -209,6 +212,8 @@ export const dartScopeResolver: ScopeResolver = {
   populateWorkspaceReferences: (files, ctx) => {
     applyDartPackageLanguageVersions(files, ctx);
     populateDartLibraryExports(files, ctx);
+    // Last: it reads the final scopes, and its spread keeps the library facts.
+    recordDartLocalCallables(files);
   },
   moduleExports: dartModuleExports,
   namespaceExportsFromModuleExports: true,

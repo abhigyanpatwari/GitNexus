@@ -263,6 +263,36 @@ describe.skipIf(!dartAvailable)('Dart export-only names and the name fallback', 
     120000,
   );
 
+  // Same boundary for the local-callable refusal: its index of the file's
+  // scopes is read after the seal has stripped them.
+  it.each([
+    ['resident scopes', '0', 0],
+    ['disk-sealed scopes', '1', 1],
+  ])(
+    "refuses a bare call to another function's local function (%s)",
+    async (_mode, diskScopeIndex, sealCalls) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-dart-local-callable-'));
+      const store = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-dart-local-callable-store-'));
+      const seal = vi.spyOn(TransitionalScopeTree.prototype, 'seal');
+      vi.stubEnv('GITNEXUS_DISK_SCOPE_INDEX', diskScopeIndex);
+      try {
+        writeFixtureRepo(root, {
+          'a.dart': 'void f() {\n  void helper() {}\n  helper();\n}\nvoid g() { helper(); }\n',
+          'b.dart': 'void h() { helper(); }\n',
+        });
+        const result = await runPipelineFromRepo(root, () => {}, { parsedFileStorePath: store });
+        expect(seal).toHaveBeenCalledTimes(sealCalls);
+        expect(callTargets(result, 'f')).toEqual(['Function:a.dart:f.helper@1:2']);
+        expect(callTargets(result, 'g')).toEqual([]);
+        expect(callTargets(result, 'h')).toEqual([]);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(store, { recursive: true, force: true });
+      }
+    },
+    120000,
+  );
+
   it('keeps the fallback for a name an unresolved package: import of the same file brings in', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-dart-export-unresolved-'));
     try {

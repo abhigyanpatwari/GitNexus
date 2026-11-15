@@ -75,26 +75,57 @@ interface DartLocalCallables {
   readonly parents: ReadonlyMap<ScopeId, ScopeId | null>;
 }
 
-const localCallables = new WeakMap<ParsedFile, DartLocalCallables>();
+/** Carried on the ParsedFile, not keyed by its identity: disk scope mode
+ *  replaces every file by a `{ ...file, scopes: [] }` copy before the name
+ *  fallback runs, and a spread keeps a symbol-keyed property. */
+const LOCAL_CALLABLES: unique symbol = Symbol('dartLocalCallables');
+type WithLocalCallables = ParsedFile & { readonly [LOCAL_CALLABLES]?: DartLocalCallables };
 
-function dartLocalCallables(parsed: ParsedFile): DartLocalCallables {
-  let index = localCallables.get(parsed);
-  if (index === undefined) {
-    const owners = new Map<string, ScopeId>();
-    const parents = new Map<ScopeId, ScopeId | null>();
-    for (const scope of parsed.scopes) {
-      parents.set(scope.id, scope.parent);
-      if (scope.kind !== 'Function' && scope.kind !== 'Block') continue;
-      for (const bindings of scope.bindings.values()) {
-        for (const binding of bindings) {
-          if (binding.origin === 'local' && binding.def.type === 'Function') {
-            owners.set(binding.def.nodeId, scope.id);
-          }
+/** Files that never went through `recordDartLocalCallables` (direct callers of
+ *  the predicate) still have their scopes; index those once per file. */
+const residentLocalCallables = new WeakMap<ParsedFile, DartLocalCallables>();
+
+function buildDartLocalCallables(parsed: ParsedFile): DartLocalCallables {
+  const owners = new Map<string, ScopeId>();
+  const parents = new Map<ScopeId, ScopeId | null>();
+  for (const scope of parsed.scopes) {
+    parents.set(scope.id, scope.parent);
+    if (scope.kind !== 'Function' && scope.kind !== 'Block') continue;
+    for (const bindings of scope.bindings.values()) {
+      for (const binding of bindings) {
+        if (binding.origin === 'local' && binding.def.type === 'Function') {
+          owners.set(binding.def.nodeId, scope.id);
         }
       }
     }
-    index = { owners, parents };
-    localCallables.set(parsed, index);
+  }
+  return { owners, parents };
+}
+
+/**
+ * Index each file's local callables while its scopes are still resident, and
+ * carry the index on the file. Runs in the workspace-reference hook, before
+ * scope sealing can strip `scopes` from the files the fallback later sees.
+ */
+export function recordDartLocalCallables(files: ParsedFile[]): void {
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    if (file === undefined) continue;
+    const withFacts: WithLocalCallables = {
+      ...file,
+      [LOCAL_CALLABLES]: buildDartLocalCallables(file),
+    };
+    files[i] = withFacts;
+  }
+}
+
+function dartLocalCallables(parsed: ParsedFile): DartLocalCallables {
+  const recorded = (parsed as WithLocalCallables)[LOCAL_CALLABLES];
+  if (recorded !== undefined) return recorded;
+  let index = residentLocalCallables.get(parsed);
+  if (index === undefined) {
+    index = buildDartLocalCallables(parsed);
+    residentLocalCallables.set(parsed, index);
   }
   return index;
 }
