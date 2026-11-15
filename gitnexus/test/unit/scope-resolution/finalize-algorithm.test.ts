@@ -175,7 +175,14 @@ describe('finalize', () => {
           expandsWildcardTo: () => [],
         },
       );
-      expect(out.imports.get(caller.moduleScope)?.[0]?.targetDefId).toBeUndefined();
+      // The caller's import stays, unresolved: the facade does not publish `helper`.
+      expect(
+        (out.imports.get(caller.moduleScope) ?? []).map((edge) => [
+          edge.localName,
+          edge.linkStatus,
+          edge.targetDefId,
+        ]),
+      ).toEqual([['helper', 'unresolved', undefined]]);
       expect(phases).not.toContain('reexports-start');
     }
   });

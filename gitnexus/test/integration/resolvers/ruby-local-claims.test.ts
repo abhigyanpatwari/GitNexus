@@ -334,6 +334,38 @@ end
   });
 });
 
+describe('Ruby local claims: self reaches a top-level method required inside a body', () => {
+  // `require` in a method or class body is attached to that scope by
+  // `rubyImportOwningScope`; the `self` fallback still finds what it loads.
+  // `helper` has a second owner so no name guess can answer.
+  const run = useFixture('ruby-local-claims-body-require', {
+    'helpers.rb': 'def helper(x); end\n',
+    'decoy.rb': 'class Decoy\n  def helper(x); end\nend\n',
+    'svc.rb': `class InMethod
+  def require_in_method
+    require_relative 'helpers'
+    helper = 2
+    helper(1)
+  end
+end
+
+class InClassBody
+  require_relative 'helpers'
+  def require_in_class(helper)
+    helper(1)
+  end
+end
+`,
+  });
+
+  it.each([
+    ['require_in_method', ['5:4 helper']],
+    ['require_in_class', ['12:4 helper']],
+  ])('the call beside a same-named local or parameter: %s', (source, expected) => {
+    expect(callsFrom(run(), source)).toEqual(expected);
+  });
+});
+
 describe('Ruby local claims: a claim belongs to the scope node that declares the local', () => {
   const FIRST_DEF = `def first
   helper = 1

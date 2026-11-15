@@ -85,6 +85,8 @@ describe('Dart SDK constraint lower bound', () => {
     ['<=3.6.0', null],
     ['latest', null],
     ['>=3.0.0 or newer', null],
+    // pub has no `||`: `VersionConstraint.parse` rejects it as unknown text.
+    ['>=3.0.0 <3.5.0 || >=3.7.0 <4.0.0', null],
     ['^three', null],
   ] as const)('reads the language version of %j as %j', (constraint, expected) => {
     expect(dartSdkLowerBoundLanguageVersion(constraint)).toBe(expected);

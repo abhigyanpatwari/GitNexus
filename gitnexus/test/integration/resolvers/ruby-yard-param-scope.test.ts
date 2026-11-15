@@ -63,8 +63,7 @@
  * sixth suite pins that a bare `@type [T]` synthesizes no binding (the removed
  * capture bound the empty name). The last suite pins `@return` above
  * `attr_reader`: the tag types the in-class read whether the accessor is the
- * FIRST statement of the class body or follows another statement, and an
- * untyped local of the same name does not borrow that type. Explicit `target()`
+ * FIRST statement of the class body or follows another statement. Explicit `target()`
  * beside a same-named parameter lives in ruby-param-shadow-call.test.ts
  * (pre-existing behaviour, passes on main).
  */
