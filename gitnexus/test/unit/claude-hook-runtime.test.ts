@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
-import { runHook } from '../utils/hook-test-helpers.js';
+import { envWithPath, runHook } from '../utils/hook-test-helpers.js';
 
 const HOOK_DIR = path.resolve(__dirname, '../../hooks/claude');
 const PLUGIN_DIR = path.resolve(__dirname, '../../../gitnexus-claude-plugin/hooks');
@@ -135,6 +135,9 @@ describe('Claude hook literal Bash search patterns', () => {
     { command: `rg pre" middle "'suffix' src`, pattern: 'pre middle suffix' },
     { command: "rg -g '*.ts' -n 'quoted phrase' src", pattern: 'quoted phrase' },
     { command: 'rg --max-count 100 UserService src/', pattern: 'UserService' },
+    { command: 'rg --sort path UserService src/', pattern: 'UserService' },
+    { command: 'rg --sortr=modified UserService src/', pattern: 'UserService' },
+    { command: 'rg -nri -m100 UserService src/', pattern: 'UserService' },
     { command: 'grep --max-count 100 UserService src/', pattern: 'UserService' },
     { command: 'rg --after-context 100 UserService src/', pattern: 'UserService' },
     { command: 'grep --after-context 100 UserService src/', pattern: 'UserService' },
@@ -152,6 +155,82 @@ describe('Claude hook literal Bash search patterns', () => {
     { command: 'grep -e"explicit phrase" src', pattern: 'explicit phrase' },
     { command: "rg -- '-literal phrase' src", pattern: '-literal phrase' },
     { command: "grep -n -- 'quoted phrase' src", pattern: 'quoted phrase' },
+    // Valid options the query must be read past (ripgrep 14.1.1, GNU grep 3.11).
+    { command: 'rg --color=never UserService', pattern: 'UserService' },
+    { command: 'rg --color always UserService src/', pattern: 'UserService' },
+    { command: 'rg --no-heading UserService', pattern: 'UserService' },
+    { command: 'rg --json UserService', pattern: 'UserService' },
+    { command: 'rg --stats UserService', pattern: 'UserService' },
+    { command: 'rg --vimgrep UserService', pattern: 'UserService' },
+    { command: 'rg --max-columns=100 UserService', pattern: 'UserService' },
+    { command: 'rg --max-depth=3 UserService', pattern: 'UserService' },
+    { command: 'grep -rn --exclude-dir=node_modules UserService .', pattern: 'UserService' },
+    { command: 'grep --color=auto -r UserService .', pattern: 'UserService' },
+    { command: 'rg UserService --color always src/', pattern: 'UserService' },
+    { command: 'rg --heading --column --trim --no-messages UserService', pattern: 'UserService' },
+    { command: 'rg --hidden --no-ignore-vcs --pretty --debug UserService', pattern: 'UserService' },
+    { command: 'grep -r --line-buffered --no-messages UserService .', pattern: 'UserService' },
+    // A long option whose value is the next token.
+    { command: 'rg --colors match:fg:red UserService src/', pattern: 'UserService' },
+    { command: 'rg --max-columns 100 UserService src/', pattern: 'UserService' },
+    { command: 'rg --max-depth 100 UserService src/', pattern: 'UserService' },
+    { command: 'rg --max-filesize 100K UserService src/', pattern: 'UserService' },
+    { command: 'rg --type-add web:*.html UserService src/', pattern: 'UserService' },
+    { command: 'rg --type-not markdown UserService src/', pattern: 'UserService' },
+    { command: 'rg --encoding utf-8 UserService src/', pattern: 'UserService' },
+    { command: 'rg --engine default UserService src/', pattern: 'UserService' },
+    { command: 'rg --field-match-separator value UserService src/', pattern: 'UserService' },
+    { command: 'rg --context-separator value UserService src/', pattern: 'UserService' },
+    { command: 'rg --path-separator / UserService src/', pattern: 'UserService' },
+    { command: 'rg --replace value UserService src/', pattern: 'UserService' },
+    { command: 'rg --threads 100 UserService src/', pattern: 'UserService' },
+    { command: 'rg --pre command UserService src/', pattern: 'UserService' },
+    { command: 'rg --pre-glob *.pdf UserService src/', pattern: 'UserService' },
+    { command: 'rg --ignore-file .rgignore UserService src/', pattern: 'UserService' },
+    { command: 'rg --iglob *.TS UserService src/', pattern: 'UserService' },
+    { command: 'rg --dfa-size-limit 100M UserService src/', pattern: 'UserService' },
+    { command: 'rg --regex-size-limit 100M UserService src/', pattern: 'UserService' },
+    { command: 'grep -r --exclude-dir node_modules UserService .', pattern: 'UserService' },
+    { command: 'grep -r --exclude-from ignored.txt UserService .', pattern: 'UserService' },
+    { command: 'grep -r --label value UserService src/', pattern: 'UserService' },
+    { command: 'grep -r --binary-files text UserService src/', pattern: 'UserService' },
+    { command: 'grep -r --devices skip UserService src/', pattern: 'UserService' },
+    { command: 'grep --directories recurse UserService src/', pattern: 'UserService' },
+    // A bundle of short options is read letter by letter.
+    { command: 'rg -nC3 UserService', pattern: 'UserService' },
+    { command: 'rg -nA2 UserService', pattern: 'UserService' },
+    { command: 'grep -rnA 2 UserService src/', pattern: 'UserService' },
+    { command: 'rg -inm5 UserService src/', pattern: 'UserService' },
+    { command: 'rg -im 100 UserService src/', pattern: 'UserService' },
+    { command: 'grep -rim 100 UserService src/', pattern: 'UserService' },
+    { command: 'rg -ng *.ts UserService src/', pattern: 'UserService' },
+    { command: 'grep -rn5 UserService src/', pattern: 'UserService' },
+    { command: 'rg -ne UserService src/', pattern: 'UserService' },
+    { command: 'grep -rneUserService src/', pattern: 'UserService' },
+    // The two tools read some letters and long names differently.
+    { command: 'rg -r value UserService src/', pattern: 'UserService' },
+    { command: 'grep -r value UserService src/', pattern: 'value' },
+    { command: 'rg -E utf-8 UserService src/', pattern: 'UserService' },
+    { command: 'grep -E utf-8 UserService src/', pattern: 'utf-8' },
+    { command: 'rg -T markdown UserService src/', pattern: 'UserService' },
+    { command: 'grep -T markdown UserService src/', pattern: 'markdown' },
+    { command: 'rg -d 100 UserService src/', pattern: 'UserService' },
+    { command: 'grep -d recurse UserService src/', pattern: 'UserService' },
+    { command: 'grep -r -D skip UserService src/', pattern: 'UserService' },
+    { command: 'grep -r --color always UserService src/', pattern: 'always' },
+    { command: 'rg -e=UserService src/', pattern: 'UserService' },
+    { command: 'grep -e=UserService src/', pattern: '=UserService' },
+    { command: 'grep -r --max 100 UserService src/', pattern: 'UserService' },
+    { command: 'grep -r --reg=UserService src/', pattern: 'UserService' },
+    // A prefix that names one option, or two spellings of one option.
+    { command: 'grep -r --no-m UserService src/', pattern: 'UserService' },
+    { command: 'grep -r --line-n UserService src/', pattern: 'UserService' },
+    { command: 'grep -r --col UserService src/', pattern: 'UserService' },
+    // `--name=value` carries its own value, so it cannot hide the query.
+    { command: 'rg --unknown-option=value UserService src', pattern: 'UserService' },
+    { command: 'grep --unknown-option=value -r UserService src', pattern: 'UserService' },
+    { command: 'rg --glob= UserService src', pattern: 'UserService' },
+    { command: 'rg UserService - ', pattern: 'UserService' },
   ])('preserves the complete argument in $command', ({ command, pattern }) => {
     expect(loadRuntime().extractPattern('Bash', { command })).toBe(pattern);
   });
@@ -174,6 +253,35 @@ describe('Claude hook literal Bash search patterns', () => {
     'rg --max-count 100',
     'rg UserService --max-count',
     'grep UserService --max-count',
+    'rg --sort',
+    'rg --sort path',
+    'rg --unknown-option value UserService src',
+    'grep --unknown-option value UserService src',
+    // GNU grep rejects a prefix shared by several options, whatever their kind.
+    'grep -r --no UserService src/',
+    'grep -r --line UserService src/',
+    'grep -r --co UserService src/',
+    'grep -r --nu UserService src/',
+    'rg -Q value UserService src',
+    'rg -nQ value UserService src',
+    'grep -rQ value UserService src',
+    // An option of the other tool is unknown to this one.
+    'rg --exclude-dir node_modules UserService src',
+    'rg -R UserService src',
+    'rg -5 UserService src',
+    'grep --json UserService src',
+    'grep --no-heading -r UserService src',
+    // A value option at the end of the command has no value.
+    'rg UserService --color',
+    'rg UserService -nA',
+    'grep -r UserService src -rnA',
+    // Queries read from a file, and options that print without searching.
+    'rg -nf patterns.txt UserService src',
+    'grep -r --file=patterns.txt UserService src',
+    'rg -h UserService src',
+    'rg --files UserService',
+    'rg --generate man UserService',
+    'grep -V UserService src',
   ])('declines an empty, malformed, or expanded argument in %s', (command) => {
     expect(loadRuntime().extractPattern('Bash', { command })).toBeNull();
   });
@@ -225,8 +333,9 @@ describe('Claude hook package ownership', () => {
         for (const debug of ['', '1']) {
           const result = runHook(path.join(packageHooks, 'gitnexus-hook.cjs'), input, repo, {
             env: {
-              ...process.env,
-              PATH: `${bin}${path.delimiter}${process.env.PATH || ''}`,
+              ...envWithPath(
+                `${bin}${path.delimiter}${process.env.PATH || process.env.Path || ''}`,
+              ),
               NODE_PATH: otherPackageAvailable ? modules : '',
               GITNEXUS_HOME: home,
               GITNEXUS_HOOK_CLI_PATH: '',

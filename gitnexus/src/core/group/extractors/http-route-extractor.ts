@@ -61,6 +61,26 @@ RETURN callerFile.id AS fileId, callerFile.filePath AS filePath,
        route.name AS routePath, route.id AS routeId,
        r.reason AS fetchReason`;
 
+/** Parallel scans have no row order. Stabilize both output and first-wins
+ * duplicate selection using every projected contract field, before resolving. */
+function orderGraphContractRows(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  const columns = [
+    'filePath',
+    'fileId',
+    'routePath',
+    'routeMethod',
+    'routeId',
+    'handlerSymbolId',
+    'routeSource',
+    'fetchReason',
+    'responseKeys',
+  ];
+  return rows
+    .map((row) => ({ row, key: JSON.stringify(columns.map((key) => row[key] ?? null)) }))
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    .map(({ row }) => row);
+}
+
 // Function/Method/CodeElement symbols (with line spans) in a file, addressed by
 // repo-relative path so the source-scan paths — which have a path but no graph
 // `fileId` — can resolve the symbol CONTAINING an HTTP call by line-span
@@ -888,7 +908,7 @@ export class HttpRouteExtractor implements ContractExtractor {
     const fileAllResolved = new Map<string, boolean>();
     let rows: Record<string, unknown>[];
     try {
-      rows = await db(HANDLES_ROUTE_QUERY);
+      rows = orderGraphContractRows(await db(HANDLES_ROUTE_QUERY));
     } catch (err) {
       // A failure here silently disables the entire graph-assisted HTTP
       // provider path (the source-scan fallback still runs and masks most
@@ -1106,7 +1126,7 @@ export class HttpRouteExtractor implements ContractExtractor {
     const out: ExtractedContract[] = [];
     let rows: Record<string, unknown>[];
     try {
-      rows = await db(FETCHES_QUERY);
+      rows = orderGraphContractRows(await db(FETCHES_QUERY));
     } catch (err) {
       logger.debug(
         `[http-route-extractor] FETCHES query failed; graph consumers skipped: ${

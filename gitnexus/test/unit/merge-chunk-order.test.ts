@@ -8,6 +8,7 @@
  */
 import { SupportedLanguages } from 'gitnexus-shared';
 import { describe, expect, it } from 'vitest';
+import { serialize, deserialize } from 'node:v8';
 
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { ExportedTypeMap } from '../../src/core/ingestion/call-processor.js';
@@ -310,6 +311,62 @@ function arrivals(): Record<(typeof ARRIVAL_SHAPES)[number], ParseWorkerResult[]
 }
 
 describe('mergeChunkResults canonical order', () => {
+  it.each([false, true])(
+    'uses relationship origins when both files emit the same node ids (cache replay=%s)',
+    (replay) => {
+      const make = (path: string): FileParse => {
+        const parsed = fileParse(path, SupportedLanguages.Go, { declaresHealthRoute: false });
+        parsed.nodes.push({
+          id: 'shared',
+          label: 'Class',
+          properties: {
+            name: 'Shared',
+            filePath: path,
+            startLine: 0,
+            endLine: 0,
+            language: SupportedLanguages.Go,
+            isExported: true,
+          },
+        });
+        parsed.relationships.push({
+          id: 'shared-edge',
+          sourceId: 'shared',
+          targetId: 'shared',
+          originFilePath: path,
+          type: 'HAS_METHOD',
+          confidence: 1,
+          reason: path,
+        });
+        return parsed;
+      };
+      const first = make('a.go'),
+        last = make('z.go');
+      const shapes = [
+        [workerResult(last, first)],
+        [workerResult(last), workerResult(first)],
+        [workerResult(first), workerResult(last)],
+      ];
+      const winners = shapes.map((results) => {
+        const graph = createKnowledgeGraph();
+        mergeChunkResults(
+          graph,
+          recordingSymbolTable().table,
+          replay ? deserialize(serialize(results)) : results,
+        );
+        return [...graph.iterRelationships()].find((rel) => rel.id === 'shared-edge');
+      });
+      expect(winners).toEqual(
+        Array(3).fill({
+          id: 'shared-edge',
+          sourceId: 'shared',
+          targetId: 'shared',
+          type: 'HAS_METHOD',
+          confidence: 1,
+          reason: 'a.go',
+        }),
+      );
+    },
+  );
   it.each(['batched', 'twoBatches', 'perFileReversed'] as const)(
     'merges the %s arrival like the per-file arrival in path order',
     (shape) => {

@@ -252,8 +252,11 @@ describe('CONTAINING_FILES_QUERY against a real LadybugDB', () => {
     // web/min.ts. The engine returns the two rows in either order; the
     // extractor's fixed order puts the Function first.
     const winners = new Set<string>();
+    let firstContracts: unknown;
     for (let run = 0; run < 20; run++) {
       const contracts = await new HttpRouteExtractor().extract(db, repoDir, repo);
+      if (run === 0) firstContracts = contracts;
+      else expect(contracts).toEqual(firstContracts);
       const tie = contracts.find(
         (c) => c.role === 'consumer' && c.contractId === 'http::GET::/api/min',
       );

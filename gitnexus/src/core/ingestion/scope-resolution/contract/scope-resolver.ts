@@ -18,6 +18,8 @@
  *        - elementTypeOf — container element type, by subscript or accessor
  *        - collapseMemberCallsByCallerTarget — one edge per caller/target
  *        - populateNamespaceSiblings — cross-file implicit visibility
+ *        - populateImportNamespaces — a whole-namespace import published once
+ *          per namespace instead of once per importer and name
  *        - hoistTypeBindingsToModule — enable ONLY when method return
  *          types are stored on the enclosing Module scope; most
  *          languages attach them to the class scope and leave this off
@@ -506,6 +508,10 @@ export interface ScopeResolver {
 
   /** Exact local module bindings, excluding definitions owned by nested scopes. */
   readonly moduleExports?: (file: ParsedFile) => ReadonlyMap<string, SymbolDefinition>;
+  /** Use moduleExports as the authoritative namespace surface as well. */
+  readonly namespaceExportsFromModuleExports?: boolean;
+  /** Names whose failed bare-receiver lookup must produce an explicit outcome. */
+  readonly reportedUnboundReceiverNames?: ReadonlySet<string>;
 
   /** Filter local and transitive export names for wildcard imports. Opting in
    * applies the filter both to re-export closures and imported bindings. */
@@ -570,6 +576,9 @@ export interface ScopeResolver {
     incoming: readonly BindingRef[],
     scopeId: ScopeId,
   ): BindingRef[];
+  /** `mergeBindings` can merge one complete ordered bucket instead of every
+   * growing prefix, with identical precedence, deduplication and ordering. */
+  readonly mergeBindingsAreAssociative?: boolean;
 
   /**
    * Per-language arity compatibility between a callsite and a
@@ -875,12 +884,30 @@ export interface ScopeResolver {
    */
   readonly postExtractSourceTextPolicy?: 'all-files' | 'uncached-files';
 
+  /** Additional cached files whose captures depend on workspace metadata.
+   * Runs before source loading; keep this predicate free of file I/O.
+   *
+   * `preExtracted` is the reused `ParsedFile` the pass already holds for
+   * `filePath`, so a resolver can decide from a capture-time fact it recorded
+   * there (for example on `captureSideChannel`) instead of from the path
+   * alone. It is undefined when the caller cannot supply the record; answer
+   * that case conservatively. */
+  readonly requiresPostExtractSourceText?: (
+    filePath: string,
+    resolutionConfig: unknown,
+    preExtracted: ParsedFile | undefined,
+  ) => boolean;
+
   /**
    * Whether the orchestrator should run `propagateImportedReturnTypes`
    * after finalize. Default `true`. TypeScript with explicit type
    * exports may want a different propagation strategy and opt out.
    */
   readonly propagatesReturnTypesAcrossImports?: boolean;
+
+  /** Follow a simple `receiver.method()` initializer through the receiver's
+   * declared class and unique method, preserving the producer's return scope. */
+  readonly followsInstanceCallResultTypes?: boolean;
 
   /**
    * Whether the compound-receiver resolver should fall back to
@@ -1833,6 +1860,25 @@ export interface ScopeResolver {
     candidate: SymbolDefinition,
     context: { readonly callerFilePath: string },
   ) => ArityVerdict;
+
+  /**
+   * Optional hook for a language whose import statement makes a whole
+   * namespace visible. Instead of one binding per importer and name, the
+   * provider publishes each namespace ONCE in `namespaceFqnBindings` and lists
+   * the namespaces an importing scope sees in `accessibleNamespacesByScope`
+   * (with `namespaceLookupTiersByScope` for precedence), so the stored size
+   * does not grow with importers times names.
+   *
+   * Runs immediately after finalize, before the first pass that reads a
+   * binding (inheritance resolution), so every later lookup sees the imported
+   * names. `populateNamespaceSiblings` runs too late for that: heritage edges
+   * and the MRO already exist when it is called. Finalized `indexes.bindings`
+   * stays immutable.
+   */
+  readonly populateImportNamespaces?: (
+    parsedFiles: readonly ParsedFile[],
+    indexes: ScopeResolutionIndexes,
+  ) => void;
 
   /**
    * Optional post-finalize hook to complete provider-owned namespace and type

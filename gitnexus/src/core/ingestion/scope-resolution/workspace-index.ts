@@ -116,6 +116,7 @@ export function buildWorkspaceResolutionIndex(
   scopeTree?: ScopeTree,
   options?: {
     readonly stripTypePreservingDecoration?: (typeName: string) => string | undefined;
+    readonly namespaceExports?: (file: ParsedFile) => ReadonlyMap<string, SymbolDefinition>;
   },
 ): WorkspaceResolutionIndex {
   const classScopeIdByDefId = new Map<string, ScopeId>();
@@ -123,11 +124,17 @@ export function buildWorkspaceResolutionIndex(
   const moduleScopeIdByFile = new Map<string, ScopeId>();
   const exportedCallableByName = new Map<string, SymbolDefinition>();
   const declaredReturnTypeByCallableId = new Map<string, TypeRef>();
+  const namespaceExportsByFile =
+    options?.namespaceExports === undefined
+      ? undefined
+      : new Map<string, ReadonlyMap<string, SymbolDefinition>>();
   // Back-compat (no scopeTree): keep the direct Scope-object maps.
   const classScopeByDefIdDirect = scopeTree === undefined ? new Map<string, Scope>() : undefined;
   const moduleScopeByFileDirect = scopeTree === undefined ? new Map<string, Scope>() : undefined;
 
   for (const parsed of parsedFiles) {
+    if (options?.namespaceExports !== undefined)
+      namespaceExportsByFile!.set(parsed.filePath, options.namespaceExports(parsed));
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope !== undefined) {
       moduleScopeIdByFile.set(parsed.filePath, moduleScope.id);
@@ -192,5 +199,6 @@ export function buildWorkspaceResolutionIndex(
     moduleScopeByFile,
     exportedCallableByName,
     declaredReturnTypeByCallableId,
+    ...(namespaceExportsByFile === undefined ? {} : { namespaceExportsByFile }),
   };
 }

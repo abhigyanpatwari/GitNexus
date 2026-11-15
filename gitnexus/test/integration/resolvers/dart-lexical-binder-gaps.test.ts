@@ -18,8 +18,7 @@
  *     call after a top-level `for (final helper in xs)`, after a braceless
  *     loop, and after a catch in a plain function (5). `_` on an arrow
  *     closure, a for-in variable and a catch parameter is no lexical name and
- *     no receiver type: beside a field `_` its site is the field's masked
- *     read, not an untyped-binder stop (6).
+ *     no receiver type: beside a field `_` it reads the field (6).
  *
  *   - FAIL-FIRST PINS (wrong or lost on main, fixed here):
  *     5. A collection `for` or `if` element bound its variable into the
@@ -36,14 +35,11 @@
  *        local `final Other _ = Other()` still bound `_` to their type; only
  *        closure and local-function parameters skipped it. From Dart 3.7 such a
  *        `_` declares nothing, so the `Other` edge was wrong. Every `_`
- *        parameter and local now binds no type. The read reaches no field
- *        either: the body-wide field-shadow mask still counts the `_`, so
- *        beside a field `_` the site is a recorded drop. A function or method
- *        named `_` publishes no return binding, so it never answers such a read
- *        (it did: `Address _() => …` turned the `Other` edge into `Address`).
- *        As for closures, this is not version-gated: before Dart 3.7 the
- *        `Other` edge was right, so pre-3.7 sources lose it, with no recorded
- *        outcome outside a class that declares a field `_`.
+ *        parameter and local binds no type and does not shadow a field. A
+ *        function named `_` has a return type only when called; its bare value
+ *        cannot answer a receiver read. Unresolved reads record an outcome.
+ *        Explicit pre-3.7 file versions preserve the older binding behavior
+ *        (covered in dart-review-followups.test.ts).
  *
  * Every site asserts its exact CALLS edges, and every site whose outcome
  * matters asserts the exact suppression (by call site, kind included).
@@ -267,7 +263,7 @@ class Holder {
 
     it('(1) a pattern assignment in a local function and matching constants declare nothing', () => {
       expect(edgesFrom(run(), 'CALLS', 'declares_nothing.dart')).toEqual([
-        'Function:declares_nothing.dart:assignsLocal -> Method:models.dart:Address.save#0 @6:7',
+        'Function:declares_nothing.dart:assignsLocal.inner@3:2 -> Method:models.dart:Address.save#0 @6:7',
         'Function:declares_nothing.dart:ifConst -> Method:models.dart:Address.save#0 @12:7',
         'Function:declares_nothing.dart:orPattern -> Method:models.dart:Address.save#0 @21:9',
         'Function:declares_nothing.dart:swExpr -> Method:models.dart:Address.run#0 @16:74',
@@ -290,9 +286,9 @@ class Holder {
     it('(3) a block or doc comment keeps the typed parameter inside the local function or closure', () => {
       expect(edgesFrom(run(), 'CALLS', 'comments.dart')).toEqual([
         'Function:comments.dart:k2 -> Method:models.dart:Address.save#0 @7:5',
-        'Function:comments.dart:k2 -> Method:models.dart:Other.run#0 @5:7',
+        'Function:comments.dart:k2.inner@3:2 -> Method:models.dart:Other.run#0 @5:7',
         'Function:comments.dart:k3 -> Method:models.dart:Address.save#0 @16:5',
-        'Function:comments.dart:k3 -> Method:models.dart:Other.run#0 @14:7',
+        'Function:comments.dart:k3.inner@10:2 -> Method:models.dart:Other.run#0 @14:7',
         'Function:comments.dart:k4 -> Method:models.dart:Address.save#0 @23:5',
         'Function:comments.dart:k4 -> Method:models.dart:Other.run#0 @21:7',
       ]);
@@ -319,14 +315,14 @@ class Holder {
     });
 
     it('(6) `_` on an arrow closure, a for-in or a catch variable is no lexical name and no receiver type', () => {
-      expect(edgesFrom(run(), 'CALLS', 'wildcard_closures.dart')).toEqual([]);
+      expect(edgesFrom(run(), 'CALLS', 'wildcard_closures.dart')).toEqual([
+        'Method:wildcard_closures.dart:Holder.arrow#1 -> Method:models.dart:Address.save#0 @6:33',
+        'Method:wildcard_closures.dart:Holder.caught#0 -> Method:models.dart:Address.run#0 @12:34',
+        'Method:wildcard_closures.dart:Holder.forIn#1 -> Method:models.dart:Address.save#0 @9:37',
+      ]);
       expect(
         outcomesIn(run(), 'wildcard_closures.dart').filter((o) => !o.includes(' forEach ')),
-      ).toEqual([
-        '12:34 call run receiver-owned-but-unbound',
-        '6:33 call save receiver-owned-but-unbound',
-        '9:37 call save receiver-owned-but-unbound',
-      ]);
+      ).toEqual([]);
     });
   },
 );
@@ -428,8 +424,8 @@ class Init {
 
     it("inside the element, the element's own variable still stops the walk", () => {
       expect(outcomesIn(run(), 'elements.dart').filter((o) => o.includes(' save '))).toEqual([
-        `25:52 call save ${UNTYPED} scope:elements.dart#25:18-25:58:Block`,
-        `30:37 call save ${UNTYPED} scope:elements.dart#30:13-30:43:Block`,
+        `25:52 call save ${UNTYPED} scope:elements.dart#25:42-25:58:Block`,
+        `30:37 call save ${UNTYPED} scope:elements.dart#30:33-30:43:Block`,
       ]);
     });
 
@@ -440,9 +436,9 @@ class Init {
         'Function:elements_more.dart:setFor -> Method:models.dart:Address.run#0 @5:5',
       ]);
       expect(outcomesIn(run(), 'elements_more.dart')).toEqual([
-        `14:37 call save ${UNTYPED} scope:elements_more.dart#14:13-14:43:Block`,
-        `4:37 call save ${UNTYPED} scope:elements_more.dart#4:13-4:43:Block`,
-        `9:61 call save ${UNTYPED} scope:elements_more.dart#9:36-9:67:Block`,
+        `14:37 call save ${UNTYPED} scope:elements_more.dart#14:23-14:43:Block`,
+        `4:37 call save ${UNTYPED} scope:elements_more.dart#4:33-4:43:Block`,
+        `9:61 call save ${UNTYPED} scope:elements_more.dart#9:57-9:67:Block`,
       ]);
     });
 
@@ -454,9 +450,9 @@ class Init {
       ]);
       expect(outcomesIn(run(), 'initializers.dart')).toEqual([
         `11:60 call save ${UNTYPED} scope:initializers.dart#11:45-11:66:Block`,
-        `16:83 call save ${UNTYPED} scope:initializers.dart#16:55-16:89:Block`,
-        `4:45 call save ${UNTYPED} scope:initializers.dart#4:17-4:51:Block`,
-        `9:50 call save ${UNTYPED} scope:initializers.dart#9:22-9:56:Block`,
+        `16:83 call save ${UNTYPED} scope:initializers.dart#16:79-16:89:Block`,
+        `4:45 call save ${UNTYPED} scope:initializers.dart#4:41-4:51:Block`,
+        `9:50 call save ${UNTYPED} scope:initializers.dart#9:46-9:56:Block`,
       ]);
     });
   },
@@ -547,22 +543,21 @@ void topParam(Other _) {
 `,
     });
 
-    it('`_` in a method, constructor or local reaches no `Other`, and the field read stays masked', () => {
-      // Only `Plain.field`, whose body declares no `_`, reads the field.
+    it('wildcard parameters and locals do not shadow the field named `_`', () => {
       expect(edgesFrom(run(), 'CALLS', 'wildcard.dart')).toEqual([
+        'Constructor:wildcard.dart:Holder.Holder#1 -> Method:models.dart:Address.run#0 @6:6',
+        'Method:wildcard.dart:Holder.arrowParam#1 -> Method:models.dart:Address.run#0 @11:32',
+        'Method:wildcard.dart:Holder.local#0 -> Method:models.dart:Address.save#0 @14:6',
+        'Method:wildcard.dart:Holder.param#1 -> Method:models.dart:Address.save#0 @9:6',
         'Method:wildcard.dart:Plain.field#0 -> Method:models.dart:Address.run#0 @25:6',
       ]);
-      expect(outcomesIn(run(), 'wildcard.dart')).toEqual([
-        '11:32 call run receiver-owned-but-unbound',
-        '14:6 call save receiver-owned-but-unbound',
-        '6:6 call run receiver-owned-but-unbound',
-        '9:6 call save receiver-owned-but-unbound',
-      ]);
+      expect(outcomesIn(run(), 'wildcard.dart')).toEqual(['19:4 call save receiver-unresolved']);
     });
 
-    it('outside a class with a field `_`, the lost `Other` edge has no recorded outcome (pre-3.7 recall cost)', () => {
-      // `topParam`'s site is line 19: no edge above, and no outcome on that line.
-      expect(outcomesIn(run(), 'wildcard.dart').filter((o) => o.startsWith('19:'))).toEqual([]);
+    it('records an unresolved receiver outside a class with a field `_`', () => {
+      expect(outcomesIn(run(), 'wildcard.dart').filter((o) => o.startsWith('19:'))).toEqual([
+        '19:4 call save receiver-unresolved',
+      ]);
     });
 
     it('a same-file function named `_` never answers a `_` parameter, local or closure parameter', () => {
@@ -570,19 +565,27 @@ void topParam(Other _) {
       // every untyped `_` receiver in the file as `Address`.
       expect(edgesFrom(run(), 'CALLS', 'wildcard_function.dart')).toEqual([
         'Function:wildcard_function.dart:chain -> Function:wildcard_function.dart:_ @-',
+        'Function:wildcard_function.dart:chain -> Method:models.dart:Address.run#0 @28:6',
         'Function:wildcard_function.dart:control -> Method:models.dart:Other.save#0 @24:4',
       ]);
-      // The cost: a member called on the result of `_()` is a recorded drop.
       expect(
         outcomesIn(run(), 'wildcard_function.dart').filter((o) => !o.includes(' forEach ')),
-      ).toEqual(['28:6 call run receiver-unresolved']);
+      ).toEqual([
+        '11:4 call save receiver-unresolved',
+        '16:4 call save receiver-unresolved',
+        '20:31 call save receiver-unresolved',
+        '6:4 call save receiver-unresolved',
+      ]);
     });
 
     it('a method named `_` on an unrelated class never answers a `_` parameter', () => {
       expect(edgesFrom(run(), 'CALLS', 'wildcard_method.dart')).toEqual([
         'Method:wildcard_method.dart:Host.control#1 -> Method:models.dart:Other.save#0 @12:6',
       ]);
-      expect(outcomesIn(run(), 'wildcard_method.dart')).toEqual([]);
+      expect(outcomesIn(run(), 'wildcard_method.dart')).toEqual([
+        '17:4 call save receiver-unresolved',
+        '9:6 call save receiver-unresolved',
+      ]);
     });
   },
 );

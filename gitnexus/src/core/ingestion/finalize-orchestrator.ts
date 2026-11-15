@@ -247,6 +247,7 @@ function withDefaultHooks(partial: Partial<FinalizeHooks>): FinalizeHooks {
     namedImportsBindTopLevelOnly: partial.namedImportsBindTopLevelOnly === true,
     expandsWildcardTo: partial.expandsWildcardTo ?? (() => []),
     filterWildcardNames: partial.filterWildcardNames,
+    mergeBindingsAreAssociative: partial.mergeBindingsAreAssociative,
     mergeBindings:
       partial.mergeBindings ??
       ((

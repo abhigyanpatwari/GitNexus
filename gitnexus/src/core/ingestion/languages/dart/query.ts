@@ -104,6 +104,11 @@ const DART_SCOPE_QUERY = `
   (function_signature
     name: (identifier) @declaration.name) @declaration.function)
 
+(local_function_declaration
+  (lambda_expression
+    (function_signature
+      name: (identifier) @declaration.name) @declaration.function))
+
 ; ── Declarations — closure bound to a local ──────────────────────────────────
 ;
 ; var handler = (int x) => target(x);   /   var blk = (int y) { ... };
@@ -154,6 +159,10 @@ const DART_SCOPE_QUERY = `
 ; ── Declarations — constructors ──────────────────────────────────────────────
 (constructor_signature
   name: (identifier) @declaration.name) @declaration.constructor
+
+; Executable members without a declaration capture still own their body locals.
+(method_signature (operator_signature) @dart.callable-body)
+(method_signature (factory_constructor_signature) @dart.callable-body)
 
 ; ── Declarations — getters / setters (Property, like the legacy DAG) ─────────
 ; \`@dart.accessor\` is private to captures.ts: it marks the inner signature so
