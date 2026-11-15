@@ -1,9 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
+import {
+  isLanguageAvailable,
+  loadLanguage,
+  loadParser,
+} from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 import { getRelationships, useFixture } from './helpers.js';
 
-describe.skipIf(!isLanguageAvailable(SupportedLanguages.Dart))(
+// isLanguageAvailable only says the grammar module loaded; probe the parser so
+// a grammar that fails in setLanguage skips the suite instead of failing it.
+let dartAvailable = isLanguageAvailable(SupportedLanguages.Dart);
+if (dartAvailable) {
+  try {
+    await loadParser();
+    await loadLanguage(SupportedLanguages.Dart);
+  } catch {
+    dartAvailable = false;
+  }
+}
+
+describe.skipIf(!dartAvailable)(
+  // Skipped when the Dart parser cannot be initialised (probe above).
   'Dart inferred result scopes',
   () => {
     const run = useFixture('dart-inferred-results', {

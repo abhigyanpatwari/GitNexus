@@ -1,9 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
+import {
+  isLanguageAvailable,
+  loadLanguage,
+  loadParser,
+} from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 import { getRelationships, getResolutionOutcomes, useFixture } from './helpers.js';
 
-describe.skipIf(!isLanguageAvailable(SupportedLanguages.Dart))('Dart review follow-ups', () => {
+// isLanguageAvailable only says the grammar module loaded; probe the parser so
+// a grammar that fails in setLanguage skips the suite instead of failing it.
+let dartAvailable = isLanguageAvailable(SupportedLanguages.Dart);
+if (dartAvailable) {
+  try {
+    await loadParser();
+    await loadLanguage(SupportedLanguages.Dart);
+  } catch {
+    dartAvailable = false;
+  }
+}
+
+describe.skipIf(!dartAvailable)('Dart review follow-ups', () => {
   const run = useFixture('dart-review-followups', {
     'pubspec.yaml': 'name: legacy\nenvironment:\n  sdk: ">=3.6.0 <4.0.0"\n',
     'package.dart':

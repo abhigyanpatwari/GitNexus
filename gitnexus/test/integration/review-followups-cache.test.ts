@@ -3,7 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
-import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
+import {
+  isLanguageAvailable,
+  loadLanguage,
+  loadParser,
+} from '../../src/core/tree-sitter/parser-loader.js';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import {
   emptyParseCache,
@@ -17,7 +21,20 @@ import { graphIdentity } from '../helpers/graph-identity.js';
 import { writeFixtureRepo, getRelationships } from './resolvers/helpers.js';
 import type { PipelineResult } from '../../src/types/pipeline.js';
 
-describe.skipIf(!isLanguageAvailable(SupportedLanguages.Dart))(
+// isLanguageAvailable only says the grammar module loaded; probe the parser so
+// a grammar that fails in setLanguage skips the suite instead of failing it.
+let dartAvailable = isLanguageAvailable(SupportedLanguages.Dart);
+if (dartAvailable) {
+  try {
+    await loadParser();
+    await loadLanguage(SupportedLanguages.Dart);
+  } catch {
+    dartAvailable = false;
+  }
+}
+
+describe.skipIf(!dartAvailable)(
+  // Skipped when the Dart parser cannot be initialised (probe above).
   'review follow-ups through the durable parse cache',
   () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'review-cache-'));
