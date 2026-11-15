@@ -396,6 +396,14 @@ describe('CLI --limit flag E2E', () => {
     const ROWS = 5000;
     const query = `UNWIND range(1, ${ROWS}) AS i RETURN i AS n, '${'x'.repeat(60)}' AS pad ORDER BY n`;
     const args = [...CLI_SPAWN_PREFIX, 'cypher', query, '--repo', 'mini-repo'];
+    // "$0" "$@" hands the argv to the CLI untouched by shell quoting. A pipeline
+    // reports the reader's status, so the CLI's own status goes to stderr.
+    const pipeTo = (reader: string) =>
+      spawnSync(
+        'sh',
+        ['-c', `{ "$0" "$@"; echo "cli-exit=$?" >&2; } | ${reader}`, process.execPath, ...args],
+        { cwd: MINI_REPO, encoding: 'utf8', env: cliEnv(), timeout: 60_000 },
+      );
 
     it.skipIf(process.platform === 'win32')(
       'delivers the same >256 KiB result through a pipe as to a file',
@@ -409,15 +417,10 @@ describe('CLI --limit flag E2E', () => {
           timeout: 60_000,
         });
         fs.closeSync(fd);
-        // "$0" "$@" hands the argv to the CLI untouched by shell quoting.
-        const piped = spawnSync('sh', ['-c', '"$0" "$@" | cat', process.execPath, ...args], {
-          cwd: MINI_REPO,
-          encoding: 'utf8',
-          env: cliEnv(),
-          timeout: 60_000,
-        });
+        const piped = pipeTo('cat');
 
         expect(toFile.status, `stderr: ${toFile.stderr}`).toBe(0);
+        expect(piped.stderr).toContain('cli-exit=0');
         const fileText = fs.readFileSync(outFile, 'utf8');
         expect(Buffer.byteLength(fileText)).toBeGreaterThan(256 * 1024);
         expect(Buffer.byteLength(piped.stdout), `stderr: ${piped.stderr}`).toBeGreaterThan(
@@ -430,6 +433,19 @@ describe('CLI --limit flag E2E', () => {
         expect(fromFile.row_count).toBe(ROWS);
         expect(fromPipe.row_count).toBe(ROWS);
         expect(fromPipe.markdown).toBe(fromFile.markdown);
+      },
+    );
+
+    it.skipIf(process.platform === 'win32')(
+      'exits 0 without a stderr copy when the reader closes early (EPIPE)',
+      () => {
+        // The result is far larger than the pipe buffer, so the CLI is still
+        // writing when `head` exits: the next write fails with EPIPE.
+        const early = pipeTo('head -c 1');
+
+        expect(early.stdout).toHaveLength(1);
+        expect(early.stderr).toContain('cli-exit=0');
+        expect(early.stderr).not.toContain('row_count');
       },
     );
   });
