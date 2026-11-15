@@ -9,12 +9,13 @@ import type {
 import { unescapeRString } from './export-pattern.js';
 import { rBareName } from './bare-name.js';
 import { assignmentTarget, isCallee, rBoundName, rLexicalAssignedNames } from './assignment.js';
-import { rOwningPackageDir } from './namespace-imports.js';
+import { rOwningPackageDir, rRDirPrefix } from './namespace-imports.js';
 import {
   rExportPatternsIncomplete,
   rNamespaceExports,
   recordedRPackageConfig,
   type RNamespaceInfo,
+  type RPackageConfig,
 } from './package-config.js';
 import {
   canonicalizeRenameBindings,
@@ -611,6 +612,24 @@ function roxygenNamesInNamespace(
   return false;
 }
 
+/**
+ * Whether the file lies in a package directory whose `Package:` name another directory declares
+ * too. The longest matching package directory owns the file, as in `rOwningPackageDir`, but the
+ * directories of copies that lost the name are considered as well.
+ */
+function inDuplicatePackage(file: string, config: RPackageConfig | undefined): boolean {
+  if (config?.duplicatePackageDirs === undefined || config.packageDirs === undefined) return false;
+  const normalized = file.replace(/\\/g, '/');
+  let owner: string | undefined;
+  for (const dir of config.packageDirs)
+    if (
+      normalized.startsWith(rRDirPrefix(dir)) &&
+      (owner === undefined || dir.length > owner.length)
+    )
+      owner = dir;
+  return owner !== undefined && config.duplicatePackageDirs.has(owner);
+}
+
 const collision = (message: string): RenameIssue => ({ code: 'name_collision', message });
 
 const unsupported = (message: string): RenameIssue => ({
@@ -788,6 +807,13 @@ export const rRenameProvider: RenameProvider = {
     // decides which one callers reach. A definition inside a function or a block scope
     // (`test_that()`, `local()`, ...) binds only there.
     const recorded = recordedRPackageConfig(files.get(target.filePath)?.parsed);
+    // Several directories declaring one `Package:` name make `pk::fn` / `pk:::fn` ambiguous: the
+    // callers of the other copy are bound to one directory or the other, and a rename would
+    // rewrite or strand them.
+    if (inDuplicatePackage(target.filePath, recorded))
+      return ambiguous(
+        "More than one directory declares this package's Package: name; which copy a `pkg::` call reaches is not decided, so a rename could rewrite or strand calls.",
+      );
     const loadUnit = rOwningPackageDir(target.filePath, recorded);
     for (const [path, source] of files) {
       if (path === target.filePath || rOwningPackageDir(path, recorded) !== loadUnit) continue;

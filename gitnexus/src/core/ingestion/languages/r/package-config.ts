@@ -53,6 +53,13 @@ export interface RPackageConfig {
    */
   packageDirs?: ReadonlySet<string>;
   /**
+   * The directories (a subset of {@link packageDirs}) whose `Package:` name another directory
+   * declares too, winner and losing copies alike. A rename in such a package is ambiguous: which
+   * copy a `pkg::fn` qualifier reaches is not decided per caller. Optional so that hand-built
+   * configs read as "no duplicate".
+   */
+  duplicatePackageDirs?: ReadonlySet<string>;
+  /**
    * True when discovery cannot rule out an undiscovered package: a directory
    * of the main walk could not be read, or a subtree the walk skipped (below
    * the depth limit, or still queued when the directory cap stopped it) may
@@ -600,6 +607,7 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
   const packages = new Map<string, string>();
   const namespaceInfoByPackageDir = new Map<string, RNamespaceInfo>();
   const packageDirs = new Set<string>();
+  const dirsByPackageName = new Map<string, string[]>();
   // One allowance (matching work and NFA states) for every exportPattern of every package
   // found by this load, split into a sub-budget per package: the number of patterns a
   // repository carries must not multiply the per-matcher cost.
@@ -636,6 +644,7 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
             if (pkgName !== undefined && !isInstalledPackageDescription(content)) {
               const pkgDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
               packageDirs.add(pkgDir);
+              dirsByPackageName.set(pkgName, [...(dirsByPackageName.get(pkgName) ?? []), pkgDir]);
               // Same name in several directories: keep the preferred one, whatever the
               // order the walk met them in (see preferredPackageDir).
               const current = packages.get(pkgName);
@@ -720,5 +729,8 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
   ) {
     truncated = true;
   }
-  return { packages, namespaceInfoByPackageDir, packageDirs, truncated };
+  const duplicatePackageDirs = new Set<string>();
+  for (const dirs of dirsByPackageName.values())
+    if (dirs.length > 1) for (const dir of dirs) duplicatePackageDirs.add(dir);
+  return { packages, namespaceInfoByPackageDir, packageDirs, duplicatePackageDirs, truncated };
 }
