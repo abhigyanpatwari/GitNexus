@@ -200,13 +200,16 @@ describe('behavior group isolation', () => {
     expect(deps.fields.lookupFieldByOwner('unrelated', 'User')).toBeUndefined();
   });
 
-  it('Impl hooks write to types.registerImpl, never to types.registerClass', () => {
+  it('keeps an existing Class separate from a same-name Impl', () => {
     const deps = makeDeps();
     const table = createRegistrationTable(deps);
-    const def = makeDef({ nodeId: 'impl:User', type: 'Impl' });
-    table.get('Impl')!('User', def);
-    expect(deps.types.lookupImplByName('User')).toHaveLength(1);
-    expect(deps.types.lookupClassByName('User')).toHaveLength(0);
+    const classDef = makeDef({ nodeId: 'class:User', type: 'Class', qualifiedName: 'app.User' });
+    const implDef = makeDef({ nodeId: 'impl:User', type: 'Impl' });
+    table.get('Class')!('User', classDef);
+    table.get('Impl')!('User', implDef);
+    expect(deps.types.lookupClassByName('User')).toEqual([classDef]);
+    expect(deps.types.lookupClassByQualifiedName('app.User')).toEqual([classDef]);
+    expect(deps.types.lookupImplByName('User')).toEqual([implDef]);
   });
 });
 
