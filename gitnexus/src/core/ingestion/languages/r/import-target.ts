@@ -179,7 +179,8 @@ function backtickedExports(exports: ReadonlySet<string>): ReadonlySet<string> {
  * it at top level; or a defining file also holds a dotted top-level def whose
  * tail equals `importedName` (finalize would index `print.tidy` under `tidy`
  * and bind the WRONG def — the guard is order-blind, so it also refuses the
- * layout where the bare def comes first). `null` degrades the call site to the
+ * layout where the bare def comes first); or a defining file holds another undotted definition with that
+ * name (a closure-local function, a second assignment), which finalize could bind instead. `null` degrades the call site to the
  * baseline `global-name-fallback` guess. Never builds a workspace file index.
  */
 export function resolveRNamedImport(
@@ -211,6 +212,9 @@ export function resolveRNamedImport(
   if (defining.some((file) => index.files.get(file)?.dottedTails.has(importedName) === true)) {
     return null;
   }
+  // A defining file in which another definition (a closure-local function, a second assignment)
+  // carries the same name: finalize would bind the first one it meets.
+  if (defining.some((file) => index.files.get(file)?.repeated.has(symbol) === true)) return null;
   return defining;
 }
 

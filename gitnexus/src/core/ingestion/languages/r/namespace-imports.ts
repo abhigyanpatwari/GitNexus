@@ -749,13 +749,38 @@ export interface RFileTopLevel {
    * this file (the plain one too, when it is also bound). Empty for a file with no such name.
    */
   readonly writtenAs: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Symbols (backticks removed) that more than one undotted definition of the file carries: a
+   * closure-local function next to a top-level one of the same name, or a second assignment. The
+   * shared finalize pass indexes the definitions of a file by simple name and binds an imported
+   * name to whichever it meets first, so such a name cannot be bound with certainty. Dotted names
+   * (R6 members, S3 methods) are not counted: they are handled apart.
+   */
+  readonly repeated: ReadonlySet<string>;
 }
 
 const EMPTY_TOP_LEVEL: RFileTopLevel = {
   names: new Set(),
   dottedTails: new Set(),
   writtenAs: new Map(),
+  repeated: new Set(),
 };
+
+/** The symbols carried by more than one undotted definition in `parsed.localDefs`. */
+function repeatedSimpleNames(parsed: ParsedFile): ReadonlySet<string> {
+  const seen = new Set<string>();
+  const repeated = new Set<string>();
+  for (const def of parsed.localDefs) {
+    const qn = def.qualifiedName;
+    // A dotted name is a member (`Class.member`) or an S3-style name; the former is kept apart
+    // by `namedImportsBindTopLevelOnly`, the latter by the `dottedTails` guard.
+    if (qn === undefined || qn.length === 0 || qn.includes('.')) continue;
+    const symbol = rBareName(qn);
+    if (seen.has(symbol)) repeated.add(symbol);
+    else seen.add(symbol);
+  }
+  return repeated;
+}
 const topLevelCache = new WeakMap<ParsedFile, RFileTopLevel>();
 
 /**
@@ -778,7 +803,7 @@ export function rFileTopLevel(parsed: ParsedFile): RFileTopLevel {
   const cached = topLevelCache.get(parsed);
   if (cached !== undefined) return cached;
   const moduleScope = parsed.scopes.find((s) => s.id === parsed.moduleScope);
-  let result = EMPTY_TOP_LEVEL;
+  let result: RFileTopLevel = { ...EMPTY_TOP_LEVEL, repeated: repeatedSimpleNames(parsed) };
   if (moduleScope !== undefined) {
     const names = new Set<string>();
     const dottedTails = new Set<string>();
@@ -801,7 +826,7 @@ export function rFileTopLevel(parsed: ParsedFile): RFileTopLevel {
       const plain = moduleScope.bindings.get(symbol);
       if (plain !== undefined && bindsTopLevel(plain)) spellings.unshift(symbol);
     }
-    result = { names, dottedTails, writtenAs };
+    result = { names, dottedTails, writtenAs, repeated: result.repeated };
   }
   topLevelCache.set(parsed, result);
   return result;

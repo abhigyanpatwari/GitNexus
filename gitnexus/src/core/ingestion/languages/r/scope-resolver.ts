@@ -181,6 +181,11 @@ const parsedFileByModuleScope = perFileSet(
  * This reverses the earlier `load_all()` reading ("every name visible"): see
  * docs/languages/r-provider.md.
  *
+ * A name is dropped when another undotted definition of the file carries it (a closure-local
+ * function of that name, a second assignment): finalize indexes the defs by simple name and would
+ * bind the name to the first one it meets, possibly the nested one.
+ * The dropped name resolves through the lower tiers.
+ *
  * A bare name is dropped when the same file also defines a dotted top-level
  * name with that tail (`foo` next to `print.foo`). The shared finalize indexes
  * every def by the text after its last `.`, so `foo` would be bound to
@@ -196,7 +201,7 @@ export function expandRWildcardNames(
 ): readonly string[] {
   const target = parsedFileByModuleScope(parsedFiles).get(targetModuleScope);
   if (target === undefined) return [];
-  const { names: topLevel, dottedTails } = rFileTopLevel(target);
+  const { names: topLevel, dottedTails, repeated } = rFileTopLevel(target);
   const cfg = recordedRPackageConfig(target);
   const seen = new Set<string>();
   const names: string[] = [];
@@ -207,6 +212,9 @@ export function expandRWildcardNames(
     // `library()` does not bring into scope. Only module-scope bindings are top-level.
     // `topLevel` holds symbols and `qn` is the name as written, backticks included.
     if (!topLevel.has(rBareName(qn))) continue;
+    // Another definition of the file (a closure-local function, a second assignment) carries the
+    // same name, and finalize binds the name to whichever it meets first.
+    if (repeated.has(rBareName(qn))) continue;
     if (dottedTails.has(qn)) continue; // shares its tail with an S3 method: see above (as written, as finalize keys it)
     if (cfg !== undefined && rSymbolVisibility(cfg, target.filePath, rBareName(qn)) !== 'public') {
       continue; // not an export of the package (or not provably one)

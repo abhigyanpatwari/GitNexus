@@ -1032,7 +1032,7 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
   ];
   const BOUND_TARGET_FILES = [
     'legacyscore/R/l.R', // dup_fn: the later importFrom() (legacyscore) wins
-    'scorelib/R/nested.R',
+    // scorelib/R/nested.R is absent: `nest_fn` also has a closure-local definition, so no import binds.
     'scorelib/R/plain.R',
     'scorelib/R/r6.R',
     'scorelib/R/s.R',
@@ -1191,18 +1191,12 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
       expect(edgeSummaries('r6_method_only_user', 'analytics/R/r6_use.R')).toEqual([]);
     });
 
-    it('documents a known limitation: a nested function defined before the top-level one still wins the binding', () => {
-      // The named branch can only choose FILES; finalize's first-callable rule then picks the
-      // nested def. Fixing it needs an `isExported` capture (query change): out of scope here.
+    it('refuses an imported name that a closure-local function of the same file also carries', () => {
+      // finalize indexes every def of the file by simple name and binds the first it meets, which
+      // is the nested one here. The named branch refuses the name instead of binding it, so no
+      // import-resolved edge reaches the nested def (it used to, at 0.85; #115, T3).
       const edges = callEdges('nested_user', 'analytics/R/nested_use.R');
-      expect(edges.map((e) => `${e.target}:${e.targetFilePath}:${e.rel.reason}`)).toEqual([
-        'nest_fn:scorelib/R/nested.R:import-resolved',
-      ]);
-      const nestFnLines = getNodesByLabelFull(result, 'Function')
-        .filter((n) => n.name === 'nest_fn' && n.properties.filePath === 'scorelib/R/nested.R')
-        .map((n) => n.properties.startLine as number);
-      const boundLine = result.graph.getNode(edges[0].rel.targetId)?.properties.startLine;
-      expect(boundLine).toBe(Math.min(...nestFnLines));
+      expect(edges.map((e) => `${e.target}:${e.targetFilePath}:${e.rel.reason}`)).toEqual([]);
     });
   });
 
@@ -1265,8 +1259,14 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
       );
       // Qualifier flip: the qualified `legacyscore::mutate()` is no longer refused (it binds to
       // legacyscore); only the bare `mutate_user()` refusal remains. Was ['dup_ext', 'mutate', 'mutate'].
+      // `nest_fn` is the closure-local refusal (#115, T3): the import binds nothing, and the guess is vetoed.
       // `hidden_helper` is the private-name veto (scorelib's NAMESPACE does not export it).
-      expect(refused.map((o) => o.name).sort()).toEqual(['dup_ext', 'hidden_helper', 'mutate']);
+      expect(refused.map((o) => o.name).sort()).toEqual([
+        'dup_ext',
+        'hidden_helper',
+        'mutate',
+        'nest_fn',
+      ]);
     });
   });
 
