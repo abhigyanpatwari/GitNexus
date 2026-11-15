@@ -101,6 +101,41 @@ function packageName(content: string, manifestPath: string): string | null {
   }
 }
 
+/** One term of a pub version constraint: an optional comparator or caret,
+ * then `major.minor[.patch]` with optional pre-release and build suffixes.
+ * Sticky, so terms may follow each other with or without whitespace. */
+const SDK_CONSTRAINT_TERM =
+  /\s*(\^|>=|<=|>|<)?\s*(\d+)\.(\d+)(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?/y;
+
+/**
+ * `major.minor` of the lower bound of a pub SDK constraint, which is the
+ * package's default language version. Caret, `>=`, `>` and an exact version
+ * each give a lower bound, in any order and with or without whitespace; an
+ * exclusive `>X.Y.Z` uses X.Y like the inclusive forms. Null when the
+ * constraint has no lower bound (`any`, empty, upper bounds only) or is not a
+ * version constraint at all.
+ */
+export function dartSdkLowerBoundLanguageVersion(constraint: string): string | null {
+  const text = constraint.trim();
+  if (text === '' || text === 'any') return null;
+  const term = new RegExp(SDK_CONSTRAINT_TERM);
+  let major = -1;
+  let minor = -1;
+  while (term.lastIndex < text.length) {
+    const match = term.exec(text);
+    if (match === null) return null;
+    if (match[1] === '<' || match[1] === '<=') continue;
+    const termMajor = Number(match[2]);
+    const termMinor = Number(match[3]);
+    // Several lower bounds intersect: the greatest one is the lower bound.
+    if (termMajor > major || (termMajor === major && termMinor > minor)) {
+      major = termMajor;
+      minor = termMinor;
+    }
+  }
+  return major < 0 ? null : `${major}.${minor}`;
+}
+
 /** Dart selects a package's language version from its SDK lower bound. */
 function packageLanguageVersion(content: string): string | null {
   try {
@@ -108,9 +143,7 @@ function packageLanguageVersion(content: string): string | null {
       environment?: { sdk?: unknown };
     } | null;
     const sdk = manifest?.environment?.sdk;
-    if (typeof sdk !== 'string') return null;
-    const lower = /^\s*(?:\^|>=\s*)?(\d+)\.(\d+)(?:\.\d+)?(?:\s|$)/.exec(sdk);
-    return lower === null ? null : `${lower[1]}.${lower[2]}`;
+    return typeof sdk === 'string' ? dartSdkLowerBoundLanguageVersion(sdk) : null;
   } catch {
     return null;
   }
@@ -188,9 +221,12 @@ export async function captureDartPackageConfig(
     const read = await readManifestBounded(path.join(repoPath, manifestPath), maxManifestSize);
     if (read === null) continue;
     if (read.ok === false) return incomplete(read.reason, manifestPath);
+    // Every readable manifest is a language-version boundary, also one whose
+    // `name` is missing or rejected: its files must not inherit the version of
+    // an enclosing package. Null records "this package declares no version".
+    languageVersionsByDirectory.set(parent, packageLanguageVersion(read.content));
     const name = packageName(read.content, manifestPath);
     if (name === null) continue;
-    languageVersionsByDirectory.set(parent, packageLanguageVersion(read.content));
 
     const witnesses = manifestsByName.get(name) ?? [];
     witnesses.push(manifestPath);
