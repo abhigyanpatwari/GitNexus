@@ -238,7 +238,10 @@ export function runExactMatch(
   );
 
   const matched: CrossLink[] = [];
-  const matchedConsumerIds = new Set<string>();
+  // Consumers are tracked as records, not by `repo::contractId`: two consumers
+  // can share that key and still end differently, because a link consumer only
+  // matches the repo its link names.
+  const matchedConsumers = new Set<StoredContract>();
   const matchedProviderIds = new Set<string>();
 
   for (const consumer of consumers) {
@@ -273,7 +276,7 @@ export function runExactMatch(
         confidence: 1.0,
       });
 
-      matchedConsumerIds.add(`${consumer.repo}::${consumer.contractId}`);
+      matchedConsumers.add(consumer);
       matchedProviderIds.add(`${provider.repo}::${provider.contractId}`);
     }
   }
@@ -282,8 +285,8 @@ export function runExactMatch(
   const normalUnmatched = contracts.filter((c) => {
     if (isServiceWildcard(c.contractId)) return false; // excluded from exact, handled separately
     if (isNoisy(c.contractId)) return false; // excluded from matching — don't surface as unmatched
-    const id = `${c.repo}::${c.contractId}`;
-    return c.role === 'provider' ? !matchedProviderIds.has(id) : !matchedConsumerIds.has(id);
+    if (c.role !== 'provider') return !matchedConsumers.has(c);
+    return !matchedProviderIds.has(`${c.repo}::${c.contractId}`);
   });
 
   // Re-add service wildcard contracts — they were never in exact matching
@@ -301,7 +304,7 @@ export function runWildcardMatch(
     (c) => c.role === 'consumer' && isServiceWildcard(c.contractId),
   );
   const matched: CrossLink[] = [];
-  const matchedConsumerIds = new Set<string>();
+  const matchedConsumers = new Set<StoredContract>();
 
   for (const consumer of wildcardConsumers) {
     const normalized = normalizeContractId(consumer.contractId);
@@ -370,13 +373,13 @@ export function runWildcardMatch(
         matchType: 'wildcard',
         confidence: Math.min(provider.confidence, consumer.confidence),
       });
-      matchedConsumerIds.add(`${consumer.repo}::${consumer.contractId}`);
+      matchedConsumers.add(consumer);
     }
   }
 
   const remaining = unmatched.filter((c) => {
     if (c.role !== 'consumer' || !isServiceWildcard(c.contractId)) return true;
-    return !matchedConsumerIds.has(`${c.repo}::${c.contractId}`);
+    return !matchedConsumers.has(c);
   });
 
   return { matched, remaining };

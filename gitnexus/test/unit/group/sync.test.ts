@@ -1280,6 +1280,67 @@ service OrderService {
     expect(consumer?.meta).toEqual({ source: 'manifest' });
   });
 
+  it('a service-wildcard manifest link matches only the repo it names (#1188)', async () => {
+    // The wildcard pass runs on what the exact pass left over, so the declared
+    // repo has to survive from one pass to the next.
+    const login = (repo: string): StoredContract => ({
+      contractId: 'grpc::auth.AuthService/Login',
+      type: 'grpc',
+      role: 'provider',
+      symbolUid: `uid-login-${repo}`,
+      symbolRef: { filePath: 'src/auth.ts', name: 'Login' },
+      symbolName: 'Login',
+      confidence: 0.9,
+      meta: {},
+      repo,
+    });
+    const config: GroupConfig = {
+      ...makeConfig({ orders: 'orders', auth: 'auth', 'legacy-auth': 'legacy-auth' }),
+      links: [
+        {
+          from: 'orders',
+          to: 'auth',
+          type: 'grpc',
+          contract: 'auth.AuthService/*',
+          role: 'consumer',
+        },
+      ],
+    };
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => [login('auth'), login('legacy-auth')],
+      skipWrite: true,
+    });
+
+    expect(
+      result.crossLinks.filter((l) => l.matchType === 'wildcard').map((l) => l.to.repo),
+    ).toEqual(['auth']);
+  });
+
+  it('an unmatched manifest consumer is reported without the declared provider repo (#1188)', async () => {
+    const config: GroupConfig = {
+      ...makeConfig({ orders: 'orders', auth: 'auth' }),
+      links: [
+        {
+          from: 'orders',
+          to: 'auth',
+          type: 'grpc',
+          contract: 'auth.AuthService/*',
+          role: 'consumer',
+        },
+      ],
+    };
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => [],
+      skipWrite: true,
+    });
+
+    expect(result.unmatched.filter((c) => c.role === 'consumer').map((c) => c.meta)).toEqual([
+      { source: 'manifest' },
+    ]);
+  });
+
   it('extractorOverride no-DB path still produces synthetic manifest UIDs', async () => {
     const links: GroupManifestLink[] = [
       {

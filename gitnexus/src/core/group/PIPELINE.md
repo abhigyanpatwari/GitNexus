@@ -143,6 +143,11 @@ names (#1188), so a route another repo happens to share does not pick up
 an extra cross-link. `meta.providerRepo` carries the declared repo through
 matching, and sync drops it before writing the registry.
 
+This applies to every link type, so a `topic` link matches only the
+publisher it names. Two things still match across the whole group:
+consumers the extractors find in source, and the provider contract a link
+creates, which any source consumer of the same contract can match.
+
 ## Cross-impact query (PR #606)
 
 ```mermaid
