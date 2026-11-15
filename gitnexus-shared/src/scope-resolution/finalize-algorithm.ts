@@ -1906,6 +1906,22 @@ function countEdgesWithin(edgeIndex: Map<string, ImportEdgeDraft[]>, files: Set<
 
 // ─── Internal: wildcard expansion (phase 4) ────────────────────────────────
 
+/**
+ * Does an import statement's ordered filter list (`ParsedImport.nameFilters`)
+ * admit `name`? Every filter must: a `show` admits only the names it lists, a
+ * `hide` admits every name it does not list. No filters admits every name.
+ */
+export function importNameFiltersAllow(
+  filters: ParsedImport['nameFilters'],
+  name: string,
+): boolean {
+  if (filters === undefined) return true;
+  for (const filter of filters) {
+    if (filter.names.includes(name) !== (filter.kind === 'show')) return false;
+  }
+  return true;
+}
+
 function expandWildcard(
   edge: ImportEdge,
   byFilePath: Map<string, FinalizeFile>,
@@ -1923,12 +1939,21 @@ function expandWildcard(
     hooks.filterWildcardNames === undefined
       ? undefined
       : getReexportClosures(edge.targetFile).get(edge.targetFile);
-  const names =
+  const published =
     hooks.filterWildcardNames?.(
       edge.targetModuleScope,
       [...new Set([...localExportsByName(target, false).keys(), ...(targetClosure?.keys() ?? [])])],
       workspace,
     ) ?? hooks.expandsWildcardTo(edge.targetModuleScope, workspace);
+  // The statement's own name filters decide which of the target's names THIS
+  // import brings in. They are applied here, where the names of a wildcard are
+  // produced, so every binding below is one the statement admits; the target's
+  // name list stays shared by all of its importers.
+  const filters = edge.nameFilters;
+  const names =
+    filters === undefined
+      ? published
+      : published.filter((name) => importNameFiltersAllow(filters, name));
   if (names.length === 0) {
     // Resolved wildcard with zero propagating names is still a real file-
     // level dependency (e.g. a C++ header that only declares classes —
