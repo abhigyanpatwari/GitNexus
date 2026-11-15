@@ -63,6 +63,8 @@ import {
   namesAtScope,
   namespaceTypeBindingFor,
   isClassLike,
+  namespaceImportAllowsMember,
+  findClassBindingInScope,
 } from '../scope/walkers.js';
 
 /** Definition identity → its own type fact; built once, facts read lazily after propagation. */
@@ -230,6 +232,7 @@ export function namespaceCallReturnType(
   }
   const claim = lookupNameClaim(inScope, head, scopes, { position, purpose: 'value' });
   if (claim.bindings.some((binding) => binding.origin === 'local')) return undefined;
+  if (!namespaceImportAllowsMember(inScope, head, member, scopes, position)) return undefined;
   const targets = new Set<ScopeId>();
   for (const edge of claim.imports) {
     if (bindsTargetModule(edge) && edge.targetModuleScope !== undefined) {
@@ -239,6 +242,12 @@ export function namespaceCallReturnType(
   const [target] = targets;
   if (targets.size !== 1 || target === undefined) return undefined;
   const module = scopes.scopeTree.getScope(target);
+  const exports =
+    module === undefined ? undefined : scopes.namespaceExportsByFile?.get(module.filePath);
+  if (exports !== undefined) {
+    const def = exports.get(member);
+    return def === undefined ? undefined : producerTypeRef(def.nodeId, scopes);
+  }
   const returned = module?.typeBindings.get(member);
   return module !== undefined &&
     returned?.source === 'return-annotation' &&
@@ -269,19 +278,42 @@ export function qualifiedYieldAt(
   }
   const claim = lookupNameClaim(producerScope, head, scopes, { purpose: 'value' });
   if (claim.bindings.some((binding) => binding.origin === 'local')) return undefined;
+  if (!namespaceImportAllowsMember(producerScope, head, member, scopes)) return undefined;
   const targets = new Set<ScopeId>();
   for (const edge of claim.imports) {
     if (bindsTargetModule(edge) && edge.targetModuleScope !== undefined) {
       targets.add(edge.targetModuleScope);
     }
   }
-  const [target] = targets;
-  if (targets.size !== 1 || target === undefined) return undefined;
-  const declared = scopes.scopeTree
-    .getScope(target)
-    ?.bindings.get(member)
-    ?.some((binding) => binding.origin === 'local' && isClassLike(binding.def.type));
-  return declared === true ? { rawName: member, declaredAtScope: target } : undefined;
+  const candidates = new Map<string, QualifiedYield>();
+  for (const target of targets) {
+    const targetModule = scopes.scopeTree.getScope(target);
+    if (
+      targetModule === undefined ||
+      !namespaceImportAllowsMember(
+        producerScope,
+        head,
+        member,
+        scopes,
+        undefined,
+        targetModule.filePath,
+      )
+    )
+      continue;
+    const exports = scopes.namespaceExportsByFile?.get(targetModule.filePath);
+    const defs =
+      exports === undefined
+        ? (targetModule.bindings.get(member) ?? [])
+            .filter((binding) => binding.origin === 'local')
+            .map((binding) => binding.def)
+        : [exports.get(member)].filter((def): def is SymbolDefinition => def !== undefined);
+    for (const def of defs) {
+      const owner = scopes.moduleScopes.get(def.filePath);
+      if (isClassLike(def.type) && owner !== undefined)
+        candidates.set(def.nodeId, { rawName: member, declaredAtScope: owner });
+    }
+  }
+  return candidates.size === 1 ? candidates.values().next().value : undefined;
 }
 
 /** `ScopeResolver.resolveQualifiedCallee` bound to one resolution pass. */
@@ -356,7 +388,12 @@ export function followChainPostFinalize(
       // against its own imports. Stop at the call rather than hand it over.
       if (
         returned === undefined ||
-        returned.rawName.includes('.') ||
+        (returned.rawName.includes('.') &&
+          !(
+            depth === 0 &&
+            start.awaited === true &&
+            awaited?.yields(returned.declaredSpelling ?? returned.rawName) !== undefined
+          )) ||
         visited.has(returned.rawName)
       ) {
         return current;
@@ -443,6 +480,7 @@ export function propagateImportedReturnTypes(
   resolveQualifiedCallee?: ScopeResolver['resolveQualifiedCallee'],
   allFilePaths?: ReadonlySet<string>,
   elementTypeOf?: ScopeResolver['elementTypeOf'],
+  lookupOwnedMethods?: (ownerId: string, name: string) => readonly SymbolDefinition[],
 ): void {
   const moduleScopeByFile = index.moduleScopeByFile;
   // An awaited binding takes what the followed return type yields under
@@ -455,13 +493,44 @@ export function propagateImportedReturnTypes(
           resolveQualified: (spelling, producerScope) =>
             qualifiedYieldAt(spelling, producerScope, indexes),
         };
-  const resolveCallee = bindQualifiedCalleeResolver(
+  const qualifiedCallee = bindQualifiedCalleeResolver(
     resolveQualifiedCallee,
     indexes,
     index,
     parsedFiles,
     allFilePaths,
   );
+  const resolveCallee: QualifiedCalleeResolver | undefined =
+    lookupOwnedMethods === undefined
+      ? qualifiedCallee
+      : (callee, inScope, position, argumentsText) => {
+          const qualified = qualifiedCallee?.(callee, inScope, position, argumentsText);
+          if (qualified !== undefined) return qualified;
+          const [, receiver, member] = QUALIFIED_MEMBER_RE.exec(callee) ?? [];
+          if (receiver === undefined || member === undefined) return undefined;
+          const type = findReceiverTypeBinding(inScope, receiver, indexes, {
+            position,
+            purpose: 'value',
+          });
+          if (
+            type === undefined ||
+            elementTypeOf?.(type.declaredSpelling ?? type.rawName, { kind: 'await' }) !== undefined
+          )
+            return undefined;
+          const owner = findClassBindingInScope(
+            type.declaredAtScope,
+            type.rawName,
+            indexes,
+            undefined,
+            { purpose: 'type' },
+          );
+          if (owner === undefined) return undefined;
+          for (const id of [owner.nodeId, ...indexes.methodDispatch.mroFor(owner.nodeId)]) {
+            const methods = lookupOwnedMethods(id, member);
+            if (methods.length > 0) return methods.length === 1 ? methods[0] : undefined;
+          }
+          return undefined;
+        };
   const scopesByFile = new Map(parsedFiles.map((file) => [file.filePath, file.scopes]));
 
   // Walk SCCs in reverse-topological order (`indexes.sccs` is leaves-

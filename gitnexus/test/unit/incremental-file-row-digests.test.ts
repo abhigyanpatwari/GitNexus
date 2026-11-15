@@ -75,8 +75,10 @@ describe('computeFileRowDigests', () => {
   });
 
   it('counts duplicate rows, so a removed duplicate is a change', () => {
-    const twice = digests([...nodes, node('a2', 'A.java')], [edge('a', 'b'), edge('a2', 'b')]);
-    const once = digests([...nodes, node('a2', 'A.java')], [edge('a', 'b')]);
+    const row = edge('a', 'b');
+    // Distinct in-memory ids, identical persisted columns (id is not serialized).
+    const twice = digests(nodes, [row, { ...row, id: 'second-copy' }]);
+    const once = digests(nodes, [row]);
     expect(twice.get('A.java')).not.toBe(once.get('A.java'));
   });
 

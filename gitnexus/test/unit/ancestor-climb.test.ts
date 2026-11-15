@@ -7,7 +7,7 @@
  * so its climb is covered through `climbAncestors` with the same stop rule
  * shape.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import {
@@ -51,8 +51,17 @@ function climbCost(source: string): ReturnType<typeof getAncestorClimbStats> {
   const tree = parse(source);
   const memo = new Map<number, string | null>();
   resetAncestorClimbStats(true);
-  for (const call of callsOf(tree.rootNode)) climbAncestors(call, memo, NAMED_FUNCTION, null);
-  return getAncestorClimbStats();
+  const prototype = (Parser as unknown as { SyntaxNode: { prototype: SyntaxNode } }).SyntaxNode
+    .prototype;
+  const reads = vi.spyOn(prototype, 'parent', 'get');
+  try {
+    for (const call of callsOf(tree.rootNode)) climbAncestors(call, memo, NAMED_FUNCTION, null);
+    const stats = getAncestorClimbStats();
+    expect(stats.nativeParentReads).toBe(reads.mock.calls.length);
+    return stats;
+  } finally {
+    reads.mockRestore();
+  }
 }
 
 /** Independent oracle: no parent index or memo from the implementation. */
@@ -73,14 +82,14 @@ describe('enclosing-function climbs are linear in nesting depth', () => {
   it.each([8, 16, 64])('climbs %i nested closures once per ancestor', (depth) => {
     const stats = climbCost(nest(depth));
     expect(stats.climbSteps).toBe(8 * depth + 1);
-    expect(stats.nativeParentReads).toBe(Math.min(8 * depth + 1, 256));
+    expect(stats.nativeParentReads).toBe(depth < 32 ? 8 * depth + 1 : 256 + 32);
   });
 
   it('does not index a flat file for many shallow climbs', () => {
     // 300 calls, three ancestors each: more than 256 native reads, none deep.
     const stats = climbCost('function f() { g(); }\n'.repeat(300));
     expect(stats.climbSteps).toBe(900);
-    expect(stats.nativeParentReads).toBe(900);
+    expect(stats.nativeParentReads).toBe(912); // 900 reads plus three shallow depth probes
     expect(stats.indexedNodes).toBe(0);
   });
 

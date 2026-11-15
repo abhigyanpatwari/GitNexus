@@ -1952,6 +1952,8 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@import.name',
   '@import.source',
   '@import.alias',
+  '@import.exports-only',
+  '@import.name-filters',
   // Provider-set marker, not a statement anchor. Listed for the same reason as
   // its siblings: it is emitted on a sub-node of the import statement, and the
   // anchor must stay `@import.statement` regardless of relative span.
@@ -1961,6 +1963,10 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@type-binding.nullable-field',
   '@type-binding.awaited',
   '@reference.name',
+  '@reference.caller-scope',
+  '@reference.lookup-scope',
+  '@reference.lookup-purpose',
+  '@reference.receiver-chain',
   '@reference.qualified-name',
   // The generic arguments a heritage base was written with, when the emitter's
   // anchor is the bare name and cannot carry them (#2912). A sub-tag for the

@@ -27,8 +27,13 @@ Build-free: the corpus goes through the real TypeScript scope extractor and
 N files, each declaring `logger`, `router` and `config` at module level and a
 top-level `interface Options { level: number }`. small = 250 files, large =
 1000 files. The timed workload is two passes over a fresh model: the first
-registers every def, the second reconciles the same files again (what a later
+registers each owned member, the second reconciles the same files again (what a later
 language pass sees in the shared model) and must register nothing.
+
+The module values and top-level `Options` stay in file-scoped indexes; their
+owner-keyed buckets must be empty. Only `Options.level` registers here. The
+complete language-fixture graph is compared with and without the former
+ownerless entries in `test/integration/ownerless-registry-parity.test.ts`.
 
 ## Gates (`baseline.json`)
 
@@ -53,8 +58,9 @@ of the profile's samples, before it fails. The budget does not move.
 
 ## Negative control
 
-With every bucket scanned (no node-id sets), shapes and fingerprints are
-unchanged and `--check` fails on both gates:
+Restoring ownerless registration fails the exact bucket-size gate: a shared
+bucket contains one def per file instead of zero. Before ownerless removal,
+the scan-only implementation also failed these historical scaling checks:
 
 ```
 reconcile_files_scaling_ratio: 4.636740799642482 > 1.5 (min of 75 samples)

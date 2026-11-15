@@ -67,7 +67,9 @@ function scopes(matches: readonly CaptureMatch[]): Record<string, string[]> {
     if (tag === undefined) continue;
     const kind = tag === '@scope.function' ? 'Function' : 'Block';
     const raw = match['@scope.lexical-names']?.text;
-    out[`${kind} ${span(match, tag)}`] = raw === undefined ? [] : (JSON.parse(raw) as string[]);
+    const key = `${kind} ${span(match, tag)}`;
+    expect(Object.hasOwn(out, key), `duplicate scope: ${key}`).toBe(false);
+    out[key] = raw === undefined ? [] : (JSON.parse(raw) as string[]);
   }
   return out;
 }
@@ -83,6 +85,57 @@ function parameterBindings(matches: readonly CaptureMatch[]): string[] {
 }
 
 describe.skipIf(!dartAvailable)('Dart lexical names (DART-11)', () => {
+  it('gives operator and factory bodies their own binding scopes', () => {
+    const emitted = emitDartScopeCaptures(
+      `class Host {
+      Host operator +(Other operand) { var local = operand; return this; }
+      factory Host.make(Other value) { var local = value; return Host(); }
+    }`,
+      'members.dart',
+    );
+    expect(Object.values(scopes(emitted))).toEqual([
+      ['local', 'operand'],
+      ['local', 'value'],
+    ]);
+    expect(parameterBindings(emitted).map((binding) => binding.split('@')[0])).toEqual([
+      'operand:Other',
+      'value:Other',
+    ]);
+    expect(
+      emitted.filter((m) => m['@type-binding.self']).map((m) => m['@type-binding.name']?.text),
+    ).toEqual(['this']);
+  });
+  it.each([
+    'void m() { [1].forEach((x) { print(x); }); }',
+    'void m() /* comment */ { [1].forEach((x) { print(x); }); }',
+    'void m() { void inner(int x) { print(x); } }',
+    'void m() { var inner = (int x) { print(x); }; }',
+    'void m() { [1].forEach((x) { [2].forEach((y) { print(y); }); }); }',
+    'int get g { [1].forEach((x) { print(x); }); return 0; }',
+    'set s(int value) { [1].forEach((x) { print(x); }); }',
+    'final f = (int x) { print(x); };',
+    'final f = [1].map((x) { return x; });',
+  ])('static member closures have no instance receiver: %s', (member) => {
+    const emitted = emitDartScopeCaptures(
+      `class Svc extends Base { static ${member} }`,
+      'static.dart',
+    );
+    expect(Object.keys(scopes(emitted)).length).toBeGreaterThan(0);
+    expect(emitted.filter((m) => m['@type-binding.self'] !== undefined)).toEqual([]);
+  });
+
+  it.each([
+    'int get g { [1].forEach((x) { print(x); }); return 0; }',
+    'set s(int value) { [1].forEach((x) { print(x); }); }',
+    'late final f = (int x) { print(x); };',
+  ])('instance member closures retain their receivers: %s', (member) => {
+    expect(
+      emitDartScopeCaptures(`class Svc extends Base { ${member} }`, 'instance.dart')
+        .filter((m) => m['@type-binding.self'] !== undefined)
+        .map((m) => `${m['@type-binding.name']?.text}:${m['@type-binding.type']?.text}`)
+        .sort(),
+    ).toEqual(['super:Base', 'this:Svc']);
+  });
   const matches = dartAvailable ? emitDartScopeCaptures(SOURCE, 'app.dart') : [];
 
   it('every scope lists the names IT declares; closures, local functions and the catch body keep their own', () => {
@@ -104,7 +157,7 @@ describe.skipIf(!dartAvailable)('Dart lexical names (DART-11)', () => {
     });
   });
 
-  it('a closure or local function that binds nothing gets no scope: it would be transparent', () => {
+  it('an empty closure stays transparent; a named local function owns its call sites', () => {
     const source = `void run(List<dynamic> items) {
   items.forEach((x) {});
   setState(() {
@@ -114,9 +167,10 @@ describe.skipIf(!dartAvailable)('Dart lexical names (DART-11)', () => {
 }
 `;
     expect(scopes(emitDartScopeCaptures(source, 'b.dart'))).toEqual({
-      // `tick` is declared here; its own empty scope is not emitted.
+      // `tick` needs its own scope even without locals, for caller ownership.
       'Function 1:0-7:1': ['items', 'tick'],
       'Function 2:16-2:22': ['x'],
+      'Function 6:2-6:16': [],
     });
   });
 
@@ -151,12 +205,12 @@ describe.skipIf(!dartAvailable)('Dart lexical names (DART-11)', () => {
       'Function 1:0-13:1': ['a', 'b', 'items', 'o', 'pair', 'v', 'value'],
       // each statement's own pattern variables stay in its own scope
       'Block 5:4-6:12': ['first'],
-      'Block 9:2-9:35': ['inner'],
-      'Block 12:2-12:32': ['k', 'w'],
+      'Block 9:12-9:35': ['inner'],
+      'Block 12:29-12:32': ['k', 'w'],
     });
   });
 
-  it('a closure carries its own `this` only where no enclosing scope binds it: under an operator', () => {
+  it('closures inherit the receiver from method, operator and getter bodies', () => {
     const source = `class Svc {
   void m(List<int> xs) {
     xs.forEach((x) {
@@ -183,10 +237,7 @@ describe.skipIf(!dartAvailable)('Dart lexical names (DART-11)', () => {
       )
       .map((m) => span(m, '@type-binding.self'))
       .sort();
-    // The method's own binding; the operator closure's, because an operator
-    // body opens no scope of its own; and the getter's own (an accessor body
-    // opens a Function scope, DART-10), which the getter closure reads.
-    expect(thisAt).toEqual(['13:12-18:3', '2:23-6:3', '8:20-10:5']);
+    expect(thisAt).toEqual(['13:12-18:3', '2:23-6:3', '7:24-12:3']);
   });
 
   it('`_` declares nothing, and a function-typed parameter names itself, not its own parameters', () => {

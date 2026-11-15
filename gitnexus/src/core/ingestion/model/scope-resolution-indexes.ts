@@ -52,10 +52,14 @@ import type {
   ReferenceSite,
   ScopeId,
   ScopeTree,
+  SymbolDefinition,
   TypeRef,
 } from 'gitnexus-shared';
 
 export interface ScopeResolutionIndexes {
+  /** Optional authoritative namespace exports, installed when the bundle is
+   *  built, before return propagation. */
+  readonly namespaceExportsByFile?: ReadonlyMap<string, ReadonlyMap<string, SymbolDefinition>>;
   readonly scopeTree: ScopeTree;
   readonly defs: DefIndex;
   readonly qualifiedNames: QualifiedNameIndex;

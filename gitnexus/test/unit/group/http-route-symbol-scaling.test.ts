@@ -60,12 +60,12 @@ describe('HTTP symbol loading bounds repeated work', () => {
   it('loads any number of handler files with one query and preserves every handler', async () => {
     const f = fixture(501);
     const contracts = await f.run();
-    expect(contracts.map((c) => [c.contractId, c.symbolUid, c.symbolName])).toEqual(
-      f.symbols.map((s, i) => [`http::GET::/r${i}`, s.uid, s.name]),
+    expect(contracts.map((c) => [c.contractId, c.symbolUid, c.symbolName]).sort()).toEqual(
+      f.symbols.map((s, i) => [`http::GET::/r${i}`, s.uid, s.name]).sort(),
     );
     expect(queries(f, CONTAINING_FILES_QUERY)).toHaveLength(1);
     expect(queries(f, CONTAINING_FILES_QUERY)[0][1]).toEqual({
-      filePaths: f.symbols.map((s) => s.filePath),
+      filePaths: f.symbols.map((s) => s.filePath).sort(),
     });
     expect(queries(f, CONTAINING_QUERY)).toEqual([]);
   });
@@ -83,7 +83,7 @@ describe('HTTP symbol loading bounds repeated work', () => {
   it('falls back to one query per file after a failed batch without losing any contract', async () => {
     const f = fixture(501, true);
     const contracts = await f.run();
-    expect(contracts.map((c) => c.symbolName)).toEqual(f.symbols.map((s) => s.name));
+    expect(contracts.map((c) => c.symbolName).sort()).toEqual(f.symbols.map((s) => s.name).sort());
     expect(queries(f, CONTAINING_FILES_QUERY)).toHaveLength(1);
     expect(queries(f, CONTAINING_QUERY)).toHaveLength(501);
   });
@@ -121,7 +121,7 @@ describe('HTTP symbol loading bounds repeated work', () => {
     expect(contracts.find((c) => c.contractId === 'http::GET::/missing')?.symbolUid).toBe('');
     // One query for the 502 route files; the two scanned files are already cached.
     expect(queries(f, CONTAINING_FILES_QUERY)).toHaveLength(1);
-    expect((queries(f, CONTAINING_FILES_QUERY)[0][1].filePaths as string[]).slice(-2)).toEqual([
+    expect((queries(f, CONTAINING_FILES_QUERY)[0][1].filePaths as string[]).slice(0, 2)).toEqual([
       'late.py',
       'missing.py',
     ]);

@@ -174,7 +174,11 @@ describe('wildcard imports', () => {
       '@import.name': capture('*'),
     } as CaptureMatch);
 
-    expect(parsed).toEqual({ kind: 'wildcard', targetRaw: 'com.example.Utils' });
+    expect(parsed).toEqual({
+      kind: 'wildcard',
+      targetRaw: 'com.example.Utils',
+      reexportsName: false,
+    });
     if (parsed === null || parsed.targetRaw === null) throw new Error('import was not interpreted');
     expect(resolveJavaModule(parsed.targetRaw, index)).toBe('src/main/java/com/example/Utils.java');
     expect(resolveJavaModule('com.example.Utils.*', index)).toEqual([

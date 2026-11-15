@@ -40,11 +40,22 @@ import { dartArityCompatibility, dartMergeBindings, resolveDartImportTarget } fr
 import { decodeMarker } from '../../utils/heritage-marker.js';
 import { typeApplicationArguments } from '../../utils/template-arguments.js';
 import type { HeritageTypeArgumentSink } from '../../scope-resolution/utils/generic-instantiation.js';
-import { expandDartWildcardNames } from './expand-wildcards.js';
-import { dartIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
+import {
+  dartIsGlobalNameFallbackPlausible,
+  recordDartLocalCallables,
+} from './name-fallback-visibility.js';
 import { captureDartPackageConfig, loadDartPackageConfig } from './package-config.js';
 import { dartElementTypeOf } from './interpret.js';
 import { emitDartPackageDependencies } from './package-dependencies.js';
+import {
+  dartModuleExports,
+  populateDartImportNamespaces,
+  populateDartLibraryExports,
+} from './library-exports.js';
+import {
+  applyDartPackageLanguageVersions,
+  requiresDartPackageSource,
+} from './package-language-version.js';
 
 interface ClassDefRef {
   readonly graphId: string;
@@ -198,6 +209,16 @@ function buildDartMro(
 }
 
 export const dartScopeResolver: ScopeResolver = {
+  populateWorkspaceReferences: (files, ctx) => {
+    applyDartPackageLanguageVersions(files, ctx);
+    populateDartLibraryExports(files, ctx);
+    // Last: it reads the final scopes, and its spread keeps the library facts.
+    recordDartLocalCallables(files);
+  },
+  moduleExports: dartModuleExports,
+  namespaceExportsFromModuleExports: true,
+  followsInstanceCallResultTypes: true,
+  reportedUnboundReceiverNames: new Set(['_']),
   language: SupportedLanguages.Dart,
   languageProvider: dartProvider,
   importEdgeReason: 'dart-scope: import',
@@ -206,6 +227,7 @@ export const dartScopeResolver: ScopeResolver = {
   captureResolutionConfig: captureDartPackageConfig,
   // Package dependencies use cached ParsedFile facts, never raw source text.
   postExtractSourceTextPolicy: 'uncached-files',
+  requiresPostExtractSourceText: requiresDartPackageSource,
   emitPostResolutionEdges: (graph, parsedFiles, _nodeLookup, _indexes, ctx) =>
     emitDartPackageDependencies(graph, parsedFiles, ctx.resolutionConfig),
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
@@ -213,14 +235,18 @@ export const dartScopeResolver: ScopeResolver = {
 
   isNamespaceImport: (parsedImport) => parsedImport.kind === 'namespace',
 
-  // Dart `import` is whole-library: every public top-level symbol of the
-  // target enters scope. Enumerating them lets `propagateImportedReturnTypes`
-  // mirror imported functions' return types into the importer.
-  expandsWildcardTo: (targetModuleScope, parsedFiles) =>
-    expandDartWildcardNames(targetModuleScope, parsedFiles),
+  // Dart `import` is whole-library: every name of the target's public export
+  // closure enters scope, less what the directive's `show` / `hide` removes.
+  // Those names are NOT expanded per importer (no `expandsWildcardTo`): each
+  // library's namespace is published once in the shared per-namespace binding
+  // channel and every importing file lists the namespaces it sees, so the
+  // wildcard import stays one edge per directive. An imported callable's
+  // return type is read from the declaration the binding names.
+  populateImportNamespaces: populateDartImportNamespaces,
 
   // Dart shadowing: local declarations hide imports.
   mergeBindings: (existing, incoming) => [...dartMergeBindings([...existing, ...incoming])],
+  mergeBindingsAreAssociative: true,
 
   // Adapter: dartArityCompatibility uses (def, callsite); contract is (callsite, def).
   arityCompatibility: (callsite, def) => dartArityCompatibility(def, callsite),

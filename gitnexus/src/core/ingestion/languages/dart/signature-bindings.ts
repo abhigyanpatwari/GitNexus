@@ -9,6 +9,8 @@
  *     declaration node and carries the function name → return type; the
  *     `bindingScopeFor` hook hoists it to the Module scope so callers (and
  *     `propagateImportedReturnTypes`) see `var u = getUser(); u.m()` resolve.
+ *     A LOCAL function's return type stays in the scope that declares the
+ *     function, the only place its name is visible.
  *     An awaitable return (`Future<T>` / `FutureOr<T>`) is carried WHOLE —
  *     see `awaitableReturnSpelling`.
  *
@@ -18,6 +20,7 @@
 
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import type { CaptureMatch } from 'gitnexus-shared';
+import { dartUsesWildcardVariables } from './language-version.js';
 import type { ParameterInfo } from '../../method-types.js';
 import {
   dartMethodConfig,
@@ -89,10 +92,13 @@ export function synthesizeDartSignatureBindings(
     for (const p of params) {
       // `_` declares nothing (Dart 3.7 wildcard variables), the same rule as
       // `synthesizeDartParameterBindings` below, so this parameter types no
-      // `_` read. A field named `_` stays masked for the body
-      // (`collectDartBodyShadows` still counts the parameter), so such a read
-      // is a recorded drop, not an edge to the field's class.
-      if (p.type === null || p.name === '' || p.name === '_') continue;
+      // `_` read. A field named `_` remains visible in wildcard language versions.
+      if (
+        p.type === null ||
+        p.name === '' ||
+        (p.name === '_' && dartUsesWildcardVariables(declNode))
+      )
+        continue;
       out.push(buildBindingMatch(bodyNode, '@type-binding.parameter', p.name, p.type));
     }
   }
@@ -135,9 +141,10 @@ export function synthesizeDartSignatureBindings(
  *
  * `paramOwner` is the `function_expression` for a closure, whose
  * `formal_parameter_list` is a direct child, or the `function_signature` of a
- * local function. No return binding: `dartBindingScopeFor` hoists every
- * `@type-binding.return` to the Module scope, which would publish a local
- * function's return type file-wide.
+ * local function. No return binding: a closure declares no return type, and a
+ * local function's is published with its declaration
+ * (`synthesizeDartSignatureBindings`), which `dartBindingScopeFor` keeps in the
+ * declaring scope instead of hoisting it file-wide.
  */
 export function synthesizeDartParameterBindings(
   paramOwner: SyntaxNode,
@@ -161,7 +168,13 @@ export function synthesizeDartParameterBindings(
     // reports `<unknown>` with no type; both guards skip it. A parameter named
     // `_` declares nothing (Dart 3.7 wildcard variables), so `_` inside the
     // body is whatever an enclosing scope calls `_`, never this parameter.
-    if (p.type === null || p.name === '' || p.name === '<unknown>' || p.name === '_') continue;
+    if (
+      p.type === null ||
+      p.name === '' ||
+      p.name === '<unknown>' ||
+      (p.name === '_' && dartUsesWildcardVariables(paramOwner))
+    )
+      continue;
     out.push(buildBindingMatch(bodyNode, '@type-binding.parameter', p.name, p.type));
   }
   return out;
