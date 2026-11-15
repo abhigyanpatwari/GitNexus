@@ -36,6 +36,7 @@ import { EMBEDDING_TEXT_VERSION } from './embedding-pipeline.js';
 import { embeddingJobIdentity } from './embedding-job-identity.js';
 import { resolveEmbeddingIdentity, type EmbeddingIdentity } from './embedding-identity.js';
 import { resolveEmbeddingConfig } from './config.js';
+import { httpEmbeddingConcurrency } from './http-client.js';
 import {
   createEmbeddingWorkManifest,
   loadEmbeddingWorkManifest,
@@ -232,6 +233,7 @@ export async function runPublishedEmbeddingJob(
     const result = {
       bufferPoolBytes: Math.floor(resources.vectorPoolBytes / (hasFallback ? 2 : 1)),
       threads: resources.nativeThreads,
+      indexThreads: resources.indexThreads,
       batchBytes: Math.min(resources.queueBytes, 8 * 1024 * 1024),
     };
     if (result.bufferPoolBytes < 8 * 1024 * 1024 || result.batchBytes < vector.dimensions * 16)
@@ -545,6 +547,8 @@ export async function runPublishedEmbeddingJob(
         fetch: async (label, ids) => (await getSource()).fetch(label, ids),
       },
       provider,
+      providerConcurrency:
+        vector.provider === 'local' || dependencies.provider ? 1 : httpEmbeddingConcurrency(),
       initializeProvider,
       signal,
       onProgress: options.onProgress,

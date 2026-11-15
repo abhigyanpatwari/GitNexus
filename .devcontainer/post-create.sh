@@ -3,8 +3,8 @@
 # created. devcontainer.json wires it up via `postCreateCommand`. Workspace
 # dependencies are installed elsewhere, in install-deps.sh (`updateContentCommand`).
 # That script runs BEFORE this one — that is the order the devcontainer spec
-# defines. This script prepares AI CLI binaries and syncs configuration from
-# the host into the container's own volumes.
+# defines. This script prepares AI CLI binaries and seeds configuration from
+# the read-only Linux snapshot at /host into writable container volumes.
 
 set -euo pipefail
 
@@ -76,7 +76,7 @@ done
 # or overwriting a working standalone installation already in that volume.
 bash "$SCRIPT_DIR/seed-codex.sh"
 
-echo "[post-create] 2/4: sync AI CLI credentials + identity from host"
+echo "[post-create] 2/4: seed missing AI CLI credentials from the Linux snapshot"
 # Clean up after an older devcontainer design (Option B). Back then these paths
 # were symlinks pointing into the read-only host stage
 # (e.g. /home/node/.claude/plugins -> /host/.claude/plugins). A write through
@@ -110,19 +110,35 @@ mkdir -p /home/node/.claude/plugins /home/node/.cursor/plugins
 #   - the plugin registry JSONs that contain absolute paths (Claude + Cursor).
 #     Those are translated below.
 #
-# How the sync behaves: it ALWAYS overwrites from the host when the container is
-# created. A fresh container then starts logged in as the host's user, if the
-# host had credentials. From that point the container manages its own login,
-# until the next rebuild copies the host files again. Logging out inside the
-# container does NOT log out the host. Per-container login is the goal, and
-# bind-mounting these files would instead make a logout shared between both.
+# Seed once from /host, a Linux volume snapshot. Never replace an existing
+# login or configuration with an older snapshot. Completion markers also keep
+# a deliberate logout (deleted credential file) intact on the next rebuild.
+
+# initialize-volumes.cjs writes this marker only after a complete snapshot; a
+# failed snapshot is left empty without it. Seeding from an empty /host copies
+# nothing, so the one-shot completion markers are published only from a
+# complete snapshot — otherwise the next rebuild could never seed it.
+SNAPSHOT_MARKER=${SNAPSHOT_MARKER:-/host/.devcontainer-snapshot-v1}
+[ -f "$SNAPSHOT_MARKER" ] || \
+    echo "[post-create]   WARNING: /host snapshot is incomplete; seeding will retry on the next rebuild"
+
+mark_seeded() {
+    # mark_seeded <marker-name> <dir>...: record a completed seed in each dir.
+    local name=$1
+    shift
+    [ -f "$SNAPSHOT_MARKER" ] || return 0
+    local dir
+    for dir in "$@"; do
+        touch "$dir/$name"
+    done
+}
 
 sync_from_host() {
     local src=$1
     local dst=$2
     local mode=${3:-600}
-    if [ -f "$src" ]; then
-        rm -f "$dst"
+    if [ ! -f "$(dirname "$dst")/.devcontainer-identity-seeded" ] && \
+       [ ! -e "$dst" ] && [ ! -L "$dst" ] && [ -f "$src" ]; then
         cp "$src" "$dst"
         chmod "$mode" "$dst"
     fi
@@ -139,8 +155,7 @@ sync_from_host \
 # different filesystems. Apps save a config by writing a temp file and renaming
 # it over the real one, and that rename fails across filesystems (the "EXDEV" or
 # "Device or resource busy" error). So copy the host's version into the named
-# volume when the container is created. The container can then rewrite it freely
-# until the next rebuild copies the host version again.
+# volume when first initialized. Later rebuilds preserve the container's copy.
 sync_from_host /host/.claude/settings.json /home/node/.claude/settings.json 644
 sync_from_host /host/.codex/config.toml   /home/node/.codex/config.toml   644
 
@@ -186,6 +201,9 @@ sync_from_host \
 sync_from_host /host/.config/gh/hosts.yml  /home/node/.config/gh/hosts.yml
 sync_from_host /host/.config/gh/config.yml /home/node/.config/gh/config.yml 644
 
+mark_seeded .devcontainer-identity-seeded \
+    /home/node/.claude /home/node/.codex /home/node/.cursor /home/node/.config/gh
+
 echo "[post-create] 3/4: seed shareable config dirs from host (first create only)"
 # The shareable dirs (Claude skills/agents/memory/commands/plugins; Codex
 # plugins/prompts/memories/skills; Cursor rules/commands/agents/skills/plugins)
@@ -204,7 +222,8 @@ echo "[post-create] 3/4: seed shareable config dirs from host (first create only
 # On the first container-create the marker is absent, so we copy; on every later
 # rebuild the marker is present, so we skip and keep whatever the container has
 # accumulated. Host edits made AFTER the first create do NOT reach the container
-# until you remove the config volume and rebuild (see README § Rebuild/reset).
+# unless you explicitly refresh the snapshot and reset the config volume
+# (see README § Rebuild/reset).
 seed_shareable() {
     # seed_shareable <cli> <subdir>...: copy each /host/.<cli>/<subdir> into the
     # named volume, once. Skips a subdir the host doesn't have. We use `cp -r`,
@@ -261,9 +280,8 @@ fi
 # re-runs the whole seed+translate. The cost is re-copying an already-copied CLI
 # on retry; `cp -r` overwrites in place, so that is idempotent and cheap relative
 # to a broken plugin registry.
-for cli in claude codex cursor; do
-    touch "/home/node/.$cli/.devcontainer-shareable-seeded"
-done
+mark_seeded .devcontainer-shareable-seeded \
+    /home/node/.claude /home/node/.codex /home/node/.cursor
 
 echo "[post-create] 4/4: seed claude-mem store from host (first create only)"
 # claude-mem keeps its memory in $HOME/.claude-mem — a SQLite DB (claude-mem.db

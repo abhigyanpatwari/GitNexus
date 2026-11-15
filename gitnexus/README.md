@@ -461,10 +461,19 @@ export GITNEXUS_EMBEDDING_API_KEY=your-key   # optional, default: "unused"
 export GITNEXUS_EMBEDDING_MAX_ATTEMPTS=3     # optional, total attempts (1-20)
 export GITNEXUS_EMBEDDING_RETRY_CAP_MS=5000  # optional, maximum retry delay
 export GITNEXUS_EMBEDDING_MIN_INTERVAL_MS=0  # optional, minimum request spacing
+export GITNEXUS_EMBEDDING_CONCURRENCY=4      # optional, requests in flight at once (1-64); 1 = serial
 export GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS=180000 # optional, per-request timeout (max 300000)
 export GITNEXUS_EMBEDDING_MAX_INPUT_CHARS=4096 # optional, final generated input budget (minimum 2)
 gitnexus analyze . --embeddings
 ```
+
+HTTP providers now default to four concurrent requests; local models and injected
+providers stay serial. For strictly serial or rate-limited endpoints, set
+`GITNEXUS_EMBEDDING_CONCURRENCY=1` to restore serial requests, or use
+`GITNEXUS_EMBEDDING_MIN_INTERVAL_MS` to pace request starts. Concurrent retries
+can exhaust their attempt budget on `429` responses even when serial requests
+succeed. The window holds at most 256 rows: with the default sub-batch size of 8,
+values above 32 do not increase concurrency. Byte limits can reduce it further.
 
 The input budget includes generated headers and context. Longer inputs are split
 without truncating their text. It counts UTF-16 characters, not model tokens;
@@ -510,6 +519,20 @@ Packages with more than 500 files are a separate, fixed limit: they are skipped
 entirely (logged as `skipping package with N files`) and every file in them is
 marked visibility-incomplete. `GITNEXUS_MAX_INJECTED_SIBLINGS` does not lift
 that skip — including at `0`.
+
+## Wildcard Import Storage
+
+For Java, an on-demand import (`import pkg.*;`) is stored once per statement
+and once per package, not once per importing file and package file. This
+changes memory use only; the graph is the same. Set
+`GITNEXUS_DISABLE_IMPORT_GROUPS=1` to store one import edge per imported file
+again, for example to compare memory or to rule the grouped form out while
+investigating a result.
+
+```bash
+export GITNEXUS_DISABLE_IMPORT_GROUPS=1
+gitnexus analyze . --force
+```
 
 ## Multi-Repo Support
 
@@ -625,6 +648,8 @@ when opted out:
 
 Eval harnesses running a global install can set `GITNEXUS_NO_UPDATE_NOTIFIER`
 for a quiet registry.
+
+Small edits, deletions and renames use selective graph writes. To limit native storage growth, analysis periodically compacts the graph: after 16 incremental writes, excessive file growth, or an old/new source-file footprint reaching the larger of 2,000 graph rows or 5% of the graph. Compaction reuses the parse cache and preserves compatible embeddings. An older index establishes its size baseline with one fresh build.
 
 ## Troubleshooting
 
@@ -779,7 +804,7 @@ Configure the behavior with these environment variables:
 | `GITNEXUS_STREAM_GRAPH_EMIT`                 | `0`, `1`                       | `1` (on)                                           | **On by default** on a full rebuild (`--force`); incremental runs ignore it. Holds structural relationships (CALLS, IMPORTS, ACCESSES, CONTAINS, ...) as CSV-on-disk plus compact in-memory columns instead of as objects in three overlapping indexes, cutting peak in-memory graph heap by ~1.4x at no measurable CPU cost (measured A/B on a synthetic 400k-node / 1.08M-edge graph: 819 MB -> 584 MB, iteration at parity, scaling verified linear from 100k to 800k nodes, with every edge still visible through the graph interface; no end-to-end measurement on a real repository yet). Nothing is traded away — community detection, process extraction, PDG taint summaries and the local-symbol pruner all read a complete relationship set and behave identically. Set to `0` only to bisect a suspected streaming-related fault. |
 | `GITNEXUS_COMMUNITY_ENGINE`                  | `graphology`, `icebug`, `auto` | `graphology`                                       | Community-detection engine used during analyze. `graphology` is the supported default. `icebug` and `auto` are **experimental** and currently behave identically: both try the optional `@ladybugmem/icebug` native Leiden over a CSR export and fall back to Graphology if it is not installed, cannot load, or lacks the deterministic thread/seed controls. Experimental engines partition differently, so community IDs are not comparable across engines.                                                                                                                                                                                                                                                                                                                                                                                |
 | `GITNEXUS_WAL_CHECKPOINT_THRESHOLD`          | integer `>= -1`                | `67108864` (64 MiB)                                | LadybugDB WAL auto-checkpoint threshold during analyze (bytes). Auto-checkpoint remains enabled; `-1` keeps Ladybug's stock ~16 MiB. Larger thresholds reduce checkpoint frequency but increase the WAL size at rotation time — choose a smaller value on disk-constrained environments.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `GITNEXUS_LBUG_BUFFER_POOL_SIZE`             | integer `>= 0` (bytes)         | min(2 GiB, 80% RAM)                                | Native buffer-pool ceiling in bytes. Bounded analysis requires a positive integer of at least 8 MiB; zero and malformed values fail preflight. Query readers retain the legacy zero/default policy. |
+| `GITNEXUS_LBUG_BUFFER_POOL_SIZE`             | integer `>= 0` (bytes)         | automatic admission (analysis); platform default (readers)                                | Native buffer-pool ceiling in bytes. Bounded analysis requires a positive integer of at least 8 MiB; zero and malformed values fail preflight. Query readers retain the legacy zero/default policy. |
 | `GITNEXUS_LBUG_MAX_DB_SIZE`                  | positive integer (bytes)       | `17179869184` (16 GiB)                             | Upper bound for a single LadybugDB database file. This is an mmap/disk-address-space ceiling, not a memory limit — it does not constrain the buffer pool (use `GITNEXUS_LBUG_BUFFER_POOL_SIZE` for that). The native engine requires a power of two: any other positive integer is rounded up to the next power of two with a warning. Raise it when indexing genuinely huge monorepos; invalid values silently fall back to the default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `GITNEXUS_ATOMIC_INCREMENTAL` | `0`, `1` | unset (the caller's choice) | `1` stages an incremental analyze into a copy of the index and swaps it in at the end, so a failed run leaves the live index untouched. `0` turns that off even for callers that request it (watch mode, auto-sync); the run logs a line when it overrides one. The cost: a failed in-place write can leave the live index partly written, and the next run then rebuilds it in full. A full rebuild, and an incremental run that escalates to a staged rebuild, still stage. POSIX only. |
 
@@ -840,16 +865,30 @@ If analyze says the repository doesn't fit, do what the message says:
 
 To set the main-thread heap yourself on a memory-constrained host, pass
 `--memory-budget <mb>`: analyze re-runs with exactly that V8 heap, overriding
-the auto-sizer and any `--max-old-space-size` pin. It sizes the main thread
-only; parse workers keep their own caps.
+the auto-sizer and any `--max-old-space-size` pin. Node also applies this
+process-wide heap flag to parser workers, overriding their per-worker limits.
 
 Use `--resource-budget <MiB>` to admit the complete analyzer process family,
 including the frontend, main heap, workers, native pools, embedding model, input
 queue, and headroom. An explicit heap or pool that cannot fit is rejected before
-work starts. Automatic sizing retains independent RAM-aware main and worker
-ceilings, whose sum may exceed RAM. Only an explicit resource budget imposes an
-aggregate phase ceiling; this reservation is
-not an operating-system RSS limit. `analyze --watch` accepts the same budget.
+work starts. Automatic sizing fixes the aggregate phase ceiling at 75% of
+effective process/container RAM, divided among concurrent auto-sync analyses.
+The main heap, workers, pools, and embedding reservations must fit that ceiling.
+Each parser worker reserves at least the main-heap allocation to account for
+Node's inherited limit. Automatic concurrency may shrink to fit; explicit worker
+counts must fit with that per-worker reservation. Automatic main-heap sizing
+leaves room for explicit worker counts and heap requests.
+The reservation is not an operating-system RSS limit. `analyze --watch` accepts
+the same budget. To enlarge the main heap, use `--memory-budget`; increase
+`--resource-budget` as well if needed, within available RAM.
+
+`embeddings sync` runs in its current process and reserves its actual V8 heap
+limit. If that heap and the local model cannot fit together, run `analyze` to
+resume with an automatically sized heap, or start sync with a smaller Node heap
+(for example, `NODE_OPTIONS="--max-old-space-size=1024" gitnexus embeddings sync`).
+Server embedding jobs also reserve the running server's actual heap; restart
+`gitnexus serve` with a smaller Node heap if admission fails.
+A supported HTTP embedding provider avoids the local-model reservation.
 
 Embedding-enabled analysis publishes the graph and keyword index first. If the
 provider fails, analyze exits nonzero while those queries remain available. Run
@@ -977,9 +1016,9 @@ Four env vars expose the pool's resilience layers (respawn budget, cumulative-ti
 | `GITNEXUS_WORKER_READY_TIMEOUT_MS`              | `5000`                             | Startup budget for a parse worker to load its grammar bindings and report `{type:'ready'}`. Slots that miss it are treated as startup crashes. Raise it on a slow or heavily loaded host where a full pool cold-starting concurrently needs more than 5s. |
 | `GITNEXUS_MEMORY`                               | `off`                              | unset (autopilot on)                                                                                                                                                                                                                                      | `off` declines GitNexus's memory autopilot: analyze will neither re-run itself with a RAM-aware heap cap nor abort the parse before V8 enters its ineffective-mark-compact death spiral. Use it when you want to drive memory manually; to simply pin a heap size, pass Node's own `--max-old-space-size`, which is already honoured as your decision. |
 | `GITNEXUS_ANALYSIS_SUPERVISOR_BYTES` | nonnegative integer bytes | automatic | Internal inherited reservation for the waiting parent process. Leave unset for automatic accounting; a supplied value counts toward analysis admission and does not set the parent heap. |
-| `GITNEXUS_WORKER_HEAP_MB`                       | `clamp(512, RAM/2/poolSize, 4096)` | Per-worker V8 old-generation heap cap (#2649). Bounds pool RSS on large repos; a worker exceeding it dies with a real heap error handled by quarantine/respawn.                                                                                           |
+| `GITNEXUS_WORKER_HEAP_MB`                       | automatic admission              | Requested per-worker V8 old-generation limit, at least 512 MiB. Node's process heap flag can override it, so admission reserves the larger of the requested worker allocation and main-heap allocation, plus native memory. Automatic concurrency shrinks to fit the aggregate budget.                                                                                           |
 | `GITNEXUS_HEAP_LIMIT_SOURCE`                    | unset                              | Set by analyze itself (`budget` or `auto`) to record where the heap limit came from, so out-of-memory advice points at `--memory-budget` rather than a `--max-old-space-size` pin.                                                                        | Never — internal; set `--memory-budget` instead.                                                                                                                                                                                                                                                                                                       |
-| `GITNEXUS_SERVER_ANALYZE_HEAP_MB`               | `min(8192, auto cap)`              | Heap for the web/MCP server's forked analyze worker (#2649). Defaults to the historical 8192 MB bounded by the machine/container's RAM-aware auto cap; set an absolute MB value to override.                                                              |
+| `GITNEXUS_SERVER_ANALYZE_HEAP_MB`               | automatic admission              | V8 old-generation heap for the web/MCP server's forked analyze worker. Defaults to the admitted main-heap reservation minus 48 MiB for young space. A positive integer overrides the old-generation heap in MiB; admission reserves that value plus 48 MiB and rejects it if the aggregate budget cannot fit.                                                              |
 | `GITNEXUS_CPP_CAPTURE_BUDGET_MS`                | `20000`                            | Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning (#2432). `0` expires immediately.                                                                                                         |
 
 ### Graph cleanup tuning
@@ -1044,24 +1083,39 @@ npx gitnexus analyze --force
 
 ### Hook augmentation and skip diagnostics
 
-The Claude Code / Antigravity hooks keep their **stderr** silent on normal skip
-paths so strict hook runners (e.g. Codex `PreToolUse`) never see unexpected
-diagnostic output.
+Claude Code and Codex hooks installed by `gitnexus setup`, and the Claude plugin,
+load the package's `gitnexus-hook` entrypoint. After upgrading an existing setup
+installation, run `gitnexus setup` again to replace the old runtime copies with
+the launcher. The launcher also supports installed `gitnexus-hook` shims, such
+as those created by pnpm.
 
-When a GitNexus process holds the repo DB write lock (the common case — the MCP
-server is running, or the DB-lock probe timed out and failed closed), the local
-CLI `augment` can't run (LadybugDB is single-writer). Rather than drop the
-augmentation, the hook hands the agent a short, conditional MCP-query hint on
+If no installation is available, recovery requires npm/npx and may need registry
+access. It fetches the exact version recorded by setup or the plugin manifest.
+The first call can wait up to 135 seconds for installation and cleanup; later
+calls load the recovered package directly from its cached location. That
+location is recorded under `~/.gitnexus/hook-launcher/`; deleting the package's
+npm cache causes recovery on the next call. Failed recovery has a five-minute
+retry cooldown. An available installation is used at its installed version;
+the exact version pin applies to recovery.
+
+The Claude Code, Codex, Claude plugin, and Antigravity hooks keep their **stderr**
+silent on normal skip paths so strict hook runners (e.g. Codex `PreToolUse`)
+never see unexpected diagnostic output.
+
+When a GitNexus process holds the repo DB write lock, or the ownership probe
+cannot rule that out, the hook skips local CLI access. It gives the agent a
+conditional MCP-query hint on
 stdout (the sanctioned `additionalContext` channel) — _"if the GitNexus MCP tools
 are live in this session, call `query` …"_ — so an agent that has the tools can
 still fetch graph-ranked context. The hint is throttled to at most once per repo
 per window (`GITNEXUS_MCP_HINT_THROTTLE_MS`, default 10 min; `0` disables), so an
-owner-locked session isn't nudged on every search. A stale-index reminder, or an
-already-current index, stays silent.
+owner-locked session isn't nudged on every search. An already-current index
+produces no reminder.
 
 To see why a hook skipped the CLI augment, set `GITNEXUS_DEBUG=1` and re-run the
-action — the hook writes the reason (e.g. `[GitNexus] augment skipped: MCP server
-owns DB`) and the stale-index hint to its stderr:
+action. This also enables launcher diagnostics for package discovery, recovery
+failures, and the retry cooldown. The stale-index reminder uses structured
+stdout; diagnostic reasons go to stderr:
 
 ```bash
 GITNEXUS_DEBUG=1 <your command>   # surfaces hook skip/diagnostic reasons on stderr

@@ -47,7 +47,7 @@ for (const manager of ['npm', 'pnpm', 'bun']) {
     GITNEXUS_HOME: path.join(root, 'home'),
     GITNEXUS_STORAGE_PATH: path.join(root, 'repo', '.gitnexus'),
     GITNEXUS_SHARED_STORE: 'off',
-    GITNEXUS_MEMORY: 'off',
+    GITNEXUS_MEMORY: undefined,
     SCARF_ANALYTICS: 'false',
   };
   try {
@@ -83,7 +83,7 @@ for (const manager of ['npm', 'pnpm', 'bun']) {
         'export function main() { return greet("GitNexus"); }\n',
     );
     run('git', ['init', '-q', 'repo'], root, env);
-    const args = ['gitnexus', 'analyze', 'repo', '--index-only', '--workers', '1'];
+    const args = ['gitnexus', 'analyze', 'repo', '--index-only', '--workers', '1', '--verbose'];
     const [program, prefix] =
       manager === 'npm'
         ? ['npx', ['--no-install']]

@@ -4,6 +4,8 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   loadParseCache,
+  ensureFileParseCache,
+  flushFileParseCache,
   persistParseCacheChunk,
   pruneCache,
   saveParseCache,
@@ -88,11 +90,13 @@ export async function publishAnalysisParseCache(
     const pruned = pruneCache(cache, cache.usedKeys);
     if (pruned > 0) log(`Parse cache: pruned ${pruned} stale chunk entries`);
     const savedKeys = await saveParseCache(cacheRoot, cache);
+    // Packed entries carry their own scopes. Retire obsolete legacy shards
+    // without walking every per-file key as a former chunk directory.
     await mergeStagedDurableParsedFileStore(
       cacheRoot,
       cache.writeStoragePath ?? cacheRoot,
       cache.identity.base,
-      new Set(savedKeys),
+      new Set(cache.fileResults ? [] : savedKeys),
     );
   };
   await (sharedStore ? withStoreLock(sharedStore, 'cache', publish) : publish());
@@ -116,6 +120,7 @@ interface CacheHandoff {
   used: string[];
   staged: string[];
   stale: string[];
+  fileResults?: boolean;
 }
 const checksum = (payload: string) => createHash('sha256').update(payload).digest('hex');
 const receiptName = (generation: string) => {
@@ -147,13 +152,27 @@ export async function stageAnalysisParseCache(
   await ownedStage(root, relative);
   // Bound each selection before copying or serializing it. Unknown/malformed
   // keys cannot become filesystem paths.
-  for (const keys of [cache.entries, cache.usedKeys, cache.stagedKeys, cache.staleKeys]) {
+  let stagedCount = cache.stagedKeys?.size ?? 0;
+  for (const key of cache.entries.keys()) if (!cache.stagedKeys?.has(key)) stagedCount++;
+  for (const key of cache.fileResults?.memory.keys() ?? [])
+    if (!cache.stagedKeys?.has(key) && !cache.entries.has(key)) stagedCount++;
+  const selectedCount = cache.usedKeys.size + (cache.staleKeys?.size ?? 0) + stagedCount;
+  // Each encoded key costs 67 bytes. Bound aggregate selection before copying;
+  // the exact encoded receipt is still checked against the same 16 MiB ceiling.
+  if (selectedCount * 67 > MAX_HANDOFF_BYTES)
+    throw new Error('Prepared parser cache key set exceeds its bound');
+  for (const keys of [
+    cache.entries,
+    cache.usedKeys,
+    cache.stagedKeys,
+    cache.staleKeys,
+    cache.fileResults?.memory,
+  ]) {
     if (!keys) continue;
-    if (keys.size > Math.floor(MAX_HANDOFF_BYTES / 3 / 70))
-      throw new Error('Prepared parser cache key set exceeds its bound');
     for (const key of keys.keys())
       if (!KEY.test(key)) throw new Error('Prepared parser cache contains an invalid key');
   }
+  if (cache.fileResults) await flushFileParseCache(cache);
   for (const [key, value] of cache.entries) await persistParseCacheChunk(cache, key, value);
   if (cache.entries.size)
     throw new Error('Could not persist prepared parser cache fallback shards');
@@ -165,6 +184,7 @@ export async function stageAnalysisParseCache(
     used: [...cache.usedKeys],
     staged: [...(cache.stagedKeys ?? [])],
     stale: [...(cache.staleKeys ?? [])],
+    ...(cache.fileResults ? { fileResults: true } : {}),
   };
   const serialized = JSON.stringify(payload);
   const bytes = Buffer.from(JSON.stringify({ payload, checksum: checksum(serialized) }));
@@ -237,7 +257,8 @@ export async function loadAnalysisParseCache(
       payload.identity.pdg !== metadata.parseCacheIdentity.pdg.identity) ||
     !keys(payload.used) ||
     !keys(payload.staged) ||
-    !keys(payload.stale)
+    !keys(payload.stale) ||
+    (payload.fileResults !== undefined && typeof payload.fileResults !== 'boolean')
   )
     throw new Error('Prepared parser cache does not match the published graph');
   const usedKeys = new Set(metadata.cacheKeys ?? []);
@@ -247,7 +268,7 @@ export async function loadAnalysisParseCache(
     payload.used.some((key) => !usedKeys.has(key))
   )
     throw new Error('Prepared parser cache selection differs from the published graph');
-  return {
+  const cache: ParseCache = {
     identity: payload.identity,
     entries: new Map(),
     usedKeys,
@@ -255,4 +276,6 @@ export async function loadAnalysisParseCache(
     stagedKeys: new Set(payload.staged),
     staleKeys: new Set(payload.stale),
   };
+  if (payload.fileResults) await ensureFileParseCache(cache);
+  return cache;
 }

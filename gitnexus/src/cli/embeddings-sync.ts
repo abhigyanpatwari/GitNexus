@@ -1,4 +1,5 @@
 import { lstat } from 'node:fs/promises';
+import { getHeapStatistics } from 'node:v8';
 import { ensurePrivateSharedGraph } from '../core/shared-store-analyze.js';
 import { resolveGraphPath } from '../storage/shared-store.js';
 import { resolveHostAnalysisResources } from '../core/analysis-host-resources.js';
@@ -33,6 +34,7 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
   // Writes go to the slot's own graph. A shared-store checkout that reads an
   // immutable commit graph (#3352) takes a private copy first.
   const resources = resolveHostAnalysisResources({
+    mainHeapMb: Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
     includeParsing: false,
     includeEmbeddings: true,
   });

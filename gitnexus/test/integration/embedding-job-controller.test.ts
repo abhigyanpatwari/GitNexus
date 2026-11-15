@@ -104,6 +104,7 @@ async function fixture(count = 130) {
     modelHeapMb: 0,
     queueBytes: 16 * 1024 * 1024,
     nativeThreads: 1,
+    indexThreads: 1,
     reservedBytes: 96 * 1024 * 1024,
   };
   const metadata = {
@@ -140,6 +141,25 @@ async function fixture(count = 130) {
 }
 
 describe('pending artifacts across graph generations', () => {
+  it.each(['local', `http:${'a'.repeat(64)}`])(
+    'keeps an injected %s provider serial despite the HTTP setting',
+    async (provider) => {
+      const f = await fixture(64);
+      vi.stubEnv('GITNEXUS_EMBEDDING_CONCURRENCY', '4');
+      f.dependencies.identity.mockReturnValue({ provider, model: 'test', dimensions: 4 });
+      let active = 0;
+      let peak = 0;
+      f.provider.mockImplementation(async (texts) => {
+        peak = Math.max(peak, ++active);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        active--;
+        return texts.map(() => Float32Array.of(1, 0, 0, 0));
+      });
+      await f.run();
+      expect(peak).toBe(1);
+      expect(f.provider).toHaveBeenCalledTimes(8);
+    },
+  );
   it.each(['full', 'symbol', 'none'] as const)(
     'uses published repository source policy (%s), then resumes without source or provider work',
     async (retention) => {
@@ -178,6 +198,24 @@ describe('pending artifacts across graph generations', () => {
       expect(result.peakQueueBytes).toBeLessThanOrEqual(f.options().resources.queueBytes);
       expect(node.content).toContain('[truncated]');
       if (retention === 'full') {
+        await fs.writeFile(
+          path.join(repo, 'sample.ts'),
+          content.replace('RECOVERED_TAIL', 'UNINDEXED_TAIL'),
+        );
+        await f.nextGeneration();
+        const unchanged = await loadMeta(f.root);
+        if (!unchanged) throw new Error('Missing fixture metadata');
+        await saveMeta(f.root, {
+          ...unchanged,
+          repoPath: repo,
+          contentRetention: retention,
+          fileHashes: { 'sample.ts': createHash('sha256').update(content).digest('hex') },
+        });
+        f.provider.mockClear();
+        read.mockClear();
+        expect((await f.run()).state?.reusedNodes).toBe(1);
+        expect(f.provider).not.toHaveBeenCalled();
+        expect(read).not.toHaveBeenCalled();
         const advance = async (source: string) => {
           await fs.writeFile(path.join(repo, 'sample.ts'), source);
           await f.nextGeneration();

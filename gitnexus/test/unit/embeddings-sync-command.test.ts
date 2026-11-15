@@ -100,6 +100,7 @@ vi.mock('../../src/core/embeddings/embedding-sidecar-client.js', () => ({
 }));
 
 const IDENTITY = { model: 'test-model', dimensions: 768, provider: 'local' } as const;
+const heap = vi.hoisted(() => ({ bytes: 1024 ** 3 }));
 
 vi.mock('../../src/core/ingestion/utils/effective-ram.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/core/ingestion/utils/effective-ram.js')>()),
@@ -109,7 +110,7 @@ vi.mock('node:v8', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:v8')>();
   return {
     ...actual,
-    getHeapStatistics: () => ({ ...actual.getHeapStatistics(), heap_size_limit: 64 * 1024 ** 3 }),
+    getHeapStatistics: () => ({ ...actual.getHeapStatistics(), heap_size_limit: heap.bytes }),
   };
 });
 
@@ -174,6 +175,7 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
   }
 
   beforeEach(() => {
+    heap.bytes = 1024 ** 3;
     vi.resetModules();
     acquireIndexLockMock.mockReset().mockResolvedValue(lockHandle());
     ensurePrivateSharedGraphMock.mockReset().mockResolvedValue(true);
@@ -212,15 +214,28 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
     await Promise.all(tmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
-  it('uses the RAM-sized automatic heap despite a larger default V8 limit', async () => {
+  it('accounts for the running process heap when sync cannot respawn', async () => {
     await store();
     await run();
     expect(runAnalysisEmbeddingPhaseMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        resources: expect.objectContaining({ automatic: true, mainHeapMb: 6553 }),
+        resources: expect.objectContaining({ automatic: true, mainHeapMb: 1024 }),
       }),
     );
   });
+
+  it.each([2096, 65536])(
+    'rejects a %i MiB running heap that cannot fit with the local model on 8 GiB before locking',
+    async (heapMb) => {
+      await store();
+      heap.bytes = heapMb * 1024 ** 2;
+      await expect(run()).rejects.toThrow('cannot admit');
+      expect(acquireIndexLockMock).not.toHaveBeenCalled();
+      expect(ensurePrivateSharedGraphMock).not.toHaveBeenCalled();
+      expect(initLbugMock).not.toHaveBeenCalled();
+      expect(runAnalysisEmbeddingPhaseMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('acquires the index lock before re-reading metadata and releases it in finally', async () => {
     const { dir } = await store();

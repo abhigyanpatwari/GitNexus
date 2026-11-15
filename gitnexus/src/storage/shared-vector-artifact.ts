@@ -93,11 +93,11 @@ export async function retainSharedVectorArtifact(
   const parent = path.dirname(directory);
   try {
     await fs.mkdir(parent, { mode: 0o700 });
-    await syncEmbeddingJobDirectory(root);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
   }
   await embeddingJobDirectory(parent);
+  await syncEmbeddingJobDirectory(root);
   const signature = createHash('sha256')
     .update(
       JSON.stringify([
@@ -127,11 +127,14 @@ export async function retainSharedVectorArtifact(
       (sourceIdentity.dev !== '0' &&
         sourceIdentity.ino !== '0' &&
         sameFile(identity, sourceIdentity))
-    )
+    ) {
+      await syncEmbeddingJobDirectory(parent);
       return;
+    }
     const retained = await receipt(directory, signature);
     if (!sameFile(retained.file, identity))
       throw new Error('Retained vector file changed; artifacts retained');
+    await syncEmbeddingJobDirectory(parent);
     return;
   }
 

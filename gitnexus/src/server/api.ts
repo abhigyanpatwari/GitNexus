@@ -27,6 +27,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
+import { getHeapStatistics } from 'node:v8';
 import {
   canonicalizePath,
   cloneDirBelongsToEntry,
@@ -2140,6 +2141,15 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         // lookup and a long-running metadata-writing job.
         const storagePath = await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
 
+        // This server cannot resize its running V8 heap. Admit its actual limit
+        // before locking or touching the index, just like embeddings sync.
+        const { resolveHostAnalysisResources } = await import('../core/analysis-host-resources.js');
+        const resources = resolveHostAnalysisResources({
+          mainHeapMb: Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
+          includeParsing: false,
+          includeEmbeddings: true,
+        });
+
         // Check shared repo lock — prevent concurrent analyze + embed on same repo
         const repoLockPath = storagePath;
         const lockErr = acquireRepoLock(repoLockPath);
@@ -2189,12 +2199,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             if (await readPreparedAnalysis(storagePath))
               throw new Error('A prepared graph awaits publication. Run gitnexus analyze first.');
             sweepStagingArtifacts(storagePath);
-            const { resolveHostAnalysisResources } =
-              await import('../core/analysis-host-resources.js');
-            const resources = resolveHostAnalysisResources({
-              includeParsing: false,
-              includeEmbeddings: true,
-            });
             if (!(await ensurePrivateSharedGraph(storagePath, () => {})))
               throw new Error('The shared graph this repository reads is gone. Re-run analyze.');
             const lbugPath = resolveGraphPath(storagePath);

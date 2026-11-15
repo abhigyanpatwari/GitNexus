@@ -28,6 +28,9 @@
 const PLATFORM_LOGIC = [
   'test/unit/embedding-sidecar-lifetime.test.ts',
   'test/unit/analysis-publication.test.ts',
+  'test/unit/analysis-writer-identity.test.ts',
+  'test/unit/analysis-writer-identity-platform.test.ts',
+  'test/integration/parse-impl-round-drain.test.ts',
   'test/unit/analysis-phase-supervisor.test.ts',
   'test/unit/shared-vector-artifact.test.ts',
   'test/unit/embedding-artifact.test.ts',
@@ -39,6 +42,9 @@ const PLATFORM_LOGIC = [
   'test/unit/setup-jsonc.test.ts',
   'test/unit/setup-codex.test.ts',
   'test/unit/setup-antigravity.test.ts',
+  'test/unit/claude-hook-launcher.test.ts',
+  'test/unit/claude-hook-runtime.test.ts',
+  'test/unit/claude-hook-build.test.ts',
   'test/integration/setup-uninstall-roundtrip.test.ts',
   'test/unit/opencode-plugin.test.ts',
   'test/integration/opencode-plugin.test.ts',
@@ -79,6 +85,8 @@ const PLATFORM_LOGIC = [
   // tests compare identity fields against raw temp-dir paths and fail on macOS,
   // where /var/... realpaths to /private/var/....
   'test/unit/analyzer-identity-path-normalization.test.ts',
+  // Windows stat/fstat device IDs differ; also exercise real host filesystem hashing.
+  'test/unit/analyzer-identity-hash-stable-file.test.ts',
   // `isInside` containment guard vs Windows cross-drive paths: path.relative
   // returns the absolute target across drives, so the guard needs isAbsolute.
   // Fixture-free and pathApi-injectable, so it is portable to every runner.
@@ -125,6 +133,7 @@ const PLATFORM_LOGIC = [
   'test/unit/pool-wal-recovery.test.ts',
   'test/unit/lbug-adapter-wal-schema.test.ts',
   'test/unit/detect-changes-worktree.test.ts',
+  'test/unit/detect-changes-stderr.test.ts',
   'test/unit/eval-server-bind-restriction.test.ts',
   'test/unit/ignore-service.test.ts',
   'test/unit/group/bridge-db.test.ts',
@@ -243,6 +252,8 @@ const LBUG_NATIVE = [
   // A real refresh worker must preserve active readers or report native contention.
   'test/integration/mcp-refresh-index-e2e.test.ts',
   'test/integration/fts-repair-warm-session.test.ts',
+  'test/integration/fts-empty-tables.test.ts',
+  'test/integration/persisted-mutation-rows.test.ts',
   'test/unit/lbug-pool-pinning.test.ts',
   'test/unit/hybrid-search.test.ts',
   'test/integration/lbug-readonly-init.test.ts',
@@ -252,6 +263,8 @@ const LBUG_NATIVE = [
   // Windows is skipped in-file (describeReopen) due to the bridge reopen lock.
   'test/integration/group/cross-trace-e2e.test.ts',
   'test/integration/group/graphql-resolve-symbol.test.ts',
+  // Runs the route extractor's two symbol queries against a real engine.
+  'test/integration/http-route-symbol-batch.test.ts',
   'test/integration/local-backend.test.ts',
   'test/integration/bm25-symbol-hydration.test.ts',
   'test/integration/local-backend-calltool.test.ts',
@@ -384,6 +397,7 @@ const WORKER_THREADS = [
   'test/integration/resolvers/java-overload-jls.test.ts',
   'test/unit/community-processor.test.ts',
   'test/integration/worker-pool.test.ts',
+  'test/integration/worker-pool-admission.test.ts',
   'test/integration/class-expression-owners.test.ts',
   'test/integration/parse-impl-quarantine-cache-skip.test.ts',
   // Real parse workers and both on-disk parse stores must retain lexical

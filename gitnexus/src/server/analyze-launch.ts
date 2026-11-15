@@ -36,7 +36,6 @@ import type { RouteHookConfig } from '../core/ingestion/language-provider.js';
 import { isTerminalJobStatus, type JobManager } from './analyze-job.js';
 import type { WorkerMessage } from './analyze-worker.js';
 import { projectAnalysisPhaseProgress } from '../core/analysis-progress.js';
-import { autoHeapCapMb } from '../core/ingestion/utils/effective-ram.js';
 
 const _require = createRequire(import.meta.url);
 
@@ -239,10 +238,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
     const includeEmbeddings = await analysisMayEmbed(targetPath, opts);
     if (launchAborted(job.id)) return;
     const resources = resolveHostAnalysisResources({
-      mainHeapMb:
-        (Number.isInteger(envHeapMb) && envHeapMb > 0
-          ? envHeapMb
-          : Math.min(8192, autoHeapCapMb())) + 48,
+      mainHeapMb: Number.isInteger(envHeapMb) && envHeapMb > 0 ? envHeapMb + 48 : undefined,
       includeEmbeddings,
       supervisorBytes: analysisSupervisorReservation(),
     });

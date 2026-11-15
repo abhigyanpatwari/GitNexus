@@ -65,7 +65,9 @@ async function releaseBarrier(barrier: string): Promise<void> {
 
 async function cacheKeys(cacheRoot: string, directory: string): Promise<string[]> {
   const index = JSON.parse(await readFile(path.join(cacheRoot, directory, 'index.json'), 'utf8'));
-  return directory === 'parse-cache' ? index.keys : Object.keys(index.entries);
+  return directory === 'parse-cache'
+    ? index.keys
+    : index.records.map((record: { key: string }) => record.key);
 }
 
 describe('parser identity across real analysis processes', () => {
@@ -133,7 +135,7 @@ describe('parser identity across real analysis processes', () => {
       await releaseBarrier(barrier);
       const a = await pending;
       expect(a.error).toBeUndefined();
-      for (const directory of ['parse-cache', 'parsedfile-cache']) {
+      for (const directory of ['parse-cache', 'parse-cache/files']) {
         const saved = await cacheKeys(paused.cacheRoot, directory);
         for (const key of newKeys) expect(saved).toContain(key);
       }
@@ -241,7 +243,7 @@ describe('parser identity across real analysis processes', () => {
       expect(bCold.hits).toBe(0);
       expect(bCold.reparsed).toBeGreaterThan(0);
       expect(bCold.facts).toEqual(b.facts);
-      for (const directory of ['parse-cache', 'parsedfile-cache']) {
+      for (const directory of ['parse-cache', 'parse-cache/files']) {
         expect((await cacheKeys(paused.cacheRoot, directory)).sort()).toEqual(
           [...bCold.meta!.cacheKeys!].sort(),
         );
@@ -369,7 +371,7 @@ describe('parser identity across real analysis processes', () => {
     try {
       const initial = await f.run();
       expect(initial.error).toBeUndefined();
-      const indexes = ['parse-cache/index.json', 'parsedfile-cache/index.json'];
+      const indexes = ['parse-cache/index.json', 'parse-cache/files/index.json'];
       const before = await Promise.all(
         indexes.map((file) => readFile(path.join(initial.storagePath, file), 'utf8')),
       );
@@ -425,7 +427,7 @@ describe('parser identity across real analysis processes', () => {
       expect(failedSave.facts).toEqual(initial.facts);
       expect(failedSave.logs.join('\n')).toMatch(/could not save parse cache/i);
       expect(failedSave.meta?.parseCacheIdentity).toEqual(initial.meta?.parseCacheIdentity);
-      await rm(path.join(initial.storagePath, 'parsedfile-cache/index.json'), { recursive: true });
+      await rm(path.join(initial.storagePath, 'parse-cache/files/index.json'), { recursive: true });
       const retry = await f.run({ options: { force: true } });
       expect(retry.error).toBeUndefined();
       expect(retry.hits).toBe(0);

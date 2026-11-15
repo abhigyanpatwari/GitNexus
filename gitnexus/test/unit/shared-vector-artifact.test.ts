@@ -54,6 +54,74 @@ it('retains an independent hard link without copying or rewriting it on retry', 
   expect(await fs.readFile(retained, 'utf8')).toBe('completed immutable vectors');
 });
 
+it.skipIf(process.platform === 'win32')(
+  'retries a failed sync when the embeddings parent already exists',
+  async () => {
+    const open = fs.open.bind(fs);
+    let attempts = 0;
+    vi.spyOn(fs, 'open').mockImplementation(async (target, flags, mode) => {
+      const handle = await open(target, flags, mode);
+      if (target === destination) {
+        const sync = handle.sync.bind(handle);
+        vi.spyOn(handle, 'sync').mockImplementation(async () => {
+          if (++attempts <= 2)
+            throw Object.assign(new Error('Directory sync failed'), { code: 'EIO' });
+          await sync();
+        });
+      }
+      return handle;
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(
+        retainSharedVectorArtifact(source, destination, generation),
+      ).rejects.toMatchObject({ code: 'EIO' });
+    }
+    await retainSharedVectorArtifact(source, destination, generation);
+    expect(attempts).toBe(3);
+    expect(await fs.readFile(retained, 'utf8')).toBe('completed immutable vectors');
+  },
+);
+
+it.skipIf(process.platform === 'win32').each([false, true])(
+  'retries publication sync for an existing artifact (copy=%s)',
+  async (copy) => {
+    if (copy) vi.spyOn(fs, 'link').mockRejectedValue(differentDevice());
+    const copyFile = vi.spyOn(fs, 'copyFile');
+    const open = fs.open.bind(fs);
+    let attempts = 0;
+    vi.spyOn(fs, 'open').mockImplementation(async (target, flags, mode) => {
+      const handle = await open(target, flags, mode);
+      if (target === path.dirname(path.dirname(retained))) {
+        const sync = handle.sync.bind(handle);
+        vi.spyOn(handle, 'sync').mockImplementation(async () => {
+          if (
+            await fs.stat(retained).then(
+              () => true,
+              () => false,
+            )
+          ) {
+            if (++attempts <= 2)
+              throw Object.assign(new Error('Directory sync failed'), { code: 'EIO' });
+          }
+          await sync();
+        });
+      }
+      return handle;
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(
+        retainSharedVectorArtifact(source, destination, generation, copy),
+      ).rejects.toMatchObject({ code: 'EIO' });
+    }
+    const inode = (await fs.stat(retained)).ino;
+    await retainSharedVectorArtifact(source, destination, generation, copy);
+    expect(attempts).toBe(3);
+    expect((await fs.stat(retained)).ino).toBe(inode);
+    expect(copyFile).toHaveBeenCalledTimes(copy ? 1 : 0);
+    expect(await fs.readFile(retained, 'utf8')).toBe(await fs.readFile(original, 'utf8'));
+  },
+);
+
 it('copies only for explicit initial adoption across filesystems, then reuses the receipt', async () => {
   vi.spyOn(fs, 'link').mockRejectedValue(differentDevice());
   const copy = vi.spyOn(fs, 'copyFile');

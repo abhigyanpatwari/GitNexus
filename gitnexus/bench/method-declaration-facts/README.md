@@ -54,6 +54,12 @@ same command with `--record` instead of `--check`, then inspect `baseline.json`.
 CI never records or accepts a new baseline automatically. Output files must not
 already exist. The two-checkout commands below remain available for diagnostics.
 
+The graph fingerprints were updated for full reference spans in
+[#3500](https://github.com/abhigyanpatwari/GitNexus/issues/3500) /
+[#3845](https://github.com/abhigyanpatwari/GitNexus/pull/3845) after comparing
+the old and new graph rows. This was a correctness-only update; the recorded
+environment and timing references remain from the original baseline.
+
 ## Detailed local measurements
 
 Build the pre-change revision and candidate with `npm run build` in each package,

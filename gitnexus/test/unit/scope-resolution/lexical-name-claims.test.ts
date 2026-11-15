@@ -19,6 +19,7 @@ import {
 import { findCallableBindingsAndAdlBlocker } from '../../../src/core/ingestion/languages/cpp/callable-bindings.js';
 import { followChainPostFinalize } from '../../../src/core/ingestion/scope-resolution/passes/imported-return-types.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 
 const range = { startLine: 4, startCol: 0, endLine: 4, endCol: 20 };
 const target: SymbolDefinition = { nodeId: 'outer:helper', filePath: 'outer.ts', type: 'Function' };
@@ -54,7 +55,7 @@ function indexes(
     moduleScopes: { byFilePath: new Map([['caller.ts', outer.id]]) },
     bindings: new Map(),
     bindingAugmentations: new Map(),
-    imports: new Map(),
+    imports: createEagerImportVisibility(new Map()),
     defs: { get: () => target },
     qualifiedNames: { get: () => [target.nodeId] },
   } as unknown as ScopeResolutionIndexes;

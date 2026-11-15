@@ -70,6 +70,43 @@ describe('analysis database resource allocations', () => {
     });
   });
 
+  it.each([undefined, 3072])(
+    'caps the native graph opener at admitted budget %s',
+    async (totalMb) => {
+      const config = await import('../../src/core/lbug/lbug-config.js');
+      const sizedPool = vi
+        .spyOn(config, 'getEffectiveBufferPoolSize')
+        .mockReturnValue(2048 * 1024 ** 2);
+      const { resolveAnalysisResourceBudget } =
+        await import('../../src/core/analysis-resource-budget.js');
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const resources = resolveAnalysisResourceBudget({
+        effectiveMemoryBytes: 4096 * 1024 ** 2,
+        availableCpus: 4,
+        modelMemoryMb: 0,
+        totalMb,
+      });
+      const stopped = new Error('native opener reached');
+      native.open.mockRejectedValue(stopped);
+      await fs.writeFile(path.join(root, 'a.ts'), 'export function a() { return 1; }');
+      try {
+        await expect(
+          runFullAnalysis(
+            root,
+            { resources, skipGit: true, skipFts: true, skipAgentsMd: true, skipSkills: true },
+            { onProgress: () => {} },
+          ),
+        ).rejects.toThrow(stopped.message);
+        expect(native.open).toHaveBeenCalled();
+        for (const call of native.open.mock.calls) {
+          expect(call[2]).toMatchObject({ bufferPoolBytes: resources.parse.graphPoolBytes });
+        }
+      } finally {
+        sizedPool.mockRestore();
+      }
+    },
+  );
+
   it('rejects invalid allocations before creating the database directory or opening native code', async () => {
     const parent = path.join(root, 'not-created');
     for (const options of [

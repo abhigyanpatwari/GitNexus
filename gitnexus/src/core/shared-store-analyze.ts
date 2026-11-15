@@ -16,6 +16,7 @@
  */
 
 import { createHash, randomUUID } from 'crypto';
+import { graphCompactionReason } from './incremental/compaction-policy.js';
 import { existsSync, constants as fsConstants } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
@@ -83,6 +84,7 @@ const FEATURE_KEY_EXCLUDED = new Set<string>([
   'fileHashes',
   'cacheKeys',
   'incrementalInProgress',
+  'graphCompaction',
   'embeddingCheckpoint',
   'stats',
 ]);
@@ -550,9 +552,30 @@ export const publishSharedGraph = async (
       // Keep the better private graph; the commit graph stays as it is, since
       // other checkouts may read it.
       const targetMeta = published ? await loadMeta(target) : null;
+      // Keep a healthy private graph through dirty edits and exact reverts.
+      // Re-adopting a due immutable graph would force another full COPY.
+      const compactedOwnIsBetter =
+        published &&
+        meta.graphPath !== targetGraph &&
+        (await exists(own)) &&
+        graphCompactionReason(
+          meta.graphCompaction,
+          await fs.stat(own).then(
+            (stat) => stat.size,
+            () => undefined,
+          ),
+        ) === undefined &&
+        graphCompactionReason(
+          targetMeta?.graphCompaction,
+          await fs.stat(targetGraph).then(
+            (stat) => stat.size,
+            () => undefined,
+          ),
+        ) !== undefined;
       const ownIsBetter =
         published &&
         (!targetMeta ||
+          compactedOwnIsBetter ||
           (!hasSeparateGraphGeneration(meta) &&
             (!!targetMeta.embeddingCheckpoint ||
               (targetMeta.stats?.embeddings ?? 0) < (meta.stats?.embeddings ?? 0)))) &&
@@ -560,15 +583,19 @@ export const publishSharedGraph = async (
       if (ownIsBetter) {
         published = false;
         log(
-          `Shared store: commit graph ${currentCommit.slice(0, 12)} is less complete; keeping the private graph.`,
+          `Shared store: commit graph ${currentCommit.slice(0, 12)} ${compactedOwnIsBetter ? 'needs compaction' : 'is less complete'}; keeping the private graph.`,
         );
       } else if (published) {
         try {
           if (hasSeparateGraphGeneration(meta) && meta.vectorGeneration && !meta.embeddingJob) {
             const retained = await retainSharedMetadata(slot, target, meta);
+            retained.graphCompaction = targetMeta?.graphCompaction;
             if (retained.vectorGeneration) await saveMeta(target, commitMetadata(retained));
           }
           await wipeLbugDbFiles(own);
+          // The receipt describes the selected physical file, not the discarded
+          // private build. Otherwise reusing a shared graph resets its deadline.
+          meta.graphCompaction = targetMeta?.graphCompaction;
         } catch (err) {
           // An open reader (Windows) can block the delete. The analysis
           // already succeeded; keep the private graph and try next run.

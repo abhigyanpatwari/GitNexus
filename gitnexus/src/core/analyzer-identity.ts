@@ -557,7 +557,13 @@ function hashStableFile(candidate: string): {
     try {
       descriptor = openSync(candidate, fsConstants.O_RDONLY);
       const openedBefore = statState(fstatSync(descriptor, { bigint: true }));
-      if (!isDeepStrictEqual(openedBefore, before.target)) continue;
+      // Windows path stats can report dev=0 while fstat reports the volume serial.
+      // Preserve openedBefore for the descriptor's before/after stability check.
+      const comparableOpened =
+        process.platform === 'win32' && before.target.dev === '0'
+          ? { ...openedBefore, dev: before.target.dev }
+          : openedBefore;
+      if (!isDeepStrictEqual(comparableOpened, before.target)) continue;
 
       const hash = createHash('sha256');
       const buffer = Buffer.allocUnsafe(HASH_BUFFER_BYTES);

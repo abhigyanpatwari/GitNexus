@@ -6,20 +6,18 @@ import { expect, it } from 'vitest';
 import lbug from '@ladybugdb/core';
 import { walkRepositoryPaths } from '../../src/core/ingestion/filesystem-walker.js';
 import { IncludeExtractor } from '../../src/core/group/extractors/include-extractor.js';
-import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
+import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 
 it.skipIf(process.platform === 'win32')(
   'repeated real analyze/status calls converge with directory symlinks (#3608)',
   async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-directory-symlinks-'));
     const repo = path.join(root, 'repo');
-    const env = {
-      ...process.env,
+    const env = cliAnalysisEnv({
       GITNEXUS_HOME: path.join(root, 'home'),
       GITNEXUS_SHARED_STORE: 'off',
-      GITNEXUS_MEMORY: 'off',
       GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000',
-    };
+    });
     const command = (args: string[]) =>
       execFileSync(process.execPath, [...CLI_SPAWN_PREFIX, ...args], {
         cwd: repo,

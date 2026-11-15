@@ -4,12 +4,26 @@
  * built `dist/cli/index.js` or tsx-on-source, so a regression here silently changes
  * what every spawn-based test actually runs — worth a direct, env-free unit test.
  */
-import { describe, it, expect } from 'vitest';
-import { computeSpawnPrefix, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { cliAnalysisEnv, computeSpawnPrefix, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 
 const DIST = '/repo/dist/cli/index.js';
 const SRC = '/repo/src/cli/index.ts';
 const TSX = 'file:///repo/node_modules/tsx/dist/loader.mjs';
+
+describe('cliAnalysisEnv', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('keeps Vitest manual mode out of real CLI children without changing the parent', () => {
+    vi.stubEnv('GITNEXUS_MEMORY', 'off');
+    expect(cliAnalysisEnv().GITNEXUS_MEMORY).toBeUndefined();
+    expect(process.env.GITNEXUS_MEMORY).toBe('off');
+  });
+
+  it('preserves an explicit per-case memory policy', () => {
+    expect(cliAnalysisEnv({ GITNEXUS_MEMORY: 'off' }).GITNEXUS_MEMORY).toBe('off');
+  });
+});
 
 describe('computeSpawnPrefix', () => {
   it('selects the built dist entry when mode=dist and dist exists', () => {

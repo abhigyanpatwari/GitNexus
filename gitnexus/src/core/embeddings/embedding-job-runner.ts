@@ -1,5 +1,6 @@
 /** One durable manifest unit, one bounded provider batch, no corpus-sized maps. */
 import { createHash } from 'node:crypto';
+import { CircuitOpenError } from 'gitnexus-shared';
 import { EmbeddingByteBudget } from '../analysis-resource-budget.js';
 import type { VectorNodeReceipt, VectorStore, VectorWriteChunk } from '../lbug/vector-store.js';
 import {
@@ -52,6 +53,9 @@ export interface EmbeddingJobRunnerOptions {
   config?: Partial<EmbeddingConfig>;
   queueBytes: number;
   provider: typeof embedBatch;
+  /** Provider requests kept in flight within one unit. A remote endpoint
+   * benefits; a local model is already CPU-bound and stays at one. */
+  providerConcurrency?: number;
   initializeProvider?: () => Promise<void>;
   signal?: AbortSignal;
   onProgress?: (state: EmbeddingJobState, peakQueueBytes: number) => void;
@@ -71,6 +75,9 @@ export async function runEmbeddingJob(
   const { directory, manifest, source, journal, store, signal } = options;
   const config = resolveEmbeddingConfig(options.config ?? {});
   const budget = new EmbeddingByteBudget(options.queueBytes);
+  const concurrency = options.providerConcurrency ?? 1;
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1)
+    throw new Error('Invalid embedding provider concurrency');
   let sourceReader: EmbeddingSourceReader | undefined;
   let releaseSourceCache: (() => void) | undefined;
   const dimensions = store.options.dimensions;
@@ -87,6 +94,7 @@ export async function runEmbeddingJob(
   let attempted = 0;
   let failures = 0;
   let consecutiveFailures = 0;
+  let firstProviderError: unknown;
   const remainingNodes =
     manifest.totalNodes - journal.snapshot().completedNodes - journal.snapshot().reusedNodes;
   const ratioFloor = Math.min(20, Math.max(5, Math.ceil(remainingNodes / config.subBatchSize / 2)));
@@ -133,9 +141,11 @@ export async function runEmbeddingJob(
       0,
     );
     const maxIdChars = missing.reduce((n, key) => Math.max(n, key.id.length), 0);
+    // Cap the window by provider concurrency and the vector store's write
+    // reservation. The queue byte budget can flush it earlier below.
     const maximumBatchRows = Math.min(
       256,
-      config.subBatchSize,
+      config.subBatchSize * concurrency,
       Math.floor(store.options.batchBytes / (16 * dimensions + 128 + 2 * (maxIdChars + 40))),
     );
     if (maximumBatchRows < 1) throw new Error('Vector write does not fit its batch reservation');
@@ -229,28 +239,71 @@ export async function runEmbeddingJob(
         await options.initializeProvider?.();
         initialized = true;
       }
-      attempted++;
+      let subBatch = -1;
       let providerFailed = false;
+      let consumedRows = 0;
       try {
         for await (const result of embedInputRanges(
           batch.map((row) => row.text),
-          batch.length,
+          Math.min(batch.length, config.subBatchSize),
           signal,
           options.provider,
+          concurrency,
         )) {
           signal?.throwIfAborted();
           const rows = batch.slice(result.start, result.end);
+          consumedRows = result.end;
+          const circuitOpen =
+            'error' in result &&
+            (result.error instanceof CircuitOpenError ||
+              (result.error instanceof Error && result.error.cause instanceof CircuitOpenError));
+          const currentSubBatch = Math.floor(result.start / config.subBatchSize);
+          // Bisection results retain their original sub-batch's accounting unit.
+          if (currentSubBatch !== subBatch) {
+            subBatch = currentSubBatch;
+            providerFailed = false;
+            if (!circuitOpen) attempted++;
+          }
           if ('error' in result) {
             for (const row of rows) failed.add(row.nodeId);
             if (isInputRejection(result.error)) {
               for (const row of rows) rejectedInputs.add(row.nodeId);
               for (const row of rows) if (rejected.size < 5) rejected.add(row.nodeId);
+              if (rejected.size >= 5)
+                abort = new Error(
+                  'Embedding inputs rejected for five nodes without a success; unfinished units remain resumable',
+                );
             } else {
               failureCause = 'provider';
-              providerFailed = true;
-              consecutiveFailures++;
-              if (consecutiveFailures >= 5) abort = result.error;
+              if (circuitOpen) {
+                // A local refusal made no provider attempt and cannot add to
+                // either failure guard. Preserve the underlying outage cause.
+                abort = new Error(
+                  'Embedding endpoint unavailable; unfinished units remain resumable',
+                  {
+                    cause: firstProviderError ?? result.error,
+                  },
+                );
+              } else {
+                firstProviderError ??= result.error;
+                if (!providerFailed) {
+                  providerFailed = true;
+                  failures++;
+                  consecutiveFailures++;
+                }
+                if (consecutiveFailures >= 5)
+                  abort = new Error(
+                    'Embedding endpoint unavailable after five failed requests without a success; unfinished units remain resumable',
+                    { cause: firstProviderError },
+                  );
+                if (!abort && attempted >= ratioFloor && failures / attempted >= 0.25)
+                  abort = new Error(
+                    'Embedding endpoint failure rate exceeded 25%; unfinished units remain resumable',
+                    { cause: firstProviderError },
+                  );
+              }
             }
+            if (abort) break;
             continue;
           }
           if (
@@ -261,6 +314,7 @@ export async function runEmbeddingJob(
           )
             throw new Error('Embedding provider returned invalid vector coverage');
           consecutiveFailures = 0;
+          firstProviderError = undefined;
           rejected.clear();
           const updates = rows.flatMap((row, i) =>
             failed.has(row.nodeId)
@@ -278,16 +332,10 @@ export async function runEmbeddingJob(
           );
           if (updates.length) await queueWrites(updates);
         }
-        if (providerFailed) failures++;
-        if (!abort && providerFailed && attempted >= ratioFloor && failures / attempted >= 0.25)
-          abort = new Error(
-            'Embedding endpoint failure rate exceeded 25%; unfinished units remain resumable',
-          );
-        if (!abort && rejected.size >= 5)
-          abort = new Error(
-            'Embedding inputs rejected for five nodes without a success; unfinished units remain resumable',
-          );
       } finally {
+        // An early guard leaves admitted peers unconsumed. Their generated
+        // counts cannot become complete receipts until a later resume writes them.
+        if (abort) for (const row of batch.slice(consumedRows)) failed.add(row.nodeId);
         for (const row of batch) row.release();
         batch = [];
       }

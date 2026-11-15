@@ -239,7 +239,7 @@ function declaredOutsideClaims(
 ): boolean {
   const own = getKotlinPackageFact(filePath);
   if (own?.status !== 'known' || index.names.get(own.packageName)?.has(head) === true) return true;
-  for (const edge of scopes.imports?.get(moduleScope.id) ?? moduleScope.imports) {
+  for (const edge of scopes.imports?.edgesAt(moduleScope.id) ?? moduleScope.imports) {
     if (edge.kind !== 'wildcard-expanded' || edge.targetModuleScope === undefined) continue;
     const targetFile = scopes.scopeTree.getScope(edge.targetModuleScope)?.filePath;
     const target = targetFile === undefined ? undefined : getKotlinPackageFact(targetFile);

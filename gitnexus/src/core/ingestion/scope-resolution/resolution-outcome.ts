@@ -23,7 +23,27 @@ export type ResolutionSuppressionReason =
    *  this to report `impact()`/`context()` counts as a lower bound rather
    *  than as exact, since a dropped site's callee is by definition unknown
    *  and cannot be attributed to any target. */
-  | 'receiver-unresolved';
+  | 'receiver-unresolved'
+  /** DART-11 — the receiver is a bare name whose NEAREST binder declares it
+   *  without a type, so the type walk stopped there instead of borrowing an
+   *  enclosing scope's type for the same spelling. `declineDetail` says why
+   *  the walk stopped; `binderScopeId` names the scope that bound the name.
+   *  Diagnostic only: `summarizeUnresolvedReceivers` does not count it, so the
+   *  persisted unresolved-receiver artifact is unchanged. */
+  | 'receiver-type-unresolved';
+
+/**
+ * Why a receiver walk stopped without a type, for `receiver-type-unresolved`.
+ *
+ * - `untyped-binder` — the nearest scope that binds the receiver name lists it
+ *   in `Scope.lexicalNames` (a parameter, local, catch or pattern variable)
+ *   and records no type FACT for it. "Untyped" is the resolver's view, not a
+ *   claim about the source: the binder may have no annotation, be `dynamic`,
+ *   or carry a type the language provider does not model (Dart drops a bare
+ *   or `dynamic`-element container). That scope owns the name either way, so
+ *   no enclosing type can be the receiver's type.
+ */
+export type ReceiverDeclineDetail = 'untyped-binder';
 
 export type ResolutionOutcome =
   | {
@@ -52,6 +72,10 @@ export type ResolutionOutcome =
       /** Candidate inventory and every required graph identity were proven. */
       readonly candidateSetComplete?: boolean;
       readonly detail?: string;
+      /** Set with `receiver-type-unresolved`: why the receiver walk stopped. */
+      readonly declineDetail?: ReceiverDeclineDetail;
+      /** Set with `untyped-binder`: the scope whose binder stopped the walk. */
+      readonly binderScopeId?: string;
       readonly phase: string;
       readonly filePath: string;
       readonly name: string;

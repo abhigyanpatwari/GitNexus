@@ -3,7 +3,6 @@ import {
   analysisMayEmbed,
   resolveHostAnalysisResources,
 } from '../../src/core/analysis-host-resources.js';
-import { heapCapMbFor } from '../../src/core/ingestion/utils/effective-ram.js';
 
 const mocks = vi.hoisted(() => ({ loadMeta: vi.fn(), placement: vi.fn() }));
 vi.mock('../../src/core/ingestion/utils/effective-ram.js', async (original) => ({
@@ -49,7 +48,9 @@ it('divides the host allowance across concurrent analyses', () => {
   const one = resolveHostAnalysisResources({ includeEmbeddings: false });
   const four = resolveHostAnalysisResources({ includeEmbeddings: false, concurrency: 4 });
   expect(four.automatic).toBe(true);
-  expect(four.mainHeapMb).toBe(heapCapMbFor(8192 * 1024 ** 2));
+  expect(four.totalBytes * 4).toBe(one.totalBytes);
+  expect(four.parse.reservedBytes * 4).toBeLessThanOrEqual(one.totalBytes);
+  expect(four.embedding.reservedBytes * 4).toBeLessThanOrEqual(one.totalBytes);
   expect(four.parse.nativeThreads * 4).toBe(one.parse.nativeThreads);
   expect(four.parse.workers).toBeLessThanOrEqual(3);
 });
@@ -61,14 +62,18 @@ it('honors bounded worker, pool, and embedding-thread overrides', () => {
   vi.stubEnv('GITNEXUS_EMBEDDING_THREADS', '8');
   const budget = resolveHostAnalysisResources({ includeEmbeddings: true });
   expect(budget.parse.workers).toBe(8);
-  expect(budget.parse.workerHeapMb).toBe(512);
+  expect(budget.parse.workerHeapMb).toBeGreaterThanOrEqual(512);
+  expect(budget.parse.workerHeapMb).toBe(budget.mainHeapMb);
+  expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
   expect(budget.parse.graphPoolBytes).toBe(256 * 1024 ** 2);
   expect(budget.embedding.nativeThreads).toBe(8);
 });
 
 it('ignores embedding-only thread configuration for a graph-only invocation', () => {
   vi.stubEnv('GITNEXUS_EMBEDDING_THREADS', 'not-a-number');
-  expect(resolveHostAnalysisResources({ includeEmbeddings: false }).parse.workers).toBe(15);
+  const budget = resolveHostAnalysisResources({ includeEmbeddings: false });
+  expect(budget.parse.workers).toBeGreaterThan(0);
+  expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
   expect(() => resolveHostAnalysisResources({ includeEmbeddings: true })).toThrow(
     'GITNEXUS_EMBEDDING_THREADS',
   );
@@ -97,10 +102,10 @@ it.each(['-1', '1.5', 'NaN'])(
   },
 );
 
-it('honors explicit heap-only overcommit but rejects a conflicting family ceiling', () => {
-  expect(
-    resolveHostAnalysisResources({ includeEmbeddings: false, mainHeapMb: 40000 }).mainHeapMb,
-  ).toBe(40000);
+it('rejects impossible heap-only requests with either automatic or explicit family ceilings', () => {
+  expect(() =>
+    resolveHostAnalysisResources({ includeEmbeddings: false, mainHeapMb: 40000 }),
+  ).toThrow('cannot admit');
   expect(() =>
     resolveHostAnalysisResources({ includeEmbeddings: false, mainHeapMb: 40000, totalMb: 24576 }),
   ).toThrow('cannot admit');

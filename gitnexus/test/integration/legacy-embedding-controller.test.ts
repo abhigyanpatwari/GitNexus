@@ -157,6 +157,7 @@ async function fixture(count = 130, unsafe: string[] = [], knownProvider = true)
       vectorPoolBytes: 64 * 1024 * 1024,
       queueBytes: 16 * 1024 * 1024,
       nativeThreads: 1,
+      indexThreads: 1,
       modelBytes: 0,
       modelHeapMb: 0,
       reservedBytes: 96 * 1024 * 1024,

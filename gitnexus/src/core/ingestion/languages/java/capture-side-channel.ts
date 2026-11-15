@@ -1,4 +1,5 @@
 import type { ParsedFile } from 'gitnexus-shared';
+import type { JavaImportUses } from './import-use-facts.js';
 import {
   createClassAnnotationFactStore,
   type ClassAnnotationFact,
@@ -28,6 +29,7 @@ export type JavaClassAnnotationFact = ClassAnnotationFact;
 
 export interface JavaCaptureSideChannel {
   readonly kind: 'java';
+  readonly importUses?: JavaImportUses;
   readonly overloadFacts?: JavaOverloadFileFacts;
   readonly packageFact: JvmPackageFact;
   readonly classAnnotations: readonly JavaClassAnnotationFact[];
@@ -41,6 +43,16 @@ export interface JavaCaptureSideChannel {
 }
 
 const classAnnotations = createClassAnnotationFactStore();
+const importUses = new Map<string, JavaImportUses>();
+
+export function setJavaImportUses(filePath: string, facts: JavaImportUses | undefined): void {
+  if (facts === undefined) importUses.delete(filePath);
+  else importUses.set(filePath, facts);
+}
+
+export function getJavaImportUses(filePath: string): JavaImportUses | undefined {
+  return importUses.get(filePath);
+}
 const springAopFacts = new Map<string, readonly JavaSpringAopFact[]>();
 const springConfigConsumers = new Map<string, readonly JavaSpringConfigConsumerFact[]>();
 const springConditionalFacts = new Map<string, readonly JavaSpringConditionalFact[]>();
@@ -51,6 +63,7 @@ const springMessageProducerFacts = new Map<string, readonly SpringMessageProduce
 
 /** Clear facts retained by a prior workspace pass in a long-lived process. */
 export function clearJavaClassAnnotationFacts(): void {
+  importUses.clear();
   clearJavaOverloadFacts();
   classAnnotations.clear();
   springAopFacts.clear();
@@ -191,6 +204,7 @@ export function collectJavaCaptureSideChannel(
   }
   return {
     kind: 'java',
+    importUses: importUses.get(filePath),
     ...(overloadFacts === undefined ? {} : { overloadFacts }),
     packageFact: packageFact ?? UNKNOWN_JVM_PACKAGE_FACT,
     classAnnotations: facts,
@@ -213,6 +227,7 @@ export function getJavaClassAnnotationFacts(filePath: string): readonly JavaClas
 /** Restore worker-collected facts before Java's post-resolution hook runs. */
 export function applyJavaCaptureSideChannel(parsed: ParsedFile): void {
   const data = parsed.captureSideChannel as JavaCaptureSideChannel | undefined;
+  setJavaImportUses(parsed.filePath, data?.kind === 'java' ? data.importUses : undefined);
   if (
     data === undefined ||
     data === null ||

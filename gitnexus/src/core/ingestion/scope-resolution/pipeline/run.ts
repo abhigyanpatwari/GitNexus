@@ -33,6 +33,7 @@ import type {
 } from 'gitnexus-shared';
 import type { TypeRef } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
+import { GraphReferenceIntegrityError } from '../../../graph/relationship-integrity.js';
 import { generateId } from '../../../../lib/utils.js';
 import { lookupOwnedMembersByOwner } from '../../model/owned-members-lookup.js';
 import type { MutableSemanticModel, SemanticModel } from '../../model/semantic-model.js';
@@ -312,8 +313,8 @@ import { logger } from '../../../logger.js';
  *     graph (so this pass is a no-op when the legacy path already emitted it).
  *   - `seen` — per-site key shared with the generic edge bridge so the two
  *     passes never double-emit the same resolution.
- * The `dedupKey` and `rel:` id shape match `tryEmitEdge` exactly, so graph
- * output stays byte-identical. The caller is the enclosing class (NOT the
+ * This prepass retains its point-only identity; unlike full spans emitted by
+ * `tryEmitEdge`, it cannot certify source-site distinctness. The caller is the enclosing class (NOT the
  * method/constructor `resolveCallerGraphId` would prefer — that broke MRO for
  * C# 12 primary constructors, #1951); the edge type is pre-discriminated.
  */
@@ -1067,6 +1068,11 @@ export function runScopeResolution(
     hooks: {
       ownedMembersBindAtModuleScope: provider.ownedMembersBindAtModuleScope,
       importsBindAtLexicalScope: provider.importsBindAtLexicalScope === true,
+      // `GITNEXUS_DISABLE_IMPORT_GROUPS=1` restores one edge per imported file,
+      // for comparing the two storage forms on the same build.
+      groupsWildcardTargets:
+        provider.groupsWildcardImportTargets === true &&
+        !parseTruthyEnv(process.env.GITNEXUS_DISABLE_IMPORT_GROUPS),
       resolveImportTarget: (targetRaw, fromFile, _workspaceIndex, parsedImport) =>
         provider.resolveImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig, {
           parsedFiles,
@@ -1243,6 +1249,7 @@ export function runScopeResolution(
       workspaceIndex,
       provider.resolveQualifiedCallee,
       allFilePaths,
+      provider.elementTypeOf,
     );
   }
 
@@ -1881,9 +1888,25 @@ export function runScopeResolution(
             ),
         });
   probeEmit('callable-flow-end', `iterations=${callableValueFlow.iterations}`);
+  const onDemandImportTargets = provider.onDemandImportTargets;
+  const importSources =
+    onDemandImportTargets === undefined
+      ? undefined
+      : new Map(emitParsedFiles.map((parsed) => [parsed.filePath, parsed]));
   const importsEmitted = callableFlowOnly
     ? 0
-    : emitImportEdges(graph, indexes.imports, indexes.scopeTree, provider.importEdgeReason);
+    : emitImportEdges(
+        graph,
+        indexes.imports,
+        indexes.scopeTree,
+        provider.importEdgeReason,
+        onDemandImportTargets === undefined
+          ? undefined
+          : (sourceFile) => {
+              const parsed = importSources?.get(sourceFile);
+              return parsed === undefined ? undefined : onDemandImportTargets(parsed, indexes);
+            },
+      );
   probeEmit('imports-end', `emitted=${importsEmitted}`);
 
   // Language-specific supplementary edges (e.g. Vue template-derived
@@ -2194,6 +2217,7 @@ export function runScopeResolution(
           }
         }
       } catch (err) {
+        if (err instanceof GraphReferenceIntegrityError) throw err;
         // Last-resort isolation, mirroring the worker-side per-file try/catch:
         // a shape the predicate misses must cost this one file's CFG, not
         // abort the language's whole scope-resolution pass mid-graph-build.

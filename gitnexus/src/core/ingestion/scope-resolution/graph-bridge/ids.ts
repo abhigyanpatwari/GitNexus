@@ -43,6 +43,7 @@ import {
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 import { parameterShapeIdTag } from '../../utils/method-props.js';
 import { definitionIdPosition } from '../utils/definition-id.js';
+import { cachedCallerChildren, cachedCallerLookupStart } from '../scope/name-lookup-cache.js';
 
 const defGraphIdMemoByLookup = new WeakMap<GraphNodeLookup, Map<string, string | undefined>>();
 
@@ -163,7 +164,7 @@ function pickCallerCallableDef(
   // A provider can place default arguments and similar expressions in the
   // scope that evaluates them, outside their physical declaration container.
   if (atRange !== undefined && scope.lookupPolicy?.callerScopeIsAuthoritative !== true) {
-    for (const childId of scopes.scopeTree.getChildren(scope.id)) {
+    for (const childId of cachedCallerChildren(scope.id, scopes)) {
       const child = scopes.scopeTree.getScope(childId);
       if (child === undefined) continue;
       if (!rangeContainsPoint(child.range, atRange)) continue;
@@ -575,7 +576,7 @@ export function resolveCallerGraphId(
   nodeLookup: GraphNodeLookup,
   atRange?: { startLine: number; startCol: number },
 ): string | undefined {
-  let current: ScopeId | null = startScope;
+  let current: ScopeId | null = cachedCallerLookupStart(startScope, scopes);
   const visited = new Set<ScopeId>();
   let lastFilePath: string | undefined;
   while (current !== null) {

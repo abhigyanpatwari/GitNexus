@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CLI_SPAWN_PREFIX, tsxLoaderUrl } from '../helpers/cli-entry.js';
+import { cliAnalysisEnv, CLI_SPAWN_PREFIX, tsxLoaderUrl } from '../helpers/cli-entry.js';
 
 const DIMS = 8;
 const NODE_COUNT = 5_128;
@@ -67,7 +67,7 @@ function readMeta(repo: string): CheckpointMeta {
 }
 
 function cliEnv(repo: string): NodeJS.ProcessEnv {
-  const env = { ...process.env };
+  const env = cliAnalysisEnv();
   for (const key of Object.keys(env)) {
     if (key.startsWith('GITNEXUS_EMBEDDING_') || key.startsWith('GITNEXUS_STORAGE_'))
       delete env[key];
@@ -85,11 +85,9 @@ function cliEnv(repo: string): NodeJS.ProcessEnv {
     GITNEXUS_EMBEDDING_SUB_BATCH_SIZE: '64',
     GITNEXUS_EMBEDDING_MAX_ATTEMPTS: '1',
     GITNEXUS_EMBEDDING_CACHE_IN_MEMORY_LIMIT: '0',
-    GITNEXUS_MEMORY: 'off',
     // SIGKILL skips process exit hooks; keep orphaned cache/export spills in
     // this suite's owned directory so afterAll can remove them as well.
     TMPDIR: path.join(root, 'tmp'),
-    NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=2048`.trim(),
     CI: '1',
   };
 }

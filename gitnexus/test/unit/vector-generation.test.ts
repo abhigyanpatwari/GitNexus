@@ -8,6 +8,7 @@ import {
   selectVectorGeneration,
 } from '../../src/storage/vector-generation.js';
 import type { RepoMeta } from '../../src/storage/repo-meta.js';
+import { readIndexCapabilities } from '../../src/storage/index-capabilities.js';
 
 const generation = 'a'.repeat(32);
 const identity = 'b'.repeat(64);
@@ -64,6 +65,104 @@ describe('artifact identity and pending-job routing', () => {
 });
 
 describe('vector generation routing', () => {
+  it.each([undefined, 'interrupted', 'partial', 'unverified-count'] as const)(
+    'gates legacy checkpoint %s reads and capability receipts independently',
+    async (kind) => {
+      const legacy: RepoMeta = {
+        repoPath: '/repo',
+        lastCommit: 'abc',
+        indexedAt: 'now',
+        stats: { embeddings: 2 },
+        embeddingDims: 4,
+        capabilities: {
+          graph: { provider: 'ladybugdb', status: 'available' },
+          fts: { provider: 'ladybugdb-fts', status: 'available' },
+          vectorSearch: {
+            provider: 'ladybugdb-vector',
+            status: 'vector-index',
+            exactScanLimit: 10000,
+          },
+        },
+        embeddingCheckpoint: {
+          at: 'now',
+          nodesProcessed: 1,
+          totalNodes: 2,
+          chunksProcessed: 2,
+          model: 'model',
+          provider: 'local',
+          dimensions: 4,
+          kind,
+        },
+      };
+      for (const base of [
+        legacy,
+        {
+          ...legacy,
+          graphPath: meta.graphPath,
+          graphGeneration: meta.graphGeneration,
+          legacyVectorSource: 'f'.repeat(64),
+        },
+      ]) {
+        const graphPath = path.join('/slot', base.graphPath ?? 'lbug');
+        const reason =
+          kind === 'unverified-count' ? 'embedding-count-unverified' : 'embedding-pending';
+        expect(select(base, graphPath)).toEqual(
+          kind === 'unverified-count' ? { kind: 'legacy' } : { kind: 'unavailable', reason },
+        );
+        expect((await readIndexCapabilities('/slot', base))?.vectorSearch).toMatchObject({
+          status: 'unavailable',
+          reason,
+        });
+        expect(select({ ...base, embeddingCheckpoint: undefined }, graphPath)).toEqual({
+          kind: 'legacy',
+        });
+        if (kind === 'unverified-count' && base.graphGeneration) {
+          expect(select({ ...base, stats: { embeddings: 0 } }, graphPath)).toMatchObject({
+            kind: 'unavailable',
+            reason: 'embeddings-unavailable',
+          });
+        }
+        expect(
+          select({ ...base, graphWriteCollapsed: { expected: 100, persisted: 1 } }, graphPath),
+        ).toEqual({ kind: 'unavailable', reason: 'graph-generation-unverified' });
+      }
+    },
+  );
+  it('still validates a sealed generation when only its count checkpoint remains', async () => {
+    const metadata: RepoMeta = {
+      ...meta,
+      embeddingCheckpoint: {
+        at: 'now',
+        nodesProcessed: 1,
+        totalNodes: 1,
+        chunksProcessed: 2,
+        model: 'model',
+        provider: 'local',
+        dimensions: 4,
+        kind: 'unverified-count',
+        pendingNodeIds: [],
+      },
+    };
+    expect(select(metadata)).toMatchObject({ kind: 'ready' });
+    expect((await readIndexCapabilities('/slot', metadata))?.vectorSearch).toMatchObject({
+      status: 'unavailable',
+      reason: 'embedding-count-unverified',
+    });
+    expect(
+      select({
+        ...metadata,
+        vectorGeneration: { ...meta.vectorGeneration, graphGeneration: 'f'.repeat(32) },
+      }),
+    ).toEqual({ kind: 'unavailable', reason: 'vector-generation-mismatch' });
+    expect(
+      (
+        await readIndexCapabilities('/slot', {
+          ...metadata,
+          incrementalInProgress: { startedAt: 1, toWriteCount: 1 },
+        })
+      )?.vectorSearch,
+    ).toMatchObject({ status: 'unavailable', reason: 'graph-generation-unverified' });
+  });
   it('keeps preserved monolithic vectors readable when a generation was published but embedding was capped', () => {
     const preserved: RepoMeta = {
       ...meta,

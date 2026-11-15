@@ -9,7 +9,6 @@ import type {
   ContinueMessage,
   GraphPreparedMessage,
 } from '../../server/analyze-worker-protocol.js';
-import { autoHeapCapMb } from '../ingestion/utils/effective-ram.js';
 import {
   analysisMayEmbed,
   analysisSupervisorReservation,
@@ -87,20 +86,6 @@ const DEFAULT_DEPS: AutoSyncAnalysisLaunchDeps = {
   clearTimeoutFn: clearTimeout,
   cancelGraceMs: AUTO_SYNC_CANCEL_GRACE_MS,
 };
-
-/**
- * Per-worker V8 heap cap for one tick.
- *
- * `autoHeapCapMb()` is a whole-machine figure, so handing it to every fork
- * over-commits memory by the parallelism factor. Admission already bounds
- * parallelism to `floor(availableMemoryGB / 2)`, so dividing here keeps the sum
- * of worker heaps inside the machine budget while leaving `max_concurrency`
- * free to mean what it says. The two rules compose to a ~1.5GB per-worker floor.
- */
-export function resolveWorkerHeapMb(concurrency = 1): number {
-  const slots = Number.isFinite(concurrency) && concurrency >= 1 ? Math.floor(concurrency) : 1;
-  return Math.max(1, Math.min(8192, Math.floor(autoHeapCapMb() / slots)));
-}
 
 export function createAutoSyncAnalysisRunner(
   overrides: Partial<AutoSyncAnalysisLaunchDeps> = {},
@@ -324,7 +309,6 @@ export function createAutoSyncAnalysisRunner(
           const includeEmbeddings = await analysisMayEmbed(repoPath, options);
           if (settled) return;
           resources = resolveHostAnalysisResources({
-            mainHeapMb: resolveWorkerHeapMb(concurrency) + 48,
             includeEmbeddings,
             supervisorBytes: Math.ceil(analysisSupervisorReservation() / (concurrency ?? 1)),
             concurrency,

@@ -10,18 +10,15 @@ import {
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import {
   loadParseCache,
-  loadParseCacheChunk,
+  loadParseCacheFiles,
   pruneCache,
   saveParseCache,
 } from '../../src/storage/parse-cache.js';
 import {
   clearParsedFileStore,
-  durableChunkHasShards,
-  getDurableParsedFileDir,
-  loadDurableParsedFileIndex,
   loadParsedFilesForPaths,
-  pruneAndSaveDurableParsedFileStore,
 } from '../../src/storage/parsedfile-store.js';
+import { loadFileResultStore, pinFileResults } from '../../src/storage/file-result-store.js';
 import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 import { createTempDir } from '../helpers/test-db.js';
 import { parseFilesWithWorkers } from '../helpers/worker-parse.js';
@@ -436,20 +433,14 @@ class Holder {
       };
       assertOwners(cold);
       pruneCache(coldCache, coldCache.usedKeys);
-      const keys = await saveParseCache(storage, coldCache);
-      await pruneAndSaveDurableParsedFileStore(
-        getDurableParsedFileDir(storage),
-        identity.base,
-        new Set(keys),
-      );
+      await saveParseCache(storage, coldCache);
       await clearParsedFileStore(storage);
-      const durable = await loadDurableParsedFileIndex(
-        getDurableParsedFileDir(storage),
+      const durable = await loadFileResultStore(
+        path.join(storage, 'parse-cache', 'files'),
         identity.base,
       );
-      for (const [key, wanted] of durable)
-        expect(await durableChunkHasShards(storage, key, wanted)).toBe(true);
-      const paths = new Set([...durable.values()].flatMap((paths) => [...paths]));
+      await pinFileResults(durable, [...durable.records.keys()], storage);
+      const paths = new Set([...durable.records.values()].map((record) => record.path));
       expect([...paths].sort()).toEqual(extensions.map((extension) => `mock.${extension}`).sort());
       const parsed = await loadParsedFilesForPaths(storage, paths);
       expect(parsed.size).toBe(4);
@@ -469,14 +460,10 @@ class Holder {
       }
 
       const warmCache = await loadParseCache(storage, identity, storage);
-      const chunks = await Promise.all(
-        [...warmCache.onDiskKeys!].map((key) => loadParseCacheChunk(warmCache, key)),
-      );
-      expect(chunks.length).toBeGreaterThan(0);
-      // ParsedFiles must come from their durable shards, not worker-result chunks.
-      expect(
-        chunks.flatMap((chunk) => chunk ?? []).flatMap((part) => part.parsedFiles ?? []),
-      ).toEqual([]);
+      const facts = await loadParseCacheFiles(warmCache, [...durable.records.values()], storage);
+      expect(facts.size).toBe(4);
+      // Scope artifacts remain separately loaded from the pinned disk snapshot.
+      expect([...facts.values()].flatMap((part) => part.parsedFiles)).toEqual([]);
       const warm = await runPipelineFromRepo(repo, () => {}, {
         workerPoolSize: 1,
         parseCache: warmCache,

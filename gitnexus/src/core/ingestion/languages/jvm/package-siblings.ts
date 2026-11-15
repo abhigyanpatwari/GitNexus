@@ -308,7 +308,7 @@ export function createJvmPackageSiblingVisibility(
       const moduleScope = scopes.moduleScopes.get(derivingClass.filePath);
       if (
         moduleScope !== undefined &&
-        scopes.imports.get(moduleScope)?.some((edge) => edge.localName === baseName)
+        scopes.imports.edgesAt(moduleScope)?.some((edge) => edge.localName === baseName)
       )
         return undefined;
       if (site !== undefined && hasInheritedEnclosingClass(site, scopes)) return undefined;

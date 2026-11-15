@@ -61,6 +61,8 @@ export function selectVectorGeneration(
 ): VectorReadSelection {
   if (metadata?.incrementalInProgress || metadata?.graphWriteCollapsed)
     return { kind: 'unavailable', reason: 'graph-generation-unverified' };
+  if (metadata?.embeddingCheckpoint && metadata.embeddingCheckpoint.kind !== 'unverified-count')
+    return { kind: 'unavailable', reason: 'embedding-pending' };
   if (!metadata?.graphGeneration && !metadata?.vectorGeneration && !metadata?.embeddingJob)
     return { kind: 'legacy' };
   const graph = metadata?.graphGeneration;

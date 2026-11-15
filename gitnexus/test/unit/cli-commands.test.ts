@@ -91,6 +91,22 @@ describe('CLI commands', () => {
       expect(pkg.default.bin).toBeDefined();
       expect(pkg.default.bin.gitnexus || pkg.default.bin).toBeDefined();
     });
+
+    it('exposes the package-owned Claude hook entrypoint without loading the main CLI', async () => {
+      const pkg = await import('../../package.json', { with: { type: 'json' } });
+      expect(pkg.default.bin['gitnexus-hook']).toBe('hooks/claude/gitnexus-hook.cjs');
+      const { spawnSync } = await import('node:child_process');
+      const entrypoint = path.join(REPO_ROOT, 'gitnexus', pkg.default.bin['gitnexus-hook']);
+      const child = spawnSync(process.execPath, [entrypoint], {
+        input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Read' }),
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      expect(child.error).toBeUndefined();
+      expect(child.status, child.stderr).toBe(0);
+      expect(child.stdout).toBe('');
+      expect(child.stderr).toBe('');
+    });
   });
 
   describe('optional parser dependencies', () => {
