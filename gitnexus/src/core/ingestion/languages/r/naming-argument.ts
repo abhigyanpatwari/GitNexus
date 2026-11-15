@@ -128,6 +128,42 @@ export function getRMatchedArgument(
 }
 
 /**
+ * Arguments of `library()` / `require()` that change what the call attaches: `exclude` hides
+ * names, `include.only` attaches only some, and `character.only` makes the first argument a
+ * variable that names the package. The provider models none of them, so a call that spells any
+ * of them imports nothing (an edge the call cannot reach is worse than none).
+ */
+const ATTACH_CHANGING_ARGUMENTS: ReadonlySet<string> = new Set([
+  'exclude',
+  'include.only',
+  'character.only',
+]);
+
+/** Per tree, per argument list: whether it spells one of {@link ATTACH_CHANGING_ARGUMENTS}. */
+const attachChangingLists = new WeakMap<object, Map<number, boolean>>();
+
+function spellsAttachChangingArgument(argumentList: SyntaxNode): boolean {
+  let perTree = attachChangingLists.get(argumentList.tree);
+  if (perTree === undefined) {
+    perTree = new Map();
+    attachChangingLists.set(argumentList.tree, perTree);
+  }
+  const cached = perTree.get(argumentList.id);
+  if (cached !== undefined) return cached;
+  let found = false;
+  for (const child of argumentList.namedChildren) {
+    if (child.type !== 'argument') continue; // comment, comma
+    const name = child.childForFieldName('name');
+    if (name !== null && ATTACH_CHANGING_ARGUMENTS.has(argumentNameText(name))) {
+      found = true;
+      break;
+    }
+  }
+  perTree.set(argumentList.id, found);
+  return found;
+}
+
+/**
  * True when `argument` (an `argument` node) is the one that names the call's
  * definition, given the call's first `formal`.
  */
@@ -190,6 +226,12 @@ export function isRNonNamingScopeMatch(captures: readonly RawCapture[]): boolean
   const argument =
     captured.node.type === 'string_content' ? captured.node.parent?.parent : captured.node.parent;
   if (argument === undefined || argument === null || argument.type !== 'argument') return false;
+
+  // `library(pkg, exclude = ...)` and its two kin attach something other than the package.
+  if (formal === 'package' && fn.node.text !== 'source') {
+    const argumentList = argument.parent;
+    if (argumentList !== null && spellsAttachChangingArgument(argumentList)) return true;
+  }
 
   return !isRNamingArgument(argument, formal);
 }

@@ -42,7 +42,6 @@ describe('R scope query: imports name only their first argument', () => {
   });
 
   it('imports the first unnamed argument after named arguments', () => {
-    expect(importSources('library(character.only = TRUE, pkg)')).toEqual(['pkg']);
     expect(importSources('library(lib.loc = lib, pkg)')).toEqual(['pkg']);
     expect(importSources('source(local = env, "a.R")')).toEqual(['"a.R"']);
   });
@@ -61,6 +60,23 @@ describe('R scope query: imports name only their first argument', () => {
   it('imports the first argument when a comment precedes it', () => {
     expect(importSources('library(\n  # the package\n  pkg, lib.loc = lib)')).toEqual(['pkg']);
     expect(importSources('source(\n  # c\n  "a.R", local = env)')).toEqual(['"a.R"']);
+  });
+});
+
+describe('R scope query: library() arguments that change what is attached', () => {
+  it('imports nothing when exclude, include.only or character.only is spelled', () => {
+    expect(importSources('library(pkg, exclude = f)')).toEqual([]);
+    expect(importSources('library(pkg, exclude = c("f", "g"))')).toEqual([]);
+    expect(importSources('require(pkg, include.only = "f")')).toEqual([]);
+    expect(importSources('library(pkg, character.only = TRUE)')).toEqual([]);
+    expect(importSources('library(character.only = TRUE, pkg)')).toEqual([]);
+    expect(importSources('library("pkg", `exclude` = f)')).toEqual([]);
+  });
+
+  it('still imports with other arguments, and never changes source()', () => {
+    expect(importSources('library(pkg, quietly = TRUE)')).toEqual(['pkg']);
+    expect(importSources('library(pkg, character.only = FALSE)')).toEqual([]);
+    expect(importSources('source("a.R", exclude = f)')).toEqual(['"a.R"']);
   });
 });
 
