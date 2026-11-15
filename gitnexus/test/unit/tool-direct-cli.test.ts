@@ -13,8 +13,14 @@ vi.mock('../../src/mcp/local/local-backend.js', () => ({
   },
 }));
 
+// output() writes a byte buffer from an offset until every byte lands (#3947).
+// Record the text each call carries and report it fully written, so the
+// assertions below can match on strings.
 vi.mock('node:fs', () => ({
-  writeSync: writeSyncMock,
+  writeSync: (fd: number, bytes: Buffer, offset = 0) => {
+    writeSyncMock(fd, bytes.subarray(offset).toString('utf8'));
+    return bytes.length - offset;
+  },
 }));
 
 describe('direct CLI tool commands', () => {

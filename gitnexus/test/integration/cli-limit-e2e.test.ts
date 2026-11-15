@@ -386,6 +386,54 @@ describe('CLI --limit flag E2E', () => {
     });
   });
 
+  // ─── piped stdout (#3947) ─────────────────────────────────────────────────
+
+  describe('piped stdout (#3947)', () => {
+    // A real pipe(2), whose buffer is a fixed 64 KiB. On POSIX the CLI's fd 1 is
+    // non-blocking when it is a pipe, so one write of a larger payload stops
+    // short. spawnSync's own 'pipe' stdio is a socketpair with a larger,
+    // host-dependent buffer, which is why the suites above never hit this.
+    const ROWS = 5000;
+    const query = `UNWIND range(1, ${ROWS}) AS i RETURN i AS n, '${'x'.repeat(60)}' AS pad ORDER BY n`;
+    const args = [...CLI_SPAWN_PREFIX, 'cypher', query, '--repo', 'mini-repo'];
+
+    it.skipIf(process.platform === 'win32')(
+      'delivers the same >256 KiB result through a pipe as to a file',
+      () => {
+        const outFile = path.join(tmpParent, 'cypher-3947.json');
+        const fd = fs.openSync(outFile, 'w');
+        const toFile = spawnSync(process.execPath, args, {
+          cwd: MINI_REPO,
+          stdio: ['ignore', fd, 'pipe'],
+          env: cliEnv(),
+          timeout: 60_000,
+        });
+        fs.closeSync(fd);
+        // "$0" "$@" hands the argv to the CLI untouched by shell quoting.
+        const piped = spawnSync('sh', ['-c', '"$0" "$@" | cat', process.execPath, ...args], {
+          cwd: MINI_REPO,
+          encoding: 'utf8',
+          env: cliEnv(),
+          timeout: 60_000,
+        });
+
+        expect(toFile.status, `stderr: ${toFile.stderr}`).toBe(0);
+        const fileText = fs.readFileSync(outFile, 'utf8');
+        expect(Buffer.byteLength(fileText)).toBeGreaterThan(256 * 1024);
+        expect(Buffer.byteLength(piped.stdout), `stderr: ${piped.stderr}`).toBeGreaterThan(
+          256 * 1024,
+        );
+        // Compare the result, not raw bytes: each run probes its own staleness
+        // envelope, so those fields may legitimately differ between the runs.
+        const fromFile = JSON.parse(fileText) as CypherTabular;
+        const fromPipe = JSON.parse(piped.stdout) as CypherTabular;
+        expect(fromFile.row_count).toBe(ROWS);
+        expect(fromPipe.row_count).toBe(ROWS);
+        expect(fromPipe.markdown).toBe(fromFile.markdown);
+      },
+    );
+  });
+
   // ─── detect-changes ───────────────────────────────────────────────────────
 
   describe('detect-changes --limit', () => {
