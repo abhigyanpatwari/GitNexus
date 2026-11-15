@@ -5,7 +5,7 @@
  * uses (`incomplete_semantics`). Each fixture is a temporary repository; nothing is indexed, so
  * the indexed file list is passed in directly.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -117,6 +117,28 @@ describe('collectRUnindexedSources', () => {
     expect(await collectRUnindexedSources(root, [])).toEqual([
       { path: 'big.R', words: [], unreadable: true },
     ]);
+  });
+
+  it('bounds the read when the file grew after the size check', async () => {
+    await write({ 'grow.R': 'x'.repeat(MAX_UNINDEXED_R_SOURCE_BYTES + 1024) });
+    const realOpen = fs.open.bind(fs);
+    const spy = vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await realOpen(...(args as Parameters<typeof fs.open>));
+      const stat = handle.stat.bind(handle);
+      handle.stat = (async (...a: unknown[]) => ({
+        ...(await (stat as (...x: unknown[]) => Promise<object>)(...a)),
+        isFile: () => true,
+        size: 10,
+      })) as unknown as typeof handle.stat;
+      return handle;
+    });
+    try {
+      expect(await collectRUnindexedSources(root, [])).toEqual([
+        { path: 'grow.R', words: [], unreadable: true },
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('ignores a .gitnexusignore that is a symbolic link, a directory or a FIFO', async () => {

@@ -103,7 +103,21 @@ async function readRegularFile(file: string, maxBytes: number): Promise<string |
       const link = await fs.lstat(file);
       if (!link.isFile()) return undefined;
     }
-    return await handle.readFile('utf8');
+    // Bounded read: the file may have grown since the `stat`, so read at most `maxBytes + 1`
+    // bytes in chunks and treat anything over `maxBytes` as unreadable.
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for (;;) {
+      const want = Math.min(64 * 1024, maxBytes + 1 - total);
+      if (want <= 0) return undefined;
+      const chunk = Buffer.allocUnsafe(want);
+      const { bytesRead } = await handle.read(chunk, 0, want, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > maxBytes) return undefined;
+      chunks.push(chunk.subarray(0, bytesRead));
+    }
+    return Buffer.concat(chunks, total).toString('utf8');
   } finally {
     await handle.close();
   }
