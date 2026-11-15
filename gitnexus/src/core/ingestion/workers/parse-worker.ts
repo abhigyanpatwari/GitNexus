@@ -102,16 +102,6 @@ try {
   Zig = requireVendoredGrammar('tree-sitter-zig') as TreeSitterLanguage;
 } catch {}
 
-// R is an npm dependency, not a vendored grammar, but its native binding can fail to load in the
-// same ways (no prebuild for the platform, a corrupt or ABI-mismatched install). A static import
-// would take the whole worker down at module load and with it the parse of every language, so it
-// goes through the shared loader behind the same guard: a failure leaves R out of `languageMap`
-// and the main thread's `isLanguageAvailable` filter skips R files.
-let R: TreeSitterLanguage | null = null;
-try {
-  R = getLanguageGrammar(SupportedLanguages.R) as TreeSitterLanguage;
-} catch {}
-
 let ObjectiveC: TreeSitterLanguage | null = null;
 try {
   ObjectiveC = requireVendoredGrammar('tree-sitter-objc') as TreeSitterLanguage;
@@ -653,11 +643,37 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin } : {}),
   [SupportedLanguages.PHP]: PHP.php_only,
   [SupportedLanguages.Ruby]: Ruby,
-  ...(R ? { [SupportedLanguages.R]: R } : {}),
   [SupportedLanguages.Vue]: TypeScript.typescript,
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
   ...(Zig ? { [SupportedLanguages.Zig]: Zig } : {}),
+};
+
+// R is an npm dependency, not a vendored grammar, but its native binding can fail to load in the
+// same ways (no prebuild for the platform, a corrupt or ABI-mismatched install). A static import
+// would take the whole worker down at module load and with it the parse of every language, and an
+// eager load would cost every worker (and log a missing binding in each) even when the run has no
+// such file. So these grammars load through the shared loader on the first file that needs them,
+// behind the same guard: a failure is cached as "absent" and the main thread's
+// `isLanguageAvailable` filter skips those files.
+const lazyLanguageLoaders: Record<string, () => TreeSitterLanguage> = {
+  [SupportedLanguages.R]: () => getLanguageGrammar(SupportedLanguages.R) as TreeSitterLanguage,
+};
+const lazyLanguageCache = new Map<string, TreeSitterLanguage | null>();
+
+const resolveLanguage = (key: string): TreeSitterLanguage | undefined => {
+  const eager = languageMap[key];
+  if (eager) return eager;
+  const load = lazyLanguageLoaders[key];
+  if (!load) return undefined;
+  if (!lazyLanguageCache.has(key)) {
+    try {
+      lazyLanguageCache.set(key, load());
+    } catch {
+      lazyLanguageCache.set(key, null);
+    }
+  }
+  return lazyLanguageCache.get(key) ?? undefined;
 };
 
 /**
@@ -671,7 +687,7 @@ const isLanguageAvailable = (language: SupportedLanguages, filePath: string): bo
     language === SupportedLanguages.TypeScript && filePath.endsWith('.tsx')
       ? `${language}:tsx`
       : language;
-  return key in languageMap && languageMap[key] != null;
+  return resolveLanguage(key) != null;
 };
 
 const setLanguage = (language: SupportedLanguages, filePath: string): void => {
@@ -679,7 +695,7 @@ const setLanguage = (language: SupportedLanguages, filePath: string): void => {
     language === SupportedLanguages.TypeScript && filePath.endsWith('.tsx')
       ? `${language}:tsx`
       : language;
-  const lang = languageMap[key];
+  const lang = resolveLanguage(key);
   if (!lang) throw new Error(`Unsupported language: ${language}`);
   parser.setLanguage(lang);
 };
